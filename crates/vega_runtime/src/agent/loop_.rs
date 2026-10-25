@@ -1274,8 +1274,20 @@ where
                 "Agent turn limit ({}) reached; stopping without issuing another request.",
                 tool_config.turn_limit
             );
+            let text_start_bytes = final_text.len();
             final_text.push_str(&notice);
             emit!(events, sink, RuntimeEvent::TextDelta(notice.clone()));
+            if let Ok(limit) = u32::try_from(tool_config.turn_limit) {
+                emit!(
+                    events,
+                    sink,
+                    RuntimeEvent::GeneratedNotice {
+                        kind: RuntimeGeneratedNoticeKind::TurnLimit { limit },
+                        text_start_bytes,
+                        text_end_bytes: final_text.len(),
+                    }
+                );
+            }
             messages.push(ChatMessage::new(ChatRole::Assistant, notice));
             emit!(
                 events,
@@ -3442,17 +3454,25 @@ where
                     .as_ref()
                     .is_some_and(|run| run.no_progress())
             {
-                let message = if tool_config
-                    .computer_use
-                    .as_ref()
-                    .is_some_and(|run| run.has_delivered_screenshots())
-                {
-                    "已有截图保留在对话中。后续电脑操作连续未取得进展，已停止重复操作。请根据最后一个工具结果处理尚未完成的工作。"
-                } else {
-                    "电脑操作连续未取得进展，已停止本轮自动操作。请根据对话中的错误修正目标或参数后重新发起；不会继续重复点击或换用脚本。"
+                let kind = RuntimeGeneratedNoticeKind::ComputerStopped {
+                    delivered_images: tool_config
+                        .computer_use
+                        .as_ref()
+                        .is_some_and(|run| run.has_delivered_screenshots()),
                 };
-                final_text.push_str(message);
-                emit!(events, sink, RuntimeEvent::TextDelta(message.into()));
+                let message = kind.canonical_text();
+                let text_start_bytes = final_text.len();
+                final_text.push_str(&message);
+                emit!(events, sink, RuntimeEvent::TextDelta(message));
+                emit!(
+                    events,
+                    sink,
+                    RuntimeEvent::GeneratedNotice {
+                        kind,
+                        text_start_bytes,
+                        text_end_bytes: final_text.len(),
+                    }
+                );
                 emit!(
                     events,
                     sink,

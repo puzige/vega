@@ -481,8 +481,11 @@ impl BranchSelector {
         })
         .detach();
 
-        let search = cx
-            .new(|cx| crate::text_input::TextInput::new(cx, "搜索分支", false).with_bare_chrome());
+        let search = cx.new(|cx| {
+            crate::text_input::TextInput::new(cx, "", false)
+                .with_placeholder_key("ui.search_branches")
+                .with_bare_chrome()
+        });
         cx.observe(&search, |this, input, cx| {
             if this.model.set_filter(input.read(cx).text()) {
                 this.scroll.scroll_to_item(0, ScrollStrategy::Top);
@@ -940,14 +943,14 @@ impl Render for BranchSelector {
                     })
                     .when(filtered_count == 0, |body| {
                         let text = if row_count > 0 {
-                            "没有匹配分支"
+                            vega_i18n::t("ui.no_matching_branches")
                         } else {
                             match self.model.status {
-                                SelectorStatus::Loading => "Loading branches…",
-                                SelectorStatus::Empty => "No local branches",
+                                SelectorStatus::Loading => vega_i18n::t("ui.loading_branches"),
+                                SelectorStatus::Empty => vega_i18n::t("ui.no_local_branches"),
                                 SelectorStatus::Failed(code) => branch_error_label(code),
                                 SelectorStatus::Closed | SelectorStatus::Ready => {
-                                    "No local branches"
+                                    vega_i18n::t("ui.no_local_branches")
                                 }
                             }
                         };
@@ -962,9 +965,9 @@ impl Render for BranchSelector {
                     .child(crate::menu_list::action_row(
                         "branch-selector-new",
                         crate::icons::Icon::Plus,
-                        "新建并切换分支".into(),
+                        vega_i18n::t("ui.create_and_switch_branch").into(),
                         false,
-                        "暂不支持：分支服务只提供列出与切换",
+                        vega_i18n::t("ui.not_available_the_branch_service_only_lists_and"),
                         colors,
                         |_, _, _| {},
                     ));
@@ -1042,30 +1045,36 @@ fn render_branch_row(
 
 fn branch_error_label(code: GitWorkspaceErrorCode) -> &'static str {
     match code {
-        GitWorkspaceErrorCode::BranchDirty => "Working tree is not clean",
-        GitWorkspaceErrorCode::BranchOperationInProgress => "Another Git operation is active",
-        GitWorkspaceErrorCode::BranchDetached => "Detached HEAD is unsupported",
-        GitWorkspaceErrorCode::BranchUnborn => "Repository has no initial commit",
-        GitWorkspaceErrorCode::BranchUnsafeFilter => "Branch contains filtered files",
-        GitWorkspaceErrorCode::BranchAlreadyCurrent => "Branch is already current",
+        GitWorkspaceErrorCode::BranchDirty => vega_i18n::t("ui.working_tree_is_not_clean"),
+        GitWorkspaceErrorCode::BranchOperationInProgress => {
+            vega_i18n::t("ui.another_git_operation_is_active")
+        }
+        GitWorkspaceErrorCode::BranchDetached => vega_i18n::t("ui.detached_head_is_unsupported"),
+        GitWorkspaceErrorCode::BranchUnborn => vega_i18n::t("ui.repository_has_no_initial_commit"),
+        GitWorkspaceErrorCode::BranchUnsafeFilter => {
+            vega_i18n::t("ui.branch_contains_filtered_files")
+        }
+        GitWorkspaceErrorCode::BranchAlreadyCurrent => vega_i18n::t("ui.branch_is_already_current"),
         GitWorkspaceErrorCode::GitUnavailable => {
-            "Git 2.40+ was not found; install Homebrew Git and retry"
+            vega_i18n::t("ui.git_2_40_was_not_found_install_homebrew_en")
         }
-        GitWorkspaceErrorCode::GitUnsupported => "Git 2.40+ is required; upgrade Git and retry",
+        GitWorkspaceErrorCode::GitUnsupported => {
+            vega_i18n::t("ui.git_2_40_is_required_upgrade_git_and_en")
+        }
         GitWorkspaceErrorCode::GitExecutableChanged => {
-            "Git changed while Vega was running; restart Vega and retry"
+            vega_i18n::t("ui.git_changed_while_vega_was_running_restart_vega_en")
         }
-        GitWorkspaceErrorCode::TimedOut => "Branch operation timed out",
-        GitWorkspaceErrorCode::Cancelled => "Branch operation cancelled",
+        GitWorkspaceErrorCode::TimedOut => vega_i18n::t("ui.branch_operation_timed_out"),
+        GitWorkspaceErrorCode::Cancelled => vega_i18n::t("ui.branch_operation_cancelled"),
         GitWorkspaceErrorCode::BranchPathLimit => {
-            "Branch listing supports at most 25,000 tracked files; reduce tracked files and retry"
+            vega_i18n::t("ui.branch_listing_supports_at_most_25_000_tracked")
         }
         GitWorkspaceErrorCode::BranchCountLimit => {
-            "Too many local branches to display (10,000 limit); remove branches and retry"
+            vega_i18n::t("ui.too_many_local_branches_to_display_10_000")
         }
         GitWorkspaceErrorCode::OutputTooLarge | GitWorkspaceErrorCode::ArtifactLimit => {
-            "Branch data exceeded a safety limit; reduce repository size or retry"
+            vega_i18n::t("ui.branch_data_exceeded_a_safety_limit_reduce_repository")
         }
-        _ => "Branches unavailable",
+        _ => vega_i18n::t("ui.branches_unavailable"),
     }
 }

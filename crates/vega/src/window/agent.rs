@@ -1,4 +1,5 @@
 use super::*;
+use vega_ui::localized_copy::LocalizedCopy;
 
 /// Poll interval for the provider/credential preflight worker. The worker
 /// owns all config and keystore IO; the UI only observes its typed result.
@@ -624,7 +625,7 @@ impl VegaWindow {
         }
         self.agent_controller
             .request_active_cancel(&request.thread_id);
-        self.pause_automation_all(&request.thread_id, "已由你停止", cx);
+        self.pause_automation_all(&request.thread_id, "stopped", cx);
         if self.clear_pending_title_wait(&request.thread_id, cx) {
             let mut projection = stream.read(cx).pending_queue().clone();
             projection.paused = true;
@@ -842,7 +843,7 @@ impl VegaWindow {
                     launch.thread.clone(),
                 ))
             } else {
-                Err("Submission is no longer available".to_owned())
+                Err(vega_i18n::t("domain.ordinary_send.submission_unavailable").to_owned())
             }
         } else {
             match &cx.global::<VegaStore>().0 {
@@ -1343,22 +1344,25 @@ impl VegaWindow {
         if !request.images.is_empty() {
             stream.update(cx, |stream, cx| {
                 stream.reject_composer_submission(cx);
-                stream
-                    .apply_codex_route_error("Codex ACP 当前仅支持文本输入；移除附件后可重试", cx);
+                stream.apply_codex_route_failure(LocalizedCopy::new("app.codex.text_only"), cx);
             });
             return;
         }
         if request.skill_intent.is_some() {
             stream.update(cx, |stream, cx| {
                 stream.reject_composer_submission(cx);
-                stream.apply_codex_route_error("Codex ACP 暂不支持 Vega Skills", cx);
+                stream.apply_codex_route_failure(
+                    LocalizedCopy::new("app.codex.skills_unsupported"),
+                    cx,
+                );
             });
             return;
         }
         if cx.global::<SettingsOpen>().0 || !self.is_draft_route(&request.thread_id) {
             stream.update(cx, |stream, cx| {
                 stream.reject_composer_submission(cx);
-                stream.apply_codex_route_error("Codex ACP 本版本只支持新建任务", cx);
+                stream
+                    .apply_codex_route_failure(LocalizedCopy::new("app.codex.new_tasks_only"), cx);
             });
             return;
         }
@@ -1372,7 +1376,8 @@ impl VegaWindow {
         let Some(draft) = self.draft_for_route(&request.thread_id) else {
             stream.update(cx, |stream, cx| {
                 stream.reject_composer_submission(cx);
-                stream.apply_codex_route_error("Codex ACP 本版本只支持新建任务", cx);
+                stream
+                    .apply_codex_route_failure(LocalizedCopy::new("app.codex.new_tasks_only"), cx);
             });
             return;
         };
@@ -1485,10 +1490,7 @@ impl VegaWindow {
             stream
                 .composer_input()
                 .update(cx, |input, cx| input.set_text(&content, cx));
-            stream.apply_codex_route_error(
-                "Codex session setup failed before the prompt; your text is ready in a new Codex draft. Check Settings → Agents, then retry.",
-                cx,
-            );
+            stream.apply_codex_route_failure(LocalizedCopy::new("app.codex.setup_failed"), cx);
         });
         self.draft = Some(draft.clone());
         self.stream_view = Some((draft.id.clone(), stream));
@@ -1520,7 +1522,7 @@ impl VegaWindow {
             Err(failure) => {
                 stream.update(cx, |stream, cx| {
                     stream.reject_composer_submission(cx);
-                    stream.apply_codex_route_error(failure.message(), cx);
+                    stream.apply_codex_route_failure(LocalizedCopy::new(failure.key()), cx);
                 });
                 return;
             }
@@ -1528,7 +1530,8 @@ impl VegaWindow {
         let Some(draft) = self.draft_for_route(&thread_id) else {
             stream.update(cx, |stream, cx| {
                 stream.reject_composer_submission(cx);
-                stream.apply_codex_route_error("Codex ACP 本版本只支持新建任务", cx);
+                stream
+                    .apply_codex_route_failure(LocalizedCopy::new("app.codex.new_tasks_only"), cx);
             });
             return;
         };

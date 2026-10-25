@@ -429,7 +429,7 @@ impl VegaWindow {
                         stream.ordinary_status_checked(
                             request.submission,
                             request.attempt,
-                            "正在结束本次发送；结束后可再次核实",
+                            "ui.ordinary_send.check_finishing",
                             cx,
                         )
                     });
@@ -458,6 +458,7 @@ impl VegaWindow {
                 if started.is_err() {
                     return;
                 }
+                let status_stream = stream.clone();
                 cx.spawn(async move |this, cx| {
                     loop {
                         cx.background_executor().timer(ORDINARY_POLL).await;
@@ -467,16 +468,16 @@ impl VegaWindow {
                             Err(mpsc::TryRecvError::Disconnected) => None,
                         };
                         let _ = this.update(cx, |this, cx| {
-                            if !this.owns_stream_request(&stream, &thread, cx) {
+                            if !this.owns_stream_request(&status_stream, &thread, cx) {
                                 return;
                             }
                             let message = match result {
-                                Some(vega_conversation::agent::OrdinaryHistoryObservation::MatchingUser) => "历史中已有本次消息；启动结果未确认，不能自动重试",
-                                Some(vega_conversation::agent::OrdinaryHistoryObservation::Absent) => "历史中未找到本次消息；缺少安全重试证明",
-                                Some(vega_conversation::agent::OrdinaryHistoryObservation::Conflict) => "历史与本次发送不匹配；请查看会话历史，不能自动重试",
-                                None => "无法核实；请稍后重试核实或查看会话历史",
+                                Some(vega_conversation::agent::OrdinaryHistoryObservation::MatchingUser) => "ui.ordinary_send.check_matching",
+                                Some(vega_conversation::agent::OrdinaryHistoryObservation::Absent) => "ui.ordinary_send.check_absent",
+                                Some(vega_conversation::agent::OrdinaryHistoryObservation::Conflict) => "ui.ordinary_send.check_conflict",
+                                None => "ui.ordinary_send.check_unavailable",
                             };
-                            stream.update(cx, |stream, cx| {
+                            status_stream.update(cx, |stream, cx| {
                                 stream.ordinary_status_checked(identity, attempt, message, cx)
                             });
                         });

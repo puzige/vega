@@ -5,7 +5,12 @@ use std::io;
 use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
+mod generated_notices;
 mod responses;
+pub(crate) use generated_notices::copy_generated_notices_in_transaction;
+pub use generated_notices::{
+    GeneratedNoticeRow, record_generated_notice, remap_generated_notices_in_transaction,
+};
 pub use responses::{AssistantResponseRow, completed_response_text, record_assistant_response};
 
 const COLUMNS: &str = "id, thread_id, seq, role, kind, content, status, created_at, \
@@ -402,6 +407,7 @@ pub struct MessagePage {
     pub rows: Vec<MessageRow>,
     pub execution_durations_ms: std::collections::HashMap<String, i64>,
     pub assistant_responses: Vec<AssistantResponseRow>,
+    pub generated_notices: Vec<GeneratedNoticeRow>,
     pub continuations: Vec<RunContinuation>,
     /// `Some(oldest_seq)` when older rows may exist — pass
     /// [`PageCursor::Before`] to continue. `None` marks the oldest end of the
@@ -425,6 +431,7 @@ pub struct PageToolCall {
     pub message_id: String,
     pub seq: i64,
     pub text_offset_bytes: Option<i64>,
+    pub codex_display: Option<crate::tool_calls::StoredCodexDisplayMetadata>,
     pub tool: String,
     pub input_json: String,
     pub output_text: Option<String>,
@@ -434,8 +441,9 @@ pub struct PageToolCall {
     pub duration_ms: Option<i64>,
 }
 
-const PAGE_TOOL_COLUMNS: &str = "id, message_id, seq, tool, input_json, output_text, \
-                                 status, approval, exit_code, duration_ms, text_offset_bytes";
+const PAGE_TOOL_COLUMNS: &str = "t.id, t.message_id, t.seq, t.tool, t.input_json, t.output_text, \
+                                 t.status, t.approval, t.exit_code, t.duration_ms, t.text_offset_bytes, \
+                                 d.preview_kind, d.preview_count, d.terminal_reason";
 
 /// Reads one keyset page of durable history ending at `cursor`, oldest→newest.
 ///
@@ -478,6 +486,7 @@ pub fn page_before(
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
     let assistant_responses = responses::for_page(&tx, thread_id, &rows)?;
+    let generated_notices = generated_notices::for_page(&tx, thread_id, &rows)?;
     let continuations = page_continuations(&tx, thread_id, &rows)?;
     drop(stmt);
     tx.commit()?;
@@ -486,6 +495,7 @@ pub fn page_before(
         rows,
         execution_durations_ms,
         assistant_responses,
+        generated_notices,
         older_cursor,
         newer_cursor,
         tool_calls,
@@ -574,6 +584,7 @@ pub fn page_containing_message(
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
     let assistant_responses = responses::for_page(&tx, thread_id, &rows)?;
+    let generated_notices = generated_notices::for_page(&tx, thread_id, &rows)?;
     let continuations = page_continuations(&tx, thread_id, &rows)?;
     tx.commit()?;
     Ok(Some(MessagePage {
@@ -581,6 +592,7 @@ pub fn page_containing_message(
         rows,
         execution_durations_ms,
         assistant_responses,
+        generated_notices,
         older_cursor,
         newer_cursor,
         tool_calls,
@@ -626,6 +638,7 @@ pub fn page_after(
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
     let assistant_responses = responses::for_page(&tx, thread_id, &rows)?;
+    let generated_notices = generated_notices::for_page(&tx, thread_id, &rows)?;
     let continuations = page_continuations(&tx, thread_id, &rows)?;
     drop(stmt);
     tx.commit()?;
@@ -634,6 +647,7 @@ pub fn page_after(
         rows,
         execution_durations_ms,
         assistant_responses,
+        generated_notices,
         older_cursor,
         newer_cursor,
         tool_calls,
@@ -690,9 +704,11 @@ fn page_tool_calls(
         return Ok(Vec::new());
     };
     let mut stmt = tx.prepare(&format!(
-        "SELECT {PAGE_TOOL_COLUMNS} FROM tool_calls WHERE thread_id = ?1 AND message_id IN \
+        "SELECT {PAGE_TOOL_COLUMNS} FROM tool_calls t \
+         LEFT JOIN codex_display_metadata d ON d.tool_call_id = t.id \
+         WHERE t.thread_id = ?1 AND t.message_id IN \
          (SELECT id FROM messages WHERE thread_id = ?1 AND seq >= ?2 AND seq <= ?3 \
-         AND status != 'streaming') ORDER BY seq"
+         AND status != 'streaming') ORDER BY t.seq"
     ))?;
     let calls: Vec<PageToolCall> = stmt
         .query_map(params![thread_id, oldest.seq, newest.seq], |row| {
@@ -708,6 +724,16 @@ fn page_tool_calls(
                 exit_code: row.get(8)?,
                 duration_ms: row.get(9)?,
                 text_offset_bytes: row.get(10)?,
+                codex_display: row
+                    .get::<_, Option<String>>(11)?
+                    .map(|preview_kind| {
+                        Ok::<_, rusqlite::Error>(crate::tool_calls::StoredCodexDisplayMetadata {
+                            preview_kind,
+                            preview_count: row.get(12)?,
+                            terminal_reason: row.get(13)?,
+                        })
+                    })
+                    .transpose()?,
             })
         })?
         .collect::<Result<_, _>>()?;

@@ -82,24 +82,16 @@ impl ContextCompactionFailureCode {
     #[allow(missing_docs)]
     pub fn message(self) -> &'static str {
         match self {
-            Self::Cancelled => "Context compaction cancelled",
-            Self::SourceChanged => "History changed. Retry compaction.",
-            Self::NoCompactablePrefix => "No complete history is available to compact.",
-            Self::TooLarge => {
-                "History is too large to compact safely. Continue in a new conversation."
-            }
-            Self::InvalidSummary => "The compaction result was invalid. Retry compaction.",
-            Self::TimedOut => "Context compaction timed out. Retry compaction.",
-            Self::ImagesUnsupported => {
-                "Historical images cannot be compacted safely. Start a new conversation."
-            }
-            Self::OverLimit => {
-                "Context exceeds the available budget. Shorten the input or start a new conversation."
-            }
-            Self::ReasoningLimit => {
-                "The run exceeded the local reasoning limit. Send your message again to continue."
-            }
-            Self::Unavailable => "Context compaction failed. Retry compaction.",
+            Self::Cancelled => vega_i18n::t("domain.compaction.cancelled"),
+            Self::SourceChanged => vega_i18n::t("domain.compaction.changed"),
+            Self::NoCompactablePrefix => vega_i18n::t("domain.compaction.no_history"),
+            Self::TooLarge => vega_i18n::t("domain.compaction.too_large"),
+            Self::InvalidSummary => vega_i18n::t("domain.compaction.invalid"),
+            Self::TimedOut => vega_i18n::t("domain.compaction.timeout"),
+            Self::ImagesUnsupported => vega_i18n::t("domain.compaction.images"),
+            Self::OverLimit => vega_i18n::t("domain.compaction.over_limit"),
+            Self::ReasoningLimit => vega_i18n::t("domain.compaction.reasoning_limit"),
+            Self::Unavailable => vega_i18n::t("domain.compaction.failed"),
         }
     }
 }

@@ -201,13 +201,13 @@ impl ThreadsBlock {
         let mut actions = Vec::new();
         if index > 0 {
             actions.push((
-                "上移".into(),
+                vega_i18n::t("ui.move_up").into(),
                 item.action(Some(ids[visible[index - 1]].clone())),
             ));
         }
         if let Some(next) = visible.get(index + 1) {
             let before = ids[*next + 1..].iter().find(|id| *id != item.id()).cloned();
-            actions.push(("下移".into(), item.action(before)));
+            actions.push((vega_i18n::t("ui.move_down").into(), item.action(before)));
         }
         actions
     }

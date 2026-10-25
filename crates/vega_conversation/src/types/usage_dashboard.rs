@@ -36,10 +36,10 @@ pub struct UsageDashboard {
 /// Content-free dashboard failure, suitable for Settings without leaking SQL.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum UsageDashboardError {
-    #[error("Usage database is unavailable")]
+    #[error("{}", vega_i18n::t("domain.usage.unavailable"))]
     Unavailable,
-    #[error("Stored usage contains invalid values")]
+    #[error("{}", vega_i18n::t("domain.usage.corruptdata"))]
     CorruptData,
-    #[error("Usage totals exceed the supported range")]
+    #[error("{}", vega_i18n::t("domain.usage.overflow"))]
     Overflow,
 }

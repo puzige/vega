@@ -1,5 +1,4 @@
 use super::*;
-use gpui_kit::gpui;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, Bounds, ListOffset, TestAppContext, WindowHandle, size};
 use std::cell::RefCell;
@@ -680,7 +679,7 @@ fn history_replacement_retains_pending_and_failed_text_mixed_and_image_only_rows
         cx.update_window(handle.into(), |_, window, _| {
             let control = window.find(action);
             assert!(control.visible());
-            assert_eq!(control.label(), Some("重试"));
+            assert_eq!(control.label(), Some(vega_i18n::t("ui.retry")));
         })
         .unwrap();
         cx.update_window(handle.into(), |_, window, _| window.remove_window())
@@ -793,8 +792,413 @@ fn history_replacement_deduplicates_durable_ordinary_rows_without_replacing_copy
         cx.update_window(handle.into(), |_, window, _| {
             let control = window.find(format!("ordinary-action-{}", submission.user_message_id()));
             assert!(control.visible());
-            assert_eq!(control.label(), Some("重试"));
+            assert_eq!(control.label(), Some(vega_i18n::t("ui.retry")));
         })
         .unwrap();
+    }
+}
+
+fn persist_user(store: &Store, thread: &str, id: &str, seq: i64, text: &str) {
+    vega_store::messages::insert(
+        store.conn(),
+        &vega_store::messages::MessageRow {
+            id: id.into(),
+            thread_id: thread.into(),
+            seq,
+            role: "user".into(),
+            kind: "text".into(),
+            content: text.into(),
+            status: "done".into(),
+            created_at: seq,
+            plan_status: None,
+            plan_review_note: None,
+            plan_reviewed_at: None,
+        },
+    )
+    .unwrap();
+}
+
+struct PrivacyDirectory(std::path::PathBuf);
+
+impl PrivacyDirectory {
+    fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "vega-ordinary-privacy-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        std::fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for PrivacyDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[gpui_kit::test]
+fn privacy_history_refresh_replaces_retained_text_and_both_copy_paths_without_changing_key(
+    cx: &mut TestAppContext,
+) {
+    init(cx);
+    for (retired, missing) in [(false, false), (false, true), (true, false)] {
+        let directory = PrivacyDirectory::new();
+        let root = directory.0.join("config");
+        let database = directory.0.join("history.sqlite");
+        let store = Store::open(&database).unwrap();
+        store.migrate().unwrap();
+        let thread =
+            vega_conversation::threads::create_standalone_thread(&store, "model", "confirm")
+                .unwrap();
+        vega_conversation::privacy::register_database(database.clone(), root.clone());
+        vega_conversation::privacy::refresh_authority(&database, &root).unwrap();
+        let secret = format!("opaque{}", thread.id);
+        let request = ComposerSubmitted {
+            request_id: 1,
+            draft_revision: 0,
+            attachment_ids: Vec::new(),
+            pending_behavior: None,
+            images: Vec::new(),
+            thread_id: thread.id.clone(),
+            content: secret.clone(),
+            skill_intent: None,
+            reasoning: Ok(None),
+        };
+        let (submission, worker) = begin(&store, &request);
+        persist_user(&store, &thread.id, submission.user_message_id(), 2, &secret);
+        persist_user(&store, &thread.id, "candidate", 4, "api_key=sample_value");
+        let handle = cx.open_window(size(px(1100.), px(900.)), |_, cx| {
+            ConversationStream::new(thread.clone(), cx)
+        });
+        let (key, copy) = handle
+            .update(cx, |stream, _, cx| {
+                stream.project_ordinary_submission(submission.clone(), cx);
+                let copy = user(stream, 0).clone();
+                assert_eq!(copy.original_text(), secret);
+                copy.set_visible_text(secret.clone().into());
+                copy.set_local_selection_range(0..secret.len());
+                copy.set_selected_text(copy.selection_generation(), secret.clone());
+                (stream.entry_identities[0].key.clone(), copy)
+            })
+            .unwrap();
+        worker
+            .record_committed(receipt(&submission, &worker))
+            .unwrap();
+        if retired {
+            worker.mark_primary_started().unwrap();
+        }
+        worker.record_cleanup(Ok(())).unwrap();
+        let attempt = worker.attempt_id();
+        worker
+            .complete(if retired {
+                Ok(())
+            } else {
+                Err(SubmissionFailure::LaunchFailed)
+            })
+            .unwrap();
+        submission.seal(attempt).unwrap();
+        handle
+            .update(cx, |stream, _, cx| stream.refresh_ordinary_submissions(cx))
+            .unwrap();
+        assert_eq!(submission.snapshot().retired, retired);
+        vega_store::keystore::set_key(&root, "new-owner-key", &secret).unwrap();
+        vega_conversation::privacy::refresh_authority(&database, &root).unwrap();
+        let review = vega_conversation::privacy::review(&store, &thread.id).unwrap();
+        assert!(review.findings.iter().any(|finding| {
+            finding.exact && finding.message_id.as_deref() == Some(submission.user_message_id())
+        }));
+        let candidate = review
+            .findings
+            .iter()
+            .position(|finding| {
+                !finding.exact && finding.message_id.as_deref() == Some("candidate")
+            })
+            .unwrap();
+        vega_conversation::privacy::set_exception(&store, &thread.id, &review, candidate, true)
+            .unwrap();
+        let (page, target) = if missing {
+            (
+                vega_conversation::history::history_page_containing_message(
+                    &store,
+                    &thread.id,
+                    "candidate",
+                    1,
+                )
+                .unwrap()
+                .unwrap(),
+                "candidate",
+            )
+        } else {
+            (
+                vega_conversation::history::latest_history_page(&store, &thread.id, 20).unwrap(),
+                submission.user_message_id(),
+            )
+        };
+        handle
+            .update(cx, |stream, _, cx| {
+                assert!(stream.replace_history_window(page, target, cx));
+                let index = stream
+                    .entry_identities
+                    .iter()
+                    .position(|identity| identity.key == key)
+                    .unwrap();
+                assert_eq!(user(stream, index).id, copy.id);
+                assert!(!user(stream, index).original_text().contains(&secret));
+                assert!(!copy.has_selected_text());
+                assert!(copy.local_selection_range().is_none());
+                assert!(copy.visible_text().is_none());
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                    "unrelated clipboard".into(),
+                ));
+                copy.copy_selected_text(cx);
+                assert_eq!(
+                    cx.read_from_clipboard().unwrap().text().as_deref(),
+                    Some("unrelated clipboard")
+                );
+                copy.copy(cx);
+                assert!(
+                    !cx.read_from_clipboard()
+                        .unwrap()
+                        .text()
+                        .unwrap()
+                        .contains(&secret)
+                );
+                assert!(stream.reveal_loaded_message(submission.user_message_id(), cx));
+            })
+            .unwrap();
+        frame(handle, cx);
+        handle
+            .update(cx, |stream, _, _| {
+                let index = stream
+                    .entry_identities
+                    .iter()
+                    .position(|identity| identity.key == key)
+                    .unwrap();
+                visible_row(stream, index);
+                assert!(
+                    !user(stream, index)
+                        .visible_text()
+                        .unwrap()
+                        .contains(&secret)
+                );
+            })
+            .unwrap();
+        let review = vega_conversation::privacy::review(&store, &thread.id).unwrap();
+        vega_conversation::privacy::permanently_clean(&store, &thread.id, &review).unwrap();
+        let page = vega_conversation::history::latest_history_page(&store, &thread.id, 20).unwrap();
+        handle
+            .update(cx, |stream, _, cx| {
+                assert!(stream.replace_history_window(page, submission.user_message_id(), cx));
+                let index = stream
+                    .entry_identities
+                    .iter()
+                    .position(|identity| identity.key == key)
+                    .unwrap();
+                assert_eq!(user(stream, index).id, copy.id);
+                assert!(!copy.original_text().contains(&secret));
+            })
+            .unwrap();
+        assert!(
+            !vega_store::messages::find(store.conn(), submission.user_message_id())
+                .unwrap()
+                .unwrap()
+                .content
+                .contains(&secret)
+        );
+        cx.update_window(handle.into(), |_, window, _| window.remove_window())
+            .unwrap();
+    }
+}
+
+#[gpui_kit::test]
+fn newer_pages_keep_pending_suffix_and_place_committed_rows_between_durable_neighbors(
+    cx: &mut TestAppContext,
+) {
+    init(cx);
+    for committed in [false, true] {
+        let store = Store::open(":memory:").unwrap();
+        let handle = open(cx, "paged");
+        let attachment = image();
+        let request = ComposerSubmitted {
+            request_id: 1,
+            draft_revision: 0,
+            attachment_ids: Vec::new(),
+            pending_behavior: None,
+            images: vec![attachment.clone()],
+            thread_id: "paged".into(),
+            content: "retained mixed send".into(),
+            skill_intent: None,
+            reasoning: Ok(None),
+        };
+        let (submission, worker) = begin(&store, &request);
+        let (keys, copy, preview) = handle
+            .update(cx, |stream, _, cx| {
+                stream.project_ordinary_submission(submission.clone(), cx);
+                let copy = user(stream, 0).clone();
+                copy.set_local_selection_range(0..8);
+                let preview = match &stream.entries[1] {
+                    StreamEntry::UserImages { images } => images[0].view.clone(),
+                    _ => panic!("ordinary images missing"),
+                };
+                (
+                    stream
+                        .entry_identities
+                        .iter()
+                        .map(|identity| identity.key.clone())
+                        .collect::<Vec<_>>(),
+                    copy,
+                    preview,
+                )
+            })
+            .unwrap();
+        let attempt = worker.attempt_id();
+        if committed {
+            let mut receipt = receipt(&submission, &worker);
+            receipt.user_seq = 45;
+            receipt.assistant_seq = 46;
+            receipt.next_seq = 47;
+            worker.record_committed(receipt).unwrap();
+            worker.record_cleanup(Ok(())).unwrap();
+        }
+        worker
+            .complete(Err(if committed {
+                SubmissionFailure::LaunchFailed
+            } else {
+                SubmissionFailure::PreflightRejected
+            }))
+            .unwrap();
+        submission.seal(attempt).unwrap();
+        let page = |start: i64, end: i64| HistoryPage {
+            subagents: Vec::new(),
+            entries: (start..=end)
+                .map(|seq| HistoryEntry::UserText {
+                    seq,
+                    message_id: format!("history-{seq}"),
+                    content: format!("historical neighbor {seq}\n").repeat(12),
+                })
+                .collect(),
+            older_cursor: None,
+            newer_cursor: Some(end),
+            newest_seq: Some(60),
+        };
+        handle
+            .update(cx, |stream, _, cx| {
+                assert!(stream.replace_history_window(page(1, 20), "history-1", cx));
+            })
+            .unwrap();
+        frame(handle, cx);
+        let anchor = handle
+            .update(cx, |stream, _, _| stream.scroll_anchor_snapshot())
+            .unwrap();
+        assert!(!anchor.following_tail);
+        for (start, end) in [(21, 30), (31, 40)] {
+            handle
+                .update(cx, |stream, _, cx| {
+                    stream.apply_newer_history_page(page(start, end), cx);
+                    assert_eq!(stream.entries.len(), end as usize + 2);
+                    assert_eq!(stream.list.item_count(), stream.entries.len());
+                    for (index, identity) in
+                        stream.entry_identities[..end as usize].iter().enumerate()
+                    {
+                        assert_eq!(
+                            identity.message_id.as_deref(),
+                            Some(format!("history-{}", index + 1).as_str())
+                        );
+                    }
+                    assert_eq!(stream.entry_identities[end as usize].key, keys[0]);
+                    assert_eq!(stream.entry_identities[end as usize + 1].key, keys[1]);
+                    assert_eq!(stream.scroll_anchor_snapshot(), anchor);
+                })
+                .unwrap();
+            frame(handle, cx);
+        }
+        handle
+            .update(cx, |stream, _, cx| {
+                let mut own_range = page(41, 50);
+                if committed {
+                    own_range
+                        .entries
+                        .retain(|entry| !matches!(entry, HistoryEntry::UserText { seq: 45, .. }));
+                    own_range.entries.insert(
+                        4,
+                        HistoryEntry::UserText {
+                            seq: 45,
+                            message_id: submission.user_message_id().into(),
+                            content: request.content.clone(),
+                        },
+                    );
+                    own_range.entries.insert(
+                        5,
+                        HistoryEntry::UserImages {
+                            seq: 45,
+                            message_id: submission.user_message_id().into(),
+                            images: vec![attachment.clone()],
+                        },
+                    );
+                }
+                stream.apply_newer_history_page(own_range, cx);
+                stream.apply_newer_history_page(page(51, 60), cx);
+                let index = stream
+                    .entry_identities
+                    .iter()
+                    .position(|identity| identity.key == keys[0])
+                    .unwrap();
+                assert_eq!(index, if committed { 44 } else { 60 });
+                assert_eq!(stream.entry_identities[index + 1].key, keys[1]);
+                assert_eq!(
+                    stream.entry_identities[index - 1].message_id.as_deref(),
+                    Some(if committed {
+                        "history-44"
+                    } else {
+                        "history-60"
+                    })
+                );
+                if committed {
+                    assert_eq!(
+                        stream.entry_identities[index + 2].message_id.as_deref(),
+                        Some("history-46")
+                    );
+                }
+                assert_eq!(user(stream, index).id, copy.id);
+                assert_eq!(copy.local_selection_range(), Some(0..8));
+                match &stream.entries[index + 1] {
+                    StreamEntry::UserImages { images } => assert_eq!(images[0].view, preview),
+                    _ => panic!("retained images missing"),
+                }
+                for key in &keys {
+                    assert_eq!(
+                        stream
+                            .entry_identities
+                            .iter()
+                            .filter(|identity| &identity.key == key)
+                            .count(),
+                        1
+                    );
+                }
+                assert_eq!(stream.list.item_count(), stream.entries.len());
+                assert_eq!(stream.scroll_anchor_snapshot(), anchor);
+                assert!(stream.ordinary_controls(index + 1, cx).is_some());
+                stream.list.scroll_to(ListOffset {
+                    item_ix: index,
+                    offset_in_item: px(0.),
+                });
+            })
+            .unwrap();
+        frame(handle, cx);
+        cx.update_window(handle.into(), |_, window, _| {
+            let action = window.find(format!("ordinary-action-{}", submission.user_message_id()));
+            assert!(action.visible());
+            assert_eq!(action.label(), Some(vega_i18n::t("ui.retry")));
+        })
+        .unwrap();
+        cx.update_window(handle.into(), |_, window, _| window.remove_window())
+            .unwrap();
     }
 }

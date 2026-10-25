@@ -62,7 +62,7 @@ pub struct AutomationEditor {
     input: Entity<TextInput>,
     pending: Option<AutomationEditSubmission>,
     request: u64,
-    error: Option<String>,
+    error: Option<crate::localized_copy::LocalizedCopy>,
     elapsed_ms: u64,
     save_focus: FocusHandle,
     revert_focus: FocusHandle,
@@ -73,7 +73,8 @@ impl EventEmitter<AutomationEditorEvent> for AutomationEditor {}
 impl AutomationEditor {
     pub fn new(task: AutomationTask, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| {
-            let mut input = TextInput::new_multiline(cx, "任务内容", 8)
+            let mut input = TextInput::new_multiline(cx, "", 8)
+                .with_placeholder_key("ui.task_content")
                 .with_editor_viewport()
                 .with_tab_stop(true);
             input.set_text(&task.instruction, cx);
@@ -179,6 +180,14 @@ impl AutomationEditor {
         result: Result<Vec<AutomationTask>, String>,
         cx: &mut Context<Self>,
     ) {
+        self.finish_save_localized(submitted, result.map_err(Into::into), cx);
+    }
+    pub fn finish_save_localized(
+        &mut self,
+        submitted: &AutomationEditSubmission,
+        result: Result<Vec<AutomationTask>, crate::localized_copy::LocalizedCopy>,
+        cx: &mut Context<Self>,
+    ) {
         if self.pending.as_ref() != Some(submitted) || self.key() != submitted.key {
             return;
         }
@@ -195,7 +204,7 @@ impl AutomationEditor {
                     self.error = None;
                 } else {
                     self.latest = None;
-                    self.error = Some("目标已清除".into());
+                    self.error = Some(crate::localized_copy::LocalizedCopy::new("ui.goal_cleared"));
                 }
             }
             Err(error) => self.error = Some(error),
@@ -311,15 +320,15 @@ impl Render for AutomationEditor {
         let conflict = self.has_conflict();
         let dirty = self.is_dirty(cx);
         let error = if self.latest.is_none() {
-            Some("目标已清除".to_string())
+            Some(vega_i18n::t("ui.goal_cleared").to_string())
         } else if conflict {
-            Some("目标已更新，请载入最新内容后重试".to_string())
+            Some(vega_i18n::t("ui.goal_updated_load_the_latest_content_and_try").to_string())
         } else if dirty && self.instruction(cx).trim().is_empty() {
-            Some("请输入任务内容".to_string())
+            Some(vega_i18n::t("ui.enter_task_content").to_string())
         } else if self.instruction(cx).len() > 16384 {
-            Some("任务内容最长 16 KiB，请缩短后保存".to_string())
+            Some(vega_i18n::t("ui.task_content_is_limited_to_16_kib_shorten").to_string())
         } else {
-            self.error.clone()
+            self.error.as_ref().map(|error| error.render())
         };
         let task = self
             .latest
@@ -328,25 +337,45 @@ impl Render for AutomationEditor {
             .unwrap_or(&self.base);
         let mut details = vec![
             task.status.label().to_string(),
-            format!("执行时间 {}", format_elapsed(self.elapsed_ms)),
+            vega_i18n::t_args(
+                "ui.run_time_duration",
+                &[("duration", &format_elapsed(self.elapsed_ms))],
+            ),
         ];
         if task.kind == AutomationKind::Goal {
             details.push(if task.usage_complete {
-                format!("已用 {} tokens", task.used_tokens)
+                vega_i18n::t_args(
+                    "ui.used_tokens_tokens",
+                    &[("tokens", &task.used_tokens.to_string())],
+                )
             } else {
-                format!("用量未知（已记录 {} tokens）", task.used_tokens)
+                vega_i18n::t_args(
+                    "ui.usage_unknown_tokens_tokens_recorded",
+                    &[("tokens", &task.used_tokens.to_string())],
+                )
             });
         }
         if let Some(budget) = task.token_budget {
-            details.push(format!("预算 {budget} tokens"));
+            details.push(vega_i18n::t_args(
+                "ui.budget_budget_tokens",
+                &[("budget", &budget.to_string())],
+            ));
         }
         if task.kind == AutomationKind::Loop {
             details.push(task.interval_seconds.map_or_else(
-                || "模型安排下次执行".into(),
-                |seconds| format!("间隔 {}", format_elapsed(seconds.saturating_mul(1000))),
+                || vega_i18n::t("ui.the_model_schedules_the_next_run").into(),
+                |seconds| {
+                    vega_i18n::t_args(
+                        "ui.interval_duration",
+                        &[("duration", &format_elapsed(seconds.saturating_mul(1000)))],
+                    )
+                },
             ));
             if let Some(expiry) = task.expires_at_ms {
-                details.push(format!("有效期至 {}", format_timestamp(expiry)));
+                details.push(vega_i18n::t_args(
+                    "ui.expires_expiry",
+                    &[("expiry", &format_timestamp(expiry))],
+                ));
             }
         }
         div()
@@ -381,16 +410,20 @@ impl Render for AutomationEditor {
                             .min_w_0()
                             .text_color(colors.text_secondary)
                             .child(if self.pending.is_some() {
-                                "保存中…"
+                                vega_i18n::t("ui.saving")
                             } else if dirty {
-                                "未保存"
+                                vega_i18n::t("ui.unsaved")
                             } else {
                                 ""
                             }),
                     )
                     .child(self.button(
                         "automation-editor-revert",
-                        if conflict { "载入最新" } else { "还原" },
+                        if conflict {
+                            vega_i18n::t("ui.load_latest")
+                        } else {
+                            vega_i18n::t("ui.revert")
+                        },
                         self.pending.is_none()
                             && self.latest.is_some()
                             && (dirty || conflict || self.error.is_some()),
@@ -400,7 +433,7 @@ impl Render for AutomationEditor {
                     ))
                     .child(self.button(
                         "automation-editor-save",
-                        "保存",
+                        vega_i18n::t("ui.save"),
                         self.can_save(cx),
                         &self.save_focus,
                         cx,
@@ -429,13 +462,13 @@ impl Render for AutomationEditor {
                         div()
                             .flex_shrink_0()
                             .text_color(colors.text_secondary)
-                            .child("任务内容"),
+                            .child(vega_i18n::t("ui.task_content")),
                     )
                     .child(
                         div()
                             .id("automation-editor-input")
                             .role(Role::TextInput)
-                            .aria_label("任务内容")
+                            .aria_label(vega_i18n::t("ui.task_content"))
                             .w_full()
                             .flex()
                             .flex_col()

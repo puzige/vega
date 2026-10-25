@@ -13,6 +13,7 @@ members = [
     "crates/vega_token",
     "crates/vega_theme",
     "crates/vega_acp",
+    "crates/vega_i18n",
     "xtask",
 ]
 exclude = ["vendor/block", "vendor/mdstream"]
@@ -82,6 +83,7 @@ vega_ui = { path = "crates/vega_ui" }
 vega_markdown = { path = "crates/vega_markdown" }
 vega_token = { path = "crates/vega_token" }
 vega_acp = { path = "crates/vega_acp" }
+vega_i18n = { path = "crates/vega_i18n" }
 # 仅供 xtask 使用
 anyhow = "=1.0.104"
 tempfile = "=3.27.0"

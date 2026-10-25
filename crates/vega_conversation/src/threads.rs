@@ -308,7 +308,7 @@ pub fn set_thread_status(
         return Err(ConversationError::NotFound(thread_id.to_string()));
     }
     if status == ThreadStatus::Archived {
-        crate::automation::pause_in_transaction(&tx, thread_id, "会话已归档")
+        crate::automation::pause_in_transaction(&tx, thread_id, "thread_archived")
             .map_err(ConversationError::CorruptRow)?;
     }
     tx.commit().map_err(store_error)?;
@@ -446,7 +446,7 @@ pub fn update_thread(
         return Err(ConversationError::NotFound(thread_id.to_string()));
     }
     if update.status == Some(ThreadStatus::Archived) {
-        crate::automation::pause_in_transaction(&tx, thread_id, "会话已归档")
+        crate::automation::pause_in_transaction(&tx, thread_id, "thread_archived")
             .map_err(ConversationError::CorruptRow)?;
     }
     tx.commit().map_err(store_error)?;

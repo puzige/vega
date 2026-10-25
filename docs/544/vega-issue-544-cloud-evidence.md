@@ -135,3 +135,20 @@ Rust: nonempty suite completed successfully (22 discovered, including ignored/sk
 父针对当前字节执行 Rust 1.98.0 定向 rustfmt check（7 文件）、diff whitespace check exit 0；静态比对 44 个原测试完整块逐字保留，现有 46 个定义。此为父验证的恢复检查点，不是行为通过。现状包含独立 queue wait UI、真实 Stop guard/render、timeout paused/error、generation-scoped 清除和两项真实控件回归；上述三项编译和两项 history 缺陷仍未修。
 
 新 fetch 发现上游 `f6723682f960f87941ffcd9cae477f4a5dbef777`（已合入 i18n，193 文件）。不改 index/worktree 的 merge 分析显示 `window/agent.rs`、conversation `agent/entry.rs`、`agent/pipeline.rs`、UI `conversation_stream/render.rs` 四冲突。先保存中断字节再集成，由唯一替代 writer 保留上游本地化/generated-notice/privacy 语义及本卡 admission/receipt/ordinary 不变量；不借合并回退已合入功能，不修改 workflows 或通用验证。实际恢复包将携本检查点、原日志与明确未决项，不重做已完成阶段。
+
+### 恢复保存与独审：79a5657833db162f171a0cd92b20ee5c6f585268
+
+[固定源码](https://github.com/puzige/vega/tree/79a5657833db162f171a0cd92b20ee5c6f585268) / [原始 patch](https://github.com/puzige/vega/commit/79a5657833db162f171a0cd92b20ee5c6f585268.patch)，tree `6bedce11982a0d8dcbc36cc189cc06e26f3c1450`。父从静态核实字节保存并推送；原独立非写入者 pinned 审查复算相同 7 文件 manifest，结论 READY-queue-delta-review / no new actionable findings。
+
+- 原两个队列发现源码层关闭：独立 wait 投影进入真实 Stop render/focus/request guard，实际事件至 controller 取消/清状态/暂停；timeout 使用起始前 deadline、有界退出、paused/error 及 Continue；generation/stream/message/permission/queue gates 保留，fresh admission 一次分派。
+- 两项新增 GPUI 测试点击真实 Stop / Continue，观察实际事件和 controller admission 决策、消息保留和 launch count。只截在 worker 发布边界，不证明 provider/事务/OS 呈现；未执行，不称通过。
+- thread switch / queue replacement / window release 清除 wait；不把 wait 伪装 actions.running。审查者未识别新增具体 API 缺陷，未编译/测试，不能清除原三项 build 和两项 history 缺陷。
+- 当前唯一替代 writer `544-repair-writer-replacement` 接收完整恢复包，允许修明确缺陷及 i18n 合并兼容；原 writer 不再写入。独立只读覆盖核对将验证现有开发测试是否真正观察关键启动/清理生产出口，不用源码数量冒充完整 A1–A12。
+
+### 同版风险覆盖核对：46 定义不能代替真实入口事实
+
+非写入者只读核对固定 79 的 46 个定义（无执行），发现的是验证缺口，不据此断言生产存在新缺陷：真实 prepare/事务覆盖有价值，但 `agent/ordinary_tests.rs::Fixture::finish_unstarted` 手动 `messages::finish`/`record_cleanup(Ok(()))`，app UI 回执测试手动绑定 receipt。它们不能证明普通 public run 的 actor/entry 清理出口会生成这些事实。
+
+已静态核实可行的最小生产观察路线：`run_thread_task_with_images_reasoning_and_mcp<F>` 的 sink 返回 `Result<(), VegaError>`；MessageStarted/RunStarted 在 commit/actor start 后、primary Started 前。用 file-backed Store、真实 ordinary/authority/accepted snapshot、带 matching `model_snapshot()` 的隔离 Provider、真实 Tools 和拒绝权限 hook，sink 确定失败可驱动真实 actor error/close/cleanup，再正常 root finalization 观察一份 user/images、failed assistant、零 provider、drain 与恢复资格。另用临时 DB trigger 拒绝 assistant insert 证明实际 rollback，以及 RunStarted 回调取消证明提交后/primary前取消；不调用测试手动 finish_unstarted 来替代。
+
+actor opener/ack 丢失及 SQL commit 后 receipt 发布前没有现成可用 fault hook，若选择验证只允许 per-run 开发期窄注入、保留真实责任层并最终清理，不造生产替身或赋值即断言。A10 当前 queue dispatch 验证 ordinary=None，但不等于真实 running Composer/steer/Codex/automation/plan/credential 全路由已验证；后续最小代表回归或静态保全分别报告，不建立新外部 E2E 门禁。H 的 OS 呈现/真实延迟仍由用户手测。现有两个 history 缺陷和三编译错误仍交当前 writer，不能因补测试清理掉未解决失败。

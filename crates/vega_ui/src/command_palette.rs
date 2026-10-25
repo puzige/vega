@@ -42,7 +42,9 @@ pub struct CommandPalette {
 impl CommandPalette {
     /// Construct with currently executable actions.
     pub fn new(actions: Vec<PaletteAction>, cx: &mut Context<Self>) -> Self {
-        let input = cx.new(|cx| TextInput::new(cx, "搜索操作、任务或文件", false));
+        let input = cx.new(|cx| {
+            TextInput::new(cx, "", false).with_placeholder_key("ui.search_actions_tasks_or_files")
+        });
         cx.observe(&input, |this, input, cx| {
             if input.read(cx).is_composing() {
                 return;
@@ -116,7 +118,7 @@ impl CommandPalette {
             result.extend(self.results.tasks.iter().take(30).map(|task| {
                 (
                     if task.title.is_empty() {
-                        "未命名任务".into()
+                        vega_i18n::t("ui.untitled_task").into()
                     } else {
                         task.title.clone()
                     },
@@ -129,7 +131,7 @@ impl CommandPalette {
             result.extend(self.results.files.iter().take(30).map(|path| {
                 (
                     path.clone(),
-                    "文件".into(),
+                    vega_i18n::t("ui.file").into(),
                     PaletteTarget::File(path.clone()),
                 )
             }));
@@ -183,13 +185,17 @@ impl CommandPalette {
 /// Labels and search aliases for supported real application operations.
 pub fn action_label(action: PaletteAction) -> (&'static str, &'static str, &'static str) {
     match action {
-        PaletteAction::NewTask => ("新建任务", "⌘N", "new task"),
-        PaletteAction::OpenWorkspace => ("打开工作区", "⌘O", "open workspace project"),
-        PaletteAction::Settings => ("打开设置", "⌘,", "settings"),
-        PaletteAction::ToggleSidebar => ("切换侧栏", "⌘B", "sidebar"),
-        PaletteAction::Terminal => ("切换终端", "⌘J", "terminal"),
-        PaletteAction::Preview => ("打开预览", "", "preview"),
-        PaletteAction::Review => ("打开 Review", "", "review diff"),
+        PaletteAction::NewTask => (vega_i18n::t("ui.new_task"), "⌘N", "new task"),
+        PaletteAction::OpenWorkspace => (
+            vega_i18n::t("ui.open_workspace"),
+            "⌘O",
+            "open workspace project",
+        ),
+        PaletteAction::Settings => (vega_i18n::t("ui.open_settings"), "⌘,", "settings"),
+        PaletteAction::ToggleSidebar => (vega_i18n::t("ui.toggle_sidebar"), "⌘B", "sidebar"),
+        PaletteAction::Terminal => (vega_i18n::t("ui.toggle_terminal"), "⌘J", "terminal"),
+        PaletteAction::Preview => (vega_i18n::t("ui.open_preview"), "", "preview"),
+        PaletteAction::Review => (vega_i18n::t("ui.open_review"), "", "review diff"),
     }
 }
 impl Focusable for CommandPalette {
@@ -245,10 +251,10 @@ impl Render for CommandPalette {
                     .child(
                         div().flex().gap_2().px_3().pb_2().children(
                             [
-                                (PaletteScope::All, "全部"),
-                                (PaletteScope::Actions, "操作"),
-                                (PaletteScope::Tasks, "任务"),
-                                (PaletteScope::Files, "文件"),
+                                (PaletteScope::All, vega_i18n::t("ui.all")),
+                                (PaletteScope::Actions, vega_i18n::t("ui.actions")),
+                                (PaletteScope::Tasks, vega_i18n::t("ui.tasks")),
+                                (PaletteScope::Files, vega_i18n::t("ui.file")),
                             ]
                             .into_iter()
                             .enumerate()
@@ -333,7 +339,7 @@ impl Render for CommandPalette {
                                 .px_4()
                                 .py_2()
                                 .text_size(px(Typography::METADATA))
-                                .child("正在搜索…"),
+                                .child(vega_i18n::t("ui.searching")),
                         )
                     })
                     .when(
@@ -350,35 +356,35 @@ impl Render for CommandPalette {
                                             .map(|error| -> String {
                                                 match error {
                                                 PaletteError::Binary => {
-                                                    "二进制文件不支持文本预览，请在 Finder 中查看"
+                                                    vega_i18n::t("ui.binary_files_cannot_be_previewed_as_text_view")
                                                         .into()
                                                 }
                                                 PaletteError::TooLarge => {
-                                                    "文件超过 128 KiB，暂不支持预览".into()
+                                                    vega_i18n::t("ui.files_larger_than_128_kib_cannot_be_previewed").into()
                                                 }
                                                 PaletteError::UnsafePath => {
-                                                    "文件位于项目之外或已改变，请重新搜索".into()
+                                                    vega_i18n::t("ui.the_file_is_outside_the_project_or_has").into()
                                                 }
                                                 PaletteError::ProjectUnavailable => {
-                                                    "项目不可访问，请重新打开工作区".into()
+                                                    vega_i18n::t("ui.the_project_is_inaccessible_reopen_the_workspace").into()
                                                 }
                                                 PaletteError::Cancelled => {
-                                                    "搜索已取消，请重试".into()
+                                                    vega_i18n::t("ui.search_cancelled_try_again").into()
                                                 }
                                                 PaletteError::Unavailable => {
-                                                    "无法读取结果，请重试或检查文件是否存在".into()
+                                                    vega_i18n::t("ui.cannot_read_the_result_try_again_or_check").into()
                                                 }
                                             }
                                             })
                                             .unwrap_or_else(|| {
-                                                "部分文件结果暂不可用，请重新搜索".into()
+                                                vega_i18n::t("ui.some_file_results_are_unavailable_search_again").into()
                                             }),
                                     ),
                             )
                         },
                     )
                     .when(!self.loading && self.entries().is_empty(), |view| {
-                        view.child(div().p_4().child("没有匹配结果"))
+                        view.child(div().p_4().child(vega_i18n::t("ui.no_matching_results")))
                     })
                     .child(
                         div()
@@ -388,7 +394,7 @@ impl Render for CommandPalette {
                             .border_color(colors.border_subtle)
                             .text_size(px(Typography::METADATA))
                             .text_color(colors.text_tertiary)
-                            .child("↑↓ 选择   ↵ 打开   Tab 切换范围   Esc 关闭"),
+                            .child(vega_i18n::t("ui.select_open_tab_change_scope_esc_close")),
                     ),
             )
     }

@@ -129,13 +129,9 @@ pub(super) fn applications(path: &Path) -> Result<Vec<ImageApplication>, ImageOp
                 if label.is_empty() {
                     continue;
                 }
-                let label = if default_path.as_ref() == Some(&bundle) {
-                    format!("{label}（默认）")
-                } else {
-                    label
-                };
                 applications.push(ImageApplication {
                     label,
+                    is_default: default_path.as_ref() == Some(&bundle),
                     path: bundle,
                 });
             }

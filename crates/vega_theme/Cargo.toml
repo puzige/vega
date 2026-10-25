@@ -4,4 +4,5 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+vega_i18n.workspace = true
 gpui_kit.workspace = true

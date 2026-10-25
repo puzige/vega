@@ -270,7 +270,7 @@ fn render_entry_internal(
                     if outcome == vega_conversation::types::TaskSummaryOutcome::Failed {
                         RunFailureKind::Persisted.message()
                     } else {
-                        "Stopped".into()
+                        vega_i18n::t("ui.stopped").into()
                     },
                     if outcome == vega_conversation::types::TaskSummaryOutcome::Failed {
                         colors.danger
@@ -286,30 +286,42 @@ fn render_entry_internal(
                 SkillHistoryVerification,
             };
             let source = match activation.source_scope {
-                SkillHistorySource::Project => "Project",
-                SkillHistorySource::VegaGlobal => "Vega global",
-                SkillHistorySource::Imported => "Imported",
+                SkillHistorySource::Project => vega_i18n::t("ui.project"),
+                SkillHistorySource::VegaGlobal => vega_i18n::t("ui.vega_global"),
+                SkillHistorySource::Imported => vega_i18n::t("ui.imported"),
             };
             let origin = match activation.origin {
-                SkillHistoryOrigin::Model => "Loaded by model",
-                SkillHistoryOrigin::ExplicitUser => "Preloaded by user",
+                SkillHistoryOrigin::Model => vega_i18n::t("ui.loaded_by_model"),
+                SkillHistoryOrigin::ExplicitUser => vega_i18n::t("ui.preloaded_by_user"),
             };
             let status = match activation.status {
-                SkillHistoryStatus::Loaded => "Loaded",
-                SkillHistoryStatus::Revoked => "Revoked",
+                SkillHistoryStatus::Loaded => vega_i18n::t("ui.loaded"),
+                SkillHistoryStatus::Revoked => vega_i18n::t("ui.revoked"),
             };
             let verification = match activation.verification {
-                SkillHistoryVerification::Verified => "Snapshot verified",
-                SkillHistoryVerification::Unavailable => "Snapshot unavailable or unverified",
+                SkillHistoryVerification::Verified => vega_i18n::t("ui.snapshot_verified"),
+                SkillHistoryVerification::Unavailable => {
+                    vega_i18n::t("ui.snapshot_unavailable_or_unverified")
+                }
             };
-            let digest = activation.content_sha256.get(..12).unwrap_or("invalid");
+            let digest = activation
+                .content_sha256
+                .get(..12)
+                .unwrap_or_else(|| vega_i18n::t("ui.invalid"));
             div()
                 .py_1()
                 .text_size(px(Typography::METADATA))
                 .text_color(colors.text_secondary)
-                .child(format!(
-                    "Skill history {} · {} · {} · {} · {} · SHA-256 {}…",
-                    activation.name, source, origin, status, verification, digest
+                .child(vega_i18n::t_args(
+                    "ui.skill_history_name_source_origin_status_verification_sha",
+                    &[
+                        ("name", &activation.name),
+                        ("source", source),
+                        ("origin", origin),
+                        ("status", status),
+                        ("verification", verification),
+                        ("digest", digest),
+                    ],
                 ))
                 .into_any_element()
         }
@@ -862,7 +874,7 @@ fn code_header(
         .child(CopyReceiptButton::new(
             receipt_id.into(),
             CopySource::Code(code.code.clone()),
-            "复制代码",
+            vega_i18n::t("ui.copy_code"),
             *colors,
             |button| {
                 button
@@ -929,10 +941,13 @@ pub(super) fn selection_context_menu(
         let selected = copy_for_menu.clone();
         let original = copy_for_menu.clone();
         menu.when(copy_original, |menu| {
-            menu.item(PopupMenuItem::new("复制原文").on_click(move |_, _, cx| original.copy(cx)))
+            menu.item(
+                PopupMenuItem::new(vega_i18n::t("ui.copy_original"))
+                    .on_click(move |_, _, cx| original.copy(cx)),
+            )
         })
         .item(
-            PopupMenuItem::new("复制")
+            PopupMenuItem::new(vega_i18n::t("ui.copy"))
                 .disabled(!copy_for_menu.has_selected_text())
                 .on_click(move |_, _, cx| selected.copy_selected_text(cx)),
         )
@@ -969,7 +984,7 @@ fn render_line_selectable(
             .pb(px(2.0))
             .text_size(px(Typography::SIDEBAR))
             .text_color(colors.text_secondary)
-            .child(div().px_2().child("你"))
+            .child(div().px_2().child(vega_i18n::t("ui.you")))
             .into_any_element(),
         LineKind::UserLine { .. } => {
             let selected = document.append_styled_runs(
@@ -1296,7 +1311,7 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors, id_prefix: &s
             .pb(px(2.0))
             .text_size(px(Typography::SIDEBAR))
             .text_color(colors.text_secondary)
-            .child(div().px_2().child("你"))
+            .child(div().px_2().child(vega_i18n::t("ui.you")))
             .into_any_element(),
         LineKind::UserLine { .. } => item
             .child(div().px_2().py(px(1.0)).child(markdown_text(
@@ -1524,9 +1539,9 @@ pub(super) fn message_with_copy(
                     format!("message-copy-receipt-{}", copy.id).into(),
                     CopySource::Message(copy.clone()),
                     if user {
-                        "复制消息"
+                        vega_i18n::t("ui.copy_message")
                     } else {
-                        "复制最终回复"
+                        vega_i18n::t("ui.copy_final_reply")
                     },
                     colors,
                     |button| {

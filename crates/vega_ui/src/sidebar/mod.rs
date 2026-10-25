@@ -196,6 +196,10 @@ pub struct VegaStore(pub Result<Store, String>);
 
 impl Global for VegaStore {}
 
+struct StoreInitializationError(Option<crate::localized_copy::LocalizedCopy>);
+
+impl Global for StoreInitializationError {}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewTaskDefaults {
     /// `defaults.model` (empty until a provider is configured).
@@ -288,8 +292,10 @@ pub fn init(cx: &mut App) {
             .map(|project| project.id),
         Err(_) => None,
     };
+    let initialization_error = store.as_ref().err().cloned();
+    cx.set_global(StoreInitializationError(initialization_error));
     cx.set_global(SelectedProject(selected));
-    cx.set_global(VegaStore(store));
+    cx.set_global(VegaStore(store.map_err(|error| error.render())));
     let (projects_collapsed, sessions_collapsed) = load_block_state();
     cx.set_global(ProjectsCollapsed(projects_collapsed));
     cx.set_global(SessionsCollapsed(sessions_collapsed));
@@ -302,17 +308,37 @@ pub fn init(cx: &mut App) {
 /// Opens and migrates `vega.db` under the platform data root (tech-spec §6).
 ///
 /// Failures come back as ready-to-render messages.
-fn open_default_store() -> Result<Store, String> {
-    let dir = vega_store::paths::data_dir()
-        .ok_or_else(|| "未能确定用户主目录（HOME 未设置）".to_string())?;
-    std::fs::create_dir_all(&dir)
-        .map_err(|error| format!("创建 {} 失败：{error}", dir.display()))?;
+fn open_default_store() -> Result<Store, crate::localized_copy::LocalizedCopy> {
+    let dir = vega_store::paths::data_dir().ok_or_else(|| {
+        crate::localized_copy::LocalizedCopy::new(
+            "ui.cannot_determine_the_home_directory_home_is_not",
+        )
+    })?;
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        crate::localized_copy::LocalizedCopy::with_args(
+            "ui.cannot_create_path_error",
+            vec![
+                ("path", dir.display().to_string().into()),
+                ("error", error.to_string().into()),
+            ],
+        )
+    })?;
     let path = dir.join("vega.db");
-    let store =
-        Store::open(&path).map_err(|error| format!("打开 {} 失败：{error}", path.display()))?;
-    store
-        .migrate()
-        .map_err(|error| format!("数据库迁移失败：{error}"))?;
+    let store = Store::open(&path).map_err(|error| {
+        crate::localized_copy::LocalizedCopy::with_args(
+            "ui.cannot_open_path_error",
+            vec![
+                ("path", path.display().to_string().into()),
+                ("error", error.to_string().into()),
+            ],
+        )
+    })?;
+    store.migrate().map_err(|error| {
+        crate::localized_copy::LocalizedCopy::with_args(
+            "ui.database_migration_failed_error",
+            vec![("error", error.to_string().into())],
+        )
+    })?;
     Ok(store)
 }
 
@@ -366,12 +392,22 @@ fn task_mutation_busy(cx: &App) -> bool {
 /// become ready-to-render messages.
 fn with_store<R>(
     cx: &App,
-    operation: impl FnOnce(&Store) -> Result<R, String>,
-) -> Result<R, String> {
+    operation: impl FnOnce(&Store) -> Result<R, crate::localized_copy::LocalizedCopy>,
+) -> Result<R, crate::localized_copy::LocalizedCopy> {
     match cx.try_global::<VegaStore>() {
         Some(VegaStore(Ok(store))) => operation(store),
-        Some(VegaStore(Err(error))) => Err(format!("项目存储不可用：{error}")),
-        None => Err("项目存储不可用：应用启动时未完成初始化".to_string()),
+        Some(VegaStore(Err(error))) => Err(crate::localized_copy::LocalizedCopy::with_args(
+            "ui.project_storage_unavailable_error",
+            vec![(
+                "error",
+                cx.try_global::<StoreInitializationError>()
+                    .and_then(|failure| failure.0.clone())
+                    .unwrap_or_else(|| error.clone().into()),
+            )],
+        )),
+        None => Err(crate::localized_copy::LocalizedCopy::new(
+            "ui.project_storage_unavailable_initialization_did_not_complete_at",
+        )),
     }
 }
 
@@ -380,7 +416,7 @@ pub struct Sidebar {
     sessions_block: Entity<ThreadsBlock>,
     sidebar_scroll: gpui_kit::ScrollHandle,
     /// Inline error from thread creation (ui-spec §4.6: no modals).
-    new_task_error: Option<String>,
+    new_task_error: Option<crate::localized_copy::LocalizedCopy>,
 }
 
 impl Sidebar {
@@ -452,7 +488,9 @@ impl Sidebar {
         };
         if task_mutation_busy(cx) {
             self.sessions_block.update(cx, |block, cx| {
-                block.error = Some("任务正在保存，请稍后重试删除".into());
+                block.error = Some(crate::localized_copy::LocalizedCopy::new(
+                    "ui.a_task_is_being_saved_try_deleting_it",
+                ));
                 cx.notify();
             });
             return;
@@ -460,7 +498,8 @@ impl Sidebar {
         cx.set_global(PendingDeleteConfirm(None));
         crate::navigation::begin_task_mutation(cx);
         let result = with_store(cx, |store| {
-            conversation::delete_thread(store, &thread.id).map_err(|error| error.to_string())
+            conversation::delete_thread(store, &thread.id)
+                .map_err(crate::localized_copy::LocalizedCopy::from)
         });
         crate::navigation::finish_task_mutation(cx);
         match result {
@@ -478,7 +517,10 @@ impl Sidebar {
                 self.sessions_block.update(cx, ThreadsBlock::reload);
             }
             Err(message) => self.sessions_block.update(cx, |block, _| {
-                block.error = Some(format!("会话删除失败：{message}"));
+                block.error = Some(crate::localized_copy::LocalizedCopy::with_args(
+                    "ui.could_not_delete_the_conversation_message",
+                    vec![("message", message)],
+                ));
             }),
         }
         cx.refresh_windows();
@@ -489,7 +531,9 @@ impl Sidebar {
     /// SESSIONS.
     pub fn create_thread(&mut self, cx: &mut Context<Self>) {
         if task_mutation_busy(cx) {
-            self.new_task_error = Some("任务正在保存，请稍后重试".into());
+            self.new_task_error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.a_task_is_being_saved_try_again_shortly",
+            ));
             cx.notify();
             return;
         }
@@ -573,7 +617,7 @@ impl Sidebar {
                         crate::icons::Icon::Plus,
                         colors.text_secondary,
                     ))
-                    .child(div().child("新建任务"))
+                    .child(div().child(vega_i18n::t("ui.new_task")))
                     .child(div().flex_1())
                     .child(
                         div()
@@ -619,8 +663,8 @@ impl Sidebar {
                             .rounded_lg()
                             .px_2()
                             .text_color(colors.text_primary)
-                            .accessibility_label("设置 (⌘,)")
-                            .tooltip("设置 (⌘,)")
+                            .accessibility_label(vega_i18n::t("ui.settings"))
+                            .tooltip(vega_i18n::t("ui.settings"))
                             .on_click(|_, _, cx| {
                                 cx.set_global(SettingsOpen(true));
                                 cx.refresh_windows();
@@ -629,7 +673,7 @@ impl Sidebar {
                                 crate::icons::Icon::Settings,
                                 colors.text_secondary,
                             ))
-                            .child(div().child("设置"))
+                            .child(div().child(vega_i18n::t("ui.settings_284")))
                             .child(div().flex_1())
                             .child(
                                 div()

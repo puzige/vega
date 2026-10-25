@@ -276,7 +276,27 @@ pub fn reject(
         conn,
         crate::write_coordination::WriteCategory::ToolCalls,
     )?;
-    let updated = transaction.execute(
+    reject_in_transaction(
+        &transaction,
+        id,
+        approval_json,
+        output_text,
+        finished_at,
+        remember,
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn reject_in_transaction(
+    conn: &Connection,
+    id: &str,
+    approval_json: &str,
+    output_text: &str,
+    finished_at: i64,
+    remember: Option<RememberExactRule<'_>>,
+) -> Result<(), ToolCallTransitionError> {
+    let updated = conn.execute(
         "UPDATE tool_calls SET status = 'rejected', approval = ?1, output_text = ?2, finished_at = ?3 \
          WHERE id = ?4 AND status = 'pending_approval'",
         params![approval_json, output_text, finished_at, id],
@@ -284,7 +304,7 @@ pub fn reject(
     ensure_one(updated)?;
     if let Some(rule) = remember {
         permissions::insert_exact(
-            &transaction,
+            conn,
             InsertExactRule {
                 project_id: rule.project_id,
                 tool: rule.tool,
@@ -293,7 +313,6 @@ pub fn reject(
             },
         )?;
     }
-    transaction.commit()?;
     Ok(())
 }
 
@@ -339,6 +358,89 @@ pub fn finish(
             finished.finished_at,
             finished.id,
         ],
+    )?;
+    ensure_one(updated)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredCodexDisplayMetadata {
+    pub preview_kind: String,
+    pub preview_count: Option<i64>,
+    pub terminal_reason: Option<String>,
+}
+
+pub fn insert_codex_pending(
+    conn: &Connection,
+    call: NewToolCall<'_>,
+    display: &StoredCodexDisplayMetadata,
+) -> Result<(), ToolCallTransitionError> {
+    if call.tool != "codex_acp" || display.terminal_reason.is_some() {
+        return Err(ToolCallTransitionError::InvalidTransition);
+    }
+    let transaction = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
+    let id = call.id;
+    insert_pending(&transaction, call)?;
+    transaction.execute(
+        "INSERT INTO codex_display_metadata (tool_call_id, preview_kind, preview_count) VALUES (?1, ?2, ?3)",
+        params![id, display.preview_kind, display.preview_count],
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+pub fn finish_codex(
+    conn: &Connection,
+    finished: FinishToolCall<'_>,
+    terminal_reason: &str,
+) -> Result<(), ToolCallTransitionError> {
+    let transaction = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
+    set_codex_terminal_reason(&transaction, finished.id, terminal_reason)?;
+    finish(&transaction, finished)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+pub fn reject_codex(
+    conn: &Connection,
+    id: &str,
+    approval_json: &str,
+    output_text: &str,
+    finished_at: i64,
+    terminal_reason: &str,
+) -> Result<(), ToolCallTransitionError> {
+    let transaction = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
+    set_codex_terminal_reason(&transaction, id, terminal_reason)?;
+    reject_in_transaction(
+        &transaction,
+        id,
+        approval_json,
+        output_text,
+        finished_at,
+        None,
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn set_codex_terminal_reason(
+    conn: &Connection,
+    id: &str,
+    terminal_reason: &str,
+) -> Result<(), ToolCallTransitionError> {
+    let updated = conn.execute(
+        "UPDATE codex_display_metadata SET terminal_reason = ?2 \
+         WHERE tool_call_id = ?1 AND terminal_reason IS NULL \
+         AND EXISTS (SELECT 1 FROM tool_calls WHERE id = ?1 AND tool = 'codex_acp')",
+        params![id, terminal_reason],
     )?;
     ensure_one(updated)
 }

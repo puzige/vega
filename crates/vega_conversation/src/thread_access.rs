@@ -5,8 +5,12 @@ use crate::types::ConversationError;
 
 pub(crate) fn acquire(store: &Store, thread: &str) -> Result<ThreadAdmission, ConversationError> {
     thread_admission::try_acquire(store.database_identity(), thread)
-        .map_err(|_| ConversationError::Store("Thread access is unavailable".into()))?
-        .ok_or_else(|| ConversationError::Store("Stop the current task before changing it".into()))
+        .map_err(|_| {
+            ConversationError::Store(vega_i18n::t("domain.ordinary_send.access_unavailable").into())
+        })?
+        .ok_or_else(|| {
+            ConversationError::Store(vega_i18n::t("domain.ordinary_send.stop_before_change").into())
+        })
 }
 
 pub(crate) fn verify(

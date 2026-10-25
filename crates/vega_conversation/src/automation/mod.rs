@@ -18,13 +18,13 @@ pub fn now_ms() -> i64 {
 }
 
 fn decode<T: DeserializeOwned>(text: &str) -> Result<T, String> {
-    serde_json::from_str(text).map_err(|_| "自动任务记录无法读取，请重新打开会话".into())
+    serde_json::from_str(text).map_err(|_| vega_i18n::t("domain.automation.error.read").into())
 }
 fn encode<T: Serialize>(value: &T) -> Result<String, String> {
-    serde_json::to_string(value).map_err(|_| "自动任务无法保存，请重试".into())
+    serde_json::to_string(value).map_err(|_| vega_i18n::t("domain.automation.error.encode").into())
 }
 fn storage(_: impl std::fmt::Display) -> String {
-    "自动任务保存失败，请重试".into()
+    vega_i18n::t("domain.automation.error.save").into()
 }
 fn load_from(conn: &Connection, thread: &str) -> Result<Vec<AutomationTask>, String> {
     db::tasks(conn, thread)
@@ -96,12 +96,12 @@ fn command_in_transaction(
 ) -> Result<Vec<AutomationTask>, String> {
     let owner = vega_store::threads::find(conn, thread)
         .map_err(storage)?
-        .ok_or("会话已删除")?;
+        .ok_or(vega_i18n::t("domain.automation.error.deleted"))?;
     if owner.status != "active" {
-        return Err("请先恢复归档会话".into());
+        return Err(vega_i18n::t("domain.automation.error.restore").into());
     }
     if owner.backend != "native" {
-        return Err("自动任务仅适用于 Vega 原生任务".into());
+        return Err(vega_i18n::t("domain.automation.error.native").into());
     }
     let mut tasks = load_from(conn, thread)?;
     match command {
@@ -113,19 +113,19 @@ fn command_in_transaction(
             instruction,
         } => {
             if instruction.trim().is_empty() || instruction.len() > 16384 {
-                return Err("请输入任务内容，最长 16 KiB".into());
+                return Err(vega_i18n::t("domain.automation.error.instruction").into());
             }
             let task = tasks
                 .iter_mut()
                 .find(|task| task.kind == *kind)
                 .filter(|task| task.identity == *identity && task.revision == *revision)
-                .ok_or("目标已更新，请载入最新内容后重试")?;
+                .ok_or(vega_i18n::t("domain.automation.error.changed"))?;
             if task.instruction != *instruction {
                 task.revision = task
                     .revision
                     .checked_add(1)
                     .filter(|value| i64::try_from(*value).is_ok())
-                    .ok_or("任务版本已达上限，请清除后重建")?;
+                    .ok_or(vega_i18n::t("domain.automation.error.revision"))?;
                 task.instruction = instruction.clone();
                 task.updated_at_ms = now;
                 save(conn, task)?;
@@ -142,13 +142,13 @@ fn command_in_transaction(
                 || token_budget.is_some_and(|value| value == 0 || value > i64::MAX as u64)
                 || interval_seconds.is_some_and(|value| !(60..=86400).contains(&value))
             {
-                return Err("任务内容、预算或间隔无效".into());
+                return Err(vega_i18n::t("domain.automation.error.invalid").into());
             }
             if tasks
                 .iter()
                 .any(|task| task.kind == *kind && !task.status.replaceable())
             {
-                return Err("已有任务，请先清除后再设置".into());
+                return Err(vega_i18n::t("domain.automation.error.exists").into());
             }
             let task = AutomationTask {
                 thread_id: thread.into(),
@@ -169,6 +169,7 @@ fn command_in_transaction(
                 blocker_count: 0,
                 blocker: None,
                 reason: None,
+                system_reason: None,
                 updated_at_ms: now,
             };
             save(conn, &task)?;
@@ -180,16 +181,16 @@ fn command_in_transaction(
                 let task = tasks
                     .iter_mut()
                     .find(|task| task.kind == *kind)
-                    .ok_or("尚未设置该任务")?;
+                    .ok_or(vega_i18n::t("domain.automation.error.missing"))?;
                 if *control == AutomationControl::Resume {
                     if task.status.replaceable() {
-                        return Err("该任务已结束，请新建任务".into());
+                        return Err(vega_i18n::t("domain.automation.error.ended").into());
                     }
                     if task
                         .token_budget
                         .is_some_and(|budget| task.used_tokens >= budget || !task.usage_complete)
                     {
-                        return Err("预算已用完或用量无法核实，请清除后重新设置预算".into());
+                        return Err(vega_i18n::t("domain.automation.error.budget_reset").into());
                     }
                     task.status = AutomationStatus::Active;
                     task.next_due_ms = now;
@@ -199,14 +200,15 @@ fn command_in_transaction(
                     task.blocker_count = 0;
                     task.blocker = None;
                     task.reason = None;
+                    task.system_reason = None;
                 } else if !task.status.replaceable() {
                     task.status = AutomationStatus::Paused;
-                    task.reason = Some("已由你暂停".into());
+                    task.set_system_reason(AutomationReason::UserPaused);
                 }
                 task.revision = task
                     .revision
                     .checked_add(1)
-                    .ok_or("任务版本已达上限，请清除后重建")?;
+                    .ok_or(vega_i18n::t("domain.automation.error.revision"))?;
                 task.updated_at_ms = now;
                 save(conn, task)?;
             }
@@ -224,8 +226,11 @@ pub(crate) fn pause_in_transaction(
     for mut task in load_from(conn, thread)? {
         if task.status == AutomationStatus::Active {
             task.status = AutomationStatus::Paused;
-            task.reason = Some(reason.into());
-            task.revision = task.revision.checked_add(1).ok_or("任务版本已达上限")?;
+            task.set_pause_reason(reason);
+            task.revision = task
+                .revision
+                .checked_add(1)
+                .ok_or(vega_i18n::t("domain.automation.error.revision_limit"))?;
             task.updated_at_ms = now_ms();
             save(conn, &task)?;
         }
@@ -255,8 +260,11 @@ pub fn pause_matching(
             })
         {
             task.status = AutomationStatus::Paused;
-            task.reason = Some(reason.into());
-            task.revision = task.revision.checked_add(1).ok_or("任务版本已达上限")?;
+            task.set_pause_reason(reason);
+            task.revision = task
+                .revision
+                .checked_add(1)
+                .ok_or(vega_i18n::t("domain.automation.error.revision_limit"))?;
             task.updated_at_ms = now_ms();
             save(&tx, &task)?;
         }
@@ -276,7 +284,7 @@ pub fn recover_startup(store: &Store) -> Result<(), String> {
         .map(|value| decode(value))
         .collect::<Result<_, _>>()?;
     for task in tasks {
-        pause_in_transaction(&tx, &task.thread_id, "应用重启后已暂停")?;
+        pause_in_transaction(&tx, &task.thread_id, "app_restarted")?;
     }
     db::recover_claims(&tx).map_err(storage)?;
     tx.commit().map_err(storage)
@@ -308,8 +316,11 @@ pub fn refresh(store: &Store, thread: &str, now: i64) -> Result<Vec<AutomationTa
             && task.expires_at_ms.is_some_and(|expiry| expiry <= now)
         {
             task.status = AutomationStatus::Expired;
-            task.reason = Some("循环已到期，恢复后将重新计时 7 天".into());
-            task.revision = task.revision.checked_add(1).ok_or("任务版本已达上限")?;
+            task.set_system_reason(AutomationReason::LoopExpired);
+            task.revision = task
+                .revision
+                .checked_add(1)
+                .ok_or(vega_i18n::t("domain.automation.error.revision_limit"))?;
             save(&tx, &task)?;
         }
     }
@@ -327,9 +338,9 @@ pub fn claim(
     let tx = store.immediate_transaction().map_err(storage)?;
     let owner = vega_store::threads::find(&tx, thread)
         .map_err(storage)?
-        .ok_or("会话已删除")?;
+        .ok_or(vega_i18n::t("domain.automation.error.deleted"))?;
     if owner.status != "active" {
-        return Err("会话已归档".into());
+        return Err(vega_i18n::t("domain.automation.error.archived").into());
     }
     if let Some(data) = db::active_run(&tx, thread).map_err(storage)? {
         let prior: AutomationRunClaim = decode(&data)?;
@@ -338,7 +349,7 @@ pub fn claim(
         } else if source.is_some() {
             return Ok(None);
         } else {
-            return Err("自动任务仍在运行".into());
+            return Err(vega_i18n::t("domain.automation.error.running").into());
         }
     }
     let tasks: Vec<_> = load_from(&tx, thread)?
@@ -364,7 +375,7 @@ pub fn claim(
                 .token_budget
                 .is_some_and(|budget| !task.usage_complete || task.used_tokens >= budget)
     }) {
-        return Err("预算已用完或用量无法核实".into());
+        return Err(vega_i18n::t("domain.automation.error.budget").into());
     }
     let run = AutomationRunClaim {
         id: ulid::Ulid::generate().to_string(),
@@ -492,14 +503,14 @@ pub fn finish(
             task.used_tokens = task
                 .used_tokens
                 .checked_add(tokens)
-                .ok_or("用量计数已达上限")?;
+                .ok_or(vega_i18n::t("domain.automation.error.usage_limit"))?;
             task.usage_complete &= complete;
         }
         task.elapsed_ms = task.elapsed_ms.saturating_add(elapsed_ms);
         if task.revision == expected.revision && task.status == AutomationStatus::Active {
             if !success {
                 task.status = AutomationStatus::Paused;
-                task.reason = Some("本轮未完成，请检查会话中的错误或待处理事项后恢复".into());
+                task.set_system_reason(AutomationReason::RunIncomplete);
             } else if task.kind == AutomationKind::Goal {
                 apply_goal_report(&mut task, run.goal_report.as_ref());
                 task.next_due_ms = now.saturating_add(1000);
@@ -514,19 +525,20 @@ pub fn finish(
                     task.next_due_ms = now.saturating_add((interval * 1000) as i64);
                 }
                 task.reason = run.wakeup.as_ref().and_then(|report| report.reason.clone());
+                task.system_reason = None;
             }
         }
         if task.kind == AutomationKind::Goal && task.token_budget.is_some() {
             if !task.usage_complete {
                 task.status = AutomationStatus::Paused;
-                task.reason = Some("无法核实本轮完整用量，请清除后重新设置预算".into());
+                task.set_system_reason(AutomationReason::UsageUnverified);
             } else if !task.status.replaceable()
                 && task
                     .token_budget
                     .is_some_and(|budget| task.used_tokens >= budget)
             {
                 task.status = AutomationStatus::BudgetLimited;
-                task.reason = Some("已达到 token 预算，后续回合已停止".into());
+                task.set_system_reason(AutomationReason::BudgetExhausted);
             }
         }
         task.updated_at_ms = now;
@@ -539,6 +551,7 @@ pub fn finish(
 fn apply_goal_report(task: &mut AutomationTask, report: Option<&GoalReport>) {
     if let Some(report) = report {
         task.reason = Some(report.reason.clone());
+        task.system_reason = None;
         if report.status == "complete" {
             task.status = AutomationStatus::Complete;
             return;
@@ -568,7 +581,7 @@ fn apply_goal_report(task: &mut AutomationTask, report: Option<&GoalReport>) {
     task.no_progress = task.no_progress.saturating_add(1);
     if task.no_progress >= 3 {
         task.status = AutomationStatus::Blocked;
-        task.reason = Some("连续三轮没有可核实的进展，请检查任务后恢复".into());
+        task.set_system_reason(AutomationReason::NoProgress);
     }
 }
 
@@ -592,7 +605,7 @@ pub(crate) fn record_usage(
             .tokens
             .checked_add(input)
             .and_then(|tokens| tokens.checked_add(output))
-            .ok_or("用量计数已达上限")?;
+            .ok_or(vega_i18n::t("domain.automation.error.usage_limit"))?;
         run.usage_ids.push(id);
         db::save_run(conn, &run.thread_id, &run.id, false, &encode(&run)?).map_err(storage)?;
     }

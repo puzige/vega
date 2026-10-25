@@ -177,9 +177,7 @@ impl OrdinaryPreparation {
 }
 
 pub(crate) fn fact_error(_: SubmissionError) -> ConversationError {
-    ConversationError::Store(
-        "Submission state is unavailable; check its status before retrying".into(),
-    )
+    ConversationError::Store(vega_i18n::t("domain.ordinary_send.facts_unavailable").into())
 }
 
 pub(crate) fn record_cleanup(run: Option<&OrdinaryRun>, succeeded: bool) {
@@ -219,11 +217,8 @@ pub(crate) fn verify_recovery(
     thread: &str,
     receipt: &CommittedReceipt,
 ) -> Result<(), ConversationError> {
-    let mismatch = || {
-        ConversationError::Store(
-            "Conversation changed; open its history before sending again".into(),
-        )
-    };
+    let mismatch =
+        || ConversationError::Store(vega_i18n::t("domain.ordinary_send.history_changed").into());
     let user = messages::find(conn, &receipt.user_message_id)
         .map_err(super::runtime_store_error)?
         .ok_or_else(mismatch)?;

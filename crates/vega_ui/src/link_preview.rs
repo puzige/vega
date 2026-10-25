@@ -1135,8 +1135,13 @@ fn build_card(
         });
     let weak = entity.downgrade();
     let open_target_value = target.clone();
-    let open = control("link-preview-open", "Open", &active.open, colors)
-        .on_click(move |_, _, cx| open_target(&open_target_value, cx));
+    let open = control(
+        "link-preview-open",
+        vega_i18n::t("ui.open"),
+        &active.open,
+        colors,
+    )
+    .on_click(move |_, _, cx| open_target(&open_target_value, cx));
     let card = div()
         .id("markdown-link-preview")
         .occlude()
@@ -1209,7 +1214,7 @@ fn build_card(
         );
     }
     match &active.data {
-        None => body = body.child(div().child("Loading…")),
+        None => body = body.child(div().child(vega_i18n::t("ui.loading_en"))),
         Some(Ok(data)) if data.site != LinkSiteKind::Mail => {
             let title = data.title.clone().unwrap_or_else(|| target.clone());
             body = body.child(
@@ -1258,19 +1263,23 @@ fn build_card(
                     | LinkPreviewFailure::Busy
             );
             body = body.child(div().text_color(colors.text_secondary).child(if retryable {
-                "无法加载预览"
+                vega_i18n::t("ui.cannot_load_preview")
             } else {
-                "当前无法提供网页预览"
+                vega_i18n::t("ui.web_preview_is_currently_unavailable")
             }));
             if retryable {
                 body = body.child(
-                    control("link-preview-retry", "Retry", &active.retry, colors).on_click(
-                        move |_, window, cx| {
-                            if let Some(entity) = weak.upgrade() {
-                                load(&entity, true, window, cx);
-                            }
-                        },
-                    ),
+                    control(
+                        "link-preview-retry",
+                        vega_i18n::t("ui.retry"),
+                        &active.retry,
+                        colors,
+                    )
+                    .on_click(move |_, window, cx| {
+                        if let Some(entity) = weak.upgrade() {
+                            load(&entity, true, window, cx);
+                        }
+                    }),
                 );
             }
         }
@@ -1281,9 +1290,9 @@ fn build_card(
             control(
                 "link-preview-address-toggle",
                 if active.expanded {
-                    "Hide address"
+                    vega_i18n::t("ui.hide_address")
                 } else {
-                    "Show address"
+                    vega_i18n::t("ui.show_address")
                 },
                 &active.address,
                 colors,

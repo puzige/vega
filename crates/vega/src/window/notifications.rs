@@ -182,7 +182,7 @@ impl VegaWindow {
         let thread = match result {
             Ok(thread) => thread,
             Err(_) => {
-                Self::completion_navigation_error("未读状态保存失败，请重新打开任务后重试。", cx);
+                Self::completion_navigation_error(vega_i18n::t("app.navigation.unread_failed"), cx);
                 return;
             }
         };
@@ -237,11 +237,11 @@ impl VegaWindow {
             .try_global::<vega_ui::navigation::TaskMutationState>()
             .is_some_and(|state| state.pending > 0)
         {
-            Self::completion_navigation_error("任务操作尚未完成，请稍后重试导航。", cx);
+            Self::completion_navigation_error(vega_i18n::t("app.navigation.mutation_pending"), cx);
             return;
         }
         let Some(database) = self.file_backed_store_path(cx) else {
-            Self::completion_navigation_error("任务暂时无法打开，请稍后重试。", cx);
+            Self::completion_navigation_error(vega_i18n::t("app.navigation.task_unavailable"), cx);
             return;
         };
         let resolved =
@@ -255,7 +255,10 @@ impl VegaWindow {
                 }
             }
             Err(NavigationError::Unavailable) => {
-                Self::completion_navigation_error("任务暂时无法打开，请稍后重试。", cx);
+                Self::completion_navigation_error(
+                    vega_i18n::t("app.navigation.task_unavailable"),
+                    cx,
+                );
             }
             Ok(None) | Err(NavigationError::InvalidRoute) => {}
         }

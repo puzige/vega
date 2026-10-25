@@ -30,7 +30,13 @@ impl RunNotice {
             RunNoticeKind::Retrying {
                 attempt,
                 max_retries,
-            } => format!("正在重新连接… {attempt}/{max_retries}"),
+            } => vega_i18n::t_args(
+                "ui.reconnecting_attempt_max_retries",
+                &[
+                    ("attempt", &attempt.to_string()),
+                    ("max_retries", &max_retries.to_string()),
+                ],
+            ),
             RunNoticeKind::Failure(failure) => failure.message(),
             RunNoticeKind::FailureWithCompaction(failure, compaction) => format!(
                 "{}\n{}",
@@ -128,7 +134,7 @@ impl RunNotice {
                                 format!("credential-continue-{}", self.message_id),
                                 *colors,
                             )
-                            .label("Continue")
+                            .label(vega_i18n::t("ui.continue"))
                             .on_click(cx.listener(
                                 move |_, _, _, cx| {
                                     cx.emit(CredentialContinuationRequested {
@@ -143,7 +149,7 @@ impl RunNotice {
                                 format!("credential-settings-{}", self.message_id),
                                 *colors,
                             )
-                            .label("Check credential settings")
+                            .label(vega_i18n::t("ui.check_credential_settings"))
                             .on_click(|_, _, cx| {
                                 cx.set_global(crate::settings::SettingsOpen(true));
                                 cx.refresh_windows();
@@ -443,7 +449,7 @@ impl ConversationStream {
         if self.compaction_failure_resolved_for_owner(&message_id, code) {
             self.controller_runtime_error = None;
             let error_message = failure.message();
-            if self.controller_error.as_deref() == Some(error_message.as_str()) {
+            if self.controller_error.as_ref().map(|copy| copy.render()) == Some(error_message) {
                 self.controller_error = None;
             }
         }
@@ -469,7 +475,7 @@ impl ConversationStream {
         self.controller_runtime_error
             .as_ref()
             .is_some_and(|(message_id, failure)| {
-                self.controller_error.as_deref() == Some(failure.message().as_str())
+                self.controller_error.as_ref().map(|copy| copy.render()) == Some(failure.message())
                     && (self.compaction_reports_run_failure(message_id, *failure)
                         || self.run_notices.values().any(|notice| {
                             notice.message_id == *message_id

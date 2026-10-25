@@ -54,6 +54,7 @@ pub struct ConversationStream {
     pub(crate) foreground_height: Pixels,
     pub(crate) entry_identities: Vec<StreamEntryIdentity>,
     pub(crate) measured_entry_heights: HashMap<String, f32>,
+    pub(crate) rendered_language: &'static str,
     pub(super) text_cache: std::cell::RefCell<super::text_cache::TextCache>,
     pub(crate) message_anchor_layout: super::message_anchors::MessageAnchorLayout,
     pub(crate) message_anchor_hovered: Option<String>,
@@ -75,6 +76,7 @@ pub struct ConversationStream {
     /// Opaque provider call ids are retained only as non-rendered map keys.
     pub(crate) tool_cards: HashMap<String, Entity<ToolCard>>,
     pub(crate) run_responses: HashMap<String, phase::RunResponses>,
+    pub(crate) generated_notices: HashMap<String, Vec<generated_notice::GeneratedNoticeSpan>>,
     pub(crate) run_activity_groups: HashMap<String, Entity<RunActivityGroup>>,
     pub(crate) run_continuations: HashMap<String, vega_conversation::types::RunContinuation>,
     pub(crate) artifact_cards: HashMap<String, Entity<ArtifactCard>>,
@@ -151,13 +153,13 @@ pub struct ConversationStream {
     pub(crate) history_draft: Option<String>,
     pub(crate) approved_not_started: bool,
     pub(crate) trusted_action_busy: bool,
-    pub(crate) controller_error: Option<String>,
+    pub(crate) controller_error: Option<crate::localized_copy::LocalizedCopy>,
     pub(crate) controller_runtime_error: Option<(String, RunFailureKind)>,
     pub(crate) run_failures: HashMap<String, RunFailureKind>,
     pub(crate) run_notices: HashMap<usize, super::run_notice::RunNotice>,
     /// Nonfatal run-start MCP omission. Kept separate so a provider failure
     /// cannot overwrite it or be overwritten by it.
-    pub(crate) mcp_warning: Option<String>,
+    pub(crate) mcp_warning: Option<crate::localized_copy::LocalizedCopy>,
     pub(crate) file_selector: FileSelectorModel,
     /// The latest bounded candidate projection for this thread's project.
     pub(crate) file_snapshot: FileIndexSnapshot,
@@ -328,7 +330,8 @@ impl ConversationStream {
         cx.observe_global::<RunningMessageDefault>(|_, cx| cx.notify())
             .detach();
         let input = cx.new(|cx| {
-            TextInput::new_multiline(cx, "描述任务，或用 @ 引用文件", COMPOSER_ROWS)
+            TextInput::new_multiline(cx, "", COMPOSER_ROWS)
+                .with_placeholder_key("ui.describe_a_task_or_use_to_reference_files")
                 .with_image_paste()
         });
         let branch_selector = cx.new(|cx| {
@@ -351,8 +354,11 @@ impl ConversationStream {
         let commit_panel =
             cx.new(|cx| CommitPanel::new(thread.id.clone(), thread.project_id.clone(), cx));
 
-        let utility_project_search =
-            cx.new(|cx| TextInput::new(cx, "搜索项目", false).with_bare_chrome());
+        let utility_project_search = cx.new(|cx| {
+            TextInput::new(cx, "", false)
+                .with_placeholder_key("ui.search_projects")
+                .with_bare_chrome()
+        });
         cx.observe(&utility_project_search, |this, input, cx| {
             this.sync_utility_project_query(&input, cx);
         })
@@ -498,6 +504,7 @@ impl ConversationStream {
                 + Layout::COMPOSER_PADDING_BOTTOM),
             entry_identities: Vec::new(),
             measured_entry_heights: HashMap::new(),
+            rendered_language: vega_i18n::language(),
             text_cache: Default::default(),
             assistant_role_rows: Vec::new(),
             message_anchor_layout: super::message_anchors::MessageAnchorLayout::default(),
@@ -516,6 +523,7 @@ impl ConversationStream {
             user_block_seq: USER_BLOCK_BASE,
             tool_cards: HashMap::new(),
             run_responses: HashMap::new(),
+            generated_notices: HashMap::new(),
             run_activity_groups: HashMap::new(),
             run_continuations: HashMap::new(),
             artifact_cards: HashMap::new(),
@@ -641,7 +649,7 @@ impl ConversationStream {
         }
     }
 
-    fn refresh_assistant_roles(&mut self) {
+    pub(super) fn refresh_assistant_roles(&mut self) {
         let mut needs_role = true;
         self.assistant_role_rows = self
             .entries
@@ -801,7 +809,11 @@ impl ConversationStream {
         self.restore_scroll_anchor_at(anchor, item_ix)
     }
 
-    fn restore_scroll_anchor_at(&mut self, anchor: &ThreadScrollAnchor, item_ix: usize) -> bool {
+    pub(super) fn restore_scroll_anchor_at(
+        &mut self,
+        anchor: &ThreadScrollAnchor,
+        item_ix: usize,
+    ) -> bool {
         if anchor.following_tail {
             self.list.set_follow_mode(gpui_kit::FollowMode::Tail);
             return true;
@@ -1146,7 +1158,10 @@ impl ConversationStream {
                 .entries
                 .iter()
                 .rposition(|entry| matches!(entry, StreamEntry::User { .. }))
-            && matches!(&self.entries[index], StreamEntry::User { copy, .. } if copy.original_text() == "[凭据检查不可用]")
+            && self.entry_identities.get(index).is_some_and(|identity| {
+                identity.message_id.is_none() && identity.pending_id.is_none()
+            })
+            && matches!(&self.entries[index], StreamEntry::User { copy, .. } if copy.live_projection_unavailable())
         {
             let block = self.user_block_seq;
             self.user_block_seq += 1;
@@ -1167,20 +1182,32 @@ impl ConversationStream {
     pub fn apply_controller_error(&mut self, cx: &mut Context<Self>) {
         self.actions.pending_mode = None;
         self.controller_runtime_error = None;
-        self.controller_error = Some("操作未保存，请重试".into());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(
+            "ui.changes_were_not_saved_try_again",
+        ));
         cx.notify();
     }
 
     pub fn apply_codex_route_error(&mut self, message: &'static str, cx: &mut Context<Self>) {
+        self.apply_codex_route_failure(message.into(), cx);
+    }
+
+    pub fn apply_codex_route_failure(
+        &mut self,
+        failure: crate::localized_copy::LocalizedCopy,
+        cx: &mut Context<Self>,
+    ) {
         self.controller_runtime_error = None;
-        self.controller_error = Some(message.into());
+        self.controller_error = Some(failure);
         cx.notify();
     }
 
     /// Keeps the exact in-flight submission intact when a duplicate send arrives.
     pub fn apply_agent_busy(&mut self, cx: &mut Context<Self>) {
         self.controller_runtime_error = None;
-        self.controller_error = Some("此对话正在执行，请等待完成或停止当前任务".into());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(
+            "ui.this_conversation_is_running_wait_for_it_to",
+        ));
         cx.notify();
     }
 
@@ -1188,8 +1215,9 @@ impl ConversationStream {
     pub fn apply_credential_error(&mut self, cx: &mut Context<Self>) {
         self.reject_composer_submission(cx);
         self.controller_runtime_error = None;
-        self.controller_error =
-            Some("本地凭据缺失或无法读取，请在设置中重新填写 API Key 后重试".into());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(
+            "ui.local_credentials_are_missing_or_unreadable_re_enter",
+        ));
         cx.notify();
     }
 
@@ -1203,7 +1231,7 @@ impl ConversationStream {
     ) {
         self.reject_composer_submission(cx);
         self.controller_runtime_error = None;
-        self.controller_error = Some(failure.message());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::Preflight(failure));
         cx.notify();
     }
 
@@ -1448,7 +1476,9 @@ impl ConversationStream {
         self.model_selection_pending = None;
         self.clear_model_selection_save_owner(request_id, cx);
         self.controller_runtime_error = None;
-        self.controller_error = Some("模型选择保存失败，请重试".into());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(
+            "ui.could_not_save_the_model_selection_try_again",
+        ));
         cx.notify();
     }
 
@@ -1584,7 +1614,9 @@ impl ConversationStream {
     /// Displays a bounded provider/runner failure after durable preparation.
     pub fn apply_agent_error(&mut self, cx: &mut Context<Self>) {
         self.controller_runtime_error = None;
-        self.controller_error = Some("执行未完成，可安全重试".into());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(
+            "ui.the_run_did_not_finish_you_can_safely",
+        ));
 
         self.meter.end_run();
         cx.notify();
@@ -1601,9 +1633,9 @@ impl ConversationStream {
         if diagnostics.is_empty() {
             return;
         }
-        self.mcp_warning = Some(format!(
-            "{} 个已启用的 MCP 服务器不可用，本轮不提供其工具；请在设置 → MCP 查看详情",
-            diagnostics.len()
+        self.mcp_warning = Some(crate::localized_copy::LocalizedCopy::with_args(
+            "ui.count_enabled_mcp_servers_are_unavailable_their_tools",
+            vec![("count", (diagnostics.len()).to_string().into())],
         ));
         cx.notify();
     }
@@ -1646,7 +1678,7 @@ impl ConversationStream {
             return;
         }
         self.controller_runtime_error = message_id.map(|id| (id.to_owned(), failure));
-        self.controller_error = Some(failure.message());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::Run(failure));
         self.meter.end_run();
         cx.notify();
     }
@@ -1660,7 +1692,7 @@ impl ConversationStream {
         cx: &mut Context<Self>,
     ) {
         self.controller_runtime_error = None;
-        self.controller_error = Some(code.message().into());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::Reference(code));
         self.meter.end_run();
         cx.notify();
     }
@@ -1712,6 +1744,7 @@ impl ConversationStream {
             | ConversationEvent::RunContinued { .. }
             | ConversationEvent::AssistantResponseStarted { .. }
             | ConversationEvent::AssistantResponseCompleted { .. }
+            | ConversationEvent::GeneratedNotice { .. }
             | ConversationEvent::ReasoningCompleted { .. }
             | ConversationEvent::ThinkingDelta { .. }
             | ConversationEvent::SummaryDelta { .. }

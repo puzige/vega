@@ -27,6 +27,16 @@ impl VegaWindow {
         mut projection: PendingQueueProjection,
         cx: &mut Context<Self>,
     ) {
+        let error = projection.error.as_deref().map(|error| {
+            [
+                "ui.ordinary_send.queue_occupied",
+                "ui.ordinary_send.queue_finishing",
+            ]
+            .into_iter()
+            .find(|key| *key == error || vega_i18n::t(key) == error)
+            .map(vega_ui::localized_copy::LocalizedCopy::new)
+            .unwrap_or_else(|| crate::app_localization::localized_error(error))
+        });
         let delivered = &self.agent_controller.queue_delivered;
         projection
             .messages
@@ -59,7 +69,9 @@ impl VegaWindow {
                 .queue_streams
                 .insert(thread_id.into(), stream.clone());
         }
-        stream.update(cx, |stream, cx| stream.apply_pending_queue(projection, cx));
+        stream.update(cx, |stream, cx| {
+            stream.apply_pending_queue_localized(projection, error, cx)
+        });
     }
 
     fn reject_pending_queue_action(
@@ -129,7 +141,7 @@ impl VegaWindow {
                     }
                     Err(()) => {
                         projection.paused = true;
-                        projection.error = Some("待处理消息读取失败，请重新打开会话".into());
+                        projection.error = Some(vega_i18n::t("app.pending.read_reopen").into());
                     }
                 }
                 this.project_pending_queue(&thread_id, &stream, projection, cx);
@@ -208,29 +220,29 @@ impl VegaWindow {
                 .as_ref()
                 .map(|service| service.current_owner_credential_values())
                 .transpose()
-                .map_err(|_| "凭据读取失败，请检查服务设置".to_string())?
+                .map_err(|_| vega_i18n::t("app.pending.credentials_read").to_string())?
                 .unwrap_or_default();
 
             let path = config_path
                 .as_deref()
-                .ok_or_else(|| "请先配置服务提供方".to_string())?;
-            let config =
-                vega_store::config::read_from(path).map_err(|_| "服务配置读取失败".to_string())?;
+                .ok_or_else(|| vega_i18n::t("app.error.provider_required").to_string())?;
+            let config = vega_store::config::read_from(path)
+                .map_err(|_| vega_i18n::t("app.error.config_read").to_string())?;
             let provider = unique_provider_for_model(&config, &model)
-                .ok_or_else(|| "请检查模型的服务提供方设置".to_string())?;
+                .ok_or_else(|| vega_i18n::t("app.error.provider_model").to_string())?;
             let root = path
                 .parent()
-                .ok_or_else(|| "服务配置读取失败".to_string())?;
+                .ok_or_else(|| vega_i18n::t("app.error.config_read").to_string())?;
             credentials.push(
                 vega_store::keystore::get_key(root, &provider.key_ref)
-                    .map_err(|_| "服务凭据读取失败".to_string())?,
+                    .map_err(|_| vega_i18n::t("app.error.credentials_read").to_string())?,
             );
 
             if vega_runtime::contains_sensitive_credential(&message.content, &credentials) {
-                return Err("消息包含凭据，请删除后重试".into());
+                return Err(vega_i18n::t("app.pending.credentials_in_message").into());
             }
             let store = vega_store::Store::open(database)
-                .map_err(|_| "待处理消息保存失败，请重试".to_string())?;
+                .map_err(|_| vega_i18n::t("app.pending.save_failed").to_string())?;
             vega_conversation::pending_messages::enqueue_cached(&store, &message, &cached)
                 .map_err(|error| error.to_string())
         });
@@ -299,7 +311,7 @@ impl VegaWindow {
             self.reject_pending_queue_action(
                 &stream,
                 &request.thread_id,
-                "待处理消息不可用，请重新打开会话",
+                vega_i18n::t("app.pending.unavailable"),
                 cx,
             );
             return;
@@ -321,14 +333,19 @@ impl VegaWindow {
             self.reject_pending_queue_action(
                 &stream,
                 &thread_id,
-                "请先回答问题，或停止当前任务",
+                vega_i18n::t("app.pending.answer_first"),
                 cx,
             );
             return;
         }
         let promoted_generation = generation.clone();
         if resume && self.agent_controller.active.contains_key(&thread_id) {
-            self.reject_pending_queue_action(&stream, &thread_id, "当前任务仍在运行", cx);
+            self.reject_pending_queue_action(
+                &stream,
+                &thread_id,
+                vega_i18n::t("app.pending.running"),
+                cx,
+            );
             return;
         }
         let Some(operation) = self.agent_controller.begin_queue_operation(&thread_id) else {
@@ -344,7 +361,7 @@ impl VegaWindow {
             let mut removed = None;
             let result = (|| {
                 let store = vega_store::Store::open(database)
-                    .map_err(|_| "待处理消息保存失败，请重试".to_string())?;
+                    .map_err(|_| vega_i18n::t("app.pending.save_failed").to_string())?;
                 match request.action {
                     PendingQueueAction::Remove(id) | PendingQueueAction::Edit(id) => {
                         removed = Some(
@@ -358,7 +375,7 @@ impl VegaWindow {
                     }
                     PendingQueueAction::Steer(id) => {
                         let generation = generation
-                            .ok_or_else(|| "任务已结束，消息仍保留在队列中".to_string())?;
+                            .ok_or_else(|| vega_i18n::t("app.pending.finished").to_string())?;
                         vega_conversation::pending_messages::promote(
                             &store,
                             &request.thread_id,
@@ -369,17 +386,17 @@ impl VegaWindow {
                     }
                     PendingQueueAction::Resume => {
                         if vega_conversation::plans::list_plans(&store, &request.thread_id)
-                            .map_err(|_| "计划读取失败".to_string())?
+                            .map_err(|_| vega_i18n::t("app.pending.plan_read").to_string())?
                             .iter()
                             .any(|plan| plan.status == PlanStatus::Pending)
                             || vega_conversation::plans::recoverable_approved_instruction(
                                 &store,
                                 &request.thread_id,
                             )
-                            .map_err(|_| "任务状态读取失败".to_string())?
+                            .map_err(|_| vega_i18n::t("app.pending.state_read").to_string())?
                             .is_some()
                         {
-                            return Err("请先处理当前计划或待恢复的任务".into());
+                            return Err(vega_i18n::t("app.pending.resolve_plan").into());
                         }
                         vega_conversation::pending_messages::recover_cached(
                             &store,
@@ -512,7 +529,7 @@ impl VegaWindow {
                     Ok(messages) => projection.messages = messages,
                     Err(()) => {
                         projection.paused = true;
-                        projection.error = Some("待处理消息读取失败，请重试".into());
+                        projection.error = Some(vega_i18n::t("app.pending.read_failed").into());
                     }
                 }
                 this.project_pending_queue(&thread_id, &stream, projection, cx);
@@ -597,7 +614,7 @@ impl VegaWindow {
             Ok(QueueStartAdmission::Blocked) | Err(_) => {
                 let mut projection = stream.read(cx).pending_queue().clone();
                 projection.paused = true;
-                projection.error = Some("会话仍被占用，请稍后继续".into());
+                projection.error = Some(vega_i18n::t("ui.ordinary_send.queue_occupied").into());
                 self.project_pending_queue(thread_id, stream, projection, cx);
                 return;
             }
@@ -710,7 +727,8 @@ impl VegaWindow {
                         } else {
                             let mut projection = stream.read(cx).pending_queue().clone();
                             projection.paused = true;
-                            projection.error = Some("会话仍在完成后台工作，请稍后继续".into());
+                            projection.error =
+                                Some(vega_i18n::t("ui.ordinary_send.queue_finishing").into());
                             this.project_pending_queue(&thread_id, &stream, projection, cx);
                         }
                     });
@@ -755,7 +773,7 @@ impl VegaWindow {
             self.reject_pending_queue_action(
                 &stream,
                 thread_id,
-                "默认发送方式保存失败，请重试",
+                vega_i18n::t("app.pending.default_save"),
                 cx,
             );
             return;
@@ -803,7 +821,9 @@ impl VegaWindow {
                         }));
                         this.on_settings_saved(false, cx);
                     }
-                    Err(()) => projection.error = Some("默认发送方式保存失败，请重试".into()),
+                    Err(()) => {
+                        projection.error = Some(vega_i18n::t("app.pending.default_save").into())
+                    }
                 }
                 this.project_pending_queue(&thread_id, &stream, projection, cx);
                 this.settle_pending_operation(&thread_id, &stream, cx);

@@ -36,6 +36,24 @@ enum OrdinaryStatus {
     Unknown,
 }
 
+pub(super) fn update_user_history_text(
+    entry: &mut StreamEntry,
+    text: &str,
+    next_block: &mut u64,
+) -> bool {
+    if let StreamEntry::User { copy, lines } = entry
+        && copy.original_text() != text
+    {
+        copy.clear_retained();
+        copy.replace_text(text);
+        *lines = user_message_lines(*next_block, text);
+        *next_block += 1;
+        true
+    } else {
+        false
+    }
+}
+
 impl ConversationStream {
     pub(crate) fn ordinary_pending_before_run(&self) -> bool {
         !self.actions.running
@@ -186,19 +204,42 @@ impl ConversationStream {
         cx: &mut Context<Self>,
     ) {
         let first = self.entries.len();
-        for (identity, entry) in retained {
+        for (identity, mut entry) in retained {
             if let Some(index) = self
                 .entry_identities
                 .iter()
                 .position(|current| current.key == identity.key)
             {
-                self.entries[index] = entry;
+                match (&entry, &self.entries[index]) {
+                    (StreamEntry::User { .. }, StreamEntry::User { copy, .. }) => {
+                        let text = copy.original_text();
+                        update_user_history_text(&mut entry, &text, &mut self.user_block_seq);
+                        self.entries[index] = entry;
+                    }
+                    (
+                        StreamEntry::UserImages { images: retained },
+                        StreamEntry::UserImages { images: current },
+                    ) if retained
+                        .iter()
+                        .map(|image| &image.image)
+                        .eq(current.iter().map(|image| &image.image)) =>
+                    {
+                        self.entries[index] = entry;
+                    }
+                    _ => {}
+                }
             } else if self.ordinary.iter().any(|row| {
                 identity.message_id.as_deref() == Some(row.submission.user_message_id())
                     && !row.submission.snapshot().retired
             }) {
+                if let StreamEntry::User { copy, .. } = &entry {
+                    let text = vega_conversation::privacy::safe_live_text(&copy.original_text());
+                    update_user_history_text(&mut entry, &text, &mut self.user_block_seq);
+                }
                 self.entries.push(entry);
                 self.entry_identities.push(identity);
+            } else if let StreamEntry::User { copy, .. } = entry {
+                copy.clear_retained();
             }
         }
         self.list_append(first);
@@ -211,6 +252,66 @@ impl ConversationStream {
             self.project_ordinary_submission(submission, cx);
         }
         self.refresh_ordinary_submissions(cx);
+        self.order_ordinary_history_entries();
+    }
+
+    pub(crate) fn order_ordinary_history_entries(&mut self) {
+        let anchor = self.scroll_anchor_snapshot();
+        let keys = self
+            .entry_identities
+            .iter()
+            .filter(|identity| {
+                self.ordinary.iter().any(|row| {
+                    identity.message_id.as_deref() == Some(row.submission.user_message_id())
+                })
+            })
+            .map(|identity| identity.key.clone())
+            .collect::<Vec<_>>();
+        for key in keys {
+            let Some(from) = self
+                .entry_identities
+                .iter()
+                .position(|identity| identity.key == key)
+            else {
+                continue;
+            };
+            let sequence = self.entry_identities[from].sequence;
+            let to = self
+                .entry_identities
+                .iter()
+                .enumerate()
+                .find_map(|(index, identity)| {
+                    if index == from {
+                        return None;
+                    }
+                    let ordinary = self.ordinary.iter().any(|row| {
+                        identity.message_id.as_deref() == Some(row.submission.user_message_id())
+                    });
+                    let follows = match (sequence, identity.sequence) {
+                        (Some(sequence), Some(other)) => other > sequence,
+                        (Some(_), None) => ordinary,
+                        (None, _) => false,
+                    };
+                    follows.then_some(index)
+                })
+                .unwrap_or(self.entries.len());
+            let to = if to > from { to - 1 } else { to };
+            if from == to {
+                continue;
+            }
+            let entry = self.entries.remove(from);
+            let identity = self.entry_identities.remove(from);
+            self.shift_entry_indices(from, 1);
+            self.list.splice(from..from + 1, 0);
+            self.entries.insert(to, entry);
+            self.entry_identities.insert(to, identity);
+            self.grow_entry_indices(to, 1);
+            self.list.splice(to..to, 1);
+        }
+        self.refresh_assistant_roles();
+        if !anchor.following_tail {
+            self.restore_scroll_anchor(&anchor);
+        }
     }
 
     pub fn refresh_ordinary_submissions(&mut self, cx: &mut Context<Self>) {
@@ -317,10 +418,14 @@ impl ConversationStream {
         }
         let (message, label, action) = match row.state {
             OrdinaryStatus::Committed => return None,
-            OrdinaryStatus::Pending => ("待提交", "取消", OrdinaryAction::Cancel),
+            OrdinaryStatus::Pending => (
+                "ui.ordinary_send.pending",
+                "ui.cancel",
+                OrdinaryAction::Cancel,
+            ),
             OrdinaryStatus::Unknown => (
-                "发送结果尚未确认；核实前不能重试",
-                "核实状态",
+                "ui.ordinary_send.unknown",
+                "ui.ordinary_send.check_status",
                 OrdinaryAction::CheckStatus,
             ),
             OrdinaryStatus::Failed(
@@ -328,36 +433,37 @@ impl ConversationStream {
                 RetryEligibility::Uncommitted | RetryEligibility::CommittedNotStarted,
             ) => (
                 if failure == SubmissionFailure::Cancelled {
-                    "已取消"
+                    "ui.cancelled"
                 } else {
                     match failure {
-                        SubmissionFailure::PreflightRejected => {
-                            "模型或 API Key 不可用；请检查设置后重试"
-                        }
-                        SubmissionFailure::SpawnFailed => "无法启动发送任务；请重试",
+                        SubmissionFailure::PreflightRejected => "ui.ordinary_send.preflight_failed",
+                        SubmissionFailure::SpawnFailed => "ui.ordinary_send.spawn_failed",
                         SubmissionFailure::PreparationFailed => {
-                            "发送准备失败；请检查模型、权限与工作目录后重试"
+                            "ui.ordinary_send.preparation_failed"
                         }
-                        SubmissionFailure::CommitFailed => "消息未能保存；请重试",
-                        SubmissionFailure::LaunchFailed => "消息已保留，但运行未启动",
-                        _ => "发送未完成",
+                        SubmissionFailure::CommitFailed => "ui.ordinary_send.commit_failed",
+                        SubmissionFailure::LaunchFailed => "ui.ordinary_send.launch_failed",
+                        _ => "ui.ordinary_send.incomplete",
                     }
                 },
-                "重试",
+                "ui.retry",
                 OrdinaryAction::Retry,
             ),
             OrdinaryStatus::Failed(_, RetryEligibility::Blocked(blocker)) => (
                 match blocker {
-                    RetryBlocker::CleanupIncomplete => "清理尚未确认；暂不能重试",
-                    RetryBlocker::HistoryChanged => "会话已变化；请查看历史后再发送",
-                    RetryBlocker::WorkersActive | RetryBlocker::Unsealed => "正在结束本次发送",
-                    _ => "无法确认安全重试；请先核实状态",
+                    RetryBlocker::CleanupIncomplete => "ui.ordinary_send.cleanup_incomplete",
+                    RetryBlocker::HistoryChanged => "ui.ordinary_send.history_changed",
+                    RetryBlocker::WorkersActive | RetryBlocker::Unsealed => {
+                        "ui.ordinary_send.finishing"
+                    }
+                    _ => "ui.ordinary_send.retry_unconfirmed",
                 },
-                "核实状态",
+                "ui.ordinary_send.check_status",
                 OrdinaryAction::CheckStatus,
             ),
         };
-        let message = row.checked.unwrap_or(message);
+        let message = vega_i18n::t(row.checked.unwrap_or(message));
+        let label = vega_i18n::t(label);
         let submission = row.submission.id();
         let attempt = row.attempt;
         let thread = self.thread.id.clone();

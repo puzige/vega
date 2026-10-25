@@ -17,6 +17,7 @@ const WINDOW_MIN_HEIGHT: f32 = 600.0;
 
 mod agent_context;
 mod app_agent;
+mod app_localization;
 mod app_notifications;
 mod app_palette;
 mod app_usage;
@@ -61,10 +62,14 @@ fn main() {
 
         // Seed the global theme from the macOS appearance; components read it
         // via `vega_theme::theme(cx)`.
-        let theme = match vega_store::config::load()
-            .map(|config| config.ui.theme)
-            .as_deref()
-        {
+        let config = vega_store::config::load();
+        vega_i18n::set_language(
+            config
+                .as_ref()
+                .map(|config| config.ui.language.as_str())
+                .unwrap_or("en"),
+        );
+        let theme = match config.as_ref().map(|config| config.ui.theme.as_str()) {
             Ok("light") => Theme::light(),
             Ok("dark") => Theme::dark(),
             _ => Theme::system(cx),

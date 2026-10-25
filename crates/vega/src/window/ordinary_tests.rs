@@ -1,12 +1,32 @@
-use super::*;
-use gpui_kit::gpui;
-use gpui_kit::test::TestWindowExt;
+use super::VegaWindow;
+use crate::app_agent::{
+    AgentBatch, AgentBatchIngress, PendingAgentRun, ordinary_effective_authority,
+};
+use gpui_kit::test::{TestAppContextExt, TestWindowExt};
+use gpui_kit::{AppContext, Entity, TestAppContext, WindowHandle, px, size};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 use vega_conversation::history::{HistoryEntry, HistoryPage};
 use vega_conversation::ordinary_submissions::for_thread;
-use vega_store::thread_admission::try_acquire;
+use vega_conversation::types::{
+    CommitFact, CommittedReceipt, ConversationEvent, OrdinarySubmission, PendingMessage,
+    PendingMessageBehavior, PendingQueueProjection, PersistedPayload, RawSubmission,
+    ReasoningChoice, SubmissionFailure, Thread,
+};
+use vega_store::thread_admission::{DatabaseIdentity, try_acquire};
+use vega_theme::Theme;
+use vega_ui::conversation_stream::{
+    ComposerStopRequested, ComposerSubmitted, ConversationStream, OrdinaryAction,
+    OrdinaryActionRequested, PendingQueueAction, PendingQueueRequested, PrivacyAction,
+    PrivacyRequested,
+};
+use vega_ui::settings::SettingsOpen;
+use vega_ui::sidebar::{
+    NewTaskDefaults, OpenedThread, PendingDeleteConfirm, ProjectsCollapsed, SelectedProject,
+    SessionsCollapsed, SidebarCollapsed, VegaStore,
+};
 
 struct Fixture {
     _directory: tempfile::TempDir,
@@ -217,7 +237,7 @@ fn controller_pending_is_visible_with_prepare_latched_and_duplicate_delivery_is_
     cx.update_window(fixture.window.into(), |_, window, cx| {
         let control = window.find(action_id.clone());
         assert!(control.visible());
-        assert_eq!(control.label(), Some("取消"));
+        assert_eq!(control.label(), Some(vega_i18n::t("ui.cancel")));
         assert!(control.bounds().size.width > px(0.) && control.bounds().size.height > px(0.));
         fixture.stream.update(cx, |stream, cx| {
             assert!(stream.composer_input().read(cx).text().is_empty());
@@ -662,7 +682,7 @@ fn title_drain_wait_exposes_real_composer_stop_and_cancels_without_launching(
     cx.update_window(fixture.window.into(), |_, window, cx| {
         let stop = window.find("composer-stop");
         assert!(stop.visible());
-        assert_eq!(stop.label(), Some("停止"));
+        assert_eq!(stop.label(), Some(vega_i18n::t("ui.stop")));
         assert!(stop.bounds().size.width > px(0.) && stop.bounds().size.height > px(0.));
         assert!(window.try_find("composer-running-send").is_none());
         assert!(window.try_find("pending-resume").is_none());
@@ -768,7 +788,7 @@ fn title_drain_timeout_exposes_real_resume_and_dispatches_once_after_release(
     cx.update_window(fixture.window.into(), |_, window, _| {
         let resume = window.find("pending-resume");
         assert!(resume.visible());
-        assert_eq!(resume.label(), Some("继续队列"));
+        assert_eq!(resume.label(), Some(vega_i18n::t("ui.continue_queue")));
         assert!(resume.bounds().size.width > px(0.) && resume.bounds().size.height > px(0.));
         assert!(window.try_find("composer-stop").is_none());
     })
@@ -973,4 +993,172 @@ fn delayed_ordinary_cancel_cannot_stop_newer_attempt_or_its_computer_use_control
     b.seal(attempt_b).unwrap();
     crate::ordinary_submission::retire_context(a.id());
     crate::ordinary_submission::retire_context(b.id());
+}
+
+#[gpui_kit::test]
+async fn privacy_requested_ingress_refreshes_retained_ordinary_from_real_history(
+    cx: &mut TestAppContext,
+) {
+    let fixture = fixture(cx);
+    let database = fixture._directory.path().join("store.sqlite");
+    let root = fixture._directory.path().join("config");
+    let secret = format!("opaque{}", fixture.thread.id);
+    vega_conversation::privacy::register_database(database.clone(), root.clone());
+    vega_conversation::privacy::refresh_authority(&database, &root).unwrap();
+    let (submission, worker) = OrdinarySubmission::begin(
+        fixture.database,
+        fixture.thread.id.clone(),
+        RawSubmission::new(secret.clone(), Vec::new(), 0, "model".into(), None, None),
+        try_acquire(fixture.database, &fixture.thread.id)
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    let assistant = submission.snapshot().attempts[0]
+        .assistant_message_id
+        .clone();
+    cx.update(|cx| {
+        let store = cx.global::<VegaStore>().0.as_ref().unwrap();
+        for (id, seq, role, content, status) in [
+            (
+                submission.user_message_id(),
+                1,
+                "user",
+                secret.as_str(),
+                "done",
+            ),
+            (assistant.as_str(), 2, "assistant", "", "failed"),
+        ] {
+            vega_store::messages::insert(
+                store.conn(),
+                &vega_store::messages::MessageRow {
+                    id: id.into(),
+                    thread_id: fixture.thread.id.clone(),
+                    seq,
+                    role: role.into(),
+                    kind: "text".into(),
+                    content: content.into(),
+                    status: status.into(),
+                    created_at: 1,
+                    plan_status: None,
+                    plan_review_note: None,
+                    plan_reviewed_at: None,
+                },
+            )
+            .unwrap();
+        }
+    });
+    fixture.controller.update(cx, |_, cx| {
+        cx.subscribe(
+            &fixture.stream,
+            |controller, stream, request: &PrivacyRequested, cx| {
+                controller.request_privacy(stream, request, cx);
+            },
+        )
+        .detach();
+    });
+    fixture.stream.update(cx, |stream, cx| {
+        stream.project_ordinary_submission(submission.clone(), cx)
+    });
+    worker.bind_accepted_payload(secret.clone()).unwrap();
+    worker
+        .bind_persisted_payload(PersistedPayload::new(secret.clone(), Vec::new()))
+        .unwrap();
+    worker.begin_commit().unwrap();
+    worker
+        .record_committed(CommittedReceipt {
+            user_message_id: submission.user_message_id().into(),
+            user_seq: 1,
+            assistant_message_id: assistant,
+            assistant_seq: 2,
+            next_seq: 3,
+            persisted_text: secret.clone(),
+            persisted_images: Vec::new(),
+        })
+        .unwrap();
+    worker.record_cleanup(Ok(())).unwrap();
+    worker
+        .complete(Err(SubmissionFailure::LaunchFailed))
+        .unwrap();
+    submission
+        .seal(submission.snapshot().attempts[0].id)
+        .unwrap();
+    frame(&fixture, cx);
+    let anchor = fixture.stream.update(cx, |stream, cx| {
+        assert!(stream.reveal_loaded_message(submission.user_message_id(), cx));
+        stream
+            .composer_input()
+            .update(cx, |input, cx| input.set_text("next private draft", cx));
+        stream.scroll_anchor_snapshot()
+    });
+    assert_eq!(
+        anchor.message_id.as_deref(),
+        Some(submission.user_message_id())
+    );
+    vega_store::keystore::set_key(&root, "classified-owner", &secret).unwrap();
+    vega_conversation::privacy::refresh_authority(&database, &root).unwrap();
+    let review = cx.update(|cx| {
+        let store = cx.global::<VegaStore>().0.as_ref().unwrap();
+        vega_conversation::privacy::review(store, &fixture.thread.id).unwrap()
+    });
+    assert!(review.findings.iter().any(|finding| finding.exact));
+    let observed = Rc::new(RefCell::new(0));
+    let captured = observed.clone();
+    let refreshes = Rc::new(RefCell::new(0));
+    let refreshed = refreshes.clone();
+    cx.update(|cx| {
+        cx.subscribe(&fixture.stream, move |_, _: &PrivacyRequested, _| {
+            *captured.borrow_mut() += 1;
+        })
+        .detach();
+        cx.observe(&fixture.stream, move |_, _| *refreshed.borrow_mut() += 1)
+            .detach();
+    });
+    fixture.stream.update(cx, |_, cx| {
+        cx.emit(PrivacyRequested {
+            thread_id: fixture.thread.id.clone(),
+            action: PrivacyAction::Clean { snapshot: review },
+        })
+    });
+    cx.wait_for(fixture.window.into(), Duration::from_secs(2), |_, cx| {
+        let store = cx.global::<VegaStore>().0.as_ref().unwrap();
+        !vega_store::messages::find(store.conn(), submission.user_message_id())
+            .unwrap()
+            .unwrap()
+            .content
+            .contains(&secret)
+            && *refreshes.borrow() > 0
+    })
+    .await;
+    assert_eq!(*observed.borrow(), 1);
+    cx.update(|cx| {
+        let store = cx.global::<VegaStore>().0.as_ref().unwrap();
+        let row = vega_store::messages::find(store.conn(), submission.user_message_id())
+            .unwrap()
+            .unwrap();
+        assert!(!row.content.contains(&secret));
+        assert!(
+            vega_conversation::privacy::review(store, &fixture.thread.id)
+                .unwrap()
+                .findings
+                .is_empty()
+        );
+    });
+    fixture.stream.update(cx, |stream, cx| {
+        assert!(stream.reveal_loaded_message(submission.user_message_id(), cx));
+        assert_eq!(stream.scroll_anchor_snapshot().identity, anchor.identity);
+        assert_eq!(
+            stream.composer_input().read(cx).text(),
+            "next private draft"
+        );
+    });
+    frame(&fixture, cx);
+    cx.update_window(fixture.window.into(), |_, window, _| {
+        assert!(
+            window
+                .find(format!("ordinary-action-{}", submission.user_message_id()))
+                .visible()
+        );
+    })
+    .unwrap();
 }

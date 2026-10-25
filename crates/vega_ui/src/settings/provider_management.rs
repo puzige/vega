@@ -11,7 +11,9 @@ use vega_conversation::types::{
 };
 use vega_store::context_compaction::{DEFAULT_MODEL_INPUT_LIMIT, DEFAULT_MODEL_OUTPUT_RESERVE};
 
-const PROVIDER_TEST_HELP_COPY: &str = "测试会发送少量固定文本请求；不会使用聊天内容。";
+fn provider_test_help_copy() -> &'static str {
+    t("settings.provider.test_help")
+}
 
 #[derive(Default)]
 pub(crate) struct ProviderManagement {
@@ -25,8 +27,8 @@ pub(crate) struct ProviderManagement {
     pub(super) form_base: Option<ProviderConfig>,
     candidates: Option<Vec<String>>,
     checked: BTreeSet<String>,
-    statuses: BTreeMap<String, String>,
-    message: Option<String>,
+    statuses: BTreeMap<String, SettingsText>,
+    message: Option<SettingsText>,
     test_help_hovered: Option<usize>,
     test_help_pinned: Option<usize>,
     test_help_dismissed: Option<usize>,
@@ -66,7 +68,7 @@ struct ModelEditor {
     request_id: u64,
     saving: bool,
     loaded_values: Option<(Option<u64>, Option<u64>, bool)>,
-    message: Option<String>,
+    message: Option<SettingsText>,
     renamed_from: Option<String>,
 }
 impl Drop for ProviderManagement {
@@ -113,6 +115,29 @@ enum Command {
 }
 
 impl SettingsView {
+    fn model_context_error(error: String) -> SettingsText {
+        SettingsText::from_known(
+            error,
+            &[
+                "app.model_context.database_unavailable",
+                "app.model_context.read_failed",
+                "app.model_context.save_failed",
+            ],
+        )
+    }
+
+    pub(super) fn refresh_provider_localization(&self, cx: &mut Context<Self>) {
+        if let Some(editor) = &self.provider_management.model_editor {
+            for input in [
+                &editor.model_input,
+                &editor.input_limit,
+                &editor.output_limit,
+            ] {
+                input.update(cx, |_, cx| cx.notify());
+            }
+        }
+    }
+
     pub(super) fn prepare_provider_presentation(&mut self, window: &Window) {
         if self.section != 0 || self.provider_management.model_editor.is_some() {
             return;
@@ -258,8 +283,8 @@ impl SettingsView {
             .id(selector.clone())
             .interactive(colors, true, false)
             .role(gpui_kit::Role::Button)
-            .aria_label("测试请求说明")
-            .aria_description(PROVIDER_TEST_HELP_COPY)
+            .aria_label(t("settings.provider.test_help_label"))
+            .aria_description(provider_test_help_copy())
             .focusable()
             .track_focus(&focus)
             .tab_stop(true)
@@ -347,7 +372,7 @@ impl SettingsView {
                     .flex_1()
                     .min_w_0()
                     .whitespace_normal()
-                    .child(PROVIDER_TEST_HELP_COPY),
+                    .child(provider_test_help_copy()),
             );
         let popup = div()
             .absolute()
@@ -422,7 +447,9 @@ impl SettingsView {
         state.message = None;
         state.candidates = None;
         state.checked.clear();
-        state.statuses.retain(|_, value| value != "正在测试…");
+        state
+            .statuses
+            .retain(|_, value| !value.is_key("settings.provider.testing"));
         cx.notify();
     }
     pub fn open_model_settings(
@@ -678,14 +705,24 @@ impl SettingsView {
                 self.model_settings = self
                     .selected_provider()
                     .and_then(|provider| original.clone().map(|model| (provider.name, model)));
-                let input = cx.new(|cx| TextInput::new(cx, "模型 ID", false).with_tab_stop(true));
+                let input = cx.new(|cx| {
+                    TextInput::new(cx, "", false)
+                        .with_placeholder_key("settings.field.model_id")
+                        .with_tab_stop(true)
+                });
                 if let Some(model) = &original {
                     input.update(cx, |input, cx| input.set_text(model, cx));
                 }
-                let input_limit =
-                    cx.new(|cx| TextInput::new(cx, "输入最大 token 数", false).with_tab_stop(true));
-                let output_limit =
-                    cx.new(|cx| TextInput::new(cx, "输出最大 token 数", false).with_tab_stop(true));
+                let input_limit = cx.new(|cx| {
+                    TextInput::new(cx, "", false)
+                        .with_placeholder_key("settings.provider.input_limit_placeholder")
+                        .with_tab_stop(true)
+                });
+                let output_limit = cx.new(|cx| {
+                    TextInput::new(cx, "", false)
+                        .with_placeholder_key("settings.provider.output_limit_placeholder")
+                        .with_tab_stop(true)
+                });
                 self.provider_management.next_model_context_request = self
                     .provider_management
                     .next_model_context_request
@@ -746,13 +783,13 @@ impl SettingsView {
                         || value.trim().is_empty()
                         || value.lines().count() != 1
                     {
-                        self.error = Some("请输入一个有效的模型 ID".into());
+                        self.error = Some(SettingsText::key("settings.provider.invalid_model"));
                     } else if let Some(mut p) = self.selected_provider() {
                         if p.models
                             .iter()
                             .any(|m| m == value.trim() && Some(m) != original.as_ref())
                         {
-                            self.error = Some("模型 ID 已存在".into());
+                            self.error = Some(SettingsText::key("settings.provider.model_exists"));
                         } else if original.as_deref() == Some(value.trim()) {
                             self.save_model_context(cx);
                         } else {
@@ -760,9 +797,8 @@ impl SettingsView {
                             // have different authorities. Never silently
                             // apply edited limits to the old model identity.
                             if original.is_some() && self.model_context_values_changed(cx) {
-                                self.error = Some(
-                                    "请先保存模型 ID，再重新打开模型设置修改上下文容量".into(),
-                                );
+                                self.error =
+                                    Some(SettingsText::key("settings.provider.save_id_first"));
                                 return;
                             }
                             if let Some(index) =
@@ -838,7 +874,7 @@ impl SettingsView {
             return;
         };
         if editor.source == PolicySource::Loading {
-            self.error = Some("正在读取模型上下文配置，请稍后重试".into());
+            self.error = Some(SettingsText::key("settings.provider.context_loading_retry"));
             return;
         }
         let (input_limit, output_limit) = if editor.unknown {
@@ -857,8 +893,7 @@ impl SettingsView {
                     (Some(input), Some(output))
                 }
                 _ => {
-                    self.error =
-                        Some("请输入正整数 token 数，且输入与输出之和不超过 4294967295".into());
+                    self.error = Some(SettingsText::key("settings.provider.invalid_capacity"));
                     return;
                 }
             }
@@ -870,7 +905,7 @@ impl SettingsView {
         let request_id = self.provider_management.next_model_context_request;
         editor.request_id = request_id;
         editor.saving = true;
-        editor.message = Some("正在保存模型上下文配置…".into());
+        editor.message = Some(SettingsText::key("settings.provider.context_saving"));
         self.error = None;
         cx.emit(ModelContextSaveRequested {
             request_id,
@@ -943,7 +978,7 @@ impl SettingsView {
                 editor.message = None;
             }
             Err(error) => {
-                editor.message = Some(error);
+                editor.message = Some(Self::model_context_error(error));
             }
         }
         cx.notify();
@@ -981,12 +1016,12 @@ impl SettingsView {
                     policy.output_reserve,
                     policy.automatic_compaction,
                 ));
-                editor.message = Some("已保存；后续请求生效，进行中的请求不受影响".into());
+                editor.message = Some(SettingsText::key("settings.provider.context_saved"));
                 self.error = None;
             }
             Err(error) => {
-                self.error = Some(error.clone());
-                editor.message = Some(error);
+                self.error = Some(Self::model_context_error(error.clone()));
+                editor.message = Some(Self::model_context_error(error));
             }
         }
         cx.notify();
@@ -1020,7 +1055,7 @@ impl SettingsView {
             return;
         }
         let Some(path) = self.config_path.clone() else {
-            self.error = Some("配置路径不可用".into());
+            self.error = Some(SettingsText::key("settings.config.path_unavailable"));
             cx.notify();
             return;
         };
@@ -1097,7 +1132,7 @@ impl SettingsView {
                     }
                     Err(error) => {
                         if generation == this.provider_management.generation {
-                            this.error = Some(format!("{error}；当前输入仍未保存"));
+                            this.error = Some(SettingsText::UnsavedProvider(error));
                         }
                     }
                 }
@@ -1133,7 +1168,7 @@ impl SettingsView {
                     }
                     Err(error) => {
                         if generation == this.provider_management.generation {
-                            this.error = Some(error.to_string());
+                            this.error = Some(SettingsText::Provider(error));
                         }
                     }
                 }
@@ -1205,7 +1240,7 @@ impl SettingsView {
                     Err(error) => {
                         this.provider_management.pending_model_reopen = None;
                         if generation == this.provider_management.generation {
-                            this.error = Some(error.to_string());
+                            this.error = Some(SettingsText::Provider(error));
                         }
                     }
                 }
@@ -1235,9 +1270,12 @@ impl SettingsView {
             action,
         };
         if let ProviderNetworkAction::TestModel { model } = &request.action {
-            state.statuses.insert(model.clone(), "正在测试…".into());
+            state.statuses.insert(
+                model.clone(),
+                SettingsText::key("settings.provider.testing"),
+            );
         }
-        state.message = Some("正在连接…".into());
+        state.message = Some(SettingsText::key("settings.provider.connecting"));
         let cancel = CancellationToken::new();
         state.cancel = Some(cancel.clone());
         let worker = cx.background_executor().spawn(async move {
@@ -1269,10 +1307,15 @@ impl SettingsView {
                 let label = match &result.outcome {
                     Ok(ProviderNetworkOutcome::Models(models)) => {
                         this.provider_management.candidates = Some(models.clone());
-                        format!("读取到 {} 个模型；请选择后添加", models.len())
+                        SettingsText::args(
+                            "settings.provider.models_discovered",
+                            &[("count", &(models.len()).to_string())],
+                        )
                     }
-                    Ok(ProviderNetworkOutcome::ModelTestSucceeded) => "连接成功".into(),
-                    Err(error) => error.to_string(),
+                    Ok(ProviderNetworkOutcome::ModelTestSucceeded) => {
+                        SettingsText::key("settings.provider.connection_success")
+                    }
+                    Err(error) => SettingsText::Provider(error.clone()),
                 };
                 if let ProviderNetworkAction::TestModel { model } = result.request.action {
                     this.provider_management
@@ -1453,10 +1496,12 @@ impl SettingsView {
             _ => None,
         };
         match profile.map(|profile| profile.support) {
-            Some(ReasoningSupport::Required) => "始终开启思考".into(),
-            Some(ReasoningSupport::Optional) => "支持思考控制".into(),
-            Some(ReasoningSupport::Unsupported) => "不支持思考控制".into(),
-            _ => "思考：提供方默认".into(),
+            Some(ReasoningSupport::Required) => t("settings.provider.reasoning.required").into(),
+            Some(ReasoningSupport::Optional) => t("settings.provider.reasoning.optional").into(),
+            Some(ReasoningSupport::Unsupported) => {
+                t("settings.provider.reasoning.unsupported").into()
+            }
+            _ => t("settings.provider.reasoning.default").into(),
         }
     }
 
@@ -1550,97 +1595,125 @@ impl SettingsView {
         if let Some(editor) = &self.provider_management.model_editor {
             let can_edit = !busy && !editor.saving;
             detail = detail
-                    .child(settings_field("模型 ID", None, editor.model_input.clone(), colors))
-                    .when(editor.original.is_some(), |detail| {
-                        let source = match editor.source {
-                            PolicySource::Loading => "正在读取模型上下文配置…".to_string(),
-                            PolicySource::AssumedDefault => format!(
-                                "默认假设值：输入 {DEFAULT_MODEL_INPUT_LIMIT} token，输出 {DEFAULT_MODEL_OUTPUT_RESERVE} token；不是供应商验证容量。小窗口模型请按实际能力修改。"
-                            ),
-                            PolicySource::Saved => "已保存的模型容量；请按供应商真实能力核对。".to_string(),
-                            PolicySource::Unknown => "容量未知：仍可发送，但不会按预算自动压缩。".to_string(),
-                        };
-                        detail
-                            .child(
-                                div()
-                                    .text_size(px(Typography::METADATA))
-                                    .text_color(colors.text_secondary)
-                                    .child(div().when(editor.source != PolicySource::Loading, |row| row).child(source)),
-                            )
-                            .when(editor.legacy_present, |detail| {
-                                detail.child(
+                .child(settings_field(
+                    t("settings.field.model_id"),
+                    None,
+                    editor.model_input.clone(),
+                    colors,
+                ))
+                .when(editor.original.is_some(), |detail| {
+                    let source = match editor.source {
+                        PolicySource::Loading => t("settings.provider.context_loading").to_string(),
+                        PolicySource::AssumedDefault => t_args(
+                            "settings.provider.context_assumed",
+                            &[
+                                ("input", &DEFAULT_MODEL_INPUT_LIMIT.to_string()),
+                                ("output", &DEFAULT_MODEL_OUTPUT_RESERVE.to_string()),
+                            ],
+                        ),
+                        PolicySource::Saved => {
+                            t("settings.provider.context_saved_hint").to_string()
+                        }
+                        PolicySource::Unknown => {
+                            t("settings.provider.context_unknown_hint").to_string()
+                        }
+                    };
+                    detail
+                        .child(
+                            div()
+                                .text_size(px(Typography::METADATA))
+                                .text_color(colors.text_secondary)
+                                .child(
                                     div()
-                                        .text_size(px(Typography::METADATA))
-                                        .text_color(colors.warning)
-                                        .child("旧会话级上下文设置已保留，但不再生效；请在此配置模型容量。"),
-                                )
-                            })
-                            .children(editor.renamed_from.as_ref().map(|previous| {
+                                        .when(editor.source != PolicySource::Loading, |row| row)
+                                        .child(source),
+                                ),
+                        )
+                        .when(editor.legacy_present, |detail| {
+                            detail.child(
                                 div()
                                     .text_size(px(Typography::METADATA))
                                     .text_color(colors.warning)
-                                    .child(format!(
-                                        "模型 ID 已从 {previous} 更改；旧 ID 的容量配置不会自动沿用。请检查并保存新模型容量。"
-                                    ))
-                            }))
-                            .when(!editor.unknown, |detail| detail.child(
+                                    .child(t("settings.provider.context_legacy")),
+                            )
+                        })
+                        .children(editor.renamed_from.as_ref().map(|previous| {
+                            div()
+                                .text_size(px(Typography::METADATA))
+                                .text_color(colors.warning)
+                                .child(t_args(
+                                    "settings.provider.context_renamed",
+                                    &[("previous", previous)],
+                                ))
+                        }))
+                        .when(!editor.unknown, |detail| {
+                            detail.child(
                                 div()
                                     .flex()
                                     .flex_col()
                                     .gap_2()
-                                    .child(settings_field("输入最大限制", Some("token".into()),
-                                        div().child(editor.input_limit.clone()), colors))
-                                    .child(settings_field("输出最大限制", Some("token".into()),
-                                        div().child(editor.output_limit.clone()), colors)),
-                            ))
-                            .child(self.provider_button(
-                                "model-context-auto".into(),
-                                if editor.automatic {
-                                    "自动压缩：开启"
-                                } else {
-                                    "自动压缩：关闭"
-                                },
-                                Command::ToggleModelAutomatic,
-                                can_edit,
-                                cx,
-                            ))
-                            .child(self.provider_button(
-                                "model-context-unknown".into(),
-                                if editor.unknown {
-                                    "容量未知：已选择"
-                                } else {
-                                    "容量未知：未选择"
-                                },
-                                Command::ToggleModelUnknown,
-                                can_edit,
-                                cx,
-                            ))
-                    })
-                    .children(editor.message.as_ref().map(|message| {
-                        div()
-                            .text_size(px(Typography::METADATA))
-                            .text_color(colors.text_secondary)
-                            .child(message.clone())
-                    }))
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .child(self.provider_button(
-                                "model-save".into(),
-                                "保存模型设置",
-                                Command::SaveModel,
-                                can_edit,
-                                cx,
-                            ))
-                            .child(self.provider_button(
-                                "model-cancel".into(),
-                                "取消",
-                                Command::Cancel,
-                                can_edit,
-                                cx,
-                            )),
-                    );
+                                    .child(settings_field(
+                                        t("settings.provider.input_limit"),
+                                        Some(t("settings.provider.tokens_unit").into()),
+                                        div().child(editor.input_limit.clone()),
+                                        colors,
+                                    ))
+                                    .child(settings_field(
+                                        t("settings.provider.output_limit"),
+                                        Some(t("settings.provider.tokens_unit").into()),
+                                        div().child(editor.output_limit.clone()),
+                                        colors,
+                                    )),
+                            )
+                        })
+                        .child(self.provider_button(
+                            "model-context-auto".into(),
+                            if editor.automatic {
+                                t("settings.provider.compaction_on")
+                            } else {
+                                t("settings.provider.compaction_off")
+                            },
+                            Command::ToggleModelAutomatic,
+                            can_edit,
+                            cx,
+                        ))
+                        .child(self.provider_button(
+                            "model-context-unknown".into(),
+                            if editor.unknown {
+                                t("settings.provider.unknown_selected")
+                            } else {
+                                t("settings.provider.unknown_unselected")
+                            },
+                            Command::ToggleModelUnknown,
+                            can_edit,
+                            cx,
+                        ))
+                })
+                .children(editor.message.as_ref().map(|message| {
+                    div()
+                        .text_size(px(Typography::METADATA))
+                        .text_color(colors.text_secondary)
+                        .child(message.render())
+                }))
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(self.provider_button(
+                            "model-save".into(),
+                            t("settings.provider.save_model"),
+                            Command::SaveModel,
+                            can_edit,
+                            cx,
+                        ))
+                        .child(self.provider_button(
+                            "model-cancel".into(),
+                            t("settings.action.cancel"),
+                            Command::Cancel,
+                            can_edit,
+                            cx,
+                        )),
+                );
         }
         detail
             .child(self.render_model_capability_image(cx))
@@ -1707,14 +1780,14 @@ impl SettingsView {
                 settings_actions()
                     .child(self.provider_button(
                         "provider-add".into(),
-                        "添加提供方",
+                        t("settings.provider.add"),
                         Command::Add,
                         !busy,
                         cx,
                     ))
                     .child(self.provider_icon_button(
                         "provider-reload".into(),
-                        "重新读取提供方",
+                        t("settings.provider.reload"),
                         crate::icons::Icon::Refresh,
                         Command::Reload,
                         !busy,
@@ -1809,7 +1882,7 @@ impl SettingsView {
         }
         list = list.child(self.provider_button(
             "provider-pricing-library".into(),
-            "模型价格库",
+            t("settings.provider.price_library"),
             Command::PriceLibrary,
             !busy,
             cx,
@@ -1828,7 +1901,7 @@ impl SettingsView {
                 .child(self.render_add_form(cx))
                 .child(self.provider_button(
                     "provider-form-cancel".into(),
-                    "取消",
+                    t("settings.action.cancel"),
                     Command::Cancel,
                     !busy,
                     cx,
@@ -1846,8 +1919,12 @@ impl SettingsView {
                     || self.provider_management.test_help_hovered == Some(0)
                     || self.provider_management.test_help_pinned == Some(0));
             let api_label = match p.api {
-                vega_conversation::types::ProviderApi::ChatCompletions => "Chat Completions",
-                vega_conversation::types::ProviderApi::Responses => "Responses",
+                vega_conversation::types::ProviderApi::ChatCompletions => {
+                    t("settings.provider.api.chat_completions")
+                }
+                vega_conversation::types::ProviderApi::Responses => {
+                    t("settings.provider.api.responses")
+                }
             };
             let index = self
                 .config
@@ -1859,21 +1936,21 @@ impl SettingsView {
                 .provider_object_menu("provider-menu", cx)
                 .child(self.provider_button(
                     "provider-up".into(),
-                    "上移",
+                    t("settings.provider.move_up"),
                     Command::Up,
                     !busy && index > 0,
                     cx,
                 ))
                 .child(self.provider_button(
                     "provider-down".into(),
-                    "下移",
+                    t("settings.provider.move_down"),
                     Command::Down,
                     !busy && index + 1 < self.config.providers.len(),
                     cx,
                 ));
             provider_menu = provider_menu.child(self.provider_button(
                 "provider-menu-close".into(),
-                "关闭菜单",
+                t("settings.provider.close_menu"),
                 Command::Menu("provider".into()),
                 true,
                 cx,
@@ -1882,7 +1959,7 @@ impl SettingsView {
                 .when(narrow, |detail| {
                     detail.child(self.provider_button(
                         "provider-list-back".into(),
-                        "返回提供方列表",
+                        t("settings.provider.back_list"),
                         Command::BackToList,
                         !busy,
                         cx,
@@ -1903,14 +1980,18 @@ impl SettingsView {
                         )
                         .child(self.provider_button(
                             "provider-enabled".into(),
-                            if p.enabled { "已启用" } else { "已禁用" },
+                            if p.enabled {
+                                t("settings.state.enabled")
+                            } else {
+                                t("settings.state.disabled")
+                            },
                             Command::Enable,
                             !busy,
                             cx,
                         ))
                         .child(self.provider_button(
                             "provider-edit".into(),
-                            "编辑",
+                            t("settings.action.edit"),
                             Command::Edit,
                             !busy,
                             cx,
@@ -1920,7 +2001,7 @@ impl SettingsView {
                                 .relative()
                                 .child(self.provider_icon_button(
                                     "provider-more".into(),
-                                    "提供方操作",
+                                    t("settings.provider.actions"),
                                     crate::icons::Icon::More,
                                     Command::Menu("provider".into()),
                                     !busy,
@@ -1940,17 +2021,21 @@ impl SettingsView {
                     settings_section()
                         .gap_2()
                         .child(self.provider_connection_row(
-                            "地址",
+                            t("settings.provider.address"),
                             div().min_w_0().child(p.base_url.clone()),
                             colors,
                         ))
-                        .child(self.provider_connection_row("协议", div().child(api_label), colors))
                         .child(self.provider_connection_row(
-                            "凭据",
+                            t("settings.provider.protocol"),
+                            div().child(api_label),
+                            colors,
+                        ))
+                        .child(self.provider_connection_row(
+                            t("settings.provider.credentials"),
                             div().child(if self.available_key_refs.contains(&p.key_ref) {
-                                KEY_STORED_PLACEHOLDER
+                                key_stored_placeholder()
                             } else {
-                                "需重新输入 API Key"
+                                t("settings.provider.key_required")
                             }),
                             colors,
                         )),
@@ -1959,14 +2044,13 @@ impl SettingsView {
                     settings_actions()
                         .mt_4()
                         .relative()
-                        .child(
-                            div()
-                                .flex_1()
-                                .child(section_title("模型", colors.text_primary)),
-                        )
+                        .child(div().flex_1().child(section_title(
+                            t("settings.field.model"),
+                            colors.text_primary,
+                        )))
                         .child(self.provider_button(
                             "provider-discover".into(),
-                            "发现模型",
+                            t("settings.provider.discover"),
                             Command::Discover,
                             !busy && !network_busy && p.enabled,
                             cx,
@@ -1974,7 +2058,7 @@ impl SettingsView {
                         .child(self.provider_test_help_control(0, help_focuses[0].clone(), cx))
                         .child(self.provider_button(
                             "provider-add-model".into(),
-                            "添加模型",
+                            t("settings.provider.add_model"),
                             Command::AddModel,
                             !busy,
                             cx,
@@ -1982,7 +2066,7 @@ impl SettingsView {
                         .when(network_busy, |row| {
                             row.child(self.provider_button(
                                 "provider-cancel".into(),
-                                "停止",
+                                t("settings.action.stop"),
                                 Command::Cancel,
                                 true,
                                 cx,
@@ -2006,7 +2090,7 @@ impl SettingsView {
                             .relative()
                             .child(self.provider_button(
                                 format!("model-test-{index}"),
-                                "测试",
+                                t("settings.provider.test"),
                                 Command::Test(model.clone()),
                                 !busy && !network_busy && p.enabled,
                                 cx,
@@ -2022,7 +2106,7 @@ impl SettingsView {
                     )
                     .child(self.provider_button(
                         format!("model-delete-{index}"),
-                        "删除",
+                        t("settings.action.delete"),
                         Command::ConfirmDelete(model.clone()),
                         !busy,
                         cx,
@@ -2052,7 +2136,7 @@ impl SettingsView {
                                 )
                                 .child(self.provider_button(
                                     format!("model-edit-{index}"),
-                                    "配置",
+                                    t("settings.provider.configure"),
                                     Command::EditModel(model.clone()),
                                     !busy,
                                     cx,
@@ -2062,7 +2146,7 @@ impl SettingsView {
                                         .relative()
                                         .child(self.provider_icon_button(
                                             format!("model-more-{index}"),
-                                            "模型操作",
+                                            t("settings.provider.model_actions"),
                                             crate::icons::Icon::More,
                                             Command::Menu(menu_key.clone()),
                                             !busy,
@@ -2082,7 +2166,7 @@ impl SettingsView {
                         .children(self.provider_management.statuses.get(model).map(|status| {
                             div()
                                 .text_color(colors.text_secondary)
-                                .child(status.clone())
+                                .child(status.render())
                         })),
                 );
             }
@@ -2090,7 +2174,10 @@ impl SettingsView {
                 detail = detail.child(
                     settings_section()
                         .child(settings_status(
-                            format!("从 {provider} 删除模型 {model}？"),
+                            t_args(
+                                "settings.provider.confirm_delete_model",
+                                &[("provider", provider), ("model", model)],
+                            ),
                             colors.warning,
                             colors,
                         ))
@@ -2098,14 +2185,14 @@ impl SettingsView {
                             settings_actions()
                                 .child(self.provider_button(
                                     "model-delete-confirm".into(),
-                                    "删除模型",
+                                    t("settings.provider.delete_model"),
                                     Command::DeleteModel(provider.clone(), model.clone()),
                                     !busy,
                                     cx,
                                 ))
                                 .child(self.provider_button(
                                     "model-delete-cancel".into(),
-                                    "取消",
+                                    t("settings.action.cancel"),
                                     Command::Cancel,
                                     !busy,
                                     cx,
@@ -2125,7 +2212,7 @@ impl SettingsView {
                             .child(self.provider_button(
                                 format!("candidate-{index}"),
                                 if existing {
-                                    "已添加"
+                                    t("settings.provider.already_added")
                                 } else if checked {
                                     "☑"
                                 } else {
@@ -2146,14 +2233,14 @@ impl SettingsView {
                         .gap_2()
                         .child(self.provider_button(
                             "provider-import".into(),
-                            "添加所选",
+                            t("settings.provider.add_selected"),
                             Command::Import,
                             !busy && !self.provider_management.checked.is_empty(),
                             cx,
                         ))
                         .child(self.provider_button(
                             "discovery-cancel".into(),
-                            "取消",
+                            t("settings.action.cancel"),
                             Command::Cancel,
                             !busy,
                             cx,
@@ -2163,7 +2250,7 @@ impl SettingsView {
         }
         if let Some(message) = &self.provider_management.message {
             detail = detail.child(settings_status(
-                message.clone(),
+                message.render(),
                 colors.text_secondary,
                 colors,
             ));

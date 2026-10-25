@@ -555,7 +555,9 @@ where
         let claim_admission = admission.clone();
         let claim = tokio::task::spawn_blocking(move || {
             let _admission = claim_admission;
-            let store = Store::open(worker_path).map_err(|_| "自动任务存储不可用".to_string())?;
+            let store = Store::open(worker_path).map_err(|_| {
+                vega_i18n::t("domain.automation.error.store_unavailable").to_string()
+            })?;
             if let Some(claim) = existing {
                 if let Some(claim) = crate::automation::activate_claim(&store, &claim)? {
                     Ok(Some(claim))
@@ -565,14 +567,16 @@ where
                         &claim,
                         crate::automation::now_ms(),
                     )?;
-                    Err("自动任务已撤销".into())
+                    Err(vega_i18n::t("domain.automation.error.cancelled").into())
                 }
             } else {
                 crate::automation::claim(&store, &thread, None, crate::automation::now_ms())
             }
         })
         .await
-        .map_err(|_| ConversationError::CorruptRow("自动任务处理失败".into()))?
+        .map_err(|_| {
+            ConversationError::CorruptRow(vega_i18n::t("domain.automation.error.processing").into())
+        })?
         .map_err(ConversationError::CorruptRow)?;
         claim.map(|claim| Arc::new(crate::automation::AutomationBinding::new(path, claim)))
     } else {
@@ -615,7 +619,9 @@ where
         if let Some(path) = store.database_path() {
             let path = path.to_path_buf();
             tokio::task::spawn_blocking(move || {
-                let store = Store::open(path).map_err(|_| "自动任务存储不可用".to_string())?;
+                let store = Store::open(path).map_err(|_| {
+                    vega_i18n::t("domain.automation.error.store_unavailable").to_string()
+                })?;
                 crate::automation::finish(
                     &store,
                     &binding.claim,
@@ -626,7 +632,11 @@ where
                 )
             })
             .await
-            .map_err(|_| ConversationError::CorruptRow("自动任务记账失败".into()))?
+            .map_err(|_| {
+                ConversationError::CorruptRow(
+                    vega_i18n::t("domain.automation.error.accounting").into(),
+                )
+            })?
             .map_err(ConversationError::CorruptRow)?;
         }
     }

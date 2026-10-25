@@ -12,6 +12,7 @@ impl TextInput {
             content_revision: 0,
             prediction: None,
             placeholder: placeholder.into(),
+            placeholder_key: None,
             masked,
             multiline: false,
             rows: 1,

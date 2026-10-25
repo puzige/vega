@@ -28,6 +28,110 @@ impl SettingsView {
                 Some(model)
             };
         }
+        self.updater_message = (!projection.message.is_empty()).then(|| {
+            SettingsText::from_known(
+                projection.message.clone(),
+                &[
+                    "app.update.app_file",
+                    "app.update.architecture",
+                    "app.update.archive_app_missing",
+                    "app.update.archive_entries",
+                    "app.update.archive_escape",
+                    "app.update.archive_expanded",
+                    "app.update.archive_invalid",
+                    "app.update.archive_length",
+                    "app.update.archive_paths",
+                    "app.update.archive_read",
+                    "app.update.archive_signature",
+                    "app.update.archive_special",
+                    "app.update.archive_unauthorized",
+                    "app.update.asset_invalid",
+                    "app.update.asset_missing",
+                    "app.update.asset_origin",
+                    "app.update.asset_signature",
+                    "app.update.asset_url",
+                    "app.update.automatic_retry",
+                    "app.update.available_verifying",
+                    "app.update.busy",
+                    "app.update.cannot_install",
+                    "app.update.canonical_path",
+                    "app.update.checking",
+                    "app.update.config_unavailable",
+                    "app.update.current",
+                    "app.update.developer_id",
+                    "app.update.development",
+                    "app.update.development_check_only",
+                    "app.update.development_install",
+                    "app.update.development_unsupported",
+                    "app.update.download_integrity",
+                    "app.update.download_interrupted",
+                    "app.update.download_limit",
+                    "app.update.downloading",
+                    "app.update.executable_link",
+                    "app.update.file_changed",
+                    "app.update.file_invalid",
+                    "app.update.identity_changed",
+                    "app.update.identity_failed",
+                    "app.update.identity_version",
+                    "app.update.install_directory",
+                    "app.update.install_location",
+                    "app.update.install_read_only",
+                    "app.update.installer_not_ready",
+                    "app.update.later",
+                    "app.update.manifest_format",
+                    "app.update.manifest_identity",
+                    "app.update.memory",
+                    "app.update.network_init",
+                    "app.update.not_ready",
+                    "app.update.notarization",
+                    "app.update.permissions",
+                    "app.update.platform",
+                    "app.update.preferences_invalid",
+                    "app.update.preferences_read",
+                    "app.update.preferences_retry",
+                    "app.update.preferences_save",
+                    "app.update.prepare_record",
+                    "app.update.public_key",
+                    "app.update.ready",
+                    "app.update.release_metadata",
+                    "app.update.release_unavailable",
+                    "app.update.release_unstable",
+                    "app.update.request_failed",
+                    "app.update.response_limit",
+                    "app.update.response_read",
+                    "app.update.restart_unconfirmed",
+                    "app.update.restarting",
+                    "app.update.rolled_back",
+                    "app.update.service_unavailable",
+                    "app.update.signature_format",
+                    "app.update.signature_incomplete",
+                    "app.update.signature_length",
+                    "app.update.signature_limit",
+                    "app.update.signature_missing",
+                    "app.update.signature_rejected",
+                    "app.update.staging_permissions",
+                    "app.update.start_failed",
+                    "app.update.symlink_path",
+                    "app.update.tasks_running",
+                    "app.update.team_mismatch",
+                    "app.update.verification_notice",
+                    "app.update.verification_output",
+                    "app.update.verification_timeout",
+                    "app.update.verifying",
+                    "app.update.version_format",
+                    "app.update.version_range",
+                    "app.update.version_unavailable",
+                ],
+            )
+        });
+        self.updater_version = Some(if projection.current_version.is_empty() {
+            SettingsText::key("domain.updater.loading_version")
+        } else {
+            SettingsText::from_known(
+                projection.current_version.clone(),
+                &["app.update.development"],
+            )
+        });
         self.updater = projection;
         cx.notify();
     }
@@ -56,24 +160,39 @@ impl SettingsView {
                     .unwrap_or_default();
                 let minutes = now.saturating_sub(last) / 60;
                 if minutes == 0 {
-                    "最后检查：刚刚".into()
+                    t("settings.updater.checked_now").into()
                 } else if minutes < 60 {
-                    format!("最后检查：{minutes} 分钟前")
+                    t_args(
+                        "settings.updater.checked_minutes",
+                        &[("minutes", &minutes.to_string())],
+                    )
                 } else {
-                    format!("最后检查：{} 小时前", minutes / 60)
+                    t_args(
+                        "settings.updater.checked_hours",
+                        &[("hours", &(minutes / 60).to_string())],
+                    )
                 }
             })
-            .unwrap_or_else(|| "尚未检查更新".into());
+            .unwrap_or_else(|| t("settings.updater.never_checked").into());
         let progress = match self.updater.phase {
-            UpdatePhase::Downloading { received, total } if total > 0 => {
-                Some(format!("已下载 {}%", received.saturating_mul(100) / total))
-            }
+            UpdatePhase::Downloading { received, total } if total > 0 => Some(t_args(
+                "settings.updater.downloaded",
+                &[(
+                    "percent",
+                    &(received.saturating_mul(100) / total).to_string(),
+                )],
+            )),
             _ => None,
         };
+        let message = self.updater_message.as_ref().map(SettingsText::render);
+        let current_version = self.updater_version.as_ref().map_or_else(
+            || self.updater.current_version_label().to_string(),
+            SettingsText::render,
+        );
         let automatic = self.updater.automatic;
         let automatic_switch = settings_switch(
             "updater-automatic",
-            "自动检查并下载",
+            t("settings.updater.automatic"),
             automatic,
             !busy,
             colors,
@@ -97,44 +216,50 @@ impl SettingsView {
             .child(
                 settings_actions()
                     .justify_between()
-                    .child(section_title("Vega 更新", colors.text_primary))
+                    .child(section_title(
+                        t("settings.updater.title"),
+                        colors.text_primary,
+                    ))
                     .child(self.settings_help(
                         "updater-help",
-                        "更新帮助",
-                        "每天自动检查一次更新。下载后需确认重启才能安装；更新包会校验签名。",
+                        t("settings.updater.help_label"),
+                        t("settings.updater.help"),
                         cx,
                     )),
             )
             .child(settings_field(
-                "版本",
+                t("settings.updater.version"),
                 Some(checked),
                 div()
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(format!("当前 {}", self.updater.current_version))
+                    .child(t_args(
+                        "settings.updater.current_version",
+                        &[("version", &current_version)],
+                    ))
                     .when_some(self.updater.latest_version.clone(), |view, version| {
-                        view.child(
-                            div()
-                                .text_color(colors.text_secondary)
-                                .child(format!("最新 {version}")),
-                        )
+                        view.child(div().text_color(colors.text_secondary).child(t_args(
+                            "settings.updater.latest_version",
+                            &[("version", &version)],
+                        )))
                     }),
                 colors,
             ))
             .child(settings_field(
-                "自动检查并下载",
+                t("settings.updater.automatic"),
                 None,
                 automatic_switch,
                 colors,
             ))
             .when(
-                !self.updater.message.is_empty()
-                    && self.updater.message != "更新包将通过内置公钥验证；安装前需要确认重启",
+                message
+                    .as_ref()
+                    .is_some_and(|message| message != t("settings.updater.verification_notice")),
                 |view| {
                     view.child(
                         settings_status(
-                            self.updater.message.clone(),
+                            message.clone().unwrap_or_default(),
                             if self.updater.phase == UpdatePhase::Error {
                                 colors.danger
                             } else if ready {
@@ -161,14 +286,14 @@ impl SettingsView {
                     .mt_3()
                     .child(self.update_button(
                         "updater-check",
-                        "检查更新",
+                        t("settings.updater.check"),
                         UpdateRequest::Check,
                         !busy && !ready,
                         cx,
                     ))
                     .child(self.update_button(
                         "updater-release",
-                        "官方发布页",
+                        t("settings.updater.release_page"),
                         UpdateRequest::ReleasePage,
                         true,
                         cx,
@@ -176,14 +301,14 @@ impl SettingsView {
                     .when(ready, |view| {
                         view.child(self.update_button(
                             "updater-later",
-                            "稍后",
+                            t("settings.updater.later"),
                             UpdateRequest::Later,
                             true,
                             cx,
                         ))
                         .child(self.update_button(
                             "updater-install",
-                            "重启以安装",
+                            t("settings.updater.install"),
                             UpdateRequest::Install,
                             true,
                             cx,
@@ -210,9 +335,9 @@ impl SettingsView {
                         .cursor_pointer()
                         .focus_visible(move |style| style.border_color(colors.accent))
                         .aria_label(if self.updater_notes_open {
-                            "收起发行说明"
+                            t("settings.updater.hide_notes")
                         } else {
-                            "展开发行说明"
+                            t("settings.updater.show_notes")
                         })
                         .child(crate::icons::icon(
                             if self.updater_notes_open {
@@ -222,7 +347,7 @@ impl SettingsView {
                             },
                             colors.text_secondary,
                         ))
-                        .child("发行说明")
+                        .child(t("settings.updater.release_notes"))
                         .on_mouse_up(
                             MouseButton::Left,
                             cx.listener(|this, _, _, cx| {
