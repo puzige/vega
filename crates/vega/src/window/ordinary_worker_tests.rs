@@ -1,19 +1,27 @@
-use super::*;
+use super::VegaWindow;
+use crate::app_agent::{AgentBatch, AgentBatchIngress, PendingAgentRun, UserSubmission};
 use base64::Engine;
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use gpui_kit::test::{TestAppContextExt, TestWindowExt};
+use gpui_kit::{App, AppContext, ElementId, Entity, Window};
 use gpui_kit::{ClipboardItem, Image, ImageFormat, TestAppContext, WindowHandle, px, size};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use vega_conversation::ordinary_submissions::for_thread;
 use vega_conversation::types::{CommitFact, PrimaryFact, RetryBlocker, RetryEligibility};
+use vega_conversation::types::{ConversationEvent, Thread};
 use vega_runtime::{
     ChatRequest, ChatRole, EventStream, Provider, ProviderEvent, StopReason, VegaError,
 };
 use vega_store::thread_admission::try_acquire;
+use vega_ui::conversation_stream::{
+    ComposerStopRequested, ComposerSubmitted, ConversationStream, PendingQueueRequested,
+};
+use vega_ui::sidebar::{OpenedThread, VegaStore};
 
 const DEADLINE: Duration = Duration::from_secs(10);
 const MODEL: &str = "gpt-4o";
@@ -180,7 +188,12 @@ impl WorkerLaunch {
     }
 
     fn cancel_and_release(&self) {
-        if let Some(cancel) = self.cancel.lock().unwrap().as_ref() {
+        if let Some(cancel) = self
+            .cancel
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+        {
             cancel.cancel();
         }
         for release in &self.script.releases {
@@ -197,18 +210,30 @@ impl WorkerLaunch {
             .is_some_and(|worker| worker.is_finished())
     }
 
-    fn join(&self) {
-        if let Some(worker) = self.worker.lock().unwrap().take() {
+    fn try_join(&self) -> Result<(), String> {
+        let mut slot = self
+            .worker
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(worker) = slot.as_ref() {
             let deadline = std::time::Instant::now() + DEADLINE;
             while !worker.is_finished() && std::time::Instant::now() < deadline {
-                std::thread::yield_now();
+                std::thread::sleep(Duration::from_millis(1));
             }
-            assert!(
-                worker.is_finished(),
-                "worker failed to drain before storage drop"
-            );
-            worker.join().unwrap();
+            if !worker.is_finished() {
+                return Err("worker join deadline exceeded".into());
+            }
         }
+        if let Some(worker) = slot.take() {
+            worker
+                .join()
+                .map_err(|error| format!("worker panicked: {}", panic_message(&*error)))?;
+        }
+        Ok(())
+    }
+
+    fn join(&self) {
+        self.try_join().unwrap();
     }
 }
 
@@ -229,7 +254,8 @@ impl Drop for PollDrain {
 }
 
 struct Fixture {
-    _directory: tempfile::TempDir,
+    directory: Option<tempfile::TempDir>,
+    safely_drained: bool,
     thread: Thread,
     database: vega_store::thread_admission::DatabaseIdentity,
     controller: Entity<VegaWindow>,
@@ -344,7 +370,8 @@ impl Fixture {
             .detach();
         });
         Self {
-            _directory: directory,
+            directory: Some(directory),
+            safely_drained: false,
             thread,
             database,
             controller,
@@ -409,23 +436,41 @@ impl Fixture {
             .await;
     }
 
-    async fn cleanup(&self, cx: &mut TestAppContext) {
-        self.controller.update(cx, |controller, cx| {
-            controller.cancel_composer_prediction(cx);
-            for cancel in controller.agent_controller.ordinary_preparing.values() {
-                cancel.cancel();
-            }
-        });
+    async fn cleanup(&mut self, cx: &mut TestAppContext) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+        self.safely_drained = false;
         for launch in &self.launches {
             launch.cancel_and_release();
+        }
+        if let Err(error) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.controller.update(cx, |controller, cx| {
+                controller.cancel_composer_prediction(cx);
+                for cancel in controller.agent_controller.ordinary_preparing.values() {
+                    cancel.cancel();
+                }
+            });
+        })) {
+            errors.push(format!(
+                "controller cancellation: {}",
+                panic_message(&*error)
+            ));
+        }
+        for (index, launch) in self.launches.iter().enumerate() {
+            if let Err(error) = launch.try_join() {
+                errors.push(format!("worker {index}: {error}"));
+            }
         }
         let controller = self.controller.clone();
         let database = self.database;
         let thread = self.thread.id.clone();
         let launches = self.launches.clone();
-        self.wait(cx, move |cx| {
+        let drain = std::panic::AssertUnwindSafe(self.wait(cx, move |cx| {
             launches.iter().all(|launch| {
-                launch.cancel.lock().unwrap().is_none()
+                launch
+                    .cancel
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .is_none()
                     || (launch.poll_drained.load(Ordering::SeqCst)
                         && launch.title_watch_drained.load(Ordering::SeqCst))
             }) && controller.read(cx).composer_prediction.is_none()
@@ -435,11 +480,29 @@ impl Fixture {
                     .agent_controller
                     .ordinary_preparing
                     .is_empty()
-                && try_acquire(database, &thread).unwrap().is_some()
-        })
+                && try_acquire(database, &thread).is_ok_and(|permit| permit.is_some())
+        }))
+        .catch_unwind()
         .await;
-        for launch in &self.launches {
-            launch.join();
+        match drain {
+            Ok(()) => {
+                self.safely_drained = self.launches.iter().all(|launch| {
+                    launch
+                        .worker
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .is_none()
+                });
+            }
+            Err(error) => errors.push(format!(
+                "lifecycle/admission drain: {}",
+                panic_message(&*error)
+            )),
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
         }
     }
 
@@ -479,23 +542,34 @@ impl Drop for Fixture {
         for launch in &self.launches {
             launch.cancel_and_release();
         }
-        for launch in &self.launches {
-            launch.join();
-        }
-        let deadline = std::time::Instant::now() + DEADLINE;
-        while std::time::Instant::now() < deadline {
-            if try_acquire(self.database, &self.thread.id)
-                .unwrap()
-                .is_some()
-            {
-                return;
+        if !self.safely_drained {
+            if let Some(directory) = self.directory.take() {
+                eprintln!(
+                    "fixture drain not established; retaining {}",
+                    directory.keep().display()
+                );
             }
-            std::thread::yield_now();
         }
-        assert!(
-            std::thread::panicking(),
-            "admission still held before storage drop"
-        );
+    }
+}
+
+fn panic_message(error: &(dyn std::any::Any + Send)) -> &str {
+    error
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| error.downcast_ref::<&str>().copied())
+        .unwrap_or("non-string panic payload")
+}
+
+fn finish_test(body: std::thread::Result<()>, cleanup: Result<(), Vec<String>>) {
+    if let Err(errors) = &cleanup {
+        eprintln!("fixture cleanup errors: {}", errors.join("; "));
+    }
+    if let Err(error) = body {
+        std::panic::resume_unwind(error);
+    }
+    if let Err(errors) = cleanup {
+        panic!("fixture cleanup failed: {}", errors.join("; "));
     }
 }
 
@@ -798,10 +872,8 @@ async fn ordinary_stop_drains_real_worker_and_duplicate_late_batches_cannot_touc
     })
     .catch_unwind()
     .await;
-    fixture.cleanup(cx).await;
-    if let Err(error) = result {
-        std::panic::resume_unwind(error);
-    }
+    let cleanup = fixture.cleanup(cx).await;
+    finish_test(result, cleanup);
 }
 
 #[gpui_kit::test]
@@ -901,8 +973,77 @@ async fn running_send_now_is_consumed_by_real_runtime_once_without_ordinary_admi
     }).unwrap();
     assert!(launch.script.auxiliary.lock().unwrap().contains(&"title"));
     }).catch_unwind().await;
-    fixture.cleanup(cx).await;
-    if let Err(error) = result {
-        std::panic::resume_unwind(error);
-    }
+    let cleanup = fixture.cleanup(cx).await;
+    finish_test(result, cleanup);
+}
+
+#[gpui_kit::test]
+async fn body_panic_cleanup_releases_held_real_worker_poll(cx: &mut TestAppContext) {
+    let mut fixture = Fixture::new(cx);
+    let launch = fixture.launch(false, cx);
+    launch.hold_poll.store(true, Ordering::SeqCst);
+    let body = std::panic::AssertUnwindSafe(async {
+        fixture.draft(FIRST, cx);
+        fixture.submit(cx);
+        fixture.primary(&launch, 1, cx).await;
+        panic!("intentional worker body failure");
+    })
+    .catch_unwind()
+    .await;
+    let cleanup = fixture.cleanup(cx).await;
+    assert!(cleanup.is_ok(), "{cleanup:?}");
+    assert!(fixture.safely_drained);
+    assert!(!launch.hold_poll.load(Ordering::SeqCst));
+    assert!(
+        launch
+            .cancel
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .is_cancelled()
+    );
+    assert!(launch.worker.lock().unwrap().is_none());
+    assert!(launch.poll_drained.load(Ordering::SeqCst));
+    assert!(launch.title_watch_drained.load(Ordering::SeqCst));
+    assert!(
+        try_acquire(fixture.database, &fixture.thread.id)
+            .unwrap()
+            .is_some()
+    );
+    let resumed =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| finish_test(body, cleanup)));
+    assert_eq!(
+        panic_message(&*resumed.unwrap_err()),
+        "intentional worker body failure"
+    );
+}
+
+#[gpui_kit::test]
+async fn held_admission_cleanup_reports_failure_and_preserves_body_panic(cx: &mut TestAppContext) {
+    let mut fixture = Fixture::new(cx);
+    let admission = try_acquire(fixture.database, &fixture.thread.id)
+        .unwrap()
+        .unwrap();
+    let body = std::panic::catch_unwind(|| panic!("original body failure"));
+    let cleanup = fixture.cleanup(cx).await;
+    assert!(
+        cleanup
+            .as_ref()
+            .unwrap_err()
+            .iter()
+            .any(|error| error.contains("lifecycle/admission drain"))
+    );
+    assert!(!fixture.safely_drained);
+    let path = fixture.directory.as_ref().unwrap().path().to_owned();
+    assert!(path.exists());
+    let resumed =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| finish_test(body, cleanup)));
+    assert_eq!(
+        panic_message(&*resumed.unwrap_err()),
+        "original body failure"
+    );
+    drop(admission);
+    assert!(fixture.cleanup(cx).await.is_ok());
+    assert!(fixture.safely_drained);
 }
