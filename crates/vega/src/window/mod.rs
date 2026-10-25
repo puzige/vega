@@ -37,10 +37,6 @@ mod native_subagents;
 pub(crate) mod navigation;
 mod notifications;
 mod ordinary_send;
-#[cfg(test)]
-mod ordinary_tests;
-#[cfg(test)]
-mod ordinary_worker_tests;
 mod pending_messages;
 mod pricing;
 mod privacy;
@@ -101,23 +97,7 @@ impl ModelSelectionRefresh {
     }
 }
 
-#[cfg(test)]
-struct AgentTestLaunch {
-    run: PendingAgentRun,
-    admission: ThreadAdmission,
-    cancel: tokio_util::sync::CancellationToken,
-    queue_context: Option<PendingRunContext>,
-}
-
 pub(crate) struct VegaWindow {
-    #[cfg(test)]
-    composer_test_config_path: Option<std::path::PathBuf>,
-    #[cfg(test)]
-    agent_test_launches: Option<Vec<AgentTestLaunch>>,
-    #[cfg(test)]
-    worker_test_launches: std::collections::VecDeque<Arc<ordinary_worker_tests::WorkerLaunch>>,
-    #[cfg(test)]
-    ordinary_test_preparations: Option<Vec<ordinary_send::OrdinaryPreparationRequest>>,
     pub(crate) composer_prediction_config_generation: u64,
     pub(crate) composer_prediction: Option<composer_predictions::ComposerPredictionOwner>,
     pub(crate) updater: crate::updater::Updater,
@@ -328,14 +308,6 @@ impl VegaWindow {
         })
         .detach();
         let mut window = Self {
-            #[cfg(test)]
-            composer_test_config_path: None,
-            #[cfg(test)]
-            agent_test_launches: None,
-            #[cfg(test)]
-            worker_test_launches: std::collections::VecDeque::new(),
-            #[cfg(test)]
-            ordinary_test_preparations: None,
             composer_prediction_config_generation: 0,
             composer_prediction: None,
             updater: crate::updater::Updater::default(),

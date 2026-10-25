@@ -45,10 +45,6 @@ mod diagnostics;
 mod entry;
 mod events;
 mod ordinary;
-#[cfg(test)]
-mod ordinary_entry_tests;
-#[cfg(test)]
-mod ordinary_tests;
 mod permission_queue;
 pub use ordinary::{
     OrdinaryHistoryObservation, OrdinaryRun, finish_ordinary_worker, observe_ordinary_history,

@@ -1,7 +1,7 @@
 //! Small local composer commands; all durable changes still use thread settings.
 use super::*;
 use crate::interaction::InteractionExt;
-use gpui_kit::{Focusable, TestSupportExt};
+use gpui_kit::Focusable;
 use vega_conversation::types::{ComputerUseControl, ControlPhase};
 
 /// Thread-mode `+`-menu rows, in the order the slash parser also accepts.
@@ -824,7 +824,6 @@ impl ConversationStream {
                 colors.accent,
                 !self.actions.stopping,
             )
-            .test_support()
             .track_focus(&self.action_focus[1])
             .on_mouse_up(
                 MouseButton::Left,

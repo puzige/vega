@@ -4,8 +4,7 @@ use crate::icons::{Icon, icon};
 use crate::interaction::InteractionExt;
 use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use gpui_kit::{
-    Anchor, Bounds, Div, Focusable, Global, Role, Stateful, TestSupportExt, anchored, canvas,
-    deferred, point,
+    Anchor, Bounds, Div, Focusable, Global, Role, Stateful, anchored, canvas, deferred, point,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -513,11 +512,7 @@ impl ConversationStream {
         }
     }
 
-    fn pending_button(
-        &self,
-        button: PendingButton,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::base::ObservedElement<Stateful<Div>> {
+    fn pending_button(&self, button: PendingButton, cx: &mut Context<Self>) -> Stateful<Div> {
         let colors = theme(cx).colors;
         let PendingButton {
             id,
@@ -532,7 +527,6 @@ impl ConversationStream {
         let keyboard_action = action.clone();
         div()
             .id(id)
-            .test_support()
             .role(Role::Button)
             .aria_label(label)
             .when_some(description, |element, description| {
@@ -632,7 +626,6 @@ impl ConversationStream {
                 colors.accent,
                 enabled,
             )
-            .test_support()
             .track_focus(&self.action_focus[1])
             .on_mouse_up(
                 MouseButton::Left,

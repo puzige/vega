@@ -1,7 +1,5 @@
 use super::*;
-use gpui_kit::{
-    ClipboardEntry, ClipboardItem, ExternalPaths, Image, PathPromptOptions, TestSupportExt,
-};
+use gpui_kit::{ClipboardEntry, ClipboardItem, ExternalPaths, Image, PathPromptOptions};
 use std::path::PathBuf;
 use vega_conversation::attachments::{MAX_IMAGE_BYTES, MAX_IMAGES, MAX_TURN_IMAGE_BYTES};
 
@@ -304,7 +302,6 @@ impl ConversationStream {
                                 colors,
                                 cx.listener(move |this, _, _, cx| this.remove_image(id, cx)),
                             )
-                            .test_support()
                             .absolute()
                             .top_0()
                             .right_0()

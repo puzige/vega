@@ -278,14 +278,6 @@ impl VegaWindow {
             skills,
             cancel,
         };
-        #[cfg(test)]
-        let request = match self.ordinary_test_preparations.as_mut() {
-            Some(preparations) => {
-                preparations.push(request);
-                return;
-            }
-            None => request,
-        };
         let unpublished = Arc::new(Mutex::new(Some(request)));
         let published = unpublished.clone();
         let (sender, receiver) = mpsc::sync_channel(1);

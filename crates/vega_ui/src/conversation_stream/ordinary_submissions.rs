@@ -1,6 +1,5 @@
 use super::*;
 use gpui_kit::Role;
-use gpui_kit::TestSupportExt;
 use vega_conversation::types::{
     AttemptId, CommitFact, OrdinarySubmission, PrimaryFact, RetryBlocker, RetryEligibility,
     SubmissionFailure, SubmissionId,
@@ -492,7 +491,6 @@ impl ConversationStream {
                             row.submission.user_message_id()
                         ))
                         .role(Role::Button)
-                        .test_support()
                         .aria_label(label)
                         .key_context("PendingMessageControl")
                         .track_focus(&row.focus)

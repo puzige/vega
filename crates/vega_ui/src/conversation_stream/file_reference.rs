@@ -73,11 +73,6 @@ impl ConversationStream {
         self.input.clone()
     }
 
-    #[cfg(feature = "development-observation")]
-    pub fn composer_draft_revision_for_development(&self, cx: &App) -> u64 {
-        self.input.read(cx).content_revision()
-    }
-
     pub(crate) fn close_file_selector_and_cancel(&mut self, cx: &mut Context<Self>) {
         let should_cancel = self.file_index_loading;
         self.file_selector_wanted = false;

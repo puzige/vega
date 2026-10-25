@@ -9,9 +9,6 @@ use std::collections::BTreeMap;
 use tokio::sync::Notify;
 #[path = "subagents/lifecycle_ownership.rs"]
 mod lifecycle_ownership;
-#[cfg(test)]
-#[path = "subagents/lifecycle_tests.rs"]
-mod lifecycle_tests;
 #[path = "subagents/stage_recovery.rs"]
 mod stage_recovery;
 use lifecycle_ownership::LifecycleOwnership;
@@ -70,8 +67,6 @@ struct RegistryState {
     admission_failure: Option<String>,
     steering: Option<Arc<dyn vega_runtime::RuntimeSteeringSource>>,
     delivered_steering: Option<String>,
-    #[cfg(test)]
-    before_terminal: Option<Arc<lifecycle_tests::Pause>>,
 }
 
 #[derive(Clone)]
@@ -1228,11 +1223,6 @@ fn child_lifecycle_inner<'a>(
                 }
             }
         };
-        #[cfg(test)]
-        {
-            let pause = registry.state.lock().ok().and_then(|state| state.before_terminal.clone());
-            if let Some(pause) = pause { pause.wait().await; }
-        }
         activity.finish();
         questions.cancel_active();
         permissions.timeout_active();

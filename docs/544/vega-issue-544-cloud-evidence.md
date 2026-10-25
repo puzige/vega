@@ -251,3 +251,47 @@ writer 首阶段只读返回 BLOCKED/停写，无代码差异：app 无直接 fu
 同一 writer execution `01M5SRWJWXKMJQ06N2BEBAVSE7` READY/停写，五代码/manifest 路径新增窄开发支持及 ordinary_worker_tests.rs。父复算全部交付 SHA256 一致：新测试文件 `60e9102de6fc9678e37f0b33e40b685565b0a6a2dca4402da272972e3bb7ce60`；旧 app ordinary_tests `64a3be6bef3728c18e9097d96c11144556337505da9f21f420a2b8273e9432f3` 不变，Cargo.lock `d0db90f75da7963241f17c906ed0f5819a24b8bb00adcf1f16ed09e038c97ca0` 未改。父逐块确认原58测试保留；新增2后预计60源码定义，未作发现/执行结论。4 Rust 文件1.98定向格式/check、diff、manifest TOML检查exit0；无本地代码执行。
 
 交付称两项经实际worker/poll：ordinary真实Composer→prepare→firstdrive→Stop→drain，然后真实新generation回放已记录production batch；回放明确为duplicate/late故障，不是自然FIFO。另项真实非ordinarylaunch→runningSend-now入队→runtimeSteeringAccepted/persist→continuation第二primaryrequest。Provider override在worker完成正常model/config/key/authority校验后，仅替transport，仍经OwnerCredentialProvider；title/prediction独立响应分类。父已检查实际diff，所有新接线cfg(test)，但真实验证仍待固定SHA独审及Actions，不能凭READY将证据缺口标闭合。失败清理、join/drain及辅助生命周期观察也列独审重点。最终须删新模块、worker_test_launches字段/初始化、test_provider参数/分支、pollgate/tap/join、TitleWatchDrain/PollDrain与dev futures引用，不删生产guard。
+
+### 真实 worker 验证：失败、责任层修复与最终 62/62
+
+以下历史失败均保留，不以最终成功覆盖失败事实。没有本地运行 Vega、编译、Clippy、测试或 CUA；开发测试和断言在成功前未被删除、忽略或放宽。
+
+| 固定开发提交 | Actions run | 实际结果与责任层处理 |
+| --- | --- | --- |
+| `71edba2c5ef913695bd69348f8d7c2bb521513c8` | [40208104770](https://github.com/puzige/vega/actions/runs/40208104770) | 编译失败：glob import 引入 GPUI test 宏递归；未取得 Rust 发现/执行。独审另发现 teardown 遇主失败时的收敛风险。 |
+| `aaaaff9972abbc005992c3e9aa3b902974745075` | [40209098443](https://github.com/puzige/vega/actions/runs/40209098443) | 显式 imports、收敛优先 cleanup 与两个 cleanup 回归已加入；编译报 Entity::read 的 TestAppContext 类型不匹配。未取得 Rust 发现/执行。 |
+| `d27e72db24f574a17d4224640255a7bcb61f20ba` | [40210110120](https://github.com/puzige/vega/actions/runs/40210110120) | 改 read_with；后续推送使此 run cancelled，不称通过。独审发现 text 借用逃逸，下一版改 owned text，比较预期不变。 |
+| `639168eeecf6389e757df80ae8bfb81d76b22197` | [40210381622](https://github.com/puzige/vega/actions/runs/40210381622) | Rust 62 执行、60 通过、2 worker 失败；两个 cleanup 回归通过。Clippy 另报 Drop collapsible-if。此时泛化 timeout 尚不足以证明根因。 |
+| `e97b9fcc1518f6909f042a2e44478d2c65f5c97a` | [40211741335](https://github.com/puzige/vega/actions/runs/40211741335) | 等价 lint 修复、增加等待阶段诊断，未改期限/谓词。62 执行、60 通过、2 失败；实际卡在 composer image attachment visible。核对观察 API 后确认 remove-image 控件未注册。 |
+| `e3fec2f0fce25f6c816c12681200bef6ec82b638` | [40212605695](https://github.com/puzige/vega/actions/runs/40212605695) | 真实附件控件补观察，附件等待通过；62 执行、60 通过、2 失败，复制回声观察为 0。steering 已观察到第二 primary 与 delivery event；实际 CopyReceipt 控件亦未注册。 |
+| `c2e4f433e35c55c3ba0764d61ca2242039e0b78a` | [40213651378](https://github.com/puzige/vega/actions/runs/40213651378) | 注册真实 CopyReceipt，保留交互 forwarding；62 执行、60 通过、2 失败。源码与日志定位为虚拟列表只挂载可见行，以及 populated running composer 显示 Send-now 而非 Stop；不是放宽预期数量的理由。 |
+| `9de693a452b16920771085f27c8d2279e9cdf411` | [40214564862](https://github.com/puzige/vega/actions/runs/40214564862) | 逐条 reveal 后观察，保留原始 Stop 实际点击，后续 populated 状态走公开 stop 动作；62 执行、61 通过、1 失败。真实 Stop/迟到批次回归通过；steering 首条 durable user 在直接 nonordinary fixture 启动后未 hydrate 到 UI。 |
+| `23005ac6484f42ddfe88a2dde778d5453974b900` | [40215618477](https://github.com/puzige/vega/actions/runs/40215618477) | 用 history_page_containing_message 加载真实已持久化首用户行，断言移出会破坏 GPUI 借用/窗口恢复的 callback。fmt/Clippy/required 成功，Rust 62 发现、62 执行、62 通过、0 跳过，Python 60 通过。父读取原始日志；Nextest `121235992433`、Clippy `121235992211`、required `121237163976`。 |
+| `317f32bcd947c704703ad863cf2ab851513227c4` | [40216649411](https://github.com/puzige/vega/actions/runs/40216649411) | 独审指出 aggregate echo 数量不能证明逐消息关联；新增既有 user-row 开发观察，将真实 durable ID 对应到实际 copy path，每个目标恰好一个、路径不同、完成前后不变。完整 required 成功；Rust **62 发现、62 执行、62 通过、0 失败、0 跳过**，Python **5+15+40=60** 通过。 |
+
+最终开发固定版本 `317f32bcd947c704703ad863cf2ab851513227c4`，tree `35c60ec5cbd1ecc7a2a975810d644a6470090c5a`：Nextest `121239117708`、Clippy（含 fmt）`121239117943`、required `121240504419` 均 success。父在本次接续重新读取 GitHub run 与原始日志，确认 62 发现/62 执行及 Python 60，不把日志中的 shell 分支字面量“no Rust tests”误当实际空集结果。
+
+可恢复 [完整源码](https://github.com/puzige/vega/tree/317f32bcd947c704703ad863cf2ab851513227c4) / [原始 patch](https://github.com/puzige/vega/commit/317f32bcd947c704703ad863cf2ab851513227c4.patch) / [真实 worker 测试](https://github.com/puzige/vega/blob/317f32bcd947c704703ad863cf2ab851513227c4/crates/vega/src/window/ordinary_worker_tests.rs)。父实际 commit API 读回相同 SHA/tree、contents API 读回 worker tests blob `e4d094c8325992d638d1d9f4f382faaeb43c6044`。对应文件 SHA256 `834831320c3022dc5c258c14820ef8a64abab33d5784c88524e0d9d5a205548b`；render 文件 `e2ebe7c7492dd232419a4b30c842ed7d816b97124ead227f091523d09e32a4a4`。不得只依赖任务分支或会过期的 artifact。父另读取 GitHub 原始 patch（4879 bytes，SHA256 `d9293f782752d727c663a9d69fe896e341d9ce2650c6c3243056b53a288c5bed`），并读取固定树 recursive API，清理前开发集合的 Git blob 身份如下：
+
+| 原始路径 | 317 固定树 Git blob |
+| --- | --- |
+| `crates/vega/src/window/ordinary_tests.rs` | `1aaf75648a00fa309e5db2b702286cf46e6363b7` |
+| `crates/vega/src/window/ordinary_worker_tests.rs` | `e4d094c8325992d638d1d9f4f382faaeb43c6044` |
+| `crates/vega_conversation/src/agent/ordinary_entry_tests.rs` | `04f872a59865b3b8c42e817cbdd85d19c8b42b4a` |
+| `crates/vega_conversation/src/agent/ordinary_tests.rs` | `6cbd449445c4d43651cbd66c9c5172609850c8ea` |
+| `crates/vega_conversation/src/agent/subagents/lifecycle_tests.rs` | `c42fc8b91788b946b2d53f51b0ddb5cdeba95252` |
+| `crates/vega_conversation/src/ordinary_submissions.rs`（含开发测试块） | `18758cfaa6f65de6a5db1d565679a75c09710f15` |
+| `crates/vega_store/src/thread_admission.rs`（含开发测试块） | `b88673d055b59033e7ca271557f0db74578cfda3` |
+| `crates/vega_ui/src/conversation_stream/ordinary_tests.rs` | `3e704e5c2621d49abf241b3354f0822ceeb9b150` |
+
+非实现者 `544-final-worker-delta-review` execution `01M5T1QE1K889DMA56J2B4BCFE` 已停写只读复审 317 相对 230：旧 P2 逐消息关联证据问题解决、无新增可执行发现；确认锁定 API path-prefix 关联与既有原生 row，Stop/drain/真实批次重放/continuation/请求数/durable-ID/images 断言不变。该结论不覆盖随后删测的最终树。
+
+实际范围：普通真实 Composer→prepare→worker 首次 drive→Stop→worker/admission drain→真实新 generation；旧生产批次重放是显式 duplicate/late 故障注入，不冒充自然 FIFO；B 是 controller/stream fixture，不冒充完整导航 E2E。实际 running Send-now→runtime steering 接受→持久化→continuation 第二 primary，用户/图片/渲染关联唯一。其他 Codex/automation/plan/credential 仍仅前述静态保留证据；原生 OS 首绘延迟、真实服务和 A12/H 仍由用户手测，不能称完整 A1–A12 已验收。
+
+### 成功留痕后清理阶段
+
+接续先核实干净工作树与无活跃 writer。原上游 MCP620 `23cb3a48d5d5c981096ac1a4f6fa6b31e1596177` 已合入 `315fcdaf518e0359427619b0c2be07c0ea1d142a`；本次 fetch 发现 MCP621 `663ad761a5d63549228f112db55d06352045a228`，无冲突合入 `ea1fe55fa60b8f19979e58fac830f1a50a85730a`（tree `70651371b34a04ebb11869592c893ec597ce0844`）。两次合并不是 317 的开发运行证据，最终完整 head 必须重新验证。
+
+唯一代码 writer `544-final-development-cleanup` execution `01M5T3NZNRT0WXS0KRT8HJ8FMZ` 从该干净版本移除全部已成功 Rust 开发测试及独占 feature/dev dependency/观察/故障/fixture/worker 接线，主会话仅改文档及外部进度，不并发写代码。不得改变生产行为、安全断言、Python/fixture/benchmark/CI 或上游 MCP 行为。writer 已 READY/停写：27 代码路径（21 修改、6 独占测试文件删除），移除 62 个开发测试属性。19 混合 Rust 文件的非测试生产 token 投影比对一致；此为静态等价检查，不替代类型/借用或运行验证。定向显式 Rust1.98 rustfmt `skip_children=true --check`、diff 检查均 exit0，两 manifest 与上游663逐字节一致，Cargo.lock 与上游一致且未改（SHA256 `d0db90f75da7963241f17c906ed0f5819a24b8bb00adcf1f16ed09e038c97ca0`），没有依赖升级。
+
+父实际复算代码 binary diff SHA256 与 writer 相符：`ea86a298f81b57ca60045b98cecbbea1a74a6a4d41c6ec6e84b155b0b1ac4c9c`（`git diff --binary -- crates Cargo.lock`）；全仓 tracked Rust/manifest 检索测试属性、cfg(test)、development-observation、test-support/test_support、OrdinaryEntryFault/test_provider/worker_test_launches 无残留，diff check exit0。实际差异中 worker poll 恢复原非测试 drain_agent_updates，fault 清理保留真实 commit→receipt/actor/ack，UI 保留真实交互、focus/aria/IDs；MCP621 root_message_id、逐消息 apply_mcp_unavailable 与 mcp_notices 渲染仍存在。非实现者完整最终 head 独审和 required CI 的 **no Rust tests（0 发现/0 执行）仍待取得**；不合并、不安装、不关闭卡片。
