@@ -152,3 +152,25 @@ Rust: nonempty suite completed successfully (22 discovered, including ignored/sk
 已静态核实可行的最小生产观察路线：`run_thread_task_with_images_reasoning_and_mcp<F>` 的 sink 返回 `Result<(), VegaError>`；MessageStarted/RunStarted 在 commit/actor start 后、primary Started 前。用 file-backed Store、真实 ordinary/authority/accepted snapshot、带 matching `model_snapshot()` 的隔离 Provider、真实 Tools 和拒绝权限 hook，sink 确定失败可驱动真实 actor error/close/cleanup，再正常 root finalization 观察一份 user/images、failed assistant、零 provider、drain 与恢复资格。另用临时 DB trigger 拒绝 assistant insert 证明实际 rollback，以及 RunStarted 回调取消证明提交后/primary前取消；不调用测试手动 finish_unstarted 来替代。
 
 actor opener/ack 丢失及 SQL commit 后 receipt 发布前没有现成可用 fault hook，若选择验证只允许 per-run 开发期窄注入、保留真实责任层并最终清理，不造生产替身或赋值即断言。A10 当前 queue dispatch 验证 ordinary=None，但不等于真实 running Composer/steer/Codex/automation/plan/credential 全路由已验证；后续最小代表回归或静态保全分别报告，不建立新外部 E2E 门禁。H 的 OS 呈现/真实延迟仍由用户手测。现有两个 history 缺陷和三编译错误仍交当前 writer，不能因补测试清理掉未解决失败。
+
+## i18n / 隐私修复与最新 CUA 集成：11c9677dd28f03987d0c06da5651d1f5825b2b6b
+
+[固定源码](https://github.com/puzige/vega/tree/11c9677dd28f03987d0c06da5651d1f5825b2b6b) / [原始 patch](https://github.com/puzige/vega/commit/11c9677dd28f03987d0c06da5651d1f5825b2b6b.patch)，tree `6804a37ffb29393790140b54b1d995dd5dee6430`。父先保存替代 writer 的修复并完成 i18n 合并 `cfc50d1b617e49d33f90fbd6a8c36d1a33be0135`，再无冲突合入 master `76c164876542c679abe1bfb5f525f1ade2fcd2e4`。当前版本保留上游 generated notices、隐私和 CUA 错误反馈语义；不改通用 workflow 或验证脚本。
+
+- 修复内容：CheckStatus 使用独立 stream clone；测试导入移除未使用项并避免同名 test 宏遮蔽；权威 history 内容改变时更新保留 copy/render 并失效选择/复制缓存；未决后缀及 durable seq 参与分页归位；本卡文案接现有双语 catalogs。
+- writer 停写后父复算其 19 文件 manifest `e1793e42ad56ea83ee5e34c84b2c3248f6a4f92595d97ea46e7d5e47164d47e2`，对应 CUA 合并前 cfc 内容。15 Rust 文件定向 1.98 rustfmt 与 diff 检查 exit 0。原 46 测试保留（必要导入及五处语言 lookup 等价修正），新增三项隐私/分页回归，49 个源码定义，不是执行数。
+- 2026-10-25T12:41:06Z 续接读回：PR #611 draft / OPEN / BLOCKED，head 如上；Issue 开放、In progress，无新外部认领。fetch 后 origin/master 仍为 76c16487 完整 SHA，任务分支与远端相同。原 writer/reviewer 均已停写/释放，但续接工具拒绝其历史 execution；不重试已拒绝调用。当前单一新 writer 仅修下列编译错误，新非写入者仅审 pinned 11c 隐私/分页与合并增量，working-tree 修改不算已审。
+
+### Actions 40184612340：生产模块可见性错误，尚无 Rust 执行
+
+[Run 40184612340](https://github.com/puzige/vega/actions/runs/40184612340) 绑定本节 head，completed / failure。Clippy `121142643716`、Nextest `121142643552`、required `121143398304` 均 failure。父读取原始日志并复核当前源文件：fmt success，Python 5 + 15 + 40 = 60 项 OK；Rust 在构建阶段失败，发现/执行/通过计数未取得。
+
+```text
+error[E0616]: field `stopping` of struct `ComposerActions` is private
+crates/vega_ui/src/conversation_stream/pending_messages.rs:120:26
+    self.actions.stopping = false;
+crates/vega_ui/src/conversation_stream/pending_messages.rs:134:30
+    self.actions.stopping = false;
+```
+
+责任层为本卡队列等待 UI 直接访问 sibling module 的 private 字段，不是 runner/依赖环境故障。修复使用所属 composer-actions 模块的窄状态操作，保留 `!running && !submit_pending` 才 reset 的条件、字段封装及实际 Stop/Resume 路由；不改可见性为宽 public，不降 lint、不删测试或盲目重跑。新 head 云端将验证编译及此前未运行的全部回归；旧失败不会被静态检查消解。后续真实 ordinary public-entry 的失败/清理/取消代表覆盖按契约 §6 推进，未取得前不宣称完整 A1–A12、OS 呈现、合并或用户验收。

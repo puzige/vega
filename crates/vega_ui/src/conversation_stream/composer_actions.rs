@@ -244,6 +244,12 @@ impl ConversationStream {
         stopped
     }
 
+    pub(super) fn reset_composer_stopping_if_idle(&mut self) {
+        if !self.actions.running && !self.composer_submit_pending {
+            self.actions.stopping = false;
+        }
+    }
+
     pub(crate) fn record_composer_terminal(&mut self, message_id: &str, cancelled: bool) {
         if self
             .active_agent_message

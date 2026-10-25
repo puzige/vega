@@ -116,9 +116,7 @@ impl ConversationStream {
         cx: &mut Context<Self>,
     ) {
         self.pending_ui.wait = Some((generation, cancel));
-        if !self.actions.running && !self.composer_submit_pending {
-            self.actions.stopping = false;
-        }
+        self.reset_composer_stopping_if_idle();
         cx.notify();
     }
 
@@ -130,9 +128,7 @@ impl ConversationStream {
             .is_some_and(|(current, _)| *current == generation)
         {
             self.pending_ui.wait = None;
-            if !self.actions.running && !self.composer_submit_pending {
-                self.actions.stopping = false;
-            }
+            self.reset_composer_stopping_if_idle();
             cx.notify();
         }
     }

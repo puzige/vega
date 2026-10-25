@@ -94,6 +94,8 @@ F 固定可审查后接线：
 
 保持完整 A1–A12，开发验证按风险选择必要真实生产路径，不造 toy controller。至少覆盖：扣住 prepare 的唯一可见 pending；同文新 revision/新附件保留；双击和重复 receipt；commit 前失败和 commit 后 actor失败的唯一 user/images；commit Unknown/Started但空输出/cleanup失败禁重投；取消与迟到事件；两窗口占用和 view销毁；真实列表对象/key/锚点；#535 queue/steering 与非普通路由保全。
 
+风险覆盖核对已确认直接设置 receipt/cleanup 的测试不能代替真实入口事实。后续必要代表验证使用实际 public ordinary run、匹配 model_snapshot 的隔离 Provider、真实临时 Store/Tools 和 event sink：MessageStarted/RunStarted 投递失败驱动真实 actor error/close/cleanup 与恢复；assistant-insert SQL trigger 失败驱动真实 rollback；RunStarted 回调取消观察提交保留且 primary 未启动。actor 启动失败、已落库 ack 丢失和 commit 后 receipt 发布前的未知，仅允许 per-run 开发期窄 fault/latch，不能全局可竞态开关、跳过事务或手动赋值事实。首次 drive 后 provider 取消仍保留 Started/禁未启动重试；至少一项实际 running Composer Queue/Send-now 入口证明不进入 ordinary，其他既有路由保全另列证据。开发支持须随测试留痕后移除。不得为覆盖数字造重复 case，不能用这些代表项宣称真实后端或 H 通过。
+
 行为/存储/GPUI进程内测试只在 Actions；正式历史行阳性对照先证明 harness 可观测，不用源码字符串冒充 UI。必要测试本轮保留开发源码/patch/完整 SHA/真实结果，最终独立清理 Rust 测试及独占支持，再对最终 head 跑完整 required CI；Python/通用CI不改。无本地 Vega运行、cargo check/Clippy/build/test、打包或 CUA。真实 UI时延/系统集成仍由用户手测；CI不代表用户验收。
 
 主会话仅写 spec/Git/协调，生产由单一专职 writer；F→I/G/U 串行，非写入者独审固定停写版本，最后 head required成功才合并。任何实际 API 或产品边界无法按本契约满足时先带精确证据返回主 Agent，禁止自行降低验收或只交 happy path。
