@@ -29,7 +29,8 @@ pub struct RawSubmission {
     text: String,
     images: Arc<[ImageAttachment]>,
     draft_revision: u64,
-    model: ResolvedModel,
+    model: String,
+    model_snapshot: Option<Box<ResolvedModel>>,
     reasoning: Option<FrozenReasoning>,
 }
 
@@ -38,7 +39,8 @@ impl RawSubmission {
         text: String,
         images: Vec<ImageAttachment>,
         draft_revision: u64,
-        model: ResolvedModel,
+        model: String,
+        model_snapshot: Option<Box<ResolvedModel>>,
         reasoning: Option<FrozenReasoning>,
     ) -> Self {
         Self {
@@ -46,6 +48,7 @@ impl RawSubmission {
             images: images.into(),
             draft_revision,
             model,
+            model_snapshot,
             reasoning,
         }
     }
@@ -62,12 +65,56 @@ impl RawSubmission {
         self.draft_revision
     }
 
-    pub fn model(&self) -> &ResolvedModel {
+    pub fn model(&self) -> &str {
         &self.model
+    }
+
+    pub fn model_snapshot(&self) -> Option<&ResolvedModel> {
+        self.model_snapshot.as_deref()
     }
 
     pub fn reasoning(&self) -> Option<&FrozenReasoning> {
         self.reasoning.as_ref()
+    }
+
+    fn validate_selection(&self) -> Result<(), SubmissionError> {
+        if self.model.trim().is_empty() {
+            return Err(SubmissionError::PayloadMismatch);
+        }
+        if let Some(reasoning) = &self.reasoning {
+            reasoning
+                .validate()
+                .map_err(|_| SubmissionError::PayloadMismatch)?;
+            if reasoning.model != self.model {
+                return Err(SubmissionError::PayloadMismatch);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate_model(&self, model: &ResolvedModel) -> Result<(), SubmissionError> {
+        self.validate_selection()?;
+        if model.identity.model != self.model
+            || self
+                .model_snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.identity != model.identity)
+            || self
+                .reasoning
+                .as_ref()
+                .is_some_and(|reasoning| reasoning.provider != model.identity.provider)
+        {
+            return Err(SubmissionError::PayloadMismatch);
+        }
+        Ok(())
+    }
+
+    fn validate(&self) -> Result<(), SubmissionError> {
+        self.validate_selection()?;
+        if let Some(model) = self.model_snapshot() {
+            self.validate_model(model)?;
+        }
+        Ok(())
     }
 }
 
@@ -84,6 +131,39 @@ impl AcceptedPayload {
 
     pub fn images(&self) -> &[ImageAttachment] {
         &self.images
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct PersistedPayload {
+    text: String,
+    images: Arc<[ImageAttachment]>,
+}
+
+impl PersistedPayload {
+    pub fn new(text: String, images: Vec<ImageAttachment>) -> Self {
+        Self {
+            text,
+            images: images.into(),
+        }
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn images(&self) -> &[ImageAttachment] {
+        &self.images
+    }
+}
+
+impl std::fmt::Debug for PersistedPayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PersistedPayload")
+            .field("text_bytes", &self.text.len())
+            .field("images", &self.images.len())
+            .finish_non_exhaustive()
     }
 }
 
@@ -116,6 +196,7 @@ pub enum CommitFact {
     NotAttempted,
     Preparing,
     CommitInFlight,
+    NotCommitted,
     Committed(Arc<CommittedReceipt>),
     Unknown,
 }
@@ -151,6 +232,12 @@ pub enum SubmissionFailure {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CleanupFailure {
+    Failed,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RollbackFailure {
     Failed,
     Unknown,
 }
@@ -194,6 +281,7 @@ pub struct AttemptSnapshot {
     pub assistant_message_id: String,
     pub kind: AttemptKind,
     pub commit: CommitFact,
+    pub persisted: Option<Arc<PersistedPayload>>,
     pub primary: PrimaryFact,
     pub cleanup: CleanupFact,
     pub workers: usize,
@@ -234,6 +322,8 @@ pub enum SubmissionError {
     PayloadMismatch,
     #[error("ordinary submission commit receipt does not match")]
     ReceiptMismatch,
+    #[error("ordinary submission worker does not own the transaction")]
+    CommitOwnerMismatch,
     #[error("ordinary submission workers have not converged")]
     WorkersActive,
     #[error("ordinary submission retry is blocked: {0:?}")]
@@ -244,9 +334,16 @@ pub enum SubmissionError {
     Admission(#[from] AdmissionError),
 }
 
+struct CommitAuthority {
+    worker: Ulid,
+    started: bool,
+    rollback: Option<Result<(), RollbackFailure>>,
+}
+
 struct AttemptState {
     facts: AttemptSnapshot,
     workers: HashSet<Ulid>,
+    commit_authority: Option<CommitAuthority>,
 }
 
 impl AttemptState {
@@ -254,9 +351,10 @@ impl AttemptState {
         Self {
             facts: AttemptSnapshot {
                 id,
-                assistant_message_id: Ulid::new().to_string(),
+                assistant_message_id: Ulid::generate().to_string(),
                 kind,
                 commit: CommitFact::NotAttempted,
+                persisted: None,
                 primary: PrimaryFact::NotYetDriven,
                 cleanup: CleanupFact::NotRequired,
                 workers: 1,
@@ -266,12 +364,27 @@ impl AttemptState {
                 failure: None,
             },
             workers: HashSet::from([worker]),
+            commit_authority: None,
         }
+    }
+
+    fn commit_authority(&self, worker: Ulid) -> Result<&CommitAuthority, SubmissionError> {
+        let authority = self
+            .commit_authority
+            .as_ref()
+            .ok_or(SubmissionError::InvalidTransition)?;
+        if authority.worker != worker {
+            return Err(SubmissionError::CommitOwnerMismatch);
+        }
+        Ok(authority)
     }
 
     fn make_unknown(&mut self) {
         self.facts.abnormal = true;
-        if !matches!(self.facts.commit, CommitFact::Committed(_)) {
+        if !matches!(
+            self.facts.commit,
+            CommitFact::Committed(_) | CommitFact::NotCommitted
+        ) {
             self.facts.commit = CommitFact::Unknown;
         }
         if self.facts.primary != PrimaryFact::Started {
@@ -362,12 +475,7 @@ impl OrdinarySubmission {
         if !admission.verifies(database, &thread_id) {
             return Err(SubmissionError::AdmissionMismatch);
         }
-        if raw.reasoning.as_ref().is_some_and(|reasoning| {
-            reasoning.provider != raw.model.identity.provider
-                || reasoning.model != raw.model.identity.model
-        }) {
-            return Err(SubmissionError::PayloadMismatch);
-        }
+        raw.validate()?;
         let mut registry = submissions()
             .lock()
             .map_err(|_| SubmissionError::Unavailable)?;
@@ -382,15 +490,15 @@ impl OrdinarySubmission {
                 }
             }
         }
-        let id = SubmissionId(Ulid::new());
+        let id = SubmissionId(Ulid::generate());
         let attempt = AttemptId {
             submission: id,
             number: 1,
         };
-        let worker = Ulid::new();
+        let worker = Ulid::generate();
         let submission = Self(Arc::new(SubmissionInner {
             id,
-            user_message_id: Ulid::new().to_string(),
+            user_message_id: Ulid::generate().to_string(),
             database,
             thread_id,
             raw: Arc::new(raw),
@@ -444,7 +552,10 @@ impl OrdinarySubmission {
         if unavailable {
             for attempt in &mut attempts {
                 attempt.abnormal = true;
-                if !matches!(attempt.commit, CommitFact::Committed(_)) {
+                if !matches!(
+                    attempt.commit,
+                    CommitFact::Committed(_) | CommitFact::NotCommitted
+                ) {
                     attempt.commit = CommitFact::Unknown;
                 }
                 if attempt.primary != PrimaryFact::Started {
@@ -491,7 +602,12 @@ impl OrdinarySubmission {
         if !current.workers.is_empty() {
             return Err(SubmissionError::WorkersActive);
         }
-        if matches!(current.facts.commit, CommitFact::CommitInFlight) {
+        if matches!(current.facts.commit, CommitFact::CommitInFlight)
+            || current
+                .commit_authority
+                .as_ref()
+                .is_some_and(|authority| !authority.started && authority.rollback.is_none())
+        {
             current.make_unknown();
         }
         if !current.facts.abnormal && current.facts.primary == PrimaryFact::NotYetDriven {
@@ -549,7 +665,7 @@ impl OrdinarySubmission {
         };
         let admission = thread_admission::try_acquire(self.0.database, &self.0.thread_id)?
             .ok_or(SubmissionError::Busy)?;
-        let worker = Ulid::new();
+        let worker = Ulid::generate();
         state
             .attempts
             .push(AttemptState::new(attempt, kind, worker));
@@ -640,10 +756,13 @@ fn retry_eligibility(state: &SubmissionState) -> RetryEligibility {
         return blocked(RetryBlocker::HistoryChanged);
     }
     match (&facts.commit, &facts.kind) {
-        (CommitFact::NotAttempted | CommitFact::Preparing, AttemptKind::CommittedRecovery(_)) => {
-            RetryEligibility::CommittedNotStarted
+        (
+            CommitFact::NotAttempted | CommitFact::Preparing | CommitFact::NotCommitted,
+            AttemptKind::CommittedRecovery(_),
+        ) => RetryEligibility::CommittedNotStarted,
+        (CommitFact::NotAttempted | CommitFact::Preparing | CommitFact::NotCommitted, _) => {
+            RetryEligibility::Uncommitted
         }
-        (CommitFact::NotAttempted | CommitFact::Preparing, _) => RetryEligibility::Uncommitted,
         (CommitFact::Committed(_), _) if facts.cleanup == CleanupFact::Succeeded => {
             RetryEligibility::CommittedNotStarted
         }
@@ -690,7 +809,7 @@ impl OrdinaryWorker {
             .attempts
             .last_mut()
             .ok_or(SubmissionError::InvalidTransition)?;
-        let worker = Ulid::new();
+        let worker = Ulid::generate();
         current.workers.insert(worker);
         current.facts.workers = current.workers.len();
         Ok(Self {
@@ -744,16 +863,64 @@ impl OrdinaryWorker {
         Ok(FactUpdate::Applied)
     }
 
-    pub fn begin_commit(&self) -> Result<FactUpdate, SubmissionError> {
+    pub fn bind_persisted_payload(
+        &self,
+        payload: PersistedPayload,
+    ) -> Result<FactUpdate, SubmissionError> {
         let mut state = self.lock()?;
-        if state.accepted.is_none() {
-            return Err(SubmissionError::InvalidTransition);
+        let accepted = state
+            .accepted
+            .as_ref()
+            .ok_or(SubmissionError::InvalidTransition)?;
+        if payload.images.as_ref() != accepted.images.as_ref() {
+            return Err(SubmissionError::PayloadMismatch);
         }
         let current = state
             .attempts
             .last_mut()
             .ok_or(SubmissionError::InvalidTransition)?;
+        if let Some(existing) = &current.facts.persisted {
+            current.commit_authority(self.worker)?;
+            return if existing.as_ref() == &payload {
+                Ok(FactUpdate::Unchanged)
+            } else {
+                Err(SubmissionError::PayloadMismatch)
+            };
+        }
         if current.facts.abnormal
+            || current.facts.failure.is_some()
+            || current.facts.history_changed
+            || !matches!(
+                current.facts.commit,
+                CommitFact::NotAttempted | CommitFact::Preparing
+            )
+        {
+            return Err(SubmissionError::InvalidTransition);
+        }
+        if let AttemptKind::CommittedRecovery(original) = &current.facts.kind
+            && (payload.text != original.persisted_text
+                || payload.images.as_ref() != original.persisted_images.as_slice())
+        {
+            return Err(SubmissionError::PayloadMismatch);
+        }
+        current.facts.persisted = Some(Arc::new(payload));
+        current.commit_authority = Some(CommitAuthority {
+            worker: self.worker,
+            started: false,
+            rollback: None,
+        });
+        Ok(FactUpdate::Applied)
+    }
+
+    pub fn begin_commit(&self) -> Result<FactUpdate, SubmissionError> {
+        let mut state = self.lock()?;
+        let current = state
+            .attempts
+            .last_mut()
+            .ok_or(SubmissionError::InvalidTransition)?;
+        let authority = current.commit_authority(self.worker)?;
+        if authority.rollback.is_some()
+            || current.facts.abnormal
             || current.facts.failure.is_some()
             || current.facts.history_changed
         {
@@ -761,6 +928,11 @@ impl OrdinaryWorker {
         }
         match current.facts.commit {
             CommitFact::NotAttempted | CommitFact::Preparing => {
+                let authority = current
+                    .commit_authority
+                    .as_mut()
+                    .ok_or(SubmissionError::InvalidTransition)?;
+                authority.started = true;
                 current.facts.commit = CommitFact::CommitInFlight;
                 current.facts.cleanup = CleanupFact::Pending;
                 Ok(FactUpdate::Applied)
@@ -770,19 +942,62 @@ impl OrdinaryWorker {
         }
     }
 
+    pub fn record_not_committed(
+        &self,
+        result: Result<(), RollbackFailure>,
+    ) -> Result<FactUpdate, SubmissionError> {
+        let mut state = self.lock()?;
+        let current = state
+            .attempts
+            .last_mut()
+            .ok_or(SubmissionError::InvalidTransition)?;
+        let authority = current.commit_authority(self.worker)?;
+        if authority.started {
+            return Err(SubmissionError::InvalidTransition);
+        }
+        if let Some(existing) = authority.rollback {
+            return if existing == result {
+                Ok(FactUpdate::Unchanged)
+            } else {
+                Err(SubmissionError::InvalidTransition)
+            };
+        }
+        if !matches!(
+            current.facts.commit,
+            CommitFact::NotAttempted | CommitFact::Preparing | CommitFact::Unknown
+        ) {
+            return Err(SubmissionError::InvalidTransition);
+        }
+        let authority = current
+            .commit_authority
+            .as_mut()
+            .ok_or(SubmissionError::InvalidTransition)?;
+        authority.rollback = Some(result);
+        match result {
+            Ok(()) => {
+                current.facts.commit = CommitFact::NotCommitted;
+                if !current.facts.abnormal {
+                    current.facts.cleanup = CleanupFact::NotRequired;
+                }
+            }
+            Err(_) => current.make_unknown(),
+        }
+        Ok(FactUpdate::Applied)
+    }
+
     pub fn record_committed(
         &self,
         receipt: CommittedReceipt,
     ) -> Result<FactUpdate, SubmissionError> {
         let mut state = self.lock()?;
-        let accepted = state
-            .accepted
-            .as_ref()
-            .ok_or(SubmissionError::InvalidTransition)?;
         let current = state
             .attempts
             .last()
             .ok_or(SubmissionError::InvalidTransition)?;
+        let authority = current.commit_authority(self.worker)?;
+        if !authority.started {
+            return Err(SubmissionError::InvalidTransition);
+        }
         if let CommitFact::Committed(existing) = &current.facts.commit {
             return if existing.as_ref() == &receipt {
                 Ok(FactUpdate::Unchanged)
@@ -790,10 +1005,18 @@ impl OrdinaryWorker {
                 Err(SubmissionError::ReceiptMismatch)
             };
         }
-        if !matches!(current.facts.commit, CommitFact::CommitInFlight) {
+        if !matches!(
+            current.facts.commit,
+            CommitFact::CommitInFlight | CommitFact::Unknown
+        ) {
             return Err(SubmissionError::InvalidTransition);
         }
-        validate_receipt(&self.submission, &current.facts, accepted, &receipt)?;
+        let persisted = current
+            .facts
+            .persisted
+            .as_ref()
+            .ok_or(SubmissionError::InvalidTransition)?;
+        validate_receipt(&self.submission, &current.facts, persisted, &receipt)?;
         let current = state
             .attempts
             .last_mut()
@@ -903,15 +1126,15 @@ impl Drop for OrdinaryWorker {
 fn validate_receipt(
     submission: &OrdinarySubmission,
     attempt: &AttemptSnapshot,
-    accepted: &AcceptedPayload,
+    persisted: &PersistedPayload,
     receipt: &CommittedReceipt,
 ) -> Result<(), SubmissionError> {
     if receipt.user_message_id != submission.user_message_id()
         || receipt.assistant_message_id != attempt.assistant_message_id
         || receipt.user_seq < 1
         || receipt.assistant_seq.checked_add(1) != Some(receipt.next_seq)
-        || receipt.persisted_text != accepted.text
-        || receipt.persisted_images.as_slice() != accepted.images.as_ref()
+        || receipt.persisted_text != persisted.text
+        || receipt.persisted_images.as_slice() != persisted.images.as_ref()
     {
         return Err(SubmissionError::ReceiptMismatch);
     }
@@ -956,23 +1179,34 @@ mod tests {
     }
 
     fn begin() -> (OrdinarySubmission, OrdinaryWorker) {
+        begin_raw(RawSubmission::new(
+            "raw reference".into(),
+            Vec::new(),
+            7,
+            "model".into(),
+            Some(Box::new(model())),
+            None,
+        ))
+        .unwrap()
+    }
+
+    fn begin_raw(
+        raw: RawSubmission,
+    ) -> Result<(OrdinarySubmission, OrdinaryWorker), SubmissionError> {
         let store = Store::open(":memory:").unwrap();
         let database = store.database_identity();
         let admission = thread_admission::try_acquire(database, "thread")
             .unwrap()
             .unwrap();
-        OrdinarySubmission::begin(
-            database,
-            "thread".into(),
-            RawSubmission::new("raw reference".into(), Vec::new(), 7, model(), None),
-            admission,
-        )
-        .unwrap()
+        OrdinarySubmission::begin(database, "thread".into(), raw, admission)
     }
 
     fn commit(submission: &OrdinarySubmission, worker: &OrdinaryWorker) -> CommittedReceipt {
         worker
             .bind_accepted_payload("expanded payload".into())
+            .unwrap();
+        worker
+            .bind_persisted_payload(PersistedPayload::new("expanded payload".into(), Vec::new()))
             .unwrap();
         worker.begin_commit().unwrap();
         let snapshot = submission.snapshot();
@@ -999,6 +1233,443 @@ mod tests {
             FactUpdate::Unchanged
         );
         receipt
+    }
+
+    fn prepared_receipt(submission: &OrdinarySubmission) -> CommittedReceipt {
+        let snapshot = submission.snapshot();
+        let attempt = snapshot.attempts.last().unwrap();
+        let payload = attempt.persisted.as_ref().unwrap();
+        let (user_seq, assistant_seq) = match &attempt.kind {
+            AttemptKind::CommittedRecovery(original) => (original.user_seq, original.next_seq),
+            _ => (1, 2),
+        };
+        CommittedReceipt {
+            user_message_id: snapshot.user_message_id,
+            user_seq,
+            assistant_message_id: attempt.assistant_message_id.clone(),
+            assistant_seq,
+            next_seq: assistant_seq + 1,
+            persisted_text: payload.text().to_owned(),
+            persisted_images: payload.images().to_vec(),
+        }
+    }
+
+    #[test]
+    fn profileless_selection_can_begin_before_model_authority_is_available() {
+        for reasoning in [None, Some(FrozenReasoning::unknown("provider", "model"))] {
+            let (submission, worker) = begin_raw(RawSubmission::new(
+                "raw reference".into(),
+                Vec::new(),
+                9,
+                "model".into(),
+                None,
+                reasoning,
+            ))
+            .unwrap();
+            assert_eq!(submission.raw().model(), "model");
+            assert!(submission.raw().model_snapshot().is_none());
+            submission.raw().validate_model(&model()).unwrap();
+            let mut different = model();
+            different.identity.model = "other-model".into();
+            assert!(matches!(
+                submission.raw().validate_model(&different),
+                Err(SubmissionError::PayloadMismatch)
+            ));
+            if submission.raw().reasoning().is_some() {
+                let mut different = model();
+                different.identity.provider = "other-provider".into();
+                assert!(matches!(
+                    submission.raw().validate_model(&different),
+                    Err(SubmissionError::PayloadMismatch)
+                ));
+            }
+            let attempt = worker.attempt_id();
+            worker
+                .complete(Err(SubmissionFailure::PreflightRejected))
+                .unwrap();
+            submission.seal(attempt).unwrap();
+            let retry = submission.try_retry(attempt).unwrap();
+            assert_eq!(submission.raw().text(), "raw reference");
+            assert!(submission.raw().model_snapshot().is_none());
+            retry.complete(Err(SubmissionFailure::Cancelled)).unwrap();
+        }
+    }
+
+    #[test]
+    fn invalid_reasoning_and_cached_model_identity_cannot_begin() {
+        let mut invalid_reasoning = FrozenReasoning::unknown("provider", "model");
+        invalid_reasoning.choice = crate::types::ReasoningChoice::Disabled;
+        let mut different_model = model();
+        different_model.identity.model = "other-model".into();
+        for (snapshot, reasoning) in [
+            (None, Some(invalid_reasoning)),
+            (
+                None,
+                Some(FrozenReasoning::unknown("provider", "other-model")),
+            ),
+            (Some(Box::new(different_model)), None),
+            (
+                Some(Box::new(model())),
+                Some(FrozenReasoning::unknown("other-provider", "model")),
+            ),
+        ] {
+            assert!(matches!(
+                begin_raw(RawSubmission::new(
+                    "raw".into(),
+                    Vec::new(),
+                    1,
+                    "model".into(),
+                    snapshot,
+                    reasoning,
+                )),
+                Err(SubmissionError::PayloadMismatch)
+            ));
+        }
+    }
+
+    #[test]
+    fn persistence_binding_is_distinct_immutable_and_survives_committed_recovery() {
+        let first = image(10);
+        let second = image(20);
+        let images = vec![first.clone(), second.clone()];
+        let (submission, worker) = begin_raw(RawSubmission::new(
+            "raw reference".into(),
+            images.clone(),
+            1,
+            "model".into(),
+            None,
+            None,
+        ))
+        .unwrap();
+        let attempt = worker.attempt_id();
+        worker.bind_accepted_payload("model input".into()).unwrap();
+        assert!(matches!(
+            worker.begin_commit(),
+            Err(SubmissionError::InvalidTransition)
+        ));
+        for wrong in [vec![second.clone(), first], vec![image(30), second]] {
+            assert!(matches!(
+                worker.bind_persisted_payload(PersistedPayload::new("stored body".into(), wrong)),
+                Err(SubmissionError::PayloadMismatch)
+            ));
+        }
+        let persisted = PersistedPayload::new("stored body".into(), images.clone());
+        assert_eq!(
+            worker.bind_persisted_payload(persisted.clone()).unwrap(),
+            FactUpdate::Applied
+        );
+        assert_eq!(
+            worker.bind_persisted_payload(persisted.clone()).unwrap(),
+            FactUpdate::Unchanged
+        );
+        worker.begin_commit().unwrap();
+        assert!(matches!(
+            worker.bind_persisted_payload(PersistedPayload::new(
+                "model input".into(),
+                images.clone()
+            )),
+            Err(SubmissionError::PayloadMismatch)
+        ));
+        let receipt = prepared_receipt(&submission);
+        let mut wrong = receipt.clone();
+        wrong.persisted_text = "model input".into();
+        assert!(matches!(
+            worker.record_committed(wrong),
+            Err(SubmissionError::ReceiptMismatch)
+        ));
+        worker.record_committed(receipt.clone()).unwrap();
+        assert_eq!(submission.raw().text(), "raw reference");
+        assert_eq!(
+            submission.snapshot().accepted.unwrap().text(),
+            "model input"
+        );
+        worker.record_cleanup(Ok(())).unwrap();
+        worker
+            .complete(Err(SubmissionFailure::LaunchFailed))
+            .unwrap();
+        submission.seal(attempt).unwrap();
+        let recovery = submission.try_retry(attempt).unwrap();
+        let recovery_attempt = recovery.attempt_id();
+        assert!(matches!(
+            recovery.bind_persisted_payload(PersistedPayload::new("model input".into(), images)),
+            Err(SubmissionError::PayloadMismatch)
+        ));
+        recovery.bind_persisted_payload(persisted).unwrap();
+        recovery.begin_commit().unwrap();
+        let recovered = prepared_receipt(&submission);
+        assert_eq!(recovered.persisted_text, receipt.persisted_text);
+        assert_eq!(recovered.persisted_images, receipt.persisted_images);
+        assert_eq!(recovered.user_message_id, receipt.user_message_id);
+        assert_eq!(recovered.assistant_seq, receipt.next_seq);
+        recovery.record_committed(recovered).unwrap();
+        assert_eq!(
+            submission.snapshot().accepted.unwrap().text(),
+            "model input"
+        );
+        recovery.record_cleanup(Ok(())).unwrap();
+        recovery
+            .complete(Err(SubmissionFailure::LaunchFailed))
+            .unwrap();
+        submission.seal(recovery_attempt).unwrap();
+        assert_eq!(
+            submission.snapshot().retry,
+            RetryEligibility::CommittedNotStarted
+        );
+    }
+
+    #[test]
+    fn authoritative_commit_survives_sibling_drop_without_creating_retry_proof() {
+        let (submission, worker_a) = begin();
+        let worker_b = worker_a.register_worker().unwrap();
+        let attempt = worker_b.attempt_id();
+        worker_b.bind_accepted_payload("accepted".into()).unwrap();
+        worker_b
+            .bind_persisted_payload(PersistedPayload::new("stored".into(), Vec::new()))
+            .unwrap();
+        worker_b.begin_commit().unwrap();
+        let receipt = prepared_receipt(&submission);
+        drop(worker_a);
+        assert!(matches!(
+            submission.snapshot().attempts.last().unwrap().commit,
+            CommitFact::Unknown
+        ));
+        assert_eq!(
+            worker_b.record_committed(receipt.clone()).unwrap(),
+            FactUpdate::Applied
+        );
+        assert_eq!(
+            worker_b.record_committed(receipt.clone()).unwrap(),
+            FactUpdate::Unchanged
+        );
+        let snapshot = submission.snapshot();
+        let facts = snapshot.attempts.last().unwrap();
+        assert!(
+            matches!(&facts.commit, CommitFact::Committed(actual) if actual.as_ref() == &receipt)
+        );
+        assert!(facts.abnormal);
+        assert_eq!(facts.primary, PrimaryFact::Unknown);
+        assert_eq!(facts.cleanup, CleanupFact::Unknown);
+        assert!(matches!(
+            worker_b.mark_primary_started(),
+            Err(SubmissionError::InvalidTransition)
+        ));
+        assert!(matches!(
+            worker_b.record_cleanup(Ok(())),
+            Err(SubmissionError::InvalidTransition)
+        ));
+        worker_b
+            .complete(Err(SubmissionFailure::LaunchFailed))
+            .unwrap();
+        submission.seal(attempt).unwrap();
+        assert_eq!(
+            submission.snapshot().retry,
+            RetryEligibility::Blocked(RetryBlocker::Unknown)
+        );
+        assert!(matches!(
+            submission.try_retry(attempt),
+            Err(SubmissionError::RetryBlocked(RetryBlocker::Unknown))
+        ));
+    }
+
+    #[test]
+    fn other_worker_cannot_take_commit_authority_or_confirm_a_lost_committer() {
+        for lose_committer in [false, true] {
+            let (submission, owner) = begin();
+            let other = owner.register_worker().unwrap();
+            let attempt = owner.attempt_id();
+            owner.bind_accepted_payload("accepted".into()).unwrap();
+            let payload = PersistedPayload::new("stored".into(), Vec::new());
+            owner.bind_persisted_payload(payload.clone()).unwrap();
+            assert!(matches!(
+                other.bind_persisted_payload(payload),
+                Err(SubmissionError::CommitOwnerMismatch)
+            ));
+            assert!(matches!(
+                other.begin_commit(),
+                Err(SubmissionError::CommitOwnerMismatch)
+            ));
+            assert!(matches!(
+                other.record_not_committed(Ok(())),
+                Err(SubmissionError::CommitOwnerMismatch)
+            ));
+            owner.begin_commit().unwrap();
+            let receipt = prepared_receipt(&submission);
+            assert!(matches!(
+                other.record_committed(receipt.clone()),
+                Err(SubmissionError::CommitOwnerMismatch)
+            ));
+            if lose_committer {
+                drop(owner);
+                assert!(matches!(
+                    other.record_committed(receipt),
+                    Err(SubmissionError::CommitOwnerMismatch)
+                ));
+                other
+                    .complete(Err(SubmissionFailure::CommitFailed))
+                    .unwrap();
+                submission.seal(attempt).unwrap();
+                assert_eq!(
+                    submission.snapshot().retry,
+                    RetryEligibility::Blocked(RetryBlocker::Unknown)
+                );
+            } else {
+                owner.record_committed(receipt.clone()).unwrap();
+                assert!(matches!(
+                    other.record_committed(receipt.clone()),
+                    Err(SubmissionError::CommitOwnerMismatch)
+                ));
+                assert_eq!(
+                    owner.record_committed(receipt).unwrap(),
+                    FactUpdate::Unchanged
+                );
+                owner.record_cleanup(Ok(())).unwrap();
+                other.complete(Ok(())).unwrap();
+                owner
+                    .complete(Err(SubmissionFailure::LaunchFailed))
+                    .unwrap();
+                submission.seal(attempt).unwrap();
+                assert_eq!(
+                    submission.snapshot().retry,
+                    RetryEligibility::CommittedNotStarted
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn confirmed_precommit_rollback_requires_owner_completion_and_sealing() {
+        let (submission, owner) = begin();
+        let other = owner.register_worker().unwrap();
+        let attempt = owner.attempt_id();
+        owner.bind_accepted_payload("accepted".into()).unwrap();
+        owner
+            .bind_persisted_payload(PersistedPayload::new("stored".into(), Vec::new()))
+            .unwrap();
+        assert!(matches!(
+            other.record_not_committed(Ok(())),
+            Err(SubmissionError::CommitOwnerMismatch)
+        ));
+        assert_eq!(
+            owner.record_not_committed(Ok(())).unwrap(),
+            FactUpdate::Applied
+        );
+        assert_eq!(
+            owner.record_not_committed(Ok(())).unwrap(),
+            FactUpdate::Unchanged
+        );
+        assert!(matches!(
+            owner.record_not_committed(Err(RollbackFailure::Unknown)),
+            Err(SubmissionError::InvalidTransition)
+        ));
+        assert!(matches!(
+            owner.begin_commit(),
+            Err(SubmissionError::InvalidTransition)
+        ));
+        assert!(matches!(
+            owner.record_committed(prepared_receipt(&submission)),
+            Err(SubmissionError::InvalidTransition)
+        ));
+        owner
+            .complete(Err(SubmissionFailure::PreparationFailed))
+            .unwrap();
+        assert!(matches!(
+            submission.seal(attempt),
+            Err(SubmissionError::WorkersActive)
+        ));
+        other.complete(Ok(())).unwrap();
+        assert_eq!(
+            submission.snapshot().retry,
+            RetryEligibility::Blocked(RetryBlocker::Unsealed)
+        );
+        submission.seal(attempt).unwrap();
+        let snapshot = submission.snapshot();
+        assert!(matches!(
+            snapshot.attempts.last().unwrap().commit,
+            CommitFact::NotCommitted
+        ));
+        assert_eq!(snapshot.retry, RetryEligibility::Uncommitted);
+        let retry = submission.try_retry(attempt).unwrap();
+        assert_eq!(submission.snapshot().accepted.unwrap().text(), "accepted");
+        retry.complete(Err(SubmissionFailure::Cancelled)).unwrap();
+    }
+
+    #[test]
+    fn confirmed_rollback_does_not_erase_abnormal_primary_uncertainty() {
+        let (submission, owner) = begin();
+        let sibling = owner.register_worker().unwrap();
+        let attempt = owner.attempt_id();
+        owner.bind_accepted_payload("accepted".into()).unwrap();
+        owner
+            .bind_persisted_payload(PersistedPayload::new("stored".into(), Vec::new()))
+            .unwrap();
+        drop(sibling);
+        owner.record_not_committed(Ok(())).unwrap();
+        let sibling = owner.register_worker().unwrap();
+        drop(sibling);
+        owner
+            .complete(Err(SubmissionFailure::PreparationFailed))
+            .unwrap();
+        submission.seal(attempt).unwrap();
+        let snapshot = submission.snapshot();
+        let facts = snapshot.attempts.last().unwrap();
+        assert!(matches!(facts.commit, CommitFact::NotCommitted));
+        assert!(facts.abnormal);
+        assert_eq!(facts.primary, PrimaryFact::Unknown);
+        assert_eq!(
+            snapshot.retry,
+            RetryEligibility::Blocked(RetryBlocker::Unknown)
+        );
+        assert!(matches!(
+            submission.try_retry(attempt),
+            Err(SubmissionError::RetryBlocked(RetryBlocker::Unknown))
+        ));
+    }
+
+    #[test]
+    fn rollback_errors_missing_outcome_and_commit_in_flight_never_prove_uncommitted() {
+        for outcome in [
+            None,
+            Some(Err(RollbackFailure::Failed)),
+            Some(Err(RollbackFailure::Unknown)),
+            Some(Ok(())),
+        ] {
+            let (submission, owner) = begin();
+            let attempt = owner.attempt_id();
+            owner.bind_accepted_payload("accepted".into()).unwrap();
+            owner
+                .bind_persisted_payload(PersistedPayload::new("stored".into(), Vec::new()))
+                .unwrap();
+            if outcome == Some(Ok(())) {
+                owner.begin_commit().unwrap();
+                assert!(matches!(
+                    owner.record_not_committed(Ok(())),
+                    Err(SubmissionError::InvalidTransition)
+                ));
+            } else if let Some(result) = outcome {
+                owner.record_not_committed(result).unwrap();
+                assert!(matches!(
+                    owner.record_not_committed(Ok(())),
+                    Err(SubmissionError::InvalidTransition)
+                ));
+            }
+            owner
+                .complete(Err(SubmissionFailure::CommitFailed))
+                .unwrap();
+            submission.seal(attempt).unwrap();
+            let snapshot = submission.snapshot();
+            assert!(matches!(
+                snapshot.attempts.last().unwrap().commit,
+                CommitFact::Unknown
+            ));
+            assert_eq!(
+                snapshot.retry,
+                RetryEligibility::Blocked(RetryBlocker::Unknown)
+            );
+            assert!(matches!(
+                submission.try_retry(attempt),
+                Err(SubmissionError::RetryBlocked(RetryBlocker::Unknown))
+            ));
+        }
     }
 
     #[test]
@@ -1099,6 +1770,9 @@ mod tests {
             worker.begin_preparing().unwrap();
             if in_flight {
                 worker.bind_accepted_payload("accepted".into()).unwrap();
+                worker
+                    .bind_persisted_payload(PersistedPayload::new("accepted".into(), Vec::new()))
+                    .unwrap();
                 worker.begin_commit().unwrap();
                 worker
                     .complete(Err(SubmissionFailure::CommitFailed))
@@ -1245,6 +1919,9 @@ mod tests {
         let (submission, worker) = begin();
         let attempt = worker.attempt_id();
         worker.bind_accepted_payload("accepted".into()).unwrap();
+        worker
+            .bind_persisted_payload(PersistedPayload::new("accepted".into(), Vec::new()))
+            .unwrap();
         worker.begin_commit().unwrap();
         let mut receipt = CommittedReceipt {
             user_message_id: submission.user_message_id().to_owned(),
@@ -1282,16 +1959,17 @@ mod tests {
         );
     }
 
+    fn image(value: u8) -> ImageAttachment {
+        let pixels = image::RgbaImage::from_pixel(1, 1, image::Rgba([value, 0, 0, 255]));
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(pixels)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        ImageAttachment::from_bytes(encoded.into_inner()).unwrap()
+    }
+
     #[test]
     fn accepted_images_survive_view_drop_and_wrong_bytes_cannot_confirm() {
-        fn image(value: u8) -> ImageAttachment {
-            let pixels = image::RgbaImage::from_pixel(1, 1, image::Rgba([value, 0, 0, 255]));
-            let mut encoded = std::io::Cursor::new(Vec::new());
-            image::DynamicImage::ImageRgba8(pixels)
-                .write_to(&mut encoded, image::ImageFormat::Png)
-                .unwrap();
-            ImageAttachment::from_bytes(encoded.into_inner()).unwrap()
-        }
         let original = image(10);
         let wrong = image(20);
         let bytes = original.bytes().to_vec();
@@ -1303,12 +1981,25 @@ mod tests {
         let (submission, worker) = OrdinarySubmission::begin(
             database,
             "thread".into(),
-            RawSubmission::new(String::new(), vec![original], 8, model(), None),
+            RawSubmission::new(
+                String::new(),
+                vec![original],
+                8,
+                "model".into(),
+                Some(Box::new(model())),
+                None,
+            ),
             admission,
         )
         .unwrap();
         let attempt = worker.attempt_id();
         worker.bind_accepted_payload(String::new()).unwrap();
+        worker
+            .bind_persisted_payload(PersistedPayload::new(
+                String::new(),
+                submission.raw().images().to_vec(),
+            ))
+            .unwrap();
         worker.begin_commit().unwrap();
         let mut receipt = CommittedReceipt {
             user_message_id: submission.user_message_id().to_owned(),

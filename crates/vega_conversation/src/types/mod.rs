@@ -2,9 +2,9 @@ pub use crate::automatic_titles::AutomaticTitleRequest;
 pub use crate::composer_predictions::{ComposerPredictionFence, ComposerPredictionRequest};
 pub use crate::ordinary_submissions::{
     AcceptedPayload, AttemptId, AttemptKind, AttemptSnapshot, CleanupFact, CleanupFailure,
-    CommitFact, CommittedReceipt, FactUpdate, OrdinarySubmission, OrdinaryWorker, PrimaryFact,
-    RawSubmission, RetryBlocker, RetryEligibility, SubmissionError, SubmissionFailure,
-    SubmissionId, SubmissionSnapshot,
+    CommitFact, CommittedReceipt, FactUpdate, OrdinarySubmission, OrdinaryWorker, PersistedPayload,
+    PrimaryFact, RawSubmission, RetryBlocker, RetryEligibility, RollbackFailure, SubmissionError,
+    SubmissionFailure, SubmissionId, SubmissionSnapshot,
 };
 use std::sync::Arc;
 pub use vega_runtime::ImageAttachment;

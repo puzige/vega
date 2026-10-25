@@ -29,7 +29,7 @@ impl DatabaseIdentity {
                     inode: metadata.ino(),
                 }
             }
-            None => Identity::Memory(Ulid::new()),
+            None => Identity::Memory(Ulid::generate()),
         };
         Ok(Self(identity))
     }
@@ -105,7 +105,7 @@ fn try_acquire_in(
     }
     let admission = Arc::new(Admission {
         key: key.clone(),
-        token: Ulid::new(),
+        token: Ulid::generate(),
     });
     admissions.insert(key, Arc::downgrade(&admission));
     Ok(Some(ThreadAdmission(admission)))
@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn file_aliases_share_admission_and_cached_identity_needs_no_path() {
-        let directory = std::env::temp_dir().join(format!("vega-admission-{}", Ulid::new()));
+        let directory = std::env::temp_dir().join(format!("vega-admission-{}", Ulid::generate()));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("database.sqlite");
         let alias = directory.join("alias.sqlite");
