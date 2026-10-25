@@ -349,14 +349,13 @@ impl ConversationStream {
                     &[
                         (
                             "kind",
-                            &(if kind == AutomationKind::Goal {
+                            if kind == AutomationKind::Goal {
                                 vega_i18n::t("ui.goal")
                             } else {
                                 vega_i18n::t("ui.loop")
-                            })
-                            .to_string(),
+                            },
                         ),
-                        ("status", &(task.status.label()).to_string()),
+                        ("status", task.status.label()),
                     ],
                 )
             };

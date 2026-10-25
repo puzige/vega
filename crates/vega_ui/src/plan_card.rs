@@ -205,7 +205,7 @@ impl PlanCard {
                 .text_size(px(Typography::HEADING_CARD))
                 .child(vega_i18n::t_args(
                     "ui.plan_status",
-                    &[("status", &(status_label(plan.status)).to_string())],
+                    &[("status", status_label(plan.status))],
                 ))
                 .into_any_element();
         }

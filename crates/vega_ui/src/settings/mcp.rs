@@ -1454,11 +1454,11 @@ impl SettingsView {
                     ("version", &revision.to_string()),
                     (
                         "credentials",
-                        &(if row.credential_configured {
+                        if row.credential_configured {
                             t("settings.state.configured")
                         } else {
                             t("settings.state.not_configured")
-                        }),
+                        },
                     ),
                 ],
             )))

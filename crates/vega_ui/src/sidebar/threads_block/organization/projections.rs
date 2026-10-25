@@ -263,12 +263,11 @@ impl ThreadsBlock {
                                 ("name", &project.name),
                                 (
                                     "state",
-                                    &(if collapsed {
+                                    if collapsed {
                                         vega_i18n::t("ui.collapsed")
                                     } else {
                                         vega_i18n::t("ui.expanded")
-                                    })
-                                    .to_string(),
+                                    },
                                 ),
                             ],
                         ))

@@ -1664,12 +1664,11 @@ impl RunActivityGroup {
                                 ("title", &title),
                                 (
                                     "action",
-                                    &(vega_i18n::t(if expanded {
+                                    vega_i18n::t(if expanded {
                                         "ui.collapse"
                                     } else {
                                         "ui.expand"
-                                    }))
-                                    .to_string(),
+                                    }),
                                 ),
                             ],
                         )

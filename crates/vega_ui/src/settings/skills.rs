@@ -728,12 +728,11 @@ fn skill_toggle_row(
                 ("label", label),
                 (
                     "state",
-                    &(if value {
+                    if value {
                         t("settings.state.on")
                     } else {
                         t("settings.state.off")
-                    })
-                    .to_string(),
+                    },
                 ),
             ],
         ),

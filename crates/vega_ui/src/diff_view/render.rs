@@ -728,13 +728,13 @@ pub(crate) fn file_summary(file: &WorkspaceFile) -> String {
     if file.staged != WorkspaceChangeKind::Unchanged {
         statuses.push(vega_i18n::t_args(
             "ui.diff_staged_status",
-            &[("status", &change_label(file.staged))],
+            &[("status", change_label(file.staged))],
         ));
     }
     if file.unstaged != WorkspaceChangeKind::Unchanged {
         statuses.push(vega_i18n::t_args(
             "ui.diff_worktree_status",
-            &[("status", &change_label(file.unstaged))],
+            &[("status", change_label(file.unstaged))],
         ));
     }
     if statuses.is_empty() {

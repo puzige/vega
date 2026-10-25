@@ -454,7 +454,7 @@ impl Render for CommitPanel {
                         .text_color(colors.danger)
                         .child(vega_i18n::t_args(
                             "ui.commit_unavailable_code",
-                            &[("code", &code.to_string())],
+                            &[("code", code)],
                         )),
                 )
             })

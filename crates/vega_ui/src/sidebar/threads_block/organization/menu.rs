@@ -40,7 +40,7 @@ impl ThreadsBlock {
                         vega_i18n::t_args(
                             "ui.selected_change_color_label",
                             &[
-                                ("selected", &if selected { "✓" } else { "  " }.to_string()),
+                                ("selected", if selected { "✓" } else { "  " }),
                                 ("label", label),
                             ],
                         ),

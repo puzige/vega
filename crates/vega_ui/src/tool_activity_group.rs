@@ -230,8 +230,7 @@ impl ToolActivityGroup {
                         ("summary", &summary),
                         (
                             "action",
-                            &(vega_i18n::t(if expanded { "ui.collapse" } else { "ui.expand" }))
-                                .to_string(),
+                            vega_i18n::t(if expanded { "ui.collapse" } else { "ui.expand" }),
                         ),
                     ],
                 ))

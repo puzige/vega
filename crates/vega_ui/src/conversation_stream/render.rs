@@ -1452,10 +1452,9 @@ impl Render for ConversationStream {
                 model,
                 ..
             }) = self.entries.get_mut(*index)
+            && copy.sync_model(stream, model, &self.counters)
         {
-            if copy.sync_model(stream, model, &self.counters) {
-                self.invalidate_item(Some(*index));
-            }
+            self.invalidate_item(Some(*index));
         }
         self.settle_final_presentation(window, cx);
         self.refresh_run_notices(cx);
