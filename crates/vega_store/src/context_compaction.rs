@@ -1401,7 +1401,7 @@ pub(crate) fn source_version_without_continuation(
 
 fn load_messages(conn: &Connection, thread_id: &str) -> rusqlite::Result<Vec<MessageRow>> {
     let (count, content_bytes): (i64, i64) = conn.query_row(
-        "SELECT COUNT(*), COALESCE(SUM(length(CAST(COALESCE((SELECT p.model_content FROM pending_messages p WHERE p.thread_id = messages.thread_id AND p.id = messages.id AND messages.role = 'user' AND p.state = 'delivered'), content) AS BLOB))), 0) \
+        "SELECT COUNT(*), COALESCE(SUM(length(CAST(COALESCE((SELECT h.model_content FROM historical_message_delivery h WHERE h.thread_id=messages.thread_id AND h.message_id=messages.id AND messages.role='user'), (SELECT p.model_content FROM pending_messages p WHERE p.thread_id = messages.thread_id AND p.id = messages.id AND messages.role = 'user' AND p.state = 'delivered'), content) AS BLOB))), 0) \
          FROM messages WHERE thread_id = ?1",
         [thread_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
@@ -1410,7 +1410,7 @@ fn load_messages(conn: &Connection, thread_id: &str) -> rusqlite::Result<Vec<Mes
         return Err(source_too_large());
     }
     let mut statement = conn.prepare(
-        "SELECT id, thread_id, seq, role, kind, COALESCE((SELECT p.model_content FROM pending_messages p WHERE p.thread_id = messages.thread_id AND p.id = messages.id AND messages.role = 'user' AND p.state = 'delivered'), content), status, created_at, \
+        "SELECT id, thread_id, seq, role, kind, COALESCE((SELECT h.model_content FROM historical_message_delivery h WHERE h.thread_id=messages.thread_id AND h.message_id=messages.id AND messages.role='user'), (SELECT p.model_content FROM pending_messages p WHERE p.thread_id = messages.thread_id AND p.id = messages.id AND messages.role = 'user' AND p.state = 'delivered'), content), status, created_at, \
                 plan_status, plan_review_note, plan_reviewed_at \
          FROM messages WHERE thread_id = ?1 ORDER BY seq, id",
     )?;
@@ -1527,6 +1527,18 @@ fn fingerprint_source(
     // so same-seq content/status/tool/image mutations cannot be mistaken for
     // an unchanged source.
     let mut hash = Sha256::new();
+    let historical_bytes: i64 = conn.query_row("SELECT COALESCE((SELECT SUM(length(CAST(COALESCE(model_content,'') AS BLOB))) FROM historical_message_delivery WHERE thread_id=?1),0)+COALESCE((SELECT SUM(length(CAST(input_json AS BLOB))+length(CAST(COALESCE(output_text,'') AS BLOB))+length(CAST(references_json AS BLOB))) FROM historical_tool_receipts WHERE thread_id=?1),0)", [thread_id], |row| row.get(0))?;
+    if historical_bytes > MAX_SOURCE_TEXT_BYTES {
+        return Err(source_too_large());
+    }
+    let mut historical = conn.prepare("SELECT message_id,json_array(model_content,previous_assistant_id) FROM historical_message_delivery WHERE thread_id=?1 UNION ALL SELECT call_id,json_array(kind,source_thread_id,source_message_id,source_call_id,input_json,output_text,references_json) FROM historical_tool_receipts WHERE thread_id=?1 ORDER BY 1,2")?;
+    let mut rows = historical.query([thread_id])?;
+    while let Some(row) = rows.next()? {
+        let id: String = row.get(0)?;
+        let value: String = row.get(1)?;
+        feed(&mut hash, b"historical-id", id.as_bytes());
+        feed(&mut hash, b"historical-value", value.as_bytes());
+    }
     for message in messages {
         feed(&mut hash, b"message", message.id.as_bytes());
         feed(&mut hash, b"thread", message.thread_id.as_bytes());
