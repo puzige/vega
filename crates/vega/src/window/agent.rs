@@ -1173,6 +1173,7 @@ impl VegaWindow {
                             pending_approved_instruction,
                             terminal_failure,
                             terminal_message_id,
+                            root_message_id,
                             mcp_unavailable,
                             ..
                         } = *finished_run;
@@ -1257,12 +1258,14 @@ impl VegaWindow {
                                 }
                             });
                         }
-                        if !mcp_unavailable.is_empty() {
+                        if !mcp_unavailable.is_empty()
+                            && let Some(message_id) = root_message_id.as_deref()
+                        {
                             let warning_stream = this
                                 .current_cached_stream_for_thread(&thread_id, cx)
                                 .unwrap_or_else(|| stream.clone());
                             warning_stream.update(cx, |stream, cx| {
-                                stream.apply_mcp_unavailable(&mcp_unavailable, cx)
+                                stream.apply_mcp_unavailable(message_id, &mcp_unavailable, cx)
                             });
                         }
                         let queue_ready =

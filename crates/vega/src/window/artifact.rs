@@ -303,9 +303,6 @@ impl VegaWindow {
             && let Some(active) = self.agent_controller.active.get_mut(thread_id)
         {
             active.mcp_unavailable.extend(batch.mcp_unavailable);
-            stream.update(cx, |stream, cx| {
-                stream.apply_mcp_unavailable(&active.mcp_unavailable, cx)
-            });
         }
         let mut refresh_sidebar = false;
         for event in batch.events {
@@ -400,7 +397,10 @@ impl VegaWindow {
         if let Some(active) = self.agent_controller.active.get(thread_id) {
             let control = active.computer_use.clone();
             stream.update(cx, |stream, cx| {
-                stream.set_computer_use_control(control, cx)
+                stream.set_computer_use_control(control, cx);
+                if let Some(message_id) = active.root_message_id.as_deref() {
+                    stream.apply_mcp_unavailable(message_id, &active.mcp_unavailable, cx);
+                }
             });
         }
         let Some(success) = batch.finished else {

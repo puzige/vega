@@ -9,6 +9,7 @@ pub(crate) enum RunNoticeKind {
         attempt: u32,
         max_retries: u32,
     },
+    McpUnavailable(usize),
     Failure(RunFailureKind),
     FailureWithCompaction(
         RunFailureKind,
@@ -36,6 +37,10 @@ impl RunNotice {
                     ("attempt", &attempt.to_string()),
                     ("max_retries", &max_retries.to_string()),
                 ],
+            ),
+            RunNoticeKind::McpUnavailable(count) => vega_i18n::t_args(
+                "ui.count_enabled_mcp_servers_are_unavailable_their_tools",
+                &[("count", &count.to_string())],
             ),
             RunNoticeKind::Failure(failure) => failure.message(),
             RunNoticeKind::FailureWithCompaction(failure, compaction) => format!(
@@ -101,7 +106,8 @@ impl RunNotice {
         let credential_failure = self.can_resume_credentials() && !reading_preview;
         let color = match self.kind {
             RunNoticeKind::Retrying { .. } => colors.text_secondary,
-            RunNoticeKind::Failure(_)
+            RunNoticeKind::McpUnavailable(_)
+            | RunNoticeKind::Failure(_)
             | RunNoticeKind::FailureWithCompaction(_, _)
             | RunNoticeKind::ContextFailure
             | RunNoticeKind::CompactionFailure(_) => colors.danger,
@@ -295,7 +301,10 @@ impl ConversationStream {
             })
     }
 
-    pub(crate) fn run_notice_projection(&self, cx: &App) -> HashMap<usize, RunNotice> {
+    pub(crate) fn run_notice_projection(
+        &self,
+        cx: &App,
+    ) -> (HashMap<usize, RunNotice>, HashMap<usize, RunNotice>) {
         let mut ends = vec![self.entries.len(); self.entries.len()];
         let mut end = self.entries.len();
         for (index, entry) in self.entries.iter().enumerate().rev() {
@@ -377,7 +386,20 @@ impl ConversationStream {
                 source.failure = Some(merge_run_failure(source.failure, *failure));
             }
         }
-        sources
+        let mcp_notices = sources
+            .iter()
+            .filter_map(|(message_id, source)| {
+                let count = self.run_mcp_unavailable.get(message_id)?;
+                Some((
+                    source.tail?,
+                    RunNotice {
+                        message_id: message_id.clone(),
+                        kind: RunNoticeKind::McpUnavailable(*count),
+                    },
+                ))
+            })
+            .collect();
+        let notices = sources
             .into_iter()
             .filter_map(|(message_id, source)| {
                 let failure = source.failure.filter(|failure| match *failure {
@@ -436,7 +458,8 @@ impl ConversationStream {
                 }?;
                 Some((source.tail?, RunNotice { message_id, kind }))
             })
-            .collect()
+            .collect();
+        (notices, mcp_notices)
     }
 
     fn clear_resolved_compaction_controller_error(&mut self) {
@@ -457,15 +480,23 @@ impl ConversationStream {
 
     pub(crate) fn refresh_run_notices(&mut self, cx: &App) {
         self.clear_resolved_compaction_controller_error();
-        let notices = self.run_notice_projection(cx);
+        let (notices, mcp_notices) = self.run_notice_projection(cx);
         let changed = self
             .run_notices
             .keys()
             .chain(notices.keys())
             .copied()
             .filter(|index| self.run_notices.get(index) != notices.get(index))
+            .chain(
+                self.mcp_notices
+                    .keys()
+                    .chain(mcp_notices.keys())
+                    .copied()
+                    .filter(|index| self.mcp_notices.get(index) != mcp_notices.get(index)),
+            )
             .collect::<HashSet<_>>();
         self.run_notices = notices;
+        self.mcp_notices = mcp_notices;
         for index in changed {
             self.invalidate_item(Some(index));
         }

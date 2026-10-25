@@ -229,18 +229,6 @@ impl ConversationStream {
                             ))
                     }),
             )
-            .children(self.mcp_warning.clone().map(|warning| {
-                div()
-                    .w_full()
-                    .max_w(px(Layout::COMPOSER_MAX_WIDTH))
-                    .mx_auto()
-                    .mt_1()
-                    .mb_2()
-                    .child(render_rows::plain_error_notice(
-                        warning.render(),
-                        colors.danger,
-                    ))
-            }))
             .when(self.thread.backend == TaskBackend::Native, |column| {
                 column.child(self.render_pending_status(cx))
             })
@@ -1629,6 +1617,20 @@ impl Render for ConversationStream {
                                                     this.run_notices.get(&index)
                                                 {
                 let colors = theme(cx).colors;
+                                                    div()
+                                                        .w_full()
+                                                        .min_w_0()
+                                                        .flex_shrink_0()
+                                                        .flex()
+                                                        .flex_col()
+                                                        .child(item)
+                                                        .child(notice.render(&colors, this.thread.id.clone(), this.reading_preview, cx))
+                                                        .into_any_element()
+                                                } else {
+                                                    item
+                                                };
+                                                let item = if let Some(notice) = this.mcp_notices.get(&index) {
+                                                    let colors = theme(cx).colors;
                                                     div()
                                                         .w_full()
                                                         .min_w_0()
