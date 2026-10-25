@@ -42,6 +42,7 @@ pub(crate) struct PendingQueueUi {
     pub(super) recovered_edit: Option<PendingMessage>,
     pub(super) resume_focus: FocusHandle,
     pub(super) recover_focus: FocusHandle,
+    wait: Option<(u64, tokio_util::sync::CancellationToken)>,
     menu_focus: [FocusHandle; 2],
     scroll: ScrollHandle,
     restore_focus: bool,
@@ -55,6 +56,7 @@ impl PendingQueueUi {
             recovered_edit: None,
             resume_focus: cx.focus_handle().tab_stop(true),
             recover_focus: cx.focus_handle().tab_stop(true),
+            wait: None,
             menu_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             scroll: ScrollHandle::new(),
             restore_focus: false,
@@ -105,6 +107,41 @@ fn echo_entry_identity(thread_id: &str, pending_id: &str, kind: &str) -> StreamE
 impl EventEmitter<PendingQueueRequested> for ConversationStream {}
 
 impl ConversationStream {
+    pub fn set_pending_queue_wait(
+        &mut self,
+        generation: u64,
+        cancel: tokio_util::sync::CancellationToken,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_ui.wait = Some((generation, cancel));
+        if !self.actions.running && !self.composer_submit_pending {
+            self.actions.stopping = false;
+        }
+        cx.notify();
+    }
+
+    pub fn clear_pending_queue_wait(&mut self, generation: u64, cx: &mut Context<Self>) {
+        if self
+            .pending_ui
+            .wait
+            .as_ref()
+            .is_some_and(|(current, _)| *current == generation)
+        {
+            self.pending_ui.wait = None;
+            if !self.actions.running && !self.composer_submit_pending {
+                self.actions.stopping = false;
+            }
+            cx.notify();
+        }
+    }
+
+    pub(super) fn has_cancellable_queue_wait(&self) -> bool {
+        self.pending_ui
+            .wait
+            .as_ref()
+            .is_some_and(|(_, cancel)| !cancel.is_cancelled())
+    }
+
     pub fn apply_pending_queue(
         &mut self,
         projection: PendingQueueProjection,

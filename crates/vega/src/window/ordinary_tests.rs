@@ -74,6 +74,13 @@ fn fixture(cx: &mut TestAppContext) -> Fixture {
                 },
             )
             .detach();
+            cx.subscribe(
+                &stream,
+                |controller, stream, request: &PendingQueueRequested, cx| {
+                    controller.pending_queue_requested(stream, request, cx);
+                },
+            )
+            .detach();
         });
         window.render_frame(cx);
     })
@@ -611,6 +618,216 @@ fn stopping_title_drain_wait_cancels_wake_and_retains_queued_message(cx: &mut Te
             fixture.stream.read(cx).pending_queue().messages[0].id,
             message.id
         );
+    });
+}
+
+#[gpui_kit::test]
+fn title_drain_wait_exposes_real_composer_stop_and_cancels_without_launching(
+    cx: &mut TestAppContext,
+) {
+    let fixture = fixture(cx);
+    let message = queued(&fixture, cx);
+    let requests = Rc::new(RefCell::new(0));
+    let captured = requests.clone();
+    cx.update(|cx| {
+        cx.subscribe(&fixture.stream, move |_, _: &ComposerStopRequested, _| {
+            *captured.borrow_mut() += 1;
+        })
+        .detach();
+    });
+    let owner = try_acquire(fixture.database, &fixture.thread.id)
+        .unwrap()
+        .unwrap();
+    let drain = owner.drain();
+    let title = owner.into_title_drain();
+    let cancel = fixture.controller.update(cx, |controller, cx| {
+        controller
+            .agent_controller
+            .run_drains
+            .insert(fixture.thread.id.clone(), drain.clone());
+        controller.continue_pending_queue(&fixture.thread.id, &fixture.stream, cx);
+        assert!(
+            !controller
+                .agent_controller
+                .active
+                .contains_key(&fixture.thread.id)
+        );
+        assert!(!fixture.stream.read(cx).pending_queue().paused);
+        controller.agent_controller.queue_drain_waits[&fixture.thread.id]
+            .cancel
+            .clone()
+    });
+    cx.run_until_parked();
+    frame(&fixture, cx);
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        let stop = window.find("composer-stop");
+        assert!(stop.visible());
+        assert_eq!(stop.label(), Some("停止"));
+        assert!(stop.bounds().size.width > px(0.) && stop.bounds().size.height > px(0.));
+        assert!(window.try_find("composer-running-send").is_none());
+        assert!(window.try_find("pending-resume").is_none());
+        window.click("composer-stop", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    frame(&fixture, cx);
+    assert_eq!(*requests.borrow(), 1);
+    assert!(cancel.is_cancelled());
+    assert!(!drain.is_released());
+    assert!(
+        try_acquire(fixture.database, &fixture.thread.id)
+            .unwrap()
+            .is_none()
+    );
+    fixture
+        .stream
+        .update(cx, |stream, cx| stream.request_composer_stop(cx));
+    assert_eq!(*requests.borrow(), 1);
+    fixture.controller.update(cx, |controller, cx| {
+        assert!(controller.agent_controller.queue_drain_waits.is_empty());
+        assert!(controller.agent_test_launches.as_ref().unwrap().is_empty());
+        assert!(fixture.stream.read(cx).pending_queue().paused);
+        assert!(fixture.stream.read(cx).pending_queue().messages[0] == message);
+    });
+    cx.update_window(fixture.window.into(), |_, window, _| {
+        assert!(window.try_find("composer-stop").is_none());
+        assert!(window.find("pending-resume").visible());
+    })
+    .unwrap();
+    drop(title);
+    cx.executor().advance_clock(Duration::from_secs(31));
+    cx.run_until_parked();
+    fixture.controller.update(cx, |controller, cx| {
+        assert!(controller.agent_test_launches.as_ref().unwrap().is_empty());
+        assert!(fixture.stream.read(cx).pending_queue().messages[0] == message);
+    });
+}
+
+#[gpui_kit::test]
+fn title_drain_timeout_exposes_real_resume_and_dispatches_once_after_release(
+    cx: &mut TestAppContext,
+) {
+    let fixture = fixture(cx);
+    let message = queued(&fixture, cx);
+    cx.update(|cx| {
+        let store = cx.global::<VegaStore>().0.as_ref().unwrap();
+        let messages = vega_conversation::pending_messages::enqueue(store, &message).unwrap();
+        assert!(messages == vec![message.clone()]);
+    });
+    let requests = Rc::new(RefCell::new(Vec::<PendingQueueAction>::new()));
+    let captured = requests.clone();
+    cx.update(|cx| {
+        cx.subscribe(
+            &fixture.stream,
+            move |_, event: &PendingQueueRequested, _| {
+                captured.borrow_mut().push(event.action.clone());
+            },
+        )
+        .detach();
+    });
+    let owner = try_acquire(fixture.database, &fixture.thread.id)
+        .unwrap()
+        .unwrap();
+    let drain = owner.drain();
+    let title = owner.into_title_drain();
+    let cancel = fixture.controller.update(cx, |controller, cx| {
+        controller
+            .agent_controller
+            .run_drains
+            .insert(fixture.thread.id.clone(), drain.clone());
+        controller.continue_pending_queue(&fixture.thread.id, &fixture.stream, cx);
+        controller.continue_pending_queue(&fixture.thread.id, &fixture.stream, cx);
+        assert_eq!(controller.agent_controller.queue_drain_waits.len(), 1);
+        assert!(!fixture.stream.read(cx).pending_queue().paused);
+        assert!(fixture.stream.read(cx).pending_queue().error.is_none());
+        controller.agent_controller.queue_drain_waits[&fixture.thread.id]
+            .cancel
+            .clone()
+    });
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_secs(31));
+    cx.run_until_parked();
+    frame(&fixture, cx);
+    assert!(!drain.is_released());
+    assert!(cancel.is_cancelled());
+    assert!(
+        try_acquire(fixture.database, &fixture.thread.id)
+            .unwrap()
+            .is_none()
+    );
+    fixture.controller.update(cx, |controller, cx| {
+        assert!(controller.agent_controller.queue_drain_waits.is_empty());
+        assert!(controller.agent_test_launches.as_ref().unwrap().is_empty());
+        assert!(fixture.stream.read(cx).pending_queue().paused);
+        assert!(!fixture.stream.read(cx).pending_queue().busy);
+        assert!(fixture.stream.read(cx).pending_queue().error.is_some());
+        assert!(fixture.stream.read(cx).pending_queue().messages[0] == message);
+        controller.continue_pending_queue(&fixture.thread.id, &fixture.stream, cx);
+        assert!(controller.agent_controller.queue_drain_waits.is_empty());
+    });
+    cx.update_window(fixture.window.into(), |_, window, _| {
+        let resume = window.find("pending-resume");
+        assert!(resume.visible());
+        assert_eq!(resume.label(), Some("继续队列"));
+        assert!(resume.bounds().size.width > px(0.) && resume.bounds().size.height > px(0.));
+        assert!(window.try_find("composer-stop").is_none());
+    })
+    .unwrap();
+    cx.executor().advance_clock(Duration::from_secs(31));
+    cx.run_until_parked();
+    fixture.controller.update(cx, |controller, _| {
+        assert!(controller.agent_controller.queue_drain_waits.is_empty());
+        assert!(controller.agent_test_launches.as_ref().unwrap().is_empty());
+    });
+    drop(title);
+    cx.executor().advance_clock(Duration::from_millis(10));
+    cx.run_until_parked();
+    fixture.controller.update(cx, |controller, _| {
+        assert!(controller.agent_test_launches.as_ref().unwrap().is_empty());
+    });
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.click("pending-resume", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    frame(&fixture, cx);
+    assert_eq!(*requests.borrow(), vec![PendingQueueAction::Resume]);
+    fixture.controller.update(cx, |controller, cx| {
+        assert!(controller.agent_controller.queue_drain_waits.is_empty());
+        assert!(!fixture.stream.read(cx).pending_queue().paused);
+        assert!(!fixture.stream.read(cx).pending_queue().busy);
+        assert!(fixture.stream.read(cx).pending_queue().error.is_none());
+        let launches = controller.agent_test_launches.as_ref().unwrap();
+        assert_eq!(launches.len(), 1);
+        assert!(
+            launches[0]
+                .admission
+                .verifies(fixture.database, &fixture.thread.id)
+        );
+        assert_eq!(
+            launches[0]
+                .queue_context
+                .as_ref()
+                .unwrap()
+                .message_id
+                .as_deref(),
+            Some(message.id.as_str())
+        );
+        assert!(!launches[0].cancel.is_cancelled());
+        match &launches[0].run {
+            PendingAgentRun::UserMessage(submission) => {
+                assert_eq!(submission.content, message.content);
+                assert!(submission.ordinary.is_none());
+            }
+            _ => panic!("queued user run expected"),
+        }
+    });
+    cx.executor().advance_clock(Duration::from_secs(31));
+    cx.run_until_parked();
+    fixture.controller.update(cx, |controller, cx| {
+        controller.continue_pending_queue(&fixture.thread.id, &fixture.stream, cx);
+        assert_eq!(controller.agent_test_launches.as_ref().unwrap().len(), 1);
+        assert!(controller.agent_controller.queue_drain_waits.is_empty());
     });
 }
 

@@ -331,12 +331,16 @@ impl ConversationStream {
                                 row.child(self.render_running_send(can_send, cx))
                             })
                             .when(
-                                (self.actions.running || self.composer_submit_pending)
+                                (self.actions.running
+                                    || self.composer_submit_pending
+                                    || self.has_cancellable_queue_wait())
                                     && !self.shows_running_send(cx),
                                 |row| row.child(self.render_composer_stop(cx)),
                             )
                             .when(
-                                !self.actions.running && !self.composer_submit_pending,
+                                !self.actions.running
+                                    && !self.composer_submit_pending
+                                    && !self.has_cancellable_queue_wait(),
                                 |row| {
                                     row.child(
                                         div()

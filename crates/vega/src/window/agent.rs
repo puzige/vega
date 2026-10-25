@@ -625,12 +625,7 @@ impl VegaWindow {
         self.agent_controller
             .request_active_cancel(&request.thread_id);
         self.pause_automation_all(&request.thread_id, "已由你停止", cx);
-        if self
-            .agent_controller
-            .queue_drain_waits
-            .remove(&request.thread_id)
-            .is_some()
-        {
+        if self.clear_pending_title_wait(&request.thread_id, cx) {
             let mut projection = stream.read(cx).pending_queue().clone();
             projection.paused = true;
             self.project_pending_queue(&request.thread_id, &stream, projection, cx);

@@ -1,6 +1,16 @@
 use super::*;
 
 impl VegaWindow {
+    pub(super) fn clear_pending_title_wait(&mut self, thread_id: &str, cx: &mut App) -> bool {
+        let Some(wait) = self.agent_controller.queue_drain_waits.remove(thread_id) else {
+            return false;
+        };
+        wait.stream.update(cx, |stream, cx| {
+            stream.clear_pending_queue_wait(wait.generation, cx)
+        });
+        true
+    }
+
     fn queue_database(&self, cx: &App) -> Option<PathBuf> {
         cx.global::<VegaStore>()
             .0
@@ -34,7 +44,7 @@ impl VegaWindow {
                     })
             })
         {
-            self.agent_controller.queue_drain_waits.remove(thread_id);
+            self.clear_pending_title_wait(thread_id, cx);
         }
         projection.committed_generation = self
             .agent_controller
@@ -541,7 +551,7 @@ impl VegaWindow {
             .get(thread_id)
             .is_some_and(|wait| wait.cancel.is_cancelled())
         {
-            self.agent_controller.queue_drain_waits.remove(thread_id);
+            self.clear_pending_title_wait(thread_id, cx);
         }
         let projection = stream.read(cx).pending_queue();
         if projection.paused
@@ -628,20 +638,23 @@ impl VegaWindow {
         else {
             return;
         };
+        stream.update(cx, |stream, cx| {
+            stream.set_pending_queue_wait(generation, cancel.clone(), cx)
+        });
         let thread_id = thread_id.to_owned();
         let stream = stream.clone();
+        let started = cx.background_executor().now();
         cx.spawn(async move |this, cx| {
-            let started = cx.background_executor().now();
             loop {
                 if cancel.is_cancelled() {
-                    let _ = this.update(cx, |this, _| {
+                    let _ = this.update(cx, |this, cx| {
                         if this
                             .agent_controller
                             .queue_drain_waits
                             .get(&thread_id)
                             .is_some_and(|wait| wait.generation == generation)
                         {
-                            this.agent_controller.queue_drain_waits.remove(&thread_id);
+                            this.clear_pending_title_wait(&thread_id, cx);
                         }
                     });
                     return;
@@ -668,7 +681,7 @@ impl VegaWindow {
                         if !valid {
                             return;
                         }
-                        this.agent_controller.queue_drain_waits.remove(&thread_id);
+                        this.clear_pending_title_wait(&thread_id, cx);
                         let projection = stream.read(cx).pending_queue();
                         if this.agent_controller.queue_streams.get(&thread_id) != Some(&stream)
                             || projection.messages.first().is_none_or(|head| {
@@ -695,12 +708,10 @@ impl VegaWindow {
                         if released {
                             this.continue_pending_queue(&thread_id, &stream, cx);
                         } else {
-                            this.reject_pending_queue_action(
-                                &stream,
-                                &thread_id,
-                                "会话仍在完成后台工作，请稍后继续",
-                                cx,
-                            );
+                            let mut projection = stream.read(cx).pending_queue().clone();
+                            projection.paused = true;
+                            projection.error = Some("会话仍在完成后台工作，请稍后继续".into());
+                            this.project_pending_queue(&thread_id, &stream, projection, cx);
                         }
                     });
                     return;

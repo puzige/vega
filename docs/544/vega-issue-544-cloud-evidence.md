@@ -98,3 +98,40 @@ Rust: nonempty suite completed successfully (22 discovered, including ignored/sk
 2. `window/pending_messages.rs:671–703` 超时移除 waiter 后调用 `reject_pending_queue_action`；该 helper 55–68 只写 error、不设 paused。UI `pending_messages.rs:618–636` 仅 paused 才显示 Continue，故提示稍后继续却无操作、释放 title 后也无 wake。超时须保留消息并转 recoverable paused/error；受控 clock 跨 30 秒、真实 Resume 入口验证恰好一次 launch，不提前释放能力或无限轮询。
 
 以上独审不包含进行中的 master merge 与原三项修复；审查者已停写、无本地执行。父已在干净检查点发起合并 `429c6a819fc5a30f8280afd2f6ed015d4682bf41` 并将两冲突和原三缺陷交同 writer。后续新 delta 须另固定、独审和云端验证；不能把本节结论扩成完整通过。
+
+## 修复及上游集成：93c25ac4e593677ff80e70b6e4e40b38ddb12db7
+
+[固定源码](https://github.com/puzige/vega/tree/93c25ac4e593677ff80e70b6e4e40b38ddb12db7) / [原始 patch](https://github.com/puzige/vega/commit/93c25ac4e593677ff80e70b6e4e40b38ddb12db7.patch)，tree `5f8936ccdca9ad282c54c4d3050d8f455e26135a`，parents `88f4011b47f7dd0ceade5b56438a11ed551a8fe8` / `429c6a819fc5a30f8280afd2f6ed015d4682bf41`。writer 停写后父复算完整 35 文件 manifest `8d280cd6a29dbe49334a6c091582ce1faadb0ac41ce50646104a6b68e4b9729e` 一致，29 改动 Rust 文件定向 1.98 rustfmt、`git diff HEAD --check` 均 exit 0；实际 stage 两冲突后完成合并，08:42Z 推送。
+
+- child 能力改为 reservation 前取、生命周期/阻塞写/terminal/release 贯穿，quarantine 保持占用；UI replacement 保留原 copy/selection/image 对象并恢复未决行；Cancel 校验精确 active submission/attempt。
+- 原 39 个测试定义保留，新增 5 个；父完整属性清点 44（ordinary facts 20、store admission 4、事务 7、child lifecycle 2、app/controller 6、UI 5）。最初仅匹配 `#[test]`/GPUI 的 42 是遗漏两处 `#[tokio::test]` 的静态脚本口径，已按完整属性更正，不是发现数或删测。
+- GitHub 源码读回验证 app 测试 blob `3bba659268449f38abd22f125409701eeef49562` 可访问。先前 zsh 未引用带问号 API path 导致 glob 错误，修正引用后只读成功；不是 GitHub 不可达，也未重放写入。
+
+### Actions 40177662011：编译/测试接线失败，非行为结果
+
+[Run](https://github.com/puzige/vega/actions/runs/40177662011) 精确 head 如上，08:49Z 按五分钟节奏查询得到 completed / failure。Clippy `121121753117`、Nextest `121121752775`、required `121122619478` 均 failure。fmt 实际 success；Python 原始日志 5 + 15 + 40 = 60 项 OK。Rust 构建失败，发现/执行计数未取得，不能称 44 项通过或失败。
+
+父读原始日志确认三项，均非外部 runner 故障：
+
+1. **生产编译缺陷 E0382**，`window/ordinary_send.rs:461–489`：CheckStatus 的 `async move` 捕获 `stream`，match 后又调用 `stream.update`。须保留外层 handle、为异步观察独立 clone，保持精确 thread/attempt 检查。
+2. **测试接线 unused import**，UI `ordinary_tests.rs:2` 的 `use gpui_kit::gpui` 被 `-D warnings` 拒绝。删除确实未用导入，不添加 allow 或降低 lint。
+3. **测试宏作用域递归**，app `ordinary_tests.rs:131` 的 `#[gpui_kit::test]` 展开 `#[test]` 时递归。父静态读取实际锁定 gpui-kit 0.6.1 facade `lib.rs:82–94`：test-support 的 glob 导出包含同名宏，要求测试显式导入类型，避免覆盖 Rust 内建 test；gpui-pre-macros 0.3.4 `test.rs:278–283` 生成未限定 `#[test]`。本 app main/window glob 加测试 `use super::*` 将宏带入作用域，须修显式 import 边界，不按编译器泛用建议提高递归上限。
+
+云端随既有 test-support feature 机械解析 11 个测试闭包包（含 proptest/辅助宏），当前 Cargo.lock 未更新；这不是本轮新增产品依赖或 GPUI 升级。没有重跑、删除测试、削弱断言、放宽 lint 或改 CI。原 writer 尚在处理两项队列入口修复；本批确切编译证据在其停写后续交。修复后新 SHA 再用同一 required Actions 验证，首次失败永久保留。
+
+### 同版独审增量：history 展示权威与分页顺序仍需修复
+
+独立非写入者对 pinned 93 相对 88 的 35 文件 digest 复算一致；原 39 完整测试定义不变、5 个新增成立。确认 child admission、精确 Cancel、两 merge 冲突和上游隐私/storage/artifact 保留没有新增 actionable finding，但新 history restoration 发现两项，父已复读原始路径：
+
+- **P1 隐私回退**：`ordinary_submissions.rs:165–195` 保留所有 tracked user（含 retired），再以匹配 key 无条件 `self.entries[index] = entry` 覆盖刚 hydrate 的 authoritative history。`window/privacy.rs:91–108` 的生产 privacy review/clean refresh 正是 replace_history_window 调用者。若普通旧正文后来被识别为凭据，新脱敏 page 会被旧正文/MessageCopy 覆盖。修复必须保 key 而不保过时正文权威；fresh content 改变时更新 copy/render、清除旧 selection/copy 缓存；未决缺行同样当前安全投影。回归需真实隐私/history服务与生产refresh入口，不用同文 synthetic page 冒充。
+- **P2 顺序错误**：`ordinary_submissions.rs:188–201` 将缺失 ordinary 加到旧 window 后；`content.rs:127–137` 新 page 直接 append 到其后，`245–281` 遇 durable key 只更新 seq/skip，不重新归位。旧1–20 + S，再hydrate21–40形成1–20,S,21–40。须将新增历史合入未决 suffix之前、durable range到达时按序放置，保留原key/copy/preview和非tail anchor；覆盖未提交与已提交未启动、多页、唯一text/images与相邻顺序。
+
+这是原隐私安全和 A2/A9/A11 的产品缺陷闭合，不授权用稳定 identity 保留已不安全内容，不降低原等价确认的对象/选择保留要求。以上审查不包含正在写入的两项队列补修；静态不是编译或行为结果。
+
+## 队列补修中断检查点，2026-10-25T09:11:58Z
+
+原单一 writer 在最终交接前中断，工具状态 failed / release released，checkpoint `01M5S54HSAK08K7Q93G18N22JB`。恢复调用历史回执为 unavailable tool，未成功恢复、未重放编辑。父已重新检查 HEAD `93c25ac4e593677ff80e70b6e4e40b38ddb12db7`、完整差异和 7 文件现状；代码 manifest 在中断后两次复算均为 `0c63e349f8bee0fc370b6f79d82b06f669d243ffbad93cebe8596206c712e40c`。未知失败 edit `call_OhMhM3kpcRbUgKoY9kj01NyN` 的处置是保留并审查当前实际字节，绝不按旧调用猜测或重放；当前未见冲突标记/截断，新增 Stop/Resume 测试和 generation cleanup 均已保存，但中断 writer 的完整 READY 不存在。
+
+父针对当前字节执行 Rust 1.98.0 定向 rustfmt check（7 文件）、diff whitespace check exit 0；静态比对 44 个原测试完整块逐字保留，现有 46 个定义。此为父验证的恢复检查点，不是行为通过。现状包含独立 queue wait UI、真实 Stop guard/render、timeout paused/error、generation-scoped 清除和两项真实控件回归；上述三项编译和两项 history 缺陷仍未修。
+
+新 fetch 发现上游 `f6723682f960f87941ffcd9cae477f4a5dbef777`（已合入 i18n，193 文件）。不改 index/worktree 的 merge 分析显示 `window/agent.rs`、conversation `agent/entry.rs`、`agent/pipeline.rs`、UI `conversation_stream/render.rs` 四冲突。先保存中断字节再集成，由唯一替代 writer 保留上游本地化/generated-notice/privacy 语义及本卡 admission/receipt/ordinary 不变量；不借合并回退已合入功能，不修改 workflows 或通用验证。实际恢复包将携本检查点、原日志与明确未决项，不重做已完成阶段。

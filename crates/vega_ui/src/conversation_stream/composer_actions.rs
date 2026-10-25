@@ -254,7 +254,11 @@ impl ConversationStream {
 
     /// Explicit user cancellation; the app validates the route and cancels its exact worker.
     pub fn request_composer_stop(&mut self, cx: &mut Context<Self>) {
-        if (!self.actions.running && !self.composer_submit_pending) || self.actions.stopping {
+        if (!self.actions.running
+            && !self.composer_submit_pending
+            && !self.has_cancellable_queue_wait())
+            || self.actions.stopping
+        {
             return;
         }
         self.actions.stopping = true;
@@ -412,7 +416,8 @@ impl ConversationStream {
                 }
             }
         }
-        if self.actions.running || self.composer_submit_pending {
+        if self.actions.running || self.composer_submit_pending || self.has_cancellable_queue_wait()
+        {
             controls.push(self.action_focus[1].clone());
         }
         controls.extend(self.automation_focuses());

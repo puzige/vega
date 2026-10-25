@@ -209,6 +209,15 @@ impl VegaWindow {
 
     fn new_with_services(cx: &mut Context<Self>, startup_services: bool) -> Self {
         cx.on_release(|this, cx| {
+            let waiting_threads: Vec<_> = this
+                .agent_controller
+                .queue_drain_waits
+                .keys()
+                .cloned()
+                .collect();
+            for thread_id in waiting_threads {
+                this.clear_pending_title_wait(&thread_id, cx);
+            }
             this.onboarding.close(cx);
             if cx
                 .try_global::<crate::automation_controller::AutomationGlobal>()
@@ -230,6 +239,16 @@ impl VegaWindow {
                 .0
                 .as_ref()
                 .map(|thread| thread.id.clone());
+            let stale_waits: Vec<_> = this
+                .agent_controller
+                .queue_drain_waits
+                .keys()
+                .filter(|thread_id| Some(thread_id.as_str()) != route_thread_id.as_deref())
+                .cloned()
+                .collect();
+            for thread_id in stale_waits {
+                this.clear_pending_title_wait(&thread_id, cx);
+            }
             if this
                 .composer_prediction
                 .as_ref()
