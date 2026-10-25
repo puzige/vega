@@ -185,9 +185,8 @@ impl ComputerUseError {
                 ("component_unavailable", false, "check_installation", None)
             }
             Self::Busy => ("busy", false, "wait_for_current_task", None),
-            Self::NotReady | Self::Cancelled => {
-                ("control_unavailable", false, "stop_and_report", None)
-            }
+            Self::NotReady => ("control_unavailable", false, "stop_and_report", None),
+            Self::Cancelled => ("cancelled", false, "stop_and_report", None),
             Self::GrantExpired => ("grant_expired", false, "reconnect_browser", None),
             Self::BrowserExtension => (
                 "browser_extension",

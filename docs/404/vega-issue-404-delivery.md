@@ -53,6 +53,23 @@
   2. 晚到 Stop 把成功 CUA 状态改成 Cancelled 但保留完成摘要/截图回执，新增 validator 拒绝该组合；旧实现也可留下这类历史记录。主 Agent 核对 live sink 调用链后确认结果生产与有限历史兼容都需处理，不声称未交付截图已 delivered。
 - [规格 v2](vega-issue-404-cua-error-recovery.md#取消竞态的实施细化v2) 细化原 C404-06/08/11；原实现者修复，写入范围最小扩展到受管 `vega_mcp` 发送事实接口，不调整普通 MCP 权限、协议、重试，不新增依赖。发送前暂停零写入可恢复、发送后未知不重放、晚到 Stop 经 live/reload/history/下轮准备的回归均待补充云端结果。
 
+## 取消竞态修复版本与实际失败处理
+
+- 修复提交 `cff7707e0b846eb7b865ff4c9949b51392256e46`：typed ManagedSendEvidence、Desktop/Browser action send 边界、截图 sink 持久化确认/撤权抑制、晚到 Stop 的完成事实及有限历史兼容。新增 7 项，合计 20 项开发测试；保留原 13 项体。
+- 本轮尝试整理已发布提交的命令被权限拒绝，经只读核对未修改 Git 状态；用户明确选择追加提交继续，允许本卡超过 3 提交限制。后续只追加普通提交/推送，不强推、不改写历史。
+- [run 40171457328](https://github.com/puzige/vega/actions/runs/40171457328)：Clippy `121102962763`、Nextest `121102963005` 均在开发测试编译时报 E0308（Tools::new 的 Result 当作 Tools 使用），尚未发现/执行 20 项。归类 harness 初始化故障，`4771298d0a37b09ff87015c822bcd5d68a6d88ab` 只作一行构造器接线修复；生产代码和断言不变。
+- [run 40172561847](https://github.com/puzige/vega/actions/runs/40172561847)，精确 head `4771298d0a37b09ff87015c822bcd5d68a6d88ab`：Clippy `121106307590` 成功；Nextest `121106307704` 20 发现/20 执行/18 通过/2 失败/0 跳过，required `121106847396` 失败。两项失败均为未交付/撤权截图取消的 `code`：实际 `control_unavailable`，断言 `cancelled`；主 Agent 复核原始日志与 feedback 分支发现 Cancelled/NotReady 合并序列化。spec 明确真实取消与未就绪分码后，由原实现者最小拆分，保留失败断言，不盲重试。
+- 非实现者完成固定 `52bf4366…`→`cff7707e…` 生产增量独立审查，无新发现，确认原两项 P2 已解决；该结论仅静态，不能代替 20 项回归或最终 head CI。此前中断的增量审查不计通过。
+
+### 可恢复的 20 项开发源码
+
+固定 `4771298d0a37b09ff87015c822bcd5d68a6d88ab`：
+
+- [runtime 测试（9 项）](https://github.com/puzige/vega/blob/4771298d0a37b09ff87015c822bcd5d68a6d88ab/crates/vega_runtime/src/computer_use/recovery_tests.rs)
+- [conversation 测试（10 项）](https://github.com/puzige/vega/blob/4771298d0a37b09ff87015c822bcd5d68a6d88ab/crates/vega_conversation/src/agent/cua_recovery_tests.rs)
+- [MCP support 与测试（1 项）](https://github.com/puzige/vega/blob/4771298d0a37b09ff87015c822bcd5d68a6d88ab/crates/vega_mcp/src/managed_recovery_test_support.rs)
+- [runtime support](https://github.com/puzige/vega/blob/4771298d0a37b09ff87015c822bcd5d68a6d88ab/crates/vega_runtime/src/computer_use/recovery_test_support.rs) 与 [原始修复 patch](https://github.com/puzige/vega/commit/cff7707e0b846eb7b865ff4c9949b51392256e46.patch)、[harness patch](https://github.com/puzige/vega/commit/4771298d0a37b09ff87015c822bcd5d68a6d88ab.patch)。
+
 ## 验证限制与后续
 
 组件/协议/身份的各类实际故障、断连/动作后观察失败变体、完整截图容量流、权限恢复后真实预检、分页/TTL/压缩/附件竞态及原生焦点交互尚无本轮动态验收，静态覆盖与具体限制以 spec 矩阵和最终报告为准。未做真实外部进程/网络 E2E。
