@@ -1763,6 +1763,12 @@ impl RunActivityGroup {
         let shimmering = headline.live;
         let activity_icon = headline.icon;
         let epoch = state.animation_epoch;
+        let focused_hidden_thinking = aggregate
+            && !expanded
+            && state.segment_children(segment_index).iter().any(|child| {
+                matches!(child, RunActivityChild::Thinking(card)
+                if card.read(cx).contains_focus(window, cx))
+            });
         if (aggregate || single_thinking)
             && state
                 .stage_outer_summary_card(segment_index, cx)
@@ -1771,14 +1777,10 @@ impl RunActivityGroup {
             header_focus.focus(window, cx);
         }
         if aggregate && !expanded {
-            let focused_hidden_child =
-                tool_ids.iter().any(|id| {
-                    crate::disclosure::focus(format!("tool-disclosure-{id}").into(), window, cx)
-                        .is_focused(window)
-                }) || state.segment_children(segment_index).iter().any(|child| {
-                    matches!(child, RunActivityChild::Thinking(card)
-                    if card.read(cx).contains_focus(window, cx))
-                });
+            let focused_hidden_child = tool_ids.iter().any(|id| {
+                crate::disclosure::focus(format!("tool-disclosure-{id}").into(), window, cx)
+                    .is_focused(window)
+            }) || focused_hidden_thinking;
             if focused_hidden_child {
                 header_focus.focus(window, cx);
             }
