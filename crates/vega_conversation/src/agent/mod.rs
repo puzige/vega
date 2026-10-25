@@ -44,6 +44,8 @@ mod credential_guard;
 mod diagnostics;
 mod entry;
 mod events;
+#[cfg(test)]
+mod fork_screenshot_tests;
 mod permission_queue;
 mod stage_activity;
 mod subagents;
