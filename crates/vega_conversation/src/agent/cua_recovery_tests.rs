@@ -778,7 +778,7 @@ async fn late_stop_round_trip(boundary: StopBoundary) {
     .await
     .unwrap();
     let (sender, receiver) = mpsc::channel(16);
-    let tools = vega_tools::Tools::new(PathBuf::new());
+    let tools = vega_tools::Tools::new(std::env::current_dir().unwrap()).unwrap();
     let runtime = vega_runtime::run_agent_with_sink(&provider, &tools, request, root.clone(), {
         let root = root.clone();
         move |event| {
