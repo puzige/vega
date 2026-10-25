@@ -1077,6 +1077,16 @@ impl ConversationStream {
                     {
                         Some(index)
                     }
+                    StreamEntry::ContextCompaction { .. }
+                        if this
+                            .entry_identities
+                            .get(index)
+                            .and_then(|identity| identity.message_id.as_ref())
+                            .and_then(|owner| this.run_activity_groups.get(owner))
+                            == Some(&group) =>
+                    {
+                        Some(index)
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>();
