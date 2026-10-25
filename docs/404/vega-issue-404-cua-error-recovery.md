@@ -1,0 +1,80 @@
+# Issue #404 — CUA 错误交回模型
+
+## 决策、范围与基线
+
+落实 [#404](https://github.com/puzige/vega/issues/404) 的 2026-10-16 用户裁决与 2026-10-25 补充证据：CUA 能力失败不等于取消对话；错误作为正常 tool result 返回模型，不插入专用错误菜单，不由 runtime 生成固定助手收尾。基线 `b03d0d5f2c7da0efab147a4fec0d26e2adefc4e3`，分支 `fix/404-cua-error-recovery`。
+
+本文替代 #75 computer-browser-use 的错误展示/因能力失败整轮取消要求，以及 cua-usability 中无进展由 runtime 固定收尾的要求；不替代权限、身份、帧绑定、epoch、用户停止、授权/接管/暂停/恢复合同。沿用共享 Desktop/Browser control，失败时终止该控制会话并清理 backend、授权与临时观察，不新增独立能力状态机。无数据库迁移，不改用户数据、权限、安装或运行时配置。
+
+当前 AGENTS/执行总纲的快速交付与 Rust 测试交付政策优先于 Issue 历史测试先行措辞：spec 先行；实现由专职子 Agent；按风险验证、非实现者独立审查；本地仅静态/格式检查，自动测试只交 Actions。必要开发 Rust 测试只留开发版本，固定可恢复源码/完整 SHA/云端结果后清理，最终 head 经完整 required CI 确认 `no Rust tests`，不能称为空集测试通过。
+
+## 根因与实施边界
+
+- `ComputerUseRun::wait_ready` 将 Failed 与 Stopping/Stopped 一起返回 Cancelled。`agent/loop_.rs` 的循环入口、请求前、model epoch 采样和模型返回后因此取消 root token，下一 provider request 无法读到已记录的工具错误。Failed 下 epoch 采样还必须能结束，不能空转。
+- `PreparedRuntimeCall::wait_computer_use_ready`、工具 authorize/execute 入口也必须区分能力失败和真实取消；调用/结果一一配对，混合批次非 CUA 工具继续按原合同执行。
+- `loop_.rs` 的 no_progress 特殊分支代写最终正文并结束回合，应删除。保持模型轮数、上下文和恢复预算不变。
+- `computer_use/backend.rs` 已有实际 dispatch 边界与动作结果未知处理，必须沿用真实执行事实，不能从错误字符串推断。
+- `conversation_stream/computer_use.rs` 与准备入口状态会生成错误菜单；仅删除错误专用展示，不删浏览器真实授权、接管/暂停/恢复/停止或设置页权限入口。普通工具失败/拒绝状态与可展开结果继续可查。
+
+## 行为与错误合同
+
+### 控制与对话分流
+
+readiness 明确区分 ready、等待用户恢复、不可用（带原始原因）、用户/任务取消。只有真实任务取消或原有明确电脑 Stop 等独立停止机制可取消 root；权限、组件、协议、身份失败和保护性停用不能直接取消 root。暂停/接管沿用等待与 epoch 撤销，旧调用/参数/附件不得跨 epoch 重新发布或派发。
+
+Failed 原因在本 run 冻结。后续 CUA 调用只返回该原因，不连接 backend、不再次授权、不派发输入。新用户 run 才重新预检；旧 interrupted 会话不改写、不后台恢复。继续对话不等于恢复电脑权限，禁止用 Shell/脚本绕过电脑能力停用。
+
+### 完整结构化 tool result
+
+新 CUA 错误为完整 JSON，不加 `Tool error:` 前缀，不通过解析字符串辨认执行事实。保留有限 `code`、`retryable`、`next_step`、`field`、安全 `diagnostic`，补齐 `capability`、`stage`、`execution_state`：
+
+```json
+{"code":"screen_recording_permission_missing","capability":"desktop","stage":"permissions","execution_state":"not_dispatched","retryable":false,"next_step":"open_system_settings","field":null,"diagnostic":"Vega 尚未获得屏幕录制权限。"}
+```
+
+`execution_state` 为 `not_dispatched` / `failed` / `outcome_unknown`，依据实际派发边界。预检拒绝仍记 rejected；实际执行失败仍记 failed；不能将已执行读取/可能已执行输入伪装成未派发。冻结原因重用于后来调用时，该新调用自身必须表达未派发，不可冒充再次执行了原动作。保留错误原始分类、tool call/result ID 配对、来源和批准审计。
+
+参数、过期观察等原有可恢复错误继续有限恢复，不放宽校验。输入派发后超时/断连/动作后观察失败保留 outcome_unknown，禁止自动重放及后续输入；模型应解释不确定性并请用户核对。成功/结果未知的既有观察与交付附件事实不得因后续失败改写。
+
+错误字段只取有限枚举/现有安全文案；不透传上游原始异常、窗口正文、原始输入、凭据、敏感路径或持久窗口标识。复用现有输出/诊断存储，不新增表。读取端兼容历史字符串与新 JSON，严格保留工具类型、来源、批准与状态校验，任意 JSON 不能伪装合法 CUA 结果。保持既有持久化长度边界。
+
+### 无进展与容量保护
+
+保留现有阈值，不删保护、不提升阈值，不通过新 call ID、目录引用、无关文件读取或交错窗口读取清零。模型收到结构化错误后可解释剩余工作或继续独立工作，runtime 不代写助手正文，也不因该错误直接结束对话。CUA 控制仍停用，后续零新增派发。
+
+无进展反馈保留有界诊断：触发类别（重复目录/窗口读取、重复失败、无变化动作、容量保护）、实际计数/阈值、底层结果类别，以及真实执行状态。保护在成功观察后触发时必须明确底层读取成功，不能暗示底层枚举/点击失败或要求修正有效参数。不落盘窗口内容、截图、原始输入或稳定目标标识。
+
+不改变合法分页、新窗口证据、有意义变化的原有行为，也不改变 TTL 或暂停/压缩/显式失效后的旧引用失效规则。
+
+### UI 与内置指引
+
+实时和历史对话均不额外生成固定权限说明、系统设置/查看诊断详情等 CUA 错误菜单，也不替换成常驻提示条。模型按当前任务解释结构化结果；普通工具卡保留失败/拒绝及可展开输出。真实浏览器授权确认、暂停/接管/恢复/停止及设置页权限操作仍可达，支持原键盘路径。内置 CUA skill 区分停止电脑操作与停止对话，保留不得重放结果未知动作、不得换用脚本绕过、有限恢复约束，并更新资源版本。
+
+## 验收矩阵与验证路线
+
+| ID | 场景 | 必须保留/观察到的结果 |
+|---|---|---|
+| C404-01 | 缺屏幕录制/辅助功能/两项权限 | 精确错误码、not_dispatched、零 driver dispatch；下一 provider request 确实含对应结构化 tool result，脚本化 provider 给出说明；root 未取消且助手非 interrupted |
+| C404-02 | 组件、初始化、协议、目标身份失败 | 原分类返回模型，CUA 清理并停用；readiness/epoch 无空转卡死 |
+| C404-03 | 参数、过期观察等可恢复错误 | 原有限恢复与严格校验保留，修正后可继续 |
+| C404-04 | 混合批次 CUA 失败 | call/result 一一配对，非 CUA 按原合同执行，模型可继续独立工作 |
+| C404-05 | 停用后再调 CUA | 原因可识别，新调用未派发；无重新连接/授权/输入 |
+| C404-06 | 动作已派发后超时/断连/观察失败 | outcome_unknown 不伪装 not_dispatched；不重放、不再输入；模型可解释未知 |
+| C404-07 | 无进展/截图容量 | 阈值保留、错误返回模型；无 runtime 代写正文/直接结束 |
+| C404-08 | 用户 Stop、暂停/接管/恢复、旧 epoch 晚到 | 真取消有效；恢复入口保留；旧输入/附件不发布、不跨 epoch 派发 |
+| C404-09 | 权限恢复后新用户 run | 新 run 正常预检，旧 run 不自动重启 |
+| C404-10 | 实时/历史 UI | 无错误菜单；普通工具结果可展开；真实授权/接管/设置入口保留 |
+| C404-11 | 持久化重开与历史格式 | 新 JSON/旧字符串可读，审计拒绝/失败/批准事实不变，无损坏误报 |
+| C404-12 | 敏感错误与伪造 JSON/审计 | 不泄露原始内容；来源、类型、批准校验继续拒绝伪造 |
+| C404-13 | 目录→窗口→目录→窗口→目录 | 同语义第 3 次目录触发，精确计数/阈值、底层成功事实；之后 CUA 零新增派发，模型/非 CUA 不被直接取消 |
+| C404-14 | 合法分页/不同窗口/变化/引用失效 | 有意义证据按原规则继续；过期、暂停、压缩、显式失效后旧引用不得复活 |
+
+优先用进程内 provider/driver 替身验证生产决策：`Provider::chat_stream`、`run_agent_with_permission_sink_and_context`、backend 的受管调用边界、现有存储投影及 GPUI 状态。不可仅检查错误落库或源码字符串来代替 C404-01。无真实外部进程/网络 E2E，不恢复旧测试全集，不引入新依赖。按风险选择少量高区分度开发回归，至少覆盖模型确实读到权限错误、停用后零派发、no_progress 诊断/继续模型、unknown 不重放、真实 Stop 与持久化审计边界；没有动态证据的条目明确写静态审查/待用户手测。
+
+本地：差异、格式、静态安全与最终 Rust 测试残留清点。Actions：既有 `pr-check` 的 fmt、全目标 Clippy、三组 Python 检查、Nextest 清点/执行及汇总 required check。开发回归结果与最终空集 head 门禁分别记录。独立审查绑定已停写完整 SHA。最新 head required check 通过才 squash merge；合并后 In review，Issue 保持开放等待用户手测，不自动安装。
+
+用户手测：无权限触发后模型解释而非 Stopped/空助手；有权限正常观察/操作；接管/恢复/停止；未知结果不自动重复；实时和历史无专用错误菜单但错误结果可查。回滚以本卡 PR 的生产差异为单位，不改写旧会话或放宽权限。
+
+## 实施记录
+
+- v1：基于当前 master 核对调用链后落库，尚未实现/运行验证。后续证据在本目录交付记录与 Issue/PR 中保留。
