@@ -16,7 +16,7 @@ struct StoredSubmission {
 }
 
 fn failure() -> ConversationError {
-    ConversationError::Store("待处理消息保存失败，请重试".into())
+    ConversationError::Store(vega_i18n::t("domain.pending.error.save").into())
 }
 
 pub fn enqueue(
@@ -47,7 +47,7 @@ pub fn enqueue_cached(
     let tx = store.immediate_transaction().map_err(|_| failure())?;
     if rows::count(&tx, &message.thread_id).map_err(|_| failure())? >= 64 {
         return Err(ConversationError::Store(
-            "待处理消息已满，请先移除或处理队列".into(),
+            vega_i18n::t("domain.pending.error.full").into(),
         ));
     }
     rows::insert(
@@ -129,7 +129,9 @@ pub fn remove(
         .ok_or_else(failure)?;
     let message = decode(row)?;
     if !rows::remove(&tx, thread_id, id).map_err(|_| failure())? {
-        return Err(ConversationError::Store("消息正在交付，请稍后重试".into()));
+        return Err(ConversationError::Store(
+            vega_i18n::t("domain.pending.error.delivering").into(),
+        ));
     }
     tx.commit().map_err(|_| failure())?;
     Ok(message)
@@ -318,9 +320,9 @@ impl RuntimeSteeringSource for QueueSteeringSource {
 }
 
 fn runtime_failure() -> VegaError {
-    VegaError::Io(std::io::Error::other(
-        "待处理消息准备失败，请取回编辑后重试",
-    ))
+    VegaError::Io(std::io::Error::other(vega_i18n::t(
+        "domain.pending.error.prepare",
+    )))
 }
 
 fn now_ms() -> i64 {

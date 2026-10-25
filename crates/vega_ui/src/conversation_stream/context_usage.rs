@@ -38,44 +38,57 @@ impl ContextUsageDisplay {
 
     pub(crate) fn percentage_label(&self) -> Option<String> {
         self.percentage_value().map(|percent| match self.source {
-            ContextUsageSource::EstimatedInput => format!("估算使用量：{percent}"),
-            ContextUsageSource::LastCallTotal => format!("最近调用使用量：{percent}"),
+            ContextUsageSource::EstimatedInput => {
+                vega_i18n::t_args("ui.estimated_usage_percent", &[("percent", &percent)])
+            }
+            ContextUsageSource::LastCallTotal => {
+                vega_i18n::t_args("ui.last_call_usage_percent", &[("percent", &percent)])
+            }
         })
     }
 
     pub(crate) fn usage_label(&self) -> &'static str {
         match self.source {
-            ContextUsageSource::EstimatedInput => "估算已用 / 配置输入上限",
-            ContextUsageSource::LastCallTotal => "最近调用总量 / 配置输入上限",
+            ContextUsageSource::EstimatedInput => {
+                vega_i18n::t("ui.estimated_usage_configured_input_limit")
+            }
+            ContextUsageSource::LastCallTotal => {
+                vega_i18n::t("ui.last_call_total_configured_input_limit")
+            }
         }
     }
 
     pub(crate) fn compact_usage_label(&self) -> String {
         let Some(estimate) = self.estimated_tokens else {
-            return "尚无数据".into();
+            return vega_i18n::t("ui.no_data_yet").into();
         };
         match self.model_input_limit {
-            Some(limit) => format!(
-                "{} / {} tokens",
-                compact_token_count(estimate),
-                compact_token_count(limit)
+            Some(limit) => vega_i18n::t_args(
+                "ui.token_usage",
+                &[
+                    ("used", &compact_token_count(estimate)),
+                    ("limit", &compact_token_count(limit)),
+                ],
             ),
-            None => format!("{} tokens", compact_token_count(estimate)),
+            None => vega_i18n::t_args(
+                "ui.token_count",
+                &[("tokens", &compact_token_count(estimate))],
+            ),
         }
     }
 
     pub(crate) fn estimate_label(&self) -> String {
         let Some(estimate) = self.estimated_tokens else {
-            return "估算输入：尚无数据".into();
+            return vega_i18n::t("ui.estimated_input_no_data_yet").into();
         };
         match self.source {
-            ContextUsageSource::EstimatedInput => format!(
-                "估算输入：{} tokens（含系统提示和实际工具定义）",
-                grouped_token_count(estimate)
+            ContextUsageSource::EstimatedInput => vega_i18n::t_args(
+                "ui.estimated_input_tokens_tokens_including_the_system_prompt",
+                &[("tokens", &grouped_token_count(estimate))],
             ),
-            ContextUsageSource::LastCallTotal => format!(
-                "最近调用总量：{} tokens（输入＋输出）",
-                grouped_token_count(estimate)
+            ContextUsageSource::LastCallTotal => vega_i18n::t_args(
+                "ui.last_call_total_tokens_tokens_input_output",
+                &[("tokens", &grouped_token_count(estimate))],
             ),
         }
     }
@@ -96,18 +109,21 @@ impl ContextUsageDisplay {
 
     pub(crate) fn capacity_label(&self) -> String {
         self.model_input_limit.map_or_else(
-            || "容量未配置".to_string(),
+            || vega_i18n::t("ui.capacity_not_configured").to_string(),
             |limit| {
-                format!(
-                    "当前模型设置输入上限：{} tokens（非供应商验证容量）",
-                    grouped_token_count(limit)
+                vega_i18n::t_args(
+                    "ui.current_model_input_limit_tokens_tokens_not_provider",
+                    &[("tokens", &grouped_token_count(limit))],
                 )
             },
         )
     }
 
     pub(crate) fn accessibility_label(&self) -> String {
-        let mut parts = vec!["上下文用量".to_string(), self.estimate_label()];
+        let mut parts = vec![
+            vega_i18n::t("ui.context_usage").to_string(),
+            self.estimate_label(),
+        ];
         if let Some(percentage) = self.percentage_label() {
             parts.push(percentage);
         }

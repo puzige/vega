@@ -34,7 +34,7 @@ pub(super) fn prepare(
     platform::validate_target_path(&bundle.path)?;
     let team = platform::verified_team(&bundle.path, &bundle.version)?;
     if team != bundle.team {
-        return Err(failure("当前应用签名身份已变化，请重新启动后检查更新"));
+        return Err(failure(vega_i18n::t("app.update.identity_changed")));
     }
     let authenticated = signature::load(staging, version, &bundle.version)?;
     let prepared = platform::private_tempdir_in(staging, "prepare-")?;
@@ -72,7 +72,8 @@ pub(super) fn prepare(
     }
     platform::write_new(
         &path,
-        &serde_json::to_vec(&manifest).map_err(|_| failure("无法准备安装记录"))?,
+        &serde_json::to_vec(&manifest)
+            .map_err(|_| failure(vega_i18n::t("app.update.prepare_record")))?,
     )?;
     let mut child = Command::new(std::env::current_exe()?)
         .arg("--vega-update-helper")
@@ -86,7 +87,7 @@ pub(super) fn prepare(
         if child.try_wait()?.is_some() || started.elapsed() > Duration::from_secs(240) {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(failure("更新安装程序未就绪，当前应用保持运行"));
+            return Err(failure(vega_i18n::t("app.update.installer_not_ready")));
         }
         std::thread::sleep(Duration::from_millis(50));
     }

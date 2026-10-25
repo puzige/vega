@@ -515,7 +515,9 @@ fn runtime_event_category(event: &RuntimeEvent) -> PersistenceCategory {
         RuntimeEvent::BuiltinSkillActivated(_) => Category::BuiltinSkill,
         RuntimeEvent::ScreenshotDelivered { .. } => Category::Screenshot,
         RuntimeEvent::ToolRoundCompleted { .. } => Category::ToolRound,
-        RuntimeEvent::AssistantResponseCompleted { .. } => Category::ResponseCompleted,
+        RuntimeEvent::AssistantResponseCompleted { .. } | RuntimeEvent::GeneratedNotice { .. } => {
+            Category::ResponseCompleted
+        }
         RuntimeEvent::DiagnosticAttempt(_) => Category::DiagnosticAttempt,
         RuntimeEvent::ReasoningRetentionReleased => Category::ReasoningReleased,
         RuntimeEvent::TextDelta(_) => Category::TextDelta,

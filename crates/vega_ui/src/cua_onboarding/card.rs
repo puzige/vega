@@ -59,9 +59,17 @@ pub enum OpenError {
 impl std::fmt::Display for OpenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Executable(error) => write!(f, "无法确认当前 Vega 的位置：{error}"),
-            Self::DisplayUnavailable => f.write_str("找不到可用显示器，无法打开电脑操控准备。"),
-            Self::Window(error) => write!(f, "无法打开电脑操控准备：{error}"),
+            Self::Executable(error) => f.write_str(&vega_i18n::t_args(
+                "ui.cannot_locate_this_copy_of_vega_error",
+                &[("error", &error.to_string())],
+            )),
+            Self::DisplayUnavailable => f.write_str(vega_i18n::t(
+                "ui.no_display_is_available_to_open_computer_use",
+            )),
+            Self::Window(error) => f.write_str(&vega_i18n::t_args(
+                "ui.cannot_open_computer_use_setup_error",
+                &[("error", &error.to_string())],
+            )),
         }
     }
 }
@@ -77,8 +85,12 @@ enum PanelFault {
 impl PanelFault {
     fn message(self) -> &'static str {
         match self {
-            Self::Geometry => "无法定位系统设置。请重新打开引导；挡住操作时可关闭。",
-            Self::Movement => "无法跟随系统设置。请重新打开引导；挡住操作时可关闭。",
+            Self::Geometry => {
+                vega_i18n::t("ui.cannot_locate_system_settings_reopen_setup_or_close")
+            }
+            Self::Movement => {
+                vega_i18n::t("ui.cannot_follow_system_settings_reopen_setup_or_close")
+            }
         }
     }
 }
@@ -106,7 +118,7 @@ pub struct GuidanceCard {
     preparation: Entity<PreparationModel>,
     preparation_owner: Option<CallbackIdentity>,
     app_icon: Arc<Image>,
-    path_error: Option<String>,
+    path_error: Option<crate::localized_copy::LocalizedCopy>,
     permission_pane: PermissionPane,
     stage: Stage,
     stage_identity: CallbackIdentity,
@@ -176,7 +188,7 @@ pub fn open(
                 tracing::warn!(?error, "preparation panel presentation failed");
                 card.close(window, cx);
                 return Err(OpenError::Window(
-                    "无法安全显示浮层。请重新打开引导，或在系统设置中手动授权。".into(),
+                    vega_i18n::t("ui.cannot_safely_display_the_overlay_reopen_setup_or").into(),
                 ));
             }
             Ok(())
@@ -410,7 +422,9 @@ impl GuidanceCard {
                         cx.reveal_path(&path);
                         self.path_error = None;
                     } else {
-                        self.path_error = Some("当前 Vega 的位置已不存在。请重新打开应用。".into());
+                        self.path_error = Some(crate::localized_copy::LocalizedCopy::new(
+                            "ui.this_copy_of_vega_no_longer_exists_at",
+                        ));
                     }
                 }
                 CardEffect::CancelPending => {

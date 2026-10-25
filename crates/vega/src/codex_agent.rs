@@ -23,12 +23,12 @@ pub(crate) enum CodexPreflightFailure {
 }
 
 impl CodexPreflightFailure {
-    pub(crate) fn message(self) -> &'static str {
+    pub(crate) fn key(self) -> &'static str {
         match self {
-            Self::ProfileUnavailable => "尚未配置 Codex ACP，请前往设置 → Agents 配置",
-            Self::InvalidProfile => "Codex ACP 配置无效，请检查 executable 与 argv",
-            Self::ExecutableUnavailable => "Codex ACP executable 不可用，请检查路径和权限",
-            Self::WorkspaceUnavailable => "所选项目目录不可用，请重新选择项目",
+            Self::ProfileUnavailable => "app.codex.profile_missing",
+            Self::InvalidProfile => "app.codex.profile_invalid",
+            Self::ExecutableUnavailable => "app.codex.executable_unavailable",
+            Self::WorkspaceUnavailable => "app.codex.workspace_unavailable",
         }
     }
 }

@@ -5,7 +5,12 @@ use std::io;
 use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
+mod generated_notices;
 mod responses;
+pub(crate) use generated_notices::copy_generated_notices_in_transaction;
+pub use generated_notices::{
+    GeneratedNoticeRow, record_generated_notice, remap_generated_notices_in_transaction,
+};
 pub use responses::{AssistantResponseRow, completed_response_text, record_assistant_response};
 
 const COLUMNS: &str = "id, thread_id, seq, role, kind, content, status, created_at, \
@@ -402,6 +407,7 @@ pub struct MessagePage {
     pub rows: Vec<MessageRow>,
     pub execution_durations_ms: std::collections::HashMap<String, i64>,
     pub assistant_responses: Vec<AssistantResponseRow>,
+    pub generated_notices: Vec<GeneratedNoticeRow>,
     pub continuations: Vec<RunContinuation>,
     /// `Some(oldest_seq)` when older rows may exist — pass
     /// [`PageCursor::Before`] to continue. `None` marks the oldest end of the
@@ -478,6 +484,7 @@ pub fn page_before(
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
     let assistant_responses = responses::for_page(&tx, thread_id, &rows)?;
+    let generated_notices = generated_notices::for_page(&tx, thread_id, &rows)?;
     let continuations = page_continuations(&tx, thread_id, &rows)?;
     drop(stmt);
     tx.commit()?;
@@ -486,6 +493,7 @@ pub fn page_before(
         rows,
         execution_durations_ms,
         assistant_responses,
+        generated_notices,
         older_cursor,
         newer_cursor,
         tool_calls,
@@ -574,6 +582,7 @@ pub fn page_containing_message(
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
     let assistant_responses = responses::for_page(&tx, thread_id, &rows)?;
+    let generated_notices = generated_notices::for_page(&tx, thread_id, &rows)?;
     let continuations = page_continuations(&tx, thread_id, &rows)?;
     tx.commit()?;
     Ok(Some(MessagePage {
@@ -581,6 +590,7 @@ pub fn page_containing_message(
         rows,
         execution_durations_ms,
         assistant_responses,
+        generated_notices,
         older_cursor,
         newer_cursor,
         tool_calls,
@@ -626,6 +636,7 @@ pub fn page_after(
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
     let assistant_responses = responses::for_page(&tx, thread_id, &rows)?;
+    let generated_notices = generated_notices::for_page(&tx, thread_id, &rows)?;
     let continuations = page_continuations(&tx, thread_id, &rows)?;
     drop(stmt);
     tx.commit()?;
@@ -634,6 +645,7 @@ pub fn page_after(
         rows,
         execution_durations_ms,
         assistant_responses,
+        generated_notices,
         older_cursor,
         newer_cursor,
         tool_calls,

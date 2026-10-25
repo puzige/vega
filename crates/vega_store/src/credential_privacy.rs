@@ -269,6 +269,7 @@ where
             )?;
         }
     }
+    crate::messages::remap_generated_notices_in_transaction(&tx, thread, &mut redact)?;
     crate::context_compaction::redact_legacy_thread_content(&tx, thread, &mut redact)?;
     for (id, field, value) in fields(&tx, thread)? {
         let changed = match field.as_str() {
@@ -452,34 +453,44 @@ pub fn refresh_epoch(conn: &Connection, digest: &str) -> rusqlite::Result<()> {
     tx.commit()
 }
 
-pub fn source_label(conn: &Connection, field: &str, id: &str) -> rusqlite::Result<String> {
-    let label = match field {
+pub fn source_label_key(
+    conn: &Connection,
+    field: &str,
+    id: &str,
+) -> rusqlite::Result<&'static str> {
+    let key = match field {
         "message" => {
             let role: String =
                 conn.query_row("SELECT role FROM messages WHERE id=?1", [id], |row| {
                     row.get(0)
                 })?;
             if role == "user" {
-                "用户消息"
+                "domain.privacy.source.user"
             } else {
-                "助手回复"
+                "domain.privacy.source.assistant"
             }
         }
-        "tool.input" => "工具调用",
-        "tool.output" => "工具结果",
-        "summary" => "对话摘要",
-        "plan.note" => "计划反馈",
-        "pending.model" | "historical.model" => "已发送请求",
-        "historical.input" => "历史工具调用",
-        "historical.output" => "历史工具结果",
-        "historical.references" | "historical.identity" => "历史引用",
-        "pending.content" => "待发送消息",
-        "delegation.name" => "子任务名称",
-        "delegation.task" => "子任务内容",
-        "delegation.result" => "子任务结果",
-        "stage.payload" => "阶段交接",
-        "stage.reconciliations" => "恢复核对",
-        _ => "对话记录",
+        "tool.input" => "domain.privacy.source.tool_input",
+        "tool.output" => "domain.privacy.source.tool_output",
+        "summary" => "domain.privacy.source.summary",
+        "plan.note" => "domain.privacy.source.plan",
+        "pending.model" | "historical.model" => "domain.privacy.source.request",
+        "historical.input" => "domain.privacy.source.historical_input",
+        "historical.output" => "domain.privacy.source.historical_output",
+        "historical.references" | "historical.identity" => {
+            "domain.privacy.source.historical_references"
+        }
+        "pending.content" => "domain.privacy.source.pending",
+        "delegation.name" => "domain.privacy.source.delegation_name",
+        "delegation.task" => "domain.privacy.source.delegation_task",
+        "delegation.result" => "domain.privacy.source.delegation_result",
+        "stage.payload" => "domain.privacy.source.stage",
+        "stage.reconciliations" => "domain.privacy.source.recovery",
+        _ => "domain.privacy.source.record",
     };
-    Ok(label.into())
+    Ok(key)
+}
+
+pub fn source_label(conn: &Connection, field: &str, id: &str) -> rusqlite::Result<String> {
+    source_label_key(conn, field, id).map(|key| vega_i18n::t(key).into())
 }

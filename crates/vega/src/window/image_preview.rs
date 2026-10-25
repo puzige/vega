@@ -63,6 +63,20 @@ impl ImagePreviewController {
 }
 
 impl VegaWindow {
+    pub(super) fn refresh_image_language(&mut self, cx: &mut Context<Self>) {
+        let Some(active) = &self.image_preview.active else {
+            return;
+        };
+        let image = active.image.clone();
+        let names = self
+            .image_preview
+            .applications
+            .iter()
+            .map(|application| application.display_label())
+            .collect();
+        image.update(cx, |image, cx| image.refresh_application_labels(names, cx));
+    }
+
     fn image_source_current(
         &self,
         stream: &Entity<ConversationStream>,
@@ -262,13 +276,13 @@ impl VegaWindow {
                         })
                         .await;
                     Some(if success {
-                        "图片已保存"
+                        "app.image.saved"
                     } else {
-                        "保存失败，请选择新的文件名重试"
+                        "app.image.save_name_failed"
                     })
                 }
                 Ok(Ok(None)) => None,
-                _ => Some("保存失败，请重试"),
+                _ => Some("app.image.save_failed"),
             };
             let _ = this.update(cx, |this, cx| {
                 this.sync_image_route(cx);
@@ -276,7 +290,7 @@ impl VegaWindow {
                     && this.image_request_current(&stream, &image, pane, cx)
                     && project == cx.global::<SelectedProject>().0;
                 image.update(cx, |view, cx| {
-                    view.finish(current.then_some(status).flatten(), cx)
+                    view.finish_localized(current.then_some(status).flatten(), cx)
                 });
             });
         })
@@ -334,12 +348,12 @@ impl VegaWindow {
                 this.image_preview.operation = None;
                 match result {
                     Ok(applications) => {
-                        let names = applications.iter().map(|app| app.label.clone()).collect();
+                        let names = applications.iter().map(|app| app.display_label()).collect();
                         this.image_preview.applications = applications;
                         image.update(cx, |view, cx| view.set_applications(names, cx));
                     }
                     Err(error) => {
-                        image.update(cx, |view, cx| view.finish(Some(error.message()), cx))
+                        image.update(cx, |view, cx| view.finish_localized(Some(error.key()), cx))
                     }
                 }
             });
@@ -403,7 +417,7 @@ impl VegaWindow {
                 }
                 this.image_preview.operation = None;
                 image.update(cx, |view, cx| {
-                    view.finish(result.err().map(|error| error.message()), cx)
+                    view.finish_localized(result.err().map(|error| error.key()), cx)
                 });
             });
         })

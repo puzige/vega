@@ -142,6 +142,8 @@ impl Default for Defaults {
 pub struct UiPrefs {
     /// UI theme. Defaults to `"dark"`.
     pub theme: String,
+    #[serde(default = "default_ui_language")]
+    pub language: String,
     /// Whether the sidebar is collapsed (Cmd+B). Defaults to `false`; the
     /// serde default keeps configs written before this field loadable.
     #[serde(default)]
@@ -158,10 +160,15 @@ pub struct UiPrefs {
     pub sessions_collapsed: bool,
 }
 
+fn default_ui_language() -> String {
+    "en".to_string()
+}
+
 impl Default for UiPrefs {
     fn default() -> Self {
         Self {
             theme: "dark".to_string(),
+            language: default_ui_language(),
             sidebar_collapsed: false,
             sidebar_width: SIDEBAR_WIDTH_DEFAULT,
             projects_collapsed: false,

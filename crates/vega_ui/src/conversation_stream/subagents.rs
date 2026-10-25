@@ -241,7 +241,7 @@ impl ConversationStream {
             div()
                 .id("subagent-parent")
                 .role(Role::Button)
-                .aria_label("Back to parent")
+                .aria_label(vega_i18n::t("ui.back_to_parent"))
                 .track_focus(&self.subagent_parent_focus)
                 .tab_stop(true)
                 .border_1()
@@ -266,7 +266,7 @@ impl ConversationStream {
                         }
                     }),
                 )
-                .child("Back to parent")
+                .child(vega_i18n::t("ui.back_to_parent"))
                 .into_any_element(),
         )
     }

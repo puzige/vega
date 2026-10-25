@@ -349,6 +349,7 @@ impl ConversationMeter {
             | ConversationEvent::AssistantResponseStarted { .. }
             | ConversationEvent::ReasoningCompleted { .. }
             | ConversationEvent::AssistantResponseCompleted { .. }
+            | ConversationEvent::GeneratedNotice { .. }
             | ConversationEvent::ToolCallApproved { .. }
             | ConversationEvent::ToolCallRunning { .. }
             | ConversationEvent::ToolCallOutput { .. }

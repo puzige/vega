@@ -506,17 +506,20 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
         }
         let input = serde_json::from_str::<serde_json::Value>(&call.input_json).unwrap_or_default();
         let title = match call.tool.as_str() {
-            "spawn_agent" => format!(
-                "Delegate {}",
-                input
-                    .get("name")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("task")
+            "spawn_agent" => vega_i18n::t_args(
+                "domain.tool_card.delegate",
+                &[(
+                    "name",
+                    input
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or(vega_i18n::t("domain.tool_card.task")),
+                )],
             ),
-            "followup_agent" => "Continue agent".into(),
-            "list_agents" => "List agents".into(),
-            "wait_agent" => "Wait for agents".into(),
-            _ => "Stop agent".into(),
+            "followup_agent" => vega_i18n::t("domain.tool_card.continue").into(),
+            "list_agents" => vega_i18n::t("domain.tool_card.list").into(),
+            "wait_agent" => vega_i18n::t("domain.tool_card.wait").into(),
+            _ => vega_i18n::t("domain.tool_card.stop").into(),
         };
         return ToolCardInputProjection::Subagent {
             tool: call.tool.clone(),

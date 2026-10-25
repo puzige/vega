@@ -6,6 +6,7 @@ mod user_questions;
 pub use pending_messages::{PendingQueueAction, PendingQueueRequested, RunningMessageDefault};
 pub mod bench;
 mod computer_use;
+pub(crate) mod generated_notice;
 mod network_retry;
 mod screenshots;
 mod skills;

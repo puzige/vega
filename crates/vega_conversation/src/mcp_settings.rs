@@ -18,31 +18,31 @@ use vega_store::mcp_servers::{self, McpEnvSlot, McpServerDraft, McpServerRow, Mc
 
 #[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
 pub enum McpSettingsError {
-    #[error("MCP configuration is invalid")]
+    #[error("{}", vega_i18n::t("domain.mcp.invalid"))]
     Invalid,
-    #[error("MCP configuration changed; reconnect this server before retrying")]
+    #[error("{}", vega_i18n::t("domain.mcp.conflict"))]
     Conflict,
-    #[error("MCP server not found")]
+    #[error("{}", vega_i18n::t("domain.mcp.notfound"))]
     NotFound,
-    #[error("at most eight MCP servers may be enabled")]
+    #[error("{}", vega_i18n::t("domain.mcp.capacity"))]
     Capacity,
-    #[error("MCP configuration storage failed")]
+    #[error("{}", vega_i18n::t("domain.mcp.store"))]
     Store,
-    #[error("MCP credential storage is unavailable")]
+    #[error("{}", vega_i18n::t("domain.mcp.credential"))]
     Credential,
-    #[error("MCP credential requires an authorized API destination binding")]
+    #[error("{}", vega_i18n::t("domain.mcp.credentialbindingrequired"))]
     CredentialBindingRequired,
-    #[error("MCP authorization is required")]
+    #[error("{}", vega_i18n::t("domain.mcp.authorizationrequired"))]
     AuthorizationRequired,
-    #[error("this authorization server requires a public HTTPS Client ID Metadata identity")]
+    #[error("{}", vega_i18n::t("domain.mcp.cimdunavailable"))]
     CimdUnavailable,
-    #[error("MCP browser authorization failed or expired")]
+    #[error("{}", vega_i18n::t("domain.mcp.authorizationfailed"))]
     AuthorizationFailed,
-    #[error("MCP connection failed")]
+    #[error("{}", vega_i18n::t("domain.mcp.connection"))]
     Connection,
-    #[error("deprecated standalone HTTP+SSE transport is unsupported")]
+    #[error("{}", vega_i18n::t("domain.mcp.unsupportedtransport"))]
     UnsupportedTransport,
-    #[error("confirm this MCP server's command or endpoint before activation")]
+    #[error("{}", vega_i18n::t("domain.mcp.confirmationrequired"))]
     ConfirmationRequired,
 }
 

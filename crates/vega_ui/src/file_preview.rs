@@ -107,13 +107,13 @@ impl Render for FilePreview {
                             .overflow_hidden()
                             .child(self.preview.relative_path.replace(['\n', '\r'], " ")),
                     )
-                    .child("只读")
+                    .child(vega_i18n::t("ui.read_only"))
                     .child(
                         div()
                             .id("file-reveal")
                             .cursor_pointer()
                             .text_color(colors.text_secondary)
-                            .child("在 Finder 中显示")
+                            .child(vega_i18n::t("ui.show_in_finder"))
                             .on_mouse_up(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| {

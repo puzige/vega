@@ -32,7 +32,7 @@ pub(crate) struct PreparationModel {
     client: Option<ProbeClient>,
     pending: Option<CheckTicket>,
     service_status: ServiceStatus,
-    adapter_error: Option<String>,
+    adapter_error: Option<session::AdapterError>,
     owners: Vec<CallbackIdentity>,
     poll: Option<CancellationToken>,
     initialized: bool,
@@ -163,7 +163,7 @@ impl PreparationModel {
                 match result {
                     Ok(()) => self.pending = Some(ticket),
                     Err(error) => {
-                        self.adapter_error = Some(error.to_string());
+                        self.adapter_error = Some(error);
                         self.controller
                             .complete(ticket, Err(ComputerUseError::Unavailable));
                         self.pending = None;
@@ -222,7 +222,7 @@ impl PreparationModel {
                         self.controller
                             .complete(ticket, Err(ComputerUseError::Unavailable));
                     }
-                    self.adapter_error = Some(error.to_string());
+                    self.adapter_error = Some(error);
                     self.client = None;
                     self.retained = true;
                     cx.notify();
@@ -241,17 +241,25 @@ impl PreparationModel {
     pub(crate) fn snapshot(&self) -> PreparationSnapshot {
         let view = self.controller.view();
         let guide_warning = if matches!(self.service_status.cleanup, CleanupStatus::Failed(_)) {
-            Some("回收失败，请在权限与检测中重试")
+            Some(vega_i18n::t(
+                "ui.cleanup_failed_retry_in_permissions_and_checks",
+            ))
         } else if self.service_status.failure.is_some() || self.adapter_error.is_some() {
-            Some("检测不可用，请在权限与检测中处理")
+            Some(vega_i18n::t(
+                "ui.checks_are_unavailable_open_permissions_and_checks",
+            ))
         } else if self.service_status.last_close_error.is_some()
             && self.service_status.cleanup != CleanupStatus::Clear
         {
-            Some("回收未确认，请在权限与检测中处理")
+            Some(vega_i18n::t(
+                "ui.cleanup_is_unconfirmed_open_permissions_and_checks",
+            ))
         } else if matches!(view.check_state, CheckState::Busy | CheckState::Failed(_))
             || self.service_status.last_inspection_error.is_some()
         {
-            Some("检测未完成，请在权限与检测中处理")
+            Some(vega_i18n::t(
+                "ui.checks_are_incomplete_open_permissions_and_checks",
+            ))
         } else {
             None
         };
@@ -260,62 +268,84 @@ impl PreparationModel {
             feedback.push(PreparationFeedback { message, warning });
         };
         match view.check_state {
-            CheckState::Idle => push("尚未检测，请重新检测权限状态。".into(), false),
+            CheckState::Idle => push(
+                vega_i18n::t("ui.permissions_have_not_been_checked_check_again").into(),
+                false,
+            ),
             CheckState::Checking => push(
                 if view.component.is_some() {
-                    "正在检测权限，下方保留上次检测结果。"
+                    vega_i18n::t("ui.checking_permissions_previous_results_remain_below")
                 } else {
-                    "正在检测权限…"
+                    vega_i18n::t("ui.checking_permissions")
                 }
                 .into(),
                 false,
             ),
             CheckState::Observed => {}
             CheckState::Busy => push(
-                "另一个任务正在使用电脑操控。请先停止该任务，再重新检测。".into(),
+                vega_i18n::t("ui.another_task_is_using_computer_control_stop_that").into(),
                 true,
             ),
-            CheckState::Unknown => {
-                push("部分权限状态未知。请检查系统设置后重新检测。".into(), true)
-            }
+            CheckState::Unknown => push(
+                vega_i18n::t("ui.some_permission_states_are_unknown_check_system_settings").into(),
+                true,
+            ),
             CheckState::Failed(error) => push(
-                format!("{}。处理后可重新检测。", error.user_message()),
+                vega_i18n::t_args(
+                    "ui.error_resolve_the_issue_then_check_again",
+                    &[("error", error.user_message())],
+                ),
                 true,
             ),
         }
         if self.retained && view.check_state != CheckState::Checking {
-            push("下方为保留状态；请重新检测以确认当前权限。".into(), false);
+            push(
+                vega_i18n::t("ui.the_status_below_is_retained_check_again_to").into(),
+                false,
+            );
         }
         if let Some(error) = &self.adapter_error {
-            push(error.clone(), true);
+            push(error.to_string(), true);
         }
         if let Some(error) = &self.service_status.failure {
-            push(error.clone(), true);
+            push(error.to_string(), true);
         }
         if let Some(error) = self.service_status.last_inspection_error
             && view.check_state != CheckState::Failed(error)
             && !(view.check_state == CheckState::Busy && error == ComputerUseError::Busy)
         {
-            push(format!("上次检测失败：{}。", error.user_message()), true);
+            push(
+                vega_i18n::t_args(
+                    "ui.last_check_failed_error",
+                    &[("error", error.user_message())],
+                ),
+                true,
+            );
         }
         if let Some(error) = self.service_status.last_close_error {
             let recovery = if self.service_status.cleanup == CleanupStatus::Clear {
-                "后续回收已完成，可重新检测。"
+                vega_i18n::t("ui.cleanup_has_since_completed_you_can_check_again")
             } else {
-                "回收尚未确认，请重新检测以重试。"
+                vega_i18n::t("ui.cleanup_is_still_unconfirmed_check_again_to_retry")
             };
             push(
-                format!("关闭检测时发生错误：{}。{recovery}", error.user_message()),
+                vega_i18n::t_args(
+                    "ui.error_while_closing_the_check_error_recovery",
+                    &[("error", error.user_message()), ("recovery", recovery)],
+                ),
                 true,
             );
         }
         match self.service_status.cleanup {
             CleanupStatus::Clear => {}
-            CleanupStatus::Reclaiming => push("正在回收准备检测资源…".into(), false),
+            CleanupStatus::Reclaiming => push(
+                vega_i18n::t("ui.cleaning_up_permission_check_resources").into(),
+                false,
+            ),
             CleanupStatus::Failed(error) => push(
-                format!(
-                    "准备检测回收失败：{}。电脑操控可能仍被占用。请重新检测以重试；仍失败时请重启 Vega。",
-                    error.user_message()
+                vega_i18n::t_args(
+                    "ui.permission_check_cleanup_failed_error_computer_control_may",
+                    &[("error", error.user_message())],
                 ),
                 true,
             ),

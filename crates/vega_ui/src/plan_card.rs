@@ -23,8 +23,9 @@ pub struct PlanReviewRequested {
 /// Persisted Plan projection plus local duplicate-submit suppression.
 pub struct PlanCard {
     plan: Plan,
+    generated_notices: Vec<crate::conversation_stream::generated_notice::GeneratedNoticeSpan>,
     submitted: bool,
-    feedback: Option<String>,
+    feedback: Option<crate::localized_copy::LocalizedCopy>,
     focus: [FocusHandle; 3],
     focus_index: usize,
 }
@@ -35,6 +36,7 @@ impl PlanCard {
     pub fn new(plan: Plan, cx: &mut Context<Self>) -> Self {
         Self {
             plan,
+            generated_notices: Vec::new(),
             submitted: false,
             feedback: None,
             focus: [
@@ -50,9 +52,30 @@ impl PlanCard {
         self.plan.status
     }
 
+    pub(crate) fn set_generated_notices(
+        &mut self,
+        notices: Vec<crate::conversation_stream::generated_notice::GeneratedNoticeSpan>,
+        cx: &mut Context<Self>,
+    ) {
+        self.generated_notices = notices;
+        cx.notify();
+    }
+
+    fn display_content(&self) -> String {
+        let notices = self
+            .generated_notices
+            .iter()
+            .filter(|span| span.is_valid_for(&self.plan.content))
+            .filter_map(|span| span.fragments(0..self.plan.content.len()))
+            .collect::<Vec<_>>();
+        crate::conversation_stream::generated_notice::project_text(&self.plan.content, &notices)
+    }
+
     pub fn apply_persisted(&mut self, plan: Plan, cx: &mut Context<Self>) {
         if plan.id != self.plan.id || plan.thread_id != self.plan.thread_id {
-            self.feedback = Some("计划状态损坏".into());
+            self.feedback = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.plan_state_corrupted",
+            ));
             self.submitted = true;
         } else {
             self.plan = plan;
@@ -63,13 +86,15 @@ impl PlanCard {
     }
 
     pub fn apply_stale(&mut self, cx: &mut Context<Self>) {
-        self.feedback = Some("该计划已被处理或替代".into());
+        self.feedback = Some(crate::localized_copy::LocalizedCopy::new(
+            "ui.this_plan_has_already_been_handled_or_replaced",
+        ));
         self.submitted = true;
         cx.notify();
     }
 
     pub fn row_count(&self) -> usize {
-        let content = self.plan.content.lines().count().max(1);
+        let content = self.display_content().lines().count().max(1);
         1 + content + 1 + usize::from(self.feedback.is_some())
     }
 
@@ -122,7 +147,7 @@ impl PlanCard {
     }
 
     pub fn render_read_only(card: Entity<Self>, window: &mut Window, cx: &mut App) -> AnyElement {
-        let rows = card.read(cx).plan.content.lines().count().max(1) + 1;
+        let rows = card.read(cx).display_content().lines().count().max(1) + 1;
         let feedback = card.read(cx).feedback.clone();
         let review_note = card.read(cx).plan.review_note.clone();
         let colors = theme(cx).colors;
@@ -134,9 +159,12 @@ impl PlanCard {
             .children(
                 review_note.map(|note| div().px_3().text_color(colors.text_secondary).child(note)),
             )
-            .children(
-                feedback.map(|feedback| div().px_3().text_color(colors.danger).child(feedback)),
-            )
+            .children(feedback.map(|feedback| {
+                div()
+                    .px_3()
+                    .text_color(colors.danger)
+                    .child(feedback.render())
+            }))
             .into_any_element()
     }
 
@@ -156,7 +184,8 @@ impl PlanCard {
                 snapshot.focus.clone(),
             )
         };
-        let content_lines: Vec<&str> = plan.content.lines().collect();
+        let content = card.read(cx).display_content();
+        let content_lines: Vec<&str> = content.lines().collect();
         let content_count = content_lines.len().max(1);
         let base = div()
             .h(px(ROW_HEIGHT))
@@ -174,7 +203,10 @@ impl PlanCard {
                 .rounded_tl_lg()
                 .rounded_tr_lg()
                 .text_size(px(Typography::HEADING_CARD))
-                .child(format!("计划 · {}", status_label(plan.status)))
+                .child(vega_i18n::t_args(
+                    "ui.plan_status",
+                    &[("status", &(status_label(plan.status)).to_string())],
+                ))
                 .into_any_element();
         }
         if row <= content_count {
@@ -212,28 +244,46 @@ impl PlanCard {
                         previous_card.update(cx, |card, cx| card.previous(action, window, cx));
                     })
                     .child(
-                        action_button("批准并执行", pending, colors.accent, focus[0].clone(), 0)
-                            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                                approve_card.update(cx, PlanCard::approve);
-                            }),
+                        action_button(
+                            vega_i18n::t("ui.approve_and_run"),
+                            pending,
+                            colors.accent,
+                            focus[0].clone(),
+                            0,
+                        )
+                        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                            approve_card.update(cx, PlanCard::approve);
+                        }),
                     )
                     .child(
-                        action_button("要求修改", pending, colors.warning, focus[1].clone(), 1)
-                            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                                changes_card.update(cx, PlanCard::changes);
-                            }),
+                        action_button(
+                            vega_i18n::t("ui.request_changes"),
+                            pending,
+                            colors.warning,
+                            focus[1].clone(),
+                            1,
+                        )
+                        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                            changes_card.update(cx, PlanCard::changes);
+                        }),
                     )
                     .child(
-                        action_button("放弃", pending, colors.danger, focus[2].clone(), 2)
-                            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                                abandon_card.update(cx, PlanCard::abandon);
-                            }),
+                        action_button(
+                            vega_i18n::t("ui.abandon"),
+                            pending,
+                            colors.danger,
+                            focus[2].clone(),
+                            2,
+                        )
+                        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                            abandon_card.update(cx, PlanCard::abandon);
+                        }),
                     );
             } else {
                 actions = actions.child(
                     plan.review_note
                         .clone()
-                        .unwrap_or_else(|| "审核已完成".into()),
+                        .unwrap_or_else(|| vega_i18n::t("ui.review_completed").into()),
                 );
             }
             return base
@@ -244,7 +294,7 @@ impl PlanCard {
                 .into_any_element();
         }
         base.text_color(colors.danger)
-            .child(feedback.unwrap_or_default())
+            .child(feedback.map(|copy| copy.render()).unwrap_or_default())
             .into_any_element()
     }
 }
@@ -270,9 +320,9 @@ fn action_button(
 
 fn status_label(status: PlanStatus) -> &'static str {
     match status {
-        PlanStatus::Pending => "待审批",
-        PlanStatus::Approved => "已批准",
-        PlanStatus::ChangesRequested => "需修改",
-        PlanStatus::Abandoned => "已放弃",
+        PlanStatus::Pending => vega_i18n::t("ui.pending_approval"),
+        PlanStatus::Approved => vega_i18n::t("ui.approved"),
+        PlanStatus::ChangesRequested => vega_i18n::t("ui.changes_requested"),
+        PlanStatus::Abandoned => vega_i18n::t("ui.abandoned"),
     }
 }

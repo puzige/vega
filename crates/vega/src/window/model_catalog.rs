@@ -19,7 +19,7 @@ impl VegaWindow {
                 view.apply_model_catalog(
                     request,
                     ModelCatalogProjection {
-                        error: Some("模型目录缓存路径不可用；仍可手动配置".into()),
+                        error: Some(vega_i18n::t("app.catalog.path_unavailable").into()),
                         ..Default::default()
                     },
                     cx,
@@ -51,6 +51,7 @@ impl VegaWindow {
                     {
                         return false;
                     }
+                    crate::app_localization::translate_error(&mut cached.error);
                     view.update(cx, |view, cx| {
                         view.apply_model_catalog(&request, cached, cx)
                     })
@@ -60,7 +61,7 @@ impl VegaWindow {
                 return;
             }
             let owner = request.owner.clone();
-            let result = cx
+            let mut result = cx
                 .background_executor()
                 .spawn(async move {
                     crate::model_catalog::refresh(&root, &owner, crate::model_catalog::now_ms())
@@ -68,6 +69,7 @@ impl VegaWindow {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if cx.global::<SettingsOpen>().0 && this.settings_view.as_ref() == Some(&view) {
+                    crate::app_localization::translate_error(&mut result.error);
                     view.update(cx, |view, cx| {
                         view.apply_model_catalog(&request, result, cx);
                     });

@@ -1150,10 +1150,10 @@ impl RunActivityGroup {
 
     fn label(&self) -> String {
         if self.continued {
-            return "Activity".into();
+            return vega_i18n::t("ui.activity").into();
         }
         if self.status == RunActivityStatus::Running && self.waiting_for_answer {
-            return "Waiting for your answer".into();
+            return vega_i18n::t("ui.waiting_for_your_answer").into();
         }
         let duration = self.execution_duration_ms.or_else(|| {
             self.started_at
@@ -1166,23 +1166,23 @@ impl RunActivityGroup {
                     u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
                 })
         });
-        let status = match self.status {
-            RunActivityStatus::Running if self.waiting_for_user => "Awaiting confirmation for",
-            RunActivityStatus::Running => "Working for",
-            RunActivityStatus::Completed => "Worked for",
-            RunActivityStatus::Failed => "Failed after",
-            RunActivityStatus::Interrupted => "Stopped after",
+        let duration_key = match self.status {
+            RunActivityStatus::Running if self.waiting_for_user => "ui.run_awaiting_duration",
+            RunActivityStatus::Running => "ui.run_working_duration",
+            RunActivityStatus::Completed => "ui.run_completed_duration",
+            RunActivityStatus::Failed => "ui.run_failed_duration",
+            RunActivityStatus::Interrupted => "ui.run_stopped_duration",
         };
         duration
-            .map(|value| format!("{status} {}", format_run_clock(value)))
+            .map(|value| vega_i18n::t_args(duration_key, &[("duration", &format_run_clock(value))]))
             .unwrap_or_else(|| match self.status {
                 RunActivityStatus::Running if self.waiting_for_user => {
-                    "Awaiting confirmation".into()
+                    vega_i18n::t("ui.awaiting_confirmation").into()
                 }
-                RunActivityStatus::Running => "Working".into(),
-                RunActivityStatus::Completed => "Completed".into(),
-                RunActivityStatus::Failed => "Failed".into(),
-                RunActivityStatus::Interrupted => "Stopped".into(),
+                RunActivityStatus::Running => vega_i18n::t("ui.working").into(),
+                RunActivityStatus::Completed => vega_i18n::t("ui.completed").into(),
+                RunActivityStatus::Failed => vega_i18n::t("ui.failed").into(),
+                RunActivityStatus::Interrupted => vega_i18n::t("ui.stopped").into(),
             })
     }
 
@@ -1232,9 +1232,15 @@ impl RunActivityGroup {
             .track_focus(&header_focus)
             .tab_stop(can_expand)
             .aria_expanded(expanded)
-            .aria_label(format!(
-                "{label}, {} run activity",
-                if expanded { "collapse" } else { "expand" }
+            .aria_label(vega_i18n::t_args(
+                "ui.run_disclosure",
+                &[
+                    ("label", &label),
+                    (
+                        "action",
+                        vega_i18n::t(if expanded { "ui.collapse" } else { "ui.expand" }),
+                    ),
+                ],
             ))
             .focus_visible(move |row| row.bg(colors.bg_hover))
             .relative()
@@ -1447,7 +1453,9 @@ impl RunActivityGroup {
             {
                 let summary = card.read(cx).summary_title().map(str::to_owned);
                 return StageHeadline {
-                    title: summary.clone().unwrap_or_else(|| "Thinking".into()),
+                    title: summary
+                        .clone()
+                        .unwrap_or_else(|| vega_i18n::t("ui.thinking").into()),
                     icon: None,
                     live,
                     summary: summary.map(|_| card.clone()),
@@ -1456,7 +1464,7 @@ impl RunActivityGroup {
             if let Some((card, _)) = tool {
                 let card = card.read(cx);
                 return StageHeadline {
-                    title: card.headline_title().to_owned(),
+                    title: card.headline_title(),
                     icon: Some(card.leading_icon()),
                     live,
                     summary: None,
@@ -1467,7 +1475,7 @@ impl RunActivityGroup {
                     let card = card.read(cx);
                     if let Some(title) = card.completed_command_headline() {
                         return StageHeadline {
-                            title: title.to_owned(),
+                            title,
                             icon: Some(card.leading_icon()),
                             live: false,
                             summary: None,
@@ -1505,7 +1513,7 @@ impl RunActivityGroup {
             title: summary
                 .as_ref()
                 .and_then(|card| card.read(cx).summary_title().map(str::to_owned))
-                .unwrap_or_else(|| "Thought".into()),
+                .unwrap_or_else(|| vega_i18n::t("ui.thought").into()),
             icon: None,
             live: false,
             summary,
@@ -1650,9 +1658,20 @@ impl RunActivityGroup {
                     .tab_stop(can_expand)
                     .when(can_expand, |row| row.aria_expanded(expanded))
                     .aria_label(if can_expand {
-                        format!(
-                            "{title}, {} stage activity",
-                            if expanded { "collapse" } else { "expand" }
+                        vega_i18n::t_args(
+                            "ui.stage_disclosure",
+                            &[
+                                ("title", &title),
+                                (
+                                    "action",
+                                    &(vega_i18n::t(if expanded {
+                                        "ui.collapse"
+                                    } else {
+                                        "ui.expand"
+                                    }))
+                                    .to_string(),
+                                ),
+                            ],
                         )
                     } else {
                         title.clone()
@@ -1755,7 +1774,7 @@ impl RunActivityGroup {
                         .pt(px(Layout::PROCESS_ITEM_GAP))
                         .text_size(px(Typography::METADATA))
                         .text_color(colors.text_tertiary)
-                        .child("Earlier thinking omitted")
+                        .child(vega_i18n::t("ui.earlier_thinking_omitted"))
                         .into_any_element(),
                 ));
             }

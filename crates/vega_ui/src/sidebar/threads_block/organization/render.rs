@@ -161,8 +161,8 @@ impl ThreadsBlock {
         let id = id.into();
         let label = label.into();
         let aria = match &action {
-            Control::CollapseAll => "收起全部".to_string(),
-            Control::Menu(_) => "组织操作".to_string(),
+            Control::CollapseAll => vega_i18n::t("ui.collapse_all").to_string(),
+            Control::Menu(_) => vega_i18n::t("ui.organization_actions").to_string(),
             _ => label.clone(),
         };
         let keyboard_action = action.clone();
@@ -277,7 +277,7 @@ impl ThreadsBlock {
                 .flex()
                 .flex_col()
                 .gap_1()
-                .child(self.section_label("正在载入", cx))
+                .child(self.section_label(vega_i18n::t("ui.loading_335"), cx))
                 .into_any_element();
         };
         self.prepare_reorder();
@@ -455,9 +455,9 @@ impl ThreadsBlock {
         self.vector_control(
             "organization-archive",
             if self.organization.as_ref().is_some_and(|org| org.archive) {
-                "隐藏已归档"
+                vega_i18n::t("ui.hide_archived")
             } else {
-                "显示已归档"
+                vega_i18n::t("ui.show_archived")
             },
             crate::icons::Icon::Archive,
             Control::Archive,
@@ -481,7 +481,7 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let colors = theme(cx).colors;
-        let label = "已固定";
+        let label = vega_i18n::t("sidebar.pinned");
         let mut pinned: Vec<_> = self
             .eligible_threads(show_archived)
             .into_iter()
@@ -541,7 +541,7 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        let label = "最近任务";
+        let label = vega_i18n::t("sidebar.recents");
         let mut standalone: Vec<_> = self
             .threads
             .iter()
@@ -581,7 +581,7 @@ impl ThreadsBlock {
                     .child(self.archive_control(!header_actions_visible, cx))
                     .child(self.vector_control(
                         "organization-new-session",
-                        "新建独立任务",
+                        vega_i18n::t("ui.new_standalone_task"),
                         crate::icons::Icon::Plus,
                         Control::NewStandalone,
                         !header_actions_visible,
@@ -622,7 +622,7 @@ impl ThreadsBlock {
                 .items_center()
                 .text_size(px(Typography::SIDEBAR))
                 .text_color(colors.text_tertiary)
-                .child("暂无最近任务")
+                .child(vega_i18n::t("ui.no_recent_tasks"))
         });
         div()
             .id("organization-recents")
@@ -648,7 +648,7 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        let label = "项目";
+        let label = vega_i18n::t("sidebar.projects");
         let header_actions_visible = self.hovered_section == Some(OrganizationSection::Projects)
             || self.focused_section == Some(OrganizationSection::Projects);
         let header = div()
@@ -667,7 +667,7 @@ impl ThreadsBlock {
             )
             .child(div().child(self.vector_control(
                 "organization-add-project",
-                "添加项目文件夹",
+                vega_i18n::t("ui.add_project_folder"),
                 crate::icons::Icon::FolderPlus,
                 Control::AddProject,
                 !header_actions_visible,
@@ -714,7 +714,11 @@ impl ThreadsBlock {
     fn render_progressive_control(&self, expanded: bool, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let state_name = if expanded { "less" } else { "more" };
-        let label = if expanded { "收起" } else { "展开更多" };
+        let label = if expanded {
+            vega_i18n::t("ui.collapse")
+        } else {
+            vega_i18n::t("ui.show_more")
+        };
         let id = format!("organization-projects-show-{state_name}");
         let focus = &self.projects_progressive_focus;
         div()
@@ -770,7 +774,7 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        let label = "展开更多";
+        let label = vega_i18n::t("ui.show_more");
         let id = format!("project-{project_id}-show-more");
         let mouse_project_id = project_id.to_owned();
         let keyboard_project_id = project_id.to_owned();
@@ -856,10 +860,20 @@ impl ThreadsBlock {
             .focusable()
             .tab_stop(true)
             .role(gpui_kit::Role::Button)
-            .aria_label(format!(
-                "{}，{}",
-                project.name,
-                if collapsed { "已收起" } else { "已展开" }
+            .aria_label(vega_i18n::t_args(
+                "ui.disclosure_state",
+                &[
+                    ("name", &project.name),
+                    (
+                        "state",
+                        &(if collapsed {
+                            vega_i18n::t("ui.collapsed")
+                        } else {
+                            vega_i18n::t("ui.expanded")
+                        })
+                        .to_string(),
+                    ),
+                ],
             ))
             .aria_expanded(!collapsed)
             .cursor_pointer()
@@ -947,7 +961,7 @@ impl ThreadsBlock {
                     .gap_1()
                     .child(self.vector_control(
                         format!("project-add-{}", project.id),
-                        format!("在 {} 中新建任务", project.name),
+                        vega_i18n::t_args("ui.new_task_in_project", &[("project", &project.name)]),
                         crate::icons::Icon::Plus,
                         Control::NewProjectTask(project_for_add),
                         !actions_visible,
@@ -955,7 +969,10 @@ impl ThreadsBlock {
                     ))
                     .child(self.vector_control(
                         format!("project-more-{}", project.id),
-                        format!("{} 项目操作", project.name),
+                        vega_i18n::t_args(
+                            "ui.project_project_actions",
+                            &[("project", &project.name)],
+                        ),
                         crate::icons::Icon::More,
                         Control::Menu(OrganizationMenu::Project(project_for_menu)),
                         !actions_visible,
@@ -1021,7 +1038,7 @@ impl ThreadsBlock {
                 .as_ref()
                 .map(|thread| thread.id.clone());
             if tasks.is_empty() && !has_pinned {
-                section = section.child(self.section_label("暂无任务", cx));
+                section = section.child(self.section_label(vega_i18n::t("ui.no_tasks"), cx));
             } else {
                 section = section.children(tasks.iter().take(visible_count).map(|thread| {
                     self.render_pi_row(

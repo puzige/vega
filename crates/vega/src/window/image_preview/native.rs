@@ -14,6 +14,17 @@ use vega_conversation::types::ImageAttachment;
 pub(super) struct ImageApplication {
     pub(super) label: String,
     pub(super) path: PathBuf,
+    pub(super) is_default: bool,
+}
+
+impl ImageApplication {
+    pub(super) fn display_label(&self) -> String {
+        if self.is_default {
+            vega_i18n::t_args("app.image.default_app", &[("label", &self.label)])
+        } else {
+            self.label.clone()
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,14 +38,14 @@ pub(super) enum ImageOpenError {
 }
 
 impl ImageOpenError {
-    pub(super) fn message(self) -> &'static str {
+    pub(super) fn key(self) -> &'static str {
         match self {
-            Self::Cancelled => "打开已取消",
-            Self::Limit => "临时图片已达上限，请保存到本地后打开",
-            Self::File => "无法准备图片，请保存到本地后打开",
-            Self::Applications => "无法查询打开方式，请保存到本地后打开",
-            Self::Launch => "打开失败，请重试或保存到本地",
-            Self::TimedOut => "打开请求超时，图片仍保留供应用读取",
+            Self::Cancelled => "app.image.cancelled",
+            Self::Limit => "app.image.limit",
+            Self::File => "app.image.file_failed",
+            Self::Applications => "app.image.applications_failed",
+            Self::Launch => "app.image.launch_failed",
+            Self::TimedOut => "app.image.timeout",
         }
     }
 }

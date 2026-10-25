@@ -152,12 +152,22 @@ impl ToolActivityGroup {
             .collect::<Vec<_>>()
             .join(", ");
         match self.aggregate_state(cx) {
-            ToolActivityState::Superseded => "Not run after takeover".into(),
-            ToolActivityState::Success => format!("Completed: {actions}"),
-            ToolActivityState::Active => format!("In progress: {actions}"),
-            ToolActivityState::Rejected => format!("Rejected calls: {actions}"),
-            ToolActivityState::Cancelled => format!("Cancelled calls: {actions}"),
-            ToolActivityState::Failed => format!("Failed calls: {actions}"),
+            ToolActivityState::Superseded => vega_i18n::t("ui.not_run_after_takeover").into(),
+            ToolActivityState::Success => {
+                vega_i18n::t_args("ui.completed_actions", &[("actions", &actions)])
+            }
+            ToolActivityState::Active => {
+                vega_i18n::t_args("ui.in_progress_actions", &[("actions", &actions)])
+            }
+            ToolActivityState::Rejected => {
+                vega_i18n::t_args("ui.rejected_calls_actions", &[("actions", &actions)])
+            }
+            ToolActivityState::Cancelled => {
+                vega_i18n::t_args("ui.cancelled_calls_actions", &[("actions", &actions)])
+            }
+            ToolActivityState::Failed => {
+                vega_i18n::t_args("ui.failed_calls_actions", &[("actions", &actions)])
+            }
         }
     }
 
@@ -214,9 +224,16 @@ impl ToolActivityGroup {
                 .group(disclosure_group.clone())
                 .track_focus(&focus)
                 .aria_expanded(expanded)
-                .aria_label(format!(
-                    "{summary}, {} tool group",
-                    if expanded { "collapse" } else { "expand" }
+                .aria_label(vega_i18n::t_args(
+                    "ui.tool_group_disclosure",
+                    &[
+                        ("summary", &summary),
+                        (
+                            "action",
+                            &(vega_i18n::t(if expanded { "ui.collapse" } else { "ui.expand" }))
+                                .to_string(),
+                        ),
+                    ],
                 ))
                 .tab_stop(true)
                 .focus_visible(move |row| row.bg(colors.bg_hover))

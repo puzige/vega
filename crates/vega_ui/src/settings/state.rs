@@ -4,6 +4,8 @@ use super::*;
 pub struct SettingsView {
     pub(crate) catalog: super::model_catalog::CatalogUi,
     pub(crate) updater: vega_conversation::types::UpdateProjection,
+    pub(super) updater_message: Option<SettingsText>,
+    pub(super) updater_version: Option<SettingsText>,
     pub(crate) updater_notes: Option<crate::conversation_stream::StreamModel>,
     pub(crate) updater_notes_open: bool,
     pub(crate) updater_notes_scroll: gpui_kit::ScrollHandle,
@@ -43,7 +45,7 @@ pub struct SettingsView {
     pub(crate) model_open: bool,
     /// Inline error message (ui-spec §4.6: no modals); empty until an IO or
     /// local credential failure occurs.
-    pub(crate) error: Option<String>,
+    pub(super) error: Option<SettingsText>,
     pub(crate) pricing: PricingSettingsProjection,
     pub(crate) pricing_editor: Option<PricingEditor>,
     pub(crate) pricing_model_input: Entity<TextInput>,
@@ -114,7 +116,10 @@ impl SettingsView {
     pub fn from_path(path: Option<std::path::PathBuf>, cx: &mut Context<Self>) -> Self {
         let (config, error) = match path.as_deref().map(config::load_from) {
             Some(Ok(config)) => (config, None),
-            _ => (AppConfig::default(), Some("配置加载失败".into())),
+            _ => (
+                AppConfig::default(),
+                Some(t("settings.config.load_failed").into()),
+            ),
         };
         let mut view = Self::from_config(config, error, cx);
         view.config_path = path;
@@ -169,30 +174,74 @@ impl SettingsView {
             }
         })
         .detach();
-        let name_input = cx.new(|cx| TextInput::new(cx, "名称", false).with_tab_stop(true));
-        let base_url_input = cx.new(|cx| TextInput::new(cx, "Base URL", false).with_tab_stop(true));
+        let name_input = cx.new(|cx| {
+            TextInput::new(cx, "", false)
+                .with_placeholder_key("settings.field.name")
+                .with_tab_stop(true)
+        });
+        let base_url_input = cx.new(|cx| {
+            TextInput::new(cx, "", false)
+                .with_placeholder_key("settings.field.base_url")
+                .with_tab_stop(true)
+        });
         let models_input = cx.new(|cx| {
-            TextInput::new_multiline(cx, "模型 ID（每行一个）", PROVIDER_MODELS_MIN_ROWS)
+            TextInput::new_multiline(cx, "", PROVIDER_MODELS_MIN_ROWS)
+                .with_placeholder_key("settings.provider.models_placeholder")
                 .with_row_bounds(PROVIDER_MODELS_MIN_ROWS, PROVIDER_MODELS_MAX_ROWS)
                 .with_tab_stop(true)
         });
-        let key_input = cx.new(|cx| TextInput::new(cx, "API Key", true).with_tab_stop(true));
-        let codex_name_input =
-            cx.new(|cx| TextInput::new(cx, "显示名称", false).with_tab_stop(true));
-        let codex_executable_input =
-            cx.new(|cx| TextInput::new(cx, "绝对 executable 路径", false).with_tab_stop(true));
-        let codex_args_input = cx
-            .new(|cx| TextInput::new_multiline(cx, "参数（每行一个 argv）", 2).with_tab_stop(true));
-        let pricing_model_input = cx.new(|cx| TextInput::new(cx, "模型 ID", false));
+        let key_input = cx.new(|cx| {
+            TextInput::new(cx, "", true)
+                .with_placeholder_key("settings.field.api_key")
+                .with_tab_stop(true)
+        });
+        let codex_name_input = cx.new(|cx| {
+            TextInput::new(cx, "", false)
+                .with_placeholder_key("settings.agents.codex.name_placeholder")
+                .with_tab_stop(true)
+        });
+        let codex_executable_input = cx.new(|cx| {
+            TextInput::new(cx, "", false)
+                .with_placeholder_key("settings.agents.codex.executable_placeholder")
+                .with_tab_stop(true)
+        });
+        let codex_args_input = cx.new(|cx| {
+            TextInput::new_multiline(cx, "", 2)
+                .with_placeholder_key("settings.agents.codex.arguments_placeholder")
+                .with_tab_stop(true)
+        });
+        let pricing_model_input = cx.new(|cx| {
+            TextInput::new(cx, "", false).with_placeholder_key("settings.field.model_id")
+        });
         let pricing_rate_inputs = [
-            cx.new(|cx| TextInput::new(cx, "Base Input", false)),
-            cx.new(|cx| TextInput::new(cx, "Base Output", false)),
-            cx.new(|cx| TextInput::new(cx, "Base Cache Read", false)),
-            cx.new(|cx| TextInput::new(cx, "Base Cache Write", false)),
-            cx.new(|cx| TextInput::new(cx, "Peak Input", false)),
-            cx.new(|cx| TextInput::new(cx, "Peak Output", false)),
-            cx.new(|cx| TextInput::new(cx, "Peak Cache Read", false)),
-            cx.new(|cx| TextInput::new(cx, "Peak Cache Write", false)),
+            cx.new(|cx| {
+                TextInput::new(cx, "", false).with_placeholder_key("settings.pricing.base_input")
+            }),
+            cx.new(|cx| {
+                TextInput::new(cx, "", false).with_placeholder_key("settings.pricing.base_output")
+            }),
+            cx.new(|cx| {
+                TextInput::new(cx, "", false)
+                    .with_placeholder_key("settings.pricing.base_cache_read")
+            }),
+            cx.new(|cx| {
+                TextInput::new(cx, "", false)
+                    .with_placeholder_key("settings.pricing.base_cache_write")
+            }),
+            cx.new(|cx| {
+                TextInput::new(cx, "", false).with_placeholder_key("settings.pricing.peak_input")
+            }),
+            cx.new(|cx| {
+                TextInput::new(cx, "", false).with_placeholder_key("settings.pricing.peak_output")
+            }),
+            cx.new(|cx| {
+                TextInput::new(cx, "", false)
+                    .with_placeholder_key("settings.pricing.peak_cache_read")
+            }),
+            cx.new(|cx| {
+                TextInput::new(cx, "", false)
+                    .with_placeholder_key("settings.pricing.peak_cache_write")
+            }),
         ];
         let profile = config.agent.codex_acp_profile.clone();
         if let Some(profile) = &profile {
@@ -203,6 +252,8 @@ impl SettingsView {
         Self {
             catalog: super::model_catalog::CatalogUi::new(cx),
             updater: Default::default(),
+            updater_message: None,
+            updater_version: None,
             updater_notes: None,
             updater_notes_open: false,
             updater_notes_scroll: gpui_kit::ScrollHandle::new(),
@@ -247,7 +298,8 @@ impl SettingsView {
             provider_test_help_focuses: Vec::new(),
             mode_open: false,
             model_open: false,
-            error,
+            error: error
+                .map(|error| SettingsText::from_known(error, &["settings.config.load_failed"])),
             pricing: PricingSettingsProjection::Loading,
             pricing_editor: None,
             pricing_model_input,
@@ -462,7 +514,7 @@ impl SettingsView {
         let models = match parse_provider_models(&models_text) {
             Ok(models) => models,
             Err(error) => {
-                self.error = Some(provider_models_error_label(&error));
+                self.error = Some(SettingsText::Models(error));
                 cx.notify();
                 return;
             }

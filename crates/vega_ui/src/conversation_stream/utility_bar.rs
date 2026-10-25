@@ -167,9 +167,9 @@ impl ConversationStream {
     fn render_utility_project_chip(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let label = if self.thread.is_standalone() {
-            "选择项目".to_string()
+            vega_i18n::t("ui.select_project").to_string()
         } else if self.project_label.is_empty() {
-            "项目".to_string()
+            vega_i18n::t("sidebar.projects").to_string()
         } else {
             self.project_label.clone()
         };
@@ -199,7 +199,9 @@ impl ConversationStream {
                         MouseButton::Left,
                         cx.listener(Self::toggle_utility_projects),
                     )
-                    .tooltip(move |_, cx| crate::icons::tooltip("切换项目", cx))
+                    .tooltip(move |_, cx| {
+                        crate::icons::tooltip(vega_i18n::t("ui.switch_project"), cx)
+                    })
                     .child(div().flex_shrink_0().child(crate::icons::icon(
                         crate::icons::Icon::Folder,
                         colors.text_secondary,
@@ -287,9 +289,9 @@ impl ConversationStream {
                     .text_size(px(Typography::SIDEBAR))
                     .text_color(colors.text_tertiary)
                     .child(if self.utility_projects.is_empty() {
-                        "点击 [+] 添加文件夹"
+                        vega_i18n::t("ui.click_to_add_a_folder")
                     } else {
-                        "没有匹配项目"
+                        vega_i18n::t("ui.no_matching_projects")
                     }),
             );
         } else {
@@ -301,16 +303,16 @@ impl ConversationStream {
                 .child(menu_list::action_row(
                     "composer-utility-project-new",
                     crate::icons::Icon::Plus,
-                    "新建项目".into(),
+                    vega_i18n::t("ui.new_project").into(),
                     false,
-                    "暂不支持：请在侧栏使用 [+ 添加项目] 注册文件夹",
+                    vega_i18n::t("ui.not_available_register_a_folder_with_add_project"),
                     colors,
                     |_, _, _| {},
                 ))
                 .child(menu_list::action_row(
                     "composer-utility-project-detach",
                     crate::icons::Icon::Close,
-                    "不关联项目".into(),
+                    vega_i18n::t("ui.no_project").into(),
                     true,
                     "",
                     colors,
@@ -328,7 +330,7 @@ impl ConversationStream {
             .id("composer-utility-branch")
             .flex()
             .items_center()
-            .tooltip(|_, cx| crate::icons::tooltip("切换分支", cx))
+            .tooltip(|_, cx| crate::icons::tooltip(vega_i18n::t("ui.switch_branch"), cx))
             .child(self.branch_selector.clone())
             .into_any_element()
     }

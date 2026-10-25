@@ -26,7 +26,7 @@ impl VegaWindow {
             view.update(cx, |view, cx| {
                 view.apply_model_context_loaded(
                     request,
-                    Err("模型上下文配置数据库不可用".into()),
+                    Err(vega_i18n::t("app.model_context.database_unavailable").into()),
                     cx,
                 )
             });
@@ -54,7 +54,7 @@ impl VegaWindow {
                     })
                 })
                 .await
-                .map_err(|_| "模型上下文配置读取失败，请重试".to_string());
+                .map_err(|_| vega_i18n::t("app.model_context.read_failed").to_string());
             let _ = this.update(cx, |this, cx| {
                 if cx.global::<SettingsOpen>().0 && this.settings_view.as_ref() == Some(&view) {
                     view.update(cx, |view, cx| {
@@ -79,7 +79,7 @@ impl VegaWindow {
             view.update(cx, |view, cx| {
                 view.apply_model_context_saved(
                     request,
-                    Err("模型上下文配置数据库不可用".into()),
+                    Err(vega_i18n::t("app.model_context.database_unavailable").into()),
                     cx,
                 )
             });
@@ -106,7 +106,7 @@ impl VegaWindow {
                         .ok_or(())
                 })
                 .await
-                .map_err(|_| "模型上下文配置保存失败，请重试".to_string());
+                .map_err(|_| vega_i18n::t("app.model_context.save_failed").to_string());
             let _ = this.update(cx, |this, cx| {
                 if cx.global::<SettingsOpen>().0 && this.settings_view.as_ref() == Some(&view) {
                     view.update(cx, |view, cx| {

@@ -15,7 +15,7 @@ use vega_theme::{Layout, ThemeColors, Typography, theme};
 use crate::conversation_stream::{MONOFONT, ROW_HEIGHT};
 use crate::icons::Icon;
 
-const CORRUPT_LABEL: &str = "Tool result corrupted";
+const CORRUPT_LABEL: &str = "ui.tool_result_corrupted";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ToolActivityCategory {
@@ -42,20 +42,20 @@ pub(crate) fn sentence_initial(phrase: &str) -> String {
 }
 
 impl ToolActivityCategory {
-    pub(crate) const fn action_phrase(self) -> &'static str {
+    pub(crate) fn action_phrase(self) -> &'static str {
         match self {
-            Self::Question => "ask questions",
-            Self::Shell => "run commands",
-            Self::Read => "read files",
-            Self::Find => "find files",
-            Self::Search => "search content",
-            Self::Write => "write files",
-            Self::Edit => "edit files",
-            Self::Mcp => "call MCP",
+            Self::Question => vega_i18n::t("ui.ask_questions"),
+            Self::Shell => vega_i18n::t("ui.run_commands"),
+            Self::Read => vega_i18n::t("ui.read_files"),
+            Self::Find => vega_i18n::t("ui.find_files"),
+            Self::Search => vega_i18n::t("ui.search_content"),
+            Self::Write => vega_i18n::t("ui.write_files"),
+            Self::Edit => vega_i18n::t("ui.edit_files"),
+            Self::Mcp => vega_i18n::t("ui.call_mcp"),
             Self::CodexAcp => "Codex ACP",
-            Self::ComputerUse => "use computer or browser",
-            Self::Skill => "use Skill",
-            Self::Other => "use tools",
+            Self::ComputerUse => vega_i18n::t("ui.use_computer_or_browser"),
+            Self::Skill => vega_i18n::t("ui.use_skill"),
+            Self::Other => vega_i18n::t("ui.use_tools"),
         }
     }
 
@@ -140,6 +140,7 @@ pub struct ToolCard {
     approval: Option<Approval>,
     result: Option<ToolCardResultProjection>,
     summary: String,
+    summary_language: &'static str,
     output_rows: Vec<String>,
     expanded: bool,
     detail_scroll: ScrollHandle,
@@ -167,6 +168,7 @@ impl ToolCard {
             approval: None,
             result: corrupt.then_some(ToolCardResultProjection::Corrupt),
             summary: String::new(),
+            summary_language: vega_i18n::language(),
             output_rows: Vec::new(),
             expanded: false,
             detail_scroll: ScrollHandle::new(),
@@ -193,6 +195,7 @@ impl ToolCard {
             approval: None,
             result: Some(projection),
             summary: String::new(),
+            summary_language: vega_i18n::language(),
             output_rows: Vec::new(),
             expanded: false,
             detail_scroll: ScrollHandle::new(),
@@ -214,6 +217,7 @@ impl ToolCard {
             approval: None,
             result: Some(ToolCardResultProjection::Corrupt),
             summary: String::new(),
+            summary_language: vega_i18n::language(),
             output_rows: Vec::new(),
             expanded: false,
             detail_scroll: ScrollHandle::new(),
@@ -244,6 +248,7 @@ impl ToolCard {
             approval,
             result,
             summary: String::new(),
+            summary_language: vega_i18n::language(),
             expanded: false,
             detail_scroll: ScrollHandle::new(),
             running_started_at: None,
@@ -440,6 +445,15 @@ impl ToolCard {
         Some((tool, input.permission_target()?))
     }
 
+    pub(crate) fn codex_permission_display(
+        &self,
+    ) -> Option<vega_conversation::types::CodexAcpActivityIdentity> {
+        match &self.input {
+            Some(ToolCardInputProjection::CodexAcp { identity, .. }) => Some(identity.clone()),
+            _ => None,
+        }
+    }
+
     pub(crate) fn set_expanded(&mut self, expanded: bool, cx: &mut gpui_kit::Context<Self>) {
         if self.expanded != expanded {
             self.expanded = expanded;
@@ -575,11 +589,15 @@ impl ToolCard {
         self.status == ToolCallStatus::Running && self.approval.is_some() && self.result.is_none()
     }
 
-    pub(crate) fn headline_title(&self) -> &str {
-        &self.summary
+    pub(crate) fn headline_title(&self) -> String {
+        if self.summary_language == vega_i18n::language() {
+            self.summary.clone()
+        } else {
+            self.build_summary()
+        }
     }
 
-    pub(crate) fn completed_command_headline(&self) -> Option<&str> {
+    pub(crate) fn completed_command_headline(&self) -> Option<String> {
         (!self.presentation_released
             && self.is_bash()
             && matches!(
@@ -608,25 +626,31 @@ impl ToolCard {
                 )
             )
         {
-            return self.summary.clone();
+            return self.headline_title();
         }
-        let (label, connector) = match self.activity_state() {
-            ToolActivityState::Success => ("Ran command", "in"),
-            ToolActivityState::Failed => ("Command failed", "after"),
-            ToolActivityState::Cancelled => ("Command cancelled", "after"),
-            ToolActivityState::Rejected => ("Command rejected", "after"),
-            ToolActivityState::Superseded => ("Not run after takeover", "after"),
-            ToolActivityState::Active if self.status == ToolCallStatus::PendingApproval => {
-                ("Awaiting command approval", "for")
+        let (label_key, duration_key) = match self.activity_state() {
+            ToolActivityState::Success => ("ui.ran_command", "ui.command_success_duration"),
+            ToolActivityState::Failed => ("ui.command_failed", "ui.command_failed_duration"),
+            ToolActivityState::Cancelled => {
+                ("ui.command_cancelled", "ui.command_cancelled_duration")
             }
+            ToolActivityState::Rejected => ("ui.command_rejected", "ui.command_rejected_duration"),
+            ToolActivityState::Superseded => (
+                "ui.not_run_after_takeover",
+                "ui.command_superseded_duration",
+            ),
+            ToolActivityState::Active if self.status == ToolCallStatus::PendingApproval => (
+                "ui.awaiting_command_approval",
+                "ui.command_approval_duration",
+            ),
             ToolActivityState::Active if self.status == ToolCallStatus::Approved => {
-                ("Ready to run command", "for")
+                ("ui.ready_to_run_command", "ui.command_ready_duration")
             }
-            ToolActivityState::Active => ("Running command", "for"),
+            ToolActivityState::Active => ("ui.running_command", "ui.command_running_duration"),
         };
         self.bash_duration().map_or_else(
-            || label.to_owned(),
-            |duration| format!("{label} {connector} {duration}"),
+            || vega_i18n::t(label_key).to_owned(),
+            |duration| vega_i18n::t_args(duration_key, &[("duration", &duration)]),
         )
     }
 
@@ -695,9 +719,15 @@ impl ToolCard {
         let row = row
             .track_focus(&focus)
             .aria_expanded(expanded)
-            .aria_label(format!(
-                "{title}, {} tool details",
-                if expanded { "collapse" } else { "expand" }
+            .aria_label(vega_i18n::t_args(
+                "ui.tool_disclosure",
+                &[
+                    ("title", &title),
+                    (
+                        "action",
+                        vega_i18n::t(if expanded { "ui.collapse" } else { "ui.expand" }),
+                    ),
+                ],
             ))
             .tab_stop(expandable)
             .focus_visible(move |row| row.bg(colors.bg_hover))
@@ -814,37 +844,53 @@ impl ToolCard {
         let current = card.read(cx);
         let agent = current.subagent().cloned();
         let title = match (&current.input, &agent) {
-            (Some(ToolCardInputProjection::Subagent { tool, .. }), Some(agent)) => format!(
-                "{} {}",
-                if tool == "spawn_agent" {
-                    "Delegate"
-                } else {
-                    "Continue"
-                },
-                agent.name
-            ),
+            (Some(ToolCardInputProjection::Subagent { tool, .. }), Some(agent)) => {
+                vega_i18n::t_args(
+                    "ui.action_name",
+                    &[
+                        (
+                            "action",
+                            if tool == "spawn_agent" {
+                                vega_i18n::t("ui.delegate")
+                            } else {
+                                vega_i18n::t("ui.continue")
+                            },
+                        ),
+                        ("name", &agent.name),
+                    ],
+                )
+            }
             (Some(ToolCardInputProjection::Subagent { title, .. }), _) => title.clone(),
-            _ => "Delegate task".into(),
+            _ => vega_i18n::t("ui.delegate_task").into(),
         };
         let (title, title_element) =
             headline.unwrap_or_else(|| (title.clone(), div().child(title).into_any_element()));
         let status = agent.as_ref().map_or_else(
             || match current.status {
-                ToolCallStatus::PendingApproval => "Pending",
-                ToolCallStatus::Approved => "Ready",
-                ToolCallStatus::Running => "Running",
-                ToolCallStatus::Cancelled => "Interrupted",
-                ToolCallStatus::Rejected => "Rejected",
-                ToolCallStatus::Failed => "Failed",
-                ToolCallStatus::Success => "Failed",
+                ToolCallStatus::PendingApproval => vega_i18n::t("ui.pending"),
+                ToolCallStatus::Approved => vega_i18n::t("ui.ready"),
+                ToolCallStatus::Running => vega_i18n::t("ui.running"),
+                ToolCallStatus::Cancelled => vega_i18n::t("ui.interrupted"),
+                ToolCallStatus::Rejected => vega_i18n::t("ui.rejected"),
+                ToolCallStatus::Failed => vega_i18n::t("ui.failed"),
+                ToolCallStatus::Success => vega_i18n::t("ui.failed"),
             },
             |agent| match agent.state {
-                SubagentState::Running => "Running",
-                SubagentState::Cancelling => "Stopping",
-                SubagentState::Completed => "Completed",
-                SubagentState::Failed => "Failed",
-                SubagentState::Interrupted => "Interrupted",
+                SubagentState::Running => vega_i18n::t("ui.running"),
+                SubagentState::Cancelling => vega_i18n::t("ui.stopping"),
+                SubagentState::Completed => vega_i18n::t("ui.completed"),
+                SubagentState::Failed => vega_i18n::t("ui.failed"),
+                SubagentState::Interrupted => vega_i18n::t("ui.interrupted"),
             },
+        );
+        let failed = agent.as_ref().map_or_else(
+            || {
+                matches!(
+                    current.status,
+                    ToolCallStatus::Failed | ToolCallStatus::Success
+                )
+            },
+            |agent| agent.state == SubagentState::Failed,
         );
         let error_detail = agent.is_none() && !current.output_rows.is_empty();
         let expanded = error_detail && current.expanded;
@@ -865,7 +911,10 @@ impl ToolCard {
         let row = div()
             .id(("subagent-invocation", card.entity_id()))
             .role(gpui_kit::Role::Button)
-            .aria_label(format!("{title}, {status}"))
+            .aria_label(vega_i18n::t_args(
+                "ui.title_status",
+                &[("title", &title), ("status", status)],
+            ))
             .when(error_detail, |row| row.aria_expanded(expanded))
             .track_focus(&focus)
             .tab_stop(enabled)
@@ -931,7 +980,7 @@ impl ToolCard {
             .child(
                 div()
                     .flex_shrink_0()
-                    .text_color(if status == "Failed" {
+                    .text_color(if failed {
                         colors.danger
                     } else {
                         colors.text_secondary
@@ -969,26 +1018,46 @@ impl ToolCard {
 
     fn refresh_summary(&mut self) {
         self.summary = self.build_summary();
+        self.summary_language = vega_i18n::language();
     }
 
     fn build_summary(&self) -> String {
         match (&self.input, &self.result) {
-            (_, Some(ToolCardResultProjection::Corrupt)) => CORRUPT_LABEL.to_string(),
+            (_, Some(ToolCardResultProjection::Corrupt)) => vega_i18n::t(CORRUPT_LABEL).to_string(),
             (
                 _,
                 Some(ToolCardResultProjection::InvalidRejected {
                     tool: InvalidToolKind::Bash,
                     ..
                 }),
-            ) => "Command rejected: use a non-empty command and a positive timeout in seconds, or null for the default"
-                .to_string(),
+            ) => vega_i18n::t("ui.command_rejected_use_a_non_empty_command_and").to_string(),
             (_, Some(ToolCardResultProjection::InvalidRejected { tool, code, .. })) => {
-                format!("Rejected {}: {}", invalid_action(*tool), code.as_str())
+                vega_i18n::t_args(
+                    "ui.rejected_action_code",
+                    &[("action", invalid_action(*tool)), ("code", code.as_str())],
+                )
             }
             (Some(ToolCardInputProjection::Bash { .. }), _) => self.build_bash_summary(),
-            (Some(ToolCardInputProjection::ReadOnly { tool, display_target, .. }), _) => {
-                let summary = readonly_summary(*tool, self.activity_state(), self.status, display_target.is_some());
-                display_target.as_ref().map_or(summary.clone(), |target| format!("{summary} {}", compact_object(target)))
+            (
+                Some(ToolCardInputProjection::ReadOnly {
+                    tool,
+                    display_target,
+                    ..
+                }),
+                _,
+            ) => {
+                let summary = readonly_summary(
+                    *tool,
+                    self.activity_state(),
+                    self.status,
+                    display_target.is_some(),
+                );
+                display_target.as_ref().map_or(summary.clone(), |target| {
+                    vega_i18n::t_args(
+                        "ui.summary_target",
+                        &[("summary", &summary), ("target", &compact_object(target))],
+                    )
+                })
             }
             (
                 Some(ToolCardInputProjection::Write {
@@ -996,9 +1065,16 @@ impl ToolCard {
                     content_bytes,
                 }),
                 None,
-            ) => format!(
-                "{} {path} · {content_bytes} bytes",
-                mutation_verb("write", self.activity_state(), self.status)
+            ) => vega_i18n::t_args(
+                "ui.write_action_bytes",
+                &[
+                    (
+                        "action",
+                        &mutation_verb("write", self.activity_state(), self.status),
+                    ),
+                    ("path", path),
+                    ("content_bytes", &content_bytes.to_string()),
+                ],
             ),
             (
                 Some(ToolCardInputProjection::Edit {
@@ -1008,9 +1084,17 @@ impl ToolCard {
                     ..
                 }),
                 None,
-            ) => format!(
-                "{} {path} · {old_string_bytes}→{new_string_bytes} bytes",
-                mutation_verb("edit", self.activity_state(), self.status)
+            ) => vega_i18n::t_args(
+                "ui.edit_action_bytes",
+                &[
+                    (
+                        "action",
+                        &mutation_verb("edit", self.activity_state(), self.status),
+                    ),
+                    ("path", path),
+                    ("old_string_bytes", &old_string_bytes.to_string()),
+                    ("new_string_bytes", &new_string_bytes.to_string()),
+                ],
             ),
             (
                 _,
@@ -1019,7 +1103,13 @@ impl ToolCard {
                     bytes_written,
                     ..
                 }),
-            ) => format!("Wrote {path} · {bytes_written} bytes"),
+            ) => vega_i18n::t_args(
+                "ui.wrote_path_bytes_written_bytes",
+                &[
+                    ("path", path),
+                    ("bytes_written", &bytes_written.to_string()),
+                ],
+            ),
             (
                 _,
                 Some(ToolCardResultProjection::EditSuccess {
@@ -1028,72 +1118,125 @@ impl ToolCard {
                     replacements,
                     ..
                 }),
-            ) => format!(
-                "Edited {path} · {bytes_written} bytes · {replacements} replacements"
+            ) => vega_i18n::t_args(
+                "ui.edited_path_bytes_written_bytes_replacements_replacements",
+                &[
+                    ("path", path),
+                    ("bytes_written", &bytes_written.to_string()),
+                    ("replacements", &replacements.to_string()),
+                ],
             ),
             (
                 Some(ToolCardInputProjection::Write { path, .. }),
                 Some(ToolCardResultProjection::MutationTerminal { .. }),
-            ) => format!(
-                "{} {path}",
-                mutation_verb("write", self.activity_state(), self.status)
+            ) => vega_i18n::t_args(
+                "ui.action_path",
+                &[
+                    (
+                        "action",
+                        &mutation_verb("write", self.activity_state(), self.status),
+                    ),
+                    ("path", path),
+                ],
             ),
             (
                 Some(ToolCardInputProjection::Edit { path, .. }),
                 Some(ToolCardResultProjection::MutationTerminal { .. }),
-            ) => format!(
-                "{} {path}",
-                mutation_verb("edit", self.activity_state(), self.status)
+            ) => vega_i18n::t_args(
+                "ui.action_path",
+                &[
+                    (
+                        "action",
+                        &mutation_verb("edit", self.activity_state(), self.status),
+                    ),
+                    ("path", path),
+                ],
             ),
             (
                 Some(ToolCardInputProjection::Skill { name, .. }),
                 Some(ToolCardResultProjection::Skill { outcome, .. }),
             ) => skill_summary(name.as_deref(), outcome),
-            (Some(ToolCardInputProjection::Skill { name, .. }), None) => format!(
-                "{} Skill {}",
-                generic_verb("use", self.activity_state(), self.status),
-                name.as_deref().unwrap_or("unknown")
+            (Some(ToolCardInputProjection::Skill { name, .. }), None) => vega_i18n::t_args(
+                "ui.action_skill",
+                &[
+                    (
+                        "action",
+                        &generic_verb("use", self.activity_state(), self.status),
+                    ),
+                    (
+                        "name",
+                        name.as_deref()
+                            .unwrap_or_else(|| vega_i18n::t("ui.unknown")),
+                    ),
+                ],
             ),
             (Some(ToolCardInputProjection::UserQuestion { .. }), _) => match self.status {
-                ToolCallStatus::Success => "Questions completed".into(),
-                ToolCallStatus::Cancelled => "Questions interrupted".into(),
-                ToolCallStatus::Failed | ToolCallStatus::Rejected => "Question failed".into(),
-                _ => "Waiting for your answer".into(),
+                ToolCallStatus::Success => vega_i18n::t("ui.questions_completed").into(),
+                ToolCallStatus::Cancelled => vega_i18n::t("ui.questions_interrupted").into(),
+                ToolCallStatus::Failed | ToolCallStatus::Rejected => {
+                    vega_i18n::t("ui.question_failed").into()
+                }
+                _ => vega_i18n::t("ui.waiting_for_your_answer").into(),
             },
             (Some(ToolCardInputProjection::ComputerUse { tool, action }), _) => {
                 if self.activity_state() == ToolActivityState::Superseded {
-                    return "Not run after takeover".into();
+                    return vega_i18n::t("ui.not_run_after_takeover").into();
                 }
                 let verb = match tool.as_str() {
                     "ComputerObserve" | "BrowserObserve" => "observe",
                     "ComputerScreenshot" => "capture",
                     _ => "control",
                 };
-                format!(
-                    "{} {} · {}{}",
-                    generic_verb(verb, self.activity_state(), self.status),
-                    if tool.starts_with("Computer") { "computer" } else { "browser" },
-                    action,
-                    if verb == "control" && self.approval == Some(Approval::Once) {
-                        " · approved for this action"
-                    } else {
-                        ""
-                    }
+                vega_i18n::t_args(
+                    "ui.computer_action",
+                    &[
+                        (
+                            "action",
+                            &generic_verb(verb, self.activity_state(), self.status),
+                        ),
+                        (
+                            "target",
+                            if tool.starts_with("Computer") {
+                                vega_i18n::t("ui.computer")
+                            } else {
+                                vega_i18n::t("ui.browser")
+                            },
+                        ),
+                        ("operation", action),
+                        (
+                            "approval",
+                            if verb == "control" && self.approval == Some(Approval::Once) {
+                                vega_i18n::t("ui.approved_for_this_action")
+                            } else {
+                                ""
+                            },
+                        ),
+                    ],
                 )
             }
-            (Some(ToolCardInputProjection::Mcp { identity, .. }), _) => format!(
-                "{} {} · server {}",
-                generic_verb("call", self.activity_state(), self.status),
-                identity.exact_tool_name,
-                identity.server_id
+            (Some(ToolCardInputProjection::Mcp { identity, .. }), _) => vega_i18n::t_args(
+                "ui.mcp_action",
+                &[
+                    (
+                        "action",
+                        &generic_verb("call", self.activity_state(), self.status),
+                    ),
+                    ("tool", &identity.exact_tool_name),
+                    ("server", &identity.server_id),
+                ],
             ),
             (Some(ToolCardInputProjection::Subagent { title, .. }), _) => title.clone(),
-            (Some(ToolCardInputProjection::CodexAcp { identity, .. }), _) => format!(
-                "{} Codex ACP · {}",
-                generic_verb("run", self.activity_state(), self.status),
-                identity.kind
+            (Some(ToolCardInputProjection::CodexAcp { identity, .. }), _) => vega_i18n::t_args(
+                "ui.codex_action",
+                &[
+                    (
+                        "action",
+                        &generic_verb("run", self.activity_state(), self.status),
+                    ),
+                    ("kind", codex_kind_label(&identity.kind)),
+                ],
             ),
-            _ => CORRUPT_LABEL.to_string(),
+            _ => vega_i18n::t(CORRUPT_LABEL).to_string(),
         }
     }
 
@@ -1113,21 +1256,26 @@ impl ToolCard {
 
     fn build_bash_summary(&self) -> String {
         let action = match self.activity_state() {
-            ToolActivityState::Superseded => "Not run after takeover",
-            ToolActivityState::Success => "Ran",
+            ToolActivityState::Superseded => vega_i18n::t("ui.not_run_after_takeover"),
+            ToolActivityState::Success => vega_i18n::t("ui.ran"),
             ToolActivityState::Active if self.status == ToolCallStatus::PendingApproval => {
-                "Awaiting approval to run"
+                vega_i18n::t("ui.awaiting_approval_to_run")
             }
-            ToolActivityState::Active if self.status == ToolCallStatus::Approved => "Ready to run",
-            ToolActivityState::Active => "Running",
-            ToolActivityState::Rejected => "Command rejected:",
-            ToolActivityState::Cancelled => "Command cancelled:",
-            ToolActivityState::Failed => "Command failed:",
+            ToolActivityState::Active if self.status == ToolCallStatus::Approved => {
+                vega_i18n::t("ui.ready_to_run")
+            }
+            ToolActivityState::Active => vega_i18n::t("ui.running"),
+            ToolActivityState::Rejected => vega_i18n::t("ui.command_rejected_en"),
+            ToolActivityState::Cancelled => vega_i18n::t("ui.command_cancelled_en"),
+            ToolActivityState::Failed => vega_i18n::t("ui.command_failed_en"),
         };
         let Some(ToolCardInputProjection::Bash { command }) = &self.input else {
             return action.into();
         };
-        format!("{action} {}", compact_object(command))
+        vega_i18n::t_args(
+            "ui.command_action",
+            &[("action", action), ("command", &compact_object(command))],
+        )
     }
 
     pub(crate) fn release_presentation(&mut self) {
@@ -1142,16 +1290,16 @@ impl ToolCard {
     }
 
     fn bash_detail_title(&self) -> String {
-        let mut title = "Shell".to_string();
+        let mut title = vega_i18n::t("ui.shell").to_string();
         if let Some(ToolCardResultProjection::Bash {
             truncated, reused, ..
         }) = &self.result
         {
             if *truncated == Some(true) {
-                title.push_str(" · truncated");
+                title.push_str(vega_i18n::t("ui.truncated"));
             }
             if *reused {
-                title.push_str(" · reused");
+                title.push_str(vega_i18n::t("ui.reused"));
             }
         }
         title
@@ -1159,16 +1307,18 @@ impl ToolCard {
 
     fn terminal_footer(&self) -> String {
         match self.activity_state() {
-            ToolActivityState::Superseded => "Not run after takeover",
-            ToolActivityState::Success => "Success",
+            ToolActivityState::Superseded => vega_i18n::t("ui.not_run_after_takeover"),
+            ToolActivityState::Success => vega_i18n::t("ui.success"),
             ToolActivityState::Active if self.status == ToolCallStatus::PendingApproval => {
-                "Awaiting approval"
+                vega_i18n::t("ui.awaiting_approval")
             }
-            ToolActivityState::Active if self.status == ToolCallStatus::Approved => "Ready to run",
-            ToolActivityState::Active => "Running",
-            ToolActivityState::Rejected => "Rejected",
-            ToolActivityState::Cancelled => "Cancelled",
-            ToolActivityState::Failed => "Failure",
+            ToolActivityState::Active if self.status == ToolCallStatus::Approved => {
+                vega_i18n::t("ui.ready_to_run")
+            }
+            ToolActivityState::Active => vega_i18n::t("ui.running"),
+            ToolActivityState::Rejected => vega_i18n::t("ui.rejected"),
+            ToolActivityState::Cancelled => vega_i18n::t("ui.cancelled"),
+            ToolActivityState::Failed => vega_i18n::t("ui.failure"),
         }
         .to_string()
     }
@@ -1207,7 +1357,7 @@ impl ToolCard {
                 output: if self.output_rows.is_empty()
                     && self.activity_state() != ToolActivityState::Active
                 {
-                    vec!["No output".to_string()]
+                    vec![vega_i18n::t("ui.no_output").to_string()]
                 } else {
                     self.output_rows.clone()
                 },
@@ -1243,44 +1393,112 @@ impl ToolCard {
     }
 }
 
+pub(crate) fn codex_identity_display(
+    identity: &vega_conversation::types::CodexAcpActivityIdentity,
+) -> String {
+    vega_i18n::t_args(
+        "ui.codex.identity",
+        &[
+            ("kind", codex_kind_label(&identity.kind)),
+            ("bytes", &identity.arguments_bytes.to_string()),
+            ("sha256", &identity.arguments_sha256),
+            ("preview", &identity.argument_preview),
+        ],
+    )
+}
+
+fn codex_kind_label(kind: &str) -> &str {
+    let key = match kind {
+        "read" => "ui.codex.kind.read",
+        "edit" => "ui.codex.kind.edit",
+        "delete" => "ui.codex.kind.delete",
+        "move" => "ui.codex.kind.move",
+        "search" => "ui.codex.kind.search",
+        "execute" => "ui.codex.kind.execute",
+        "think" => "ui.codex.kind.think",
+        "fetch" => "ui.codex.kind.fetch",
+        "other" => "ui.codex.kind.other",
+        _ => return kind,
+    };
+    vega_i18n::t(key)
+}
+
+fn action_label(action: &'static str) -> &'static str {
+    match action {
+        "run" => vega_i18n::t("ui.action_run"),
+        "write" => vega_i18n::t("ui.action_write"),
+        "edit" => vega_i18n::t("ui.action_edit"),
+        "call" => vega_i18n::t("ui.action_call"),
+        "use" => vega_i18n::t("ui.action_use"),
+        "observe" => vega_i18n::t("ui.action_observe"),
+        "capture" => vega_i18n::t("ui.action_capture"),
+        "control" => vega_i18n::t("ui.action_control"),
+        "read" => vega_i18n::t("ui.action_read"),
+        "search" => vega_i18n::t("ui.action_search"),
+        "read files" => vega_i18n::t("ui.read_files"),
+        "find files" => vega_i18n::t("ui.find_files"),
+        "search content" => vega_i18n::t("ui.search_content"),
+        _ => action,
+    }
+}
+
 fn invalid_action(tool: InvalidToolKind) -> &'static str {
     match tool {
-        InvalidToolKind::Bash => "run",
-        InvalidToolKind::Write => "write",
-        InvalidToolKind::Edit => "edit",
+        InvalidToolKind::Bash => vega_i18n::t("ui.action_run"),
+        InvalidToolKind::Write => vega_i18n::t("ui.action_write"),
+        InvalidToolKind::Edit => vega_i18n::t("ui.action_edit"),
     }
 }
 
 fn generic_verb(action: &'static str, state: ToolActivityState, status: ToolCallStatus) -> String {
     let (past, ongoing) = match action {
-        "write" => ("Wrote", "Writing"),
-        "edit" => ("Edited", "Editing"),
-        "call" => ("Called", "Calling"),
-        "run" => ("Ran", "Running"),
-        "use" => ("Used", "Using"),
-        "observe" => ("Observed", "Observing"),
-        "capture" => ("Captured", "Capturing"),
-        "control" => ("Controlled", "Controlling"),
-        "read" => ("Read", "Reading"),
-        "read files" => ("Read files", "Reading files"),
-        "find files" => ("Found files", "Finding files"),
-        "search" => ("Searched", "Searching"),
-        "search content" => ("Searched content", "Searching content"),
+        "write" => (vega_i18n::t("ui.wrote"), vega_i18n::t("ui.writing")),
+        "edit" => (vega_i18n::t("ui.edited"), vega_i18n::t("ui.editing")),
+        "call" => (vega_i18n::t("ui.called"), vega_i18n::t("ui.calling")),
+        "run" => (vega_i18n::t("ui.ran"), vega_i18n::t("ui.running")),
+        "use" => (vega_i18n::t("ui.used"), vega_i18n::t("ui.using")),
+        "observe" => (vega_i18n::t("ui.observed"), vega_i18n::t("ui.observing")),
+        "capture" => (vega_i18n::t("ui.captured"), vega_i18n::t("ui.capturing")),
+        "control" => (
+            vega_i18n::t("ui.controlled"),
+            vega_i18n::t("ui.controlling"),
+        ),
+        "read" => (vega_i18n::t("ui.read"), vega_i18n::t("ui.reading")),
+        "read files" => (
+            vega_i18n::t("ui.read_files_en"),
+            vega_i18n::t("ui.reading_files"),
+        ),
+        "find files" => (
+            vega_i18n::t("ui.found_files"),
+            vega_i18n::t("ui.finding_files"),
+        ),
+        "search" => (vega_i18n::t("ui.searched"), vega_i18n::t("ui.searching_en")),
+        "search content" => (
+            vega_i18n::t("ui.searched_content"),
+            vega_i18n::t("ui.searching_content"),
+        ),
         _ => (action, action),
     };
+    let action = action_label(action);
     match state {
-        ToolActivityState::Superseded => "Not run after takeover".to_string(),
+        ToolActivityState::Superseded => vega_i18n::t("ui.not_run_after_takeover").to_string(),
         ToolActivityState::Success => past.to_owned(),
         ToolActivityState::Active if status == ToolCallStatus::PendingApproval => {
-            format!("Awaiting approval to {action}")
+            vega_i18n::t_args("ui.awaiting_approval_to_action", &[("action", action)])
         }
         ToolActivityState::Active if status == ToolCallStatus::Approved => {
-            format!("Ready to {action}")
+            vega_i18n::t_args("ui.ready_to_action", &[("action", action)])
         }
         ToolActivityState::Active => ongoing.to_owned(),
-        ToolActivityState::Rejected => format!("Rejected: {action}"),
-        ToolActivityState::Cancelled => format!("Cancelled: {action}"),
-        ToolActivityState::Failed => format!("Failed to {action}"),
+        ToolActivityState::Rejected => {
+            vega_i18n::t_args("ui.rejected_action", &[("action", action)])
+        }
+        ToolActivityState::Cancelled => {
+            vega_i18n::t_args("ui.cancelled_action", &[("action", action)])
+        }
+        ToolActivityState::Failed => {
+            vega_i18n::t_args("ui.failed_to_action", &[("action", action)])
+        }
     }
 }
 
@@ -1318,22 +1536,39 @@ fn readonly_summary(
 }
 
 fn skill_summary(name: Option<&str>, outcome: &SkillCardOutcome) -> String {
-    let name = name.unwrap_or("unknown");
+    let name = name.unwrap_or_else(|| vega_i18n::t("ui.unknown"));
     match outcome {
-        SkillCardOutcome::Loaded => format!("Loaded Skill {name}"),
-        SkillCardOutcome::AlreadyLoaded => format!("Loaded Skill {name} · reused"),
-        SkillCardOutcome::ResourceRead { text_bytes, sha256 } => format!(
-            "Read Skill {name} reference · {text_bytes} bytes · SHA-256 {}…",
-            sha256.get(..12).unwrap_or("invalid")
-        ),
-        SkillCardOutcome::AssetMetadata { size_bytes } => {
-            format!(
-                "Viewed Skill {name} asset metadata · {size_bytes} bytes · unknown type · content not read"
-            )
+        SkillCardOutcome::Loaded => vega_i18n::t_args("ui.loaded_skill_name", &[("name", name)]),
+        SkillCardOutcome::AlreadyLoaded => {
+            vega_i18n::t_args("ui.loaded_skill_name_reused", &[("name", name)])
         }
-        SkillCardOutcome::Failed { code } => format!("Skill {name} failed · {code}"),
-        SkillCardOutcome::Rejected => format!("Rejected Skill {name}"),
-        SkillCardOutcome::Cancelled => format!("Cancelled Skill {name}"),
+        SkillCardOutcome::ResourceRead { text_bytes, sha256 } => vega_i18n::t_args(
+            "ui.read_skill_name_reference_text_bytes_bytes_sha",
+            &[
+                ("name", name),
+                ("text_bytes", &text_bytes.to_string()),
+                (
+                    "digest",
+                    sha256
+                        .get(..12)
+                        .unwrap_or_else(|| vega_i18n::t("ui.invalid")),
+                ),
+            ],
+        ),
+        SkillCardOutcome::AssetMetadata { size_bytes } => vega_i18n::t_args(
+            "ui.viewed_skill_name_asset_metadata_size_bytes_bytes",
+            &[("name", name), ("size_bytes", &size_bytes.to_string())],
+        ),
+        SkillCardOutcome::Failed { code } => vega_i18n::t_args(
+            "ui.skill_name_failed_code",
+            &[("name", name), ("code", &code.to_string())],
+        ),
+        SkillCardOutcome::Rejected => {
+            vega_i18n::t_args("ui.rejected_skill_name", &[("name", name)])
+        }
+        SkillCardOutcome::Cancelled => {
+            vega_i18n::t_args("ui.cancelled_skill_name", &[("name", name)])
+        }
     }
 }
 

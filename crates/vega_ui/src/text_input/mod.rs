@@ -57,6 +57,7 @@ pub struct TextInput {
     content_revision: u64,
     prediction: Option<SharedString>,
     placeholder: SharedString,
+    placeholder_key: Option<&'static str>,
     masked: bool,
     multiline: bool,
     /// Visible row count, dynamically clamped to the configured row range.
@@ -94,6 +95,23 @@ pub struct ImagePaste(pub std::sync::Arc<ClipboardItem>);
 impl gpui_kit::EventEmitter<ImagePaste> for TextInput {}
 
 impl TextInput {
+    pub fn with_placeholder_key(mut self, key: &'static str) -> Self {
+        self.placeholder_key = Some(key);
+        self
+    }
+
+    pub fn set_placeholder_key(&mut self, key: &'static str, cx: &mut Context<Self>) {
+        if self.placeholder_key != Some(key) {
+            self.placeholder_key = Some(key);
+            cx.notify();
+        }
+    }
+
+    fn localized_placeholder(&self) -> SharedString {
+        self.placeholder_key
+            .map_or_else(|| self.placeholder.clone(), |key| vega_i18n::t(key).into())
+    }
+
     /// Enables attachment paste only for the conversation Composer.
     pub fn with_image_paste(mut self) -> Self {
         self.image_paste = true;

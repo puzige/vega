@@ -29,6 +29,26 @@ impl AutomationBinding {
     }
 }
 
+fn decode<T: DeserializeOwned>(text: &str) -> Result<T, String> {
+    serde_json::from_str(text).map_err(|_| "自动任务记录无法读取，请重新打开会话".into())
+}
+
+fn encode<T: Serialize>(value: &T) -> Result<String, String> {
+    serde_json::to_string(value).map_err(|_| "自动任务无法保存，请重试".into())
+}
+
+fn storage(_: impl std::fmt::Display) -> String {
+    "自动任务保存失败，请重试".into()
+}
+
+fn load_from(conn: &Connection, thread: &str) -> Result<Vec<AutomationTask>, String> {
+    db::tasks(conn, thread)
+        .map_err(storage)?
+        .iter()
+        .map(|value| decode(value))
+        .collect()
+}
+
 fn tool_error(message: impl Into<String>) -> VegaError {
     VegaError::Tool {
         tool: "automation".into(),
@@ -42,10 +62,24 @@ impl RuntimeAutomationHook for AutomationBinding {
             .claim
             .tasks
             .iter()
-            .find(|task| task.kind == AutomationKind::Goal);
-        let loop_task = self.claim.tasks.iter().find(|task| {
-            self.claim.source == Some(AutomationKind::Loop) && task.kind == AutomationKind::Loop
-        });
+            .find(|task| task.kind == AutomationKind::Goal)
+            .cloned()
+            .map(|mut task| {
+                task.system_reason = None;
+                task
+            });
+        let loop_task = self
+            .claim
+            .tasks
+            .iter()
+            .find(|task| {
+                self.claim.source == Some(AutomationKind::Loop) && task.kind == AutomationKind::Loop
+            })
+            .cloned()
+            .map(|mut task| {
+                task.system_reason = None;
+                task
+            });
         serde_json::json!({"goal":goal,"loop":loop_task,"trigger":self.claim.source})
     }
     fn provider_started(&self) {
@@ -134,6 +168,7 @@ pub(super) fn call_in_transaction(
             }
             let mut task = task;
             task.used_tokens = task.used_tokens.saturating_add(run.tokens);
+            task.system_reason = None;
             return Ok(
                 serde_json::json!({"goal":task,"remaining_tokens":task.token_budget.map(|budget| budget.saturating_sub(task.used_tokens))}),
             );

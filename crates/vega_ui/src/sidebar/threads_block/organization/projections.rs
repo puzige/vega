@@ -66,7 +66,7 @@ impl ThreadsBlock {
                 )
                 .child(self.organization_control(
                     format!("group-collapse-{}", group.id),
-                    "展开或收起分组",
+                    vega_i18n::t("ui.expand_or_collapse_group"),
                     Control::Collapse(target),
                     false,
                     cx,
@@ -82,7 +82,7 @@ impl ThreadsBlock {
                 )
                 .child(self.organization_control(
                     format!("group-menu-{}", group.id),
-                    "更多分组操作",
+                    vega_i18n::t("ui.more_group_actions"),
                     Control::Menu(OrganizationMenu::Group(group.id.clone())),
                     false,
                     cx,
@@ -132,7 +132,7 @@ impl ThreadsBlock {
         // Both the heading and its expanded rows belong to the same drop target.
         let mut rows = ungrouped.flex().flex_col().child(self.organization_control(
             "organization-ungrouped",
-            "未分组",
+            vega_i18n::t("ui.ungrouped"),
             Control::Collapse(target.clone()),
             false,
             cx,
@@ -159,7 +159,7 @@ impl ThreadsBlock {
 
         body = body.child(self.organization_control(
             "organization-add-project",
-            "+ 添加项目",
+            vega_i18n::t("ui.add_project"),
             Control::AddProject,
             false,
             cx,
@@ -257,10 +257,20 @@ impl ThreadsBlock {
                         .focusable()
                         .tab_stop(true)
                         .role(gpui_kit::Role::Button)
-                        .aria_label(format!(
-                            "{}，{}",
-                            project.name,
-                            if collapsed { "已收起" } else { "已展开" }
+                        .aria_label(vega_i18n::t_args(
+                            "ui.disclosure_state",
+                            &[
+                                ("name", &project.name),
+                                (
+                                    "state",
+                                    &(if collapsed {
+                                        vega_i18n::t("ui.collapsed")
+                                    } else {
+                                        vega_i18n::t("ui.expanded")
+                                    })
+                                    .to_string(),
+                                ),
+                            ],
                         ))
                         .aria_expanded(!collapsed)
                         .cursor_pointer()
@@ -336,7 +346,7 @@ impl ThreadsBlock {
                 )
                 .child(self.vector_control(
                     format!("project-menu-{}", project.id),
-                    "更多项目操作",
+                    vega_i18n::t("ui.more_project_actions"),
                     crate::icons::Icon::More,
                     Control::Menu(OrganizationMenu::Project(project.id.clone())),
                     false,
@@ -349,7 +359,7 @@ impl ThreadsBlock {
                     .filter(|t| t.project_id == project.id)
                     .collect();
                 if rows.is_empty() {
-                    body = body.child(self.section_label("暂无任务", cx));
+                    body = body.child(self.section_label(vega_i18n::t("ui.no_tasks"), cx));
                 }
                 for thread in rows {
                     body = body
@@ -373,15 +383,27 @@ impl ThreadsBlock {
             .unwrap_or(0);
         let rows = sorted_threads(&self.threads, &preferences);
         if rows.is_empty() {
-            body = body.child(self.section_label("暂无活跃任务", cx));
+            body = body.child(self.section_label(vega_i18n::t("ui.no_active_tasks"), cx));
         }
         let sections = [
-            (None, "置顶"),
-            (Some(SidebarTimelineBucket::Today), "今天"),
-            (Some(SidebarTimelineBucket::Yesterday), "昨天"),
-            (Some(SidebarTimelineBucket::Last7Days), "近7天"),
-            (Some(SidebarTimelineBucket::Last30Days), "近30天"),
-            (Some(SidebarTimelineBucket::Earlier), "更早"),
+            (None, vega_i18n::t("sidebar.pinned")),
+            (Some(SidebarTimelineBucket::Today), vega_i18n::t("ui.today")),
+            (
+                Some(SidebarTimelineBucket::Yesterday),
+                vega_i18n::t("ui.yesterday"),
+            ),
+            (
+                Some(SidebarTimelineBucket::Last7Days),
+                vega_i18n::t("ui.last_7_days"),
+            ),
+            (
+                Some(SidebarTimelineBucket::Last30Days),
+                vega_i18n::t("ui.last_30_days"),
+            ),
+            (
+                Some(SidebarTimelineBucket::Earlier),
+                vega_i18n::t("ui.earlier"),
+            ),
         ];
         for (bucket, label) in sections {
             let rows: Vec<_> = rows
@@ -437,7 +459,7 @@ impl ThreadsBlock {
             .px_3()
             .text_size(px(Typography::SIDEBAR))
             .text_color(colors.text_tertiary)
-            .child("拖入任务，或通过任务菜单移入")
+            .child(vega_i18n::t("ui.drag_tasks_here_or_move_them_using_the"))
             .drag_over::<OrganizationDrag>(move |s, _, _, _| s.bg(colors.bg_active))
             .on_drop(cx.listener(move |this, drag: &OrganizationDrag, _, cx| {
                 if let DragKind::Thread(id) = &drag.kind {
@@ -603,7 +625,7 @@ impl ThreadsBlock {
                         format!("project-thread-running-{}", thread.id).into(),
                     ))
                     .size(px(Layout::SIDEBAR_ACTION_SIZE))
-                    .aria_label("任务正在运行")
+                    .aria_label(vega_i18n::t("ui.task_running"))
                     .flex_shrink_0()
                     .flex()
                     .items_center()

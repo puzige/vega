@@ -40,7 +40,7 @@ impl VegaWindow {
         projection.error = Some(error);
         stream.update(cx, |stream, cx| {
             stream.reject_composer_submission(cx);
-            stream.apply_automation(projection, cx);
+            crate::app_localization::apply_automation(stream, projection, cx);
         });
     }
     pub(crate) fn intercept_automation(
@@ -60,13 +60,13 @@ impl VegaWindow {
         if stream.read(cx).task_backend() != TaskBackend::Native {
             self.automation_error(
                 &stream,
-                "持续目标与循环任务仅适用于 Vega 原生任务".into(),
+                vega_i18n::t("app.automation.native_commands").into(),
                 cx,
             );
         } else if !request.images.is_empty() || request.skill_intent.is_some() {
             self.automation_error(
                 &stream,
-                "自动任务命令不支持图片或 Skill 选择，请先移除附件".into(),
+                vega_i18n::t("app.automation.no_attachments").into(),
                 cx,
             );
         } else {
@@ -115,7 +115,7 @@ impl VegaWindow {
             self.automation_edit_error(
                 &stream,
                 editor.as_ref(),
-                "自动任务仅适用于 Vega 原生任务".into(),
+                vega_i18n::t("app.automation.native_only").into(),
                 cx,
             );
             return;
@@ -134,9 +134,9 @@ impl VegaWindow {
                 self.automation_error(
                     &stream,
                     if kind == AutomationKind::Goal {
-                        "/goal [--budget 正整数] 任务内容 · pause / resume / clear"
+                        vega_i18n::t("app.automation.goal_usage")
                     } else {
-                        "/loop [5m] 任务内容 · pause / resume / clear"
+                        vega_i18n::t("app.automation.loop_usage")
                     }
                     .into(),
                     cx,
@@ -152,7 +152,7 @@ impl VegaWindow {
             self.automation_edit_error(
                 &stream,
                 editor.as_ref(),
-                "任务正在保存，请稍后重试".into(),
+                vega_i18n::t("app.automation.saving").into(),
                 cx,
             );
             return;
@@ -161,14 +161,19 @@ impl VegaWindow {
             self.automation_edit_error(
                 &stream,
                 editor.as_ref(),
-                "自动任务存储不可用，请重新打开会话".into(),
+                vega_i18n::t("app.automation.store_reopen").into(),
                 cx,
             );
             return;
         };
         let draft = self.draft_for_route(thread);
         if draft.is_some() && !matches!(command, AutomationCommand::Create { .. }) {
-            self.automation_edit_error(&stream, editor.as_ref(), "尚未设置该任务".into(), cx);
+            self.automation_edit_error(
+                &stream,
+                editor.as_ref(),
+                vega_i18n::t("app.automation.not_set").into(),
+                cx,
+            );
             return;
         }
         let edit_fence = match &command {
@@ -218,7 +223,9 @@ impl VegaWindow {
         let mut projection = stream.read(cx).automation_projection().clone();
         projection.busy = true;
         projection.error = None;
-        stream.update(cx, |stream, cx| stream.apply_automation(projection, cx));
+        stream.update(cx, |stream, cx| {
+            crate::app_localization::apply_automation(stream, projection, cx)
+        });
         self.automation_controller
             .streams
             .insert(thread.into(), stream.clone());
@@ -229,12 +236,14 @@ impl VegaWindow {
         let model = stream.read(cx).displayed_model().to_owned();
         let mcp_settings = self.mcp_settings.clone();
         let worker = cx.background_executor().spawn(async move {
-            let _lane = lane.lock().map_err(|_| "自动任务保存失败".to_string())?;
+            let _lane = lane
+                .lock()
+                .map_err(|_| vega_i18n::t("app.automation.save_failed").to_string())?;
             if counter.load(Ordering::SeqCst) != epoch {
-                return Err("自动任务操作已撤销".into());
+                return Err(vega_i18n::t("app.automation.cancelled").into());
             }
-            let store =
-                vega_store::Store::open(database).map_err(|_| "自动任务存储不可用".to_string())?;
+            let store = vega_store::Store::open(database)
+                .map_err(|_| vega_i18n::t("app.automation.store_unavailable").to_string())?;
             let pending: Vec<_> = vega_conversation::automation::load(&store, &worker_thread)?
                 .into_iter()
                 .filter(|task| pending_pauses.contains(&task.kind))
@@ -244,7 +253,7 @@ impl VegaWindow {
                     &store,
                     &worker_thread,
                     &pending,
-                    "已由你暂停",
+                    "user_paused",
                 )?;
             }
             if let AutomationCommand::Create { instruction, .. }
@@ -254,19 +263,22 @@ impl VegaWindow {
                     .as_ref()
                     .map(|service| service.current_owner_credential_values())
                     .transpose()
-                    .map_err(|_| "凭据检查失败，请检查服务设置".to_string())?
+                    .map_err(|_| vega_i18n::t("app.automation.credential_check").to_string())?
                     .unwrap_or_default();
-                let path = config_path.as_deref().ok_or("请先配置服务提供方")?;
-                let config = vega_store::config::read_from(path).map_err(|_| "服务配置读取失败")?;
+                let path = config_path
+                    .as_deref()
+                    .ok_or(vega_i18n::t("app.error.provider_required"))?;
+                let config = vega_store::config::read_from(path)
+                    .map_err(|_| vega_i18n::t("app.error.config_read"))?;
                 let provider = unique_provider_for_model(&config, &model)
-                    .ok_or("请检查模型的服务提供方设置")?;
-                let root = path.parent().ok_or("服务配置读取失败")?;
+                    .ok_or(vega_i18n::t("app.error.provider_model"))?;
+                let root = path.parent().ok_or(vega_i18n::t("app.error.config_read"))?;
                 credentials.push(
                     vega_store::keystore::get_key(root, &provider.key_ref)
-                        .map_err(|_| "服务凭据读取失败")?,
+                        .map_err(|_| vega_i18n::t("app.error.credentials_read"))?,
                 );
                 if vega_runtime::contains_sensitive_credential(instruction, &credentials) {
-                    return Err("任务内容包含凭据，请删除后重试".into());
+                    return Err(vega_i18n::t("app.automation.credentials_in_task").into());
                 }
             }
             let now = vega_conversation::automation::now_ms();
@@ -287,12 +299,12 @@ impl VegaWindow {
             let _ = this.update(cx, |this, cx| {
                 if let Some((view, submitted)) = &editor {
                     view.update(cx, |view, cx| {
-                        view.finish_save(
+                        view.finish_save_localized(
                             submitted,
                             result
                                 .as_ref()
                                 .map(|(tasks, _)| tasks.clone())
-                                .map_err(Clone::clone),
+                                .map_err(|error| crate::app_localization::localized_error(error)),
                             cx,
                         )
                     });
@@ -333,7 +345,8 @@ impl VegaWindow {
                             if materialized {
                                 stream.set_draft_route(false, cx);
                             }
-                            stream.apply_automation(
+                            crate::app_localization::apply_automation(
+                                stream,
                                 AutomationProjection {
                                     tasks,
                                     busy: false,
@@ -354,7 +367,9 @@ impl VegaWindow {
                         if editor.is_some() {
                             let mut projection = stream.read(cx).automation_projection().clone();
                             projection.busy = false;
-                            stream.update(cx, |stream, cx| stream.apply_automation(projection, cx));
+                            stream.update(cx, |stream, cx| {
+                                crate::app_localization::apply_automation(stream, projection, cx)
+                            });
                         } else {
                             this.automation_error(&stream, error, cx);
                         }
@@ -392,7 +407,11 @@ impl VegaWindow {
                 }
             });
             if let Some(stream) = self.automation_controller.streams.get(thread) {
-                self.automation_error(stream, "自动任务存储不可用，请重新打开会话".into(), cx);
+                self.automation_error(
+                    stream,
+                    vega_i18n::t("app.automation.store_reopen").into(),
+                    cx,
+                );
             }
             return;
         };
@@ -400,12 +419,14 @@ impl VegaWindow {
         let reason = reason.to_string();
         let worker_thread = thread.clone();
         let worker = cx.background_executor().spawn(async move {
-            let _lane = lane.lock().map_err(|_| "自动任务暂停失败".to_string())?;
+            let _lane = lane
+                .lock()
+                .map_err(|_| vega_i18n::t("app.automation.pause_failed").to_string())?;
             if counter.load(Ordering::SeqCst) != epoch {
-                return Err("自动任务操作已撤销".into());
+                return Err(vega_i18n::t("app.automation.cancelled").into());
             }
-            let store =
-                vega_store::Store::open(database).map_err(|_| "自动任务存储不可用".to_string())?;
+            let store = vega_store::Store::open(database)
+                .map_err(|_| vega_i18n::t("app.automation.store_unavailable").to_string())?;
             vega_conversation::automation::pause_all(&store, &worker_thread, &reason)
         });
         cx.spawn(async move |this, cx| {
@@ -422,7 +443,8 @@ impl VegaWindow {
                 if let Some(stream) = this.automation_controller.streams.get(&thread).cloned() {
                     match result {
                         Ok(tasks) => stream.update(cx, |stream, cx| {
-                            stream.apply_automation(
+                            crate::app_localization::apply_automation(
+                                stream,
                                 AutomationProjection {
                                     tasks,
                                     busy: false,
@@ -557,9 +579,11 @@ impl VegaWindow {
         let thread = thread.to_string();
         let worker_thread = thread.clone();
         let worker = cx.background_executor().spawn(async move {
-            let _lane = lane.lock().map_err(|_| "自动任务读取失败".to_string())?;
+            let _lane = lane
+                .lock()
+                .map_err(|_| vega_i18n::t("app.automation.read_failed").to_string())?;
             let store = vega_store::Store::open(&database)
-                .map_err(|_| "自动任务读取失败，请重新打开会话".to_string())?;
+                .map_err(|_| vega_i18n::t("app.automation.read_reopen").to_string())?;
             let now = vega_conversation::automation::now_ms();
             let tasks = vega_conversation::automation::refresh(&store, &worker_thread, now)?;
             let eligible = eligible && counter.load(Ordering::SeqCst) == epoch;
@@ -573,7 +597,7 @@ impl VegaWindow {
                     &store,
                     &worker_thread,
                     &pending,
-                    "已由你暂停",
+                    "user_paused",
                 )?;
             }
             let sampled_at = std::time::Instant::now();
@@ -655,13 +679,14 @@ impl VegaWindow {
                             && let Some(timings) = timings
                         {
                             let error = if !cx.global::<AutomationGlobal>().ready {
-                                Some("自动任务恢复失败，请重启 Vega 后重试".into())
+                                Some(vega_i18n::t("app.automation.recovery_failed").into())
                             } else {
                                 stream.read(cx).automation_projection().error.clone()
                             };
                             this.refresh_automation_editors(&thread, &tasks, &timings, cx);
                             stream.update(cx, |stream, cx| {
-                                stream.apply_automation(
+                                crate::app_localization::apply_automation(
+                                    stream,
                                     AutomationProjection {
                                         tasks: tasks.clone(),
                                         busy: false,
@@ -693,7 +718,7 @@ impl VegaWindow {
                             failed_start = true;
                             this.automation_error(
                                 &stream,
-                                "自动任务未能开始，请检查模型和会话状态后恢复".into(),
+                                vega_i18n::t("app.automation.start_failed").into(),
                                 cx,
                             );
                         }

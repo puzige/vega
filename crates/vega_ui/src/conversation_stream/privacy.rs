@@ -30,7 +30,7 @@ pub(crate) struct PrivacyPanel {
     pub pending: bool,
     pub confirming: bool,
     pub review: Option<PrivacyReview>,
-    pub error: Option<String>,
+    pub error: Option<crate::localized_copy::LocalizedCopy>,
     pub details: HashSet<usize>,
 }
 
@@ -56,6 +56,14 @@ impl ConversationStream {
         result: Result<PrivacyReview, String>,
         cx: &mut Context<Self>,
     ) {
+        self.apply_privacy_result(result.map_err(Into::into), cx);
+    }
+
+    pub fn apply_privacy_result(
+        &mut self,
+        result: Result<PrivacyReview, crate::localized_copy::LocalizedCopy>,
+        cx: &mut Context<Self>,
+    ) {
         self.privacy.pending = false;
         match result {
             Ok(review) => self.privacy.review = Some(review),
@@ -72,10 +80,10 @@ impl ConversationStream {
             .flex_col()
             .gap_2();
         if self.privacy.pending {
-            view = view.child("正在检查…");
+            view = view.child(vega_i18n::t("ui.checking"));
         }
         if let Some(error) = &self.privacy.error {
-            view = view.child(div().text_color(colors.danger).child(error.clone()));
+            view = view.child(div().text_color(colors.danger).child(error.render()));
         }
         if let Some(review) = &self.privacy.review {
             let mut rows = div()
@@ -87,7 +95,7 @@ impl ConversationStream {
                 .gap_2()
                 .scroll_edge_fade(colors.bg_base, ScrollFade::compact());
             if review.findings.is_empty() {
-                rows = rows.child("未发现需要处理的凭据");
+                rows = rows.child(vega_i18n::t("ui.no_credentials_need_attention"));
             }
             for (index, finding) in review.findings.iter().enumerate() {
                 let snapshot = review.clone();
@@ -96,14 +104,14 @@ impl ConversationStream {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(finding.source_label.clone())
-                    .child(finding.preview.clone())
+                    .child(finding.source_label())
+                    .child(finding.preview_text())
                     .child(
                         PrivacyButton::new(format!("credential-details-{index}"), colors)
                             .label(if self.privacy.details.contains(&index) {
-                                "收起详情"
+                                vega_i18n::t("ui.hide_details")
                             } else {
-                                "检测详情"
+                                vega_i18n::t("ui.detection_details")
                             })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if !this.privacy.details.remove(&index) {
@@ -122,7 +130,7 @@ impl ConversationStream {
                     let message = message.clone();
                     row = row.child(
                         PrivacyButton::new(format!("credential-locate-{index}"), colors)
-                            .label("定位")
+                            .label(vega_i18n::t("ui.locate"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.request_message_location(&message, cx)
                             })),
@@ -132,9 +140,9 @@ impl ConversationStream {
                     row = row.child(
                         PrivacyButton::new(format!("credential-exception-{index}"), colors)
                             .label(if allow {
-                                "标记为测试值 / 误报"
+                                vega_i18n::t("ui.mark_as_test_value_false_positive")
                             } else {
-                                "撤销例外"
+                                vega_i18n::t("ui.remove_exception")
                             })
                             .disabled(self.privacy.pending)
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -155,12 +163,26 @@ impl ConversationStream {
             if review.findings.iter().any(|finding| finding.cleanable) {
                 if self.privacy.confirming {
                     let snapshot = review.clone();
-                    view = view.child("将永久替换本对话记录中的凭据，无法撤销。备份、WAL 和外部文件可能仍保留原值。")
-                        .child(PrivacyButton::new("credential-clean-confirm", colors).label("确认永久清理").disabled(self.privacy.pending)
-                            .on_click(cx.listener(move |this, _, _, cx| this.request_privacy(PrivacyAction::Clean { snapshot:snapshot.clone() }, cx))));
+                    view = view
+                        .child(vega_i18n::t(
+                            "ui.this_permanently_replaces_credentials_in_this_conversation_and",
+                        ))
+                        .child(
+                            PrivacyButton::new("credential-clean-confirm", colors)
+                                .label(vega_i18n::t("ui.confirm_permanent_cleanup"))
+                                .disabled(self.privacy.pending)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.request_privacy(
+                                        PrivacyAction::Clean {
+                                            snapshot: snapshot.clone(),
+                                        },
+                                        cx,
+                                    )
+                                })),
+                        );
                     view = view.child(
                         PrivacyButton::new("credential-clean-cancel", colors)
-                            .label("取消清理")
+                            .label(vega_i18n::t("ui.cancel_cleanup"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.privacy.confirming = false;
                                 cx.notify();
@@ -169,7 +191,9 @@ impl ConversationStream {
                 } else {
                     view = view.child(
                         PrivacyButton::new("credential-clean-preview", colors)
-                            .label("永久清理对话中的凭据")
+                            .label(vega_i18n::t(
+                                "ui.permanently_remove_credentials_from_this_conversation",
+                            ))
                             .disabled(self.privacy.pending)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.privacy.confirming = true;
@@ -181,7 +205,7 @@ impl ConversationStream {
         }
         view.child(
             PrivacyButton::new("credential-review-close", colors)
-                .label("关闭")
+                .label(vega_i18n::t("ui.close"))
                 .disabled(self.privacy.pending)
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.privacy.opened = false;

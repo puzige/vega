@@ -220,7 +220,7 @@ impl ThinkingBlock {
         } else if !self.thinking_preview.title.is_empty() {
             &self.thinking_preview.title
         } else {
-            "Thinking"
+            vega_i18n::t("ui.thinking")
         }
     }
 
@@ -486,7 +486,7 @@ impl Render for ThinkingBlock {
                     .tab_stop(can_expand)
                     .focus_visible(move |row| row.bg(colors.bg_hover))
                     .aria_label(if can_expand {
-                        format!("{}, expand or collapse thinking", title)
+                        vega_i18n::t_args("ui.thinking_disclosure", &[("title", &title)])
                     } else {
                         title.clone()
                     })
@@ -555,7 +555,7 @@ impl Render for ThinkingBlock {
                     div()
                         .text_size(px(Typography::METADATA))
                         .text_color(colors.text_tertiary)
-                        .child("Earlier thinking omitted"),
+                        .child(vega_i18n::t("ui.earlier_thinking_omitted")),
                 )
             })
     }

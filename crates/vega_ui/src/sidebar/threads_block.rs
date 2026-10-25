@@ -53,7 +53,7 @@ pub struct ThreadsBlock {
     /// Active inline rename session (`None` = not renaming).
     pub(crate) editing: Option<RenameSession>,
     /// Inline error message (ui-spec §4.6).
-    pub(crate) error: Option<String>,
+    pub(crate) error: Option<crate::localized_copy::LocalizedCopy>,
     action_pending: bool,
     project_generation: u64,
     actions_scroll: gpui_kit::ScrollHandle,
@@ -129,10 +129,10 @@ impl ThreadsBlock {
             Some(project_id) => with_store(cx, |store| {
                 let active =
                     conversation::list_threads(store, &project_id, Some(ThreadStatus::Active))
-                        .map_err(|error| error.to_string())?;
+                        .map_err(crate::localized_copy::LocalizedCopy::from)?;
                 let archived =
                     conversation::list_threads(store, &project_id, Some(ThreadStatus::Archived))
-                        .map_err(|error| error.to_string())?;
+                        .map_err(crate::localized_copy::LocalizedCopy::from)?;
                 Ok((active, archived))
             }),
         };
@@ -174,7 +174,9 @@ impl ThreadsBlock {
 
     pub(crate) fn create_task(&mut self, project_id: Option<String>, cx: &mut Context<Self>) {
         if task_mutation_busy(cx) {
-            self.error = Some("任务正在保存，请稍后重试".into());
+            self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.a_task_is_being_saved_try_again_shortly",
+            ));
             cx.notify();
             return;
         }
@@ -188,13 +190,15 @@ impl ThreadsBlock {
         if let Some(project_id) = project_id.as_deref() {
             let exists = with_store(cx, |store| {
                 vega_store::projects::find(store.conn(), project_id)
-                    .map_err(|error| error.to_string())
+                    .map_err(crate::localized_copy::LocalizedCopy::storage)
                     .map(|row| row.is_some())
             });
             match exists {
                 Ok(true) => {}
                 Ok(false) => {
-                    self.error = Some("项目不存在，无法创建任务".into());
+                    self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                        "ui.the_project_does_not_exist_cannot_create_a",
+                    ));
                     cx.notify();
                     return;
                 }
@@ -221,7 +225,9 @@ impl ThreadsBlock {
             return;
         }
         if task_mutation_busy(cx) {
-            self.error = Some("任务正在保存，请稍后重试".into());
+            self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.a_task_is_being_saved_try_again_shortly",
+            ));
             cx.notify();
             return;
         }
@@ -231,7 +237,8 @@ impl ThreadsBlock {
         self.close_actions();
         crate::navigation::begin_task_mutation(cx);
         let result = with_store(cx, |store| {
-            conversation::visit_thread(store, thread_id).map_err(|error| error.to_string())
+            conversation::visit_thread(store, thread_id)
+                .map_err(crate::localized_copy::LocalizedCopy::from)
         });
         crate::navigation::finish_task_mutation(cx);
         match result {
@@ -253,11 +260,13 @@ impl ThreadsBlock {
     /// failure as the block's inline error bar (ui-spec §4.6).
     fn mutate_thread(
         &mut self,
-        operation: impl FnOnce(&Store) -> Result<(), String>,
+        operation: impl FnOnce(&Store) -> Result<(), crate::localized_copy::LocalizedCopy>,
         cx: &mut Context<Self>,
     ) {
         if task_mutation_busy(cx) {
-            self.error = Some("任务正在保存，请稍后重试".into());
+            self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.a_task_is_being_saved_try_again_shortly",
+            ));
             cx.notify();
             return;
         }
@@ -280,7 +289,7 @@ impl ThreadsBlock {
         self.mutate_thread(
             |store| {
                 conversation::set_thread_pinned(store, thread_id, !pinned)
-                    .map_err(|error| error.to_string())
+                    .map_err(crate::localized_copy::LocalizedCopy::from)
             },
             cx,
         );
@@ -291,7 +300,7 @@ impl ThreadsBlock {
         self.mutate_thread(
             |store| {
                 conversation::set_thread_status(store, thread_id, status)
-                    .map_err(|error| error.to_string())
+                    .map_err(crate::localized_copy::LocalizedCopy::from)
             },
             cx,
         );
@@ -320,7 +329,8 @@ impl ThreadsBlock {
         {
             return;
         }
-        let input = cx.new(|cx| TextInput::new(cx, "会话标题", false));
+        let input = cx
+            .new(|cx| TextInput::new(cx, "", false).with_placeholder_key("ui.conversation_title"));
         input.update(cx, |input, cx| input.set_text(&thread.title, cx));
         self.editing = Some(RenameSession {
             thread_id: thread.id.clone(),
@@ -583,7 +593,9 @@ impl ThreadsBlock {
     /// Applies only committed fields, never a stale task snapshot or a route change.
     fn apply_update(&mut self, thread: &Thread, update: ThreadUpdate, cx: &mut Context<Self>) {
         if self.action_pending || task_mutation_busy(cx) {
-            self.error = Some("任务操作正在保存，请稍后重试".into());
+            self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.task_actions_are_being_saved_try_again_shortly",
+            ));
             cx.notify();
             return;
         }
@@ -595,7 +607,7 @@ impl ThreadsBlock {
             crate::navigation::begin_task_mutation(cx);
             let result = with_store(cx, |store| {
                 conversation::update_thread(store, &thread.id, &update)
-                    .map_err(|error| error.to_string())
+                    .map_err(crate::localized_copy::LocalizedCopy::from)
             });
             crate::navigation::finish_task_mutation(cx);
             match result {
@@ -629,10 +641,11 @@ impl ThreadsBlock {
         let id = thread.id.clone();
         let project = thread.project_id.clone();
         let database = with_store(cx, |store| {
-            store
-                .database_path()
-                .map(Path::to_path_buf)
-                .ok_or_else(|| "任务存储需要文件数据库".to_string())
+            store.database_path().map(Path::to_path_buf).ok_or_else(|| {
+                crate::localized_copy::LocalizedCopy::new(
+                    "ui.task_storage_requires_a_file_backed_database",
+                )
+            })
         });
         let Ok(database) = database else {
             self.error = database.err();
@@ -643,18 +656,20 @@ impl ThreadsBlock {
         crate::navigation::begin_task_mutation(cx);
         let committed = update.clone();
         let worker = cx.background_executor().spawn(async move {
-            let store = Store::open(database).map_err(|e| e.to_string())?;
+            let store =
+                Store::open(database).map_err(crate::localized_copy::LocalizedCopy::storage)?;
             let renamed_at = if let Some(title) = &update.title {
                 Some(
                     conversation::rename_thread(&store, &id, title)
-                        .map_err(|e| e.to_string())?
+                        .map_err(crate::localized_copy::LocalizedCopy::from)?
                         .updated_at,
                 )
             } else {
-                conversation::update_thread(&store, &id, &update).map_err(|e| e.to_string())?;
+                conversation::update_thread(&store, &id, &update)
+                    .map_err(crate::localized_copy::LocalizedCopy::from)?;
                 None
             };
-            Ok::<_, String>((id, project, renamed_at))
+            Ok::<_, crate::localized_copy::LocalizedCopy>((id, project, renamed_at))
         });
         cx.spawn(async move |this, cx| {
             let result = worker.await;
@@ -734,7 +749,9 @@ impl ThreadsBlock {
 
     fn project_action(&mut self, thread: &Thread, finder: bool, cx: &mut Context<Self>) {
         if self.action_pending {
-            self.error = Some("任务操作正在保存，请稍后重试".into());
+            self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.task_actions_are_being_saved_try_again_shortly",
+            ));
             cx.notify();
             return;
         }
@@ -744,10 +761,11 @@ impl ThreadsBlock {
         let target_id = id.clone();
         let route = cx.global::<OpenedThread>().0.as_ref().map(|t| t.id.clone());
         let database = with_store(cx, |store| {
-            store
-                .database_path()
-                .map(Path::to_path_buf)
-                .ok_or_else(|| "任务存储需要文件数据库".to_string())
+            store.database_path().map(Path::to_path_buf).ok_or_else(|| {
+                crate::localized_copy::LocalizedCopy::new(
+                    "ui.task_storage_requires_a_file_backed_database",
+                )
+            })
         });
         let Ok(database) = database else {
             self.error = database.err();
@@ -756,8 +774,10 @@ impl ThreadsBlock {
         };
         self.action_pending = true;
         let worker = cx.background_executor().spawn(async move {
-            let store = Store::open_read_only(database).map_err(|e| e.to_string())?;
-            conversation::task_project_path(&store, &id).map_err(|e| e.to_string())
+            let store = Store::open_read_only(database)
+                .map_err(crate::localized_copy::LocalizedCopy::storage)?;
+            conversation::task_project_path(&store, &id)
+                .map_err(crate::localized_copy::LocalizedCopy::from)
         });
         cx.spawn(async move |this, cx| {
             let result = worker.await;
@@ -886,7 +906,7 @@ impl ThreadsBlock {
                             .text_size(px(Typography::METADATA))
                             .font_weight(Typography::HEADING_CARD_WEIGHT)
                             .text_color(colors.text_secondary)
-                            .child("SESSIONS"),
+                            .child(vega_i18n::t("ui.sessions")),
                     )
                     .child(crate::icons::icon(
                         if collapsed {
@@ -921,15 +941,19 @@ impl ThreadsBlock {
                 .into_any_element()
         };
         if self.loaded_project.is_none() {
-            return guidance("暂无项目：先在「项目」区选择").into_any_element();
+            return guidance(vega_i18n::t("ui.no_project_choose_one_in_projects_first"))
+                .into_any_element();
         }
         if self.threads.is_empty() && self.archived.is_empty() {
-            return guidance("暂无会话：点顶部「新建任务」开始").into_any_element();
+            return guidance(vega_i18n::t(
+                "ui.no_conversations_click_new_task_above_to_start",
+            ))
+            .into_any_element();
         }
         let mut body = div().flex().flex_col();
         if self.threads.is_empty() {
             // 仅剩归档线程：主列表给一行引导，归档折叠区照常可见可展开。
-            body = body.child(guidance("暂无活跃会话"));
+            body = body.child(guidance(vega_i18n::t("ui.no_active_conversations")));
         } else {
             body =
                 body.children(self.threads.iter().map(|thread| {
@@ -974,7 +998,10 @@ impl ThreadsBlock {
                 div()
                     .text_size(px(Typography::SIDEBAR))
                     .text_color(colors.text_secondary)
-                    .child(format!("已归档 ({})", self.archived.len())),
+                    .child(vega_i18n::t_args(
+                        "ui.archived_count",
+                        &[("count", &(self.archived.len()).to_string())],
+                    )),
             )
             .child(crate::icons::icon(
                 if self.archive_expanded {
@@ -1113,7 +1140,7 @@ impl ThreadsBlock {
         let mouse_move_thread_id = thread_id.clone();
         let row_thread = thread.clone();
         let accessibility_label = if thread_is_running(&thread.id, cx) {
-            format!("{}，正在运行", thread.title)
+            vega_i18n::t_args("ui.title_running", &[("title", &thread.title)])
         } else {
             thread.title.clone()
         };
@@ -1291,7 +1318,7 @@ impl ThreadsBlock {
             .rounded_md()
             .text_size(px(Typography::HEADING_BLOCK))
             .text_color(colors.text_secondary)
-            .aria_label("会话操作")
+            .aria_label(vega_i18n::t("ui.conversation_actions"))
             .focusable()
             .tab_stop(true)
             .when_some(
@@ -1434,7 +1461,7 @@ impl ThreadsBlock {
                     "{running_selector_prefix}thread-running-{running_selector_id}"
                 )))
                 .size(px(Layout::SIDEBAR_ACTION_SIZE))
-                .aria_label("任务正在运行")
+                .aria_label(vega_i18n::t("ui.task_running"))
                 .flex_shrink_0()
                 .flex()
                 .items_center()
@@ -1468,7 +1495,11 @@ impl ThreadsBlock {
         group = group.child(trigger);
         if quick_actions_visible {
             let pinned = thread.pinned;
-            let pin_label = if pinned { "取消置顶" } else { "置顶" };
+            let pin_label = if pinned {
+                vega_i18n::t("ui.unpin")
+            } else {
+                vega_i18n::t("ui.pin")
+            };
             let pin_thread_id = thread.id.clone();
             let pin_button = div()
                 .id(ElementId::Name(
@@ -1504,16 +1535,16 @@ impl ThreadsBlock {
                     format!("{action_prefix}thread-archive-{thread_id}").into(),
                 ))
                 .aria_label(if archived {
-                    "恢复任务"
+                    vega_i18n::t("ui.restore_task")
                 } else {
-                    "归档任务"
+                    vega_i18n::t("ui.archive_task")
                 })
                 .tooltip(move |_, cx| {
                     crate::icons::tooltip(
                         if archived {
-                            "恢复任务"
+                            vega_i18n::t("ui.restore_task")
                         } else {
-                            "归档任务"
+                            vega_i18n::t("ui.archive_task")
                         },
                         cx,
                     )
@@ -1578,27 +1609,41 @@ impl ThreadsBlock {
         let mut actions = vec![
             (
                 if thread.pinned {
-                    "取消置顶"
+                    vega_i18n::t("ui.unpin")
                 } else {
-                    "置顶"
+                    vega_i18n::t("ui.pin")
                 },
                 false,
             ),
-            ("重命名", false),
-            (if archived { "恢复" } else { "归档" }, false),
+            (vega_i18n::t("ui.rename"), false),
+            (
+                if archived {
+                    vega_i18n::t("ui.resume")
+                } else {
+                    vega_i18n::t("ui.archive")
+                },
+                false,
+            ),
             (
                 if thread.unread {
-                    "标记为已读"
+                    vega_i18n::t("ui.mark_as_read")
                 } else {
-                    "标记为未读"
+                    vega_i18n::t("ui.mark_as_unread")
                 },
                 false,
             ),
         ];
         if !thread.is_standalone() {
-            actions.extend([("在 Finder 中打开项目", false), ("复制项目路径", false)]);
+            actions.extend([
+                (vega_i18n::t("ui.open_project_in_finder"), false),
+                (vega_i18n::t("ui.copy_project_path"), false),
+            ]);
         }
-        actions.extend([("复制会话 ID", false), ("前往设置", false), ("删除", true)]);
+        actions.extend([
+            (vega_i18n::t("ui.copy_conversation_id"), false),
+            (vega_i18n::t("ui.go_to_settings"), false),
+            (vega_i18n::t("ui.delete"), true),
+        ]);
         let mut actions: Vec<(String, bool)> = actions
             .into_iter()
             .map(|(label, danger)| (label.to_string(), danger))

@@ -12,12 +12,41 @@ pub enum CleanupStatus {
     Failed(ComputerUseError),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ServiceFailure {
+    StateUnavailable,
+    StartupFailed(String),
+    WorkerFailed(String),
+    CleanupUnconfirmed,
+}
+
+impl std::fmt::Display for ServiceFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StateUnavailable => f.write_str(vega_i18n::t(
+                "ui.the_permission_check_service_state_is_unavailable_restart",
+            )),
+            Self::StartupFailed(error) => f.write_str(&vega_i18n::t_args(
+                "ui.cannot_start_the_permission_check_service_error",
+                &[("error", error)],
+            )),
+            Self::WorkerFailed(error) => f.write_str(&vega_i18n::t_args(
+                "ui.the_permission_check_did_not_finish_normally_error",
+                &[("error", error)],
+            )),
+            Self::CleanupUnconfirmed => f.write_str(vega_i18n::t(
+                "ui.permission_check_cleanup_could_not_be_confirmed_on",
+            )),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ServiceStatus {
     pub cleanup: CleanupStatus,
     pub last_close_error: Option<ComputerUseError>,
     pub last_inspection_error: Option<ComputerUseError>,
-    pub failure: Option<String>,
+    pub failure: Option<ServiceFailure>,
 }
 
 impl ServiceStatus {
@@ -144,9 +173,16 @@ pub enum AdapterError {
 impl std::fmt::Display for AdapterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unavailable => f.write_str("准备检测服务不可用，请重启 Vega 后重试。"),
-            Self::Spawn(error) => write!(f, "无法启动准备检测服务：{error}"),
-            Self::InvalidInspection => f.write_str("准备检测请求不符合只读权限检查要求。"),
+            Self::Unavailable => f.write_str(vega_i18n::t(
+                "ui.the_permission_check_service_is_unavailable_restart_vega",
+            )),
+            Self::Spawn(error) => f.write_str(&vega_i18n::t_args(
+                "ui.cannot_start_the_permission_check_service_error",
+                &[("error", error)],
+            )),
+            Self::InvalidInspection => f.write_str(vega_i18n::t(
+                "ui.the_permission_check_request_does_not_meet_read",
+            )),
         }
     }
 }
@@ -284,12 +320,12 @@ fn snapshot(state: &Mutex<ServiceState>) -> ServiceStatus {
             cleanup: CleanupStatus::Failed(ComputerUseError::Unavailable),
             last_close_error: None,
             last_inspection_error: None,
-            failure: Some("准备检测服务状态不可用，请重启 Vega。".into()),
+            failure: Some(ServiceFailure::StateUnavailable),
         },
     }
 }
 
-fn set_failure(state: &Mutex<ServiceState>, failure: String) {
+fn set_failure(state: &Mutex<ServiceState>, failure: ServiceFailure) {
     tracing::error!(%failure, "preparation service unavailable");
     if let Ok(mut state) = state.lock() {
         state.status.failure = Some(failure);
@@ -309,7 +345,7 @@ pub fn service_status() -> ServiceStatus {
             cleanup: CleanupStatus::Failed(ComputerUseError::Unavailable),
             last_close_error: None,
             last_inspection_error: None,
-            failure: Some("准备检测服务状态不可用，请重启 Vega。".into()),
+            failure: Some(ServiceFailure::StateUnavailable),
         },
     }
 }
@@ -339,7 +375,7 @@ fn service() -> Result<Service, AdapterError> {
             {
                 Ok(runtime) => runtime,
                 Err(error) => {
-                    set_failure(&state, format!("无法启动准备检测服务：{error}"));
+                    set_failure(&state, ServiceFailure::StartupFailed(error.to_string()));
                     return;
                 }
             };
@@ -367,7 +403,7 @@ async fn serve(
                     cancel.cancel();
                     while let Some(result) = workers.join_next().await {
                         if let Err(error) = result {
-                            set_failure(&state, format!("准备检测未正常结束：{error}"));
+                            set_failure(&state, ServiceFailure::WorkerFailed(error.to_string()));
                         }
                     }
                     let _outcome = reclaim(None, &state, &gate).await;
@@ -382,7 +418,7 @@ async fn serve(
                     cancel.cancel();
                     while let Some(result) = workers.join_next().await {
                         if let Err(error) = result {
-                            set_failure(&state, format!("准备检测未正常结束：{error}"));
+                            set_failure(&state, ServiceFailure::WorkerFailed(error.to_string()));
                         }
                     }
                     let _outcome = reclaim(None, &state, &gate).await;
@@ -391,7 +427,7 @@ async fn serve(
             },
             result = workers.join_next(), if !workers.is_empty() => {
                 if let Some(Err(error)) = result {
-                    set_failure(&state, format!("准备检测未正常结束：{error}"));
+                    set_failure(&state, ServiceFailure::WorkerFailed(error.to_string()));
                 }
             }
         }
@@ -549,7 +585,7 @@ pub fn install_quit_hook(cx: &mut gpui_kit::App) {
                 .is_err()
                 || response.await.is_err()
             {
-                set_failure(&service.state, "退出时无法确认准备检测已回收。".into());
+                set_failure(&service.state, ServiceFailure::CleanupUnconfirmed);
             }
         }
     })

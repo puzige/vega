@@ -19,9 +19,9 @@ pub(crate) fn commit_row_key(generation: u64, index: usize, staged: usize) -> St
 
 pub(crate) fn commit_row_status(forced: bool, selected: bool) -> &'static str {
     match (forced, selected) {
-        (true, _) => "Included · staged",
-        (false, true) => "Selected · worktree",
-        (false, false) => "Optional · worktree",
+        (true, _) => vega_i18n::t("ui.included_staged"),
+        (false, true) => vega_i18n::t("ui.selected_worktree"),
+        (false, false) => vega_i18n::t("ui.optional_worktree"),
     }
 }
 
