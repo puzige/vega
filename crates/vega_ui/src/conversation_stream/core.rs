@@ -261,6 +261,11 @@ impl ConversationStream {
         for card in self.artifact_cards.values() {
             card.update(cx, |card, cx| card.set_reading_preview(reading, cx));
         }
+        for group in self.artifact_groups.values() {
+            group.update(cx, |group, cx| {
+                group.set_review_availability(reading, self.thread.is_standalone(), cx);
+            });
+        }
         self.hydration.loading = false;
         self.hydration.paused = false;
         self.hydration.paused_direction = None;
