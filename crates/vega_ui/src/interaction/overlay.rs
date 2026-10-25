@@ -110,7 +110,9 @@ impl OverlayEntry {
         }
     }
 
-    pub fn surface<E>(&self, inner: E, bypass: bool) -> OverlaySurface<E> {
+    pub fn surface<E: InteractiveElement>(&self, inner: E, bypass: bool) -> OverlaySurface<E> {
+        #[cfg(test)]
+        let inner = inner.debug_selector(|| "overlay-entry-surface".into());
         OverlaySurface {
             inner,
             entry: self.clone(),
@@ -188,10 +190,6 @@ where
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        #[cfg(test)]
-        {
-            self.inner.interactivity().debug_selector = Some("overlay-entry-surface".into());
-        }
         self.inner
             .prepaint(id, inspector, bounds, layout, window, cx)
     }

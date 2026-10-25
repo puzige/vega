@@ -5,7 +5,7 @@ use crate::{
 };
 use gpui_kit::{
     AppContext, Context, Entity, Focusable, IntoElement, ParentElement, Render, Styled,
-    TestAppContext, VisualTestContext, Window, WindowHandle, div, gpui, test::TestWindowExt,
+    TestAppContext, VisualTestContext, Window, WindowHandle, div, test::TestWindowExt,
 };
 use std::{cell::Cell, rc::Rc, time::Duration};
 use vega_conversation::types::{

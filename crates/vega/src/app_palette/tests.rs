@@ -1,8 +1,8 @@
 use super::AppPalette;
 use gpui_kit::{
     AppContext, Context, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement,
-    ParentElement, Quad, Render, Styled, TestAppContext, Window, WindowHandle, canvas, div, gpui,
-    px, test::TestWindowExt,
+    ParentElement, Quad, Render, Styled, TestAppContext, Window, WindowHandle, canvas, div, px,
+    test::TestWindowExt,
 };
 use std::{cell::Cell, rc::Rc, time::Duration};
 use vega_conversation::types::{PaletteAction, PaletteError, PaletteSearch};
@@ -248,16 +248,14 @@ fn accepted_async_close_expires_before_reopen_without_an_intervening_paint(
         .advance_clock(Duration::from_millis(45));
     let middle = frame(window, cx);
     assert!(middle > 0. && middle < 1.);
+    cx.run_until_parked();
     let (painted, original) = window
         .update(cx, |host, _, cx| {
             let original = host.palette.view.as_ref().unwrap().entity_id();
             let painted = host.paints.get();
             cx.spawn(async move |host, cx| {
-                host.update(cx, |host, cx| {
-                    host.palette.request_close(cx);
-                    cx.notify();
-                })
-                .unwrap();
+                host.update(cx, |host, cx| host.palette.request_close(cx))
+                    .unwrap();
             })
             .detach();
             (painted, original)
@@ -273,6 +271,7 @@ fn accepted_async_close_expires_before_reopen_without_an_intervening_paint(
         .unwrap();
     cx.background_executor
         .advance_clock(Duration::from_millis(121));
+    cx.run_until_parked();
     window
         .update(cx, |host, window, cx| {
             assert_eq!(host.paints.get(), painted);
