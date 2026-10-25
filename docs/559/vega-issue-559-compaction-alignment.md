@@ -1,6 +1,45 @@
-# #559 — 压缩过程行对齐
+# #559 — 压缩过程行对齐与阶段收纳
 
-版本：v1，2026-10-25。Issue：[#559](https://github.com/puzige/vega/issues/559)。
+版本：v2，2026-10-25。Issue：[#559](https://github.com/puzige/vega/issues/559)。
+
+## v2 用户追加：与工具过程共用收纳栏
+
+本节是本轮实现契约，取代下方 v1 的“无新增交互”和禁止修改 `context_control` / `phase` / `run_activity` 的范围限制；v1 对齐与首行图标几何、错误和持久化规则继续保留。
+
+本轮基线：`429c6a819fc5a30f8280afd2f6ed015d4682bf41`。用户要求将 `Compacting context` 和上方工具/命令过程放在同一收纳栏，不再在工具阶段下方常驻独立的压缩过程行。
+
+### 根因与最小方案
+
+- `context_control::apply_context_status` 虽调用 `RunActivityGroup::set_compacting`，但只切换回合 phase；压缩内容仍独立追加为 `StreamEntry::ContextCompaction`。
+- 工具与思考经 `ensure_live_run_activity_segment` 进入 `RunActivitySegment`；阶段标题、展开内容和估算都由 `RunActivityGroup` 管理。当前压缩未接入这一过程投影，`process_entry_hidden` 也只隐藏成功/取消，不隐藏已纳入收纳的活跃压缩。
+- 保留原始 `ContextCompaction` entry、generation、identity 与状态持久化；为当前回合当前阶段增加真实的压缩过程投影。已有活跃阶段时复用，不因压缩再建第二个收纳栏；正文已经分隔阶段时不跨正文合并；无阶段但有当前回合时通过现有入口建立阶段。
+- 压缩作为过程项而非伪造工具调用，不生成工具 call_id、命令输出或假成功记录。实现可采用阶段内有 generation 归属的状态或专用过程 child，避免将 ToolCard 泛化成无关状态容器。
+- 仅当活跃压缩已确实投影到所属阶段时，隐藏对应独立行。无所属回合的手动压缩、无法建立所属阶段的状态继续复用原行，不能为了去重无条件隐藏。
+
+### 验收矩阵
+
+| 场景 | v2 可观察结果 |
+|---|---|
+| 读取文件/执行命令后开始压缩，阶段收起 | 只有同一个过程收纳栏；标题显示真实的 `Compacting context` 与现有压缩图标，使用现有运行反馈；不能仍只显示已结束的 `Read files` |
+| 展开该阶段 | 工具/命令与压缩按发生顺序位于同一详情区，复用现有箭头、鼠标与键盘展开/收起；不增加解释段或常驻卡片底色 |
+| 只有压缩一个过程项，或正文后新阶段首先压缩 | 紧凑显示真实压缩状态，不出现空 `Thought` 标题、重复行或无内容的展开按钮；不跨正文合并到先前阶段 |
+| 压缩成功/主动取消 | 从收纳标题与详情中移除临时压缩项及其全部占位，既有工具保持原状态、详情与展开状态；没有工具的临时阶段也不留空白 |
+| 压缩失败 | 不把失败藏入正常过程收纳；仍按现有回合底部安全红字或独立手动压缩错误显示，不重复、不吞另一真实原因；恢复入口不变 |
+| 压缩后继续产生工具/思考/正文 | 真实新活动恢复现有标题选择与运行反馈，无永久 `Compacting context`、错误的 tool count、重复或倒序 |
+| 迟到事件/多次 generation/切线程/历史恢复 | 保留原有隔离与去重，不把旧状态投影到新回合；成功/取消提示不复活；没有新增持久化格式 |
+| 窄窗口、浅深主题、滚动和焦点 | 使用原有字号/图标/间距 token；render、row count、height estimate、隐藏投影与锚点一致；复用已有焦点迁移与键盘控件，不吞必要错误 |
+
+### 允许实现范围与验证
+
+专职子 Agent 仅修改 `crates/vega_ui/src/conversation_stream/{context_control,run_activity,phase,render_rows,message_anchors,content}.rs` 中必要接线，确需其他文件先报告。优先复用现有压缩行渲染和高度计算，保持 generation 与 owner 绑定；同步受影响的穷尽分支、checkpoint/rollback、计数、可见性、布局失效和最终运行详情。不得修改压缩算法、预算、运行时事件、数据库、用户配置、权限、工具行为、主题 token、依赖、CI 或安装应用。
+
+这是 UI 过程投影变化，按最小交付不临时制造 Rust 测试，不恢复已清除测试。本地只执行 diff/fmt 等静态检查，不运行 Vega、编译、Clippy 或测试，不使用 CUA。实现停写并提交精确版本后，由非实现者独立审查上述矩阵及静态调用链；现有 Actions 对最终 head 运行完整 required `check (fmt, clippy, test)`，Rust 结果应标为 `no Rust tests`（0 发现 / 0 执行），不能冒充行为测试通过。原生像素、交互、浅深主题与滚动效果待用户手测。CI 每五分钟查询；通过且独立审查无缺口后 squash merge，Issue 保持开放并置 In review，不自动安装或关闭。
+
+回滚：回退本轮过程投影代码可恢复 v1 独立临时行；保留全部原始状态与历史数据。
+
+---
+
+## v1 已交付基线（历史范围）
 基线：`420a0eb9a06594173b658f7e3a4437e3d2b5432d`。
 
 ## 目标与证据
