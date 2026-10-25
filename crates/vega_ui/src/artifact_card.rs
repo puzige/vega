@@ -531,7 +531,8 @@ impl ArtifactCard {
                     && menu_key.read(cx).menu_open
                 {
                     cx.stop_propagation();
-                    menu_key.read(cx).focus[1].focus(window, cx);
+                    let menu_focus = menu_key.read(cx).focus[1].clone();
+                    menu_focus.focus(window, cx);
                 } else if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                     cx.stop_propagation();
                     menu_key.update(cx, |card, cx| card.toggle_menu(window, cx));

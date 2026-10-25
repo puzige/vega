@@ -73,4 +73,12 @@ CI每5分钟查一次，完成通知例外；失败先查原日志、区分产�
 - 用户确认后认领评论已发布并读回： https://github.com/puzige/vega/issues/601#issuecomment-6392270729 。标识 `vega-601-artifact-card-20261025T020614Z`。
 - 阶段：专职实现已停写，待固定提交、非写入者独审及同版 Actions。改动为 `artifact_card.rs`、`composer.rs`、`core.rs`、`message_anchors.rs`、`render.rs` 和主题 token 六个生产文件；`render.rs` 仅将既有守卫方法改为 sibling 可见，不改守卫或事件含义。
 - 实现停写差异（相对规格提交 `256eb7be5504a37749d107293e71a9e3b52f194d`，`git diff --no-ext-diff --no-color --binary --full-index HEAD --`）：34,407 bytes，SHA-256 `f284ad798d88f29c78d05348e8f9cf522b48949b135c997b9c5163cb26f53117`。主会话已读回核对。
-- 本地定点 Rust 1.98 rustfmt、`cargo fmt --all -- --check`、`git diff --check` 均退出0；完整捕获/去重/归属方法保持不变，几何静态核算符合上表。未新增或恢复 Rust 测试及独占接线、依赖或CI；本次行为验证采用完整静态链与独审，实际原生焦点、事件、视觉、滚动与外部打开待用户手测。无本地产品执行/编译/测试/CUA；云端与独审结果尚未取得，不据此声称通过。
+- 本地定点 Rust 1.98 rustfmt、`cargo fmt --all -- --check`、`git diff --check` 均退出0；完整捕获/去重/归属方法保持不变，几何静态核算符合上表。未新增或恢复 Rust 测试及独占接线、依赖或CI；本次行为验证采用完整静态链与独审，实际原生焦点、事件、视觉、滚动与外部打开待用户手测。无本地产品执行/编译/测试/CUA。以下记录后续实际结果，不将静态检查当作编译或行为通过。
+
+### 首轮审查与失败诊断
+
+- 任务候选 `f5d8ae93a279ffc9e73255b43afd445a982eb4ad`，PR https://github.com/puzige/vega/pull/609 。非实现者完整静态审查无 actionable finding，但该结论不替代云端编译。
+- Actions https://github.com/puzige/vega/actions/runs/40157019604 实际失败：Clippy `121060456077`、Nextest `121060456298`、required `121061143785` 均failure。Python三组实际5/15/40项OK；Rust编译失败，发现/执行计数未取得，不把日志脚本中的空集分支文本误报为0发现/0执行。
+- 原始Clippy job日志100,566 bytes，SHA-256 `1dda5f82469924f602526e131dd7cb6f4b21195d1781a85476c9ab39f1073982`；Nextest日志74,161 bytes，SHA-256 `3c00dd47f8d0c89f5de3df37d6a23c7de11cc0cd89cb30c6ed71cfdd92d17a17`（`gh run view --job ... --log` 输出身份）。
+- 根因是实现层Rust借用错误E0502：`artifact_card.rs:534` 在 `menu_key.read(cx).focus[1].focus(window, cx)` 同时持有不可变实体读取并尝试可变借用cx。不是测试观察故障、验收变化或外部环境问题。修复先克隆真实FocusHandle结束读取，再调用原focus，保留原键盘及所有产品验收，不改CI或断言。
+- 为满足strict分支门禁，已正常合入最新master `572a3c6f1b50ea34c2214245dcd18ee3a70bb737`；保留其#607压缩布局/估算和#605侧栏修复。单一原writer只修该借用点，停写后复用独审者审修复及集成delta，推同一PR获得新SHA完整门禁。
