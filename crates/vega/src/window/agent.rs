@@ -102,7 +102,11 @@ impl VegaWindow {
         receiver: mpsc::Receiver<()>,
         cx: &mut Context<Self>,
     ) {
+        #[cfg(test)]
+        let test_launch = self.worker_test_launches.front().cloned();
         cx.spawn(async move |this, cx| {
+            #[cfg(test)]
+            let _test_title_drain = test_launch.map(ordinary_worker_tests::TitleWatchDrain);
             let mut retry = false;
             let mut io_failures = 0;
             loop {
@@ -1010,6 +1014,13 @@ impl VegaWindow {
             })
             .cloned()
             .collect();
+        #[cfg(test)]
+        let test_launch = self.worker_test_launches.pop_front();
+        #[cfg(test)]
+        let test_provider = test_launch.as_ref().map(|launch| {
+            launch.bind_cancel(cancel.clone());
+            launch.provider.clone()
+        });
         let worker = std::thread::Builder::new()
             .name("vega-agent".into())
             .spawn(move || {
@@ -1032,6 +1043,8 @@ impl VegaWindow {
                     automation_pauses,
                     replay_registry,
                     admission,
+                    #[cfg(test)]
+                    test_provider,
                 );
                 drop(worker_activity);
             });
@@ -1061,15 +1074,38 @@ impl VegaWindow {
             }
             return;
         }
+        #[cfg(test)]
+        if let Some(launch) = &test_launch {
+            launch.bind_worker(worker.ok());
+        }
         drop(sender);
 
         let thread_id = thread_id.to_string();
         cx.spawn(async move |this, cx| {
+            #[cfg(test)]
+            let _test_poll_drain = test_launch.clone().map(ordinary_worker_tests::PollDrain);
             let mut control_status = None;
             let mut control_check = std::time::Instant::now();
+            #[cfg(test)]
+            let mut held_batch = None;
             loop {
                 cx.background_executor().timer(AGENT_EVENT_POLL).await;
+                #[cfg(not(test))]
                 let batch = drain_agent_updates(&receiver);
+                #[cfg(test)]
+                let batch = {
+                    let batch = held_batch
+                        .take()
+                        .unwrap_or_else(|| drain_agent_updates(&receiver));
+                    if let Some(launch) = &test_launch {
+                        if !launch.poll_ready(&batch) {
+                            held_batch = Some(batch);
+                            continue;
+                        }
+                        launch.observe(&batch);
+                    }
+                    batch
+                };
                 let keep_running = this
                     .update(cx, |this, cx| {
                         if control_check.elapsed() >= std::time::Duration::from_millis(50) {

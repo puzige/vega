@@ -233,3 +233,21 @@ fetch 现见 master `921d735ca0dda3f17ab99ea4949002a1fdc44ab4`，含 compaction 
 完整 HEAD `5bfb4f7392f67ff0abb39ee369c374e19d38c008`，tree `3139834b3cd0ccc78c73a76ad3f1fa69e31a9648`。窄增量独审无新发现：别名 feature 兼容，Interaction 实现满足观察 wrapper，focus 传递给 inner，58测试未变；两文件格式/diff0。独审不代表运行通过。
 
 [Actions 40201631700](https://github.com/puzige/vega/actions/runs/40201631700) failure，Clippy `121193848734` success（fmt含），Nextest `121193848868` failure，required `121194652443` failure；Python60 OK。Rust58发现/58执行/57通过/1失败/0跳过。三控件测试（Stop、Continue timeout、running Composer）均通过。唯一失败 UI ordinary_tests.rs648，actual Cancel / expected 取消；父复读同测试剩余硬编码、生产 ordinary_controls 和双语 catalog，确认遗留中文标签观察错误，而非取消行为或默认语言缺陷。将同一断言的 Cancel/Check status 两分支改为生产实际 catalog lookup，保 visible、分支语义与全部后续断言；无其他中文标签残留，58定义保留。没有本地执行、删测或同字节重试。
+
+### e46ed9d5：开发集成 58/58 GREEN，仍有范围内证据缺口
+
+完整 HEAD `e46ed9d5af087869fdf241da83c7b177cdd577fe`，tree `a25cd1e7659842cfb9820ad007e694a48c09fed9`。[Actions 40202426538](https://github.com/puzige/vega/actions/runs/40202426538) completed/success：Nextest `121196223393`、Clippy `121196224183`、required `121197158397` success；fmt成功，Python5+15+40=60 OK。父读取原始日志：58发现、58执行、58通过、0失败、0跳过。独立非实现者审该标签增量无新发现；此前固定代码增量独审结论仍按版本适用，不把 GREEN 宣称为完整 A1–A12 或用户验收。
+
+可恢复开发源码 [tree](https://github.com/puzige/vega/tree/e46ed9d5af087869fdf241da83c7b177cdd577fe) / [patch](https://github.com/puzige/vega/commit/e46ed9d5af087869fdf241da83c7b177cdd577fe.patch)；父实际 GitHub commit API 读回同 SHA，public-entry 源文件 contents API blob `04f872a59865b3b8c42e817cbdd85d19c8b42b4a` 与本地固定树一致，UI ordinary_tests blob `3e704e5c2621d49abf241b3354f0822ceeb9b150`。不可只依赖分支名或临时 Actions artifact。
+
+剩余代表验证不是新产品缺陷：A7/A9 缺实际 app Stop 后真实 buffered batch 对新 owner/另一 thread 的隔离；A10 缺实际 steering 接受与 continuation。非实现者复核当前调用链，现有 launch capture 提前返回，不可事后手造 active/Finished 充当真实 worker；据此补契约后由唯一 writer `01M5SR7YV2EB9420FSGPQ1C9P4`（execution `01M5SR7YV2NN5PKX62BXHSNEA9`）仅写 app worker/window 开发接缝与两项真实回归，主会话不并发改代码，只写证据/契约并协调。
+
+A10 其他路由当前静态证据：submit_composer 先 automation intercept、Native pending enqueue、active guard、Codex 分流，再 ordinary；window/automation.rs 与 master921字节一致。ApprovedPlan/CredentialContinuation 在 app worker 保留独立分支及原 cancellation/credential 检查，不带 ordinary handle；conversation entry 对 ordinary 混用 approved/delegated/pending/automation 配置显式拒绝。#535 app record_event 保 predecessor_message_ids 与 predecessor terminal 过滤，UI RunContinued 按匹配 active 结束旧助手，无自然 continuation divider 回退。以上不是 Codex/automation/plan/credential 真实后端运行通过；后续 steering 代表也不能冒充全路由/原生 H 验收。开发测试与独占支持尚未清理，不合并、不安装、不关卡。
+
+writer 首阶段只读返回 BLOCKED/停写，无代码差异：app 无直接 futures 引用，无法构造 Provider::EventStream；没有以假事件绕过。父复核四文件 hash 与 e46 一致、provider.rs516/1902 真 API，exec-guide§5 白名单已含 futures，workspace Cargo55 已锁 =0.3.34，conversation 已直接使用。不是新增包/产品依赖裁决：补契约只允许 app dev-dependencies 复用已批准锁定版本并最终移除，扩大允许写入仅 crates/vega/Cargo.toml 开发段，不允许锁文件包升级/手改或通用 CI。execution `01M5SRWJWXKMJQ06N2BEBAVSE7` 接续同范围，原58测试保持；当时新源码/结果未取得，不称已补完。
+
+### 真实 worker 两项回归交付候选
+
+同一 writer execution `01M5SRWJWXKMJQ06N2BEBAVSE7` READY/停写，五代码/manifest 路径新增窄开发支持及 ordinary_worker_tests.rs。父复算全部交付 SHA256 一致：新测试文件 `60e9102de6fc9678e37f0b33e40b685565b0a6a2dca4402da272972e3bb7ce60`；旧 app ordinary_tests `64a3be6bef3728c18e9097d96c11144556337505da9f21f420a2b8273e9432f3` 不变，Cargo.lock `d0db90f75da7963241f17c906ed0f5819a24b8bb00adcf1f16ed09e038c97ca0` 未改。父逐块确认原58测试保留；新增2后预计60源码定义，未作发现/执行结论。4 Rust 文件1.98定向格式/check、diff、manifest TOML检查exit0；无本地代码执行。
+
+交付称两项经实际worker/poll：ordinary真实Composer→prepare→firstdrive→Stop→drain，然后真实新generation回放已记录production batch；回放明确为duplicate/late故障，不是自然FIFO。另项真实非ordinarylaunch→runningSend-now入队→runtimeSteeringAccepted/persist→continuation第二primaryrequest。Provider override在worker完成正常model/config/key/authority校验后，仅替transport，仍经OwnerCredentialProvider；title/prediction独立响应分类。父已检查实际diff，所有新接线cfg(test)，但真实验证仍待固定SHA独审及Actions，不能凭READY将证据缺口标闭合。失败清理、join/drain及辅助生命周期观察也列独审重点。最终须删新模块、worker_test_launches字段/初始化、test_provider参数/分支、pollgate/tap/join、TitleWatchDrain/PollDrain与dev futures引用，不删生产guard。

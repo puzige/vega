@@ -1076,6 +1076,7 @@ pub(crate) fn run_agent_worker_with_mcp(
     automation_pauses: Vec<AutomationTask>,
     replay_registry: Option<vega_conversation::agent::ReplaySessionRegistry>,
     admission: ThreadAdmission,
+    #[cfg(test)] test_provider: Option<Arc<dyn vega_runtime::Provider>>,
 ) {
     let ordinary = match &mut run {
         PendingAgentRun::UserMessage(submission) => submission
@@ -1289,6 +1290,13 @@ pub(crate) fn run_agent_worker_with_mcp(
                 authority.validate_current(&model_snapshot).map_err(|_| ())?;
                 authority.model().clone()
             } else { model_snapshot };
+            #[cfg(test)]
+            if let Some(provider) = &test_provider {
+                if provider.model_snapshot().as_ref() != Some(&model_snapshot) {
+                    return Err(());
+                }
+                return Ok(provider.clone());
+            }
             let provider = vega_runtime::OpenAiProvider::new(provider.base_url, key)
                 .map(|transport| {
                     transport.with_responses_api(

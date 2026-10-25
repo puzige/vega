@@ -39,6 +39,8 @@ mod notifications;
 mod ordinary_send;
 #[cfg(test)]
 mod ordinary_tests;
+#[cfg(test)]
+mod ordinary_worker_tests;
 mod pending_messages;
 mod pricing;
 mod privacy;
@@ -112,6 +114,8 @@ pub(crate) struct VegaWindow {
     composer_test_config_path: Option<std::path::PathBuf>,
     #[cfg(test)]
     agent_test_launches: Option<Vec<AgentTestLaunch>>,
+    #[cfg(test)]
+    worker_test_launches: std::collections::VecDeque<Arc<ordinary_worker_tests::WorkerLaunch>>,
     #[cfg(test)]
     ordinary_test_preparations: Option<Vec<ordinary_send::OrdinaryPreparationRequest>>,
     pub(crate) composer_prediction_config_generation: u64,
@@ -328,6 +332,8 @@ impl VegaWindow {
             composer_test_config_path: None,
             #[cfg(test)]
             agent_test_launches: None,
+            #[cfg(test)]
+            worker_test_launches: std::collections::VecDeque::new(),
             #[cfg(test)]
             ordinary_test_preparations: None,
             composer_prediction_config_generation: 0,
