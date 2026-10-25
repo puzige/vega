@@ -33,7 +33,7 @@ pub(crate) fn model_trigger_label(
 }
 
 impl ConversationStream {
-    fn emit_open_diff(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn emit_open_diff(&mut self, cx: &mut Context<Self>) {
         if self.reading_preview || self.thread.is_standalone() {
             return;
         }

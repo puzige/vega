@@ -404,9 +404,11 @@ impl VegaWindow {
         }
         match request.action {
             OrdinaryAction::Cancel => {
-                crate::ordinary_submission::cancel(request.submission, request.attempt);
-                self.agent_controller
-                    .request_active_cancel(&request.thread_id);
+                self.agent_controller.request_ordinary_cancel(
+                    &request.thread_id,
+                    request.submission,
+                    request.attempt,
+                );
             }
             OrdinaryAction::Retry => {
                 if let Ok(worker) = submission.try_retry(request.attempt) {

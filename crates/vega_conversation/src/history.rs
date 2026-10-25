@@ -190,6 +190,7 @@ pub fn restart_history_page(
     thread_id: &str,
     limit: usize,
 ) -> Result<HistoryPage, ConversationError> {
+    guard_legacy_history(store, thread_id)?;
     let admission = vega_store::thread_admission::try_acquire(store.database_identity(), thread_id)
         .map_err(|_| ConversationError::Store("Thread access is unavailable".into()))?;
     let Some(_admission) = admission else {
@@ -243,6 +244,7 @@ pub fn latest_history_page(
     thread_id: &str,
     limit: usize,
 ) -> Result<HistoryPage, ConversationError> {
+    guard_legacy_history(store, thread_id)?;
     let page = page_read(store, thread_id, PageCursor::Head, limit)?;
     assemble(store, thread_id, page, limit, true)
 }
@@ -256,6 +258,7 @@ pub fn history_page_before(
     cursor: PageCursor,
     limit: usize,
 ) -> Result<HistoryPage, ConversationError> {
+    guard_legacy_history(store, thread_id)?;
     let page = page_read(store, thread_id, cursor, limit)?;
     assemble(store, thread_id, page, limit, false)
 }
@@ -266,6 +269,7 @@ pub fn history_page_containing_message(
     message_id: &str,
     limit: usize,
 ) -> Result<Option<HistoryPage>, ConversationError> {
+    guard_legacy_history(store, thread_id)?;
     let page = messages::page_containing_message(store.conn(), thread_id, message_id, limit)
         .map_err(page_failure)?;
     let Some(page) = page else {
@@ -280,6 +284,7 @@ pub fn history_page_after(
     cursor: i64,
     limit: usize,
 ) -> Result<HistoryPage, ConversationError> {
+    guard_legacy_history(store, thread_id)?;
     let page =
         messages::page_after(store.conn(), thread_id, cursor, limit).map_err(page_failure)?;
     assemble(store, thread_id, page, limit, true)
@@ -298,115 +303,12 @@ fn assemble(
         )));
     }
     let mut page = page;
-    let projection = crate::privacy::DisplayProjection::load(store, thread_id)?;
-    for row in &mut page.rows {
-        let positions: Vec<_> = page
-            .tool_calls
-            .iter()
-            .enumerate()
-            .filter_map(|(index, call)| {
-                (call.message_id == row.id)
-                    .then_some((index, call.text_offset_bytes))
-                    .and_then(|(index, offset)| {
-                        offset
-                            .and_then(|offset| usize::try_from(offset).ok())
-                            .map(|offset| (index, offset))
-                    })
-            })
-            .collect();
-        let offsets: Vec<_> = positions.iter().map(|(_, offset)| *offset).collect();
-        for response in page
-            .assistant_responses
-            .iter_mut()
-            .filter(|response| response.message_id == row.id)
-        {
-            let (_, positions) = projection.offsets(
-                &row.content,
-                &[response.text_start_bytes, response.text_end_bytes],
-            );
-            if let [start, end] = positions.as_slice() {
-                response.text_start_bytes = *start;
-                response.text_end_bytes = *end;
-            }
-        }
-        let (content, offsets) = projection.offsets(&row.content, &offsets);
-        row.content = content;
-        for ((index, _), offset) in positions.into_iter().zip(offsets) {
-            page.tool_calls[index].text_offset_bytes = i64::try_from(offset).ok();
-        }
-        if let Some(note) = &mut row.plan_review_note {
-            *note = projection.text(note);
-        }
-    }
-    for call in &mut page.tool_calls {
-        call.input_json = projection.json(&call.input_json);
-        if let Some(output) = &mut call.output_text {
-            *output = projection.text(output);
-        }
-    }
+    project_page_privacy(store, thread_id, &mut page)?;
     let newest_seq = page.rows.last().map(|row| row.seq);
     let mut entries = project_rows(&page)?;
-    if let (Some(oldest), Some(newest)) = (page.rows.first(), page.rows.last()) {
-        let records =
-            skills::load_history_page_records(store.conn(), thread_id, oldest.seq, newest.seq)
-                .map_err(|error| ConversationError::Store(error.to_string()))?;
-        let by_run = project_skill_history(records);
-        // Insert after each owning assistant's final text/tool segment. This
-        // preserves the ordinary user/tool timeline and never creates a fake
-        // tool call for an explicitly preloaded Skill.
-        for row in page.rows.iter().rev().filter(|row| row.role == "assistant") {
-            let Some(activations) = by_run.get(&row.id) else {
-                continue;
-            };
-            let Some(position) = entries.iter().rposition(|entry| match entry {
-                HistoryEntry::AssistantText { message_id, .. }
-                | HistoryEntry::Tool { message_id, .. } => message_id == &row.id,
-                HistoryEntry::Plan { plan, .. } => plan.id == row.id,
-                _ => false,
-            }) else {
-                continue;
-            };
-            for activation in activations.iter().rev() {
-                entries.insert(
-                    position + 1,
-                    HistoryEntry::SkillActivation {
-                        seq: row.seq,
-                        activation: activation.clone(),
-                    },
-                );
-            }
-        }
-    }
+    append_skill_history(store, thread_id, &page, &mut entries)?;
 
-    if attach_summary
-        && let Some(summary) = crate::summary::latest_task_summary(store, thread_id, None)?
-        && let Some(position) = entries.iter().rposition(|entry| {
-            matches!(
-                entry,
-                HistoryEntry::AssistantText { message_id, .. }
-                    | HistoryEntry::Tool { message_id, .. }
-                    if *message_id == summary.message_id
-            )
-        })
-    {
-        let assistant_seq = match &entries[position] {
-            HistoryEntry::AssistantText { seq, .. } => *seq,
-            HistoryEntry::Tool { .. } => page
-                .rows
-                .iter()
-                .find(|row| row.id == summary.message_id)
-                .map(|row| row.seq)
-                .ok_or_else(|| ConversationError::CorruptRow("summary owner missing".into()))?,
-            _ => unreachable!("position matched an owner entry"),
-        };
-        entries.insert(
-            position + 1,
-            HistoryEntry::Summary {
-                seq: assistant_seq,
-                summary,
-            },
-        );
-    }
+    append_task_summary(store, thread_id, &page, &mut entries, attach_summary)?;
     for row in page.rows.iter().filter(|row| row.role == "assistant") {
         if let Some(receipt) = vega_store::credential_continuation::find(store.conn(), &row.id)
             .map_err(|error| ConversationError::Store(error.to_string()))?
@@ -449,6 +351,83 @@ fn assemble(
         newer_cursor: page.newer_cursor,
         newest_seq,
     })
+}
+
+fn append_task_summary(
+    store: &Store,
+    thread_id: &str,
+    page: &MessagePage,
+    entries: &mut Vec<HistoryEntry>,
+    attach_summary: bool,
+) -> Result<(), ConversationError> {
+    if attach_summary
+        && let Some(summary) = crate::summary::latest_task_summary(store, thread_id, None)?
+        && let Some(position) = entries.iter().rposition(|entry| {
+            matches!(
+                entry,
+                HistoryEntry::AssistantText { message_id, .. }
+                    | HistoryEntry::Tool { message_id, .. }
+                    if *message_id == summary.message_id
+            )
+        })
+    {
+        let assistant_seq = match &entries[position] {
+            HistoryEntry::AssistantText { seq, .. } => *seq,
+            HistoryEntry::Tool { .. } => page
+                .rows
+                .iter()
+                .find(|row| row.id == summary.message_id)
+                .map(|row| row.seq)
+                .ok_or_else(|| ConversationError::CorruptRow("summary owner missing".into()))?,
+            _ => unreachable!("position matched an owner entry"),
+        };
+        entries.insert(
+            position + 1,
+            HistoryEntry::Summary {
+                seq: assistant_seq,
+                summary,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn append_skill_history(
+    store: &Store,
+    thread_id: &str,
+    page: &MessagePage,
+    entries: &mut Vec<HistoryEntry>,
+) -> Result<(), ConversationError> {
+    if let (Some(oldest), Some(newest)) = (page.rows.first(), page.rows.last()) {
+        let records =
+            skills::load_history_page_records(store.conn(), thread_id, oldest.seq, newest.seq)
+                .map_err(|error| ConversationError::Store(error.to_string()))?;
+        let by_run = project_skill_history(records);
+        for row in page.rows.iter().rev().filter(|row| row.role == "assistant") {
+            let Some(activations) = by_run.get(&row.id) else {
+                continue;
+            };
+            let Some(position) = entries.iter().rposition(|entry| match entry {
+                HistoryEntry::AssistantText { message_id, .. }
+                | HistoryEntry::Tool { message_id, .. } => message_id == &row.id,
+                HistoryEntry::Plan { plan, .. } => plan.id == row.id,
+                _ => false,
+            }) else {
+                continue;
+            };
+            for activation in activations.iter().rev() {
+                entries.insert(
+                    position + 1,
+                    HistoryEntry::SkillActivation {
+                        seq: row.seq,
+                        activation: activation.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn project_skill_history(
@@ -531,6 +510,13 @@ fn parsed_skill_audit(
 /// Any row outside the typed vocabulary fails closed: hydration never
 /// silently drops durable content.
 fn project_rows(page: &MessagePage) -> Result<Vec<HistoryEntry>, ConversationError> {
+    project_rows_with(page, &tool_entry)
+}
+
+fn project_rows_with(
+    page: &MessagePage,
+    project_tool: &impl Fn(&PageToolCall) -> HistoryEntry,
+) -> Result<Vec<HistoryEntry>, ConversationError> {
     if page.images.iter().any(|image| {
         !page.rows.iter().any(|row| {
             row.id == image.message_id
@@ -670,6 +656,7 @@ fn project_rows(page: &MessagePage) -> Result<Vec<HistoryEntry>, ConversationErr
                         page.execution_durations_ms.get(&row.id).copied(),
                         &calls,
                         &mut entries,
+                        project_tool,
                     )?;
                 }
             },
@@ -705,7 +692,7 @@ fn project_rows(page: &MessagePage) -> Result<Vec<HistoryEntry>, ConversationErr
         }
         if let Some(calls) = calls_by_message.remove(row.id.as_str()) {
             for call in calls {
-                entries.push(tool_entry(call));
+                entries.push(project_tool(call));
             }
         }
     }
@@ -725,6 +712,7 @@ fn project_assistant(
     execution_duration_ms: Option<i64>,
     calls: &[&PageToolCall],
     entries: &mut Vec<HistoryEntry>,
+    project_tool: &impl Fn(&PageToolCall) -> HistoryEntry,
 ) -> Result<(), ConversationError> {
     // One NULL makes the whole message legacy. Prior content has no exact
     // boundary, so never infer positions from timestamps or adjacent text.
@@ -737,7 +725,7 @@ fn project_assistant(
             execution_duration_ms: execution_duration_ms
                 .and_then(|duration| u64::try_from(duration).ok()),
         });
-        entries.extend(calls.iter().map(|call| tool_entry(call)));
+        entries.extend(calls.iter().map(|call| project_tool(call)));
         return Ok(());
     }
     let mut start = 0;
@@ -756,7 +744,7 @@ fn project_assistant(
                 execution_duration_ms: None,
             });
         }
-        entries.push(tool_entry(call));
+        entries.push(project_tool(call));
         start = offset;
     }
     if start < row.content.len()
@@ -914,4 +902,302 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
         input,
         result,
     }
+}
+
+fn guard_legacy_history(store: &Store, thread: &str) -> Result<(), ConversationError> {
+    if vega_store::thread_fork::has_archived_delegation(store.conn(), thread)
+        .map_err(|error| ConversationError::Store(error.to_string()))?
+    {
+        return Err(ConversationError::UnsupportedHistoricalConsumer);
+    }
+    Ok(())
+}
+
+pub fn latest_historical_history_page(
+    store: &Store,
+    thread: &str,
+    limit: usize,
+) -> Result<crate::types::HistoricalHistoryPage, ConversationError> {
+    assemble_historical(
+        store,
+        thread,
+        page_read(store, thread, PageCursor::Head, limit)?,
+        true,
+    )
+}
+
+pub fn historical_history_page_before(
+    store: &Store,
+    thread: &str,
+    cursor: PageCursor,
+    limit: usize,
+) -> Result<crate::types::HistoricalHistoryPage, ConversationError> {
+    assemble_historical(
+        store,
+        thread,
+        page_read(store, thread, cursor, limit)?,
+        false,
+    )
+}
+
+pub fn historical_history_page_after(
+    store: &Store,
+    thread: &str,
+    cursor: i64,
+    limit: usize,
+) -> Result<crate::types::HistoricalHistoryPage, ConversationError> {
+    let page = messages::page_after(store.conn(), thread, cursor, limit).map_err(page_failure)?;
+    assemble_historical(store, thread, page, true)
+}
+
+pub fn historical_history_page_containing_message(
+    store: &Store,
+    thread: &str,
+    message: &str,
+    limit: usize,
+) -> Result<Option<crate::types::HistoricalHistoryPage>, ConversationError> {
+    messages::page_containing_message(store.conn(), thread, message, limit)
+        .map_err(page_failure)?
+        .map(|page| assemble_historical(store, thread, page, true))
+        .transpose()
+}
+
+fn assemble_historical(
+    store: &Store,
+    thread: &str,
+    mut page: MessagePage,
+    attach_summary: bool,
+) -> Result<crate::types::HistoricalHistoryPage, ConversationError> {
+    use crate::types::{HistoricalHistoryEntry, HistoricalHistoryPage};
+    project_page_privacy(store, thread, &mut page)?;
+    let projection = crate::privacy::DisplayProjection::load(store, thread)?;
+    let archives = if let (Some(first), Some(last)) = (page.rows.first(), page.rows.last()) {
+        vega_store::thread_fork::historical_receipts_in_range(
+            store.conn(),
+            thread,
+            first.seq,
+            last.seq,
+        )
+        .map_err(|error| ConversationError::Store(error.to_string()))?
+    } else {
+        Vec::new()
+    };
+    let mut delegations = HashMap::new();
+    for call in page
+        .tool_calls
+        .iter()
+        .filter(|call| vega_runtime::is_subagent_tool(&call.tool))
+    {
+        let archive = archives
+            .iter()
+            .find(|archive| archive.call_id == call.id && archive.kind == "delegation");
+        let input = archive.map_or_else(
+            || call.input_json.clone(),
+            |archive| projection.json(&archive.input_json),
+        );
+        let receipt = archive.map_or_else(
+            || {
+                call.output_text
+                    .as_deref()
+                    .map(|text| project_historical_receipt(&projection, text))
+            },
+            |archive| {
+                archive
+                    .output_text
+                    .as_ref()
+                    .map(|text| project_historical_receipt(&projection, text))
+            },
+        );
+        let mut references = archive.map_or_else(Vec::new, |archive| {
+            archive
+                .references
+                .iter()
+                .map(|reference| crate::types::HistoricalReference {
+                    field: projection.text(&reference.field),
+                    source_id: projection.text(&reference.source_id),
+                    destination_id: reference
+                        .destination_id
+                        .as_ref()
+                        .map(|id| projection.text(id)),
+                })
+                .collect()
+        });
+        if archive.is_none() {
+            vega_store::thread_fork::delegation_references(
+                &input,
+                receipt.as_deref(),
+                &mut references,
+            )
+            .map_err(|error| ConversationError::CorruptRow(error.to_string()))?;
+        }
+        let status = ToolCallStatus::parse(&call.status)
+            .ok_or_else(|| ConversationError::CorruptRow("historical tool status".into()))?;
+        delegations.insert(
+            call.id.clone(),
+            HistoricalHistoryEntry::Delegation {
+                seq: call.seq,
+                message_id: call.message_id.clone(),
+                call_id: call.id.clone(),
+                tool: call.tool.clone(),
+                input_json: input,
+                status,
+                approval: call
+                    .approval
+                    .as_deref()
+                    .and_then(|raw| ApprovalAudit::from_json(raw).ok())
+                    .map(|audit| audit.decision),
+                result: decode_historical_delegation(receipt, references)?,
+            },
+        );
+    }
+    let mut entries = project_rows_with(&page, &|call| {
+        if delegations.contains_key(&call.id) {
+            HistoryEntry::Tool {
+                seq: call.seq,
+                message_id: call.message_id.clone(),
+                call_id: call.id.clone(),
+                status: ToolCallStatus::Success,
+                approval: None,
+                input: None,
+                result: None,
+            }
+        } else {
+            tool_entry(call)
+        }
+    })?;
+    append_skill_history(store, thread, &page, &mut entries)?;
+    append_task_summary(store, thread, &page, &mut entries, attach_summary)?;
+    let entries = entries
+        .into_iter()
+        .map(|entry| {
+            if let HistoryEntry::Tool { call_id, .. } = &entry
+                && let Some(delegation) = delegations.remove(call_id)
+            {
+                return delegation;
+            }
+            HistoricalHistoryEntry::Ordinary(entry)
+        })
+        .collect();
+    Ok(HistoricalHistoryPage {
+        entries,
+        older_cursor: page.older_cursor,
+        newer_cursor: page.newer_cursor,
+        newest_seq: page.rows.last().map(|row| row.seq),
+    })
+}
+
+fn project_historical_receipt(
+    projection: &crate::privacy::DisplayProjection,
+    text: &str,
+) -> String {
+    let projected = projection.json(text);
+    match (
+        serde_json::from_str::<serde_json::Value>(text),
+        serde_json::from_str::<serde_json::Value>(&projected),
+    ) {
+        (Ok(original), Ok(safe)) if original == safe => text.into(),
+        _ => projected,
+    }
+}
+
+fn decode_historical_delegation(
+    receipt: Option<String>,
+    references: Vec<crate::types::HistoricalReference>,
+) -> Result<crate::types::HistoricalDelegationResult, ConversationError> {
+    use crate::types::{HistoricalAgentSummary, HistoricalDelegationResult};
+    let mut agents = Vec::new();
+    if let Some(text) = &receipt
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(text)
+    {
+        let recorded = value.get("agent").into_iter().chain(
+            value
+                .get("agents")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten(),
+        );
+        for agent in recorded {
+            let text = |field| {
+                agent
+                    .get(field)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            };
+            agents.push(HistoricalAgentSummary {
+                historical_agent_id: text("agent_id"),
+                historical_message_id: text("message_id"),
+                name: text("name"),
+                state: text("state"),
+                result: text("result"),
+                release_state: text("release_state"),
+                checkpoint_json: agent
+                    .get("checkpoint")
+                    .filter(|value| !value.is_null())
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|_| {
+                        ConversationError::CorruptRow("historical checkpoint JSON".into())
+                    })?,
+            });
+        }
+    }
+    Ok(HistoricalDelegationResult {
+        receipt,
+        agents,
+        references,
+    })
+}
+
+fn project_page_privacy(
+    store: &Store,
+    thread_id: &str,
+    page: &mut MessagePage,
+) -> Result<(), ConversationError> {
+    let projection = crate::privacy::DisplayProjection::load(store, thread_id)?;
+    for row in &mut page.rows {
+        let positions: Vec<_> = page
+            .tool_calls
+            .iter()
+            .enumerate()
+            .filter_map(|(index, call)| {
+                (call.message_id == row.id)
+                    .then_some((index, call.text_offset_bytes))
+                    .and_then(|(index, offset)| {
+                        offset
+                            .and_then(|offset| usize::try_from(offset).ok())
+                            .map(|offset| (index, offset))
+                    })
+            })
+            .collect();
+        let offsets: Vec<_> = positions.iter().map(|(_, offset)| *offset).collect();
+        for response in page
+            .assistant_responses
+            .iter_mut()
+            .filter(|response| response.message_id == row.id)
+        {
+            let (_, positions) = projection.offsets(
+                &row.content,
+                &[response.text_start_bytes, response.text_end_bytes],
+            );
+            if let [start, end] = positions.as_slice() {
+                response.text_start_bytes = *start;
+                response.text_end_bytes = *end;
+            }
+        }
+        let (content, offsets) = projection.offsets(&row.content, &offsets);
+        row.content = content;
+        for ((index, _), offset) in positions.into_iter().zip(offsets) {
+            page.tool_calls[index].text_offset_bytes = i64::try_from(offset).ok();
+        }
+        if let Some(note) = &mut row.plan_review_note {
+            *note = projection.text(note);
+        }
+    }
+    for call in &mut page.tool_calls {
+        call.input_json = projection.json(&call.input_json);
+        if let Some(output) = &mut call.output_text {
+            *output = projection.text(output);
+        }
+    }
+    Ok(())
 }

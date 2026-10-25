@@ -650,18 +650,21 @@ fn page_continuations(
         return Ok(Vec::new());
     };
     let mut stmt = tx.prepare(
-        "WITH page AS (SELECT id, seq FROM messages WHERE thread_id = ?1 \
+        "WITH deliveries AS ( \
+         SELECT id, accepted_after_assistant_id AS previous_id FROM pending_messages \
+         WHERE thread_id=?1 AND state='delivered' \
+         UNION SELECT message_id,previous_assistant_id FROM historical_message_delivery WHERE thread_id=?1), \
+         page AS (SELECT id, seq FROM messages WHERE thread_id = ?1 \
          AND seq >= ?2 AND seq <= ?3 AND status != 'streaming'), \
          candidates AS ( \
-         SELECT p.id FROM page m JOIN pending_messages p \
-         ON p.thread_id = ?1 AND p.accepted_after_assistant_id = m.id \
-         UNION SELECT p.id FROM page m JOIN pending_messages p ON p.id = m.id \
+         SELECT p.id FROM page m JOIN deliveries p ON p.previous_id = m.id \
+         UNION SELECT p.id FROM page m JOIN deliveries p ON p.id = m.id \
          UNION SELECT p.id FROM page m JOIN messages u \
-         ON u.thread_id = ?1 AND u.seq = m.seq - 1 JOIN pending_messages p ON p.id = u.id) \
-         SELECT previous.id, u.id, successor.id FROM candidates c \
-         JOIN pending_messages p ON p.id = c.id AND p.thread_id = ?1 AND p.state = 'delivered' \
+         ON u.thread_id = ?1 AND u.seq = m.seq - 1 JOIN deliveries p ON p.id = u.id) \
+         SELECT DISTINCT previous.id, u.id, successor.id FROM candidates c \
+         JOIN deliveries p ON p.id = c.id \
          JOIN messages u ON u.id = p.id AND u.thread_id = ?1 AND u.role = 'user' AND u.status = 'done' \
-         JOIN messages previous ON previous.id = p.accepted_after_assistant_id \
+         JOIN messages previous ON previous.id = p.previous_id \
          AND previous.thread_id = ?1 AND previous.role = 'assistant' AND previous.seq < u.seq \
          JOIN messages successor ON successor.thread_id = ?1 AND successor.seq = u.seq + 1 \
          AND successor.role = 'assistant' ORDER BY u.seq",

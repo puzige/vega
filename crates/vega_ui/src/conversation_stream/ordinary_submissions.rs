@@ -104,14 +104,13 @@ impl ConversationStream {
         cx: &mut Context<Self>,
     ) {
         let snapshot = submission.snapshot();
-        if snapshot.thread_id != self.thread.id
-            || self
-                .ordinary
-                .iter()
-                .any(|row| row.submission.id() == snapshot.id)
-        {
+        if snapshot.thread_id != self.thread.id || snapshot.retired {
             return;
         }
+        let tracked = self
+            .ordinary
+            .iter()
+            .any(|row| row.submission.id() == snapshot.id);
         let Some(attempt) = snapshot.attempts.last() else {
             return;
         };
@@ -151,13 +150,66 @@ impl ConversationStream {
         if self.entries.len() > first {
             self.list_append(first);
         }
-        self.ordinary.push(OrdinaryRow {
-            submission,
-            attempt: attempt.id,
-            state: OrdinaryStatus::Pending,
-            focus: cx.focus_handle().tab_stop(true),
-            checked: None,
-        });
+        if !tracked {
+            self.ordinary.push(OrdinaryRow {
+                submission,
+                attempt: attempt.id,
+                state: OrdinaryStatus::Pending,
+                focus: cx.focus_handle().tab_stop(true),
+                checked: None,
+            });
+        }
+        self.refresh_ordinary_submissions(cx);
+    }
+
+    pub(crate) fn take_ordinary_history_entries(
+        &mut self,
+    ) -> Vec<(StreamEntryIdentity, StreamEntry)> {
+        self.ensure_entry_identities();
+        std::mem::take(&mut self.entry_identities)
+            .into_iter()
+            .zip(std::mem::take(&mut self.entries))
+            .filter(|(identity, entry)| {
+                matches!(
+                    entry,
+                    StreamEntry::User { .. } | StreamEntry::UserImages { .. }
+                ) && self.ordinary.iter().any(|row| {
+                    identity.message_id.as_deref() == Some(row.submission.user_message_id())
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn restore_ordinary_history_entries(
+        &mut self,
+        retained: Vec<(StreamEntryIdentity, StreamEntry)>,
+        cx: &mut Context<Self>,
+    ) {
+        let first = self.entries.len();
+        for (identity, entry) in retained {
+            if let Some(index) = self
+                .entry_identities
+                .iter()
+                .position(|current| current.key == identity.key)
+            {
+                self.entries[index] = entry;
+            } else if self.ordinary.iter().any(|row| {
+                identity.message_id.as_deref() == Some(row.submission.user_message_id())
+                    && !row.submission.snapshot().retired
+            }) {
+                self.entries.push(entry);
+                self.entry_identities.push(identity);
+            }
+        }
+        self.list_append(first);
+        let submissions = self
+            .ordinary
+            .iter()
+            .map(|row| row.submission.clone())
+            .collect::<Vec<_>>();
+        for submission in submissions {
+            self.project_ordinary_submission(submission, cx);
+        }
         self.refresh_ordinary_submissions(cx);
     }
 

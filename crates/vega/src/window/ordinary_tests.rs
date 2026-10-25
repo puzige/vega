@@ -613,3 +613,147 @@ fn stopping_title_drain_wait_cancels_wake_and_retains_queued_message(cx: &mut Te
         );
     });
 }
+
+#[gpui_kit::test]
+fn delayed_ordinary_cancel_cannot_stop_newer_attempt_or_its_computer_use_controls(
+    cx: &mut TestAppContext,
+) {
+    let fixture = fixture(cx);
+    let make = || {
+        vega_conversation::types::OrdinarySubmission::begin(
+            fixture.database,
+            fixture.thread.id.clone(),
+            vega_conversation::types::RawSubmission::new(
+                "retained payload".into(),
+                Vec::new(),
+                1,
+                "model".into(),
+                None,
+                None,
+            ),
+            try_acquire(fixture.database, &fixture.thread.id)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    let (a, worker_a) = make();
+    let attempt_a = worker_a.attempt_id();
+    let cancel_a = tokio_util::sync::CancellationToken::new();
+    crate::ordinary_submission::retain_context(
+        a.id(),
+        crate::ordinary_submission::OrdinaryContext::new(fixture.thread.clone(), None, None, None),
+    )
+    .unwrap();
+    crate::ordinary_submission::set_cancel(a.id(), attempt_a, cancel_a.clone()).unwrap();
+    fixture.stream.update(cx, |stream, cx| {
+        stream.project_ordinary_submission(a.clone(), cx)
+    });
+    worker_a
+        .complete(Err(SubmissionFailure::PreparationFailed))
+        .unwrap();
+    a.seal(attempt_a).unwrap();
+    let (b, worker_b) = make();
+    let attempt_b = worker_b.attempt_id();
+    let cancel_b = tokio_util::sync::CancellationToken::new();
+    crate::ordinary_submission::retain_context(
+        b.id(),
+        crate::ordinary_submission::OrdinaryContext::new(fixture.thread.clone(), None, None, None),
+    )
+    .unwrap();
+    crate::ordinary_submission::set_cancel(b.id(), attempt_b, cancel_b.clone()).unwrap();
+    fixture.stream.update(cx, |stream, cx| {
+        stream.project_ordinary_submission(b.clone(), cx)
+    });
+    let control = vega_runtime::computer_use::ComputerUseControl::new();
+    let before = control.snapshot();
+    let generation = fixture.controller.update(cx, |controller, _| {
+        let (generation, _) = controller
+            .agent_controller
+            .begin(
+                fixture.thread.id.clone(),
+                fixture.stream.clone(),
+                None,
+                None,
+            )
+            .unwrap();
+        let active = controller
+            .agent_controller
+            .active
+            .get_mut(&fixture.thread.id)
+            .unwrap();
+        active.ordinary_attempt = Some((b.id(), attempt_b));
+        active.cancel = cancel_b.clone();
+        active.computer_use = Some(control.clone());
+        active.computer_use_owner = "current computer-use owner".into();
+        active.root_message_id = Some("current assistant".into());
+        active.queue_ready = true;
+        controller
+            .agent_controller
+            .ordinary_preparing
+            .insert(fixture.thread.id.clone(), cancel_b.clone());
+        generation
+    });
+    let stale = OrdinaryActionRequested {
+        thread_id: fixture.thread.id.clone(),
+        submission: a.id(),
+        attempt: attempt_a,
+        action: OrdinaryAction::Cancel,
+    };
+    for _ in 0..2 {
+        fixture.controller.update(cx, |controller, cx| {
+            controller.ordinary_action(fixture.stream.clone(), &stale, cx);
+            let active = &controller.agent_controller.active[&fixture.thread.id];
+            assert_eq!(active.generation, generation);
+            assert_eq!(active.ordinary_attempt, Some((b.id(), attempt_b)));
+            assert_eq!(active.root_message_id.as_deref(), Some("current assistant"));
+            assert!(active.queue_ready);
+            assert!(active.cancellation_reason.is_none());
+            assert!(active.completion_outcome.is_none());
+            assert_eq!(active.computer_use_owner, "current computer-use owner");
+            assert!(
+                active
+                    .computer_use
+                    .as_ref()
+                    .unwrap()
+                    .same_instance(&control)
+            );
+            assert!(!active.cancel.is_cancelled());
+            assert!(
+                !controller.agent_controller.ordinary_preparing[&fixture.thread.id].is_cancelled()
+            );
+        });
+        assert!(cancel_a.is_cancelled());
+        assert!(!cancel_b.is_cancelled());
+        let after = control.snapshot();
+        assert_eq!(after.epoch, before.epoch);
+        assert_eq!(after.phase, before.phase);
+        assert_eq!(after.capability, before.capability);
+        assert_eq!(after.target_label, before.target_label);
+        assert_eq!(after.error, before.error);
+    }
+    fixture.controller.update(cx, |controller, cx| {
+        controller.ordinary_action(
+            fixture.stream.clone(),
+            &OrdinaryActionRequested {
+                thread_id: fixture.thread.id.clone(),
+                submission: b.id(),
+                attempt: attempt_b,
+                action: OrdinaryAction::Cancel,
+            },
+            cx,
+        );
+    });
+    assert!(cancel_b.is_cancelled());
+    assert_eq!(
+        control.snapshot().phase,
+        vega_runtime::computer_use::ControlPhase::Stopping
+    );
+    assert!(control.snapshot().epoch > before.epoch);
+    worker_b
+        .complete(Err(SubmissionFailure::Cancelled))
+        .unwrap();
+    b.seal(attempt_b).unwrap();
+    crate::ordinary_submission::retire_context(a.id());
+    crate::ordinary_submission::retire_context(b.id());
+}

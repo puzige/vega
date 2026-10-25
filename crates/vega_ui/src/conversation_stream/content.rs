@@ -706,7 +706,7 @@ impl ConversationStream {
             cx.notify();
             return false;
         }
-        self.entries.clear();
+        let ordinary_entries = self.take_ordinary_history_entries();
         self.assistant_role_rows.clear();
         self.run_notices.clear();
         self.response_checkpoint = None;
@@ -752,6 +752,7 @@ impl ConversationStream {
         self.deferred_permission = None;
         self.hydration = HistoryHydration::default();
         self.apply_history_page(page, cx);
+        self.restore_ordinary_history_entries(ordinary_entries, cx);
         if let Some(anchor) = restore_anchor
             && (self.restore_process_anchor(anchor, cx) || self.restore_scroll_anchor(anchor))
         {

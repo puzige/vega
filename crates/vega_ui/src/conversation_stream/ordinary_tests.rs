@@ -16,6 +16,8 @@ fn thread(id: &str) -> Thread {
     Thread {
         id: id.into(),
         parent_thread_id: None,
+        forked_from_thread_id: None,
+        forked_from_message_id: None,
         backend: TaskBackend::Native,
         project_id: String::new(),
         title: "Conversation".into(),
@@ -475,4 +477,324 @@ fn original_images_survive_new_attachments_pure_image_and_view_rehydration(
     worker
         .complete(Err(SubmissionFailure::LaunchFailed))
         .unwrap();
+}
+
+#[gpui_kit::test]
+fn history_replacement_retains_pending_and_failed_text_mixed_and_image_only_rows(
+    cx: &mut TestAppContext,
+) {
+    init(cx);
+    for (text, with_image) in [("pending text", false), ("mixed text", true), ("", true)] {
+        let store = Store::open(":memory:").unwrap();
+        let handle = open(cx, "a");
+        let historical = "formal historical positive control\n".repeat(60);
+        handle
+            .update(cx, |stream, _, cx| {
+                stream.apply_history_page(history("historical", &historical, 1), cx);
+            })
+            .unwrap();
+        frame(handle, cx);
+        handle
+            .update(cx, |stream, _, _| {
+                assert_eq!(
+                    user(stream, 0).visible_text().as_deref(),
+                    Some(historical.as_str())
+                );
+                visible_row(stream, 0);
+            })
+            .unwrap();
+        let attachment = image();
+        let request = handle
+            .update(cx, |stream, _, cx| {
+                stream
+                    .input
+                    .update(cx, |input, cx| input.set_text(text, cx));
+                if with_image {
+                    stream.attachments.push((
+                        1,
+                        attachments::ImagePreview::new(
+                            attachment.clone(),
+                            "submitted.png".into(),
+                            cx,
+                        ),
+                    ));
+                    stream.submitted_attachments = stream.attachments.clone();
+                }
+                ComposerSubmitted {
+                    request_id: 1,
+                    draft_revision: stream.input.read(cx).content_revision(),
+                    attachment_ids: if with_image { vec![1] } else { Vec::new() },
+                    pending_behavior: None,
+                    images: if with_image {
+                        vec![attachment.clone()]
+                    } else {
+                        Vec::new()
+                    },
+                    thread_id: "a".into(),
+                    content: text.into(),
+                    skill_intent: None,
+                    reasoning: Ok(None),
+                }
+            })
+            .unwrap();
+        let (submission, worker) = begin(&store, &request);
+        let (keys, copy, preview) = handle
+            .update(cx, |stream, _, cx| {
+                assert!(stream.begin_ordinary_pending(submission.clone(), &request, cx));
+                let keys = stream.entry_identities[1..]
+                    .iter()
+                    .map(|identity| identity.key.clone())
+                    .collect::<Vec<_>>();
+                let copy = (!text.is_empty()).then(|| user(stream, 1).clone());
+                if let Some(copy) = &copy {
+                    copy.set_local_selection_range(0..4);
+                    copy.set_selected_text(copy.selection_generation(), text[..4].into());
+                }
+                let preview = stream.entries.iter().find_map(|entry| match entry {
+                    StreamEntry::UserImages { images } => Some(images[0].view.clone()),
+                    _ => None,
+                });
+                stream
+                    .input
+                    .update(cx, |input, cx| input.set_text("next draft", cx));
+                stream.attachments.push((
+                    2,
+                    attachments::ImagePreview::new(attachment.clone(), "next.png".into(), cx),
+                ));
+                (keys, copy, preview)
+            })
+            .unwrap();
+        let action = format!("ordinary-action-{}", submission.user_message_id());
+        assert!(submission.snapshot().accepted.is_none());
+        let mut preparation = Some(worker.register_worker().unwrap());
+        for failed in [false, true] {
+            if failed {
+                preparation
+                    .take()
+                    .unwrap()
+                    .complete(Err(SubmissionFailure::PreflightRejected))
+                    .unwrap();
+            }
+            handle
+                .update(cx, |stream, _, cx| {
+                    assert!(stream.reveal_loaded_message("historical", cx));
+                })
+                .unwrap();
+            frame(handle, cx);
+            let anchor = handle
+                .update(cx, |stream, _, _| stream.scroll_anchor_snapshot())
+                .unwrap();
+            assert!(!anchor.following_tail);
+            handle
+                .update(cx, |stream, _, cx| {
+                    assert!(stream.replace_history_window_with_anchor(
+                        history("historical", &historical, 1),
+                        "historical",
+                        Some(&anchor),
+                        cx,
+                    ));
+                    stream.project_ordinary_submission(submission.clone(), cx);
+                    assert_eq!(stream.entries.len(), 1 + keys.len());
+                    assert_eq!(stream.list.item_count(), 1 + keys.len());
+                    assert_eq!(
+                        stream.entry_identities[1..]
+                            .iter()
+                            .map(|identity| identity.key.clone())
+                            .collect::<Vec<_>>(),
+                        keys
+                    );
+                    if let Some(copy) = &copy {
+                        assert_eq!(user(stream, 1).id, copy.id);
+                        assert_eq!(user(stream, 1).selection_scope(), copy.selection_scope());
+                        assert_eq!(user(stream, 1).local_selection_range(), Some(0..4));
+                    }
+                    if let Some(preview) = &preview {
+                        match stream.entries.last().unwrap() {
+                            StreamEntry::UserImages { images } => {
+                                assert_eq!(images[0].image, attachment);
+                                assert_eq!(&images[0].view, preview);
+                            }
+                            _ => panic!("retained image row missing"),
+                        }
+                    }
+                    assert_eq!(stream.input.read(cx).text(), "next draft");
+                    assert_eq!(stream.attachments.len(), 1);
+                    assert_eq!(stream.attachments[0].0, 2);
+                    assert!(
+                        stream
+                            .ordinary_controls(stream.entries.len() - 1, cx)
+                            .is_some()
+                    );
+                })
+                .unwrap();
+            frame(handle, cx);
+            handle
+                .update(cx, |stream, _, _| {
+                    assert_eq!(stream.scroll_anchor_snapshot(), anchor)
+                })
+                .unwrap();
+            handle
+                .update(cx, |stream, _, _| {
+                    stream.list.scroll_to(ListOffset {
+                        item_ix: stream.entries.len() - 1,
+                        offset_in_item: px(0.),
+                    });
+                })
+                .unwrap();
+            frame(handle, cx);
+            cx.update_window(handle.into(), |_, window, _| {
+                let control = window.find(action.clone());
+                assert!(control.visible());
+                assert_eq!(
+                    control.label(),
+                    Some(if failed { "核实状态" } else { "取消" })
+                );
+            })
+            .unwrap();
+        }
+        worker
+            .complete(Err(SubmissionFailure::PreflightRejected))
+            .unwrap();
+        let attempt = submission.snapshot().attempts.last().unwrap().id;
+        submission.seal(attempt).unwrap();
+        handle
+            .update(cx, |stream, _, cx| {
+                stream.refresh_ordinary_submissions(cx);
+                assert!(stream.replace_history_window(
+                    history("historical", &historical, 1),
+                    "historical",
+                    cx
+                ));
+                assert_eq!(
+                    stream.scroll_anchor_snapshot().message_id.as_deref(),
+                    Some("historical")
+                );
+                assert!(!stream.scroll_anchor_snapshot().following_tail);
+                stream.list.scroll_to(ListOffset {
+                    item_ix: stream.entries.len() - 1,
+                    offset_in_item: px(0.),
+                });
+            })
+            .unwrap();
+        frame(handle, cx);
+        cx.update_window(handle.into(), |_, window, _| {
+            let control = window.find(action);
+            assert!(control.visible());
+            assert_eq!(control.label(), Some("重试"));
+        })
+        .unwrap();
+        cx.update_window(handle.into(), |_, window, _| window.remove_window())
+            .unwrap();
+    }
+}
+
+#[gpui_kit::test]
+fn history_replacement_deduplicates_durable_ordinary_rows_without_replacing_copy_or_images(
+    cx: &mut TestAppContext,
+) {
+    init(cx);
+    let store = Store::open(":memory:").unwrap();
+    let handle = open(cx, "a");
+    let attachment = image();
+    let request = handle
+        .update(cx, |stream, _, cx| {
+            stream
+                .input
+                .update(cx, |input, cx| input.set_text("mixed text", cx));
+            ComposerSubmitted {
+                request_id: 1,
+                draft_revision: stream.input.read(cx).content_revision(),
+                attachment_ids: Vec::new(),
+                pending_behavior: None,
+                images: vec![attachment.clone()],
+                thread_id: "a".into(),
+                content: "mixed text".into(),
+                skill_intent: None,
+                reasoning: Ok(None),
+            }
+        })
+        .unwrap();
+    let (submission, worker) = begin(&store, &request);
+    let (copy, preview, keys) = handle
+        .update(cx, |stream, _, cx| {
+            assert!(stream.begin_ordinary_pending(submission.clone(), &request, cx));
+            let copy = user(stream, 0).clone();
+            copy.set_local_selection_range(0..5);
+            let preview = match &stream.entries[1] {
+                StreamEntry::UserImages { images } => images[0].view.clone(),
+                _ => panic!("mixed image row missing"),
+            };
+            (
+                copy,
+                preview,
+                stream
+                    .entry_identities
+                    .iter()
+                    .map(|identity| identity.key.clone())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .unwrap();
+    let committed = receipt(&submission, &worker);
+    worker.record_committed(committed.clone()).unwrap();
+    worker.record_cleanup(Ok(())).unwrap();
+    worker
+        .complete(Err(SubmissionFailure::LaunchFailed))
+        .unwrap();
+    let attempt = submission.snapshot().attempts.last().unwrap().id;
+    submission.seal(attempt).unwrap();
+    for _ in 0..2 {
+        handle
+            .update(cx, |stream, _, cx| {
+                let mut page = history(
+                    submission.user_message_id(),
+                    "mixed text",
+                    committed.user_seq,
+                );
+                page.entries.push(HistoryEntry::UserImages {
+                    seq: committed.user_seq,
+                    message_id: submission.user_message_id().into(),
+                    images: vec![attachment.clone()],
+                });
+                assert!(stream.replace_history_window(page, submission.user_message_id(), cx));
+                stream.project_ordinary_submission(submission.clone(), cx);
+                stream.refresh_ordinary_submissions(cx);
+                assert_eq!(stream.entries.len(), 2);
+                assert_eq!(stream.list.item_count(), 2);
+                assert_eq!(stream.ordinary.len(), 1);
+                assert_eq!(
+                    stream
+                        .entry_identities
+                        .iter()
+                        .map(|identity| identity.key.clone())
+                        .collect::<Vec<_>>(),
+                    keys
+                );
+                assert!(
+                    stream
+                        .entry_identities
+                        .iter()
+                        .all(|identity| identity.sequence == Some(committed.user_seq))
+                );
+                assert_eq!(user(stream, 0).id, copy.id);
+                assert_eq!(user(stream, 0).selection_scope(), copy.selection_scope());
+                assert_eq!(user(stream, 0).local_selection_range(), Some(0..5));
+                match &stream.entries[1] {
+                    StreamEntry::UserImages { images } => {
+                        assert_eq!(images[0].view, preview);
+                        assert_eq!(images[0].image, attachment);
+                    }
+                    _ => panic!("durable image row missing"),
+                }
+                assert!(stream.ordinary_controls(1, cx).is_some());
+            })
+            .unwrap();
+        frame(handle, cx);
+        cx.update_window(handle.into(), |_, window, _| {
+            let control = window.find(format!("ordinary-action-{}", submission.user_message_id()));
+            assert!(control.visible());
+            assert_eq!(control.label(), Some("重试"));
+        })
+        .unwrap();
+    }
 }

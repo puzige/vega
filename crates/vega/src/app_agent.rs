@@ -167,6 +167,7 @@ pub(crate) struct ActiveAgentRun {
     pub(crate) completion_outcome: Option<RunCompletionOutcome>,
     pub(crate) delegated_message_id: Option<String>,
     pub(crate) delegated_parent_thread: Option<String>,
+    pub(crate) ordinary_attempt: Option<(SubmissionId, AttemptId)>,
     pub(crate) queue_generation: String,
     pub(crate) question_notifications: HashMap<UserQuestionId, Option<SharedString>>,
     pub(crate) queue_delivery: Option<PendingMessage>,
@@ -501,6 +502,23 @@ impl AppAgentController {
         }
     }
 
+    pub(crate) fn request_ordinary_cancel(
+        &self,
+        thread_id: &str,
+        submission: SubmissionId,
+        attempt: AttemptId,
+    ) {
+        crate::ordinary_submission::cancel(submission, attempt);
+        if let Some(active) = self.active.get(thread_id)
+            && active.ordinary_attempt == Some((submission, attempt))
+        {
+            if let Some(control) = &active.computer_use {
+                control.stop();
+            }
+            active.cancel.cancel();
+        }
+    }
+
     pub(crate) fn queue_review(
         &mut self,
         stream: &Entity<ConversationStream>,
@@ -553,6 +571,7 @@ impl AppAgentController {
                 completion_outcome: None,
                 delegated_message_id: None,
                 delegated_parent_thread: None,
+                ordinary_attempt: None,
                 queue_generation: ulid::Ulid::generate().to_string(),
                 question_notifications: HashMap::new(),
                 queue_delivery: None,

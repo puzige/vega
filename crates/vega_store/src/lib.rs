@@ -26,6 +26,7 @@ pub mod delegated_ownership;
 pub mod delegated_stages;
 pub mod subagents;
 pub mod thread_admission;
+pub mod thread_fork;
 pub mod threads;
 pub mod token_usage;
 pub mod tool_calls;
@@ -76,6 +77,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0032_codex_project_history.sql"),
     include_str!("../migrations/0033_delegated_stage_recovery.sql"),
     include_str!("../migrations/0034_run_continuations.sql"),
+    include_str!("../migrations/0035_thread_fork.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.

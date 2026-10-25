@@ -9,6 +9,9 @@ use std::collections::BTreeMap;
 use tokio::sync::Notify;
 #[path = "subagents/lifecycle_ownership.rs"]
 mod lifecycle_ownership;
+#[cfg(test)]
+#[path = "subagents/lifecycle_tests.rs"]
+mod lifecycle_tests;
 #[path = "subagents/stage_recovery.rs"]
 mod stage_recovery;
 use lifecycle_ownership::LifecycleOwnership;
@@ -37,6 +40,10 @@ struct AgentRecord {
     call_id: String,
     cancel: CancellationToken,
     receipt_persisted: CancellationToken,
+    writer: Option<(
+        Arc<DelegatedOwnership>,
+        vega_store::thread_admission::ThreadAdmission,
+    )>,
     occupied: bool,
     admitted: bool,
     committed: bool,
@@ -63,6 +70,8 @@ struct RegistryState {
     admission_failure: Option<String>,
     steering: Option<Arc<dyn vega_runtime::RuntimeSteeringSource>>,
     delivered_steering: Option<String>,
+    #[cfg(test)]
+    before_terminal: Option<Arc<lifecycle_tests::Pause>>,
 }
 
 #[derive(Clone)]
@@ -369,6 +378,7 @@ impl Registry {
                 .get_mut(&(snapshot.agent_id.clone(), snapshot.message_id.clone()))
         {
             record.snapshot = snapshot;
+            record.writer = None;
             record.occupied = false;
             record.boundary = boundary;
         }
@@ -565,6 +575,7 @@ struct ReservedExecution {
     previous: Option<ContinuationBoundary>,
     activity: super::stage_activity::StageActivity,
     owner: Arc<DelegatedOwnership>,
+    admission: vega_store::thread_admission::ThreadAdmission,
     resume: Option<serde_json::Value>,
 }
 
@@ -731,9 +742,11 @@ impl Supervisor {
         };
         let owner = DelegatedOwnership::acquire(&launch.database, &snapshot.agent_id)
             .map_err(|_| failure("native writer ownership unavailable"))?;
+        let store = Store::open(&launch.database)?;
+        let admission = crate::thread_access::acquire(&store, &snapshot.agent_id)
+            .map_err(|_| failure("child admission unavailable"))?;
         let resume = (tool == "resume_agent").then(|| input.clone());
         if let (Some(input), Some(previous)) = (&resume, &previous) {
-            let store = Store::open(&launch.database)?;
             stage_recovery::verify_resume(&store, &snapshot, previous, input)?;
         }
         let cancel = launch.cancel.child_token();
@@ -746,6 +759,7 @@ impl Supervisor {
                 call_id: call_id.into(),
                 cancel: cancel.clone(),
                 receipt_persisted: CancellationToken::new(),
+                writer: Some((owner.clone(), admission.clone())),
                 occupied: true,
                 admitted: false,
                 committed: false,
@@ -764,6 +778,7 @@ impl Supervisor {
             previous,
             activity,
             owner,
+            admission,
             resume,
         })
     }
@@ -773,7 +788,7 @@ impl Supervisor {
         launch: &ChildLaunch<'_>,
         target: &ExecutionKey,
     ) -> Result<serde_json::Value, VegaError> {
-        let (mut snapshot, cancel) = {
+        let (mut snapshot, cancel, writer) = {
             let state = self
                 .registry
                 .state
@@ -783,14 +798,25 @@ impl Supervisor {
                 .executions
                 .get(target)
                 .ok_or_else(|| failure("unknown_agent"))?;
-            (record.snapshot.clone(), record.cancel.clone())
+            (
+                record.snapshot.clone(),
+                record.cancel.clone(),
+                record.writer.clone(),
+            )
         };
         if !snapshot.state.is_terminal() {
             cancel.cancel();
             let database = launch.database.clone();
             let (child, run) = target.clone();
             let durable = tokio::task::spawn_blocking(move || {
+                let (owner, admission) =
+                    writer.ok_or_else(|| failure("child writer unavailable"))?;
+                if !owner.verifies(&database, &child) {
+                    return Err(failure("native writer identity changed"));
+                }
                 let store = Store::open(database).map_err(|_| failure("storage unavailable"))?;
+                crate::thread_access::verify(&store, &child, &admission)
+                    .map_err(|_| failure("child admission identity changed"))?;
                 let tx = store
                     .immediate_transaction()
                     .map_err(|_| failure("storage unavailable"))?;
@@ -963,6 +989,8 @@ fn child_lifecycle_inner<'a>(
     reserved: ReservedExecution,
     registry: Registry,
 ) -> LocalBoxFuture<'a, ()> {
+    let mut ownership =
+        LifecycleOwnership::new(launch.database.clone(), &reserved, registry.clone());
     let ReservedExecution {
         mut snapshot,
         task,
@@ -971,6 +999,7 @@ fn child_lifecycle_inner<'a>(
         previous,
         activity,
         owner,
+        admission,
         resume,
     } = reserved;
     let provider = launch.provider;
@@ -1019,7 +1048,6 @@ fn child_lifecycle_inner<'a>(
         let permissions = PermissionQueue::with_activity(activity.clone());
         let questions = UserQuestionQueue::with_activity(activity.clone());
         let queue_generation = ulid::Ulid::generate().to_string();
-        let mut ownership = LifecycleOwnership::new(database.clone(), snapshot.clone(), previous.as_ref().map(|previous| previous.message_id.clone()), owner.clone(), registry.clone(), cancel.clone());
         let mut resumed_admission = false;
         if let (Some(input), Some(previous)) = (&resume,&previous) {
             let validation = async {
@@ -1061,6 +1089,7 @@ fn child_lifecycle_inner<'a>(
             previous.clone(),
             resume.clone(),
             owner.clone(),
+            admission.clone(),
         )
         .await;
         let (thread, user_id) = match created {
@@ -1143,7 +1172,7 @@ fn child_lifecycle_inner<'a>(
                     let mut config = PersistenceActorConfig {
                         delegated: true,
                         delegated_owner: Some(owner.clone()),
-                        stage_hook: Some(Arc::new(stage_recovery::StageHook { database:database.clone(),snapshot:snapshot.clone(),owner:owner.clone(),tools:tools.clone(),config:stage_config.clone(),permissions:permissions.clone(),registry:registry.clone() })),
+                        stage_hook: Some(Arc::new(stage_recovery::StageHook { database:database.clone(),snapshot:snapshot.clone(),owner:owner.clone(),admission:admission.clone(),tools:tools.clone(),config:stage_config.clone(),permissions:permissions.clone(),registry:registry.clone() })),
                         delegated_parent: Some((
                             snapshot.parent_thread_id.clone(),
                             snapshot.parent_message_id.clone(),
@@ -1164,13 +1193,13 @@ fn child_lifecycle_inner<'a>(
                     };
                     match Store::open(&database) {
                         Ok(store) => async {
-                            let admission = crate::thread_access::acquire(&store, &snapshot.agent_id)?;
+                            crate::thread_access::verify(&store, &snapshot.agent_id, &admission)?;
                             config.admission = Some(admission.clone());
                             if let Some(reader) = &config.owner_credential_reader {
                                 config.steering_source = Some(Arc::new(crate::pending_messages::QueueSteeringSource::new(
                                     database.clone(), tools.root().to_path_buf(), snapshot.agent_id.clone(), queue_generation,
                                     reader.clone(), cancel.clone(),
-                                ).with_thread_admission(admission)));
+                                ).with_thread_admission(admission.clone())));
                             }
                             let child_host = host.clone();
                             let id = snapshot.agent_id.clone();
@@ -1199,6 +1228,11 @@ fn child_lifecycle_inner<'a>(
                 }
             }
         };
+        #[cfg(test)]
+        {
+            let pause = registry.state.lock().ok().and_then(|state| state.before_terminal.clone());
+            if let Some(pause) = pause { pause.wait().await; }
+        }
         activity.finish();
         questions.cancel_active();
         permissions.timeout_active();
@@ -1247,7 +1281,7 @@ fn child_lifecycle_inner<'a>(
         };
         (snapshot.result, snapshot.truncated) = bounded_result(&retained);
         let complete = usage_observer.complete();
-        let terminal = persist_child_terminal(database.clone(), snapshot.clone(), complete, owner.clone()).await;
+        let terminal = persist_child_terminal(database.clone(), snapshot.clone(), complete, owner.clone(), admission.clone()).await;
         let mut persisted = terminal.is_ok();
         let boundary = terminal.ok().flatten();
         if persisted { persisted = match Store::open(&database) { Ok(store) => stage_recovery::refresh(&store,&mut snapshot).is_ok(), Err(_) => false }; }
@@ -1281,6 +1315,8 @@ fn same_context(
     left.id == right.id
         && left.parent_thread_id == right.parent_thread_id
         && left.workspace_owner_thread_id == right.workspace_owner_thread_id
+        && left.forked_from_thread_id == right.forked_from_thread_id
+        && left.forked_from_message_id == right.forked_from_message_id
         && left.project_id == right.project_id
         && left.mode == right.mode
         && left.permission_mode == right.permission_mode
@@ -1300,6 +1336,7 @@ async fn create_child(
     previous: Option<ContinuationBoundary>,
     resume: Option<serde_json::Value>,
     owner: Arc<DelegatedOwnership>,
+    admission: vega_store::thread_admission::ThreadAdmission,
 ) -> Result<(crate::types::Thread, String), VegaError> {
     tokio::task::spawn_blocking(move || {
         if cancel.is_cancelled() {
@@ -1309,6 +1346,8 @@ async fn create_child(
             return Err(failure("native writer identity changed"));
         }
         let store = Store::open(database).map_err(|_| failure("storage unavailable"))?;
+        crate::thread_access::verify(&store, &snapshot.agent_id, &admission)
+            .map_err(|_| failure("child admission identity changed"))?;
         let tx = store
             .immediate_transaction()
             .map_err(|_| failure("storage unavailable"))?;
@@ -1462,12 +1501,15 @@ async fn persist_child_terminal(
     snapshot: SubagentSnapshot,
     usage_complete: bool,
     owner: Arc<DelegatedOwnership>,
+    admission: vega_store::thread_admission::ThreadAdmission,
 ) -> Result<Option<ContinuationBoundary>, VegaError> {
     tokio::task::spawn_blocking(move || {
         if !owner.verifies(&database, &snapshot.agent_id) {
             return Err(failure("native writer identity changed"));
         }
         let store = Store::open(database).map_err(|_| failure("storage unavailable"))?;
+        crate::thread_access::verify(&store, &snapshot.agent_id, &admission)
+            .map_err(|_| failure("child admission identity changed"))?;
         let tx = store
             .immediate_transaction()
             .map_err(|_| failure("storage unavailable"))?;

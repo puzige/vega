@@ -87,3 +87,14 @@ Rust: nonempty suite completed successfully (22 discovered, including ignored/sk
 | P2 | app `window/ordinary_send.rs:388–401`：仅校验旧提交的 attempt 后调用 thread-wide request_active_cancel，延迟 Cancel A 可取消新运行 B | 仅取消精确 submission/attempt token，或额外验证当前 controller 的对应归属；A 的迟到/重复 Cancel 不改变 B 的 token、computer-use controls 和运行态 |
 
 这些是原 A7/A9/G 边界的产品缺陷，不改验收、不删断言。已知 title-drain/queue 唤醒、首次 effective provider/reasoning 冻结和真实 GPUI 回归另见契约有界补充，仍未完成。单一 writer 正处理该先前授权范围；本批独审修复在其停写后续交，不并发增加第二写入者。最终仍需新固定版本独审、真实云端验证、开发测试留痕清理、最终无 Rust 测试 head 的 required CI，以及合并后的用户手测。
+
+## 有界补修：88f4011b47f7dd0ceade5b56438a11ed551a8fe8
+
+[固定源码](https://github.com/puzige/vega/tree/88f4011b47f7dd0ceade5b56438a11ed551a8fe8) / [原始 patch](https://github.com/puzige/vega/commit/88f4011b47f7dd0ceade5b56438a11ed551a8fe8.patch)，tree `d4a66cea4e622ff919e566af7d2e80273b59e815`。父与非写入者各自复算 15 code/manifest 文件 digest `5a47c89446c8013d1423629972df11608b7745584c2cfb9d5ed706c11f2c2a03` 一致。父 targeted Rust 1.98 rustfmt、diff whitespace check exit 0；原 29 个完整测试定义字节保留，新增 10 个，共 39 个源码定义，不是云端发现/执行结果。已推送，仍未取得本版编译或行为结果。
+
+独立 pinned delta 审查确认 title 持能力到实际 collection/title/usage 持久化结束、weak drain 不提前释放；effective authority 在 accepted payload 前绑定，重试复用且当前 provider/model/route/credentials 重验，未建立额外缺陷。真实列表测试含历史行 clipped bounds、key/MessageCopy/selection/clipboard/neighbor/scroll 观察，但尚未执行。另有两处 P2，父已复读固定源码，均为产品/真实入口缺口，不放宽验收：
+
+1. `window/pending_messages.rs:625–633` 仅 controller 保存 queue wait；UI `composer_actions.rs:256–263` 在非 running/非 submit-pending 时拒绝 Stop，`render.rs:333–340` 也不显示 Stop。title-drain 时普通主运行已结束，因此用户不能取消等待。新测试 `window/ordinary_tests.rs:574–604` 直接调用 controller.stop_composer，绕过真实事件 guard；保留该层覆盖，补真实 Composer Stop 入口回归，并将可取消 wait 独立投影给 UI，不伪装 primary-running。
+2. `window/pending_messages.rs:671–703` 超时移除 waiter 后调用 `reject_pending_queue_action`；该 helper 55–68 只写 error、不设 paused。UI `pending_messages.rs:618–636` 仅 paused 才显示 Continue，故提示稍后继续却无操作、释放 title 后也无 wake。超时须保留消息并转 recoverable paused/error；受控 clock 跨 30 秒、真实 Resume 入口验证恰好一次 launch，不提前释放能力或无限轮询。
+
+以上独审不包含进行中的 master merge 与原三项修复；审查者已停写、无本地执行。父已在干净检查点发起合并 `429c6a819fc5a30f8280afd2f6ed015d4682bf41` 并将两冲突和原三缺陷交同 writer。后续新 delta 须另固定、独审和云端验证；不能把本节结论扩成完整通过。

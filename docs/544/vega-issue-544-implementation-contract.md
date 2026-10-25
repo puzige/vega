@@ -84,7 +84,7 @@ F 固定可审查后接线：
 
 集成检查点 `5805080462bd77c4695ee1bb26a849a1b3cc3366` 已保存，不是完整 READY。下列补充闭合既有 A1–A12，不减少验收：
 
-- 自动标题保留原独立 capability 到实际结束；普通主运行结束后若队列因 title drain 暂时未获 thread admission，不把原 queue 标成失败/暂停，不提前释放 title 能力。仅此可识别的等待原因登记一次可取消的重分派唤醒；每次唤醒重新验证 thread/stream/queue generation、暂停/停止/权限状态和真实 admission。占用解除后按原队列一次分派，不在失败未知时无限盲重试，不改变全局调度策略。
+- 自动标题保留原独立 capability 到实际结束；普通主运行结束后若队列因 title drain 暂时未获 thread admission，不把原 queue 标成失败/暂停，不提前释放 title 能力。仅此可识别的等待原因登记一次可取消的重分派唤醒；每次唤醒重新验证 thread/stream/queue generation、暂停/停止/权限状态和真实 admission。占用解除后按原队列一次分派，不在失败未知时无限盲重试，不改变全局调度策略。等待的取消必须经真实 Composer Stop 控件/动作可达，不只在 controller 内有 cancel；等待态独立投影，不伪装 primary-running 以改变发送路由。有界等待超时后保留队列并转 paused/error，显示可用的“继续队列”恢复入口；不得只提示稍后继续却没有动作。受控时钟越过期限、释放能力并经真实 Resume 入口继续时恰好分派一次。
 - raw reasoning 为 None 不代表每次重试可重新选择 provider/default。第一份实际解析成功的 provider identity、resolved model authority 与 effective FrozenReasoning 按 submission 一次绑定；后续 attempt 使用相同逻辑 choice/authority，配置变化不静默转 provider。凭据和当前安全可用性仍重验，原 route/model 失效显示可恢复错误，不借旧快照绕授权。first binding 在后台、先于 accepted payload/provider primary，UI pending 不等它。
 - 为验证真实列表/controller 的必要行为，允许仅开发期在 `vega_ui`/必要 `vega` 的 dev-dependencies 启用已经锁定 `gpui_kit` 的 `test-support` feature。只复用现有依赖，不升级/引入新产品依赖；不改通用 CI。先用正式历史用户行作阳性对照，再验证实际提交/回执和列表对象，不能用源码字符串或镜像 helper。所有测试和独占 feature/接线在真实云端验证留痕后移除，最终 head 仍须 Rust 0 发现/0 执行。此授权不允许本地编译或执行。
 - 固定 `5805080462bd77c4695ee1bb26a849a1b3cc3366` 的独审发现须闭合：child-specific admission 在 resume validation/create 写入前取得，贯穿 host/runtime/terminal persistence/release bookkeeping，所有 detached blocking mutation 持同一能力 clone。不能先写后取、runtime 后提前 drop，quarantine 不得凭空释放仍有副作用的 owner；两个生命周期边界的冲突 service mutation 必须拒绝。

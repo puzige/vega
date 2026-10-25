@@ -749,6 +749,7 @@ pub(super) fn estimate_entry_height(
         }
         StreamEntry::Tool { card } => card.read(cx).estimated_height(),
         StreamEntry::ToolGroup { group } => group.read(cx).estimated_height(cx),
+        StreamEntry::ArtifactGroup { group } => group.read(cx).estimated_height(),
         StreamEntry::User { lines, .. } => estimate_user_height(lines, text_width),
         StreamEntry::Assistant { model, failure, .. } => {
             estimate_markdown_height(model, text_width)

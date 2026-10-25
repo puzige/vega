@@ -807,6 +807,9 @@ impl VegaWindow {
             _ => None,
         };
         let ordinary_cancel = ordinary_launch.map(|launch| launch.cancel.clone());
+        let ordinary_attempt = ordinary_launch
+            .and_then(|launch| launch.run())
+            .map(|run| (run.submission.id(), run.worker.attempt_id()));
         let admission = match &cx.global::<VegaStore>().0 {
             Ok(store) => match ordinary_launch.and_then(|launch| launch.run()) {
                 Some(run) => Some(run.worker.admission().clone()),
@@ -894,6 +897,7 @@ impl VegaWindow {
         let cancel = if let Some(cancel) = ordinary_cancel {
             if let Some(active) = self.agent_controller.active.get_mut(thread_id) {
                 active.cancel = cancel.clone();
+                active.ordinary_attempt = ordinary_attempt;
             }
             cancel
         } else {

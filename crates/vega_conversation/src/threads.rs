@@ -10,6 +10,44 @@ use crate::types::{
     Thread, ThreadMode, ThreadStatus, ThreadUpdate,
 };
 
+#[derive(Debug, thiserror::Error)]
+pub enum ForkThreadError {
+    #[error(transparent)]
+    Refused(#[from] vega_store::thread_fork::ForkError),
+    #[error("fork history validation failed: {0}")]
+    History(ConversationError),
+}
+
+pub fn fork_thread(
+    store: &Store,
+    source_thread_id: &str,
+    through_message_id: &str,
+) -> Result<Thread, ForkThreadError> {
+    use vega_store::thread_fork::ForkError;
+    let tx = store.immediate_transaction().map_err(ForkError::from)?;
+    let row =
+        vega_store::thread_fork::clone_prefix(&tx, source_thread_id, through_message_id, now_ms())?;
+    let source =
+        context_compaction::load_source_in_transaction(&tx, &row.id).map_err(ForkError::from)?;
+    crate::agent::history_from_context_source(&source, "", None)
+        .map_err(|error| ForkError::CorruptHistory(error.to_string()))?;
+    let images = vega_store::image_attachments::for_messages(&tx, &row.id, &source.messages)
+        .map_err(ForkError::from)?;
+    for message in &source.messages {
+        let attachments = images
+            .iter()
+            .filter(|image| image.message_id == message.id)
+            .map(|image| crate::types::ImageAttachment::from_bytes(image.encoded.clone()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| ForkError::CorruptHistory(error.to_string()))?;
+        crate::attachments::validate_images(&attachments)
+            .map_err(|error| ForkError::CorruptHistory(error.to_string()))?;
+    }
+    let thread = thread_from_row(&row).map_err(ForkThreadError::History)?;
+    tx.commit().map_err(ForkError::from)?;
+    Ok(thread)
+}
+
 pub fn new_thread_id() -> String {
     // ulid 3.x：构造函数为 generate()（自带当前时间戳 + 随机数）。
     ulid::Ulid::generate().to_string()
@@ -145,6 +183,8 @@ fn assemble_thread(
     let now = now_ms();
     Thread {
         parent_thread_id: None,
+        forked_from_thread_id: None,
+        forked_from_message_id: None,
         id: new_thread_id(),
         backend: TaskBackend::Native,
         project_id: project_id.unwrap_or_default().to_string(),
@@ -526,6 +566,8 @@ pub(crate) fn thread_from_row(row: &store::ThreadRow) -> Result<Thread, Conversa
     })?;
     Ok(Thread {
         parent_thread_id: row.parent_thread_id.clone(),
+        forked_from_thread_id: row.forked_from_thread_id.clone(),
+        forked_from_message_id: row.forked_from_message_id.clone(),
         id: row.id.clone(),
         backend: TaskBackend::parse(&row.backend)
             .ok_or_else(|| ConversationError::CorruptRow("backend".to_string()))?,

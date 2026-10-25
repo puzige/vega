@@ -7,6 +7,7 @@ pub(super) struct StageHook {
     pub database: PathBuf,
     pub snapshot: SubagentSnapshot,
     pub owner: Arc<DelegatedOwnership>,
+    pub admission: vega_store::thread_admission::ThreadAdmission,
     pub tools: vega_tools::Tools,
     pub config: vega_runtime::RuntimeToolConfig,
     pub permissions: PermissionQueue,
@@ -24,6 +25,7 @@ impl vega_runtime::RuntimeSubagentHook for StageHook {
         let database = self.database.clone();
         let snapshot = self.snapshot.clone();
         let owner = self.owner.clone();
+        let admission = self.admission.clone();
         let tools = self.tools.clone();
         let config = self.config.clone();
         let permissions = self.permissions.clone();
@@ -48,6 +50,8 @@ impl vega_runtime::RuntimeSubagentHook for StageHook {
                 return Err(VegaError::CredentialExposureBlocked);
             }
             let store = Store::open(&database)?;
+            crate::thread_access::verify(&store, &snapshot.agent_id, &admission)
+                .map_err(|_| failure("child admission identity changed"))?;
             let mut artifacts = Vec::new();
             for artifact in input["artifacts"]
                 .as_array()
@@ -330,6 +334,7 @@ pub(super) fn load(
                 call_id: row.spawn_call_id,
                 cancel: CancellationToken::new(),
                 receipt_persisted: CancellationToken::new(),
+                writer: None,
                 occupied,
                 admitted: true,
                 committed: true,
