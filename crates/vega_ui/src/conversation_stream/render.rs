@@ -1598,6 +1598,19 @@ impl Render for ConversationStream {
                                                                 cx,
                                                                 &this.selection_focus,
                                                             );
+                                                            #[cfg(feature = "development-observation")]
+                                                            let body = {
+                                                            let mut body = body;
+                                                            if let StreamEntry::User { .. } = entry
+                                                                && let Some(message_id) = this.entry_identities.get(index).and_then(|identity| identity.message_id.as_deref())
+                                                                && let Some(row) = body.downcast_mut::<gpui_kit::Stateful<gpui_kit::Div>>()
+                                                            {
+                                                                use gpui_kit::TestSupportExt;
+                                                                let observed = std::mem::replace(row, div().id("development-observation-placeholder"));
+                                                                body = observed.aria_label(format!("development-user-row:{message_id}")).test_support().into_any_element();
+                                                            }
+                                                            body
+                                                            };
                                                             if let StreamEntry::Assistant { copy, .. } = entry
                                                                 && let Some(source) = this.copy_source_for_entry(index)
                                                             {

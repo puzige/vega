@@ -681,11 +681,23 @@ fn attachment_paths(window: &Window) -> Vec<Vec<ElementId>> {
     paths
 }
 
+fn durable_user_echo_paths(window: &Window, message_id: &str) -> Vec<Vec<ElementId>> {
+    let label = format!("development-user-row:{message_id}");
+    let rows = gpui_kit::base::test_support::snapshots(window)
+        .into_iter()
+        .filter(|snapshot| snapshot.label() == Some(label.as_str()))
+        .collect::<Vec<_>>();
+    user_echo_paths(window)
+        .into_iter()
+        .filter(|path| rows.iter().any(|row| path.starts_with(row.path())))
+        .collect()
+}
+
 async fn revealed_user_echo_paths(
     fixture: &Fixture,
     message_ids: &[&str],
     cx: &mut TestAppContext,
-) -> Vec<Vec<ElementId>> {
+) -> Vec<(String, Vec<ElementId>)> {
     let mut paths = Vec::new();
     let mut identities = Vec::new();
     for message_id in message_ids {
@@ -703,19 +715,22 @@ async fn revealed_user_echo_paths(
                 "revealed durable user echo registered",
                 fixture.window.into(),
                 cx,
-                |window, _| !user_echo_paths(window).is_empty(),
+                |window, _| !durable_user_echo_paths(window, message_id).is_empty(),
             )
             .await;
         let observed = cx
             .update_window(fixture.window.into(), |_, window, _| {
-                user_echo_paths(window)
+                durable_user_echo_paths(window, message_id)
             })
             .unwrap();
-        for path in observed {
-            if !paths.contains(&path) {
-                paths.push(path);
-            }
-        }
+        assert_eq!(
+            observed.len(),
+            1,
+            "copy controls for durable user {message_id}: {observed:?}"
+        );
+        let path = observed.into_iter().next().unwrap();
+        assert!(!paths.iter().any(|(_, existing)| existing == &path));
+        paths.push(((*message_id).to_owned(), path));
     }
     paths.sort_by_cached_key(|path| format!("{path:?}"));
     paths
