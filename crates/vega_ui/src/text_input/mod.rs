@@ -17,6 +17,10 @@ actions!(
         Delete,
         Left,
         Right,
+        Up,
+        Down,
+        SelectUp,
+        SelectDown,
         SelectLeft,
         SelectRight,
         SelectAll,
@@ -38,6 +42,7 @@ const MASK_CHAR: char = '•';
 /// One laid-out display line: its start offset in the content, the segment
 /// length (excluding the separating `\n`), and the shaped line. Single-line
 /// inputs keep exactly one entry (start 0).
+#[derive(Clone)]
 pub(crate) struct LineLayout {
     start: usize,
     len: usize,
@@ -73,6 +78,9 @@ pub struct TextInput {
     marked_range: Option<Range<usize>>,
     /// Layout cache from the last paint (one entry per display line).
     last_lines: Vec<LineLayout>,
+    navigation_lines: Vec<LineLayout>,
+    navigation_revision: u64,
+    vertical_goal: Option<(Range<usize>, bool, u64, Pixels)>,
     /// Line height used at the last paint (for y → line mapping).
     last_line_height: Pixels,
     last_bounds: Option<Bounds<Pixels>>,

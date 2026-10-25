@@ -407,15 +407,24 @@ impl ConversationStream {
     pub(crate) fn on_previous_message(
         &mut self,
         _: &PreviousMessage,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.composer_history.is_empty()
-            || (self.history_cursor.is_none() && !self.input.read(cx).cursor_allows_history())
-        {
+        if self.input.read(cx).is_composing() {
             return;
         }
         let current = self.input.read(cx).text().to_string();
+        let recalling_history = self
+            .history_cursor
+            .and_then(|index| self.composer_history.get(index))
+            == Some(&current);
+        if self.composer_history.is_empty()
+            || (!recalling_history && !self.input.read(cx).cursor_allows_history())
+        {
+            self.input
+                .update(cx, |input, cx| input.up(&crate::text_input::Up, window, cx));
+            return;
+        }
         if let Some(index) = self.history_cursor
             && self.composer_history.get(index) != Some(&current)
         {
