@@ -213,3 +213,11 @@ fetch 现见 master `921d735ca0dda3f17ab99ea4949002a1fdc44ab4`，含 compaction 
 现有回归保存为 `81329ed2`，上游无冲突合入 `0d4329815e3a41363ba220a53c0a32888d0ed69b`。主会话直接修复：OrdinaryLaunch 在 UserSubmission 内改最小 Box；仅删除无调用的同步 materialize wrapper；等价合并 draft guard；为 app 的四处 revision 断言增加 vega_ui 独占 development-observation feature / 窄 getter（最终随测试移除），未公开 TextInput::content_revision。活动排序对 sequence None 投影按同 message_id 的 durable sequence 判断，不把活动当普通 pending 后缀；新增 completed/retired mixed ordinary 的真实 history replacement + newer-page 回归，断言 text/images/activity/reply、唯一 key、原 copy/selection/preview、列表数和非尾锚点。
 
 本轮实际静态检查：13 Rust 文件定向 Rust 1.98 rustfmt --check / skip_children=true、git diff --check、两个变更 manifest TOML 解析均 exit 0。原 57 测试块保留，仅 app 四处观察 API 等义替换；新增一项后 58 源码属性。编译、发现、执行计数仍未取得；本轮没有本地 Vega/构建/Clippy/测试/CUA。新增 public-entry 的 first-drive cancel/error 样例不等同于真实 app Cancel→buffered late-event generation 交错，其他非普通 route 的运行证据仍须按实际结果区分，不因此宣称完整 A1–A12。后续固定保存 SHA，非实现者审增量与故障接线，并交现有 Actions；旧 903 失败不被静态检查覆盖。
+
+### 8bab7e6a：独审及首次集成执行
+
+固定完整 HEAD `8bab7e6a386a6882dade8541795bd7eee6cc67c4`，tree `c1c25c4c844e5d5a34ca4b9a6ee77e71c5e0cd03`。非实现者对比 11c 完成只读独审：未发现新增产品/测试 API 缺陷；原活动 P2 源码修复成立，真实入口与 per-run fault/drain 事实边界可行。独审实际 22 变更 Rust 文件 rustfmt、diff、TOML exit0，不是运行通过或合并批准。保留 A7/A9 appCancel→buffered late-event/newgeneration 及 A10 非普通运行证据缺口。
+
+[Actions 40199681162](https://github.com/puzige/vega/actions/runs/40199681162) completed/failure，Clippy `121187999583` success（含 fmt），Nextest `121187999454` failure，required `121189358266` failure。Python 5+15+40=60 OK。Rust 已实际发现58、执行58、54通过、4失败、0跳过。七 public-entry 回归全部通过，completed ordinary activity 排序新回归通过；不以部分通过称全卡 GREEN。
+
+父读取原始失败 stdout/stderr 并核对锁定 gpui-kit0.6.1 test.rs 与当前/上游 render_rows.rs：三项 app 控件测试报 Registered paths none（composer-stop、pending-resume、composer-running-send），真实控件有 id 但未 test_support 注册；这是观察接线故障，补三个真实构造点（shared pending_button 同时覆盖 remove），不改其行为/可达性断言。第四项 history replacement 阳性对照把 visible_text 当原始全文，实际既有 user_message_lines 使用 trim_end_matches newline；修为同时 assert original_text 完整及展示正文遵循该既有规范，不改变生产裁剪、不删内容检查。target_changed 编辑被拒后重读再定点修正，未重放未知写入。全部58定义保留，三文件定向格式/diff待最终复核；无本地执行、不改通用CI、不重跑同字节求绿。

@@ -495,9 +495,10 @@ fn history_replacement_retains_pending_and_failed_text_mixed_and_image_only_rows
         frame(handle, cx);
         handle
             .update(cx, |stream, _, _| {
+                assert_eq!(user(stream, 0).original_text(), historical);
                 assert_eq!(
                     user(stream, 0).visible_text().as_deref(),
-                    Some(historical.as_str())
+                    Some(historical.trim_end_matches('\n'))
                 );
                 visible_row(stream, 0);
             })

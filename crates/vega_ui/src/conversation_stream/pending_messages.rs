@@ -4,7 +4,8 @@ use crate::icons::{Icon, icon};
 use crate::interaction::InteractionExt;
 use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use gpui_kit::{
-    Anchor, Bounds, Div, Focusable, Global, Role, Stateful, anchored, canvas, deferred, point,
+    Anchor, Bounds, Div, Focusable, Global, Role, Stateful, TestSupportExt, anchored, canvas,
+    deferred, point,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -527,6 +528,7 @@ impl ConversationStream {
         let keyboard_action = action.clone();
         div()
             .id(id)
+            .test_support()
             .role(Role::Button)
             .aria_label(label)
             .when_some(description, |element, description| {
@@ -594,6 +596,7 @@ impl ConversationStream {
         };
         div()
             .id("composer-running-send")
+            .test_support()
             .role(Role::Button)
             .aria_label(label)
             .tooltip(move |_, cx| crate::icons::tooltip(label, cx))

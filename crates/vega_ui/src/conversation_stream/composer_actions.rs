@@ -1,7 +1,7 @@
 //! Small local composer commands; all durable changes still use thread settings.
 use super::*;
 use crate::interaction::InteractionExt;
-use gpui_kit::Focusable;
+use gpui_kit::{Focusable, TestSupportExt};
 use vega_conversation::types::{ComputerUseControl, ControlPhase};
 
 /// Thread-mode `+`-menu rows, in the order the slash parser also accepts.
@@ -802,6 +802,7 @@ impl ConversationStream {
         let colors = theme(cx).colors;
         div()
             .id("composer-stop")
+            .test_support()
             .track_focus(&self.action_focus[1])
             .tab_stop(true)
             .aria_label(if self.actions.stopping {
