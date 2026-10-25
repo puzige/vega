@@ -67,6 +67,7 @@ fn valid_mixed_skill_rejection_input(tool: &str, input_json: &str) -> bool {
                 id: "mixed-batch".to_string(),
                 tool: tool.to_string(),
                 input_json: input_json.to_string(),
+                codex_display: None,
             };
             crate::types::McpCallIdentity::from_tool_call(&call).is_some()
         }
@@ -1474,6 +1475,7 @@ pub(crate) fn validate_recovered_projection(
                 id: call_id.to_string(),
                 tool: tool.to_string(),
                 input_json: input_json.to_string(),
+                codex_display: None,
             };
             if crate::types::McpCallIdentity::from_tool_call(&projected).is_none()
                 || exit_code.is_some()

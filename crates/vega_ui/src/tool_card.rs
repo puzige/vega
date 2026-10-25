@@ -6,9 +6,10 @@ use std::time::{Duration, Instant};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, App, Entity, MouseButton, MouseUpEvent, ScrollHandle, Task, div, px};
 use vega_conversation::types::{
-    Approval, InvalidToolKind, ReadOnlyToolKind, SkillCardOutcome, SubagentOpenRequested,
-    SubagentSnapshot, SubagentState, ToolCall, ToolCallStatus, ToolCardInputProjection,
-    ToolCardResultProjection, ToolResult, tool_card_input_projection, tool_card_result_projection,
+    Approval, CodexAcpActivityIdentity, CodexArgumentPreview, CodexDisplayMetadata,
+    InvalidToolKind, ReadOnlyToolKind, SkillCardOutcome, SubagentOpenRequested, SubagentSnapshot,
+    SubagentState, ToolCall, ToolCallStatus, ToolCardInputProjection, ToolCardResultProjection,
+    ToolResult, tool_card_input_projection, tool_card_result_projection,
 };
 use vega_theme::{Layout, ThemeColors, Typography, theme};
 
@@ -447,9 +448,11 @@ impl ToolCard {
 
     pub(crate) fn codex_permission_display(
         &self,
-    ) -> Option<vega_conversation::types::CodexAcpActivityIdentity> {
+    ) -> Option<(CodexAcpActivityIdentity, Option<CodexArgumentPreview>)> {
         match &self.input {
-            Some(ToolCardInputProjection::CodexAcp { identity, .. }) => Some(identity.clone()),
+            Some(ToolCardInputProjection::CodexAcp {
+                identity, preview, ..
+            }) => Some((identity.clone(), *preview)),
             _ => None,
         }
     }
@@ -1384,7 +1387,15 @@ impl ToolCard {
                 Some(ToolDetail {
                     title: Some("Codex ACP".to_string()),
                     command: None,
-                    output: self.output_rows.clone(),
+                    output: match &self.result {
+                        Some(ToolCardResultProjection::CodexAcp {
+                            reason: Some(reason),
+                            ..
+                        }) => {
+                            vec![reason.message().to_owned()]
+                        }
+                        _ => self.output_rows.clone(),
+                    },
                     footer: None,
                 })
             }
@@ -1394,15 +1405,27 @@ impl ToolCard {
 }
 
 pub(crate) fn codex_identity_display(
-    identity: &vega_conversation::types::CodexAcpActivityIdentity,
+    identity: &CodexAcpActivityIdentity,
+    preview: Option<CodexArgumentPreview>,
 ) -> String {
+    let preview = preview
+        .filter(|preview| {
+            CodexDisplayMetadata {
+                preview: *preview,
+                reason: None,
+            }
+            .validated_preview(identity)
+            .is_some()
+        })
+        .map(|preview| preview.message())
+        .unwrap_or_else(|| identity.argument_preview.clone());
     vega_i18n::t_args(
         "ui.codex.identity",
         &[
             ("kind", codex_kind_label(&identity.kind)),
             ("bytes", &identity.arguments_bytes.to_string()),
             ("sha256", &identity.arguments_sha256),
-            ("preview", &identity.argument_preview),
+            ("preview", &preview),
         ],
     )
 }

@@ -11,6 +11,7 @@ pub struct ToolCall {
     /// Safe complete JSON input. Write/edit bodies are replaced by strict
     /// content-free audit projections before this boundary.
     pub input_json: String,
+    pub codex_display: Option<CodexDisplayMetadata>,
 }
 
 impl std::fmt::Debug for ToolCall {
@@ -253,6 +254,7 @@ pub struct ToolResult {
     /// Typed content-free projection for an atomic invalid tool path.
     /// All ordinary terminal paths keep this absent.
     pub invalid: Option<InvalidToolProjection>,
+    pub codex_display: Option<CodexDisplayMetadata>,
 }
 
 impl std::fmt::Debug for ToolResult {
@@ -363,6 +365,7 @@ pub enum ToolCardInputProjection {
     CodexAcp {
         identity: CodexAcpActivityIdentity,
         permission_target: String,
+        preview: Option<CodexArgumentPreview>,
     },
     /// Only the validated Skill name and a reference path's length/hash.
     /// `name=None` represents the exact `{}` invalid-input audit placeholder.
@@ -461,6 +464,7 @@ pub enum ToolCardResultProjection {
         status: ToolCallStatus,
         output: String,
         reused: bool,
+        reason: Option<CodexTerminalReason>,
     },
     /// Strictly decoded content-free result from Vega's Skill tool pair.
     Skill {
@@ -553,6 +557,9 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
             ToolCardInputProjection::Corrupt,
             |identity| ToolCardInputProjection::CodexAcp {
                 permission_target: identity.permission_target(),
+                preview: call
+                    .codex_display
+                    .and_then(|display| display.validated_preview(&identity)),
                 identity,
             },
         );
@@ -922,7 +929,7 @@ pub fn tool_card_result_projection(
                 reused: result.reused,
             }
         }
-        ToolCardInputProjection::CodexAcp { .. } => {
+        ToolCardInputProjection::CodexAcp { preview, .. } => {
             if !is_terminal(result.status)
                 || result.exit_code.is_some()
                 || result.duration_ms.is_some()
@@ -939,6 +946,9 @@ pub fn tool_card_result_projection(
                 status: result.status,
                 output: result.output.clone(),
                 reused: result.reused,
+                reason: result.codex_display.and_then(|display| {
+                    display.validated_reason(*preview, result.status, &result.output)
+                }),
             }
         }
         ToolCardInputProjection::Skill {

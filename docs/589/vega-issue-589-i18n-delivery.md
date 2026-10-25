@@ -26,8 +26,8 @@ Language changes must update existing views, not only newly created windows. Rev
 | A05: named interpolation | Catalog/argument static validation; implementation review; user reconnect/preview/count checks | Pending |
 | A06: UI and error coverage | Per-literal static inventory with explicit non-UI classifications; bilingual surface review | Pending |
 | A07: accessibility | Translated-name and keyboard-handler review; user keyboard/reader check | Pending |
-| Rust compile/lint and repository checks | Latest-head GitHub Actions `pr-check` | First checkpoint failed compilation; corrected-head result pending |
-| Final Rust test inventory | Static inventory plus CI discovery/execution counts | No local Rust test sources; cloud counts not obtained because first discovery build failed |
+| Rust compile/lint and repository checks | Latest-head GitHub Actions `pr-check` | First checkpoint failed compilation; second compiled but Clippy blocked on one lazy-evaluation warning; final head pending |
+| Final Rust test inventory | Static inventory plus CI discovery/execution counts | Second cloud cycle: no Rust tests (0 discovered, 0 executed); final-head inventory still required |
 
 No Vega code, builds, compilation, packaging, or tests are executed locally. Local checks are limited to quick formatting, diffs, and static source/resource analysis. Static checks do not establish native rendering, persistence across real restarts, screen-reader behavior, or complete UI acceptance. No Rust test is added solely for this migration's process; final required CI still applies.
 
@@ -65,5 +65,21 @@ Independent reviews approved the repaired application boundary and domain cleanu
 - Original failed-log SHA-256: `7cecaf287f8ad891b32742518b0d58786a17c7f39f86ce22594957bd2a517c85`.
 - Product wiring causes: missing `SettingsText`/`t`/`t_args` imports in the MCP settings module; the removed placeholder constant; a sibling module calling a private scroll-restoration helper; four `String` values passed where interpolation expects borrowed strings. These are not external CI failures or acceptance changes.
 - Corrections preserve behavior: imports only, existing placeholder helper, module-scoped helper visibility and temporary borrows. No assertion, gate, test, runtime policy or acceptance criterion was weakened. Corrected-head cloud results remain pending.
+
+### Second cloud cycle
+
+- Checked head: `36b7479f0e80db2b2b597c8aeecc43c4d34eddc6`.
+- Run: [40173882170](https://github.com/puzige/vega/actions/runs/40173882170).
+- Nextest workspace compilation/discovery completed successfully: **no Rust tests (0 discovered, 0 executed)**. This is an empty suite, not a claim of behavioral Rust test coverage.
+- The required aggregate check still failed because Clippy rejected one `unnecessary_lazy_evaluations` instance in `sidebar_organization/mutations.rs:38`. Original failed-log SHA-256: `16c593a12b153b8e5e47cebe95f7be95acafa7a2990d6cdaaf9c97f5003632ae`.
+- The correction uses `ok_or` with the identical stable error value; no warning suppression, weakened assertion or CI change. Final-head checks remain pending.
+
+### Final Codex coverage batch
+
+The remaining Codex-generated parameter descriptions and terminal reasons now carry typed provenance through live calls/results and persisted history. Migration `0037_codex_display_metadata.sql` adds a strict, cascading tool-call metadata table. Insert/reject/finish operations save metadata and the existing lifecycle transition in one transaction. Rendering localizes only when the explicit metadata matches the canonical preview/output and status; legacy, mismatched and external content remains unchanged. Canonical four-field input JSON, permission targets, argument length/digest and original output bytes remain stable.
+
+The implementation froze under manifest SHA-256 `5ff7269dd22f923603361af8e03cb6bb640289eeb79c07035d16784b3adc6f61` and delta SHA-256 `4206131f069072a84c07518e736fa01c2c4a24c4f2942995bccc9115bc19a1fd`. The parent reran whole-workspace formatting, diff hygiene, the static i18n inventory and the no-Rust-test-source scan. Current static inventory: 1,764 keys per language, 1,740 literal translation calls, zero resource/reference errors and zero UI/unreviewed Chinese literals; benchmark bytes match the original hash. Independent Codex review and final-head CI remain pending.
+
+An attempted combined amend/force-push command was denied before execution. No history rewrite occurred; subsequent delivery uses an ordinary additional commit and push rather than retrying the denied operation.
 
 The intermediate content identities above are not final-version approvals. Final versions, current static commands, independent delta review, and cloud run/job results will be recorded on the PR when available. Unknown or unrun checks remain pending; CI success and merging do not imply user acceptance.

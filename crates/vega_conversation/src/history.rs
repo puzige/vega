@@ -7,9 +7,10 @@ use vega_store::recovery;
 use vega_store::skills::{self, SkillActivationAuditRecord};
 
 use crate::types::{
-    Approval, ApprovalAudit, ApprovalSource, ConversationError, InvalidToolCode, InvalidToolKind,
-    Plan, PlanStatus, TaskCostSummary, ToolCallStatus, ToolCardInputProjection,
-    ToolCardResultProjection, ToolResult, tool_card_input_projection, tool_card_result_projection,
+    Approval, ApprovalAudit, ApprovalSource, CodexDisplayMetadata, ConversationError,
+    InvalidToolCode, InvalidToolKind, Plan, PlanStatus, TaskCostSummary, ToolCallStatus,
+    ToolCardInputProjection, ToolCardResultProjection, ToolResult, tool_card_input_projection,
+    tool_card_result_projection,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -837,6 +838,10 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
         id: call.id.clone(),
         tool: call.tool.clone(),
         input_json: call.input_json.clone(),
+        codex_display: call
+            .codex_display
+            .as_ref()
+            .and_then(CodexDisplayMetadata::from_stored),
     };
     let input = tool_card_input_projection(&proposal);
     if matches!(
@@ -849,6 +854,7 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
         let result = crate::types::ToolResult {
             status: ToolCallStatus::Cancelled,
             output: crate::types::USER_QUESTION_CANCELLED.into(),
+            codex_display: None,
             reused: true,
             exit_code: None,
             duration_ms: None,
@@ -888,6 +894,7 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
         let result = ToolResult {
             status,
             output: call.output_text.clone().unwrap_or_default(),
+            codex_display: proposal.codex_display,
             reused: true,
             exit_code: call.exit_code,
             duration_ms: call.duration_ms.and_then(|ms| u64::try_from(ms).ok()),

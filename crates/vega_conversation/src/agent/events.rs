@@ -1310,6 +1310,7 @@ pub(crate) fn validate_runtime_proposal(
             id: call.id.clone(),
             tool: call.name.clone(),
             input_json: call.input_json.clone(),
+            codex_display: None,
         };
         return crate::types::McpCallIdentity::from_tool_call(&projected)
             .map(|_| ())

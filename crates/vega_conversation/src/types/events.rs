@@ -804,6 +804,7 @@ pub(crate) fn from_runtime_event(
                     duration_ms: result.duration_ms,
                     truncated: result.truncated,
                     invalid: Some(invalid),
+                    codex_display: None,
                 },
             })
         }
@@ -818,6 +819,7 @@ pub(crate) fn from_runtime_event(
                     duration_ms: result.duration_ms,
                     truncated: result.truncated,
                     invalid: None,
+                    codex_display: None,
                 },
             })
         }
@@ -852,6 +854,7 @@ pub(crate) fn from_runtime_event(
                     duration_ms: result.duration_ms,
                     truncated: result.truncated,
                     invalid: None,
+                    codex_display: None,
                 },
             })
         }
@@ -1037,6 +1040,7 @@ pub(crate) fn safe_runtime_tool_call(call: &vega_runtime::RuntimeToolCall) -> Op
         id: call.id.clone(),
         tool: call.name.clone(),
         input_json: call.input_json.clone(),
+        codex_display: None,
     };
     if vega_runtime::is_subagent_tool(&call.name) {
         return (call.input_json == "{}"

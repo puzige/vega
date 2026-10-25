@@ -9,7 +9,10 @@ use gpui_kit::{
     Window, actions, div, px,
 };
 use vega_conversation::agent::{PERMISSION_TIMEOUT, PermissionLease};
-use vega_conversation::types::{PermissionDecision, PermissionOptionChoice, PermissionRequest};
+use vega_conversation::types::{
+    CodexAcpActivityIdentity, CodexArgumentPreview, PermissionDecision, PermissionOptionChoice,
+    PermissionRequest,
+};
 use vega_theme::{Layout, Typography, theme};
 
 use crate::conversation_stream::{MONOFONT, ROW_HEIGHT, display_width};
@@ -46,7 +49,7 @@ struct SafePermissionPrompt {
     tool: String,
     display_target: String,
     command_rows: Vec<String>,
-    codex_identity: Option<vega_conversation::types::CodexAcpActivityIdentity>,
+    codex_identity: Option<(CodexAcpActivityIdentity, Option<CodexArgumentPreview>)>,
     danger_rule_id: Option<String>,
     danger_reason: Option<String>,
     allow_persistent: bool,
@@ -57,13 +60,13 @@ impl SafePermissionPrompt {
     fn from_request(
         request: &PermissionRequest,
         allow_persistent: bool,
-        codex_identity: Option<vega_conversation::types::CodexAcpActivityIdentity>,
+        codex_identity: Option<(CodexAcpActivityIdentity, Option<CodexArgumentPreview>)>,
     ) -> Self {
         Self {
             tool: request.tool.clone(),
             display_target: request.display_target.clone(),
             command_rows: wrap_command_rows(&request.display_target),
-            codex_identity: codex_identity.filter(|identity| {
+            codex_identity: codex_identity.filter(|(identity, _)| {
                 request.tool == "codex_acp"
                     && identity.is_valid()
                     && identity.permission_target() == request.display_target
@@ -78,7 +81,11 @@ impl SafePermissionPrompt {
     fn command_rows(&self) -> Vec<String> {
         self.codex_identity
             .as_ref()
-            .map(|identity| wrap_command_rows(&crate::tool_card::codex_identity_display(identity)))
+            .map(|(identity, preview)| {
+                wrap_command_rows(&crate::tool_card::codex_identity_display(
+                    identity, *preview,
+                ))
+            })
             .unwrap_or_else(|| self.command_rows.clone())
     }
 
@@ -149,7 +156,7 @@ impl PermissionCard {
         request: &PermissionRequest,
         lease: PermissionLease,
         allow_persistent: bool,
-        codex_identity: Option<vega_conversation::types::CodexAcpActivityIdentity>,
+        codex_identity: Option<(CodexAcpActivityIdentity, Option<CodexArgumentPreview>)>,
         cx: &mut gpui_kit::Context<Self>,
     ) -> Self {
         let note = cx.new(|cx| {

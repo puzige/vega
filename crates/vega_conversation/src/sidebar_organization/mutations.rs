@@ -35,9 +35,9 @@ pub(super) fn apply_in_transaction(
         .manual_thread_order
         .retain(|id| existing.contains(id.as_str()) && seen.insert(id.clone()));
     state.preferences.sort = SidebarTaskSort::Manual;
-    state.revision = sql::next_revision(state.revision).ok_or_else(|| {
-        SidebarOrganizationError::LimitKey("domain.organization.validation.revision")
-    })?;
+    state.revision = sql::next_revision(state.revision).ok_or(
+        SidebarOrganizationError::LimitKey("domain.organization.validation.revision"),
+    )?;
     let rows = sql::OrganizationRows {
         revision: state.revision as i64,
         preferences: serde_json::to_string(&state.preferences).map_err(storage)?,

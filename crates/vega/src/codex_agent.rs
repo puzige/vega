@@ -693,6 +693,7 @@ fn finish_codex_prompt_result(
 struct CodexToolActivity {
     call_id: String,
     identity: CodexAcpActivityIdentity,
+    preview: CodexArgumentPreview,
     status: ToolCallStatus,
     permission_pending: bool,
     selected_by_user: bool,
@@ -727,7 +728,7 @@ fn ensure_codex_tool_activity(
     if activities.contains_key(&external_id) {
         return Some(external_id);
     }
-    let identity = codex_tool_identity(raw_tool_call)?;
+    let (identity, preview) = codex_tool_identity(raw_tool_call)?;
     let call_id = ulid::Ulid::generate().to_string();
     let input_json = serde_json::json!({
         "kind": identity.kind,
@@ -738,7 +739,8 @@ fn ensure_codex_tool_activity(
     .to_string();
     let seq = vega_store::tool_calls::next_seq(store.conn(), thread_id).ok()?;
     let created_at = unix_millis()?;
-    vega_store::tool_calls::insert_pending(
+    let (preview_kind, preview_count) = preview.storage_parts();
+    vega_store::tool_calls::insert_codex_pending(
         store.conn(),
         vega_store::tool_calls::NewToolCall {
             id: &call_id,
@@ -750,12 +752,21 @@ fn ensure_codex_tool_activity(
             status: "pending_approval",
             created_at,
         },
+        &vega_store::tool_calls::StoredCodexDisplayMetadata {
+            preview_kind: preview_kind.into(),
+            preview_count,
+            terminal_reason: None,
+        },
     )
     .ok()?;
     let call = ToolCall {
         id: call_id.clone(),
         tool: "codex_acp".into(),
         input_json,
+        codex_display: Some(CodexDisplayMetadata {
+            preview,
+            reason: None,
+        }),
     };
     let _ = sender.send(AgentUpdate::Event(ConversationEvent::ToolCallProposed {
         call,
@@ -765,6 +776,7 @@ fn ensure_codex_tool_activity(
         CodexToolActivity {
             call_id,
             identity,
+            preview,
             status: ToolCallStatus::PendingApproval,
             permission_pending: false,
             selected_by_user: false,
@@ -774,7 +786,9 @@ fn ensure_codex_tool_activity(
     Some(external_id)
 }
 
-fn codex_tool_identity(raw_tool_call: &Value) -> Option<CodexAcpActivityIdentity> {
+fn codex_tool_identity(
+    raw_tool_call: &Value,
+) -> Option<(CodexAcpActivityIdentity, CodexArgumentPreview)> {
     let raw_input = raw_tool_call
         .get("rawInput")
         .or_else(|| raw_tool_call.get("input"))
@@ -802,20 +816,25 @@ fn codex_tool_identity(raw_tool_call: &Value) -> Option<CodexAcpActivityIdentity
             )
         })
         .unwrap_or("other");
+    let preview = match raw_input {
+        Value::Object(object) => CodexArgumentPreview::Object {
+            count: object.len().try_into().ok()?,
+        },
+        Value::Array(values) => CodexArgumentPreview::Array {
+            count: values.len().try_into().ok()?,
+        },
+        Value::String(_) => CodexArgumentPreview::String,
+        Value::Number(_) => CodexArgumentPreview::Number,
+        Value::Bool(_) => CodexArgumentPreview::Bool,
+        Value::Null => CodexArgumentPreview::Null,
+    };
     let identity = CodexAcpActivityIdentity {
         kind: kind.to_owned(),
         arguments_bytes: raw_bytes.len().try_into().ok()?,
         arguments_sha256: format!("{:x}", Sha256::digest(&raw_bytes)),
-        argument_preview: match raw_input {
-            Value::Object(object) => format!("object with {} fields", object.len()),
-            Value::Array(values) => format!("array with {} items", values.len()),
-            Value::String(_) => "string value".into(),
-            Value::Number(_) => "number value".into(),
-            Value::Bool(_) => "boolean value".into(),
-            Value::Null => "null value".into(),
-        },
+        argument_preview: preview.canonical(),
     };
-    identity.is_valid().then_some(identity)
+    identity.is_valid().then_some((identity, preview))
 }
 
 fn codex_permission_request(
@@ -860,7 +879,7 @@ fn apply_codex_permission_resolution(
                     store,
                     activity,
                     ApprovalSource::User,
-                    "Codex tool permission rejected",
+                    CodexTerminalReason::PermissionRejected,
                     sender,
                 ),
                 Some(CodexPermissionAction::Allow) => {
@@ -873,7 +892,7 @@ fn apply_codex_permission_resolution(
                     store,
                     activity,
                     ApprovalSource::Timeout,
-                    "Codex tool permission option was invalid",
+                    CodexTerminalReason::PermissionInvalid,
                     sender,
                 ),
             }
@@ -885,7 +904,7 @@ fn apply_codex_permission_resolution(
                     store,
                     activity,
                     ApprovalSource::Timeout,
-                    "Codex tool permission request ended",
+                    CodexTerminalReason::PermissionEnded,
                     sender,
                 );
             }
@@ -928,21 +947,21 @@ fn apply_codex_tool_status(
             store,
             activity,
             ToolCallStatus::Success,
-            "Codex completed tool activity",
+            CodexTerminalReason::ToolCompleted,
             sender,
         ),
         Some("failed") => finish_codex_tool(
             store,
             activity,
             ToolCallStatus::Failed,
-            "Codex tool activity failed",
+            CodexTerminalReason::ToolFailed,
             sender,
         ),
         Some("cancelled") => finish_codex_tool(
             store,
             activity,
             ToolCallStatus::Cancelled,
-            "Codex tool activity cancelled",
+            CodexTerminalReason::ToolCancelled,
             sender,
         ),
         _ => {}
@@ -1000,7 +1019,7 @@ fn reject_codex_tool(
     store: &Store,
     activity: &mut CodexToolActivity,
     source: ApprovalSource,
-    output: &str,
+    reason: CodexTerminalReason,
     sender: &std_mpsc::SyncSender<AgentUpdate>,
 ) {
     if activity.status != ToolCallStatus::PendingApproval {
@@ -1015,13 +1034,13 @@ fn reject_codex_tool(
     let Ok(approval_json) = audit.to_json() else {
         return;
     };
-    if vega_store::tool_calls::reject(
+    if vega_store::tool_calls::reject_codex(
         store.conn(),
         &activity.call_id,
         &approval_json,
-        output,
+        reason.canonical_output(),
         unix_millis().unwrap_or_default(),
-        None,
+        reason.as_str(),
     )
     .is_err()
     {
@@ -1030,7 +1049,7 @@ fn reject_codex_tool(
     activity.status = ToolCallStatus::Rejected;
     let _ = sender.send(AgentUpdate::Event(ConversationEvent::ToolCallFinished {
         call_id: activity.call_id.clone(),
-        result: codex_tool_result(ToolCallStatus::Rejected, output),
+        result: codex_tool_result(activity, ToolCallStatus::Rejected, reason),
     }));
 }
 
@@ -1038,7 +1057,7 @@ fn finish_codex_tool(
     store: &Store,
     activity: &mut CodexToolActivity,
     status: ToolCallStatus,
-    output: &str,
+    reason: CodexTerminalReason,
     sender: &std_mpsc::SyncSender<AgentUpdate>,
 ) {
     if activity.status == ToolCallStatus::PendingApproval {
@@ -1053,7 +1072,7 @@ fn finish_codex_tool(
     if activity.status != ToolCallStatus::Running {
         return;
     }
-    if vega_store::tool_calls::finish(
+    if vega_store::tool_calls::finish_codex(
         store.conn(),
         vega_store::tool_calls::FinishToolCall {
             id: &activity.call_id,
@@ -1062,18 +1081,19 @@ fn finish_codex_tool(
                 ToolCallStatus::Cancelled => "cancelled",
                 _ => "failed",
             },
-            output_text: output,
+            output_text: reason.canonical_output(),
             exit_code: None,
             duration_ms: None,
             finished_at: unix_millis().unwrap_or_default(),
         },
+        reason.as_str(),
     )
     .is_ok()
     {
         activity.status = status;
         let _ = sender.send(AgentUpdate::Event(ConversationEvent::ToolCallFinished {
             call_id: activity.call_id.clone(),
-            result: codex_tool_result(status, output),
+            result: codex_tool_result(activity, status, reason),
         }));
     }
 }
@@ -1094,7 +1114,7 @@ fn finalize_codex_tool_activities(
                     store,
                     activity,
                     ApprovalSource::Timeout,
-                    "Codex stopped before permission completed",
+                    CodexTerminalReason::PermissionIncomplete,
                     sender,
                 );
             } else {
@@ -1102,7 +1122,7 @@ fn finalize_codex_tool_activities(
                     store,
                     activity,
                     terminal,
-                    "Codex ended before tool activity completed",
+                    CodexTerminalReason::ToolIncomplete,
                     sender,
                 );
             }
@@ -1114,7 +1134,7 @@ fn finalize_codex_tool_activities(
                 store,
                 activity,
                 terminal,
-                "Codex ended before tool activity completed",
+                CodexTerminalReason::ToolIncomplete,
                 sender,
             );
         }
@@ -1122,15 +1142,23 @@ fn finalize_codex_tool_activities(
     let _ = (thread_id, message_id);
 }
 
-fn codex_tool_result(status: ToolCallStatus, output: &str) -> ToolResult {
+fn codex_tool_result(
+    activity: &CodexToolActivity,
+    status: ToolCallStatus,
+    reason: CodexTerminalReason,
+) -> ToolResult {
     ToolResult {
         status,
-        output: output.to_owned(),
+        output: reason.canonical_output().to_owned(),
         reused: false,
         exit_code: None,
         duration_ms: None,
         truncated: (status == ToolCallStatus::Success).then_some(false),
         invalid: None,
+        codex_display: Some(CodexDisplayMetadata {
+            preview: activity.preview,
+            reason: Some(reason),
+        }),
     }
 }
 
