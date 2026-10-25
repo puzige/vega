@@ -98,6 +98,17 @@
 
 原始累计变化可从 [PR #613 files/commits](https://github.com/puzige/vega/pull/613/commits) 和上述各完整 commit `.patch` 恢复。独占接线在 runtime backend/batch/mod、conversation pipeline、MCP managed/lib，最终树全部移除；生产 feedback、typed send evidence 与 screenshot sink acknowledgement 不属于删测范围。
 
+## 清理与最新 master 合流验证
+
+- `813e1a5408185a7b58dd5379d54a65008b88f78e` 清理 4 个开发测试/支持文件及 15 个测试门控区块（84 行接线）；代码 0 插入/2,279 删除，release 生产逻辑无替换。非实现者独立复核无清理发现，并静态扫描 420 个非 vendor Rust 文件，未见测试/支持/doctest 残留。
+- 合入 master `429c6a819fc5a30f8280afd2f6ed015d4682bf41` 后固定 `c13da160c27a7c681a7cc24fc226f69c7fbb0dc3`。[run 40174268402](https://github.com/puzige/vega/actions/runs/40174268402)：Nextest `121111465462` 明确 `no Rust tests`（0 发现、0 执行），Clippy `121111465603` 和 required `121112108233` 成功，Python 60 项通过。空集门禁不冒充前述 20 项功能验证。
+- 合流独立审查发现一项 P2：master 新增完整历史分叉中 `thread_fork.rs` 两处只允许 success 截图，拒绝 #404 支持的历史 Cancelled + 已持久交付截图及别名。原运行时可留下该记录；后续正常 Final 的 prefix 应可分叉，不重写取消状态或复制权限。
+- 更新 spec v2 后，`b4d2e70325bf9d2169115b540e93d18a24e7b53a` 仅修 store 的两处截图门禁：实际非空附件、assistant/message/thread 归属、精确有界回执与批准/输入审计，保留原 prefix/顺序/事务和成功 first-line 兼容；原 UI/runtime/MCP 不变。独立增量审查无发现。
+- [run 40177276819](https://github.com/puzige/vega/actions/runs/40177276819)：Clippy `121120594971` 成功；Nextest `121120594809` 3 发现/3 执行/1 通过/2 失败/0 跳过。两失败误从 `ContextSource.images` 读取助手截图；该集合按生产合同只包含用户模型输入图片，不应改成临时桌面观察。主 Agent 核对原始日志与 SQL 后归类观测层错误，保留图片字节/归属/历史断言。
+- `652c390c59068e70af26f2a61636712b3e35c7ea` 仅改开发回归为真实 `image_attachments::for_messages` + `HistoryEntry::AssistantScreenshot` 观测；3 个定义、17 类拒绝 case、source 不变和无权限断言保留，生产字节不变。非实现者独立小增量审查无发现。
+- [run 40178249738](https://github.com/puzige/vega/actions/runs/40178249738)：Nextest `121123523447` 3 发现/3 执行/3 通过/0 跳过，Clippy `121123523287`、required `121124160784` 成功，Python 60 项通过。包含 17 类错误证明/引用的原子拒绝、plain/legacy-budget/structured-budget 的公共 fork、reload、fork-of-fork、历史投影及下轮准备。
+- 该批原始 [fork_screenshot_tests.rs](https://github.com/puzige/vega/blob/652c390c59068e70af26f2a61636712b3e35c7ea/crates/vega_conversation/src/agent/fork_screenshot_tests.rs) 固定在完整 green head，SHA256 `d1888784de4b7953002fbd9ac88277fbec125a8b6e64b7f19be7a538d32de82f`，GitHub contents API 已核实 blob `5ed4e7ea3e160989687b9a39d9f3f72097fb99d2` 可达。[实现原始 patch](https://github.com/puzige/vega/commit/b4d2e70325bf9d2169115b540e93d18a24e7b53a.patch)、[观测修正 patch](https://github.com/puzige/vega/commit/652c390c59068e70af26f2a61636712b3e35c7ea.patch) 可恢复测试与当时生产行为。最后清理仅删除此测试文件及 conversation agent 的两行模块接线，不移除 store 生产校验。
+
 ## 验证限制与后续
 
 组件/协议/身份的各类实际故障、断连/动作后观察失败变体、完整截图容量流、权限恢复后真实预检、分页/TTL/压缩/附件竞态及原生焦点交互尚无本轮动态验收，静态覆盖与具体限制以 spec 矩阵和最终报告为准。未做真实外部进程/网络 E2E。
