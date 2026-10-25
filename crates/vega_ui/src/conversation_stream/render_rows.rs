@@ -108,6 +108,42 @@ pub(crate) fn process_surface(_colors: &ThemeColors) -> gpui_kit::Div {
         .gap(px(Layout::PROCESS_ITEM_GAP))
 }
 
+pub(crate) fn render_compaction_activity(
+    label: impl IntoElement,
+    colors: &ThemeColors,
+) -> AnyElement {
+    let (glyph, color) = context_compaction_visual(
+        vega_conversation::types::ContextCompactionStatus::Compacting,
+        colors,
+    );
+    let line_height = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
+    let vertical_padding = (Layout::CONVERSATION_TOOL_HEIGHT - line_height) / 2.;
+    div()
+        .w_full()
+        .flex_shrink_0()
+        .min_w_0()
+        .min_h(px(Layout::CONVERSATION_TOOL_HEIGHT))
+        .py(px(vertical_padding))
+        .flex()
+        .items_start()
+        .gap(px(Layout::CONVERSATION_INLINE_GAP))
+        .text_size(px(Typography::CONVERSATION))
+        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
+        .text_color(color)
+        .child(
+            div()
+                .w(px(Layout::ICON_SIZE))
+                .h(px(line_height))
+                .flex()
+                .items_center()
+                .justify_center()
+                .flex_shrink_0()
+                .child(icon(glyph, color)),
+        )
+        .child(div().min_w_0().flex_1().whitespace_normal().child(label))
+        .into_any_element()
+}
+
 fn render_entry_internal(
     entry: &StreamEntry,
     window: &mut Window,
@@ -142,35 +178,10 @@ fn render_entry_internal(
                     ))
                     .into_any_element();
             }
-            let (glyph, color) = context_compaction_visual(record.status, &colors);
-            let restored = *restored;
-            let label = context_compaction_label(record.status, record.failure, restored);
-            let line_height = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
-            let vertical_padding = (Layout::CONVERSATION_TOOL_HEIGHT - line_height) / 2.;
-            div()
-                .w_full()
-                .flex_shrink_0()
-                .min_w_0()
-                .min_h(px(Layout::CONVERSATION_TOOL_HEIGHT))
-                .py(px(vertical_padding))
-                .flex()
-                .items_start()
-                .gap(px(Layout::CONVERSATION_INLINE_GAP))
-                .text_size(px(Typography::CONVERSATION))
-                .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
-                .text_color(color)
-                .child(
-                    div()
-                        .w(px(Layout::ICON_SIZE))
-                        .h(px(line_height))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .flex_shrink_0()
-                        .child(icon(glyph, color)),
-                )
-                .child(div().min_w_0().flex_1().whitespace_normal().child(label))
-                .into_any_element()
+            render_compaction_activity(
+                context_compaction_label(record.status, record.failure, *restored),
+                &colors,
+            )
         }
         StreamEntry::User { lines, copy } => {
             let body = if let Some(focus) = focus {

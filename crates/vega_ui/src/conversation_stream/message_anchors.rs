@@ -793,16 +793,20 @@ pub(super) fn estimate_entry_height(
                     * Typography::BODY_LINE_HEIGHT)
                     .max(Layout::DISCLOSURE_HEADER_HEIGHT);
             }
-            let width = (text_width - Layout::ICON_SIZE - Layout::CONVERSATION_INLINE_GAP).max(1.);
-            let columns = (width / (Typography::CONVERSATION * 0.56)).max(1.) as usize;
-            let vertical_padding = (Layout::CONVERSATION_TOOL_HEIGHT - line_height) / 2.;
-            (display_width(&label).div_ceil(columns).max(1) as f32 * line_height
-                + 2. * vertical_padding)
-                .max(Layout::CONVERSATION_TOOL_HEIGHT)
+            estimate_compaction_activity_height(&label, text_width)
         }
         StreamEntry::SkillActivation { .. } => 30.0,
         _ => (entry.row_count(cx).max(1) as f32 * ROW_HEIGHT + 12.0).max(30.0),
     }
+}
+
+pub(super) fn estimate_compaction_activity_height(label: &str, width: f32) -> f32 {
+    let line_height = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
+    let width = (width - Layout::ICON_SIZE - Layout::CONVERSATION_INLINE_GAP).max(1.);
+    let columns = (width / (Typography::CONVERSATION * 0.56)).max(1.) as usize;
+    let vertical_padding = (Layout::CONVERSATION_TOOL_HEIGHT - line_height) / 2.;
+    (display_width(label).div_ceil(columns).max(1) as f32 * line_height + 2. * vertical_padding)
+        .max(Layout::CONVERSATION_TOOL_HEIGHT)
 }
 
 pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {

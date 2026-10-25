@@ -701,10 +701,33 @@ impl ConversationStream {
         if let Some(StreamEntry::RunActivity { group }) = self.entries.get(index) {
             return group.read(cx).header_hidden();
         }
-        if matches!(self.entries.get(index), Some(StreamEntry::ContextCompaction { record, .. })
-            if matches!(record.status, vega_conversation::types::ContextCompactionStatus::Succeeded | vega_conversation::types::ContextCompactionStatus::Cancelled))
+        if let Some(StreamEntry::RunActivitySegment { group, segment }) = self.entries.get(index) {
+            return group.read(cx).segment_row_count(*segment, cx) == 0;
+        }
+        if let Some(StreamEntry::ContextCompaction { model, record, .. }) = self.entries.get(index)
         {
-            return true;
+            use vega_conversation::types::ContextCompactionStatus as Status;
+            if matches!(record.status, Status::Succeeded | Status::Cancelled) {
+                return true;
+            }
+            if record.status == Status::Compacting {
+                return self
+                    .entry_identities
+                    .get(index)
+                    .and_then(|identity| identity.message_id.as_ref())
+                    .and_then(|owner| self.run_activity_groups.get(owner))
+                    .is_some_and(|group| {
+                        group
+                            .read(cx)
+                            .compaction_segment(model, record.generation)
+                            .is_some_and(|projected| {
+                                self.entries.iter().any(|entry| {
+                                    matches!(entry, StreamEntry::RunActivitySegment { group: owned, segment }
+                                        if owned == group && *segment == projected)
+                                })
+                            })
+                    });
+            }
         }
         let Some(StreamEntry::Assistant {
             copy,
