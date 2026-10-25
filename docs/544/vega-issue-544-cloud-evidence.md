@@ -174,3 +174,36 @@ crates/vega_ui/src/conversation_stream/pending_messages.rs:134:30
 ```
 
 责任层为本卡队列等待 UI 直接访问 sibling module 的 private 字段，不是 runner/依赖环境故障。修复使用所属 composer-actions 模块的窄状态操作，保留 `!running && !submit_pending` 才 reset 的条件、字段封装及实际 Stop/Resume 路由；不改可见性为宽 public，不降 lint、不删测试或盲目重跑。新 head 云端将验证编译及此前未运行的全部回归；旧失败不会被静态检查消解。后续真实 ordinary public-entry 的失败/清理/取消代表覆盖按契约 §6 推进，未取得前不宣称完整 A1–A12、OS 呈现、合并或用户验收。
+
+## 模块封装修复：903287d0498e0f8f696a1571ec64916ca0132c7c
+
+[固定源码](https://github.com/puzige/vega/tree/903287d0498e0f8f696a1571ec64916ca0132c7c) / [原始 patch](https://github.com/puzige/vega/commit/903287d0498e0f8f696a1571ec64916ca0132c7c.patch)，tree `6d32a73ad5272d7d44699a553506183a979c1551`。两个私有字段写入改为所属模块的 `reset_composer_stopping_if_idle` 操作，原 idle 条件不变；49 个开发测试未变。writer 停写后父复算 composer_actions SHA256 `ab0b2a96350cb724afb47ab659880cabeb7ef832881870d85786e62fcdb70f94`、pending_messages `af873e6d2da62d77eae7852594f879b784badebf873abd80e6cd205ee36a5c2f`，定向 1.98 rustfmt / diff 检查 exit 0，字段访问仅留所属模块。12:54:04Z 推送。
+
+### Actions 40195173888：下一层编译 / lint 缺陷
+
+[Run 40195173888](https://github.com/puzige/vega/actions/runs/40195173888) 绑定本节 head，completed / failure。Clippy `121174360023`、Nextest `121174360238`、required `121175189693` 均 failure。fmt success，Python 原始日志 5 + 15 + 40 = 60 项 OK。生产代码已越过前一 E0616；Rust 测试仍在构建失败，发现/执行计数未取得。
+
+父读取原始 job 日志并复核 pinned 源码，以下不是外部环境问题：
+
+| 责任层 | 原始错误 / 位置 | 修复边界 |
+|---|---|---|
+| 测试观察 API | E0624，app `window/ordinary_tests.rs:248` 调 UI crate-private `TextInput::content_revision`（`text_input/state.rs:169`） | 保留同文新 revision 的不等式断言；使用窄的开发期观察接口，不删除断言或把内部生产 API 宽泛公开，最终随测试清理 |
+| 生产死代码 | `window/session.rs:279` 的 `VegaWindow::materialize_draft` 已无调用者；app 全路径只剩该定义和 ordinary background 直接调用 conversation service | 删除已替代的同步 wrapper，不恢复 UI I/O 或添加 dead_code allow，不删仍在用的 conversation materialization 服务 |
+| 生产类型布局 | `app_agent.rs:32` 的 `PendingAgentRun::UserMessage(UserSubmission)` 至少 512 字节，与下一 variant 24 字节不对称 | 在大载荷边界引入最小 indirection，保所有 route 与 drop/cancel/worker 所有权，不 suppress large_enum_variant |
+| 生产条件结构 | `window/ordinary_send.rs:38–46` 嵌套 draft/不存在判断触发 collapsible_if | 保原错误传播、存在性和 materialize 条件，只合并等价 guard，不降低检查 |
+
+该轮没有 unchanged rerun、删测、ignore、放宽 lint 或本地编译。当前单一 writer 正补已约定的真实入口回归；上述确切修复在它停写后一次交付，防止并发修改接口。独立 reviewer 只审固定 11c 隐私/分页/i18n/CUA 增量，现已完成并要求补修下节 P2；903 的窄封装修复和后续变化另行 delta 审查。
+
+### 11c 固定增量独审：活动投影归属 P2，待修
+
+审查源为 `11c9677dd28f03987d0c06da5651d1f5825b2b6b`（tree `6804a37ffb29393790140b54b1d995dd5dee6430`），对比 `79a5657833db162f171a0cd92b20ee5c6f585268`（tree `6bedce11982a0d8dcbc36cc189cc06e26f3c1450`）。非实现者只读 Git 对象，未审 903 封装修复及当前真实入口测试工作区。原隐私内容权威修复在源码层面成立；i18n/generated-notice、真实 commit→receipt→title 顺序和 CUA 29 上游路径保留无新增缺陷。静态 diff exit 0，双语 1,790 keys 对齐，26 新 ordinary keys 非空/placeholder 匹配；不是执行或 A1–A12 通过。
+
+唯一 actionable P2：`ordinary_submissions.rs:290–294` 跳过非 ordinary、seq None 行；`content.rs:580–611` 却正以助手 ID 和 None 序号构建 leading RunActivity。完成的 ordinary U45 与助手 A46 有 duration 时，真实 hydration 先得 `U45 → Activity(A,None) → A46`，ordering 将 U 插到 A46 前而越过 Activity，变成 `Activity(A) → U45 → A46`。父于 2026-10-25T13:15Z 前后复读两固定对象及 StreamEntryIdentity，确认 message_id 已可识别助手归属，retired submission 的视图跟踪仍参与排序。此为产品排序缺陷，不是 harness 故障或接受范围变化。
+
+契约补充同一 A11：按下一 durable 消息的最早所属投影确定边界，或等价保留投影所属消息的时间位置；不能把所有 None 归成 pending 后缀。真实 history replacement/pagination 回归须含 completed assistant + duration，保 text/images/activity/reply 顺序、唯一 key、copy/preview、列表数和非尾锚点，既有断言不删。当时唯一 writer 仍执行真实入口回归；它停写后才交此 P2 与前节四项编译/lint 修复。当时 fetch 后 master 仍 `76c164876542c679abe1bfb5f525f1ade2fcd2e4`，已是 HEAD 祖先，无新上游需覆盖当时脏代码。
+
+### 中断恢复检查点与上游同步
+
+继续时确认 writer `01M5SHDJRV0EW173Z5QVD06NNC` 的 execution `01M5SJ3JDT592F1YXK0SCC2QXR` 已 interrupted/released，无 unknown effects。此前 resume 返回 stale recovery boundary，不重试或重放。父复算七文件 SHA256 与中断前记录一致，diff --check exit 0；保留新增七项 public-entry 与一项 running Composer table 的源码、per-run 故障接线和临时配置 override，尚未取得完整 READY、编译或执行结果。已知四项 CI 缺陷及活动行 P2 仍待修，保存检查点不表示通过。
+
+fetch 现见 master `921d735ca0dda3f17ab99ea4949002a1fdc44ab4`，含 compaction activity `86d340d2` 与 #617 按需委派规则。先保存现有工作再同步，不覆盖脏文件；采用新规则后由主会话直接完成紧密耦合修复，独立非实现者审查、无本地执行和最新 required CI 门禁不变。

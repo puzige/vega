@@ -1304,6 +1304,14 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         return Err(super::ordinary::fact_error(error));
     }
     transaction.commit().map_err(runtime_store_error)?;
+    #[cfg(test)]
+    if config.ordinary_entry_fault
+        == Some(super::persistence::OrdinaryEntryFault::CommitReceiptLost)
+    {
+        return Err(ConversationError::Runtime(Arc::new(
+            persistence_actor_error("committed receipt publication unavailable"),
+        )));
+    }
     if let (Some(ordinary), Some(receipt)) = (ordinary, receipt) {
         ordinary
             .worker

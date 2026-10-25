@@ -109,6 +109,8 @@ struct AgentTestLaunch {
 
 pub(crate) struct VegaWindow {
     #[cfg(test)]
+    composer_test_config_path: Option<std::path::PathBuf>,
+    #[cfg(test)]
     agent_test_launches: Option<Vec<AgentTestLaunch>>,
     #[cfg(test)]
     ordinary_test_preparations: Option<Vec<ordinary_send::OrdinaryPreparationRequest>>,
@@ -322,6 +324,8 @@ impl VegaWindow {
         })
         .detach();
         let mut window = Self {
+            #[cfg(test)]
+            composer_test_config_path: None,
             #[cfg(test)]
             agent_test_launches: None,
             #[cfg(test)]

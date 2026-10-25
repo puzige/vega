@@ -1162,3 +1162,174 @@ async fn privacy_requested_ingress_refreshes_retained_ordinary_from_real_history
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+async fn running_native_composer_ingress_persists_queue_or_send_now_without_ordinary_preparation(
+    cx: &mut TestAppContext,
+) {
+    for (behavior, label) in [
+        (PendingMessageBehavior::Queue, "ui.queue_message"),
+        (PendingMessageBehavior::Steer, "ui.steer"),
+    ] {
+        let fixture = fixture(cx);
+        let root = fixture._directory.path().join("config");
+        let path = root.join("config.toml");
+        let config = vega_store::config::AppConfig {
+            providers: vec![vega_store::config::ProviderConfig {
+                name: "isolated-provider".into(),
+                base_url: "https://example.invalid/v1".into(),
+                models: vec!["model".into()],
+                key_ref: "isolated-provider".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        config.save_to(&path).unwrap();
+        vega_store::keystore::set_key(&root, "isolated-provider", "temporary-provider-value")
+            .unwrap();
+        let queue_generation = fixture.controller.update(cx, |controller, _| {
+            controller.composer_test_config_path = Some(path.clone());
+            assert!(controller.mcp_settings.is_none());
+            controller
+                .agent_controller
+                .begin(
+                    fixture.thread.id.clone(),
+                    fixture.stream.clone(),
+                    None,
+                    None,
+                )
+                .unwrap();
+            controller.agent_controller.active[&fixture.thread.id]
+                .queue_generation
+                .clone()
+        });
+        let requests = Rc::new(RefCell::new(Vec::<ComposerSubmitted>::new()));
+        let captured = requests.clone();
+        cx.update(|cx| {
+            cx.set_global(vega_ui::conversation_stream::RunningMessageDefault(
+                behavior,
+            ));
+            cx.subscribe(&fixture.stream, move |_, event: &ComposerSubmitted, _| {
+                captured.borrow_mut().push(event.clone());
+            })
+            .detach();
+        });
+        let captured_revision = cx
+            .update_window(fixture.window.into(), |_, window, cx| {
+                fixture.stream.update(cx, |stream, cx| {
+                    stream.begin_composer_run(cx);
+                    stream
+                        .composer_input()
+                        .update(cx, |input, cx| input.set_text("accepted running input", cx));
+                    stream.focus_composer(window, cx);
+                    stream.composer_input().read(cx).content_revision()
+                })
+            })
+            .unwrap();
+        frame(&fixture, cx);
+        cx.update_window(fixture.window.into(), |_, window, cx| {
+            assert!(window.find("composer-running-send").visible());
+            assert_eq!(
+                window.find("composer-running-send").label(),
+                Some(vega_i18n::t(label))
+            );
+            window.click("composer-running-send", cx);
+            fixture.stream.update(cx, |stream, cx| {
+                stream.composer_input().update(cx, |input, cx| {
+                    input.set_text("next running draft", cx);
+                    input.set_text("accepted running input", cx);
+                });
+                assert_ne!(
+                    stream.composer_input().read(cx).content_revision(),
+                    captured_revision
+                );
+            });
+        })
+        .unwrap();
+        cx.wait_for(fixture.window.into(), Duration::from_secs(2), |_, cx| {
+            let projection = fixture.stream.read(cx).pending_queue();
+            !projection.busy && projection.messages.len() == 1
+        })
+        .await;
+        assert_eq!(requests.borrow().len(), 1);
+        let request = requests.borrow()[0].clone();
+        assert_eq!(request.pending_behavior, Some(behavior));
+        assert_eq!(request.content, "accepted running input");
+        assert_eq!(request.draft_revision, captured_revision);
+        assert!(request.images.is_empty());
+        fixture.controller.update(cx, |controller, cx| {
+            assert_eq!(controller.composer_config_path(), Some(path.clone()));
+            assert!(
+                controller
+                    .ordinary_test_preparations
+                    .as_ref()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(controller.agent_test_launches.as_ref().unwrap().is_empty());
+            assert!(controller.agent_controller.ordinary_preparing.is_empty());
+            assert!(controller.agent_controller.ordinary_requests.is_empty());
+            assert_eq!(controller.agent_controller.active.len(), 1);
+            let active = &controller.agent_controller.active[&fixture.thread.id];
+            assert_eq!(active.queue_generation, queue_generation);
+            assert!(!active.cancel.is_cancelled());
+            assert!(active.ordinary_attempt.is_none());
+            let stream = fixture.stream.read(cx);
+            let projection = stream.pending_queue();
+            assert!(projection.error.is_none());
+            assert!(!projection.paused);
+            assert_eq!(
+                projection.committed_generation.as_deref(),
+                Some(queue_generation.as_str())
+            );
+            let message = &projection.messages[0];
+            assert_eq!(message.behavior, behavior);
+            assert_eq!(message.content, request.content);
+            assert_eq!(message.generation, queue_generation);
+            assert_eq!(
+                stream.composer_input().read(cx).text(),
+                "accepted running input"
+            );
+            assert_ne!(
+                stream.composer_input().read(cx).content_revision(),
+                request.draft_revision
+            );
+            match behavior {
+                PendingMessageBehavior::Queue => {
+                    assert_eq!(stream.rail_pending_ids(), vec![message.id.clone()]);
+                    assert!(stream.projected_pending_ids().is_empty());
+                }
+                PendingMessageBehavior::Steer => {
+                    assert!(stream.rail_pending_ids().is_empty());
+                    assert_eq!(stream.projected_pending_ids(), vec![message.id.clone()]);
+                }
+            }
+            let store = cx.global::<VegaStore>().0.as_ref().unwrap();
+            let durable =
+                vega_conversation::pending_messages::load(store, &fixture.thread.id).unwrap();
+            assert_eq!(durable.len(), 1);
+            assert!(durable[0] == *message);
+            assert!(
+                vega_store::context_compaction::load_source(store.conn(), &fixture.thread.id)
+                    .unwrap()
+                    .messages
+                    .is_empty()
+            );
+        });
+        assert!(
+            for_thread(fixture.database, &fixture.thread.id)
+                .unwrap()
+                .is_empty()
+        );
+        frame(&fixture, cx);
+        cx.update_window(fixture.window.into(), |_, window, cx| {
+            if behavior == PendingMessageBehavior::Queue {
+                let message = &fixture.stream.read(cx).pending_queue().messages[0];
+                let remove = window.find(format!("pending-remove-{}", message.id));
+                assert!(remove.visible());
+                assert_eq!(remove.label(), Some(vega_i18n::t("ui.delete_message")));
+            }
+        })
+        .unwrap();
+    }
+}

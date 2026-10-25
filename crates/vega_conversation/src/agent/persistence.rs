@@ -34,8 +34,18 @@ pub(crate) struct DelegatedAuthority {
     pub exact_rules: Vec<RuntimeExactRule>,
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum OrdinaryEntryFault {
+    ActorOpen,
+    EventAckLost,
+    CommitReceiptLost,
+}
+
 #[derive(Clone, Default)]
 pub struct PersistenceActorConfig {
+    #[cfg(test)]
+    pub(super) ordinary_entry_fault: Option<OrdinaryEntryFault>,
     pub(crate) ordinary: Option<super::ordinary::OrdinaryRun>,
     pub(crate) admission: Option<crate::types::ThreadAdmission>,
     pub(crate) subagent_host: Option<Arc<dyn crate::types::SubagentHost>>,
@@ -215,6 +225,13 @@ impl PersistenceActor {
         let ordinary_task = super::ordinary::OrdinaryTask::register(config.ordinary.as_ref())
             .map_err(|_| persistence_actor_error("ordinary worker registration unavailable"))?;
         let task = tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            let database_path =
+                if config.ordinary_entry_fault == Some(OrdinaryEntryFault::ActorOpen) {
+                    database_path.join("actor-open-failure")
+                } else {
+                    database_path
+                };
             let store = match Store::open_with_busy_timeout(database_path, PERSISTENCE_BUSY_TIMEOUT)
                 .and_then(|store| {
                     store.conn().busy_handler(Some(persistence_busy_handler))?;
@@ -382,6 +399,14 @@ impl PersistenceActor {
                             && let RuntimeEvent::SteeringAccepted(input) = event.as_ref()
                         {
                             message_id = input.assistant_message_id.clone();
+                        }
+                        #[cfg(test)]
+                        if result.is_ok()
+                            && matches!(event.as_ref(), RuntimeEvent::Error(_))
+                            && config.ordinary_entry_fault == Some(OrdinaryEntryFault::EventAckLost)
+                        {
+                            drop(ack);
+                            continue;
                         }
                         let _ = ack.send(result);
                     }
