@@ -42,6 +42,17 @@
 - Clippy 是新增 Option 返回路径的 lint 问题，按原诊断使用 `?`，不加 allow，不盲重试。
 - 修复由原实现者持有原范围；完成后固定新 head、独立审查和 Actions 重验。原 11 项回归保留，不以已有通过替代缺陷修复后的验证。
 
+## 第二轮开发验证与取消竞态审查
+
+精确 head `52bf436653d35e418d740197ccaee4dcebb3b634`，[Actions run 40165878090](https://github.com/puzige/vega/actions/runs/40165878090)：fmt、Clippy job `121086692366`、Nextest job `121086692465`、required 汇总 `121087367740` 全部成功；13 发现/13 执行/13 通过/0 跳过，三组 Python 检查成功。本地仍仅 fmt/diff 静态检查。
+
+- 新增两项回归：生产反馈生成的有限错误经过 live terminal/recovered/history/card 审计；生产 agent + `persist_runtime_event` 的已执行观察容量错误返回下一 provider request 并由模型解释。保留原 11 项断言；未放宽 terminal 校验。
+- 可恢复补充源码：[runtime 测试](https://github.com/puzige/vega/blob/52bf436653d35e418d740197ccaee4dcebb3b634/crates/vega_runtime/src/computer_use/recovery_tests.rs)、[临时跨 crate support](https://github.com/puzige/vega/blob/52bf436653d35e418d740197ccaee4dcebb3b634/crates/vega_runtime/src/computer_use/recovery_test_support.rs)、[conversation 测试](https://github.com/puzige/vega/blob/52bf436653d35e418d740197ccaee4dcebb3b634/crates/vega_conversation/src/agent/cua_recovery_tests.rs)、[完整 patch](https://github.com/puzige/vega/commit/52bf436653d35e418d740197ccaee4dcebb3b634.patch)。临时 support 包括 backend、batch、mod 接线，均须在最终树清除。
+- 新非实现者完成完整静态审查，要求修改两项 P2，不以 CI 绿冒充审查通过：
+  1. backend 在 ManagedClient 真正写入前设置 input_started，发送前取消可被误记为 outcome_unknown 并冻结已暂停控制。主 Agent 核对 managed.rs 的发送前取消与 biased select、backend 的标志设置，确认修复应在实际发送边界提供类型化事实，而非放宽未知结果保护。
+  2. 晚到 Stop 把成功 CUA 状态改成 Cancelled 但保留完成摘要/截图回执，新增 validator 拒绝该组合；旧实现也可留下这类历史记录。主 Agent 核对 live sink 调用链后确认结果生产与有限历史兼容都需处理，不声称未交付截图已 delivered。
+- [规格 v2](vega-issue-404-cua-error-recovery.md#取消竞态的实施细化v2) 细化原 C404-06/08/11；原实现者修复，写入范围最小扩展到受管 `vega_mcp` 发送事实接口，不调整普通 MCP 权限、协议、重试，不新增依赖。发送前暂停零写入可恢复、发送后未知不重放、晚到 Stop 经 live/reload/history/下轮准备的回归均待补充云端结果。
+
 ## 验证限制与后续
 
 组件/协议/身份的各类实际故障、断连/动作后观察失败变体、完整截图容量流、权限恢复后真实预检、分页/TTL/压缩/附件竞态及原生焦点交互尚无本轮动态验收，静态覆盖与具体限制以 spec 矩阵和最终报告为准。未做真实外部进程/网络 E2E。

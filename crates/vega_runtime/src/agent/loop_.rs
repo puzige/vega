@@ -3323,17 +3323,19 @@ where
                     }
                 }
             };
+            let computer_use_call =
+                crate::computer_use::ComputerUseRun::tool_capability(&call.name).is_some();
             if cancelled_while_running
-                || (call.name == "ComputerScreenshot"
-                    && result.status == RuntimeToolStatus::Success
-                    && cancel.is_cancelled())
+                && !(computer_use_call && result.status == RuntimeToolStatus::Success)
             {
                 result.status = RuntimeToolStatus::Cancelled;
-                if crate::computer_use::ComputerUseRun::tool_capability(&call.name).is_some() {
+                if computer_use_call {
                     result.truncated = None;
                 }
             }
-            let mut project_observation = result.status == RuntimeToolStatus::Success;
+            let mut project_observation = result.status == RuntimeToolStatus::Success
+                && !cancelled_while_running
+                && !cancel.is_cancelled();
             if project_observation
                 && !cancel.is_cancelled()
                 && let Some(run) = &tool_config.computer_use
@@ -3343,7 +3345,7 @@ where
                 project_observation = false;
                 if let Some(receipt) = run.limited_screenshot_receipt(&call.id, error) {
                     result.output = receipt;
-                } else {
+                } else if error != crate::computer_use::ComputerUseError::Cancelled {
                     result.status = RuntimeToolStatus::Failed;
                     result.truncated = None;
                     result.output = run.error_feedback(&call.name, error, true);
@@ -3366,6 +3368,7 @@ where
                 && let Some(run) = &tool_config.computer_use
                 && let Some((image, epoch)) = run.screenshot(&call.id)
             {
+                let delivered = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 emit!(
                     events,
                     sink,
@@ -3375,13 +3378,31 @@ where
                         control: run.control.clone(),
                         epoch,
                         cancel: cancel.clone(),
+                        delivered: delivered.clone(),
                     }
                 );
-                run.acknowledge_screenshot(&call.id, epoch)
-                    .map_err(|_| VegaError::Tool {
-                        tool: "ComputerScreenshot".into(),
-                        message: "screenshot delivery acknowledgement failed".into(),
-                    })?;
+                if delivered.load(std::sync::atomic::Ordering::Acquire) {
+                    run.acknowledge_screenshot(&call.id, epoch)
+                        .map_err(|_| VegaError::Tool {
+                            tool: "ComputerScreenshot".into(),
+                            message: "screenshot delivery acknowledgement failed".into(),
+                        })?;
+                }
+            }
+            if call.name == "ComputerScreenshot"
+                && result.status == RuntimeToolStatus::Success
+                && let Some(run) = &tool_config.computer_use
+                && !run.screenshot_delivered(&call.id)
+            {
+                project_observation = false;
+                result.status = RuntimeToolStatus::Cancelled;
+                result.truncated = None;
+                result.output = run.error_feedback(
+                    &call.name,
+                    crate::computer_use::ComputerUseError::Cancelled,
+                    true,
+                );
+                run.discard_pending_screenshot(&call.id);
             }
             emit!(
                 events,

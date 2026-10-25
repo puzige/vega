@@ -1028,6 +1028,7 @@ pub enum RuntimeEvent {
         control: crate::computer_use::ComputerUseControl,
         epoch: u64,
         cancel: CancellationToken,
+        delivered: Arc<std::sync::atomic::AtomicBool>,
     },
     ToolRoundCompleted {
         response_id: String,

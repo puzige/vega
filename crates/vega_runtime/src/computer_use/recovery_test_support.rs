@@ -9,6 +9,7 @@ pub(super) struct DriverState {
     pub(super) windows: usize,
     pub(super) unknown_action: bool,
     pub(super) pause_on_action: Option<ComputerUseControl>,
+    after_execute: Option<(String, Box<dyn FnOnce() + Send>)>,
 }
 
 #[derive(Clone)]
@@ -29,6 +30,28 @@ impl Driver {
 
     pub fn calls(&self) -> Vec<String> {
         self.state().calls.clone()
+    }
+
+    pub fn after_execution(&self, call_id: &str, callback: impl FnOnce() + Send + 'static) {
+        self.state().after_execute = Some((call_id.into(), Box::new(callback)));
+    }
+
+    pub(super) fn executed(&self, call_id: &str) {
+        let callback = {
+            let mut state = self.state();
+            if state
+                .after_execute
+                .as_ref()
+                .is_some_and(|(id, _)| id == call_id)
+            {
+                state.after_execute.take()
+            } else {
+                None
+            }
+        };
+        if let Some((_, callback)) = callback {
+            callback();
+        }
     }
 
     pub(super) fn connected(&self) {

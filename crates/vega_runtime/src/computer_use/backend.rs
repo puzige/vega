@@ -14,7 +14,7 @@ use std::{
 };
 use tokio::process::{Child, Command};
 use tokio_util::sync::CancellationToken;
-use vega_mcp::{LocalServer, ManagedClient};
+use vega_mcp::{LocalServer, ManagedClient, ManagedSendEvidence};
 
 #[derive(Default)]
 pub(super) struct Backends {
@@ -22,11 +22,13 @@ pub(super) struct Backends {
     browser: Option<Browser>,
     #[cfg(any(test, debug_assertions))]
     pub(super) test_driver: Option<super::recovery_test_support::Driver>,
+    #[cfg(any(test, debug_assertions))]
+    pub(super) test_action_client: Option<ManagedClient>,
 }
 struct Dispatch<'a> {
     cancel: &'a CancellationToken,
     started: bool,
-    input_started: bool,
+    input_send: ManagedSendEvidence,
 }
 
 enum CaptureMode {
@@ -181,6 +183,39 @@ impl Backends {
             .await
     }
 
+    async fn action_call(
+        &mut self,
+        capability: Capability,
+        name: &str,
+        args: Value,
+        cancel: &CancellationToken,
+        send: &mut ManagedSendEvidence,
+    ) -> Result<vega_mcp::ManagedResult, vega_mcp::McpError> {
+        #[cfg(any(test, debug_assertions))]
+        {
+            if let Some(client) = &mut self.test_action_client {
+                return client
+                    .call_with_send_evidence(name, args, cancel, send)
+                    .await;
+            }
+            if let Some(driver) = &self.test_driver {
+                *send = ManagedSendEvidence::WriteStarted;
+                return driver.call(name, args);
+            }
+        }
+        let client = match capability {
+            Capability::Desktop => self
+                .desktop
+                .as_mut()
+                .and_then(|desktop| desktop.client.as_mut()),
+            Capability::Browser => self.browser.as_mut().map(|browser| &mut browser.client),
+        }
+        .ok_or(vega_mcp::McpError::Transport)?;
+        client
+            .call_with_send_evidence(name, args, cancel, send)
+            .await
+    }
+
     pub(super) async fn execute(
         &mut self,
         run: &ComputerUseRun,
@@ -203,19 +238,23 @@ impl Backends {
         let mut dispatch = Dispatch {
             cancel: &token,
             started: false,
-            input_started: false,
+            input_send: ManagedSendEvidence::NotStarted,
         };
         let result = tokio::select! { biased;
             _ = root_cancel.cancelled() => { run.control.stop(); Err(Error::Cancelled) },
             result = self.execute_inner(run,epoch,name,call_id,arguments,&mut dispatch) => result,
         };
-        if !dispatch.started && matches!(result, Err(Error::Cancelled | Error::NotReady)) {
+        let input_started = dispatch.input_send == ManagedSendEvidence::WriteStarted;
+        if !dispatch.started
+            && !input_started
+            && matches!(result, Err(Error::Cancelled | Error::NotReady))
+        {
             run.check_request_epoch(epoch, root_cancel)
                 .map_err(|error| ToolFailure::before_dispatch(name, error))?;
         }
         result.map_err(|error| {
             let capability = ComputerUseRun::tool_capability(name).unwrap_or(Capability::Desktop);
-            let error = if dispatch.input_started {
+            let error = if input_started {
                 let error = diagnostics::context(capability, Stage::Action, error);
                 run.control.fail_dispatched_action(epoch, error);
                 error
@@ -226,7 +265,7 @@ impl Backends {
                 error,
                 capability,
                 Stage::for_tool(name),
-                if dispatch.input_started {
+                if input_started {
                     ExecutionState::OutcomeUnknown
                 } else if dispatch.started {
                     ExecutionState::Failed
@@ -265,23 +304,19 @@ impl Backends {
             }
             run.control.check_epoch(epoch)?;
             run.consume_observations();
-            dispatch.started = true;
-            dispatch.input_started = true;
-            let dispatched = match capability {
-                Capability::Desktop => self.desktop_call(tool, mapped, cancel).await,
-                Capability::Browser => {
-                    self.browser
-                        .as_mut()
-                        .ok_or(Error::NotReady)?
-                        .client
-                        .call(tool, mapped, cancel)
-                        .await
-                }
-            };
+            let dispatched = self
+                .action_call(capability, tool, mapped, cancel, &mut dispatch.input_send)
+                .await;
             let result = match checked(capability, Stage::Action, dispatched) {
                 Ok(result) => result,
                 Err(error) => {
-                    return Err(action_unknown(run, epoch, capability, Stage::Action, error));
+                    return Err(
+                        if dispatch.input_send == ManagedSendEvidence::WriteStarted {
+                            action_unknown(run, epoch, capability, Stage::Action, error)
+                        } else {
+                            error
+                        },
+                    );
                 }
             };
             drop(result);
@@ -582,6 +617,11 @@ impl Backends {
         cancel: &CancellationToken,
         navigation: bool,
     ) -> Result<(), Error> {
+        #[cfg(any(test, debug_assertions))]
+        if self.test_driver.is_some() {
+            run.control.check_epoch(epoch)?;
+            return Ok(());
+        }
         let browser = self.browser.as_mut().ok_or(Error::NotReady)?;
         let current = browser.current_target(cancel).await?;
         let previous = run

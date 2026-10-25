@@ -502,6 +502,13 @@ impl ComputerUseRun {
         ) {
             self.cleanup_revoked().await;
         }
+        #[cfg(any(test, debug_assertions))]
+        {
+            let driver = self.backend.lock().await.test_driver.clone();
+            if let Some(driver) = driver {
+                driver.executed(call_id);
+            }
+        }
         result
     }
 
@@ -581,7 +588,7 @@ impl ComputerUseRun {
             .lock()
             .ok()?
             .iter()
-            .find(|capture| capture.call_id == call_id)
+            .find(|capture| capture.call_id == call_id && !capture.delivered)
             .map(|capture| (capture.image.clone(), capture.epoch))
     }
 
@@ -612,7 +619,7 @@ impl ComputerUseRun {
         Ok(())
     }
 
-    fn screenshot_delivered(&self, call_id: &str) -> bool {
+    pub(crate) fn screenshot_delivered(&self, call_id: &str) -> bool {
         self.screenshots.lock().is_ok_and(|screenshots| {
             screenshots.iter().any(|capture| {
                 capture.delivered

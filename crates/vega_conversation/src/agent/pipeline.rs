@@ -1296,7 +1296,10 @@ fn valid_computer_use_output(
             }
         };
         return tool == "ComputerScreenshot"
-            && status == RuntimeToolStatus::Success
+            && matches!(
+                status,
+                RuntimeToolStatus::Success | RuntimeToolStatus::Cancelled
+            )
             && approval.source == ApprovalSource::ComputerUse
             && model_projection
             && value["status"] == "delivered"
@@ -1311,35 +1314,61 @@ fn valid_computer_use_output(
             });
     }
     match status {
-        RuntimeToolStatus::Success => approval.source == ApprovalSource::ComputerUse
-            && output.strip_prefix("completed; observation_id=").is_some_and(|rest| {
-                rest.split_once(';').is_some_and(|(id, suffix)| {
-                    !id.is_empty() && matches!(suffix,
-                        " observation images and page data are ephemeral and are not retained in history."
-                        | " window directory is ephemeral and is not retained in history.")
-                })
-            }),
-        RuntimeToolStatus::Failed => approval.source == ApprovalSource::ComputerUse
-            && (output.starts_with("Tool error: computer use:")
-                || output.starts_with("Tool error: computer use not_dispatched:")
-                || output.starts_with("outcome_unknown:")
-                || matches!(output, vega_runtime::CALL_ID_CONFLICT_OUTPUT
-                    | "Tool error: credential safety check unavailable")),
+        RuntimeToolStatus::Success => {
+            approval.source == ApprovalSource::ComputerUse && valid_computer_use_completion(output)
+        }
+        RuntimeToolStatus::Failed => {
+            approval.source == ApprovalSource::ComputerUse
+                && (output.starts_with("Tool error: computer use:")
+                    || output.starts_with("Tool error: computer use not_dispatched:")
+                    || output.starts_with("outcome_unknown:")
+                    || matches!(
+                        output,
+                        vega_runtime::CALL_ID_CONFLICT_OUTPUT
+                            | "Tool error: credential safety check unavailable"
+                    ))
+        }
         RuntimeToolStatus::Rejected => match approval.source {
-            ApprovalSource::ComputerUse => output.starts_with("Tool error: computer use:")
-                || output.starts_with("Tool error: computer use not_dispatched:"),
-            ApprovalSource::RunMode => output == "Tool error: computer use denied by run mode"
-                || output == "Tool error: denied: unavailable tool"
-                || output == "Tool error: denied by run mode",
+            ApprovalSource::ComputerUse => {
+                output.starts_with("Tool error: computer use:")
+                    || output.starts_with("Tool error: computer use not_dispatched:")
+            }
+            ApprovalSource::RunMode => {
+                output == "Tool error: computer use denied by run mode"
+                    || output == "Tool error: denied: unavailable tool"
+                    || output == "Tool error: denied by run mode"
+            }
             ApprovalSource::Recovery => output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT,
-            ApprovalSource::Validation => output == "Tool error: mixed Skill load batch rejected other tools",
+            ApprovalSource::Validation => {
+                output == "Tool error: mixed Skill load batch rejected other tools"
+            }
             _ => false,
         },
-        RuntimeToolStatus::Cancelled => approval.source == ApprovalSource::ComputerUse
-            && (matches!(output, vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT
-                | vega_store::recovery::RECOVERY_CANCELLED_OUTPUT)
-                || output.starts_with("outcome_unknown:")),
+        RuntimeToolStatus::Cancelled => {
+            approval.source == ApprovalSource::ComputerUse
+                && (matches!(
+                    output,
+                    vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT
+                        | vega_store::recovery::RECOVERY_CANCELLED_OUTPUT
+                ) || output.starts_with("outcome_unknown:")
+                    || valid_computer_use_completion(output))
+        }
     }
+}
+
+fn valid_computer_use_completion(output: &str) -> bool {
+    let Some(rest) = output.strip_prefix("completed; observation_id=") else {
+        return false;
+    };
+    let Some((id, suffix)) = rest.split_once(';') else {
+        return false;
+    };
+    !id.is_empty()
+        && matches!(
+            suffix,
+            " observation images and page data are ephemeral and are not retained in history."
+                | " window directory is ephemeral and is not retained in history."
+        )
 }
 
 #[allow(clippy::too_many_arguments)]

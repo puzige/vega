@@ -24,6 +24,17 @@ pub struct ManagedResult {
     pub is_error: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ManagedSendEvidence {
+    #[default]
+    NotStarted,
+    WriteStarted,
+}
+
+#[cfg(any(test, debug_assertions))]
+#[path = "managed_recovery_test_support.rs"]
+pub mod recovery_test_support;
+
 pub struct ManagedClient {
     child: Option<Child>,
     stdin: Box<dyn AsyncWrite + Unpin + Send>,
@@ -32,6 +43,8 @@ pub struct ManagedClient {
     tools: HashMap<String, Value>,
     closed: bool,
     browser_connection_started: bool,
+    #[cfg(any(test, debug_assertions))]
+    before_send: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl ManagedClient {
@@ -64,6 +77,8 @@ impl ManagedClient {
             tools: HashMap::new(),
             closed: false,
             browser_connection_started: false,
+            #[cfg(any(test, debug_assertions))]
+            before_send: None,
         })
     }
 
@@ -149,6 +164,17 @@ impl ManagedClient {
             .await
     }
 
+    pub async fn call_with_send_evidence(
+        &mut self,
+        name: &str,
+        arguments: Value,
+        cancel: &CancellationToken,
+        send: &mut ManagedSendEvidence,
+    ) -> Result<ManagedResult, McpError> {
+        self.call_with_timeout_and_send_evidence(name, arguments, cancel, REQUEST_TIMEOUT, send)
+            .await
+    }
+
     pub async fn connect_browser_target(
         &mut self,
         cancel: &CancellationToken,
@@ -185,6 +211,24 @@ impl ManagedClient {
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<ManagedResult, McpError> {
+        self.call_with_timeout_and_send_evidence(
+            name,
+            arguments,
+            cancel,
+            timeout,
+            &mut ManagedSendEvidence::NotStarted,
+        )
+        .await
+    }
+
+    async fn call_with_timeout_and_send_evidence(
+        &mut self,
+        name: &str,
+        arguments: Value,
+        cancel: &CancellationToken,
+        timeout: Duration,
+        send: &mut ManagedSendEvidence,
+    ) -> Result<ManagedResult, McpError> {
         if !self.tools.contains_key(name) {
             return Err(McpError::UnsupportedResult);
         }
@@ -195,6 +239,7 @@ impl ManagedClient {
                 json!({"name":name,"arguments":arguments}),
                 cancel,
                 timeout,
+                send,
             )
             .await?;
         parse_result(value)
@@ -206,8 +251,14 @@ impl ManagedClient {
         params: Value,
         cancel: &CancellationToken,
     ) -> Result<Value, McpError> {
-        self.request_with_timeout(method, params, cancel, REQUEST_TIMEOUT)
-            .await
+        self.request_with_timeout(
+            method,
+            params,
+            cancel,
+            REQUEST_TIMEOUT,
+            &mut ManagedSendEvidence::NotStarted,
+        )
+        .await
     }
 
     async fn request_with_timeout(
@@ -216,6 +267,7 @@ impl ManagedClient {
         params: Value,
         cancel: &CancellationToken,
         timeout: Duration,
+        send: &mut ManagedSendEvidence,
     ) -> Result<Value, McpError> {
         if self.closed {
             return Err(McpError::Transport);
@@ -225,9 +277,16 @@ impl ManagedClient {
         }
         let id = self.next_id;
         self.next_id = self.next_id.checked_add(1).ok_or(McpError::LimitExceeded)?;
+        #[cfg(any(test, debug_assertions))]
+        if let Some(before_send) = self.before_send.take() {
+            before_send();
+        }
         let exchange = async {
-            self.write(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
-                .await?;
+            self.write_with_send_evidence(
+                json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}),
+                send,
+            )
+            .await?;
             let mut total = 0usize;
             loop {
                 let mut frame = Vec::new();
@@ -279,10 +338,20 @@ impl ManagedClient {
     }
 
     async fn write(&mut self, value: Value) -> Result<(), McpError> {
+        self.write_with_send_evidence(value, &mut ManagedSendEvidence::NotStarted)
+            .await
+    }
+
+    async fn write_with_send_evidence(
+        &mut self,
+        value: Value,
+        send: &mut ManagedSendEvidence,
+    ) -> Result<(), McpError> {
         let mut bytes = serde_json::to_vec(&value).map_err(|_| McpError::InvalidMessage)?;
         bytes.push(b'\n');
         let mut offset = 0;
         while offset < bytes.len() {
+            *send = ManagedSendEvidence::WriteStarted;
             let written = self
                 .stdin
                 .write(&bytes[offset..])

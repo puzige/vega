@@ -531,3 +531,120 @@ async fn reused_screenshot_error_preserves_the_error_and_earlier_delivery_receip
     assert_eq!(budget["status"], "delivered");
     assert_eq!(budget["model_projection"]["execution_state"], "failed");
 }
+
+#[tokio::test]
+async fn managed_action_pause_before_send_has_zero_writes_and_can_resume() {
+    for capability in [Capability::Desktop, Capability::Browser] {
+        for partial in [false, true] {
+            let driver = Driver::new([true, true], false);
+            let mut run = configured_run(&driver).await;
+            run.browser_enabled = true;
+            let epoch = run.control.begin(capability).unwrap();
+            let mut previous = observation(&run, "observed", false);
+            if capability == Capability::Desktop {
+                run.control
+                    .connected(epoch, capability, Target::DesktopCatalog)
+                    .unwrap();
+                run.control
+                    .set_windows(epoch, driver.windows().unwrap())
+                    .unwrap();
+                let page = run.control.catalog_page(epoch, None).unwrap();
+                run.control
+                    .select_window(epoch, page["windows"][0]["target_id"].as_str().unwrap())
+                    .unwrap();
+                previous.target = run.control.target(capability).unwrap().unwrap();
+            } else {
+                previous.capability = capability;
+                previous.target = Target::Browser {
+                    connection: "memory".into(),
+                    index: 0,
+                    title: "Example".into(),
+                    url: "https://example.test".into(),
+                };
+                previous.text = "button [ref=e1]".into();
+                run.control
+                    .connected(epoch, capability, previous.target.clone())
+                    .unwrap();
+            }
+            run.control.publish(previous.clone()).unwrap();
+            let control = run.control.clone();
+            let callback: Box<dyn FnOnce() + Send> = Box::new(move || control.pause());
+            let (client, writes) = if partial {
+                vega_mcp::recovery_test_support::observed_client(None, Some(callback))
+            } else {
+                vega_mcp::recovery_test_support::observed_client(Some(callback), None)
+            };
+            run.backend.lock().await.test_action_client = Some(client);
+            let name = if capability == Capability::Desktop {
+                "ComputerAct"
+            } else {
+                "BrowserAct"
+            };
+            let arguments = json!({"observation_id":"observed","action":"click",
+                "target":if capability == Capability::Desktop { "button" } else { "e1" },
+                "x":null,"y":null});
+            let root = CancellationToken::new();
+            let failure = tokio::time::timeout(
+                Duration::from_secs(1),
+                run.execute_at(name, "paused", arguments.clone(), epoch, &root),
+            )
+            .await
+            .unwrap()
+            .unwrap_err();
+            assert_eq!(writes.bytes(), usize::from(partial));
+            assert!(!root.is_cancelled());
+            if partial {
+                let value: Value = serde_json::from_str(&failure.feedback()).unwrap();
+                assert_eq!(value["execution_state"], "outcome_unknown");
+                assert_eq!(value["next_step"], "ask_user_to_verify_without_replay");
+                assert_eq!(run.control.status().phase, ControlPhase::Failed);
+                assert!(run.control.resume(run.control.status().epoch).is_err());
+                let later = run
+                    .execute_at(name, "later", arguments, run.control.status().epoch, &root)
+                    .await
+                    .unwrap_err();
+                assert_eq!(later.execution_state, ExecutionState::NotDispatched);
+                assert_eq!(writes.bytes(), 1);
+            } else {
+                assert_eq!(failure.feedback(), SUPERSEDED_CONTROL_OUTPUT);
+                assert_eq!(failure.execution_state, ExecutionState::NotDispatched);
+                assert!(matches!(
+                    run.control.status().phase,
+                    ControlPhase::Pausing | ControlPhase::Paused
+                ));
+                assert!(run.cleanup_revoked().await);
+                assert_eq!(run.control.status().phase, ControlPhase::Paused);
+                run.control.resume(run.control.status().epoch).unwrap();
+                assert_eq!(run.wait_ready(&root).await, Ok(Readiness::Ready));
+                assert!(run.control.publish(previous).is_err());
+                let stale = run
+                    .execute_at(name, "stale", arguments, epoch, &root)
+                    .await
+                    .unwrap_err();
+                assert_eq!(stale.feedback(), SUPERSEDED_CONTROL_OUTPUT);
+                assert_eq!(writes.bytes(), 0);
+                let resumed = run.control.begin(capability).unwrap();
+                assert!(resumed > epoch);
+                run.control
+                    .connected(
+                        resumed,
+                        capability,
+                        if capability == Capability::Desktop {
+                            Target::DesktopCatalog
+                        } else {
+                            Target::Browser {
+                                connection: "resumed-memory".into(),
+                                index: 0,
+                                title: "Example".into(),
+                                url: "https://example.test".into(),
+                            }
+                        },
+                    )
+                    .unwrap();
+                run.authorize(name, &json!({}), resumed, &root)
+                    .await
+                    .unwrap();
+            }
+        }
+    }
+}

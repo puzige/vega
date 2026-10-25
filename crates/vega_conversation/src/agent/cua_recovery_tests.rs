@@ -271,7 +271,11 @@ fn superseded_receipts_and_guard_results_keep_exact_audit_boundaries() {
 }
 
 fn live_store() -> Store {
-    let store = Store::open(":memory:").unwrap();
+    live_store_at(std::path::Path::new(":memory:"))
+}
+
+fn live_store_at(path: &std::path::Path) -> Store {
+    let store = Store::open(path).unwrap();
     store.migrate().unwrap();
     vega_store::threads::create_standalone(
         store.conn(),
@@ -638,4 +642,511 @@ async fn executed_observation_budget_error_reaches_the_model_and_live_terminal_s
             result: Some(crate::types::ToolCardResultProjection::ComputerUse { output, .. }), ..
         } if Some(output) == budget_result.as_ref()
     )));
+}
+
+struct LateStopProvider {
+    run: vega_runtime::computer_use::ComputerUseRun,
+    screenshot: bool,
+    requests: std::sync::atomic::AtomicUsize,
+}
+
+impl Provider for LateStopProvider {
+    fn chat_stream(
+        &self,
+        _: vega_runtime::ChatRequest,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<vega_runtime::EventStream, VegaError>> {
+        assert!(!cancel.is_cancelled());
+        let index = self
+            .requests
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let (id, name, input) = match index {
+            0 => (
+                "directory",
+                "ComputerObserve",
+                json!({"target_id":null,"cursor":null}),
+            ),
+            1 => {
+                let directory = self
+                    .run
+                    .control
+                    .snapshot()
+                    .observations
+                    .into_iter()
+                    .next()
+                    .unwrap();
+                let page: Value = serde_json::from_str(&directory.text).unwrap();
+                (
+                    "late",
+                    if self.screenshot {
+                        "ComputerScreenshot"
+                    } else {
+                        "ComputerObserve"
+                    },
+                    if self.screenshot {
+                        json!({"target_id":page["windows"][0]["target_id"]})
+                    } else {
+                        json!({"target_id":page["windows"][0]["target_id"],"cursor":null})
+                    },
+                )
+            }
+            _ => panic!("late Stop must prevent another provider request"),
+        };
+        Box::pin(async move {
+            Ok(Box::pin(futures::stream::iter([
+                Ok(vega_runtime::ProviderEvent::ToolUse {
+                    id: id.into(),
+                    name: name.into(),
+                    input_json: input.to_string(),
+                }),
+                Ok(vega_runtime::ProviderEvent::Done {
+                    stop_reason: vega_runtime::StopReason::ToolUse,
+                }),
+            ])) as vega_runtime::EventStream)
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StopBoundary {
+    CompletedObservation,
+    BeforeScreenshotPublication,
+    StaleScreenshotEpoch,
+    AfterScreenshotPublication,
+}
+
+async fn late_stop_round_trip(boundary: StopBoundary) {
+    let directory =
+        std::env::temp_dir().join(format!("vega-cua-recovery-{}", ulid::Ulid::generate()));
+    std::fs::create_dir(&directory).unwrap();
+    let database_path = directory.join("conversation.sqlite3");
+    drop(live_store_at(&database_path));
+    let driver = Driver::new([true, true], false);
+    let run = configured_run(&driver).await;
+    let root = CancellationToken::new();
+    if matches!(
+        boundary,
+        StopBoundary::CompletedObservation | StopBoundary::BeforeScreenshotPublication
+    ) {
+        let stop = root.clone();
+        driver.after_execution("late", move || stop.cancel());
+    }
+    let provider = LateStopProvider {
+        run: run.clone(),
+        screenshot: boundary != StopBoundary::CompletedObservation,
+        requests: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let request = AgentRequest {
+        model: "scripted".into(),
+        system_prompt: "Inspect the requested window.".into(),
+        history: vec![vega_runtime::ChatMessage::new(
+            vega_runtime::ChatRole::User,
+            "Inspect the window.",
+        )],
+        max_tokens: None,
+        completed_tool_results: Default::default(),
+        tool_config: RuntimeToolConfig::new(
+            RuntimeRunMode::Execute,
+            RuntimePermissionMode::FullAccess,
+            "project".into(),
+            "thread".into(),
+            PathBuf::new(),
+            Vec::new(),
+        )
+        .with_computer_use(Some(run.clone()))
+        .with_turn_limit(4),
+        pricing_catalog: None,
+        reasoning: None,
+        model_snapshot: None,
+        replay_frame: None,
+        context_budget: None,
+        context_source_version: None,
+        context_source_fingerprint: None,
+        context_operation_id: None,
+        context_compaction_hook: None,
+    };
+    let actor = PersistenceActor::start(PersistenceActorStart {
+        database_path: database_path.clone(),
+        project_id: "project".into(),
+        thread_id: "thread".into(),
+        message_id: "assistant".into(),
+        model: "scripted".into(),
+        is_plan: false,
+        next_tool_seq: 1,
+        config: PersistenceActorConfig::default(),
+    })
+    .await
+    .unwrap();
+    let (sender, receiver) = mpsc::channel(16);
+    let tools = vega_tools::Tools::new(PathBuf::new());
+    let runtime = vega_runtime::run_agent_with_sink(&provider, &tools, request, root.clone(), {
+        let root = root.clone();
+        move |event| {
+            let sender = sender.clone();
+            let root = root.clone();
+            async move {
+                if boundary == StopBoundary::StaleScreenshotEpoch
+                    && let RuntimeEvent::ScreenshotDelivered { control, .. } = &event
+                {
+                    control.pause();
+                    root.cancel();
+                }
+                let (ack, received) = oneshot::channel();
+                sender
+                    .send(RuntimeEnvelope {
+                        event,
+                        ack: Some(ack),
+                    })
+                    .await
+                    .map_err(|_| persistence_actor_error("event channel closed"))?;
+                received
+                    .await
+                    .map_err(|_| persistence_actor_error("event acknowledgement dropped"))?
+            }
+        }
+    });
+    let mut events = Vec::new();
+    let mut text = String::new();
+    let clock = crate::types::WorkClock::new(None);
+    let diagnostics = super::super::diagnostics::DiagnosticsWriter::buffered();
+    let mut sink = |event: &ConversationEvent| {
+        if boundary == StopBoundary::AfterScreenshotPublication
+            && matches!(event, ConversationEvent::ScreenshotDelivered { .. })
+        {
+            root.cancel();
+        }
+        Ok(())
+    };
+    let processor = process_runtime_events(
+        receiver,
+        &actor,
+        RuntimeEventContext {
+            message_id: "assistant",
+            streamed_content: &mut text,
+            events: &mut events,
+            event_sink: &mut sink,
+            cancel: root.clone(),
+            run_started_at: std::time::Instant::now(),
+            work_clock: &clock,
+            diagnostics: &diagnostics,
+            thread_id: "thread",
+            run_id: "assistant",
+            root_attempt_id: "attempt",
+            subagent_receipts: None,
+        },
+    );
+    let (outcome, persisted) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(runtime, processor)
+    })
+    .await
+    .unwrap();
+    persisted.unwrap();
+    let outcome = outcome.unwrap();
+    assert!(root.is_cancelled() && outcome.interrupted && !outcome.failed);
+    assert_eq!(
+        provider.requests.load(std::sync::atomic::Ordering::Acquire),
+        2
+    );
+    let published = boundary == StopBoundary::AfterScreenshotPublication;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, ConversationEvent::ScreenshotDelivered { .. }))
+            .count(),
+        usize::from(published)
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, ConversationEvent::Error { .. }))
+    );
+    let terminal = outcome
+        .events
+        .iter()
+        .find_map(|event| match event {
+            RuntimeEvent::ToolCallFinished(result) if result.call_id == "late" => {
+                Some(result.clone())
+            }
+            _ => None,
+        })
+        .unwrap();
+    let completed = boundary == StopBoundary::CompletedObservation || published;
+    assert_eq!(
+        terminal.status,
+        if completed {
+            RuntimeToolStatus::Success
+        } else {
+            RuntimeToolStatus::Cancelled
+        }
+    );
+    if boundary == StopBoundary::CompletedObservation {
+        assert!(terminal.output.starts_with("completed; observation_id="));
+    } else {
+        let output: Value = serde_json::from_str(&terminal.output).unwrap();
+        if published {
+            assert_eq!(output["status"], "delivered");
+            assert_eq!(output["artifact_id"], "screenshot:late");
+        } else {
+            assert_eq!(output["code"], "cancelled");
+            assert_eq!(output["execution_state"], "failed");
+            assert!(output.get("status").is_none());
+            assert_eq!(terminal.truncated, None);
+        }
+    }
+    actor.close().await.unwrap();
+    let store = Store::open(&database_path).unwrap();
+    let rows = tool_calls::terminal_results(store.conn(), "thread").unwrap();
+    assert_eq!(rows["late"].output, terminal.output);
+    assert_eq!(
+        rows["late"].status,
+        if completed { "success" } else { "cancelled" }
+    );
+    assert_eq!(
+        messages::find(store.conn(), "assistant")
+            .unwrap()
+            .unwrap()
+            .status,
+        "interrupted"
+    );
+    let page = crate::history::restart_history_page(&store, "thread", 20).unwrap();
+    assert_eq!(
+        page.entries
+            .iter()
+            .filter(|entry| matches!(
+                entry,
+                crate::history::HistoryEntry::AssistantScreenshot { .. }
+            ))
+            .count(),
+        usize::from(published)
+    );
+    assert!(page.entries.iter().any(|entry| matches!(entry,
+        crate::history::HistoryEntry::Tool { call_id, result: Some(crate::types::ToolCardResultProjection::ComputerUse { output, .. }), .. }
+            if call_id == "late" && output == &terminal.output
+    )));
+    drop(store);
+    let prepared = prepare_run_with_images_and_reasoning(
+        database_path.clone(),
+        "thread".into(),
+        "Continue independent work.".into(),
+        "Respond safely.".into(),
+        "next-user".into(),
+        "next-assistant".into(),
+        PersistenceActorConfig::default(),
+        false,
+        None,
+        None,
+        Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        prepared.request.completed_tool_results["late"]
+            .result
+            .status,
+        terminal.status
+    );
+    assert_eq!(
+        prepared.request.completed_tool_results["late"]
+            .result
+            .output,
+        terminal.output
+    );
+    assert!(
+        prepared
+            .request
+            .history
+            .iter()
+            .any(|message| message.tool_call_id.as_deref() == Some("late"))
+    );
+    drop(prepared);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn late_stop_preserves_completed_observation_through_live_sink_reload_and_next_run() {
+    late_stop_round_trip(StopBoundary::CompletedObservation).await;
+}
+
+#[tokio::test]
+async fn late_stop_never_claims_an_unpublished_screenshot_was_delivered() {
+    late_stop_round_trip(StopBoundary::BeforeScreenshotPublication).await;
+}
+
+#[tokio::test]
+async fn revoked_screenshot_epoch_is_not_published_or_reported_as_pipeline_failure() {
+    late_stop_round_trip(StopBoundary::StaleScreenshotEpoch).await;
+}
+
+#[tokio::test]
+async fn late_stop_preserves_an_already_published_screenshot_through_reload_and_next_run() {
+    late_stop_round_trip(StopBoundary::AfterScreenshotPublication).await;
+}
+
+#[test]
+fn legacy_cancelled_completions_and_screenshot_receipts_remain_bounded_and_readable() {
+    let directory =
+        std::env::temp_dir().join(format!("vega-cua-legacy-{}", ulid::Ulid::generate()));
+    std::fs::create_dir(&directory).unwrap();
+    let database_path = directory.join("conversation.sqlite3");
+    let store = live_store_at(&database_path);
+    let receipt = json!({"status":"delivered","artifact_id":"screenshot:legacy-image",
+        "delivery":"conversation_image_attachment","saved_in_history":true,
+        "read_only":true,"unchanged":false,"next_step":"continue_remaining_requested_work_or_finish"});
+    let audit = approval_audit_to_runtime(&approval(Approval::Once));
+    let mut next_seq = 1;
+    for (id, tool, action, output) in [
+        ("legacy-read", "ComputerObserve", "observe", "completed; observation_id=legacy; observation images and page data are ephemeral and are not retained in history.".into()),
+        ("legacy-directory", "ComputerObserve", "observe", "completed; observation_id=legacy; window directory is ephemeral and is not retained in history.".into()),
+        ("legacy-image", "ComputerScreenshot", "screenshot", receipt.to_string()),
+    ] {
+        for event in [
+            RuntimeEvent::ToolCallProposed(vega_runtime::RuntimeToolCall { id:id.into(), name:tool.into(), input_json:audit_input(action) }),
+            RuntimeEvent::ToolCallApproved { call_id:id.into(), audit:audit.clone(), remember_rule:None },
+            RuntimeEvent::ToolCallRunning { call_id:id.into() },
+        ] {
+            persist_live_event(&store, &mut next_seq, "", &event).unwrap();
+        }
+        let terminal = vega_runtime::RuntimeToolResult {
+            call_id:id.into(), output, status:RuntimeToolStatus::Cancelled, reused:false,
+            exit_code:None, duration_ms:None, truncated:None, approval:Some(audit.clone()), remember_rule:None,
+        };
+        persist_live_event(&store, &mut next_seq, "", &RuntimeEvent::ToolCallFinished(terminal)).unwrap();
+    }
+    persist_live_event(&store, &mut next_seq, "", &RuntimeEvent::Interrupted).unwrap();
+    let validate_legacy = |tool: &str, action: &str, output: &str, approval: &ApprovalAudit| {
+        validate_recovered_projection(
+            "project",
+            "thread",
+            "legacy",
+            tool,
+            &audit_input(action),
+            output,
+            RuntimeToolStatus::Cancelled,
+            approval,
+            None,
+            None,
+        )
+    };
+    let mut forged = receipt.clone();
+    forged["extra"] = json!("untrusted");
+    assert!(
+        validate_legacy(
+            "ComputerScreenshot",
+            "screenshot",
+            &forged.to_string(),
+            &approval(Approval::Once)
+        )
+        .is_err()
+    );
+    assert!(
+        validate_legacy(
+            "ComputerObserve",
+            "observe",
+            &receipt.to_string(),
+            &approval(Approval::Once)
+        )
+        .is_err()
+    );
+    assert!(
+        validate_legacy(
+            "ComputerScreenshot",
+            "screenshot",
+            &receipt.to_string(),
+            &approval(Approval::Deny)
+        )
+        .is_err()
+    );
+    let mut wrong_source = approval(Approval::Once);
+    wrong_source.source = ApprovalSource::RunMode;
+    assert!(
+        validate_legacy(
+            "ComputerScreenshot",
+            "screenshot",
+            &receipt.to_string(),
+            &wrong_source
+        )
+        .is_err()
+    );
+    let mut with_note = approval(Approval::Once);
+    with_note.note = Some("not allowed".into());
+    assert!(
+        validate_legacy(
+            "ComputerScreenshot",
+            "screenshot",
+            &receipt.to_string(),
+            &with_note
+        )
+        .is_err()
+    );
+    let mut oversized = receipt.clone();
+    oversized["artifact_id"] = json!(format!("screenshot:{}", "x".repeat(2048)));
+    assert!(
+        validate_legacy(
+            "ComputerScreenshot",
+            "screenshot",
+            &oversized.to_string(),
+            &approval(Approval::Once)
+        )
+        .is_err()
+    );
+    assert!(
+        validate_legacy(
+            "ComputerObserve",
+            "observe",
+            "completed; observation_id=legacy; forged completion",
+            &approval(Approval::Once)
+        )
+        .is_err()
+    );
+    assert!(
+        validate_legacy(
+            "ComputerScreenshot",
+            "screenshot",
+            r#"{"status":"cancelled","arbitrary":true}"#,
+            &approval(Approval::Once)
+        )
+        .is_err()
+    );
+    drop(store);
+    let reopened = Store::open(&database_path).unwrap();
+    let page = crate::history::restart_history_page(&reopened, "thread", 20).unwrap();
+    assert_eq!(
+        page.entries
+            .iter()
+            .filter(|entry| matches!(
+                entry,
+                crate::history::HistoryEntry::Tool {
+                    status: crate::types::ToolCallStatus::Cancelled,
+                    result: Some(crate::types::ToolCardResultProjection::ComputerUse {
+                        status: crate::types::ToolCallStatus::Cancelled,
+                        ..
+                    }),
+                    ..
+                }
+            ))
+            .count(),
+        3
+    );
+    drop(reopened);
+    let prepared = prepare_run_with_images_and_reasoning(
+        database_path,
+        "thread".into(),
+        "Continue.".into(),
+        "Respond safely.".into(),
+        "next-user".into(),
+        "next-assistant".into(),
+        PersistenceActorConfig::default(),
+        false,
+        None,
+        None,
+        Vec::new(),
+    )
+    .unwrap();
+    for id in ["legacy-read", "legacy-directory", "legacy-image"] {
+        assert_eq!(
+            prepared.request.completed_tool_results[id].result.status,
+            RuntimeToolStatus::Cancelled
+        );
+    }
+    drop(prepared);
+    std::fs::remove_dir_all(directory).unwrap();
 }
