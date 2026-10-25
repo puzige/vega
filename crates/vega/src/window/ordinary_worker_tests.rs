@@ -689,10 +689,11 @@ async fn revealed_user_echo_paths(
     let mut paths = Vec::new();
     let mut identities = Vec::new();
     for message_id in message_ids {
-        let anchor = fixture.stream.update(cx, |stream, cx| {
-            assert!(stream.reveal_loaded_message(message_id, cx));
-            stream.scroll_anchor_snapshot()
+        let (revealed, anchor) = fixture.stream.update(cx, |stream, cx| {
+            let revealed = stream.reveal_loaded_message(message_id, cx);
+            (revealed, stream.scroll_anchor_snapshot())
         });
+        assert!(revealed, "durable user message not loaded: {message_id}");
         assert_eq!(anchor.message_id.as_deref(), Some(*message_id));
         let identity = anchor.identity.unwrap();
         assert!(!identities.contains(&identity));
@@ -1036,6 +1037,15 @@ async fn running_send_now_is_consumed_by_real_runtime_once_without_ordinary_admi
     let first_rows = fixture.rows(cx);
     let old_assistant = first_rows.iter().find(|row| row.role == "assistant").unwrap().id.clone();
     let first_user = first_rows.iter().find(|row| row.role == "user").unwrap().id.clone();
+    let first_user_page = cx.update(|cx| {
+        vega_conversation::history::history_page_containing_message(
+            cx.global::<VegaStore>().0.as_ref().unwrap(),
+            &fixture.thread.id,
+            &first_user,
+            1,
+        )
+    }).unwrap().unwrap();
+    fixture.stream.update(cx, |stream, cx| stream.apply_history_page(first_user_page, cx));
     cx.update(|cx| cx.set_global(vega_ui::conversation_stream::RunningMessageDefault(vega_conversation::types::PendingMessageBehavior::Steer)));
     fixture.draft(STEER, cx);
     attach(&fixture, cx).await;
@@ -1081,10 +1091,11 @@ async fn running_send_now_is_consumed_by_real_runtime_once_without_ordinary_admi
     assert_eq!(events.iter().filter(|event| matches!(event, ConversationEvent::MessageStarted { message_id, .. } if message_id == &next_assistant)).count(), 1);
     next_assistant
     };
-    fixture.stream.update(cx, |stream, cx| {
-        assert!(stream.reveal_loaded_message(&pending.id, cx));
-        assert!(stream.projected_pending_ids().is_empty());
+    let (pending_revealed, projected_pending_ids) = fixture.stream.update(cx, |stream, cx| {
+        (stream.reveal_loaded_message(&pending.id, cx), stream.projected_pending_ids())
     });
+    assert!(pending_revealed, "delivered pending message not loaded: {}", pending.id);
+    assert!(projected_pending_ids.is_empty());
     let revealed_echoes = revealed_user_echo_paths(&fixture, &[&first_user, &pending.id], cx).await;
     assert_eq!(revealed_echoes.len(), 2);
     cx.update_window(fixture.window.into(), |_, window, cx| {
