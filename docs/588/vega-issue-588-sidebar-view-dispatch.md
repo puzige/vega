@@ -1,10 +1,10 @@
 # Issue #588：侧边栏视图真实分派（按项目 / 扁平列表）
 
 - Issue：[#588](https://github.com/puzige/vega/issues/588)
-- 看板：Vega Desktop，Status=Backlog，Size=M
+- 看板：Vega Desktop，Size=M；当前状态以 Issue / Project 为准
 - 基线：`a100f730`（origin/master）
 - 规则：[AGENTS](../../AGENTS.md)、[执行总纲](../vega-exec-guide.md)、[设计守则](../vega-design-guidelines.md)
-- 状态：规格已冻结，待实现。本地不编译、不测试。
+- 状态：规格已冻结，实现见 [PR #606](https://github.com/puzige/vega/pull/606)；云端门禁及用户手测结果以 PR / Issue 记录为准。本地不编译、不测试。
 
 ## 1. 问题
 
@@ -70,7 +70,19 @@ case `project`: return e.projectKey == null || !b.has(e.projectKey);
 - `Timeline` 是否应改名为 `List`/`In one list`，与 #589 的 i18n 文案一并处理？建议在 #589 落地时统一。
 - 扁平列表是否应包含置顶任务？本卡按 A06 保持独立「已固定」段。
 
-## 6. 约束
+## 6. 实现方案补充
+
+当前实现基线核对发现：`Control::View` 无可见调用入口，且只写 `preferences.view`；旧 `render_timeline_projection` 按日期分桶、包含自己的置顶区、未分页，不符合 A02/A05/A06。因此不直接接通旧投影，保留本卡原验收，采用现有最近任务渲染器实现真正扁平列表。
+
+- `render_organization` 始终保留现有已固定段；按 `preferences.project_view` 分派，`ByProject` 保留项目与最近任务，`Timeline` 只渲染统一任务列表。
+- 复用最近任务的行、归档开关及 `recents_visible` / `recents_total` 分页；扁平模式包含所有项目归属，排除已固定任务后调用 `sorted_threads`，不按日期分桶。
+- 在现有任务分区标题栏提供键盘可访问的布局菜单，不增加常驻行、不移动任务列表起点；菜单明确显示“按项目 / 扁平列表”及当前选择。写入现有 `SetPreferences` 持久化链路，切换成功后重置列表显示窗口为 `RECENTS_PAGE`。
+- 清理未使用的旧 group/project/timeline 渲染投影及其独占 helper，保留当前生产调用所需 helper；不接入本卡以外的 Groups 模式。移除掩盖该投影的模块级 `allow(dead_code)`，无关既存死代码不扩大清理。
+- 扁平模式的滚动增长只影响可见的统一列表，不推进隐藏的项目任务窗口。项目删除、默认值、排序、存储 schema 及分页常量不变。
+
+该补充明确实现路径和布局入口，不改变 A01–A06。界面行为与重启持久化仍需用户手测；本地仅做静态检查，完整编译门禁交 Actions。
+
+## 7. 约束
 
 - 本地不编译、不测试、不打包，仅静态检查；验证交云端 PR Check，原生观感交用户手测。
 - 代码改动走 worktree + PR，不直接改 master。
