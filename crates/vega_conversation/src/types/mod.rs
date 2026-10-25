@@ -1,5 +1,11 @@
 pub use crate::automatic_titles::AutomaticTitleRequest;
 pub use crate::composer_predictions::{ComposerPredictionFence, ComposerPredictionRequest};
+pub use crate::ordinary_submissions::{
+    AcceptedPayload, AttemptId, AttemptKind, AttemptSnapshot, CleanupFact, CleanupFailure,
+    CommitFact, CommittedReceipt, FactUpdate, OrdinarySubmission, OrdinaryWorker, PrimaryFact,
+    RawSubmission, RetryBlocker, RetryEligibility, SubmissionError, SubmissionFailure,
+    SubmissionId, SubmissionSnapshot,
+};
 use std::sync::Arc;
 pub use vega_runtime::ImageAttachment;
 pub use vega_runtime::computer_use::{
@@ -9,6 +15,7 @@ pub use vega_runtime::computer_use::{
     SUPERSEDED_CONTROL_OUTPUT, Target, preparation_from_check_permissions, unknown_preparation,
 };
 pub use vega_store::messages::RunContinuation;
+pub use vega_store::thread_admission::{AdmissionError, DatabaseIdentity, ThreadAdmission};
 
 use serde::{Deserialize, Deserializer, Serialize};
 

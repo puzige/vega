@@ -44,6 +44,7 @@ pub use mcp_settings::{McpRunReadiness, McpServerSettingsService, McpSettingsErr
 mod skill_settings;
 pub use skill_settings::{SkillSettingsError, SkillSettingsService};
 
+pub mod ordinary_submissions;
 pub mod pending_messages;
 
 pub mod privacy;
