@@ -250,6 +250,10 @@ pub(crate) struct PendingEcho {
 }
 
 impl ConversationStream {
+    pub fn suspend_decorative_overlays(&mut self, _: &mut Context<Self>) {
+        self.file_entry.suspend();
+    }
+
     pub fn set_reading_preview(&mut self, reading: bool, cx: &mut Context<Self>) {
         if self.reading_preview == reading {
             return;

@@ -1,9 +1,17 @@
-use super::*;
-use gpui_kit::{
-    AppContext, TestAppContext, VisualTestContext, WindowHandle, gpui, test::TestWindowExt,
+use crate::{
+    conversation_stream::{ConversationStream, FileIndexCancelled, FileIndexFailureCode},
+    file_selector::{AcceptFile, CancelFile},
+    settings::SettingsOpen,
 };
-use std::{cell::Cell, rc::Rc};
-use vega_conversation::types::ThreadStatus;
+use gpui_kit::{
+    AppContext, Context, Entity, Focusable, IntoElement, ParentElement, Render, Styled,
+    TestAppContext, VisualTestContext, Window, WindowHandle, div, gpui, test::TestWindowExt,
+};
+use std::{cell::Cell, rc::Rc, time::Duration};
+use vega_conversation::types::{
+    FileIndexSnapshot, PermissionMode, TaskBackend, Thread, ThreadMode, ThreadStatus,
+};
+use vega_theme::theme;
 
 fn fixture(cx: &mut TestAppContext) -> WindowHandle<ConversationStream> {
     cx.update(|cx| {
@@ -13,26 +21,7 @@ fn fixture(cx: &mut TestAppContext) -> WindowHandle<ConversationStream> {
         cx.set_global(SettingsOpen(false));
         cx.set_reduce_motion(false);
     });
-    let window = cx.add_window(|_, cx| {
-        ConversationStream::new(
-            Thread {
-                parent_thread_id: None,
-                id: "thread".into(),
-                backend: TaskBackend::Native,
-                project_id: "project".into(),
-                title: "Files".into(),
-                mode: ThreadMode::Ask,
-                permission_mode: PermissionMode::ReadOnly,
-                model: String::new(),
-                status: ThreadStatus::Active,
-                pinned: false,
-                unread: false,
-                created_at: 0,
-                updated_at: 0,
-            },
-            cx,
-        )
-    });
+    let window = cx.add_window(|_, cx| new_stream("thread", cx));
     window
         .update(cx, |stream, window, cx| {
             window.activate_window();
@@ -43,7 +32,30 @@ fn fixture(cx: &mut TestAppContext) -> WindowHandle<ConversationStream> {
     window
 }
 
-fn frame(window: WindowHandle<ConversationStream>, cx: &mut TestAppContext) -> f32 {
+fn new_stream(id: &str, cx: &mut Context<ConversationStream>) -> ConversationStream {
+    ConversationStream::new(
+        Thread {
+            parent_thread_id: None,
+            forked_from_thread_id: None,
+            forked_from_message_id: None,
+            id: id.into(),
+            backend: TaskBackend::Native,
+            project_id: "project".into(),
+            title: "Files".into(),
+            mode: ThreadMode::Ask,
+            permission_mode: PermissionMode::ReadOnly,
+            model: String::new(),
+            status: ThreadStatus::Active,
+            pinned: false,
+            unread: false,
+            created_at: 0,
+            updated_at: 0,
+        },
+        cx,
+    )
+}
+
+fn frame<V: Render + 'static>(window: WindowHandle<V>, cx: &mut TestAppContext) -> f32 {
     cx.update_window(window.into(), |_, window, cx| window.render_frame(cx))
         .unwrap();
     let bounds = VisualTestContext::from_window(window.into(), cx)
@@ -191,4 +203,131 @@ fn file_close_reopen_preserves_painted_origin_and_cancel_fence_while_failure_sna
         })
         .unwrap();
     assert_eq!(frame(window, cx), 0.);
+}
+
+struct RetainedHost {
+    streams: [Entity<ConversationStream>; 2],
+    selected: Option<usize>,
+}
+
+impl RetainedHost {
+    fn select(&mut self, selected: Option<usize>, cx: &mut Context<Self>) {
+        if self.selected != selected
+            && let Some(previous) = self.selected
+        {
+            self.streams[previous].update(cx, ConversationStream::suspend_decorative_overlays);
+        }
+        self.selected = selected;
+        cx.notify();
+    }
+}
+
+impl Render for RetainedHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .children(self.selected.map(|index| self.streams[index].clone()))
+    }
+}
+
+#[gpui_kit::test]
+fn loaded_file_menu_retained_across_page_and_thread_unmount_resumes_opaque(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_global(vega_theme::Theme::dark());
+        cx.set_global(crate::sidebar::SelectedProject(Some("project".into())));
+        cx.set_global(SettingsOpen(false));
+        cx.set_reduce_motion(false);
+    });
+    let window = cx.add_window(|_, cx| RetainedHost {
+        streams: [
+            cx.new(|cx| new_stream("thread", cx)),
+            cx.new(|cx| new_stream("other", cx)),
+        ],
+        selected: Some(0),
+    });
+    window
+        .update(cx, |host, window, cx| {
+            window.activate_window();
+            host.streams[0].update(cx, |stream, window_cx| {
+                stream.focus_composer(window, window_cx)
+            });
+        })
+        .unwrap();
+    cx.run_until_parked();
+    for destination in [None, Some(1)] {
+        let (stream, generation) = window
+            .update(cx, |host, _, cx| {
+                let stream = host.streams[0].clone();
+                let generation = stream.update(cx, |stream, cx| {
+                    stream.invalidate_file_index(cx);
+                    let input = stream.input.clone();
+                    input.update(cx, |input, cx| input.set_text("@", cx));
+                    stream.sync_at_query(&input, cx);
+                    assert!(stream.apply_file_index_result(
+                        stream.file_index_generation,
+                        Ok(FileIndexSnapshot {
+                            entries: vec!["src/main.rs".into()]
+                        }),
+                        cx,
+                    ));
+                    assert!(!stream.file_index_loading);
+                    stream.file_index_generation
+                });
+                (stream, generation)
+            })
+            .unwrap();
+        assert_eq!(frame(window, cx), 0.);
+        cx.background_executor
+            .advance_clock(Duration::from_millis(45));
+        let middle = frame(window, cx);
+        assert!(middle > 0. && middle < 1.);
+        window
+            .update(cx, |host, window, cx| {
+                let focus = window.focused(cx);
+                cx.set_global(SettingsOpen(destination.is_none()));
+                host.select(destination, cx);
+                assert_eq!(window.focused(cx), focus);
+            })
+            .unwrap();
+        for _ in 0..2 {
+            cx.update_window(window.into(), |_, window, cx| window.render_frame(cx))
+                .unwrap();
+            assert!(
+                VisualTestContext::from_window(window.into(), cx)
+                    .debug_bounds("overlay-entry-surface")
+                    .is_none()
+            );
+        }
+        cx.background_executor
+            .advance_clock(Duration::from_millis(200));
+        window
+            .update(cx, |host, _, cx| {
+                assert_eq!(host.streams[0], stream);
+                let retained = stream.read(cx);
+                assert!(retained.file_selector_wanted);
+                assert!(retained.file_selector.is_open());
+                assert!(retained.file_index_loaded);
+                assert!(!retained.file_index_loading);
+                assert_eq!(retained.file_index_generation, generation);
+                assert_eq!(retained.file_snapshot.entries, vec!["src/main.rs"]);
+                cx.set_global(SettingsOpen(false));
+                host.select(Some(0), cx);
+            })
+            .unwrap();
+        assert!((frame(window, cx) - 1.).abs() < 0.0001);
+        window
+            .update(cx, |_, window, cx| {
+                window.simulate_next_frame(cx);
+            })
+            .unwrap();
+        assert!((frame(window, cx) - 1.).abs() < 0.0001);
+        window
+            .update(cx, |_, window, cx| {
+                assert_eq!(window.simulate_next_frame(cx), 0)
+            })
+            .unwrap();
+    }
 }

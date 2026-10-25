@@ -370,7 +370,7 @@ impl VegaWindow {
                         match result {
                             Ok(thread) => {
                                 if this.accept_palette_thread(thread, cx) {
-                                    this.palette.close_requested = true;
+                                    this.palette.request_close(cx);
                                     cx.refresh_windows();
                                 } else if let Some(view) = &this.palette.view {
                                     view.update(cx, |view, cx| {
@@ -415,7 +415,7 @@ impl VegaWindow {
                         match result {
                             Ok(preview) => {
                                 this.palette.preview = Some((current, result_project, preview));
-                                this.palette.close_requested = true;
+                                this.palette.request_close(cx);
                                 cx.notify();
                             }
                             Err(error) => {

@@ -1,6 +1,11 @@
-use super::*;
-use gpui_kit::{prelude::*, test::TestWindowExt, *};
-use vega_theme::Theme;
+use super::OverlayEntry;
+use gpui_kit::{
+    AppContext, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Render, Styled,
+    TestAppContext, Window, WindowHandle, canvas, deferred, div, fill, gpui, px,
+    test::TestWindowExt,
+};
+use std::{cell::RefCell, rc::Rc, time::Duration};
+use vega_theme::{Motion, Theme};
 
 struct Host {
     entry: OverlayEntry,

@@ -1,10 +1,18 @@
-use super::*;
-use gpui_kit::{prelude::*, test::TestWindowExt};
+use super::AppPalette;
+use gpui_kit::{
+    AppContext, Context, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement,
+    ParentElement, Quad, Render, Styled, TestAppContext, Window, WindowHandle, canvas, div, gpui,
+    px, test::TestWindowExt,
+};
+use std::{cell::Cell, rc::Rc, time::Duration};
+use vega_conversation::types::{PaletteAction, PaletteError, PaletteSearch};
 use vega_theme::Theme;
+use vega_ui::command_palette::{CommandPalette, PaletteClosed};
 
 struct Host {
     palette: AppPalette,
     focus: FocusHandle,
+    paints: Rc<Cell<usize>>,
 }
 
 impl Host {
@@ -42,10 +50,16 @@ impl Render for Host {
         self.palette
             .entry
             .sync(self.palette.view.is_some(), true, window, cx);
+        let paints = self.paints.clone();
         div()
             .id("prior")
             .size_full()
             .track_focus(&self.focus)
+            .child(
+                canvas(|_, _, _| (), move |_, _, _, _| paints.set(paints.get() + 1))
+                    .absolute()
+                    .size(px(1.)),
+            )
             .children(self.palette.view.clone())
     }
 }
@@ -59,6 +73,7 @@ fn fixture(cx: &mut TestAppContext) -> WindowHandle<Host> {
     let window = cx.add_window(|_, cx| Host {
         palette: AppPalette::default(),
         focus: cx.focus_handle(),
+        paints: Rc::default(),
     });
     window
         .update(cx, |host, window, cx| {
@@ -218,4 +233,66 @@ fn real_palette_failure_is_immediately_opaque_and_route_invalidation_resets_entr
         })
         .unwrap();
     assert_eq!(frame(window, cx), 0.);
+}
+
+#[gpui_kit::test]
+fn accepted_async_close_expires_before_reopen_without_an_intervening_paint(
+    cx: &mut TestAppContext,
+) {
+    let window = fixture(cx);
+    window
+        .update(cx, |host, window, cx| host.open(window, cx))
+        .unwrap();
+    assert_eq!(frame(window, cx), 0.);
+    cx.background_executor
+        .advance_clock(Duration::from_millis(45));
+    let middle = frame(window, cx);
+    assert!(middle > 0. && middle < 1.);
+    let (painted, original) = window
+        .update(cx, |host, _, cx| {
+            let original = host.palette.view.as_ref().unwrap().entity_id();
+            let painted = host.paints.get();
+            cx.spawn(async move |host, cx| {
+                host.update(cx, |host, cx| {
+                    host.palette.request_close(cx);
+                    cx.notify();
+                })
+                .unwrap();
+            })
+            .detach();
+            (painted, original)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |host, _, _| {
+            assert!(host.palette.close_requested);
+            assert_eq!(host.paints.get(), painted);
+            assert_eq!(host.palette.view.as_ref().unwrap().entity_id(), original);
+        })
+        .unwrap();
+    cx.background_executor
+        .advance_clock(Duration::from_millis(121));
+    window
+        .update(cx, |host, window, cx| {
+            assert_eq!(host.paints.get(), painted);
+            let cancel = host.palette.cancel.clone();
+            host.open(window, cx);
+            assert!(cancel.is_cancelled());
+            assert_ne!(host.palette.view.as_ref().unwrap().entity_id(), original);
+            assert!(
+                host.palette
+                    .view
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            );
+        })
+        .unwrap();
+    assert_eq!(frame(window, cx), 0.);
+    cx.background_executor
+        .advance_clock(Duration::from_millis(120));
+    assert!((frame(window, cx) - 1.).abs() < 0.0001);
 }

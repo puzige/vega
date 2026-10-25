@@ -68,6 +68,9 @@ impl Render for VegaWindow {
         self.sync_navigation(cx);
         let settings_open = cx.global::<SettingsOpen>().0;
         let content: AnyElement = if settings_open {
+            if let Some((_, stream)) = &self.stream_view {
+                stream.update(cx, ConversationStream::suspend_decorative_overlays);
+            }
             if self.settings_view.is_none()
                 && let Some((_, stream)) = &self.stream_view
             {
@@ -227,6 +230,10 @@ impl Render for VegaWindow {
                                 thread_id != &thread.id || cached != &view
                             }) {
                                 if let Some((previous_id, previous)) = self.stream_view.take() {
+                                    previous.update(
+                                        cx,
+                                        ConversationStream::suspend_decorative_overlays,
+                                    );
                                     if previous_id != thread.id {
                                         let anchor = previous.read(cx).scroll_anchor_snapshot();
                                         self.thread_scroll_states
@@ -283,6 +290,8 @@ impl Render for VegaWindow {
                         }
                         None => {
                             if let Some((previous_id, previous)) = self.stream_view.take() {
+                                previous
+                                    .update(cx, ConversationStream::suspend_decorative_overlays);
                                 if previous_id != thread.id {
                                     let anchor = previous.read(cx).scroll_anchor_snapshot();
                                     self.thread_scroll_states
