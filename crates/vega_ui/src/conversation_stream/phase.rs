@@ -265,7 +265,7 @@ impl ConversationStream {
         {
             return None;
         }
-        (!copy.original_text().is_empty()).then_some(copy)
+        copy.has_text().then_some(copy)
     }
 
     fn invalidate_copy_owner(&mut self, owner: Option<u64>) {
@@ -384,7 +384,11 @@ impl ConversationStream {
                     | StreamEntry::ContextCompaction { .. }
             ) {
                 let top = match previous_visible.and_then(|previous| self.entries.get(previous)) {
-                    Some(StreamEntry::RunActivity { .. }) => Layout::CONVERSATION_BODY_TOP,
+                    Some(
+                        StreamEntry::RunActivity { .. }
+                        | StreamEntry::User { .. }
+                        | StreamEntry::UserImages { .. },
+                    ) => Layout::CONVERSATION_BODY_TOP,
                     Some(StreamEntry::Assistant { .. }) => Layout::CONVERSATION_STAGE_TOP,
                     _ => 0.,
                 };
@@ -412,7 +416,12 @@ impl ConversationStream {
                     }
                     insets.insert(
                         index,
-                        if previous_clock.get(owner) == Some(&true) {
+                        if previous_clock.get(owner) == Some(&true)
+                            || matches!(
+                                previous_visible.and_then(|previous| self.entries.get(previous)),
+                                Some(StreamEntry::User { .. } | StreamEntry::UserImages { .. })
+                            )
+                        {
                             Layout::CONVERSATION_BODY_TOP
                         } else {
                             Layout::CONVERSATION_STAGE_TOP
@@ -456,11 +465,7 @@ impl ConversationStream {
                     previous_assistant = false;
                 }
                 RunDetail::Assistant(entry_index) => {
-                    height += message_anchors::estimate_entry_height(
-                        &self.entries[*entry_index],
-                        cx,
-                        self.workspace_width,
-                    );
+                    height += self.estimated_entry_height(*entry_index, cx, false);
                     previous_assistant = true;
                 }
             }

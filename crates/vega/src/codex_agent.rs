@@ -335,6 +335,7 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
     let _ = sender.send(AgentUpdate::Event(ConversationEvent::RunStarted {
         message_id: assistant_message_id.clone(),
         started_at: run_started_at,
+        work_clock: None,
     }));
     let _ = user_message_id;
     let prompt_handle = match connection.prompt(&session.session_id, prompt).await {

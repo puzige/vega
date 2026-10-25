@@ -117,16 +117,19 @@ pub(crate) struct RunActivityGroup {
     sticky: StickyState,
     collapsed_sticky: Option<StickyCollapse>,
     started_at: Option<Instant>,
+    work_clock: Option<vega_conversation::types::WorkClock>,
     animation_epoch: Instant,
     clock_task: Option<gpui_kit::Task<()>>,
     phase: RunPhase,
     waiting_for_user: bool,
+    waiting_for_answer: bool,
     current_thinking: Option<Entity<ThinkingBlock>>,
     thinking_order: u64,
     activity_order: u64,
     tool_starts: Vec<(Entity<ToolCard>, u64)>,
     presentation_released: bool,
     continued: bool,
+    continuation_successor: bool,
     process_copies: HashSet<u64>,
     final_confirmed: bool,
     body_in_details: bool,
@@ -284,9 +287,15 @@ impl RunActivityGroup {
             cx.notify();
         }
     }
-    pub(crate) fn start_clock(&mut self, started_at: Instant, cx: &mut Context<Self>) {
+    pub(crate) fn start_clock(
+        &mut self,
+        started_at: Instant,
+        work_clock: Option<vega_conversation::types::WorkClock>,
+        cx: &mut Context<Self>,
+    ) {
         if self.started_at.is_none() && !self.terminal && !self.presentation_released {
             self.started_at = Some(started_at);
+            self.work_clock = work_clock;
             self.animation_epoch = started_at;
             self.sync_thinking_visibility(cx);
             cx.notify();
@@ -329,6 +338,21 @@ impl RunActivityGroup {
         } else if self.phase == RunPhase::Compacting {
             self.set_phase(RunPhase::Working, cx);
         }
+    }
+
+    pub(crate) fn set_question_waiting(&mut self, waiting: bool, cx: &mut Context<Self>) {
+        if self.terminal || self.waiting_for_answer == waiting {
+            return;
+        }
+        self.waiting_for_answer = waiting;
+        if let Some(card) = &self.current_thinking {
+            card.update(cx, |card, cx| {
+                card.shimmer_epoch = None;
+                cx.notify();
+            });
+        }
+        self.sync_thinking_visibility(cx);
+        cx.notify();
     }
 
     pub(crate) fn set_waiting(&mut self, waiting: bool, cx: &mut Context<Self>) {
@@ -433,7 +457,23 @@ impl RunActivityGroup {
         cx.notify();
     }
 
+    pub(crate) fn mark_continuation_successor(&mut self, cx: &mut Context<Self>) {
+        if self.continuation_successor {
+            return;
+        }
+        self.continuation_successor = true;
+        cx.notify();
+    }
+
     pub(crate) fn header_hidden(&self) -> bool {
+        if !self.continued
+            && self.continuation_successor
+            && self.status == RunActivityStatus::Running
+            && !self.waiting_for_user
+            && !self.waiting_for_answer
+        {
+            return true;
+        }
         let has_details = !self.process_copies.is_empty()
             || self
                 .segments
@@ -593,16 +633,19 @@ impl RunActivityGroup {
             sticky: StickyState::default(),
             collapsed_sticky: None,
             started_at: None,
+            work_clock: None,
             animation_epoch: Instant::now(),
             clock_task: None,
             phase: RunPhase::Working,
             waiting_for_user: false,
+            waiting_for_answer: false,
             current_thinking: None,
             thinking_order: 0,
             activity_order: 0,
             tool_starts: Vec::new(),
             presentation_released: false,
             continued: false,
+            continuation_successor: false,
             process_copies: HashSet::new(),
             final_confirmed: false,
             body_in_details: false,
@@ -1109,10 +1152,19 @@ impl RunActivityGroup {
         if self.continued {
             return "Activity".into();
         }
+        if self.status == RunActivityStatus::Running && self.waiting_for_answer {
+            return "Waiting for your answer".into();
+        }
         let duration = self.execution_duration_ms.or_else(|| {
             self.started_at
                 .filter(|_| !self.terminal && !self.presentation_released)
-                .map(|start| start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)
+                .map(|start| {
+                    let elapsed = self
+                        .work_clock
+                        .as_ref()
+                        .map_or_else(|| start.elapsed(), |clock| clock.elapsed());
+                    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+                })
         });
         let status = match self.status {
             RunActivityStatus::Running if self.waiting_for_user => "Awaiting confirmation for",
@@ -1373,7 +1425,10 @@ impl RunActivityGroup {
             .segments
             .get(segment)
             .and_then(|state| state.latest_progress.as_ref());
-        let live = owns_progress && !self.waiting_for_user && self.phase != RunPhase::Compacting;
+        let live = owns_progress
+            && !self.waiting_for_user
+            && !self.waiting_for_answer
+            && self.phase != RunPhase::Compacting;
         if owns_progress {
             let tool = self
                 .tool_starts

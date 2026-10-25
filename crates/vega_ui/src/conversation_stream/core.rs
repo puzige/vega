@@ -53,6 +53,7 @@ pub struct ConversationStream {
     pub(crate) foreground_height: Pixels,
     pub(crate) entry_identities: Vec<StreamEntryIdentity>,
     pub(crate) measured_entry_heights: HashMap<String, f32>,
+    pub(super) text_cache: std::cell::RefCell<super::text_cache::TextCache>,
     pub(crate) message_anchor_layout: super::message_anchors::MessageAnchorLayout,
     pub(crate) message_anchor_hovered: Option<String>,
     pub(crate) message_anchor_rail_hovered: bool,
@@ -90,6 +91,7 @@ pub struct ConversationStream {
     pub(crate) deferred_user_question: Option<vega_conversation::agent::PendingUserQuestion>,
     pub(crate) active_user_question: Option<Entity<crate::user_question_panel::UserQuestionPanel>>,
     pub(crate) active_user_question_call_id: Option<String>,
+    pub(crate) user_question_attention: Option<vega_conversation::types::UserQuestionId>,
     pub(crate) _user_question_listener_task: gpui_kit::Task<()>,
     /// Request retained after the queue listener wakes before its durable
     /// ToolCallProposed event reaches this stream.
@@ -409,9 +411,6 @@ impl ConversationStream {
                 this.context_usage_dismissed = true;
                 cx.notify();
                 this.timeout_permission(cx);
-                if this.delegated_run_active {
-                    this.cancel_user_questions(cx);
-                }
             }
         })
         .detach();
@@ -491,6 +490,7 @@ impl ConversationStream {
                 + Layout::COMPOSER_PADDING_BOTTOM),
             entry_identities: Vec::new(),
             measured_entry_heights: HashMap::new(),
+            text_cache: Default::default(),
             assistant_role_rows: Vec::new(),
             message_anchor_layout: super::message_anchors::MessageAnchorLayout::default(),
             message_anchor_hovered: None,
@@ -522,6 +522,7 @@ impl ConversationStream {
             deferred_user_question: None,
             active_user_question: None,
             active_user_question_call_id: None,
+            user_question_attention: None,
             _user_question_listener_task: user_question_listener_task,
             deferred_permission: None,
             active_permission: None,
@@ -693,6 +694,7 @@ impl ConversationStream {
         self.ensure_entry_identities();
         if let Some(slot) = self.entry_identities.get_mut(index) {
             self.measured_entry_heights.remove(&slot.key);
+            self.text_cache.get_mut().retire(&slot.key);
             *slot = identity;
         }
     }
@@ -842,6 +844,7 @@ impl ConversationStream {
         if index < self.entry_identities.len() {
             let identity = self.entry_identities.remove(index);
             self.measured_entry_heights.remove(&identity.key);
+            self.text_cache.get_mut().retire(&identity.key);
         }
         self.list.splice(index..index + 1, 0);
     }
