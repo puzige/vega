@@ -422,15 +422,93 @@ impl Fixture {
         .unwrap();
     }
 
-    async fn wait(&self, cx: &mut TestAppContext, predicate: impl Fn(&mut App) -> bool + 'static) {
-        cx.wait_for(self.window.into(), DEADLINE, move |_, cx| predicate(cx))
+    async fn wait_window(
+        &self,
+        stage: &str,
+        window: gpui_kit::AnyWindowHandle,
+        cx: &mut TestAppContext,
+        predicate: impl FnMut(&mut Window, &mut App) -> bool,
+    ) {
+        let started = std::time::Instant::now();
+        eprintln!("worker fixture wait started: {stage}");
+        let result = std::panic::AssertUnwindSafe(cx.wait_for(window, DEADLINE, predicate))
+            .catch_unwind()
+            .await;
+        if result.is_err() {
+            eprintln!(
+                "worker fixture wait failed: {stage}; wall_elapsed={:?}",
+                started.elapsed()
+            );
+            self.controller.read_with(cx, |controller, _| {
+                eprintln!(
+                    "active={} preparing={} prediction_pending={}",
+                    controller.agent_controller.active.len(),
+                    controller.agent_controller.ordinary_preparing.len(),
+                    controller.composer_prediction.is_some()
+                );
+            });
+            for (index, launch) in self.launches.iter().enumerate() {
+                let (cancel_bound, cancelled) = {
+                    let cancel = launch
+                        .cancel
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    (
+                        cancel.is_some(),
+                        cancel.as_ref().is_some_and(CancellationToken::is_cancelled),
+                    )
+                };
+                let (worker_bound, worker_finished) = {
+                    let worker = launch
+                        .worker
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    (
+                        worker.is_some(),
+                        worker.as_ref().is_some_and(|worker| worker.is_finished()),
+                    )
+                };
+                eprintln!(
+                    "launch={index} primary={} cancel_bound={} cancelled={} worker_bound={} worker_finished={} hold_poll={} poll_waiting={} finished={} poll_drained={} title_drained={} events={}",
+                    launch.primary_count(),
+                    cancel_bound,
+                    cancelled,
+                    worker_bound,
+                    worker_finished,
+                    launch.hold_poll.load(Ordering::SeqCst),
+                    launch.poll_waiting.load(Ordering::SeqCst),
+                    launch.finished.load(Ordering::SeqCst),
+                    launch.poll_drained.load(Ordering::SeqCst),
+                    launch.title_watch_drained.load(Ordering::SeqCst),
+                    launch.events.lock().unwrap().len()
+                );
+            }
+        }
+        if let Err(error) = result {
+            std::panic::resume_unwind(error);
+        }
+        eprintln!(
+            "worker fixture wait completed: {stage}; wall_elapsed={:?}",
+            started.elapsed()
+        );
+    }
+
+    async fn wait(
+        &self,
+        stage: &str,
+        cx: &mut TestAppContext,
+        predicate: impl Fn(&mut App) -> bool + 'static,
+    ) {
+        self.wait_window(stage, self.window.into(), cx, move |_, cx| predicate(cx))
             .await;
     }
 
     async fn primary(&self, launch: &Arc<WorkerLaunch>, count: usize, cx: &mut TestAppContext) {
         let launch = launch.clone();
-        self.wait(cx, move |_| launch.primary_count() == count)
-            .await;
+        self.wait(&format!("primary request count {count}"), cx, move |_| {
+            launch.primary_count() == count
+        })
+        .await;
     }
 
     async fn cleanup(&mut self, cx: &mut TestAppContext) -> Result<(), Vec<String>> {
@@ -461,24 +539,28 @@ impl Fixture {
         let database = self.database;
         let thread = self.thread.id.clone();
         let launches = self.launches.clone();
-        let drain = std::panic::AssertUnwindSafe(self.wait(cx, move |cx| {
-            launches.iter().all(|launch| {
-                launch
-                    .cancel
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .is_none()
-                    || (launch.poll_drained.load(Ordering::SeqCst)
-                        && launch.title_watch_drained.load(Ordering::SeqCst))
-            }) && controller.read(cx).composer_prediction.is_none()
-                && controller.read(cx).agent_controller.active.is_empty()
-                && controller
-                    .read(cx)
-                    .agent_controller
-                    .ordinary_preparing
-                    .is_empty()
-                && try_acquire(database, &thread).is_ok_and(|permit| permit.is_some())
-        }))
+        let drain = std::panic::AssertUnwindSafe(self.wait(
+            "cleanup lifecycle/admission drain",
+            cx,
+            move |cx| {
+                launches.iter().all(|launch| {
+                    launch
+                        .cancel
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .is_none()
+                        || (launch.poll_drained.load(Ordering::SeqCst)
+                            && launch.title_watch_drained.load(Ordering::SeqCst))
+                }) && controller.read(cx).composer_prediction.is_none()
+                    && controller.read(cx).agent_controller.active.is_empty()
+                    && controller
+                        .read(cx)
+                        .agent_controller
+                        .ordinary_preparing
+                        .is_empty()
+                    && try_acquire(database, &thread).is_ok_and(|permit| permit.is_some())
+            },
+        ))
         .catch_unwind()
         .await;
         match drain {
@@ -508,7 +590,7 @@ impl Fixture {
         let thread = self.thread.id.clone();
         let database = self.database;
         let launch = launch.clone();
-        self.wait(cx, move |cx| {
+        self.wait("finished worker lifecycle/admission drain", cx, move |cx| {
             launch.finished.load(Ordering::SeqCst)
                 && launch.poll_drained.load(Ordering::SeqCst)
                 && launch.title_watch_drained.load(Ordering::SeqCst)
@@ -539,13 +621,13 @@ impl Drop for Fixture {
         for launch in &self.launches {
             launch.cancel_and_release();
         }
-        if !self.safely_drained {
-            if let Some(directory) = self.directory.take() {
-                eprintln!(
-                    "fixture drain not established; retaining {}",
-                    directory.keep().display()
-                );
-            }
+        if !self.safely_drained
+            && let Some(directory) = self.directory.take()
+        {
+            eprintln!(
+                "fixture drain not established; retaining {}",
+                directory.keep().display()
+            );
         }
     }
 }
@@ -611,10 +693,14 @@ async fn attach(fixture: &Fixture, cx: &mut TestAppContext) {
         window.press("cmd-v", cx)
     })
     .unwrap();
-    cx.wait_for(fixture.window.into(), DEADLINE, |window, _| {
-        attachment_paths(window).len() == 1
-    })
-    .await;
+    fixture
+        .wait_window(
+            "composer image attachment visible",
+            fixture.window.into(),
+            cx,
+            |window, _| attachment_paths(window).len() == 1,
+        )
+        .await;
 }
 
 #[gpui_kit::test]
@@ -657,7 +743,7 @@ async fn ordinary_stop_drains_real_worker_and_duplicate_late_batches_cannot_touc
         );
         let waiting = first.clone();
         fixture
-            .wait(cx, move |_| {
+            .wait("held poll and worker/title completion", cx, move |_| {
                 waiting.poll_waiting.load(Ordering::SeqCst)
                     && waiting.worker_finished()
                     && waiting.title_watch_drained.load(Ordering::SeqCst)
@@ -783,10 +869,14 @@ async fn ordinary_stop_drains_real_worker_and_duplicate_late_batches_cannot_touc
             window.press("cmd-v", cx);
         })
         .unwrap();
-        cx.wait_for(b_window.into(), DEADLINE, |window, _| {
-            attachment_paths(window).len() == 1
-        })
-        .await;
+        fixture
+            .wait_window(
+                "other-thread image attachment visible",
+                b_window.into(),
+                cx,
+                |window, _| attachment_paths(window).len() == 1,
+            )
+            .await;
         let b_anchor = b_stream.read_with(cx, |stream, _| stream.scroll_anchor_snapshot());
         let (b_attachments, b_echoes) = cx
             .update_window(b_window.into(), |_, window, _| {
@@ -900,7 +990,7 @@ async fn running_send_now_is_consumed_by_real_runtime_once_without_ordinary_admi
     attach(&fixture, cx).await;
     fixture.click("composer-running-send", cx);
     let stream = fixture.stream.clone();
-    fixture.wait(cx, move |cx| !stream.read(cx).pending_queue().busy && stream.read(cx).pending_queue().messages.len() == 1).await;
+    fixture.wait("steering queue accepted and idle", cx, move |cx| !stream.read(cx).pending_queue().busy && stream.read(cx).pending_queue().messages.len() == 1).await;
     let pending = fixture.stream.read_with(cx, |stream, _| stream.pending_queue().messages[0].clone());
     assert_eq!(pending.content, STEER);
     assert_eq!(pending.images, vec![image()]);
@@ -919,7 +1009,7 @@ async fn running_send_now_is_consumed_by_real_runtime_once_without_ordinary_admi
     launch.script.releases[0].cancel();
     fixture.primary(&launch, 2, cx).await;
     let events = launch.clone();
-    fixture.wait(cx, move |_| events.events.lock().unwrap().iter().any(|event| matches!(event, ConversationEvent::PendingMessageDelivered { .. }))).await;
+    fixture.wait("pending delivery event observed", cx, move |_| events.events.lock().unwrap().iter().any(|event| matches!(event, ConversationEvent::PendingMessageDelivered { .. }))).await;
     let requests = launch.script.requests.lock().unwrap().clone();
     assert_eq!(requests.len(), 2);
     assert!(!requests[0].messages.iter().any(|message| message.role == ChatRole::User && message.content == STEER));
