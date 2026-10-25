@@ -4,15 +4,11 @@ use std::{cell::Cell, rc::Rc};
 
 #[derive(Clone)]
 pub(super) enum Control {
-    View(SidebarView),
-    CollapseAll,
+    ProjectView(SidebarProjectView),
     Menu(OrganizationMenu),
     Archive,
-    NewGroup,
     AddProject,
-    Collapse(SidebarCollapseTarget),
     More(String),
-    Project(String),
     NewStandalone,
     NewProjectTask(String),
     ToggleProject(String),
@@ -62,27 +58,27 @@ impl ThreadsBlock {
     pub(super) fn control_action(
         &mut self,
         action: Control,
-        window: &mut Window,
+        _: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match action {
-            Control::View(view) => {
+            Control::ProjectView(view) => {
                 self.close_actions();
                 if let Some(org) = self.organization.as_mut() {
                     org.menu = None;
                     org.menu_anchor = None;
                     if let Some(snapshot) = &org.snapshot {
                         let mut preferences = snapshot.preferences.clone();
-                        preferences.view = view;
+                        if snapshot.preferences.project_view == view {
+                            return;
+                        }
+                        preferences.project_view = view;
                         self.submit_organization(
                             SidebarOrganizationAction::SetPreferences(preferences),
                             cx,
                         );
                     }
                 }
-            }
-            Control::CollapseAll => {
-                self.submit_organization(SidebarOrganizationAction::CollapseAll, cx)
             }
             Control::Menu(_) => return,
             Control::Archive => {
@@ -115,24 +111,14 @@ impl ThreadsBlock {
                 let project_refs: Vec<_> = projects.iter().collect();
                 self.sync_project_task_windows(&project_refs, show_archived);
             }
-            Control::NewGroup => self.edit_group(None, window, cx),
             Control::AddProject => {
                 if let Some(org) = &self.organization {
                     org.projects.update(cx, ProjectsBlock::open_picker);
                 }
             }
-            Control::Collapse(target) => self.toggle_organization_collapse(target, cx),
             Control::More(id) => {
                 if let Some(organization) = self.organization.as_mut() {
                     organization.grow_project_task_page(&id);
-                }
-            }
-            Control::Project(id) => {
-                if crate::navigation::allow_task_navigation(None, cx)
-                    && let Some(org) = &self.organization
-                {
-                    org.projects
-                        .update(cx, |projects, cx| projects.select_project(&id, cx));
                 }
             }
             Control::NewStandalone => self.create_task(None, cx),
@@ -160,10 +146,10 @@ impl ThreadsBlock {
         let colors = theme(cx).colors;
         let id = id.into();
         let label = label.into();
-        let aria = match &action {
-            Control::CollapseAll => "收起全部".to_string(),
-            Control::Menu(_) => "组织操作".to_string(),
-            _ => label.clone(),
+        let aria = if selected {
+            format!("{label}，已选择")
+        } else {
+            label.clone()
         };
         let keyboard_action = action.clone();
         let button_bounds =
@@ -174,7 +160,9 @@ impl ThreadsBlock {
             .id(ElementId::Name(id.clone().into()))
             .focusable()
             .tab_stop(true)
+            .role(gpui_kit::Role::Button)
             .aria_label(aria)
+            .aria_selected(selected)
             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
             .px_2()
             .rounded_lg()
@@ -253,10 +241,6 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        // Every value the sections need is copied out before the first
-        // `&mut self` section renderer runs, so no borrow of
-        // `self.organization` is held across it. `render_recents_pi` is
-        // `&mut self` because lazy loading records the live total.
         let Some((snapshot, show_archived, menu_open)) = self.organization.as_ref().map(|org| {
             (
                 org.snapshot.clone().map(|mut snapshot| {
@@ -338,8 +322,15 @@ impl ThreadsBlock {
             .flex_col()
             .gap(px(Layout::SIDEBAR_SECTION_GAP));
         body = body.children(self.render_pinned_pi(&snapshot, show_archived, cx));
-        body = body.child(self.render_projects_pi(&snapshot, show_archived, cx));
-        body = body.child(self.render_recents_pi(&snapshot, show_archived, cx));
+        match snapshot.preferences.project_view {
+            SidebarProjectView::ByProject => {
+                body = body.child(self.render_projects_pi(&snapshot, show_archived, cx));
+                body = body.child(self.render_recents_pi(&snapshot, show_archived, cx));
+            }
+            SidebarProjectView::Timeline => {
+                body = body.child(self.render_recents_pi(&snapshot, show_archived, cx));
+            }
+        }
         body = body.children(menu_open.then(|| self.render_organization_menu(cx)));
         body = body.children(
             self.error
@@ -542,21 +533,14 @@ impl ThreadsBlock {
     ) -> AnyElement {
         let colors = theme(cx).colors;
         let label = "最近任务";
-        let mut standalone: Vec<_> = self
-            .threads
-            .iter()
-            .filter(|thread| thread.is_standalone() && !thread.pinned)
-            .cloned()
+        let project_view = snapshot.preferences.project_view;
+        let threads: Vec<_> = self
+            .eligible_threads(show_archived)
+            .into_iter()
+            .filter(|thread| !thread.pinned)
+            .filter(|thread| project_view == SidebarProjectView::Timeline || thread.is_standalone())
             .collect();
-        if show_archived {
-            standalone.extend(
-                self.archived
-                    .iter()
-                    .filter(|thread| thread.is_standalone() && !thread.pinned)
-                    .cloned(),
-            );
-        }
-        standalone = super::projections::sorted_threads(&standalone, &snapshot.preferences);
+        let threads = super::projections::sorted_threads(&threads, &snapshot.preferences);
         let header_actions_visible = self.hovered_section == Some(OrganizationSection::Recents)
             || self.focused_section == Some(OrganizationSection::Recents);
         let header = div()
@@ -596,10 +580,31 @@ impl ThreadsBlock {
             .0
             .as_ref()
             .map(|thread| thread.id.clone());
-        let empty = standalone.is_empty();
+        let empty = threads.is_empty();
 
-        self.recents_total = standalone.len();
-        let rows = standalone
+        let layout = div()
+            .id("organization-layout")
+            .flex()
+            .items_center()
+            .gap_1()
+            .children(
+                [
+                    ("by-project", "按项目", SidebarProjectView::ByProject),
+                    ("timeline", "扁平列表", SidebarProjectView::Timeline),
+                ]
+                .into_iter()
+                .map(|(id, label, view)| {
+                    self.organization_control(
+                        format!("organization-layout-{id}"),
+                        label,
+                        Control::ProjectView(view),
+                        project_view == view,
+                        cx,
+                    )
+                }),
+            );
+        self.recents_total = threads.len();
+        let rows = threads
             .into_iter()
             .take(self.recents_visible)
             .map(|thread| {
@@ -608,7 +613,11 @@ impl ThreadsBlock {
                     &thread,
                     &opened_id,
                     archived,
-                    "standalone-thread-row-",
+                    if project_view == SidebarProjectView::ByProject {
+                        "standalone-thread-row-"
+                    } else {
+                        "timeline-thread-row-"
+                    },
                     true,
                     cx,
                 )
@@ -630,6 +639,7 @@ impl ThreadsBlock {
             .flex_col()
             .flex_shrink_0()
             .child(header)
+            .child(layout)
             .child(
                 div()
                     .id("organization-recents-scroll")

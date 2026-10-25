@@ -1,12 +1,9 @@
-#![allow(dead_code)]
-
 use super::*;
 use std::collections::{HashMap, HashSet};
 use vega_conversation::sidebar_organization as service;
 use vega_conversation::types::{
     SidebarCollapseTarget, SidebarGroupColor, SidebarOrganizationAction,
-    SidebarOrganizationOutcome, SidebarOrganizationSnapshot, SidebarProject, SidebarTaskSort,
-    SidebarTimelineBucket, SidebarView,
+    SidebarOrganizationOutcome, SidebarOrganizationSnapshot, SidebarProject, SidebarProjectView,
 };
 mod menu;
 mod projections;
@@ -129,6 +126,7 @@ struct GroupEditor {
 }
 #[derive(Clone)]
 enum OrganizationMenu {
+    #[allow(dead_code)]
     Group(String),
     Project(String),
 }
@@ -146,40 +144,12 @@ enum MenuCommand {
     NewTask(String),
     RemoveProject(String),
 }
-#[derive(Clone)]
-struct OrganizationDrag {
-    kind: DragKind,
-    label: String,
-}
-#[derive(Clone)]
-enum DragKind {
-    Project(String),
-    Group(String),
-    Thread(String),
-}
-
 fn project_row_is_active(project_id: &str, cx: &App) -> bool {
     cx.global::<SelectedProject>().0.as_deref() == Some(project_id)
         && cx
             .try_global::<OpenedThread>()
             .and_then(|opened| opened.0.as_ref())
             .is_none_or(|thread| thread.project_binding() != Some(project_id))
-}
-
-impl Render for OrganizationDrag {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = theme(cx).colors;
-        div()
-            .px_3()
-            .py_2()
-            .rounded_md()
-            .bg(colors.bg_elevated)
-            .border_1()
-            .border_color(colors.border_subtle)
-            .text_size(px(Typography::SIDEBAR))
-            .text_color(colors.text_primary)
-            .child(self.label.clone())
-    }
 }
 
 impl ThreadsBlock {
@@ -289,6 +259,9 @@ impl ThreadsBlock {
                 let Some(snapshot) = organization.snapshot.as_ref() else {
                     return false;
                 };
+                if snapshot.preferences.project_view != SidebarProjectView::ByProject {
+                    return false;
+                }
                 let projects = Self::visible_project_ids(snapshot, self.projects_expanded);
                 organization.has_project_tasks_to_grow(&projects, &snapshot.collapsed)
             })
@@ -306,6 +279,9 @@ impl ThreadsBlock {
         let projects_expanded = self.projects_expanded;
         let project_growth = self.organization.as_ref().and_then(|organization| {
             let snapshot = organization.snapshot.as_ref()?;
+            if snapshot.preferences.project_view != SidebarProjectView::ByProject {
+                return None;
+            }
             Some((
                 Self::visible_project_ids(snapshot, projects_expanded),
                 snapshot.collapsed.clone(),
@@ -513,6 +489,11 @@ impl ThreadsBlock {
                             .cloned()
                             .collect();
                     }
+                    if org.snapshot.as_ref().is_some_and(|old| {
+                        old.preferences.project_view != snapshot.preferences.project_view
+                    }) {
+                        self.recents_visible = RECENTS_PAGE;
+                    }
                     org.snapshot = Some(snapshot);
                 }
                 if was_mutation {
@@ -570,6 +551,7 @@ impl ThreadsBlock {
         self.error = None;
         cx.notify();
     }
+    #[allow(dead_code)]
     fn commit_group(&mut self, cx: &mut Context<Self>) {
         let Some(editor) = self.organization.as_ref().and_then(|o| o.editor.as_ref()) else {
             return;
