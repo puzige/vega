@@ -422,7 +422,7 @@ impl ProtectedProcess {
             return Err(CredentialError::InvalidBinding);
         }
         let mut profile = format!(
-            "(version 1)(allow default)(deny file-read* file-write* (subpath \"{root}\"))(deny process-info*)(deny mach-lookup (global-name \"com.apple.taskgated\"))"
+            "(version 1)(allow default)(deny file-read* file-write* (subpath \"{root}\"))(deny process-info*)(allow process-info-pidinfo (target self))(deny mach-lookup (global-name \"com.apple.taskgated\"))"
         );
         if let Some(lease) = &self.lease {
             profile.push_str(&format!(
