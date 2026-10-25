@@ -152,9 +152,8 @@ pub struct ConversationStream {
     pub(crate) controller_runtime_error: Option<(String, RunFailureKind)>,
     pub(crate) run_failures: HashMap<String, RunFailureKind>,
     pub(crate) run_notices: HashMap<usize, super::run_notice::RunNotice>,
-    /// Nonfatal run-start MCP omission. Kept separate so a provider failure
-    /// cannot overwrite it or be overwritten by it.
-    pub(crate) mcp_warning: Option<crate::localized_copy::LocalizedCopy>,
+    pub(crate) run_mcp_unavailable: HashMap<String, usize>,
+    pub(crate) mcp_notices: HashMap<usize, super::run_notice::RunNotice>,
     pub(crate) file_selector: FileSelectorModel,
     /// The latest bounded candidate projection for this thread's project.
     pub(crate) file_snapshot: FileIndexSnapshot,
@@ -579,7 +578,8 @@ impl ConversationStream {
             controller_runtime_error: None,
             run_notices: HashMap::new(),
             run_failures: HashMap::new(),
-            mcp_warning: None,
+            run_mcp_unavailable: HashMap::new(),
+            mcp_notices: HashMap::new(),
             file_selector: FileSelectorModel::default(),
             file_snapshot: FileIndexSnapshot::default(),
             file_index_loading: false,
@@ -1606,21 +1606,23 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// An enabled-but-unavailable MCP server contributes no tools to this
-    /// run. The count is enough to disclose the omission; the Settings page
-    /// owns the per-server code and no remote error body enters Composer.
     pub fn apply_mcp_unavailable(
         &mut self,
+        message_id: &str,
         diagnostics: &[vega_conversation::types::McpServerDiagnostic],
         cx: &mut Context<Self>,
     ) {
-        if diagnostics.is_empty() {
+        let count = diagnostics
+            .iter()
+            .map(|diagnostic| &diagnostic.server_id)
+            .collect::<HashSet<_>>()
+            .len();
+        if count == 0 || self.run_mcp_unavailable.get(message_id) == Some(&count) {
             return;
         }
-        self.mcp_warning = Some(crate::localized_copy::LocalizedCopy::with_args(
-            "ui.count_enabled_mcp_servers_are_unavailable_their_tools",
-            vec![("count", (diagnostics.len()).to_string().into())],
-        ));
+        self.run_mcp_unavailable
+            .insert(message_id.to_owned(), count);
+        self.refresh_run_notices(cx);
         cx.notify();
     }
 
