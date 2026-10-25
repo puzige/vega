@@ -258,8 +258,8 @@ pub(crate) fn action_button_owned(
         .as_ref()
         .map(gpui_kit::ElementId::from)
         .unwrap_or_else(|| label.clone().into());
-    let destructive = label == "删除";
-    let primary = label.starts_with("保存");
+    let destructive = label == t("settings.action.delete");
+    let primary = label.starts_with(t("settings.action.save"));
     settings_action_chrome(colors)
         .id(id)
         .interaction_surface(
@@ -307,24 +307,22 @@ pub(crate) fn action_button_owned(
 
 pub(crate) fn pricing_error_label(code: PricingSettingsErrorCode) -> &'static str {
     match code {
-        PricingSettingsErrorCode::Io => "定价文件读写失败，请检查数据目录后重新加载",
-        PricingSettingsErrorCode::MalformedCatalog => {
-            "定价文件已损坏；原文件已保留，请外部修复后重新加载"
-        }
-        PricingSettingsErrorCode::LockedProfile => "内置模型结构不完整或 metadata 被修改",
-        PricingSettingsErrorCode::InvalidInput => "模型 ID 或价格格式无效",
-        PricingSettingsErrorCode::ModelNotPriced => "当前模型未配置价格，请先添加后重试",
-        PricingSettingsErrorCode::TargetChanged => "定价文件在保存期间变化，请重新加载",
-        PricingSettingsErrorCode::RecoveryRequired => "保存结果无法确认，请重新加载恢复",
-        PricingSettingsErrorCode::Busy => "已有定价操作正在进行",
-        PricingSettingsErrorCode::LimitExceeded => "定价文件或条目超过安全上限",
+        PricingSettingsErrorCode::Io => t("settings.pricing.error.io"),
+        PricingSettingsErrorCode::MalformedCatalog => t("settings.pricing.error.malformed"),
+        PricingSettingsErrorCode::LockedProfile => t("settings.pricing.error.locked"),
+        PricingSettingsErrorCode::InvalidInput => t("settings.pricing.error.invalid"),
+        PricingSettingsErrorCode::ModelNotPriced => t("settings.pricing.error.unpriced"),
+        PricingSettingsErrorCode::TargetChanged => t("settings.pricing.error.conflict"),
+        PricingSettingsErrorCode::RecoveryRequired => t("settings.pricing.error.recovery"),
+        PricingSettingsErrorCode::Busy => t("settings.pricing.error.busy"),
+        PricingSettingsErrorCode::LimitExceeded => t("settings.pricing.error.limit"),
     }
 }
 
 pub(crate) fn pricing_notice_label(notice: PricingNotice) -> &'static str {
     match notice {
-        PricingNotice::DurabilityUnknownReconciled => "保存已复验，但目录 durability 曾无法确认",
-        PricingNotice::ExternalWinnerAdopted => "保存期间文件发生变化，已采用外部有效版本",
+        PricingNotice::DurabilityUnknownReconciled => t("settings.pricing.notice.durability"),
+        PricingNotice::ExternalWinnerAdopted => t("settings.pricing.notice.external"),
     }
 }
 
@@ -406,25 +404,36 @@ fn is_provider_model_id(model: &str) -> bool {
 /// constraint and never includes arbitrary input or credential values.
 pub(crate) fn provider_models_error_label(error: &ProviderModelsError) -> String {
     match error {
-        ProviderModelsError::Empty => "请至少填写一个模型 ID".to_string(),
-        ProviderModelsError::InputTooLarge => {
-            format!(
-                "模型列表过大（最多 {} KiB）",
-                PROVIDER_MODELS_INPUT_BYTES_LIMIT / 1024
-            )
-        }
-        ProviderModelsError::TooMany { line } => {
-            format!("第 {line} 行超出模型数量上限（最多 {PROVIDER_MODEL_COUNT_MAX} 个）")
-        }
-        ProviderModelsError::TooLong { line } => {
-            format!("第 {line} 行模型 ID 过长（最多 {PROVIDER_MODEL_ID_MAX_BYTES} 字节）")
-        }
-        ProviderModelsError::Duplicate { line } => {
-            format!("第 {line} 行模型 ID 与前面重复")
-        }
-        ProviderModelsError::Invalid { line } => {
-            format!("第 {line} 行模型 ID 无效：请使用字母、数字、点、下划线、冒号、斜杠或连字符")
-        }
+        ProviderModelsError::Empty => t("settings.provider.models.empty").to_string(),
+        ProviderModelsError::InputTooLarge => t_args(
+            "settings.provider.models.too_large",
+            &[(
+                "limit",
+                &(PROVIDER_MODELS_INPUT_BYTES_LIMIT / 1024).to_string(),
+            )],
+        ),
+        ProviderModelsError::TooMany { line } => t_args(
+            "settings.provider.models.too_many",
+            &[
+                ("line", &line.to_string()),
+                ("limit", &PROVIDER_MODEL_COUNT_MAX.to_string()),
+            ],
+        ),
+        ProviderModelsError::TooLong { line } => t_args(
+            "settings.provider.models.too_long",
+            &[
+                ("line", &line.to_string()),
+                ("limit", &PROVIDER_MODEL_ID_MAX_BYTES.to_string()),
+            ],
+        ),
+        ProviderModelsError::Duplicate { line } => t_args(
+            "settings.provider.models.duplicate",
+            &[("line", &line.to_string())],
+        ),
+        ProviderModelsError::Invalid { line } => t_args(
+            "settings.provider.models.invalid",
+            &[("line", &line.to_string())],
+        ),
     }
 }
 

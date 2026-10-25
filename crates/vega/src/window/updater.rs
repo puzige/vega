@@ -42,9 +42,20 @@ impl VegaWindow {
         .detach();
     }
 
+    pub(super) fn localized_update_projection(&self) -> UpdateProjection {
+        let mut projection = self.updater.state.clone();
+        if let Some(message) = crate::app_localization::translated(&projection.message) {
+            projection.message = message.into();
+        }
+        if let Some(version) = crate::app_localization::translated(&projection.current_version) {
+            projection.current_version = version.into();
+        }
+        projection
+    }
+
     pub(crate) fn publish_updater(&self, cx: &mut Context<Self>) {
         if let Some(view) = &self.settings_view {
-            let projection = self.updater.state.clone();
+            let projection = self.localized_update_projection();
             view.update(cx, |view, cx| view.apply_update_projection(projection, cx));
         }
         cx.notify();
@@ -76,8 +87,7 @@ impl VegaWindow {
                     || self.workspace_has_terminals()
                     || artifact_busy
                 {
-                    self.updater.state.message =
-                        "请先结束所有会话中的运行任务并关闭终端，再重启安装".into();
+                    self.updater.state.message = vega_i18n::t("app.update.tasks_running").into();
                     self.publish_updater(cx);
                     return;
                 }
@@ -87,7 +97,7 @@ impl VegaWindow {
         }
         if !self.updater.request(request) && matches!(request, UpdateRequest::Install) {
             crate::updater::set_installing(false);
-            self.updater.state.message = "更新服务忙，请稍后重试".into();
+            self.updater.state.message = vega_i18n::t("app.update.busy").into();
         }
         self.publish_updater(cx);
     }

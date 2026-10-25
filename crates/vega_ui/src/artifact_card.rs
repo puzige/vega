@@ -379,9 +379,9 @@ impl ArtifactCard {
             || menu_open
             || focus.iter().any(|focus| focus.contains_focused(window, cx));
         let hint = if opening {
-            "Opening file in progress"
+            vega_i18n::t("ui.opening_file_in_progress")
         } else {
-            "File unavailable"
+            vega_i18n::t("ui.file_unavailable")
         };
         let details = match projection.size_bytes {
             Some(size) => format!("{} · {}", projection.label, format_size(size)),
@@ -410,12 +410,12 @@ impl ArtifactCard {
                 gpui_kit::Role::Group
             })
             .aria_label(if preview_enabled {
-                format!("Preview {}", projection.label)
+                vega_i18n::t_args("ui.preview_name", &[("name", &projection.label)])
             } else {
                 projection.label.clone()
             })
             .aria_description(if preview_enabled {
-                "Preview file"
+                vega_i18n::t("ui.preview_file")
             } else {
                 hint
             })
@@ -511,7 +511,7 @@ impl ArtifactCard {
             let menu_card = card.clone();
             let menu_key = card.clone();
             let trigger = compact_button(
-                "Open file in",
+                "ui.open_file_in",
                 Icon::More,
                 &focus[1],
                 open_enabled,
@@ -567,6 +567,11 @@ impl ArtifactCard {
                 .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_mouse_down_out(move |_, _, cx| outside.update(cx, ArtifactCard::close_menu));
             for (index, (target, label)) in OPEN_TARGETS.into_iter().enumerate() {
+                let label = match target {
+                    OpenInTarget::Terminal => vega_i18n::t("ui.terminal"),
+                    OpenInTarget::DefaultApplication => vega_i18n::t("ui.default"),
+                    _ => label,
+                };
                 let open_card = card.clone();
                 let key_card = card.clone();
                 let item_focus = self.focus[index + 1].clone();
@@ -711,12 +716,22 @@ impl ArtifactCard {
                     clear_card.update(cx, ArtifactCard::clear);
                 })
                 .child(
-                    artifact_button("Preview", preview_enabled, focus[0].clone(), colors)
-                        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                            preview_card.update(cx, ArtifactCard::preview);
-                        }),
+                    artifact_button(
+                        vega_i18n::t("ui.preview"),
+                        preview_enabled,
+                        focus[0].clone(),
+                        colors,
+                    )
+                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                        preview_card.update(cx, ArtifactCard::preview);
+                    }),
                 );
             for (index, (target, label)) in OPEN_TARGETS.iter().copied().enumerate() {
+                let label = match target {
+                    OpenInTarget::Terminal => vega_i18n::t("ui.terminal"),
+                    OpenInTarget::DefaultApplication => vega_i18n::t("ui.default"),
+                    _ => label,
+                };
                 let open_card = card.clone();
                 actions = actions.child(
                     artifact_button(label, open_enabled, focus[index + 1].clone(), colors)
@@ -766,7 +781,7 @@ pub struct ArtifactGroup {
     capture_errors: Vec<(String, GitWorkspaceErrorCode)>,
     file_errors: Vec<(Entity<ArtifactCard>, GitWorkspaceErrorCode)>,
     review_request: OpenWorkspaceDiffRequested,
-    review_disabled_reason: Option<&'static str>,
+    review_disabled_reason_key: Option<&'static str>,
 }
 
 impl EventEmitter<OpenWorkspaceDiffRequested> for ArtifactGroup {}
@@ -786,7 +801,7 @@ impl ArtifactGroup {
             capture_errors: Vec::new(),
             file_errors: Vec::new(),
             review_request,
-            review_disabled_reason: review_disabled_reason(reading_preview, standalone),
+            review_disabled_reason_key: review_disabled_reason_key(reading_preview, standalone),
         }
     }
 
@@ -826,15 +841,15 @@ impl ArtifactGroup {
         standalone: bool,
         cx: &mut Context<Self>,
     ) {
-        let reason = review_disabled_reason(reading_preview, standalone);
-        if self.review_disabled_reason != reason {
-            self.review_disabled_reason = reason;
+        let reason = review_disabled_reason_key(reading_preview, standalone);
+        if self.review_disabled_reason_key != reason {
+            self.review_disabled_reason_key = reason;
             cx.notify();
         }
     }
 
     fn open_review(&mut self, cx: &mut Context<Self>) {
-        if self.review_disabled_reason.is_none() && !self.files.is_empty() {
+        if self.review_disabled_reason_key.is_none() && !self.files.is_empty() {
             cx.emit(self.review_request.clone());
         }
     }
@@ -941,13 +956,17 @@ impl ArtifactGroup {
         let has_toggle = total > Layout::ARTIFACT_VISIBLE_FILES;
         let heading = if total == 1 {
             let card = state.files[0].card.read(cx);
-            format!("Edited {}", artifact_path(&card.projection.label).1)
+            vega_i18n::t_args(
+                "ui.artifact.edited_file",
+                &[("name", artifact_path(&card.projection.label).1)],
+            )
         } else {
-            format!("Edited {total} files")
+            vega_i18n::t_args("ui.artifact.edited_files", &[("count", &total.to_string())])
         };
         let review_reason = state
-            .review_disabled_reason
-            .or((total == 0).then_some("No edited files are available for review"));
+            .review_disabled_reason_key
+            .or((total == 0).then_some("ui.artifact.review_empty"))
+            .map(vega_i18n::t);
         let files = state
             .files
             .iter()
@@ -974,9 +993,13 @@ impl ArtifactGroup {
             .track_focus(&review_focus)
             .tab_stop(true)
             .role(gpui_kit::Role::Button)
-            .aria_label("Open Review")
-            .aria_description(review_reason.unwrap_or("Open workspace changes"))
-            .tooltip(move |_, cx| crate::icons::tooltip(review_reason.unwrap_or("Open Review"), cx))
+            .aria_label(vega_i18n::t("ui.open_review"))
+            .aria_description(
+                review_reason.unwrap_or(vega_i18n::t("ui.artifact.open_workspace_changes")),
+            )
+            .tooltip(move |_, cx| {
+                crate::icons::tooltip(review_reason.unwrap_or(vega_i18n::t("ui.open_review")), cx)
+            })
             .focus_visible(move |style| style.bg(colors.bg_hover))
             .h(px(Layout::ARTIFACT_ACTION_SIZE))
             .px_2()
@@ -991,7 +1014,7 @@ impl ArtifactGroup {
                 colors.text_tertiary
             })
             .when(review_reason.is_none(), |button| button.cursor_pointer())
-            .child("Open Review")
+            .child(vega_i18n::t("ui.open_review"))
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 cx.stop_propagation();
                 review_click.update(cx, ArtifactGroup::open_review);
@@ -1046,9 +1069,12 @@ impl ArtifactGroup {
         }
         if has_toggle {
             let label = if expanded {
-                "Collapse files".to_owned()
+                vega_i18n::t("ui.artifact.collapse_files").to_owned()
             } else {
-                format!("Show {} more files", total - visible)
+                vega_i18n::t_args(
+                    "ui.artifact.show_more_files",
+                    &[("count", &(total - visible).to_string())],
+                )
             };
             let disclosure_id: gpui_kit::SharedString =
                 format!("artifact-disclosure-{}", group.entity_id()).into();
@@ -1134,11 +1160,11 @@ impl ArtifactGroup {
     }
 }
 
-fn review_disabled_reason(reading_preview: bool, standalone: bool) -> Option<&'static str> {
+fn review_disabled_reason_key(reading_preview: bool, standalone: bool) -> Option<&'static str> {
     if reading_preview {
-        Some("Review is unavailable in reading preview")
+        Some("ui.artifact.review_reading_preview")
     } else if standalone {
-        Some("Review requires a project conversation")
+        Some("ui.artifact.review_project_required")
     } else {
         None
     }
@@ -1165,15 +1191,16 @@ fn format_size(size: u64) -> String {
 }
 
 fn compact_button(
-    label: &'static str,
+    label_key: &'static str,
     glyph: Icon,
     focus: &FocusHandle,
     enabled: bool,
     disabled_hint: &'static str,
     colors: ThemeColors,
 ) -> crate::interaction::Interaction {
+    let label = vega_i18n::t(label_key);
     div()
-        .id(label)
+        .id(label_key)
         .interactive(colors, enabled, false)
         .track_focus(&focus.clone().tab_stop(enabled))
         .tab_stop(enabled)
@@ -1226,15 +1253,15 @@ fn artifact_button(
 fn error_label(code: Option<GitWorkspaceErrorCode>) -> String {
     code.map_or_else(String::new, |code| match code {
         GitWorkspaceErrorCode::GitUnavailable => {
-            "Git 2.40+ was not found. Install Homebrew Git and retry.".to_owned()
+            vega_i18n::t("ui.git_2_40_was_not_found_install_homebrew").to_owned()
         }
         GitWorkspaceErrorCode::GitUnsupported => {
-            "Git 2.40+ is required. Upgrade Git and retry.".to_owned()
+            vega_i18n::t("ui.git_2_40_is_required_upgrade_git_and").to_owned()
         }
         GitWorkspaceErrorCode::GitExecutableChanged => {
-            "Git changed while Vega was running. Restart Vega and retry.".to_owned()
+            vega_i18n::t("ui.git_changed_while_vega_was_running_restart_vega").to_owned()
         }
-        code => format!("Artifact unavailable ({})", code.as_str()),
+        code => vega_i18n::t_args("ui.artifact_unavailable_code", &[("code", code.as_str())]),
     })
 }
 

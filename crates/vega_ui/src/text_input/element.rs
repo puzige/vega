@@ -137,7 +137,7 @@ impl Element for TextElement {
             (
                 input
                     .prediction_text()
-                    .map_or_else(|| input.placeholder.clone(), SharedString::from),
+                    .map_or_else(|| input.localized_placeholder(), SharedString::from),
                 theme(cx).colors.text_tertiary.into(),
             )
         } else {

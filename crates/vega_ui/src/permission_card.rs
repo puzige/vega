@@ -9,7 +9,10 @@ use gpui_kit::{
     Window, actions, div, px,
 };
 use vega_conversation::agent::{PERMISSION_TIMEOUT, PermissionLease};
-use vega_conversation::types::{PermissionDecision, PermissionOptionChoice, PermissionRequest};
+use vega_conversation::types::{
+    CodexAcpActivityIdentity, CodexArgumentPreview, PermissionDecision, PermissionOptionChoice,
+    PermissionRequest,
+};
 use vega_theme::{Layout, Typography, theme};
 
 use crate::conversation_stream::{MONOFONT, ROW_HEIGHT, display_width};
@@ -46,6 +49,7 @@ struct SafePermissionPrompt {
     tool: String,
     display_target: String,
     command_rows: Vec<String>,
+    codex_identity: Option<(CodexAcpActivityIdentity, Option<CodexArgumentPreview>)>,
     danger_rule_id: Option<String>,
     danger_reason: Option<String>,
     allow_persistent: bool,
@@ -53,11 +57,20 @@ struct SafePermissionPrompt {
 }
 
 impl SafePermissionPrompt {
-    fn from_request(request: &PermissionRequest, allow_persistent: bool) -> Self {
+    fn from_request(
+        request: &PermissionRequest,
+        allow_persistent: bool,
+        codex_identity: Option<(CodexAcpActivityIdentity, Option<CodexArgumentPreview>)>,
+    ) -> Self {
         Self {
             tool: request.tool.clone(),
             display_target: request.display_target.clone(),
             command_rows: wrap_command_rows(&request.display_target),
+            codex_identity: codex_identity.filter(|(identity, _)| {
+                request.tool == "codex_acp"
+                    && identity.is_valid()
+                    && identity.permission_target() == request.display_target
+            }),
             danger_rule_id: request.danger_rule_id.clone(),
             danger_reason: request.danger_reason.clone(),
             allow_persistent: allow_persistent && request.external.is_none(),
@@ -65,8 +78,39 @@ impl SafePermissionPrompt {
         }
     }
 
+    fn command_rows(&self) -> Vec<String> {
+        self.codex_identity
+            .as_ref()
+            .map(|(identity, preview)| {
+                wrap_command_rows(&crate::tool_card::codex_identity_display(
+                    identity, *preview,
+                ))
+            })
+            .unwrap_or_else(|| self.command_rows.clone())
+    }
+
     fn is_danger(&self) -> bool {
         self.danger_rule_id.is_some()
+    }
+
+    fn danger_label(&self) -> &str {
+        let internal_danger = self.tool == "bash" && self.acp_options.is_none();
+        let key = internal_danger
+            .then_some(self.danger_rule_id.as_deref())
+            .flatten()
+            .and_then(|rule| match rule {
+                "rm-root-recursive-force" => Some("ui.danger.root_recursive_delete"),
+                "git-force-push" => Some("ui.danger.force_push"),
+                "raw-device-write" => Some("ui.danger.raw_device_write"),
+                "filesystem-format" => Some("ui.danger.filesystem_format"),
+                "diskutil-destructive" => Some("ui.danger.diskutil_destructive"),
+                _ => None,
+            });
+        key.map(vega_i18n::t).unwrap_or_else(|| {
+            self.danger_reason
+                .as_deref()
+                .unwrap_or_else(|| vega_i18n::t("ui.dangerous_command"))
+        })
     }
 
     fn display_tool(&self) -> &str {
@@ -112,9 +156,12 @@ impl PermissionCard {
         request: &PermissionRequest,
         lease: PermissionLease,
         allow_persistent: bool,
+        codex_identity: Option<(CodexAcpActivityIdentity, Option<CodexArgumentPreview>)>,
         cx: &mut gpui_kit::Context<Self>,
     ) -> Self {
-        let note = cx.new(|cx| TextInput::new(cx, "Reason for rejection (optional)", false));
+        let note = cx.new(|cx| {
+            TextInput::new(cx, "", false).with_placeholder_key("ui.reason_for_rejection_optional")
+        });
         cx.observe(&note, |_, _, cx| cx.notify()).detach();
         let danger = request.danger_rule_id.is_some();
         let acp_option_focuses = request
@@ -137,7 +184,7 @@ impl PermissionCard {
             });
         });
         Self {
-            prompt: SafePermissionPrompt::from_request(request, allow_persistent),
+            prompt: SafePermissionPrompt::from_request(request, allow_persistent, codex_identity),
             lease: Some(lease),
             note,
             once_focus: cx.focus_handle().tab_index(1).tab_stop(true),
@@ -164,9 +211,9 @@ impl PermissionCard {
     /// Fixed-height rows, including UTF-8-safe wrapped command rows.
     pub fn row_count(&self) -> usize {
         if let Some(options) = &self.prompt.acp_options {
-            1 + self.prompt.command_rows.len() + options.len()
+            1 + self.prompt.command_rows().len() + options.len()
         } else {
-            1 + self.prompt.command_rows.len() + if self.prompt.is_danger() { 2 } else { 0 } + 2
+            1 + self.prompt.command_rows().len() + if self.prompt.is_danger() { 2 } else { 0 } + 2
         }
     }
 
@@ -429,12 +476,15 @@ impl PermissionCard {
                 colors.warning
             };
             let label = if is_danger {
-                format!(
-                    "Dangerous command requires confirmation · {}",
-                    card_ref.prompt.display_tool()
+                vega_i18n::t_args(
+                    "ui.dangerous_command_requires_confirmation_tool",
+                    &[("tool", card_ref.prompt.display_tool())],
                 )
             } else {
-                format!("Permission required · {}", card_ref.prompt.display_tool())
+                vega_i18n::t_args(
+                    "ui.permission_required_tool",
+                    &[("tool", card_ref.prompt.display_tool())],
+                )
             };
             return container
                 .items_start()
@@ -456,34 +506,31 @@ impl PermissionCard {
                 .child(div().min_w_0().flex_1().child(label))
                 .into_any_element();
         }
-        let command_end = 1 + card_ref.prompt.command_rows.len();
+        let command_rows = card_ref.prompt.command_rows();
+        let command_end = 1 + command_rows.len();
         if (1..command_end).contains(&row) {
             return container
                 .bg(colors.code_bg)
                 .font_family(MONOFONT)
                 .text_size(px(Typography::CODE))
                 .text_color(colors.text_primary)
-                .child(card_ref.prompt.command_rows[row - 1].clone())
+                .child(command_rows[row - 1].clone())
                 .into_any_element();
         }
         if is_danger && row == command_end {
             return container
                 .text_size(px(Typography::SIDEBAR))
                 .text_color(colors.danger)
-                .child(
-                    card_ref
-                        .prompt
-                        .danger_reason
-                        .clone()
-                        .unwrap_or_else(|| "Dangerous command".to_string()),
-                )
+                .child(card_ref.prompt.danger_label().to_owned())
                 .into_any_element();
         }
         if is_danger && row == command_end + 1 {
             return container
                 .text_size(px(Typography::SIDEBAR))
                 .text_color(colors.warning)
-                .child("Always allow still requires confirmation for future dangerous commands")
+                .child(vega_i18n::t(
+                    "ui.always_allow_still_requires_confirmation_for_future_dangerous",
+                ))
                 .into_any_element();
         }
         if let Some(options) = &card_ref.prompt.acp_options {
@@ -535,7 +582,7 @@ impl PermissionCard {
         let reject_card = card.clone();
         let mut container = container.justify_end().gap_2().child(permission_button(
             format!("permission-once-{}", card.entity_id()),
-            "Allow once".to_string(),
+            vega_i18n::t("ui.allow_once").to_string(),
             once,
             true,
             colors,
@@ -547,7 +594,7 @@ impl PermissionCard {
         if card.read(cx).prompt.allow_persistent {
             container = container.child(permission_button(
                 format!("permission-always-{}", card.entity_id()),
-                "Always allow".to_string(),
+                vega_i18n::t("ui.always_allow").to_string(),
                 always,
                 false,
                 colors,
@@ -560,7 +607,7 @@ impl PermissionCard {
         container
             .child(permission_button(
                 format!("permission-deny-{}", card.entity_id()),
-                "Reject".to_string(),
+                vega_i18n::t("ui.reject").to_string(),
                 reject,
                 false,
                 colors,

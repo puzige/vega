@@ -289,51 +289,58 @@ impl RunFailureKind {
     /// Actionable text made entirely from local vocabulary and HTTP metadata.
     pub fn message(self) -> String {
         match self {
-            Self::ProviderUnknown => "The provider request failed without a specific reason. Retry or switch providers.".into(),
-            Self::ProviderProtocol => "The provider returned invalid data. Retry or switch models.".into(),
-            Self::ProviderRejected => "The provider did not complete the response. Check model settings, then retry or switch models.".into(),
-            Self::ProviderOutputLimit => "The model reached its output limit. Continue the task or adjust the output allowance.".into(),
-            Self::ProviderQuota => {
-                "Provider quota exhausted. Add credit or switch providers in Settings → Providers, then retry.".into()
+            Self::ProviderUnknown => vega_i18n::t("domain.failure.provider_unknown").into(),
+            Self::ProviderProtocol => vega_i18n::t("domain.failure.provider_protocol").into(),
+            Self::ProviderRejected => vega_i18n::t("domain.failure.provider_rejected").into(),
+            Self::ProviderOutputLimit => {
+                vega_i18n::t("domain.failure.provider_output_limit").into()
             }
+            Self::ProviderQuota => vega_i18n::t("domain.failure.provider_quota").into(),
             Self::ProviderAuthorization => {
-                "The provider rejected your credentials or account permissions. Check the API key in Settings → Providers, then retry.".into()
+                vega_i18n::t("domain.failure.provider_authorization").into()
             }
-            Self::ProviderRateLimited => "The provider rate-limited this request. Retry later or switch providers.".into(),
-            Self::ProviderHttp(status) => {
-                format!("Provider request failed (HTTP {status}). Check provider status, model, and quota, then retry.")
-            }
-            Self::ProviderTransport => "Could not connect to the provider. Check your network and provider address, then retry.".into(),
+            Self::ProviderRateLimited => vega_i18n::t("domain.failure.provider_rate_limit").into(),
+            Self::ProviderHttp(status) => vega_i18n::t_args(
+                "domain.failure.provider_http",
+                &[("status", &status.to_string())],
+            ),
+            Self::ProviderTransport => vega_i18n::t("domain.failure.provider_transport").into(),
             Self::CredentialExposureBlocked => {
-                "The request could not be transformed safely. Completed tool actions are preserved. Check tool configuration before continuing."
-                    .into()
+                vega_i18n::t("domain.failure.credential_block").into()
             }
-            Self::CredentialCheckUnavailable => "Credentials could not be read. Check credentials in Settings before continuing. Completed actions are preserved.".into(),
-            Self::ProjectInstructionsUnavailable => "Project instructions could not be loaded. Check the root AGENTS.md or CLAUDE.md: use a readable UTF-8 file up to 64 KiB without links, then retry.".into(),
-            Self::ProjectPathInvalid => "The project path is not valid UTF-8. Rename the project folder or choose another project, then retry.".into(),
-            Self::CredentialProjectionInvalid(index) => format!("Tool {} contains sensitive values and cannot be sent safely. Check tool configuration before continuing.", index + 1),
-            Self::CredentialOutcomeUnknown => "Some action outcomes are unknown. Check the tool records before continuing.".into(),
-            Self::CredentialContinuationUnavailable => "Recovery is unavailable because it was already used, the conversation changed, or an action outcome is unknown. Check tool records, then send a new message.".into(),
-            Self::ContextOverLimit => {
-                "Context exceeds available capacity. The conversation is preserved. Reduce the current input or remove images, then retry. For long tasks, narrow tool queries or start a new conversation.".into()
+            Self::CredentialCheckUnavailable => {
+                vega_i18n::t("domain.failure.credential_check").into()
             }
+            Self::ProjectInstructionsUnavailable => {
+                vega_i18n::t("domain.failure.project_instructions").into()
+            }
+            Self::ProjectPathInvalid => vega_i18n::t("domain.failure.project_path").into(),
+            Self::CredentialProjectionInvalid(index) => vega_i18n::t_args(
+                "domain.failure.credential_projection",
+                &[("index", &(index + 1).to_string())],
+            ),
+            Self::CredentialOutcomeUnknown => {
+                vega_i18n::t("domain.failure.credential_outcome").into()
+            }
+            Self::CredentialContinuationUnavailable => {
+                vega_i18n::t("domain.failure.credential_continuation").into()
+            }
+            Self::ContextOverLimit => vega_i18n::t("domain.failure.context_limit").into(),
             Self::Compaction(failure) => failure.message().into(),
-            Self::ReasoningLimit(_) => {
-                "The run exceeded the local reasoning limit. Send your message again to continue.".into()
+            Self::ReasoningLimit(_) => vega_i18n::t("domain.failure.reasoning_limit").into(),
+            Self::ModelImagesUnsupported => vega_i18n::t("domain.failure.model_images").into(),
+            Self::ReasoningSelectionInvalid => {
+                vega_i18n::t("domain.failure.reasoning_selection").into()
             }
-            Self::ModelImagesUnsupported => "This model does not accept images. Choose a vision model or enable image input in model settings, then retry.".into(),
-            Self::ReasoningSelectionInvalid => "The selected thinking level is unavailable. Choose provider default or another available level in the conversation, then retry.".into(),
-            Self::ReasoningReplay => {
-                "The model returned reasoning state that cannot be continued. Retry, or start a new conversation if this persists.".into()
-            }
-            Self::Runtime => "The run failed. Check the runtime environment, then retry.".into(),
-            Self::RuntimeStorage => "The conversation could not be saved. Reopen it, then retry.".into(),
-            Self::RuntimeStorageBusy => "Conversation storage is busy. Wait for other tasks to finish, then retry.".into(),
-            Self::RuntimeApprovalAudit => "A tool record failed safety validation. Reopen the conversation, review its tool records, then retry.".into(),
-            Self::RuntimeState => "The saved conversation state could not be updated. Reopen it, then retry.".into(),
-            Self::RuntimeIo => "A local I/O operation failed. Check local access and available storage, then retry.".into(),
-            Self::RuntimePipeline => "The conversation worker stopped unexpectedly. Reopen the conversation, then retry.".into(),
-            Self::Persisted => "This response failed. Check provider status, quota, or the runtime environment, then retry.".into(),
+            Self::ReasoningReplay => vega_i18n::t("domain.failure.reasoning_replay").into(),
+            Self::Runtime => vega_i18n::t("domain.failure.runtime").into(),
+            Self::RuntimeStorage => vega_i18n::t("domain.failure.storage").into(),
+            Self::RuntimeStorageBusy => vega_i18n::t("domain.failure.storage_busy").into(),
+            Self::RuntimeApprovalAudit => vega_i18n::t("domain.failure.audit").into(),
+            Self::RuntimeState => vega_i18n::t("domain.failure.state").into(),
+            Self::RuntimeIo => vega_i18n::t("domain.failure.io").into(),
+            Self::RuntimePipeline => vega_i18n::t("domain.failure.pipeline").into(),
+            Self::Persisted => vega_i18n::t("domain.failure.persisted").into(),
         }
     }
 }
@@ -405,6 +412,10 @@ pub enum ConversationEvent {
     AssistantResponseCompleted {
         message_id: MessageId,
         response: AssistantResponseMetadata,
+    },
+    GeneratedNotice {
+        message_id: MessageId,
+        notice: super::GeneratedNoticeMetadata,
     },
     /// A streaming assistant row was created.
     MessageStarted {
@@ -571,6 +582,11 @@ impl std::fmt::Debug for ConversationEvent {
                 .debug_struct("AssistantResponseCompleted")
                 .field("message_id_bytes", &message_id.len())
                 .field("response", response)
+                .finish(),
+            Self::GeneratedNotice { message_id, notice } => formatter
+                .debug_struct("GeneratedNotice")
+                .field("message_id_bytes", &message_id.len())
+                .field("notice", notice)
                 .finish(),
             Self::MessageStarted { message_id, seq } => formatter
                 .debug_struct("MessageStarted")
@@ -749,6 +765,18 @@ pub(crate) fn from_runtime_event(
                 },
             },
         }),
+        RuntimeEvent::GeneratedNotice {
+            kind,
+            text_start_bytes,
+            text_end_bytes,
+        } => Some(ConversationEvent::GeneratedNotice {
+            message_id: message_id.to_string(),
+            notice: super::GeneratedNoticeMetadata::from_runtime(
+                *kind,
+                *text_start_bytes,
+                *text_end_bytes,
+            ),
+        }),
         RuntimeEvent::TextDelta(delta) => Some(ConversationEvent::TextDelta {
             message_id: message_id.to_string(),
             delta: delta.clone(),
@@ -776,6 +804,7 @@ pub(crate) fn from_runtime_event(
                     duration_ms: result.duration_ms,
                     truncated: result.truncated,
                     invalid: Some(invalid),
+                    codex_display: None,
                 },
             })
         }
@@ -790,6 +819,7 @@ pub(crate) fn from_runtime_event(
                     duration_ms: result.duration_ms,
                     truncated: result.truncated,
                     invalid: None,
+                    codex_display: None,
                 },
             })
         }
@@ -824,6 +854,7 @@ pub(crate) fn from_runtime_event(
                     duration_ms: result.duration_ms,
                     truncated: result.truncated,
                     invalid: None,
+                    codex_display: None,
                 },
             })
         }
@@ -1009,6 +1040,7 @@ pub(crate) fn safe_runtime_tool_call(call: &vega_runtime::RuntimeToolCall) -> Op
         id: call.id.clone(),
         tool: call.name.clone(),
         input_json: call.input_json.clone(),
+        codex_display: None,
     };
     if vega_runtime::is_subagent_tool(&call.name) {
         return (call.input_json == "{}"

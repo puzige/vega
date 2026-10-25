@@ -1,4 +1,5 @@
 use super::*;
+use vega_ui::localized_copy::LocalizedCopy;
 
 impl VegaWindow {
     pub(crate) fn request_privacy(
@@ -13,13 +14,13 @@ impl VegaWindow {
             .contains_key(&request.thread_id)
         {
             stream.update(cx, |stream, cx| {
-                stream.apply_privacy_review(Err("请等待当前任务完成或停止后检查".into()), cx)
+                stream.apply_privacy_result(Err(LocalizedCopy::new("app.privacy.wait")), cx)
             });
             return;
         }
         let Some(database) = self.context_database(cx) else {
             stream.update(cx, |stream, cx| {
-                stream.apply_privacy_review(Err("无法读取对话，请重试".into()), cx)
+                stream.apply_privacy_result(Err(LocalizedCopy::new("app.privacy.read_retry")), cx)
             });
             return;
         };
@@ -31,7 +32,7 @@ impl VegaWindow {
                 .background_executor()
                 .spawn(async move {
                     let store = vega_store::Store::open(database)
-                        .map_err(|_| "无法读取对话".to_string())?;
+                        .map_err(|_| vega_i18n::t("app.privacy.read_failed").to_string())?;
                     let changed = !matches!(&request.action, PrivacyAction::Review);
                     match request.action {
                         PrivacyAction::Review => {}
@@ -81,8 +82,8 @@ impl VegaWindow {
                 }
                 stream.update(cx, |stream, cx| {
                     if stale {
-                        stream.apply_privacy_review(
-                            Err("任务状态已变化，请在任务结束后重新检查".into()),
+                        stream.apply_privacy_result(
+                            Err(LocalizedCopy::new("app.privacy.changed")),
                             cx,
                         );
                         return;
@@ -108,9 +109,12 @@ impl VegaWindow {
                                     stream.replace_history_window(page, &anchor, cx);
                                 }
                             }
-                            stream.apply_privacy_review(Ok(review), cx);
+                            stream.apply_privacy_result(Ok(review), cx);
                         }
-                        Err(error) => stream.apply_privacy_review(Err(error), cx),
+                        Err(error) => stream.apply_privacy_result(
+                            Err(crate::app_localization::localized_error(&error)),
+                            cx,
+                        ),
                     }
                 });
             });

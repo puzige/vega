@@ -17,6 +17,7 @@ impl EventEmitter<AutomationRequested> for ConversationStream {}
 #[derive(Default)]
 pub(crate) struct AutomationUi {
     pub projection: AutomationProjection,
+    pub error: Option<crate::localized_copy::LocalizedCopy>,
     pub editor_dirty: bool,
     pub timings: HashMap<String, AutomationTiming>,
     clocks: HashMap<String, Entity<AutomationClock>>,
@@ -101,6 +102,18 @@ impl ConversationStream {
         &self.automation.projection
     }
     pub fn apply_automation(&mut self, projection: AutomationProjection, cx: &mut Context<Self>) {
+        let error = projection.error.as_ref().map(|error| error.clone().into());
+        self.apply_automation_localized(projection, error, cx);
+    }
+    pub fn apply_automation_localized(
+        &mut self,
+        projection: AutomationProjection,
+        error: Option<crate::localized_copy::LocalizedCopy>,
+        cx: &mut Context<Self>,
+    ) {
+        let error_changed = self.automation.error.as_ref().map(|error| error.render())
+            != error.as_ref().map(|error| error.render());
+        self.automation.error = error;
         for task in &projection.tasks {
             self.automation
                 .clocks
@@ -127,16 +140,23 @@ impl ConversationStream {
             .map(|task| {
                 let remaining = task.next_due_ms.saturating_sub(now).max(0);
                 let label = if remaining == 0 {
-                    "等待执行".to_string()
+                    vega_i18n::t("ui.waiting_to_run").to_string()
                 } else if remaining <= 60_000 {
                     "<1m".to_string()
                 } else {
-                    format!("{}m 后", remaining.saturating_add(59_999) / 60_000)
+                    vega_i18n::t_args(
+                        "ui.in_minutes_m",
+                        &[(
+                            "minutes",
+                            &(remaining.saturating_add(59_999) / 60_000).to_string(),
+                        )],
+                    )
                 };
                 (task.identity.clone(), label)
             })
             .collect();
-        if self.automation.projection != projection
+        if error_changed
+            || self.automation.projection != projection
             || self.automation.wakeup_labels != wakeup_labels
         {
             self.automation.projection = projection;
@@ -274,13 +294,13 @@ impl ConversationStream {
             .key_context("Composer")
             .on_action(cx.listener(Self::next_composer_control))
             .on_action(cx.listener(Self::previous_composer_control));
-        if let Some(error) = &self.automation.projection.error {
+        if let Some(error) = &self.automation.error {
             view = view.child(
                 div()
                     .mb_2()
                     .text_size(px(Typography::BODY))
                     .text_color(colors.danger)
-                    .child(error.clone()),
+                    .child(error.render()),
             );
         }
         if self.thread.backend != TaskBackend::Native {
@@ -290,8 +310,8 @@ impl ConversationStream {
             if !matches!(
                 task.status,
                 AutomationStatus::Active | AutomationStatus::Complete
-            ) && let Some(reason) = &task.reason
-                && !(task.status == AutomationStatus::Paused && reason == "已由你暂停")
+            ) && let Some(reason) = task.reason_message()
+                && !(task.status == AutomationStatus::Paused && task.is_user_paused())
             {
                 view = view.child(
                     div()
@@ -299,7 +319,7 @@ impl ConversationStream {
                         .mb_2()
                         .text_size(px(Typography::BODY))
                         .text_color(colors.text_secondary)
-                        .child(reason.clone()),
+                        .child(reason.to_owned()),
                 );
             }
         }
@@ -317,21 +337,26 @@ impl ConversationStream {
                 .join(" ");
             let label = if compact {
                 if task.status == AutomationStatus::BudgetLimited {
-                    "预算用尽".to_string()
+                    vega_i18n::t("ui.budget_exhausted").to_string()
                 } else {
                     task.status.label().to_string()
                 }
             } else if task.status == AutomationStatus::Active {
                 kind.label().to_string()
             } else {
-                format!(
-                    "{} · {}",
-                    if kind == AutomationKind::Goal {
-                        "目标"
-                    } else {
-                        "循环"
-                    },
-                    task.status.label()
+                vega_i18n::t_args(
+                    "ui.automation_status",
+                    &[
+                        (
+                            "kind",
+                            if kind == AutomationKind::Goal {
+                                vega_i18n::t("ui.goal")
+                            } else {
+                                vega_i18n::t("ui.loop")
+                            },
+                        ),
+                        ("status", task.status.label()),
+                    ],
                 )
             };
             let mut row = div()
@@ -421,13 +446,16 @@ impl ConversationStream {
             row = row.child(self.automation_button(
                 format!("automation-{}-clear", kind.key()),
                 (
-                    format!(
-                        "清除{}",
-                        if kind == AutomationKind::Goal {
-                            "目标"
-                        } else {
-                            "循环"
-                        }
+                    vega_i18n::t_args(
+                        "ui.clear_kind",
+                        &[(
+                            "kind",
+                            if kind == AutomationKind::Goal {
+                                vega_i18n::t("ui.goal")
+                            } else {
+                                vega_i18n::t("ui.loop")
+                            },
+                        )],
                     ),
                     Icon::Trash,
                 ),
@@ -446,14 +474,20 @@ impl ConversationStream {
                 row = row.child(self.automation_button(
                     format!("automation-{}-control", kind.key()),
                     (
-                        format!(
-                            "{}{}",
-                            if active { "暂停" } else { "恢复" },
-                            if kind == AutomationKind::Goal {
-                                "目标"
+                        vega_i18n::t_args(
+                            if active {
+                                "ui.pause_kind"
                             } else {
-                                "循环"
-                            }
+                                "ui.resume_kind"
+                            },
+                            &[(
+                                "kind",
+                                if kind == AutomationKind::Goal {
+                                    vega_i18n::t("ui.goal")
+                                } else {
+                                    vega_i18n::t("ui.loop")
+                                },
+                            )],
                         ),
                         if active { Icon::Pause } else { Icon::Play },
                     ),
@@ -486,9 +520,9 @@ impl ConversationStream {
                     format!("automation-{}-details", kind.key()),
                     (
                         if kind == AutomationKind::Goal {
-                            "编辑目标"
+                            vega_i18n::t("ui.edit_goal")
                         } else {
-                            "编辑循环"
+                            vega_i18n::t("ui.edit_loop")
                         }
                         .into(),
                         Icon::Maximize,

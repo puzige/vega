@@ -150,10 +150,14 @@ impl ConversationStream {
                 .text_color(colors.text_secondary)
                 .children(
                     [
-                        ("conversation-computer-use-prepare", "电脑操控准备", false),
+                        (
+                            "conversation-computer-use-prepare",
+                            vega_i18n::t("ui.computer_use_setup"),
+                            false,
+                        ),
                         (
                             "conversation-computer-use-prepare-dismiss",
-                            "关闭准备入口",
+                            vega_i18n::t("ui.close_setup_entry"),
                             true,
                         ),
                     ]
@@ -231,8 +235,8 @@ impl ConversationStream {
             if accessibility || screen_recording {
                 notice = notice.child(div().flex().gap_2().children(
                     [
-                        (accessibility, "辅助功能设置", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", "conversation-accessibility-settings"),
-                        (screen_recording, "屏幕录制设置", "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", "conversation-screen-recording-settings"),
+                        (accessibility, vega_i18n::t("ui.accessibility_settings"), "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", "conversation-accessibility-settings"),
+                        (screen_recording, vega_i18n::t("ui.screen_recording_settings"), "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", "conversation-screen-recording-settings"),
                     ]
                     .into_iter()
                     .filter(|(needed, _, _, _)| *needed)
@@ -303,9 +307,9 @@ impl ConversationStream {
                         }),
                     )
                     .child(if expanded {
-                        "收起诊断详情"
+                        vega_i18n::t("ui.hide_diagnostics")
                     } else {
-                        "查看诊断详情"
+                        vega_i18n::t("ui.view_diagnostics")
                     }),
             );
             if expanded {
@@ -324,7 +328,9 @@ impl ConversationStream {
             let click_context = context.clone();
             let key_context = context.clone();
             notice = notice
-                .child("请确认本任务可以访问这个浏览器标签页：")
+                .child(vega_i18n::t(
+                    "ui.confirm_that_this_task_may_access_this_browser",
+                ))
                 .child(target.label())
                 .child(
                     div()
@@ -362,7 +368,7 @@ impl ConversationStream {
                                 cx.notify();
                             }
                         }))
-                        .child("允许此标签页"),
+                        .child(vega_i18n::t("ui.allow_this_tab")),
                 );
         }
         if status.phase == ControlPhase::Paused {
@@ -371,7 +377,9 @@ impl ConversationStream {
             let click_context = context.clone();
             let key_context = context.clone();
             notice = notice
-                .child("电脑操作已暂停。准备好后可继续本任务。")
+                .child(vega_i18n::t(
+                    "ui.computer_control_is_paused_resume_this_task_when",
+                ))
                 .child(
                     div()
                         .id("conversation-computer-resume")
@@ -407,10 +415,10 @@ impl ConversationStream {
                                 cx.notify();
                             }
                         }))
-                        .child("继续"),
+                        .child(vega_i18n::t("ui.continue")),
                 );
         } else if status.phase == ControlPhase::Pausing {
-            notice = notice.child("正在交还控制…");
+            notice = notice.child(vega_i18n::t("ui.returning_control"));
         }
         Some(notice.into_any_element())
     }

@@ -31,6 +31,36 @@ pub struct ControlSnapshot {
     pub observations: Vec<Observation>,
 }
 
+enum TargetLabel {
+    Text(String),
+    DesktopCatalog,
+}
+
+impl TargetLabel {
+    fn canonical(&self) -> &str {
+        match self {
+            Self::Text(text) => text,
+            Self::DesktopCatalog => "所有桌面窗口",
+        }
+    }
+
+    fn display(&self) -> String {
+        match self {
+            Self::Text(text) => text.clone(),
+            Self::DesktopCatalog => Target::DesktopCatalog.label(),
+        }
+    }
+}
+
+impl From<&Target> for TargetLabel {
+    fn from(target: &Target) -> Self {
+        match target {
+            Target::DesktopCatalog => Self::DesktopCatalog,
+            _ => Self::Text(target.label()),
+        }
+    }
+}
+
 struct State {
     phase: ControlPhase,
     capability: Option<Capability>,
@@ -41,7 +71,7 @@ struct State {
     browser_target: Option<Target>,
     desktop: Option<Target>,
     browser: Option<Target>,
-    target_label: String,
+    target_label: TargetLabel,
     grant_started: [Option<Instant>; 2],
     last_used: [Option<Instant>; 2],
     error: Option<ComputerUseError>,
@@ -79,7 +109,7 @@ impl ComputerUseControl {
         add(1, format!("{:?}", state.phase).as_bytes());
         add(2, format!("{:?}", state.capability).as_bytes());
         add(3, &state.epoch.to_le_bytes());
-        add(4, state.target_label.as_bytes());
+        add(4, state.target_label.canonical().as_bytes());
         for window in &state.windows {
             add(5, window.selection_id.as_bytes());
             add(6, window.application.as_bytes());
@@ -146,7 +176,7 @@ impl ComputerUseControl {
                 browser_target: None,
                 desktop: None,
                 browser: None,
-                target_label: String::new(),
+                target_label: TargetLabel::Text(String::new()),
                 grant_started: [None; 2],
                 last_used: [None; 2],
                 error: None,
@@ -210,7 +240,7 @@ impl ComputerUseControl {
             phase: state.phase,
             capability: state.capability,
             epoch: state.epoch,
-            target_label: state.target_label.clone(),
+            target_label: state.target_label.display(),
             browser_target: state.browser_target.clone(),
             error: state.error,
             observations: if include_media {
@@ -311,7 +341,7 @@ impl ComputerUseControl {
         state
             .observations
             .retain(|item| item.capability != Capability::Desktop);
-        state.target_label = window.label();
+        state.target_label = TargetLabel::Text(window.label());
         state.desktop = Some(Target::Desktop(window));
         state.capability = Some(Capability::Desktop);
         drop(state);
@@ -370,7 +400,7 @@ impl ComputerUseControl {
             .observations
             .retain(|item| item.capability != Capability::Desktop);
         state.desktop = Some(Target::DesktopCatalog);
-        state.target_label = Target::DesktopCatalog.label();
+        state.target_label = TargetLabel::DesktopCatalog;
         let result = serde_json::json!({"windows":page,"next_cursor":next,"instruction":"Use ComputerObserve with target_id from this directory and cursor:null before any ComputerAct. A directory observation cannot authorize an action. Refresh with target_id:null,cursor:null after stale errors."});
         drop(state);
         self.notify();
@@ -398,7 +428,7 @@ impl ComputerUseControl {
             .browser_target
             .take()
             .ok_or(ComputerUseError::TargetChanged)?;
-        state.target_label = target.label();
+        state.target_label = TargetLabel::from(&target);
         state.browser = Some(target);
         state.grant_started[1] = Some(Instant::now());
         state.last_used[1] = state.grant_started[1];
@@ -474,7 +504,7 @@ impl ComputerUseControl {
             .observations
             .retain(|item| item.capability != Capability::Desktop);
         state.desktop = Some(Target::DesktopCatalog);
-        state.target_label = Target::DesktopCatalog.label();
+        state.target_label = TargetLabel::DesktopCatalog;
         state.capability = Some(Capability::Desktop);
         state.phase = ControlPhase::Running;
         drop(state);
@@ -514,7 +544,7 @@ impl ComputerUseControl {
         if state.epoch != epoch || state.action_cancel.is_cancelled() {
             return Err(ComputerUseError::Cancelled);
         }
-        state.target_label = target.label();
+        state.target_label = TargetLabel::from(&target);
         match capability {
             Capability::Desktop => state.desktop = Some(target),
             Capability::Browser => state.browser = Some(target),

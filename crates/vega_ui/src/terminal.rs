@@ -1,10 +1,6 @@
 //! Interactive terminal viewport. The PTY owns editing, history and command execution.
 use crate::scroll_edge_fade::{ScrollFade, ScrollFadeMetrics};
-use crate::{
-    conversation_stream::MONOFONT,
-    icons::{Icon, icon_button},
-    text_input,
-};
+use crate::{conversation_stream::MONOFONT, icons::Icon, text_input};
 use gpui_kit::{prelude::*, *};
 use std::{ops::Range, path::PathBuf, time::Duration};
 use vega_conversation::{
@@ -183,13 +179,15 @@ impl Render for TerminalView {
             .as_ref()
             .map_or(TerminalStatus::Starting, |s| s.status);
         let label = if self.session.is_none() || status == TerminalStatus::Failed {
-            "终端启动失败".into()
+            vega_i18n::t("ui.terminal_failed_to_start").into()
         } else {
             match status {
-                TerminalStatus::Starting => "正在启动终端…".into(),
-                TerminalStatus::Running => "zsh · 登录 shell".into(),
-                TerminalStatus::Exited(code) => format!("进程已退出 ({code})"),
-                TerminalStatus::Failed => "终端错误".into(),
+                TerminalStatus::Starting => vega_i18n::t("ui.starting_terminal").into(),
+                TerminalStatus::Running => vega_i18n::t("ui.zsh_login_shell").into(),
+                TerminalStatus::Exited(code) => {
+                    vega_i18n::t_args("ui.process_exited_code", &[("code", &code.to_string())])
+                }
+                TerminalStatus::Failed => vega_i18n::t("ui.terminal_error").into(),
             }
         };
         let view = cx.entity();
@@ -240,17 +238,17 @@ impl Render for TerminalView {
                                 .items_center()
                                 .gap_1()
                                 .flex_shrink_0()
-                                .child(icon_button(
+                                .child(crate::icons::localized_icon_button(
                                     Icon::Document,
-                                    "复制当前终端屏幕（⌘C）",
+                                    "ui.copy_current_terminal_screen_c",
                                     colors,
                                     cx.listener(|this, _, window, cx| {
                                         this.copy_screen(&text_input::Copy, window, cx)
                                     }),
                                 ))
-                                .child(icon_button(
+                                .child(crate::icons::localized_icon_button(
                                     Icon::Refresh,
-                                    "重启终端",
+                                    "ui.restart_terminal",
                                     colors,
                                     cx.listener(|this, _, _, cx| this.restart(cx)),
                                 )),
@@ -262,7 +260,7 @@ impl Render for TerminalView {
                     div()
                         .px_2()
                         .text_color(colors.danger)
-                        .child("终端输入未发送，请重试"),
+                        .child(vega_i18n::t("ui.terminal_input_was_not_sent_try_again")),
                 )
             })
             .child(

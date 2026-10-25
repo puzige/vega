@@ -46,9 +46,11 @@ fn safe(value: &str, limit: usize) -> bool {
 fn price(value: Option<&Value>) -> CatalogResult<Option<String>> {
     value
         .map(|v| {
-            let n = v.as_number().ok_or("模型目录价格格式无效")?;
+            let n = v
+                .as_number()
+                .ok_or(vega_i18n::t("app.catalog.price_format"))?;
             if !n.as_f64().is_some_and(|v| v.is_finite() && v >= 0.) {
-                return Err("模型目录价格格式无效".into());
+                return Err(vega_i18n::t("app.catalog.price_format").into());
             }
             Ok(n.to_string())
         })
@@ -59,16 +61,16 @@ fn option(value: Value) -> CatalogResult<CatalogReasoningOption> {
     let kind = value
         .get("type")
         .and_then(Value::as_str)
-        .ok_or("模型目录思考资料无效")?;
+        .ok_or(vega_i18n::t("app.catalog.reasoning_invalid"))?;
     Ok(match kind {
         "toggle" => CatalogReasoningOption::Toggle,
         "effort" => {
             let values = value
                 .get("values")
                 .and_then(Value::as_array)
-                .ok_or("模型目录思考档位无效")?;
+                .ok_or(vega_i18n::t("app.catalog.effort_invalid"))?;
             if values.len() > 32 {
-                return Err("模型目录思考档位超限".into());
+                return Err(vega_i18n::t("app.catalog.effort_limit").into());
             }
             CatalogReasoningOption::Effort(
                 values
@@ -80,7 +82,7 @@ fn option(value: Value) -> CatalogResult<CatalogReasoningOption> {
                             let value = v
                                 .as_str()
                                 .filter(|v| safe(v, 64))
-                                .ok_or("模型目录思考档位无效")?;
+                                .ok_or(vega_i18n::t("app.catalog.effort_invalid"))?;
                             Ok(Some(value.to_string()))
                         }
                     })
@@ -93,38 +95,38 @@ fn option(value: Value) -> CatalogResult<CatalogReasoningOption> {
                 .map(|v| {
                     v.as_i64()
                         .filter(|v| *v >= -1)
-                        .ok_or("模型目录思考预算无效")
+                        .ok_or(vega_i18n::t("app.catalog.budget_invalid"))
                 })
                 .transpose()?;
             let max = value
                 .get("max")
-                .map(|v| v.as_u64().ok_or("模型目录思考预算无效"))
+                .map(|v| v.as_u64().ok_or(vega_i18n::t("app.catalog.budget_invalid")))
                 .transpose()?;
             if min.is_some_and(|min| min >= 0 && max.is_some_and(|max| min as u64 > max)) {
-                return Err("模型目录思考预算无效".into());
+                return Err(vega_i18n::t("app.catalog.budget_invalid").into());
             }
             CatalogReasoningOption::Budget { min, max }
         }
         unknown if safe(unknown, 64) => CatalogReasoningOption::Unknown(unknown.into()),
-        _ => return Err("模型目录思考资料无效".into()),
+        _ => return Err(vega_i18n::t("app.catalog.reasoning_invalid").into()),
     })
 }
 
 pub(super) fn parse(bytes: &[u8]) -> CatalogResult<Vec<CatalogProvider>> {
     if bytes.len() > MAX_BYTES {
-        return Err("模型目录响应超过大小限制".into());
+        return Err(vega_i18n::t("app.catalog.response_limit").into());
     }
     let providers: BTreeMap<String, Provider> =
-        serde_json::from_slice(bytes).map_err(|_| "模型目录格式无效")?;
+        serde_json::from_slice(bytes).map_err(|_| vega_i18n::t("app.catalog.format_invalid"))?;
     if providers.is_empty() || providers.len() > 4096 {
-        return Err("模型目录提供方数量无效".into());
+        return Err(vega_i18n::t("app.catalog.provider_count").into());
     }
     let mut count = 0;
     providers
         .into_iter()
         .map(|(key, p)| {
             if key != p.id || !safe(&p.id, 1024) || !safe(&p.name, 4096) {
-                return Err("模型目录提供方身份无效".into());
+                return Err(vega_i18n::t("app.catalog.provider_identity").into());
             }
             let models = p
                 .models
@@ -141,7 +143,7 @@ pub(super) fn parse(bytes: &[u8]) -> CatalogResult<Vec<CatalogProvider>> {
                         || m.status.as_ref().is_some_and(|s| !safe(s, 64))
                         || m.reasoning_options.len() > 32
                     {
-                        return Err("模型目录模型身份或数量无效".into());
+                        return Err(vega_i18n::t("app.catalog.model_identity").into());
                     }
                     let cost = m
                         .cost

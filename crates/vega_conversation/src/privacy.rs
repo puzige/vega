@@ -16,7 +16,7 @@ type LiveCredentials = HashMap<PathBuf, Option<(u64, Vec<String>)>>;
 static LIVE: OnceLock<Mutex<LiveCredentials>> = OnceLock::new();
 
 fn unavailable() -> ConversationError {
-    ConversationError::Store("凭据检查不可用，请检查凭据设置后重试".into())
+    ConversationError::Store(vega_i18n::t("domain.privacy.unavailable").into())
 }
 
 pub fn register_database(database: PathBuf, root: PathBuf) {
@@ -65,7 +65,7 @@ fn known(store: &Store, root: Option<&std::path::Path>) -> Result<Vec<String>, C
 pub fn safe_live_text(text: &str) -> String {
     match LIVE.get_or_init(Default::default).lock() {
         Ok(roots) => project_live(text, &roots),
-        Err(_) => "[凭据检查不可用]".into(),
+        Err(_) => vega_i18n::t("domain.privacy.check_unavailable").into(),
     }
 }
 
@@ -75,7 +75,7 @@ fn project_live(text: &str, roots: &LiveCredentials) -> String {
             .as_ref()
             .is_some_and(|(revision, _)| *revision == vega_store::keystore::revision(root))
     }) {
-        return "[凭据检查不可用]".into();
+        return vega_i18n::t("domain.privacy.check_unavailable").into();
     }
     let values: Vec<String> = roots
         .values()
@@ -287,7 +287,7 @@ impl DisplayProjection {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct PrivacyFinding {
     pub source_label: String,
     pub message_id: Option<String>,
@@ -301,6 +301,43 @@ pub struct PrivacyFinding {
     pub excepted: bool,
     pub fingerprint: String,
     pub preview: String,
+    source_label_key: &'static str,
+    preview_parts: Option<(String, String)>,
+}
+
+impl PartialEq for PrivacyFinding {
+    fn eq(&self, other: &Self) -> bool {
+        self.message_id == other.message_id
+            && self.source_id == other.source_id
+            && self.field == other.field
+            && self.rule == other.rule
+            && self.start == other.start
+            && self.end == other.end
+            && self.exact == other.exact
+            && self.cleanable == other.cleanable
+            && self.excepted == other.excepted
+            && self.fingerprint == other.fingerprint
+            && self.source_label_key == other.source_label_key
+            && self.preview_parts == other.preview_parts
+    }
+}
+
+impl Eq for PrivacyFinding {}
+
+impl PrivacyFinding {
+    pub fn source_label(&self) -> &'static str {
+        vega_i18n::t(self.source_label_key)
+    }
+
+    pub fn preview_text(&self) -> String {
+        match &self.preview_parts {
+            Some((before, after)) => vega_i18n::t_args(
+                "domain.privacy.redacted_preview",
+                &[("before", before), ("after", after)],
+            ),
+            None => vega_i18n::t("domain.privacy.redacted").into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -327,13 +364,22 @@ pub fn review(store: &Store, thread: &str) -> Result<PrivacyReview, Conversation
             };
             let digest = fingerprint(key.as_bytes(), finding.rule_id, content);
             let exact = finding.confidence == CredentialConfidence::KnownExact;
-            findings.push(PrivacyFinding {
-                source_label: vega_store::credential_privacy::source_label(
-                    store.conn(),
-                    &field,
-                    &id,
-                )
-                .map_err(|_| unavailable())?,
+            let source_label_key =
+                vega_store::credential_privacy::source_label_key(store.conn(), &field, &id)
+                    .map_err(|_| unavailable())?;
+            let (safe, offsets) = projection.offsets(&text, &[finding.start, finding.end]);
+            let preview_parts = offsets
+                .first()
+                .zip(offsets.get(1))
+                .and_then(|(start, end)| Some((safe.get(..*start)?, safe.get(*end..)?)))
+                .map(|(before, after)| {
+                    let before: String = before.chars().rev().take(64).collect();
+                    let before: String = before.chars().rev().collect();
+                    let after: String = after.chars().take(96).collect();
+                    (before, after)
+                });
+            let mut projected = PrivacyFinding {
+                source_label: vega_i18n::t(source_label_key).into(),
                 message_id: vega_store::credential_privacy::source_message_id(
                     store.conn(),
                     &field,
@@ -355,26 +401,15 @@ pub fn review(store: &Store, thread: &str) -> Result<PrivacyReview, Conversation
                         .iter()
                         .any(|(rule, value)| rule == finding.rule_id && value == &digest),
                 fingerprint: digest,
-                preview: {
-                    let (safe, offsets) = projection.offsets(&text, &[finding.start, finding.end]);
-                    let preview = offsets
-                        .first()
-                        .zip(offsets.get(1))
-                        .and_then(|(start, end)| Some((safe.get(..*start)?, safe.get(*end..)?)));
-                    match preview {
-                        Some((before, after)) => {
-                            let before: String = before.chars().rev().take(64).collect();
-                            let before: String = before.chars().rev().collect();
-                            let after: String = after.chars().take(96).collect();
-                            format!("{before}[已遮盖]{after}")
-                        }
-                        None => "[已遮盖]".into(),
-                    }
-                },
-            });
+                preview: String::new(),
+                source_label_key,
+                preview_parts,
+            };
+            projected.preview = projected.preview_text();
+            findings.push(projected);
             if findings.len() >= 500 {
                 return Err(ConversationError::Store(
-                    "检测结果过多，请先缩小对话范围".into(),
+                    vega_i18n::t("domain.privacy.too_many").into(),
                 ));
             }
         }
@@ -394,7 +429,9 @@ pub fn set_exception(
 ) -> Result<(), ConversationError> {
     let current = review(store, thread)?;
     if current.source_fingerprint != snapshot.source_fingerprint {
-        return Err(ConversationError::Store("对话已变化，请重新检查".into()));
+        return Err(ConversationError::Store(
+            vega_i18n::t("domain.privacy.changed").into(),
+        ));
     }
     let finding = current
         .findings
@@ -414,7 +451,7 @@ pub fn set_exception(
         &finding.fingerprint,
         allow,
     )
-    .map_err(|_| ConversationError::Store("例外未保存，对话可能已变化，请重新检查".into()))
+    .map_err(|_| ConversationError::Store(vega_i18n::t("domain.privacy.exception_failed").into()))
 }
 
 pub fn permanently_clean(
@@ -424,11 +461,13 @@ pub fn permanently_clean(
 ) -> Result<(), ConversationError> {
     let current = review(store, thread)?;
     if !current.findings.iter().any(|finding| finding.cleanable) {
-        return Err(ConversationError::Store("没有需要永久清理的凭据".into()));
+        return Err(ConversationError::Store(
+            vega_i18n::t("domain.privacy.nothing").into(),
+        ));
     }
     if current != *snapshot {
         return Err(ConversationError::Store(
-            "检测结果已变化，请重新检查后确认".into(),
+            vega_i18n::t("domain.privacy.findings_changed").into(),
         ));
     }
     let projection = DisplayProjection::load(store, thread)?;
@@ -438,5 +477,5 @@ pub fn permanently_clean(
         &snapshot.source_fingerprint,
         |text, offsets| projection.offsets(text, offsets),
     )
-    .map_err(|_| ConversationError::Store("清理未保存，对话可能已变化，请重新检查".into()))
+    .map_err(|_| ConversationError::Store(vega_i18n::t("domain.privacy.cleanup_failed").into()))
 }

@@ -101,10 +101,10 @@ pub(crate) enum PreparedRow {
     SideBySide(SidePair),
     ProjectionError {
         id: WorkspaceFileId,
-        text: String,
+        code: GitWorkspaceErrorCode,
     },
     Message {
-        text: String,
+        key: &'static str,
         danger: bool,
     },
 }
@@ -141,6 +141,7 @@ pub struct DiffView {
     rows: Vec<PreparedRow>,
     hunk_indexes: Vec<usize>,
     current_hunk: Option<usize>,
+    rendered_language: &'static str,
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
 }

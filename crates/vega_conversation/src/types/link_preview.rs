@@ -7,23 +7,23 @@ pub enum LinkSiteKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum LinkPreviewFailure {
-    #[error("This address cannot be previewed")]
+    #[error("{}", vega_i18n::t("domain.link.blocked"))]
     Blocked,
-    #[error("This target is not a web page")]
+    #[error("{}", vega_i18n::t("domain.link.unsupported"))]
     Unsupported,
-    #[error("This page requires access")]
+    #[error("{}", vega_i18n::t("domain.link.requireslogin"))]
     RequiresLogin,
-    #[error("Unable to load preview")]
+    #[error("{}", vega_i18n::t("domain.link.network"))]
     Network,
-    #[error("Preview request timed out")]
+    #[error("{}", vega_i18n::t("domain.link.timeout"))]
     Timeout,
-    #[error("Preview is too large")]
+    #[error("{}", vega_i18n::t("domain.link.toolarge"))]
     TooLarge,
-    #[error("Unable to read this preview")]
+    #[error("{}", vega_i18n::t("domain.link.malformed"))]
     Malformed,
-    #[error("Preview request cancelled")]
+    #[error("{}", vega_i18n::t("domain.link.cancelled"))]
     Cancelled,
-    #[error("Preview service is busy")]
+    #[error("{}", vega_i18n::t("domain.link.busy"))]
     Busy,
 }
 

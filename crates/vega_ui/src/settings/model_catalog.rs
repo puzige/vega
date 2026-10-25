@@ -13,12 +13,16 @@ pub(crate) struct CatalogUi {
     selected_provider: Option<String>,
     candidate: Option<CatalogIdentity>,
     search: Entity<TextInput>,
-    message: Option<String>,
+    message: Option<SettingsText>,
+    error: Option<SettingsText>,
 }
 impl CatalogUi {
     pub(crate) fn new(cx: &mut Context<SettingsView>) -> Self {
-        let search =
-            cx.new(|cx| TextInput::new(cx, "搜索提供方或完整模型 ID", false).with_tab_stop(true));
+        let search = cx.new(|cx| {
+            TextInput::new(cx, "", false)
+                .with_placeholder_key("settings.catalog.search_placeholder")
+                .with_tab_stop(true)
+        });
         cx.observe(&search, |_, _, cx| cx.notify()).detach();
         Self {
             owner: None,
@@ -30,6 +34,7 @@ impl CatalogUi {
             candidate: None,
             search,
             message: None,
+            error: None,
         }
     }
 }
@@ -69,6 +74,10 @@ fn simple_prices(model: &CatalogModel) -> Option<[String; 4]> {
 }
 
 impl SettingsView {
+    pub(super) fn refresh_catalog_localization(&self, cx: &mut Context<Self>) {
+        self.catalog.search.update(cx, |_, cx| cx.notify());
+    }
+
     pub(crate) fn ensure_model_catalog(&mut self, cx: &mut Context<Self>) {
         let owner = if matches!(self.section, 0 | 2 | 3) {
             self.model_settings
@@ -85,6 +94,7 @@ impl SettingsView {
         }
         self.catalog.owner = owner;
         self.catalog.projection = Default::default();
+        self.catalog.error = None;
         self.catalog.open = false;
         self.catalog.mapping = false;
         self.catalog.message = None;
@@ -126,6 +136,40 @@ impl SettingsView {
             self.catalog.mapping = false;
             self.catalog.candidate = None;
         }
+        self.catalog.error = projection.error.clone().map(|error| {
+            SettingsText::from_known(
+                error,
+                &[
+                    "app.catalog.budget_invalid",
+                    "app.catalog.cache_create",
+                    "app.catalog.cache_format",
+                    "app.catalog.cache_integrity",
+                    "app.catalog.cache_limit",
+                    "app.catalog.cache_save",
+                    "app.catalog.cache_unavailable",
+                    "app.catalog.cache_write",
+                    "app.catalog.effort_invalid",
+                    "app.catalog.effort_limit",
+                    "app.catalog.encoding",
+                    "app.catalog.fetch_failed",
+                    "app.catalog.format_invalid",
+                    "app.catalog.mapping_format",
+                    "app.catalog.mapping_limit",
+                    "app.catalog.mapping_target",
+                    "app.catalog.model_identity",
+                    "app.catalog.network",
+                    "app.catalog.path_invalid",
+                    "app.catalog.path_unavailable",
+                    "app.catalog.price_format",
+                    "app.catalog.provider_count",
+                    "app.catalog.provider_identity",
+                    "app.catalog.reasoning_invalid",
+                    "app.catalog.response_limit",
+                    "app.catalog.response_read",
+                    "app.catalog.service_unavailable",
+                ],
+            )
+        });
         self.catalog.projection = projection;
         cx.notify();
         true
@@ -144,7 +188,7 @@ impl SettingsView {
             return;
         };
         self.apply_catalog_capacity_candidate(input, value, cx);
-        self.catalog.message = Some("已填入编辑框；保存模型设置后生效".into());
+        self.catalog.message = Some(SettingsText::key("settings.catalog.filled"));
         cx.notify();
     }
 
@@ -196,9 +240,9 @@ impl SettingsView {
                 .child(self.settings_route_button(
                     "model-catalog-toggle",
                     if open {
-                        "收起模型资料"
+                        t("settings.catalog.collapse")
                     } else {
-                        "模型资料 · models.dev"
+                        t("settings.catalog.title")
                     },
                     true,
                     cx.listener(|this, _, _, cx| {
@@ -209,36 +253,58 @@ impl SettingsView {
                 ))
                 .child(self.settings_route_button(
                     "model-catalog-refresh",
-                    if busy { "正在读取" } else { "刷新资料" },
+                    if busy {
+                        t("settings.catalog.reading")
+                    } else {
+                        t("settings.catalog.refresh")
+                    },
                     !busy,
                     cx.listener(|this, _, _, cx| {
                         this.request_model_catalog(CatalogAction::Refresh, cx)
                     }),
                     cx,
                 ))
-                .child(self.settings_help(
-                    "model-catalog-help",
-                    "模型资料帮助",
-                    format!(
-                        "目录资料仅作为候选值；刷新不会改动手动配置。应用输入、输出或价格后仍需保存。缓存格式 {}；内容摘要 {}。",
-                        self.catalog.projection.schema_version,
-                        self.catalog.projection.digest.as_deref().map(|value| value.chars().take(12).collect::<String>()).unwrap_or_else(|| "未获取".into())
+                .child(
+                    self.settings_help(
+                        "model-catalog-help",
+                        t("settings.catalog.help"),
+                        t_args(
+                            "settings.catalog.help_detail",
+                            &[
+                                (
+                                    "version",
+                                    &self.catalog.projection.schema_version.to_string(),
+                                ),
+                                (
+                                    "digest",
+                                    &(self
+                                        .catalog
+                                        .projection
+                                        .digest
+                                        .as_deref()
+                                        .map(|value| value.chars().take(12).collect::<String>())
+                                        .unwrap_or_else(|| {
+                                            t("settings.catalog.not_fetched").into()
+                                        })),
+                                ),
+                            ],
+                        ),
+                        cx,
                     ),
-                    cx,
-                )),
+                ),
         );
-        if let Some(error) = self.catalog.projection.error.clone() {
-            section = section.child(settings_status(error, colors.warning, colors));
+        if let Some(error) = &self.catalog.error {
+            section = section.child(settings_status(error.render(), colors.warning, colors));
         }
         if !open {
             return section.into_any_element();
         }
         let status = if busy {
-            Some("正在读取公开目录")
+            Some(t("settings.catalog.loading"))
         } else if self.catalog.projection.stale {
-            Some("缓存已过期；仍可查看或手动配置")
+            Some(t("settings.catalog.stale"))
         } else if self.catalog.projection.fetched_at_ms.is_none() {
-            Some("尚无目录资料；可继续手动配置")
+            Some(t("settings.catalog.empty"))
         } else {
             None
         };
@@ -249,12 +315,16 @@ impl SettingsView {
                 div()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_secondary)
-                    .child(format!(
-                        "models.dev · {} 分钟前获取",
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| (d.as_millis() as u64).saturating_sub(timestamp) / 60000)
-                            .unwrap_or_default()
+                    .child(t_args(
+                        "settings.catalog.fetched_ago",
+                        &[(
+                            "minutes",
+                            &(std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| (d.as_millis() as u64).saturating_sub(timestamp) / 60000)
+                                .unwrap_or_default())
+                            .to_string(),
+                        )],
                     )),
             );
         }
@@ -262,7 +332,7 @@ impl SettingsView {
             settings_actions()
                 .child(self.settings_route_button(
                     "model-catalog-map",
-                    "关联目录模型",
+                    t("settings.catalog.map"),
                     !busy,
                     cx.listener(|this, _, _, cx| {
                         this.catalog.mapping = !this.catalog.mapping;
@@ -276,7 +346,7 @@ impl SettingsView {
                 .when(self.catalog.projection.mapped.is_some(), |actions| {
                     actions.child(self.settings_route_button(
                         "model-catalog-unmap",
-                        "取消关联",
+                        t("settings.catalog.unmap"),
                         !busy,
                         cx.listener(|this, _, _, cx| {
                             this.request_model_catalog(CatalogAction::Unmap, cx)
@@ -289,45 +359,51 @@ impl SettingsView {
             section = section.child(self.render_catalog_mapping(cx));
         }
         if let Some(target) = &self.catalog.projection.mapped {
-            section = section.child(
-                div()
-                    .min_w_0()
-                    .whitespace_normal()
-                    .child(format!("目录身份：{} / {}", target.provider, target.model)),
-            );
+            section = section.child(div().min_w_0().whitespace_normal().child(t_args(
+                "settings.catalog.identity",
+                &[("provider", &target.provider), ("model", &target.model)],
+            )));
         }
         if let Some(model) = self.catalog.projection.matched_model().cloned() {
-            section = section.child(div().text_color(colors.text_secondary).child(format!(
-                        "总上下文 {} · 输入 {} · 输出 {} token",
-                        model.context,
-                        model
-                            .input
-                            .map(|v| v.to_string())
-                            .unwrap_or_else(|| "未提供".into()),
-                        model.output
-                    )));
+            section = section.child(
+                div().text_color(colors.text_secondary).child(t_args(
+                    "settings.catalog.capacity",
+                    &[
+                        ("context", &model.context.to_string()),
+                        (
+                            "input",
+                            &(model
+                                .input
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| t("settings.catalog.not_provided").into())),
+                        ),
+                        ("output", &model.output.to_string()),
+                    ],
+                )),
+            );
             let support = |value: Option<bool>| match value {
-                Some(true) => "支持",
-                Some(false) => "不支持",
-                None => "未提供",
+                Some(true) => t("settings.catalog.supported"),
+                Some(false) => t("settings.catalog.unsupported"),
+                None => t("settings.catalog.not_provided"),
             };
-            section = section.child(div().text_color(colors.text_secondary).child(format!(
-                "工具调用：{} · 思考：{}",
-                support(model.tool_call),
-                support(model.reasoning)
+            section = section.child(div().text_color(colors.text_secondary).child(t_args(
+                "settings.catalog.capabilities",
+                &[
+                    ("tools", support(model.tool_call)),
+                    ("reasoning", support(model.reasoning)),
+                ],
             )));
             if let Some(canonical) = &model.canonical_id {
-                section = section.child(
-                    div()
-                        .text_color(colors.text_secondary)
-                        .child(format!("标准模型身份：{canonical}")),
-                );
+                section = section.child(div().text_color(colors.text_secondary).child(t_args(
+                    "settings.catalog.canonical",
+                    &[("canonical", canonical)],
+                )));
             }
             if let Some(status) = &model.status {
                 section = section.child(
                     div()
                         .text_color(colors.warning)
-                        .child(format!("目录状态：{status}")),
+                        .child(t_args("settings.catalog.status", &[("status", status)])),
                 );
             }
             let capacity_ready = self.catalog_capacity_editable();
@@ -335,14 +411,14 @@ impl SettingsView {
                 settings_actions()
                     .child(self.settings_route_button(
                         "model-catalog-input",
-                        "使用目录输入上限",
+                        t("settings.catalog.apply_input"),
                         capacity_ready && model.input.is_some_and(|v| v > 0),
                         cx.listener(|this, _, _, cx| this.catalog_apply_capacity(true, cx)),
                         cx,
                     ))
                     .child(self.settings_route_button(
                         "model-catalog-output",
-                        "使用目录输出上限",
+                        t("settings.catalog.apply_output"),
                         capacity_ready && model.output > 0,
                         cx.listener(|this, _, _, cx| this.catalog_apply_capacity(false, cx)),
                         cx,
@@ -353,45 +429,77 @@ impl SettingsView {
                     .reasoning_options
                     .iter()
                     .map(|option| match option {
-                        CatalogReasoningOption::Toggle => "开关".into(),
+                        CatalogReasoningOption::Toggle => t("settings.catalog.toggle").into(),
                         CatalogReasoningOption::Effort(values) => values
                             .iter()
                             .map(|v| v.as_deref().unwrap_or("null"))
                             .collect::<Vec<_>>()
                             .join(" / "),
-                        CatalogReasoningOption::Budget { min, max } => {
-                            format!(
-                                "预算 {}–{}",
-                                min.map(|v| v.to_string())
-                                    .unwrap_or_else(|| "未提供".into()),
-                                max.map(|v| v.to_string())
-                                    .unwrap_or_else(|| "未提供".into())
-                            )
-                        }
+                        CatalogReasoningOption::Budget { min, max } => t_args(
+                            "settings.catalog.budget",
+                            &[
+                                (
+                                    "min",
+                                    &(min.map(|v| v.to_string()).unwrap_or_else(|| {
+                                        t("settings.catalog.not_provided").into()
+                                    })),
+                                ),
+                                (
+                                    "max",
+                                    &(max.map(|v| v.to_string()).unwrap_or_else(|| {
+                                        t("settings.catalog.not_provided").into()
+                                    })),
+                                ),
+                            ],
+                        ),
                         CatalogReasoningOption::Unknown(value) => value.clone(),
                     })
                     .collect::<Vec<_>>()
-                    .join("；");
+                    .join(t("settings.detail_separator"));
                 section = section.child(
                     div()
                         .text_color(colors.text_secondary)
-                        .child(format!("思考资料：{text}")),
+                        .child(t_args("settings.catalog.reasoning", &[("text", &text)])),
                 );
             }
             if let Some(cost) = &model.cost {
                 section = section
-                    .child(div().text_color(colors.text_secondary).child(format!(
-                        "USD / 1M token · 输入 {} · 输出 {} · 缓存读取 {} · 缓存写入 {}",
-                        cost.input.as_deref().unwrap_or("未提供"),
-                        cost.output.as_deref().unwrap_or("未提供"),
-                        cost.cache_read.as_deref().unwrap_or("未提供"),
-                        cost.cache_write.as_deref().unwrap_or("未提供")
-                    )))
+                    .child(
+                        div().text_color(colors.text_secondary).child(t_args(
+                            "settings.catalog.prices",
+                            &[
+                                (
+                                    "input",
+                                    cost.input
+                                        .as_deref()
+                                        .unwrap_or(t("settings.catalog.not_provided")),
+                                ),
+                                (
+                                    "output",
+                                    cost.output
+                                        .as_deref()
+                                        .unwrap_or(t("settings.catalog.not_provided")),
+                                ),
+                                (
+                                    "cache_read",
+                                    cost.cache_read
+                                        .as_deref()
+                                        .unwrap_or(t("settings.catalog.not_provided")),
+                                ),
+                                (
+                                    "cache_write",
+                                    cost.cache_write
+                                        .as_deref()
+                                        .unwrap_or(t("settings.catalog.not_provided")),
+                                ),
+                            ],
+                        )),
+                    )
                     .when(cost.complex, |s| {
                         s.child(
                             div()
                                 .text_color(colors.text_secondary)
-                                .child("目录含阶梯或额外计费维度；请手动配置价格"),
+                                .child(t("settings.catalog.complex_pricing")),
                         )
                     });
             }
@@ -405,7 +513,7 @@ impl SettingsView {
             section = section
                 .child(self.settings_route_button(
                     "model-catalog-prices",
-                    "填入共享模型价格…",
+                    t("settings.catalog.apply_prices"),
                     simple_prices(&model).is_some()
                         && price_target
                         && self.pricing_allows_editing()
@@ -417,11 +525,11 @@ impl SettingsView {
                     div()
                         .text_size(px(Typography::METADATA))
                         .text_color(colors.text_secondary)
-                        .child("价格以模型 ID 共享给所有提供方；填入后仍需保存确认"),
+                        .child(t("settings.catalog.shared_prices_hint")),
                 );
         } else if self.catalog.projection.mapped.is_some() {
             section = section.child(settings_status(
-                "关联模型不在当前目录中；保留手动配置",
+                t("settings.catalog.mapped_missing"),
                 colors.warning,
                 colors,
             ));
@@ -430,7 +538,7 @@ impl SettingsView {
             section = section.child(
                 div()
                     .text_color(colors.text_secondary)
-                    .child(message.clone()),
+                    .child(message.render()),
             );
         }
         section.into_any_element()
@@ -443,7 +551,7 @@ impl SettingsView {
         if let Some(provider) = self.catalog.selected_provider.clone() {
             body = body.child(self.settings_route_button(
                 "catalog-provider-back",
-                "重新选择目录提供方",
+                t("settings.catalog.choose_provider"),
                 true,
                 cx.listener(|this, _, _, cx| {
                     this.catalog.selected_provider = None;
@@ -505,7 +613,7 @@ impl SettingsView {
             }
             body = body.child(self.settings_route_button(
                 "catalog-map-confirm",
-                "关联所选模型资料",
+                t("settings.catalog.confirm_map"),
                 self.catalog.candidate.is_some() && !self.catalog.projection.refreshing,
                 cx.listener(|this, _, _, cx| {
                     if let Some(target) = this.catalog.candidate.clone() {
@@ -563,7 +671,7 @@ impl SettingsView {
             div()
                 .text_size(px(Typography::METADATA))
                 .text_color(colors.text_secondary)
-                .child("最多显示 20 项；可用完整 ID 缩小结果"),
+                .child(t("settings.catalog.results_limit")),
         )
         .into_any_element()
     }

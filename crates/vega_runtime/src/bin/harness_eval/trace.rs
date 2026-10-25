@@ -220,6 +220,28 @@ impl Recorder {
                     },
                 }));
             }
+            RuntimeEvent::GeneratedNotice {
+                kind,
+                text_start_bytes,
+                text_end_bytes,
+            } => {
+                let (kind, turn_limit, delivered_images) = match kind {
+                    vega_runtime::RuntimeGeneratedNoticeKind::TurnLimit { limit } => {
+                        ("turn_limit", Some(limit), None)
+                    }
+                    vega_runtime::RuntimeGeneratedNoticeKind::ComputerStopped {
+                        delivered_images,
+                    } => ("computer_stopped", None, Some(delivered_images)),
+                };
+                self.trace.push(json!({
+                    "event": "generated_notice",
+                    "kind": kind,
+                    "turn_limit": turn_limit,
+                    "delivered_images": delivered_images,
+                    "text_start_bytes": text_start_bytes,
+                    "text_end_bytes": text_end_bytes,
+                }));
+            }
             RuntimeEvent::Finished(reason) => {
                 let terminal = match reason {
                     RuntimeFinishReason::End => "end",

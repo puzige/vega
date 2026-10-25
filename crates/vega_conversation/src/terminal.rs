@@ -16,7 +16,7 @@ const SCROLLBACK: usize = 2_000;
 
 /// Content-free terminal failures; shell output is never put into diagnostics.
 #[derive(Debug, thiserror::Error)]
-#[error("terminal operation unavailable")]
+#[error("{}", vega_i18n::t("domain.terminal.unavailable"))]
 pub struct TerminalError;
 
 enum Command {

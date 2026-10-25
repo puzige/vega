@@ -27,19 +27,21 @@ fn mode_command(mode: ThreadMode) -> &'static str {
 
 pub(crate) fn permission_label(mode: PermissionMode) -> &'static str {
     match mode {
-        PermissionMode::ReadOnly => "只读",
-        PermissionMode::Confirm => "确认",
-        PermissionMode::Auto => "自动",
-        PermissionMode::FullAccess => "完全访问",
+        PermissionMode::ReadOnly => vega_i18n::t("ui.read_only"),
+        PermissionMode::Confirm => vega_i18n::t("ui.confirm"),
+        PermissionMode::Auto => vega_i18n::t("ui.auto"),
+        PermissionMode::FullAccess => vega_i18n::t("ui.full_access"),
     }
 }
 
 pub(crate) fn permission_description(mode: PermissionMode) -> &'static str {
     match mode {
-        PermissionMode::ReadOnly => "每次都询问",
-        PermissionMode::Confirm => "仅对潜在不安全操作询问",
-        PermissionMode::Auto => "自动批准，使用沙箱",
-        PermissionMode::FullAccess => "不使用沙箱，危险操作仍需确认",
+        PermissionMode::ReadOnly => vega_i18n::t("ui.ask_every_time"),
+        PermissionMode::Confirm => vega_i18n::t("ui.ask_only_for_potentially_unsafe_actions"),
+        PermissionMode::Auto => vega_i18n::t("ui.approve_automatically_using_the_sandbox"),
+        PermissionMode::FullAccess => {
+            vega_i18n::t("ui.no_sandbox_dangerous_actions_still_require_confirmation")
+        }
     }
 }
 
@@ -55,9 +57,9 @@ pub(crate) fn permission_is_warning(mode: PermissionMode) -> bool {
     matches!(mode, PermissionMode::Auto | PermissionMode::FullAccess)
 }
 
-pub(crate) const PERMISSION_PICKER_TITLE: &str = "操作应如何获得批准？";
+pub(crate) const PERMISSION_PICKER_TITLE: &str = "ui.how_should_actions_be_approved";
 
-pub(crate) const PERMISSION_PICKER_LEARN_MORE: &str = "了解更多";
+pub(crate) const PERMISSION_PICKER_LEARN_MORE: &str = "ui.learn_more";
 
 /// One selectable `+`-menu row. Rendering, keyboard highlight indices, and
 /// click dispatch all consume this one projection, so they cannot drift.
@@ -79,12 +81,12 @@ enum ComposerActionRow {
 impl ComposerActionRow {
     fn label(self) -> &'static str {
         match self {
-            Self::Goal => "持续目标",
-            Self::Loop => "循环任务",
-            Self::AddImages => "添加图片",
-            Self::CredentialReview => "凭据检查",
-            Self::ComputerTakeover => "接管电脑操作",
-            Self::FileReference => "项目文件引用",
+            Self::Goal => vega_i18n::t("ui.ongoing_goal"),
+            Self::Loop => vega_i18n::t("ui.recurring_task"),
+            Self::AddImages => vega_i18n::t("ui.add_images"),
+            Self::CredentialReview => vega_i18n::t("ui.review_credentials"),
+            Self::ComputerTakeover => vega_i18n::t("ui.take_over_computer_control"),
+            Self::FileReference => vega_i18n::t("ui.reference_project_files"),
             Self::Mode(mode) => mode_command(mode),
             Self::Permission(mode) => permission_label(mode),
         }
@@ -725,9 +727,15 @@ impl ConversationStream {
                             .hover(move |row| row.bg(colors.bg_hover))
                     })
                     .when(!enabled, |row| {
-                        row.aria_label("接管电脑操作，已失效").tooltip(|_, cx| {
-                            crate::icons::tooltip("这项接管已失效，请关闭并重新打开菜单", cx)
-                        })
+                        row.aria_label(vega_i18n::t("ui.take_over_computer_control_expired"))
+                            .tooltip(|_, cx| {
+                                crate::icons::tooltip(
+                                    vega_i18n::t(
+                                        "ui.this_takeover_has_expired_close_and_reopen_the",
+                                    ),
+                                    cx,
+                                )
+                            })
                     })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if this.actions.menu_generation == generation
@@ -786,9 +794,9 @@ impl ConversationStream {
             .track_focus(&self.action_focus[1])
             .tab_stop(true)
             .aria_label(if self.actions.stopping {
-                "正在停止"
+                vega_i18n::t("ui.stopping")
             } else {
-                "停止"
+                vega_i18n::t("ui.stop")
             })
             .key_context("ComposerStop")
             .on_action(cx.listener(Self::stop_composer_action))

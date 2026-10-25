@@ -41,11 +41,7 @@ impl AutomaticTitleRequest {
     }
 
     pub(crate) fn fallback(&self) -> String {
-        if self.source.is_empty() {
-            "图片对话".into()
-        } else {
-            self.source.chars().take(40).collect()
-        }
+        self.source.chars().take(40).collect()
     }
 
     pub(crate) fn launch(

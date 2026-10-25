@@ -83,10 +83,14 @@ pub(crate) fn show_question(
     let title = title.trim();
     cx.show_system_notification(SystemNotification {
         tag: tag.clone(),
-        title: if title.is_empty() { "新任务" } else { title }
-            .to_owned()
-            .into(),
-        body: "Waiting for your answer".into(),
+        title: if title.is_empty() {
+            vega_i18n::t("app.task.new")
+        } else {
+            title
+        }
+        .to_owned()
+        .into(),
+        body: vega_i18n::t("app.notification.waiting").into(),
         actions: Vec::new(),
     });
     Some(tag)
@@ -110,8 +114,12 @@ pub(crate) fn show(
     }
     let body = match outcome {
         RunCompletionOutcome::Completed => summary,
-        RunCompletionOutcome::Failed => format!("任务失败：{summary}"),
-        RunCompletionOutcome::Interrupted => format!("任务已中断：{summary}"),
+        RunCompletionOutcome::Failed => {
+            vega_i18n::t_args("app.notification.failed", &[("summary", &summary)])
+        }
+        RunCompletionOutcome::Interrupted => {
+            vega_i18n::t_args("app.notification.interrupted", &[("summary", &summary)])
+        }
     };
     let mut characters = body.chars();
     let mut body = characters.by_ref().take(160).collect::<String>();
@@ -132,9 +140,13 @@ pub(crate) fn show(
     let title = title.trim();
     cx.show_system_notification(SystemNotification {
         tag,
-        title: if title.is_empty() { "新任务" } else { title }
-            .to_owned()
-            .into(),
+        title: if title.is_empty() {
+            vega_i18n::t("app.task.new")
+        } else {
+            title
+        }
+        .to_owned()
+        .into(),
         body: body.into(),
         actions: Vec::new(),
     });

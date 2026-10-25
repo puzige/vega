@@ -15,7 +15,9 @@ impl ConversationStream {
     pub fn apply_approved_not_started(&mut self, cx: &mut Context<Self>) {
         self.approved_not_started = true;
         self.controller_runtime_error = None;
-        self.controller_error = Some("已批准计划尚未执行；恢复入口待补充".into());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(
+            "ui.the_approved_plan_has_not_run_yet_a",
+        ));
         cx.notify();
     }
 
@@ -29,7 +31,12 @@ impl ConversationStream {
             return;
         }
         let id = plan.id.clone();
-        let card = cx.new(|cx| PlanCard::new(plan, cx));
+        let notices = self.generated_notices.get(&id).cloned().unwrap_or_default();
+        let card = cx.new(|cx| {
+            let mut card = PlanCard::new(plan, cx);
+            card.set_generated_notices(notices, cx);
+            card
+        });
         cx.subscribe(&card, |_, _, event: &PlanReviewRequested, cx| {
             cx.emit(event.clone());
         })
@@ -180,6 +187,7 @@ impl ConversationStream {
             .flat_map(|relation| [&relation.previous_assistant_id, &relation.next_assistant_id])
             .collect::<HashSet<_>>();
         let response_boundaries = phase::history_response_boundaries(&history_entries);
+        let generated_notices = generated_notice::history_notices(&history_entries);
         let mut assistant_offsets = HashMap::<String, usize>::new();
         let activity_runs: HashSet<_> = history_entries
             .iter()
@@ -209,7 +217,7 @@ impl ConversationStream {
         let mut restored_responses: HashMap<String, phase::RunResponses> = HashMap::new();
         for entry in history_entries {
             match entry {
-                HistoryEntry::RunContinuation { .. } => {}
+                HistoryEntry::RunContinuation { .. } | HistoryEntry::GeneratedNotice { .. } => {}
                 HistoryEntry::CredentialContinuation {
                     message_id,
                     failure,
@@ -316,11 +324,21 @@ impl ConversationStream {
                         let part = &content[part_start..part_end];
                         let mut stream = MarkdownStream::new();
                         stream.append(part);
-                        stream.finish();
+                        let copy = MessageCopy::new(part);
+                        if let Some(notices) = generated_notices.get(&(message_id.clone(), seq)) {
+                            copy.set_generated_notices(
+                                notices
+                                    .iter()
+                                    .filter_map(|span| {
+                                        span.fragments(start + part_start..start + part_end)
+                                    })
+                                    .collect(),
+                            );
+                        }
                         let mut model = StreamModel::default();
-                        model.sync(&stream.snapshot(), &self.counters);
+                        copy.finish_model(&mut stream, &mut model, &self.counters);
                         hydrated.push(StreamEntry::Assistant {
-                            copy: MessageCopy::new(part),
+                            copy,
                             stream: Box::new(stream),
                             model,
                             failure: (status
@@ -362,7 +380,15 @@ impl ConversationStream {
                             cx,
                         );
                     }
-                    let card = cx.new(|cx| PlanCard::new(plan, cx));
+                    let notices = generated_notices
+                        .get(&(id.clone(), seq))
+                        .cloned()
+                        .unwrap_or_default();
+                    let card = cx.new(|cx| {
+                        let mut card = PlanCard::new(plan, cx);
+                        card.set_generated_notices(notices, cx);
+                        card
+                    });
                     cx.subscribe(&card, |_, _, event: &PlanReviewRequested, cx| {
                         cx.emit(event.clone());
                     })
@@ -677,7 +703,8 @@ impl ConversationStream {
             | HistoryEntry::AssistantText { message_id: id, .. }
             | HistoryEntry::AssistantScreenshot { message_id: id, .. }
             | HistoryEntry::Tool { message_id: id, .. }
-            | HistoryEntry::AssistantResponseMetadata { message_id: id, .. } => id == message_id,
+            | HistoryEntry::AssistantResponseMetadata { message_id: id, .. }
+            | HistoryEntry::GeneratedNotice { message_id: id, .. } => id == message_id,
             HistoryEntry::Plan { plan, .. } => plan.id == message_id,
             HistoryEntry::Summary { summary, .. } => summary.message_id == message_id,
             HistoryEntry::SkillActivation { .. } | HistoryEntry::RunContinuation { .. } => false,
@@ -706,6 +733,7 @@ impl ConversationStream {
         self.run_activity_groups.clear();
         self.run_continuations.clear();
         self.run_responses.clear();
+        self.generated_notices.clear();
         self.artifact_cards.clear();
         self.artifact_call_owners.clear();
         self.artifact_history_generation = self.artifact_history_generation.wrapping_add(1);
@@ -941,11 +969,15 @@ impl ConversationStream {
             vega_conversation::types::PermissionPresentation::Ready => {}
         }
         let allow_persistent = pending.allows_persistent_permission();
+        let codex_identity = card
+            .as_ref()
+            .and_then(|card| card.read(cx).codex_permission_display());
         self.remove_active_permission(cx);
         let Some((request, lease)) = pending.into_parts() else {
             return;
         };
-        let card = cx.new(|cx| PermissionCard::new(&request, lease, allow_persistent, cx));
+        let card =
+            cx.new(|cx| PermissionCard::new(&request, lease, allow_persistent, codex_identity, cx));
         cx.subscribe(&card, |this, card, _: &PermissionCardResolved, cx| {
             if this
                 .active_permission
@@ -1311,6 +1343,7 @@ impl ConversationStream {
                     self.active_agent_sequence,
                     false,
                 );
+                self.generated_notices.remove(&message_id);
                 self.active_agent_message = Some((message_id, usize::MAX));
                 self.active_segment_has_text = false;
                 self.active_segment_has_visible_text = false;
@@ -1353,6 +1386,9 @@ impl ConversationStream {
                     }
                 }
                 self.apply_response_metadata(&message_id, response, cx);
+            }
+            ConversationEvent::GeneratedNotice { message_id, notice } => {
+                self.apply_generated_notice(&message_id, notice, cx);
             }
             ConversationEvent::TextDelta { message_id, delta } => {
                 let Some((active_id, entry_index)) = self.active_agent_message.as_ref() else {
@@ -1656,14 +1692,16 @@ impl ConversationStream {
                         {
                             *active_failure = Some(failure);
                             self.controller_runtime_error = Some((message_id.clone(), failure));
-                            self.controller_error = Some(failure.message());
+                            self.controller_error =
+                                Some(crate::localized_copy::LocalizedCopy::Run(failure));
                         }
                     }
                     self.record_composer_terminal(&message_id, false);
                     self.finish_agent_message(&message_id, cx);
                 } else {
                     self.controller_runtime_error = None;
-                    self.controller_error = Some(failure.message());
+                    self.controller_error =
+                        Some(crate::localized_copy::LocalizedCopy::Run(failure));
                     if let Some((message_id, _)) = self.active_agent_message.clone() {
                         self.finish_agent_message(&message_id, cx);
                     }
@@ -1708,12 +1746,14 @@ impl ConversationStream {
         // 在本帧内完成最终物化——否则批量 ingress 末批 [delta…, Finished]
         // 的尾部 delta 永不上屏、终块永无 committed 高亮。
         if entry_index != usize::MAX {
-            if let Some(StreamEntry::Assistant { stream, model, .. }) =
-                self.entries.get_mut(entry_index)
+            if let Some(StreamEntry::Assistant {
+                copy,
+                stream,
+                model,
+                ..
+            }) = self.entries.get_mut(entry_index)
             {
-                stream.finish();
-                let snapshot = stream.snapshot();
-                model.sync(&snapshot, &self.counters);
+                copy.finish_model(stream, model, &self.counters);
             }
             self.invalidate_item(Some(entry_index));
         }
@@ -1759,10 +1799,14 @@ impl ConversationStream {
             return;
         }
         if self.active_segment_has_text {
-            if let Some(StreamEntry::Assistant { stream, model, .. }) = self.entries.get_mut(index)
+            if let Some(StreamEntry::Assistant {
+                copy,
+                stream,
+                model,
+                ..
+            }) = self.entries.get_mut(index)
             {
-                stream.finish();
-                model.sync(&stream.snapshot(), &self.counters);
+                copy.finish_model(stream, model, &self.counters);
             }
             self.invalidate_item(Some(index));
             self.active_segment_ordinal = self.active_segment_ordinal.saturating_add(1);

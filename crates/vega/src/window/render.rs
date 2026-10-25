@@ -3,6 +3,7 @@ use vega_ui::icons::{Icon, shell_icon_button};
 
 impl Render for VegaWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_language(cx);
         self.sync_navigation(cx);
         self.sync_preparation(cx);
         self.sync_completion_attention(window, cx);
@@ -94,7 +95,7 @@ impl Render for VegaWindow {
                 });
                 crate::app_usage::bind(&settings, cx);
                 settings.update(cx, |view, cx| {
-                    view.apply_update_projection(self.updater.state.clone(), cx)
+                    view.apply_update_projection(self.localized_update_projection(), cx)
                 });
                 cx.subscribe(&settings, |this, _, request: &UpdateRequest, cx| {
                     this.request_update(*request, cx);
@@ -441,7 +442,7 @@ impl Render for VegaWindow {
         } else {
             let navigation_error = cx
                 .try_global::<vega_ui::navigation::NavigationState>()
-                .and_then(|state| state.error);
+                .and_then(|state| state.error_message());
             let main = div()
                 .size_full()
                 .min_h_0()
@@ -500,7 +501,7 @@ impl Render for VegaWindow {
                         settings_open
                             .then(|| {
                                 cx.try_global::<vega_ui::navigation::NavigationState>()
-                                    .and_then(|state| state.error)
+                                    .and_then(|state| state.error_message())
                                     .map(|error| {
                                         div()
                                             .px_3()
@@ -602,7 +603,7 @@ impl VegaWindow {
             .occlude()
             .child(shell_icon_button(
                 Icon::Summary,
-                "切换环境",
+                vega_i18n::t("app.shell.toggle_environment"),
                 None,
                 environment_available
                     && !right_visible
@@ -614,7 +615,7 @@ impl VegaWindow {
             ))
             .child(shell_icon_button(
                 Icon::DockBottom,
-                "切换终端",
+                vega_i18n::t("app.shell.toggle_terminal"),
                 Some("⌘J".into()),
                 self.workspace_recent_terminal_is_rendered(window, cx),
                 project_route,
@@ -626,7 +627,7 @@ impl VegaWindow {
                     .capture_any_mouse_down(|_, window, _| window.prevent_default())
                     .child(shell_icon_button(
                         Icon::DockRight,
-                        "切换右侧面板",
+                        vega_i18n::t("app.shell.toggle_panel"),
                         None,
                         self.right_workspace_rendered_non_terminal(window, cx),
                         self.right_workspace_slot_available(window, cx),
@@ -640,13 +641,13 @@ impl VegaWindow {
     pub(crate) fn main_header_title(&self, cx: &App) -> String {
         let thread = cx.global::<OpenedThread>().0.clone();
         let Some(thread) = thread else {
-            return "新建任务".to_string();
+            return vega_i18n::t("app.task.create").to_string();
         };
         if self.is_draft_route(&thread.id) {
-            return "新建任务".to_string();
+            return vega_i18n::t("app.task.create").to_string();
         }
         if thread.title.is_empty() {
-            "未命名任务".to_string()
+            vega_i18n::t("app.task.untitled").to_string()
         } else {
             thread.title.clone()
         }
@@ -701,9 +702,9 @@ impl VegaWindow {
                             .text_color(colors.brand_primary)
                             .hover(move |style| style.bg(colors.bg_hover))
                             .child(if self.updater.state.phase == UpdatePhase::Ready {
-                                "更新已就绪"
+                                vega_i18n::t("app.shell.update_ready")
                             } else {
-                                "发现新版本"
+                                vega_i18n::t("app.shell.update_available")
                             })
                             .on_mouse_up(
                                 MouseButton::Left,

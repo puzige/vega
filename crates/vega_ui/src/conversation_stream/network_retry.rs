@@ -93,6 +93,9 @@ impl ConversationStream {
         if let Some(responses) = self.run_responses.get_mut(message_id) {
             responses.rollback(text_start_bytes);
         }
+        if let Some(notices) = self.generated_notices.get_mut(message_id) {
+            notices.retain(|span| span.display_end <= text_start_bytes);
+        }
         let anchor = self.scroll_anchor_snapshot();
         for index in removed.into_iter().rev() {
             self.entries.remove(index);

@@ -8,7 +8,7 @@ fn loading_indicator(colors: ThemeColors) -> AnyElement {
         .justify_center()
         .text_size(px(Typography::METADATA))
         .text_color(colors.text_secondary)
-        .child("加载中")
+        .child(vega_i18n::t("ui.loading"))
         .into_any_element()
 }
 
@@ -93,7 +93,7 @@ impl Render for ScreenshotCard {
             .child(
                 div()
                     .id("screenshot-expand")
-                    .aria_label("查看截图大图")
+                    .aria_label(vega_i18n::t("ui.view_full_screenshot"))
                     .track_focus(&self.image.view.read(cx).thumbnail_focus())
                     .tab_stop(true)
                     .w_full()
@@ -103,7 +103,9 @@ impl Render for ScreenshotCard {
                     .cursor_pointer()
                     .hover(move |style| style.border_1().border_color(colors.text_secondary))
                     .focus_visible(move |style| style.border_1().border_color(colors.brand_primary))
-                    .tooltip(|_, cx| crate::icons::tooltip("查看大图 · Enter", cx))
+                    .tooltip(|_, cx| {
+                        crate::icons::tooltip(vega_i18n::t("ui.view_full_image_enter"), cx)
+                    })
                     .on_key_down(
                         cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
                             if matches!(event.keystroke.key.as_str(), "enter" | "space") {
@@ -133,7 +135,7 @@ impl ConversationStream {
             .filter(|entry| matches!(entry, StreamEntry::Screenshot { .. }))
             .count()
             + 1;
-        let name = attachments::image_name("截图", ordinal, &image);
+        let name = attachments::image_name("screenshot", ordinal, &image);
         let card = cx.new(|cx| ScreenshotCard::new(image, name, cx));
         let view = card.read(cx).image.view.clone();
         self.observe_image(&view, cx);

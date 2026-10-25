@@ -98,24 +98,24 @@ const TRACK_UNFILLED: Rgba = measured_rgba(0xE9E8E8FF);
 
 pub const OFF_CHOICE_NAME: &str = "disabled";
 
-pub const OFF_LABEL: &str = "Off";
+pub const OFF_LABEL: &str = "ui.off";
 
-pub const PROVIDER_DEFAULT_LABEL: &str = "Default";
+pub const PROVIDER_DEFAULT_LABEL: &str = "ui.default";
 
 pub fn tier_display_label(effort: &str) -> String {
     if effort == "enabled" {
-        return "开启思考".into();
+        return vega_i18n::t("ui.enable_thinking").into();
     }
     match effort {
-        "none" => "None".to_string(),
-        "minimal" => "Minimal".to_string(),
-        "low" => "Low".to_string(),
-        "medium" => "Medium".to_string(),
-        "high" => "High".to_string(),
-        "xhigh" => "Extra High".to_string(),
-        "max" => "Max".to_string(),
-        "ultra" => "Ultra".to_string(),
-        "persistent" => "Persistent".to_string(),
+        "none" => vega_i18n::t("ui.none").to_string(),
+        "minimal" => vega_i18n::t("ui.minimal").to_string(),
+        "low" => vega_i18n::t("ui.low").to_string(),
+        "medium" => vega_i18n::t("ui.medium").to_string(),
+        "high" => vega_i18n::t("ui.high").to_string(),
+        "xhigh" => vega_i18n::t("ui.extra_high").to_string(),
+        "max" => vega_i18n::t("ui.max").to_string(),
+        "ultra" => vega_i18n::t("ui.ultra").to_string(),
+        "persistent" => vega_i18n::t("ui.persistent").to_string(),
         other => {
             let mut characters = other.chars();
             match characters.next() {
@@ -292,8 +292,8 @@ impl ThinkingSliderModel {
     pub fn label(&self) -> String {
         match self.current.as_ref() {
             Some(Selection::Tier(tier)) => tier_display_label(tier),
-            Some(Selection::Off) => OFF_LABEL.to_string(),
-            None if self.provider_default => PROVIDER_DEFAULT_LABEL.to_string(),
+            Some(Selection::Off) => vega_i18n::t(OFF_LABEL).to_string(),
+            None if self.provider_default => vega_i18n::t(PROVIDER_DEFAULT_LABEL).to_string(),
             None => String::new(),
         }
     }

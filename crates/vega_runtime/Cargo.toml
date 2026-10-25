@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+vega_i18n.workspace = true
 vega_credentials = { workspace = true }
 image = { workspace = true }
 base64 = { workspace = true }

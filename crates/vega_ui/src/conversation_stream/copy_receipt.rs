@@ -173,10 +173,15 @@ impl CopyReceiptButton {
             .child(GlyphLayer::new(Icon::Check, colors, blend.clone(), true));
         let clicked = binding.clone();
         let accessible = binding.clone();
-        let button =
-            crate::icons::icon_button_with_content(content, label, colors, move |_, window, cx| {
+        let button = crate::icons::icon_button_with_id(
+            content,
+            id.clone(),
+            label,
+            colors,
+            move |_, window, cx| {
                 activate(&clicked.borrow(), window, cx);
-            });
+            },
+        );
         Self {
             id: id.into(),
             source,
@@ -310,7 +315,7 @@ impl Element for ReceiptSurface {
     fn write_a11y_info(&self, node: &mut gpui_kit::accesskit::Node) {
         self.button.write_a11y_info(node);
         if self.active.get() {
-            node.set_description("已执行复制调用");
+            node.set_description(vega_i18n::t("ui.copy_requested"));
         }
     }
 

@@ -14,16 +14,22 @@ impl ThreadsBlock {
         let mut items = Vec::new();
         match menu {
             OrganizationMenu::Group(id) => {
-                items.push(("新建任务".into(), MenuCommand::NewTask(id.clone())));
-                items.push(("重命名".into(), MenuCommand::Rename(id.clone())));
+                items.push((
+                    vega_i18n::t("ui.new_task").into(),
+                    MenuCommand::NewTask(id.clone()),
+                ));
+                items.push((
+                    vega_i18n::t("ui.rename").into(),
+                    MenuCommand::Rename(id.clone()),
+                ));
                 for (color, label) in [
-                    (SidebarGroupColor::Gray, "灰"),
-                    (SidebarGroupColor::Red, "红"),
-                    (SidebarGroupColor::Orange, "橙"),
-                    (SidebarGroupColor::Yellow, "黄"),
-                    (SidebarGroupColor::Green, "绿"),
-                    (SidebarGroupColor::Blue, "蓝"),
-                    (SidebarGroupColor::Purple, "紫"),
+                    (SidebarGroupColor::Gray, vega_i18n::t("ui.gray")),
+                    (SidebarGroupColor::Red, vega_i18n::t("ui.red")),
+                    (SidebarGroupColor::Orange, vega_i18n::t("ui.orange")),
+                    (SidebarGroupColor::Yellow, vega_i18n::t("ui.yellow")),
+                    (SidebarGroupColor::Green, vega_i18n::t("ui.green")),
+                    (SidebarGroupColor::Blue, vega_i18n::t("ui.blue")),
+                    (SidebarGroupColor::Purple, vega_i18n::t("ui.purple")),
                 ] {
                     let selected = snapshot
                         .groups
@@ -31,7 +37,13 @@ impl ThreadsBlock {
                         .find(|g| &g.id == id)
                         .is_some_and(|g| g.color == color);
                     items.push((
-                        format!("{} 更改颜色 · {label}", if selected { "✓" } else { "  " }),
+                        vega_i18n::t_args(
+                            "ui.selected_change_color_label",
+                            &[
+                                ("selected", if selected { "✓" } else { "  " }),
+                                ("label", label),
+                            ],
+                        ),
                         MenuCommand::Apply(SidebarOrganizationAction::SetGroupColor {
                             group_id: id.clone(),
                             color,
@@ -41,7 +53,7 @@ impl ThreadsBlock {
                 if let Some(index) = snapshot.groups.iter().position(|g| &g.id == id) {
                     if index > 0 {
                         items.push((
-                            "分组上移".into(),
+                            vega_i18n::t("ui.move_group_up").into(),
                             MenuCommand::Apply(SidebarOrganizationAction::MoveGroup {
                                 group_id: id.clone(),
                                 before_id: Some(snapshot.groups[index - 1].id.clone()),
@@ -50,7 +62,7 @@ impl ThreadsBlock {
                     }
                     if index + 1 < snapshot.groups.len() {
                         items.push((
-                            "分组下移".into(),
+                            vega_i18n::t("ui.move_group_down").into(),
                             MenuCommand::Apply(SidebarOrganizationAction::MoveGroup {
                                 group_id: id.clone(),
                                 before_id: snapshot.groups.get(index + 2).map(|g| g.id.clone()),
@@ -59,14 +71,17 @@ impl ThreadsBlock {
                     }
                 }
                 items.push((
-                    "取消分组并删除".into(),
+                    vega_i18n::t("ui.ungroup_and_delete").into(),
                     MenuCommand::Apply(SidebarOrganizationAction::DissolveGroup {
                         group_id: id.clone(),
                     }),
                 ));
             }
             OrganizationMenu::Project(id) => {
-                items.push(("移除项目".into(), MenuCommand::RemoveProject(id.clone())));
+                items.push((
+                    vega_i18n::t("ui.remove_project").into(),
+                    MenuCommand::RemoveProject(id.clone()),
+                ));
                 items.extend(
                     self.reorder_menu_actions(&ReorderItem::Project(id.clone()))
                         .into_iter()
@@ -113,8 +128,8 @@ impl ThreadsBlock {
         };
         let items = self.organization_menu_items();
         let title = match org.menu {
-            Some(OrganizationMenu::Group(_)) => "分组操作",
-            _ => "项目操作",
+            Some(OrganizationMenu::Group(_)) => vega_i18n::t("ui.group_actions"),
+            _ => vega_i18n::t("ui.project_actions"),
         };
         let menu = div()
             .id("organization-menu")
@@ -207,33 +222,45 @@ impl ThreadsBlock {
                     .text_color(colors.text_tertiary)
                     .child(title),
             )
-            .children(items.into_iter().enumerate().map(|(index, (label, _))| {
-                div()
-                    .id(ElementId::Name(format!("organization-menu-{index}").into()))
-                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .px_2()
-                    .rounded_md()
-                    .text_size(px(Typography::SIDEBAR))
-                    .text_color(if label.contains("取消分组并删除") {
-                        colors.danger
-                    } else {
-                        colors.text_primary
-                    })
-                    .when(org.menu_index == index, |s| s.bg(colors.bg_active))
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(colors.bg_hover))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.activate_organization_menu(index, window, cx);
-                        }),
-                    )
-                    .child(label)
-            }));
+            .children(
+                items
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (label, command))| {
+                        div()
+                            .id(ElementId::Name(format!("organization-menu-{index}").into()))
+                            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .px_2()
+                            .rounded_md()
+                            .text_size(px(Typography::SIDEBAR))
+                            .text_color(
+                                if matches!(
+                                    command,
+                                    MenuCommand::Apply(
+                                        SidebarOrganizationAction::DissolveGroup { .. }
+                                    )
+                                ) {
+                                    colors.danger
+                                } else {
+                                    colors.text_primary
+                                },
+                            )
+                            .when(org.menu_index == index, |s| s.bg(colors.bg_active))
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(colors.bg_hover))
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.activate_organization_menu(index, window, cx);
+                                }),
+                            )
+                            .child(label)
+                    }),
+            );
         div()
             .absolute()
             .top_0()

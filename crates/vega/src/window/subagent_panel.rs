@@ -305,7 +305,12 @@ impl VegaWindow {
                 .iter()
                 .filter(|agent| self.subagent_display_state(agent) == state)
                 .count();
-            (count > 0).then(|| format!("{count} {}", state_label(state)))
+            (count > 0).then(|| {
+                vega_i18n::t_args(
+                    "app.subagent.count",
+                    &[("count", &count.to_string()), ("state", state_label(state))],
+                )
+            })
         })
         .collect::<Vec<_>>()
         .join(" · ")
@@ -324,7 +329,7 @@ impl VegaWindow {
         section = section.child(
             panel_button(
                 "environment-subagents-open",
-                "Subagents",
+                vega_i18n::t("app.workspace.subagents"),
                 colors,
                 cx.listener(|this, _, window, cx| {
                     this.open_subagent_panel(window, cx);
@@ -810,7 +815,7 @@ impl VegaWindow {
                     .is_some_and(|active| active.generation == generation)
                 {
                     this.subagent_panel.stop_error = None;
-                    this.pause_automation_all(&target, "已由你停止", cx);
+                    this.pause_automation_all(&target, "stopped", cx);
                     this.agent_controller.request_active_cancel(&target);
                 }
                 cx.notify();
@@ -828,7 +833,7 @@ impl VegaWindow {
         let child = child.to_string();
         let button = panel_button(
             format!("subagent-panel-stop-{child}"),
-            "Stop",
+            vega_i18n::t("app.workspace.stop"),
             theme(cx).colors,
             cx.listener(move |this, _, _, cx| {
                 this.stop_panel_child(&child, generation, cx);
@@ -848,11 +853,11 @@ impl VegaWindow {
                 div()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.danger)
-                    .child("Could not load subagents."),
+                    .child(vega_i18n::t("app.workspace.load_failed")),
             )
             .child(panel_button(
                 "subagent-panel-retry",
-                "Retry",
+                vega_i18n::t("app.workspace.retry"),
                 colors,
                 cx.listener(|this, _, _, cx| this.load_subagent_panel(cx)),
             ))
@@ -918,11 +923,11 @@ impl VegaWindow {
                     .child(
                         div()
                             .text_color(colors.danger)
-                            .child("Could not stop this subagent."),
+                            .child(vega_i18n::t("app.workspace.stop_failed")),
                     )
                     .child(panel_button(
                         "subagent-stop-error-open",
-                        "Open conversation",
+                        vega_i18n::t("app.workspace.open_conversation"),
                         colors,
                         cx.listener(move |this, _, _, cx| {
                             this.open_panel_child_conversation(&child, cx)
@@ -938,7 +943,7 @@ impl VegaWindow {
                 .iter()
                 .find(|agent| agent.agent_id == child)
                 .map(|agent| agent.name.clone())
-                .unwrap_or_else(|| "Subagent".into());
+                .unwrap_or_else(|| vega_i18n::t("app.workspace.subagent").into());
             let state = self
                 .subagent_panel
                 .agents
@@ -965,7 +970,7 @@ impl VegaWindow {
                 .border_color(colors.border_subtle)
                 .child(panel_button(
                     "subagent-panel-back",
-                    "Back",
+                    vega_i18n::t("app.workspace.back"),
                     colors,
                     cx.listener(|this, _, window, cx| {
                         this.clear_subagent_detail(cx);
@@ -989,7 +994,7 @@ impl VegaWindow {
                 }))
                 .child(panel_button(
                     "subagent-panel-open-conversation",
-                    "Open conversation",
+                    vega_i18n::t("app.workspace.open_conversation"),
                     colors,
                     cx.listener(move |this, _, _, cx| {
                         this.open_panel_child_conversation(&open_child, cx)
@@ -1014,7 +1019,7 @@ impl VegaWindow {
                     div()
                         .p_3()
                         .text_color(colors.text_secondary)
-                        .child("Loading…"),
+                        .child(vega_i18n::t("app.workspace.loading")),
                 );
             }
             if error {
@@ -1028,11 +1033,11 @@ impl VegaWindow {
                         .child(
                             div()
                                 .text_color(colors.danger)
-                                .child("Could not open this subagent."),
+                                .child(vega_i18n::t("app.workspace.open_failed")),
                         )
                         .child(panel_button(
                             "subagent-detail-retry",
-                            "Retry",
+                            vega_i18n::t("app.workspace.retry"),
                             colors,
                             cx.listener(move |this, _, window, cx| {
                                 this.select_subagent_detail(&child, window, cx)
@@ -1059,7 +1064,7 @@ impl VegaWindow {
                     div()
                         .p_3()
                         .text_color(colors.text_secondary)
-                        .child("Loading…"),
+                        .child(vega_i18n::t("app.workspace.loading")),
                 );
             }
             let rows = self.subagent_panel.agents.clone();
@@ -1120,11 +1125,11 @@ impl VegaWindow {
 
 fn state_label(state: SubagentState) -> &'static str {
     match state {
-        SubagentState::Running => "Running",
-        SubagentState::Cancelling => "Stopping",
-        SubagentState::Completed => "Completed",
-        SubagentState::Failed => "Failed",
-        SubagentState::Interrupted => "Interrupted",
+        SubagentState::Running => vega_i18n::t("app.subagent.running"),
+        SubagentState::Cancelling => vega_i18n::t("app.subagent.stopping"),
+        SubagentState::Completed => vega_i18n::t("app.subagent.completed"),
+        SubagentState::Failed => vega_i18n::t("app.subagent.failed"),
+        SubagentState::Interrupted => vega_i18n::t("app.subagent.interrupted"),
     }
 }
 
