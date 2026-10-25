@@ -46,7 +46,7 @@ fn protected_profile(
         return Err(BashError::new(BashErrorCode::SandboxUnavailable));
     }
     let mut profile = format!(
-        "{base}\n(deny file-read* file-write* (subpath \"{root}\"))\n(deny process-info*)\n(allow process-info-pidinfo (target self))\n(deny mach-lookup (global-name \"com.apple.taskgated\"))"
+        "{base}\n(deny file-read* file-write* (subpath \"{root}\"))\n(deny process-info*)\n(allow process-info-pidinfo (target self))\n(allow process-info-setcontrol (target self))\n(deny mach-lookup (global-name \"com.apple.taskgated\"))"
     );
     if let Some(port) = credentials.proxy_port {
         profile.push_str(&format!(
