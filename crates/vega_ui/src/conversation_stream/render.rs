@@ -229,6 +229,18 @@ impl ConversationStream {
                             ))
                     }),
             )
+            .children(self.mcp_warning.clone().map(|warning| {
+                div()
+                    .w_full()
+                    .max_w(px(Layout::COMPOSER_MAX_WIDTH))
+                    .mx_auto()
+                    .mt_1()
+                    .mb_2()
+                    .child(render_rows::plain_error_notice(
+                        warning.render(),
+                        colors.danger,
+                    ))
+            }))
             .when(self.thread.backend == TaskBackend::Native, |column| {
                 column.child(self.render_pending_status(cx))
             })
@@ -403,18 +415,6 @@ impl ConversationStream {
                     ),
             )
             .child(self.render_active_skills(cx))
-            .children(self.mcp_warning.clone().map(|warning| {
-                div()
-                    .w_full()
-                    .max_w(px(Layout::COMPOSER_MAX_WIDTH))
-                    .mx_auto()
-                    .mt_1()
-                    .child(render_rows::status_notice(
-                        warning.render(),
-                        colors.warning,
-                        &colors,
-                    ))
-            }))
             .into_any_element()
     }
 
