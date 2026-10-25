@@ -33,7 +33,6 @@ impl Host {
         view.update(cx, |view, cx| view.apply(Ok(PaletteSearch::default()), cx));
         cx.subscribe(&view, |this, _, _: &PaletteClosed, cx| {
             this.palette.request_close(cx);
-            cx.notify();
         })
         .detach();
         window.focus(&view.read(cx).focus_handle(cx), cx);
