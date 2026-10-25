@@ -773,17 +773,19 @@ pub(super) fn estimate_entry_height(
                 return 0.;
             }
             let label = context_compaction_label(record.status, record.failure, *restored);
-            let failed = record.status == vega_conversation::types::ContextCompactionStatus::Failed;
-            let width = if failed {
-                text_width
-            } else {
-                (text_width - Layout::ICON_SIZE - Layout::CONVERSATION_INLINE_GAP).max(1.)
-            };
-            let columns = (width / (Typography::BODY * 0.56)).max(1.) as usize;
-            (display_width(&label).div_ceil(columns).max(1) as f32
-                * Typography::BODY
-                * Typography::BODY_LINE_HEIGHT)
-                .max(Layout::DISCLOSURE_HEADER_HEIGHT)
+            if record.status == vega_conversation::types::ContextCompactionStatus::Failed {
+                let columns = (text_width / (Typography::BODY * 0.56)).max(1.) as usize;
+                return (display_width(&label).div_ceil(columns).max(1) as f32
+                    * Typography::BODY
+                    * Typography::BODY_LINE_HEIGHT)
+                    .max(Layout::DISCLOSURE_HEADER_HEIGHT);
+            }
+            let width = (text_width - Layout::ICON_SIZE - Layout::CONVERSATION_INLINE_GAP).max(1.);
+            let columns = (width / (Typography::CONVERSATION * 0.56)).max(1.) as usize;
+            let vertical_padding = (Layout::CONVERSATION_TOOL_HEIGHT - line_height) / 2.;
+            (display_width(&label).div_ceil(columns).max(1) as f32 * line_height
+                + 2. * vertical_padding)
+                .max(Layout::CONVERSATION_TOOL_HEIGHT)
         }
         StreamEntry::SkillActivation { .. } => 30.0,
         _ => (entry.row_count(cx).max(1) as f32 * ROW_HEIGHT + 12.0).max(30.0),

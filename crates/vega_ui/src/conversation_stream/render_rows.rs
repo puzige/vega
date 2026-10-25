@@ -145,23 +145,27 @@ fn render_entry_internal(
             let (glyph, color) = context_compaction_visual(record.status, &colors);
             let restored = *restored;
             let label = context_compaction_label(record.status, record.failure, restored);
+            let line_height = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
+            let vertical_padding = (Layout::CONVERSATION_TOOL_HEIGHT - line_height) / 2.;
             div()
                 .w_full()
                 .flex_shrink_0()
                 .min_w_0()
-                .min_h(px(Layout::DISCLOSURE_HEADER_HEIGHT))
+                .min_h(px(Layout::CONVERSATION_TOOL_HEIGHT))
+                .py(px(vertical_padding))
                 .flex()
                 .items_start()
                 .gap(px(Layout::CONVERSATION_INLINE_GAP))
-                .text_size(px(Typography::BODY))
-                .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
+                .text_size(px(Typography::CONVERSATION))
+                .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
                 .text_color(color)
                 .child(
                     div()
                         .w(px(Layout::ICON_SIZE))
-                        .h(px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
+                        .h(px(line_height))
                         .flex()
                         .items_center()
+                        .justify_center()
                         .flex_shrink_0()
                         .child(icon(glyph, color)),
                 )
