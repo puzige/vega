@@ -1712,6 +1712,7 @@ impl ThreadsBlock {
             .track_focus(&session.input.read(cx).focus_handle(cx))
             .on_action(cx.listener(|this, _: &ConfirmRename, _, cx| this.commit_rename(cx)))
             .on_action(cx.listener(|this, _: &CloseSettings, _, cx| this.cancel_rename(cx)))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.cancel_rename(cx)))
             .child(session.input.clone())
             .into_any_element()
     }
