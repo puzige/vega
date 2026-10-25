@@ -35,14 +35,13 @@ impl OrdinaryPreparationRequest {
                 return Err(SubmissionFailure::PreparationFailed);
             }
             let thread_id = self.run.submission.snapshot().thread_id;
-            if let Some(draft) = &self.draft {
-                if vega_store::threads::find(store.conn(), &thread_id)
+            if let Some(draft) = &self.draft
+                && vega_store::threads::find(store.conn(), &thread_id)
                     .map_err(|_| SubmissionFailure::PreparationFailed)?
                     .is_none()
-                {
-                    vega_conversation::threads::materialize_draft(&store, draft)
-                        .map_err(|_| SubmissionFailure::PreparationFailed)?;
-                }
+            {
+                vega_conversation::threads::materialize_draft(&store, draft)
+                    .map_err(|_| SubmissionFailure::PreparationFailed)?;
             }
             let thread = vega_conversation::threads::open_thread(&store, &thread_id)
                 .map_err(|_| SubmissionFailure::PreparationFailed)?;
@@ -352,7 +351,7 @@ impl VegaWindow {
                             PendingAgentRun::UserMessage(crate::app_agent::UserSubmission {
                                 content: observed.raw().text().to_owned(),
                                 images: observed.raw().images().to_vec(),
-                                ordinary: Some(launch),
+                                ordinary: Some(Box::new(launch)),
                             }),
                             reasoning,
                             cx,

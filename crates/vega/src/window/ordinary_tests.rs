@@ -245,7 +245,7 @@ fn controller_pending_is_visible_with_prepare_latched_and_duplicate_delivery_is_
                 input.set_text("ordinary captured input", cx)
             });
             assert_ne!(
-                stream.composer_input().read(cx).content_revision(),
+                stream.composer_draft_revision_for_development(cx),
                 request.draft_revision
             );
         });
@@ -1222,7 +1222,7 @@ async fn running_native_composer_ingress_persists_queue_or_send_now_without_ordi
                         .composer_input()
                         .update(cx, |input, cx| input.set_text("accepted running input", cx));
                     stream.focus_composer(window, cx);
-                    stream.composer_input().read(cx).content_revision()
+                    stream.composer_draft_revision_for_development(cx)
                 })
             })
             .unwrap();
@@ -1240,7 +1240,7 @@ async fn running_native_composer_ingress_persists_queue_or_send_now_without_ordi
                     input.set_text("accepted running input", cx);
                 });
                 assert_ne!(
-                    stream.composer_input().read(cx).content_revision(),
+                    stream.composer_draft_revision_for_development(cx),
                     captured_revision
                 );
             });
@@ -1291,7 +1291,7 @@ async fn running_native_composer_ingress_persists_queue_or_send_now_without_ordi
                 "accepted running input"
             );
             assert_ne!(
-                stream.composer_input().read(cx).content_revision(),
+                stream.composer_draft_revision_for_development(cx),
                 request.draft_revision
             );
             match behavior {

@@ -99,4 +99,4 @@ F 固定可审查后接线：
 
 行为/存储/GPUI进程内测试只在 Actions；正式历史行阳性对照先证明 harness 可观测，不用源码字符串冒充 UI。必要测试本轮保留开发源码/patch/完整 SHA/真实结果，最终独立清理 Rust 测试及独占支持，再对最终 head 跑完整 required CI；Python/通用CI不改。无本地 Vega运行、cargo check/Clippy/build/test、打包或 CUA。真实 UI时延/系统集成仍由用户手测；CI不代表用户验收。
 
-主会话仅写 spec/Git/协调，生产由单一专职 writer；F→I/G/U 串行，非写入者独审固定停写版本，最后 head required成功才合并。任何实际 API 或产品边界无法按本契约满足时先带精确证据返回主 Agent，禁止自行降低验收或只交 happy path。
+前阶段主会话仅写 spec/Git/协调，生产由单一专职 writer，F→I/G/U 串行。合入 #617（master `921d735ca0dda3f17ab99ea4949002a1fdc44ab4`）后，按新规则由主会话直接接续紧密耦合修复，不再强制实现委派；同一范围仍只有一个写入者。开发期 revision 观察用独占 feature 窄接口，随测试留痕后移除，不公开 TextInput 内部状态。非写入者独审固定停写版本，最后 head required成功才合并。任何实际 API 或产品边界无法按本契约满足时先带精确证据返回主 Agent，禁止自行降低验收或只交 happy path。

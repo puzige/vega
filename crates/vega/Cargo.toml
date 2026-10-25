@@ -30,3 +30,4 @@ ulid.workspace = true
 
 [dev-dependencies]
 gpui_kit = { workspace = true, features = ["test-support"] }
+vega_ui = { workspace = true, features = ["development-observation"] }

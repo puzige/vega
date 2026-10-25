@@ -40,7 +40,7 @@ pub(crate) enum PendingAgentRun {
 pub(crate) struct UserSubmission {
     pub content: String,
     pub images: Vec<vega_conversation::types::ImageAttachment>,
-    pub ordinary: Option<crate::ordinary_submission::OrdinaryLaunch>,
+    pub ordinary: Option<Box<crate::ordinary_submission::OrdinaryLaunch>>,
 }
 
 impl From<String> for UserSubmission {

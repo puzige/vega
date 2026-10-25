@@ -287,7 +287,15 @@ impl ConversationStream {
                     let ordinary = self.ordinary.iter().any(|row| {
                         identity.message_id.as_deref() == Some(row.submission.user_message_id())
                     });
-                    let follows = match (sequence, identity.sequence) {
+                    let projected_sequence = identity.sequence.or_else(|| {
+                        let message_id = identity.message_id.as_deref()?;
+                        self.entry_identities.iter().find_map(|projection| {
+                            (projection.message_id.as_deref() == Some(message_id))
+                                .then_some(projection.sequence)
+                                .flatten()
+                        })
+                    });
+                    let follows = match (sequence, projected_sequence) {
                         (Some(sequence), Some(other)) => other > sequence,
                         (Some(_), None) => ordinary,
                         (None, _) => false,

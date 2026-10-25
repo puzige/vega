@@ -207,3 +207,9 @@ crates/vega_ui/src/conversation_stream/pending_messages.rs:134:30
 继续时确认 writer `01M5SHDJRV0EW173Z5QVD06NNC` 的 execution `01M5SJ3JDT592F1YXK0SCC2QXR` 已 interrupted/released，无 unknown effects。此前 resume 返回 stale recovery boundary，不重试或重放。父复算七文件 SHA256 与中断前记录一致，diff --check exit 0；保留新增七项 public-entry 与一项 running Composer table 的源码、per-run 故障接线和临时配置 override，尚未取得完整 READY、编译或执行结果。已知四项 CI 缺陷及活动行 P2 仍待修，保存检查点不表示通过。
 
 fetch 现见 master `921d735ca0dda3f17ab99ea4949002a1fdc44ab4`，含 compaction activity `86d340d2` 与 #617 按需委派规则。先保存现有工作再同步，不覆盖脏文件；采用新规则后由主会话直接完成紧密耦合修复，独立非实现者审查、无本地执行和最新 required CI 门禁不变。
+
+### 接续修复与开发验证候选
+
+现有回归保存为 `81329ed2`，上游无冲突合入 `0d4329815e3a41363ba220a53c0a32888d0ed69b`。主会话直接修复：OrdinaryLaunch 在 UserSubmission 内改最小 Box；仅删除无调用的同步 materialize wrapper；等价合并 draft guard；为 app 的四处 revision 断言增加 vega_ui 独占 development-observation feature / 窄 getter（最终随测试移除），未公开 TextInput::content_revision。活动排序对 sequence None 投影按同 message_id 的 durable sequence 判断，不把活动当普通 pending 后缀；新增 completed/retired mixed ordinary 的真实 history replacement + newer-page 回归，断言 text/images/activity/reply、唯一 key、原 copy/selection/preview、列表数和非尾锚点。
+
+本轮实际静态检查：13 Rust 文件定向 Rust 1.98 rustfmt --check / skip_children=true、git diff --check、两个变更 manifest TOML 解析均 exit 0。原 57 测试块保留，仅 app 四处观察 API 等义替换；新增一项后 58 源码属性。编译、发现、执行计数仍未取得；本轮没有本地 Vega/构建/Clippy/测试/CUA。新增 public-entry 的 first-drive cancel/error 样例不等同于真实 app Cancel→buffered late-event generation 交错，其他非普通 route 的运行证据仍须按实际结果区分，不因此宣称完整 A1–A12。后续固定保存 SHA，非实现者审增量与故障接线，并交现有 Actions；旧 903 失败不被静态检查覆盖。

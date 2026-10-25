@@ -1202,3 +1202,159 @@ fn newer_pages_keep_pending_suffix_and_place_committed_rows_between_durable_neig
             .unwrap();
     }
 }
+
+#[gpui_kit::test]
+fn completed_ordinary_history_keeps_reply_activity_after_text_and_images(cx: &mut TestAppContext) {
+    init(cx);
+    let store = Store::open(":memory:").unwrap();
+    let handle = open(cx, "completed-order");
+    let request = ComposerSubmitted {
+        request_id: 1,
+        draft_revision: 0,
+        attachment_ids: Vec::new(),
+        pending_behavior: None,
+        images: vec![image()],
+        thread_id: "completed-order".into(),
+        content: "completed ordinary input".into(),
+        skill_intent: None,
+        reasoning: Ok(None),
+    };
+    let (submission, worker) = begin(&store, &request);
+    let (keys, copy, preview) = handle
+        .update(cx, |stream, _, cx| {
+            stream.project_ordinary_submission(submission.clone(), cx);
+            let copy = user(stream, 0).clone();
+            copy.set_local_selection_range(0..9);
+            let preview = match &stream.entries[1] {
+                StreamEntry::UserImages { images } => images[0].view.clone(),
+                _ => panic!("ordinary image missing"),
+            };
+            (
+                stream
+                    .entry_identities
+                    .iter()
+                    .map(|identity| identity.key.clone())
+                    .collect::<Vec<_>>(),
+                copy,
+                preview,
+            )
+        })
+        .unwrap();
+    let attempt = worker.attempt_id();
+    let mut committed = receipt(&submission, &worker);
+    committed.user_seq = 45;
+    committed.assistant_seq = 46;
+    committed.next_seq = 47;
+    let assistant = committed.assistant_message_id.clone();
+    worker.record_committed(committed).unwrap();
+    worker.mark_primary_started().unwrap();
+    worker.record_cleanup(Ok(())).unwrap();
+    worker.complete(Ok(())).unwrap();
+    submission.seal(attempt).unwrap();
+    handle
+        .update(cx, |stream, _, cx| stream.refresh_ordinary_submissions(cx))
+        .unwrap();
+    assert!(submission.snapshot().retired);
+    let page = |with_tail: bool| {
+        let mut entries = (1..=20)
+            .map(|seq| HistoryEntry::UserText {
+                seq,
+                message_id: format!("history-{seq}"),
+                content: format!("historical neighbor {seq}\n").repeat(12),
+            })
+            .collect::<Vec<_>>();
+        entries.extend([
+            HistoryEntry::UserText {
+                seq: 45,
+                message_id: submission.user_message_id().into(),
+                content: request.content.clone(),
+            },
+            HistoryEntry::UserImages {
+                seq: 45,
+                message_id: submission.user_message_id().into(),
+                images: request.images.clone(),
+            },
+            HistoryEntry::AssistantText {
+                seq: 46,
+                message_id: assistant.clone(),
+                content: "completed reply".into(),
+                status: vega_conversation::history::AssistantStatus::Done,
+                execution_duration_ms: Some(1200),
+            },
+        ]);
+        if with_tail {
+            entries.push(HistoryEntry::UserText {
+                seq: 47,
+                message_id: "tail".into(),
+                content: "later message".into(),
+            });
+        }
+        HistoryPage {
+            subagents: Vec::new(),
+            entries,
+            older_cursor: None,
+            newer_cursor: (!with_tail).then_some(46),
+            newest_seq: Some(47),
+        }
+    };
+    handle
+        .update(cx, |stream, _, cx| {
+            assert!(stream.replace_history_window(page(false), "history-1", cx));
+        })
+        .unwrap();
+    frame(handle, cx);
+    let anchor = handle
+        .update(cx, |stream, _, _| stream.scroll_anchor_snapshot())
+        .unwrap();
+    assert!(!anchor.following_tail);
+    handle
+        .update(cx, |stream, _, cx| {
+            stream.apply_newer_history_page(history("tail", "later message", 47), cx)
+        })
+        .unwrap();
+    for replace in [false, true] {
+        handle
+            .update(cx, |stream, _, cx| {
+                if replace {
+                    assert!(stream.replace_history_window(page(true), "history-1", cx));
+                }
+                assert_eq!(stream.entries.len(), 25);
+                assert_eq!(stream.list.item_count(), 25);
+                assert_eq!(stream.entry_identities[20].key, keys[0]);
+                assert_eq!(stream.entry_identities[21].key, keys[1]);
+                assert!(matches!(
+                    &stream.entries[22],
+                    StreamEntry::RunActivity { .. }
+                ));
+                assert_eq!(
+                    stream.entry_identities[22].message_id.as_deref(),
+                    Some(assistant.as_str())
+                );
+                assert!(matches!(&stream.entries[23], StreamEntry::Assistant { .. }));
+                assert_eq!(
+                    stream.entry_identities[23].message_id.as_deref(),
+                    Some(assistant.as_str())
+                );
+                assert_eq!(
+                    stream.entry_identities[24].message_id.as_deref(),
+                    Some("tail")
+                );
+                assert_eq!(user(stream, 20).id, copy.id);
+                assert_eq!(copy.local_selection_range(), Some(0..9));
+                match &stream.entries[21] {
+                    StreamEntry::UserImages { images } => assert_eq!(images[0].view, preview),
+                    _ => panic!("ordinary image replaced"),
+                }
+                let unique = stream
+                    .entry_identities
+                    .iter()
+                    .map(|identity| &identity.key)
+                    .collect::<std::collections::HashSet<_>>();
+                assert_eq!(unique.len(), stream.entries.len());
+                assert_eq!(stream.scroll_anchor_snapshot(), anchor);
+            })
+            .unwrap();
+    }
+    cx.update_window(handle.into(), |_, window, _| window.remove_window())
+        .unwrap();
+}
