@@ -887,7 +887,33 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
                 && audit.note.is_none()
                 && audit.danger.is_none()
         });
+    let invalid_computer_use_audit = matches!(input, ToolCardInputProjection::ComputerUse { .. })
+        && !approval_audit.as_ref().is_some_and(|audit| {
+            let runtime_status = match status {
+                ToolCallStatus::Success => vega_runtime::RuntimeToolStatus::Success,
+                ToolCallStatus::Failed => vega_runtime::RuntimeToolStatus::Failed,
+                ToolCallStatus::Rejected => vega_runtime::RuntimeToolStatus::Rejected,
+                ToolCallStatus::Cancelled => vega_runtime::RuntimeToolStatus::Cancelled,
+                _ => return false,
+            };
+            crate::agent::validate_recovered_projection(
+                "",
+                "",
+                &call.id,
+                &call.tool,
+                &call.input_json,
+                call.output_text.as_deref().unwrap_or_default(),
+                runtime_status,
+                audit,
+                call.exit_code,
+                call.duration_ms
+                    .and_then(|duration| u64::try_from(duration).ok()),
+            )
+            .is_ok()
+                && call.duration_ms.is_none()
+        });
     let (input, result) = if invalid_bash_claim
+        || invalid_computer_use_audit
         || invalid_superseded_claim
         || matches!(input, ToolCardInputProjection::Corrupt)
         || matches!(

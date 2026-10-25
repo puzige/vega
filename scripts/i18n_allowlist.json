@@ -979,6 +979,167 @@
       "count": 1,
       "category": "stored_content",
       "reason": "Spec 3.1 exact canonical baseline bytes used to validate explicitly sourced notice metadata against its owning assistant message before writing or hydrating. Store never translates or discovers notices by searching content."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "电脑操控组件不可用，请检查安装",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "组件缺失，请重新安装 Vega；开发环境先运行组件准备命令",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "组件版本或清单不兼容，请重新安装 Vega",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "电脑操控需要 macOS 14 或更新版本",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "另一个任务正在使用电脑操控，请先停止该任务",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "能力尚未连接、已接管或正在停止",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "操作已取消；已派发动作的结果可能未知",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "接管前的待执行请求已撤销，请刷新目标后重新规划",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "目标已变化或关闭，请重新发现或连接",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "观察已过期，请重新观察后再操作",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "本次授权已到期，请重新连接",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "请在系统设置中授予 Vega 辅助功能和屏幕录制权限",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "请安装并连接 Playwright 浏览器扩展，在扩展中选择标签页",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "执行器工具协议不兼容",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "执行器拒绝操作；目标或定向输入权限可能不可用",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "观察图片格式无效或超出大小限制",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "操作参数无效，请检查目标后重试。",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "当前观察仅可查看，输入前需要重新读取窗口控件。",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "窗口目录已过期，请重新发现窗口。",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "本轮截图已达到数量或大小限制，请在新回合继续。",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "重复操作没有进展，已停止本轮电脑操作。",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "literal": "本批观察已达到容量限制，请先使用已有结果，再分批读取其余窗口。",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Stable canonical CUA diagnostic in model/tool feedback and persisted audit reconstruction; UI error translation is separate and must not change protocol bytes."
+    },
+    {
+      "path": "crates/vega_store/src/thread_fork.rs",
+      "literal": "本批观察已达到容量限制，请先使用已有结果，再分批读取其余窗口。",
+      "count": 1,
+      "category": "protocol",
+      "reason": "Exact canonical screenshot-budget diagnostic used to validate persisted CUA receipts during history forks; matches stable model/tool feedback, not UI text, and must not depend on UI language."
     }
   ]
 }

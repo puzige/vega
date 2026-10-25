@@ -15,7 +15,7 @@ pub use auth::{
     ResourceAuthorization, ScopeChallenge,
 };
 pub use http::HttpClient;
-pub use managed::{ManagedClient, ManagedImage, ManagedResult};
+pub use managed::{ManagedClient, ManagedImage, ManagedResult, ManagedSendEvidence};
 pub use stdio::StdioClient;
 
 /// Validate an exact endpoint in Settings without sending any network request.

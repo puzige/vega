@@ -1332,7 +1332,10 @@ where
         }
 
         if let Some(run) = &tool_config.computer_use {
-            if run.wait_ready(&cancel).await.is_err() {
+            if matches!(
+                run.wait_ready(&cancel).await,
+                Err(crate::computer_use::ComputerUseError::Cancelled)
+            ) {
                 cancel.cancel();
             }
             run.trim_messages(&mut messages);
@@ -1833,7 +1836,10 @@ where
         let mut bounded_turn_reasoning_bytes = 0usize;
         let mut retained_reasoning_bytes = 0usize;
         if let Some(run) = &tool_config.computer_use
-            && run.wait_ready(&cancel).await.is_err()
+            && matches!(
+                run.wait_ready(&cancel).await,
+                Err(crate::computer_use::ComputerUseError::Cancelled)
+            )
         {
             cancel.cancel();
         }
@@ -1866,8 +1872,13 @@ where
         );
         let computer_use_epoch = if let Some(run) = &tool_config.computer_use {
             loop {
-                if run.wait_ready(&cancel).await.is_err() {
-                    cancel.cancel();
+                match run.wait_ready(&cancel).await {
+                    Ok(crate::computer_use::Readiness::Unavailable(_)) => {
+                        run.trim_messages(&mut messages);
+                        break run.ready_model_epoch();
+                    }
+                    Err(crate::computer_use::ComputerUseError::Cancelled) => cancel.cancel(),
+                    _ => {}
                 }
                 if cancel.is_cancelled() {
                     run.trim_messages(&mut messages);
@@ -2559,7 +2570,10 @@ where
             );
         }
         if let Some(run) = &tool_config.computer_use {
-            if run.wait_ready(&cancel).await.is_err() {
+            if matches!(
+                run.wait_ready(&cancel).await,
+                Err(crate::computer_use::ComputerUseError::Cancelled)
+            ) {
                 cancel.cancel();
             }
             run.trim_messages(&mut messages);
@@ -3189,10 +3203,17 @@ where
                         (
                             terminal_result(
                                 &call,
-                                crate::computer_use::ComputerUseError::ObservationBudget {
-                                    executed: false,
-                                }
-                                .feedback(),
+                                tool_config
+                                    .computer_use
+                                    .as_ref()
+                                    .ok_or_else(|| safe_prepare_error(&call.name))?
+                                    .error_feedback(
+                                        &call.name,
+                                        crate::computer_use::ComputerUseError::ObservationBudget {
+                                            executed: false,
+                                        },
+                                        false,
+                                    ),
                                 RuntimeToolStatus::Failed,
                                 Some(audit),
                             ),
@@ -3314,14 +3335,19 @@ where
                     }
                 }
             };
+            let computer_use_call =
+                crate::computer_use::ComputerUseRun::tool_capability(&call.name).is_some();
             if cancelled_while_running
-                || (call.name == "ComputerScreenshot"
-                    && result.status == RuntimeToolStatus::Success
-                    && cancel.is_cancelled())
+                && !(computer_use_call && result.status == RuntimeToolStatus::Success)
             {
                 result.status = RuntimeToolStatus::Cancelled;
+                if computer_use_call {
+                    result.truncated = None;
+                }
             }
-            let mut project_observation = result.status == RuntimeToolStatus::Success;
+            let mut project_observation = result.status == RuntimeToolStatus::Success
+                && !cancelled_while_running
+                && !cancel.is_cancelled();
             if project_observation
                 && !cancel.is_cancelled()
                 && let Some(run) = &tool_config.computer_use
@@ -3331,9 +3357,10 @@ where
                 project_observation = false;
                 if let Some(receipt) = run.limited_screenshot_receipt(&call.id, error) {
                     result.output = receipt;
-                } else {
+                } else if error != crate::computer_use::ComputerUseError::Cancelled {
                     result.status = RuntimeToolStatus::Failed;
-                    result.output = error.feedback();
+                    result.truncated = None;
+                    result.output = run.error_feedback(&call.name, error, true);
                     run.discard_pending_screenshot(&call.id);
                 }
             }
@@ -3353,6 +3380,7 @@ where
                 && let Some(run) = &tool_config.computer_use
                 && let Some((image, epoch)) = run.screenshot(&call.id)
             {
+                let delivered = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 emit!(
                     events,
                     sink,
@@ -3362,13 +3390,31 @@ where
                         control: run.control.clone(),
                         epoch,
                         cancel: cancel.clone(),
+                        delivered: delivered.clone(),
                     }
                 );
-                run.acknowledge_screenshot(&call.id, epoch)
-                    .map_err(|_| VegaError::Tool {
-                        tool: "ComputerScreenshot".into(),
-                        message: "screenshot delivery acknowledgement failed".into(),
-                    })?;
+                if delivered.load(std::sync::atomic::Ordering::Acquire) {
+                    run.acknowledge_screenshot(&call.id, epoch)
+                        .map_err(|_| VegaError::Tool {
+                            tool: "ComputerScreenshot".into(),
+                            message: "screenshot delivery acknowledgement failed".into(),
+                        })?;
+                }
+            }
+            if call.name == "ComputerScreenshot"
+                && result.status == RuntimeToolStatus::Success
+                && let Some(run) = &tool_config.computer_use
+                && !run.screenshot_delivered(&call.id)
+            {
+                project_observation = false;
+                result.status = RuntimeToolStatus::Cancelled;
+                result.truncated = None;
+                result.output = run.error_feedback(
+                    &call.name,
+                    crate::computer_use::ComputerUseError::Cancelled,
+                    true,
+                );
+                run.discard_pending_screenshot(&call.id);
             }
             emit!(
                 events,
@@ -3447,47 +3493,6 @@ where
                 },
             );
 
-            if !cancelled_while_running
-                && !cancel.is_cancelled()
-                && tool_config
-                    .computer_use
-                    .as_ref()
-                    .is_some_and(|run| run.no_progress())
-            {
-                let kind = RuntimeGeneratedNoticeKind::ComputerStopped {
-                    delivered_images: tool_config
-                        .computer_use
-                        .as_ref()
-                        .is_some_and(|run| run.has_delivered_screenshots()),
-                };
-                let message = kind.canonical_text();
-                let text_start_bytes = final_text.len();
-                final_text.push_str(&message);
-                emit!(events, sink, RuntimeEvent::TextDelta(message));
-                emit!(
-                    events,
-                    sink,
-                    RuntimeEvent::GeneratedNotice {
-                        kind,
-                        text_start_bytes,
-                        text_end_bytes: final_text.len(),
-                    }
-                );
-                emit!(
-                    events,
-                    sink,
-                    RuntimeEvent::Finished(RuntimeFinishReason::End)
-                );
-                return Ok(outcome(
-                    events,
-                    messages,
-                    final_text,
-                    tool_call_count,
-                    executed_tool_call_count,
-                    false,
-                    false,
-                ));
-            }
             if cancelled_while_running || cancel.is_cancelled() {
                 emit!(events, sink, RuntimeEvent::Interrupted);
                 return Ok(outcome(
