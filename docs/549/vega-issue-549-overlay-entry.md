@@ -46,7 +46,7 @@
 | E09 | `settings/provider_management.rs::render_provider_management` 及 provider/model 菜单开关 | ProviderManagement 对象区分；priority 2；保存冲突、测试失败、权限/删除确认不淡入 |
 | E10 | `image_preview.rs::Render::render/set_applications/dismiss_menu` | ImagePreview 的打开方式菜单；只菜单淡入，原 priority 2；真实错误/保存/外部打开回执不改 |
 | E11 | `command_palette.rs::Render::render`；`vega/src/app_palette.rs`；必要 `window/render.rs` owner 接线 | 持久 AppPalette 保留元信息，短命 CommandPalette 只拿表面 handle；仅内卡淡入，外 backdrop/取消/回焦即时；search generation 不充当动效身份 |
-| E12 | `vega/src/window/workspace.rs::render_environment/render_workspace_layout` 及 Environment 开关 | VegaWindow/Workspace 持状态；只窄窗卡片，保留 outside layer/stop_propagation/锚点；宽窗 rail/Dock/PTY 不改 |
+| E12 | `vega/src/window/workspace.rs::render_environment/render_workspace` 及 Environment 开关 | VegaWindow/Workspace 持状态；只窄窗卡片，保留 outside layer/stop_propagation/锚点；宽窗 rail/Dock/PTY 不改 |
 | E13 | `link_preview.rs::Coordinator/dismiss/arm/MarkdownLinkPreviewLayer::prepaint/build_card` | Coordinator 按现有 link key 保留对象元信息；保留 Positioner、bounds 测量、priority 100、400/150ms；error/rejected/warning 旁路 |
 
 明确排除：权限 picker/卡片/确认、错误与保存冲突、Settings navigation guard、provider_test_help_tooltip/settings_help_open、普通 tooltip、系统文件对话框、全页/整窗/宽窗 Environment/Dock 尺寸、message anchors/#344、正文/复制/Final/模型 runtime。不得用本卡顺带合入其他未合并 PR。
@@ -91,7 +91,15 @@
 
 开发测试如使用：固定远端可恢复完整源码/patch、SHA、实际执行结果，保留失败证据；达到必要验证后统一清理测试及独占支持，由非写入者核对最终完整 head。最终 required CI 必须明确 `no Rust tests`（0发现/0执行），不是行为测试通过。保留 Python/fixtures/benchmark/通用 CI。最新 head required 成功且独立审查无阻断才合并，Issue 保持 OPEN/In review 等用户手测，不自动关闭/Done。
 
-## 5. 交付与回滚
+## 5. 当前周期集成与修复记录
+
+- 第一批生产/开发测试提交 `9115ff4c034aee99e08fbc903c8b9d709b71f2ba`，Draft PR [#612](https://github.com/puzige/vega/pull/612)。仅共享接线、E01/E11；其余入口仍未完成。
+- 原始 [Actions 40160001377](https://github.com/puzige/vega/actions/runs/40160001377) 为 failure；Clippy `121069369407` 与 Nextest `121069369177` 均在测试编译阶段报告 `recursion limit reached while expanding #[test]`，位置 `interaction/overlay/tests.rs:120`。Kit facade glob 导入把 test 属性宏带入作用域，GPUI 宏生成的裸 `#[test]` 被再次解析为自身；这是测试接线问题，不是有效行为结果，禁止加 recursion_limit 掩盖。两 job 原始日志 SHA-256 分别为 `cb200a56aadeea0d83e8df8148cf2666ceb0ef7348b8ec36733934671a4b7b8d` / `4d708332184b0f53085e6a72f30a4d5e8f3e08db1be9d2c31dabb7adda95a287`。Rust 发现/执行计数未取得，不把九个定义当执行。
+- 独立审查在同一提交发现两处 P2 产品接线遗漏：E01 已加载菜单所在 retained stream 被 Settings/路由隐藏时未 suspend，恢复可能重新入场；E11 异步任务/文件预览成功直接赋 close_requested，未在接受时记录 close 时间，延迟 render 后可错误延长120ms连续性。原 O03/O04/O06 不变：修复实际 owner 隐藏边沿、统一所有接受的 close intent；新增 loaded menu 卸载恢复及延迟 close intent 回归，保留现有断言。允许在 `vega/src/window/render.rs`、必要 navigation 接线和 `ConversationStream` 中添加窄公开装饰生命周期方法，不改变业务关闭/请求/焦点规则。
+- 写入前再次 fetch 并将最新 master `429c6a819fc5a30f8280afd2f6ed015d4682bf41` 正常 merge 到 `a8e1ef3c7e17027bbfc64ffe8a4d072e3effd1ea`。#601 产物组与 #518 Native fork 已保留。Thread 新增 provenance 两字段要求开发 fixture 补 None；不是本卡新增持久化范围。
+- E12 实际符号为 `render_workspace`，修正旧候选名，不改变产品范围。以上是本轮真实证据与下一修复路线，不宣称已修复或通过。
+
+## 6. 交付与回滚
 
 - 单一 writer 先交本页对应源码及必要开发验证，READY 包含精确 diff/文件身份、静态检查、未决项、停写声明；父固定内容后独立审查与 Actions 同版本进行。后续 delta 需重审受影响不变量。
 - 本页初始阶段仅规格及静态调研，无新增生产变更、Rust 测试、PR/CI或原生手测。所有待验证项目保持未验证。
