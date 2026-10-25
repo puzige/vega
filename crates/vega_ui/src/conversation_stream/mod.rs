@@ -2,6 +2,8 @@ mod privacy;
 pub use privacy::{PrivacyAction, PrivacyRequested};
 mod attachments;
 mod ordinary_submissions;
+#[cfg(test)]
+mod ordinary_tests;
 mod pending_messages;
 pub use ordinary_submissions::{OrdinaryAction, OrdinaryActionRequested};
 mod user_questions;

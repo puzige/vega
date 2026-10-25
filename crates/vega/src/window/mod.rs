@@ -36,6 +36,8 @@ mod native_subagents;
 pub(crate) mod navigation;
 mod notifications;
 mod ordinary_send;
+#[cfg(test)]
+mod ordinary_tests;
 mod pending_messages;
 mod pricing;
 mod privacy;
@@ -96,7 +98,19 @@ impl ModelSelectionRefresh {
     }
 }
 
+#[cfg(test)]
+struct AgentTestLaunch {
+    run: PendingAgentRun,
+    admission: ThreadAdmission,
+    cancel: tokio_util::sync::CancellationToken,
+    queue_context: Option<PendingRunContext>,
+}
+
 pub(crate) struct VegaWindow {
+    #[cfg(test)]
+    agent_test_launches: Option<Vec<AgentTestLaunch>>,
+    #[cfg(test)]
+    ordinary_test_preparations: Option<Vec<ordinary_send::OrdinaryPreparationRequest>>,
     pub(crate) composer_prediction_config_generation: u64,
     pub(crate) composer_prediction: Option<composer_predictions::ComposerPredictionOwner>,
     pub(crate) updater: crate::updater::Updater,
@@ -190,6 +204,10 @@ pub(crate) struct VegaWindow {
 
 impl VegaWindow {
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
+        Self::new_with_services(cx, true)
+    }
+
+    fn new_with_services(cx: &mut Context<Self>, startup_services: bool) -> Self {
         cx.on_release(|this, cx| {
             this.onboarding.close(cx);
             if cx
@@ -283,6 +301,10 @@ impl VegaWindow {
         })
         .detach();
         let mut window = Self {
+            #[cfg(test)]
+            agent_test_launches: None,
+            #[cfg(test)]
+            ordinary_test_preparations: None,
             composer_prediction_config_generation: 0,
             composer_prediction: None,
             updater: crate::updater::Updater::default(),
@@ -340,8 +362,10 @@ impl VegaWindow {
             model_catalog_generation: 0,
             deferred_model_refresh: None,
         };
-        window.start_pricing_load(cx);
-        window.start_updater(cx);
+        if startup_services {
+            window.start_pricing_load(cx);
+            window.start_updater(cx);
+        }
         window
     }
 
@@ -350,6 +374,7 @@ impl VegaWindow {
         self.image_preview.retire();
         self.context_controller.cancel();
         self.window_alive.store(false, Ordering::SeqCst);
+        self.agent_controller.queue_drain_waits.clear();
         for (_, cancel) in self.agent_controller.ordinary_preparing.drain() {
             cancel.cancel();
         }

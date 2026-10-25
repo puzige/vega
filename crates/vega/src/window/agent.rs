@@ -627,6 +627,17 @@ impl VegaWindow {
         self.pause_automation_all(&request.thread_id, "已由你停止", cx);
         if self
             .agent_controller
+            .queue_drain_waits
+            .remove(&request.thread_id)
+            .is_some()
+        {
+            let mut projection = stream.read(cx).pending_queue().clone();
+            projection.paused = true;
+            self.project_pending_queue(&request.thread_id, &stream, projection, cx);
+            return;
+        }
+        if self
+            .agent_controller
             .ordinary_preparing
             .contains_key(&request.thread_id)
         {
@@ -663,6 +674,17 @@ impl VegaWindow {
         run: PendingAgentRun,
         cx: &mut Context<Self>,
     ) {
+        self.start_agent_run_with_admission(stream, thread_id, run, None, cx);
+    }
+
+    pub(super) fn start_agent_run_with_admission(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        thread_id: &str,
+        run: PendingAgentRun,
+        admission: Option<ThreadAdmission>,
+        cx: &mut Context<Self>,
+    ) {
         // Programmatic/Plan callers use the same run-start freeze as the
         // Composer path. An invalid declared profile is rejected while the
         // draft remains in the stream; it must never silently become a
@@ -684,7 +706,7 @@ impl VegaWindow {
                 return;
             }
         };
-        self.start_agent_run_with_reasoning(stream, thread_id, run, reasoning, cx);
+        self.start_agent_run_with_authority(stream, thread_id, run, reasoning, admission, cx);
     }
 
     pub(crate) fn start_agent_run_with_reasoning(
@@ -693,6 +715,18 @@ impl VegaWindow {
         thread_id: &str,
         run: PendingAgentRun,
         reasoning: Option<FrozenReasoning>,
+        cx: &mut Context<Self>,
+    ) {
+        self.start_agent_run_with_authority(stream, thread_id, run, reasoning, None, cx);
+    }
+
+    fn start_agent_run_with_authority(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        thread_id: &str,
+        run: PendingAgentRun,
+        reasoning: Option<FrozenReasoning>,
+        supplied_admission: Option<ThreadAdmission>,
         cx: &mut Context<Self>,
     ) {
         if !self.owns_stream_request(&stream, thread_id, cx)
@@ -776,11 +810,17 @@ impl VegaWindow {
         let admission = match &cx.global::<VegaStore>().0 {
             Ok(store) => match ordinary_launch.and_then(|launch| launch.run()) {
                 Some(run) => Some(run.worker.admission().clone()),
-                None => {
-                    vega_store::thread_admission::try_acquire(store.database_identity(), thread_id)
-                        .ok()
-                        .flatten()
-                }
+                None => match supplied_admission {
+                    Some(owner) => owner
+                        .verifies(store.database_identity(), thread_id)
+                        .then_some(owner),
+                    None => vega_store::thread_admission::try_acquire(
+                        store.database_identity(),
+                        thread_id,
+                    )
+                    .ok()
+                    .flatten(),
+                },
             },
             Err(_) => None,
         };
@@ -848,6 +888,9 @@ impl VegaWindow {
             stream.update(cx, ConversationStream::apply_agent_busy);
             return;
         };
+        self.agent_controller
+            .run_drains
+            .insert(thread_id.into(), admission.drain());
         let cancel = if let Some(cancel) = ordinary_cancel {
             if let Some(active) = self.agent_controller.active.get_mut(thread_id) {
                 active.cancel = cancel.clone();
@@ -898,6 +941,19 @@ impl VegaWindow {
                 }
             });
 
+        #[cfg(test)]
+        let (run, admission, cancel, queue_context) = match self.agent_test_launches.as_mut() {
+            Some(launches) => {
+                launches.push(AgentTestLaunch {
+                    run,
+                    admission,
+                    cancel,
+                    queue_context,
+                });
+                return;
+            }
+            None => (run, admission, cancel, queue_context),
+        };
         vega_ui::sidebar::set_thread_running(thread_id, true, cx);
         self.agent_controller.preparation_stream = None;
         self.begin_context_primary_owner(generation, cx);

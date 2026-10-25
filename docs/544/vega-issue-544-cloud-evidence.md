@@ -66,3 +66,24 @@ Rust: nonempty suite completed successfully (22 discovered, including ignored/sk
 ```
 
 此结果验证基础层能力/事实边界，不验证 UI、本卡完整 A1–A12、真实网络或 OS 呈现。基础层同字节独审/云端可复用；后续 I/G/U 集成增量和最终无 Rust 测试 head 必须分别验证，不能只拿此轮通过合并。当前单一 writer 接 UI/app/pipeline/冲突服务边界，仍 draft / In progress，无合并或用户手测。
+
+## I/G/U 首版：5805080462bd77c4695ee1bb26a849a1b3cc3366
+
+[固定源码](https://github.com/puzige/vega/tree/5805080462bd77c4695ee1bb26a849a1b3cc3366) / [原始 patch](https://github.com/puzige/vega/commit/5805080462bd77c4695ee1bb26a849a1b3cc3366.patch)，tree `aaac91c450767f3ad1eeb034ed1156210cb4c82f`。包含 app 后台准备、ordinary pipeline/事务、冲突服务准入和真实 UI pending/恢复接线；这是保存检查点，不是完整 READY。
+
+- writer 停写后父复算 34 个 Rust 文件的 manifest，与 writer 最终 digest `e6237432dcf9b0a66e81c2e9d6c978fc452c2b3a704381c300ebc92a12a744d8` 一致。
+- 本版仅取得 targeted Rust 1.98.0 rustfmt 和 `git diff --check` 静态结果；新增 7 个事务/生命周期测试定义，保留基础 22 个。集成发现/执行计数、编译和行为结果尚未取得。
+- 2026-10-25T07:05:48Z 读回 PR head 为本 SHA、draft / OPEN / mergeStateStatus DIRTY，statusCheckRollup 为空；分支 Actions 列表仍只有基础层两轮。不能将旧基础层 green 当本版通过，也不能将未触发称为测试失败。
+- fetch 得到 master `429c6a819fc5a30f8280afd2f6ed015d4682bf41`。不改变 index/worktree 的 `git merge-tree --write-tree HEAD origin/master` 识别 `history.rs` 和 store `lib.rs` 两处冲突。前者须同时保留新 fork 历史 guard 与本卡 repair admission；后者须同时导出 thread_fork/thread_admission。当前 writer 活跃且有未提交改动，暂不实际合并或覆盖；停写固定后集成并验证新 head。
+
+### 非写入者独审：changes required，父已复读固定源码
+
+审查使用 pinned `git show`，不包含审查期间开始的后续 working-tree 修改。四份未改基础文件 hash 匹配，固定实现契约 SHA256 `842703f62fe4cc2cb593b3bee42d3be4b60b2bb9ccddb89cefb09fdbde3b0c44` 匹配。审查者未写入、编译、测试、运行 Vega 或 CUA。
+
+| 严重度 | 原始证据 / 缺口 | 修复边界 / 必要回归 |
+|---|---|---|
+| P1 | `agent/subagents.rs:1054–1065,1165–1196,1249–1270`：child 先 create/写入再 acquire，runtime 返回后先 drop，terminal/host release 尚未结束。底层 model/permission/context setters 只看 admission，delegated ownership 不能补此窗口 | child-specific capability 在 validation/create 前取得，贯穿 host admission、runtime、terminal、release；detached blocking work 持 clone；两个边界暂停时冲突 service mutation 均拒绝，真实结束才释放 |
+| P2 | UI `ordinary_submissions.rs:101–108,118–149` 与 `content.rs:709–754`：history replacement 清 entries，却保留 ordinary tracking；重投影因已有记录提前返回，未提交/失败行和 Retry/Cancel 消失 | 区分记录与视觉行存在性；替换后按稳定 user ID 合并未决内容和控件，保留导航锚点，已提交不重复；text/mixed/image-only 均覆盖 |
+| P2 | app `window/ordinary_send.rs:388–401`：仅校验旧提交的 attempt 后调用 thread-wide request_active_cancel，延迟 Cancel A 可取消新运行 B | 仅取消精确 submission/attempt token，或额外验证当前 controller 的对应归属；A 的迟到/重复 Cancel 不改变 B 的 token、computer-use controls 和运行态 |
+
+这些是原 A7/A9/G 边界的产品缺陷，不改验收、不删断言。已知 title-drain/queue 唤醒、首次 effective provider/reasoning 冻结和真实 GPUI 回归另见契约有界补充，仍未完成。单一 writer 正处理该先前授权范围；本批独审修复在其停写后续交，不并发增加第二写入者。最终仍需新固定版本独审、真实云端验证、开发测试留痕清理、最终无 Rust 测试 head 的 required CI，以及合并后的用户手测。

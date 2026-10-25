@@ -119,6 +119,31 @@ impl RawSubmission {
 }
 
 #[derive(Clone, PartialEq, Eq)]
+pub struct EffectiveAuthority {
+    model: ResolvedModel,
+    reasoning: FrozenReasoning,
+}
+
+impl EffectiveAuthority {
+    pub fn model(&self) -> &ResolvedModel {
+        &self.model
+    }
+
+    pub fn reasoning(&self) -> &FrozenReasoning {
+        &self.reasoning
+    }
+
+    pub fn validate_current(&self, model: &ResolvedModel) -> Result<(), SubmissionError> {
+        if &self.model != model {
+            return Err(SubmissionError::PayloadMismatch);
+        }
+        vega_runtime::model_compat::freeze_choice(model, self.reasoning.choice.clone())
+            .map_err(|_| SubmissionError::PayloadMismatch)?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct AcceptedPayload {
     text: String,
     images: Arc<[ImageAttachment]>,
@@ -298,6 +323,7 @@ pub struct SubmissionSnapshot {
     pub thread_id: String,
     pub raw: Arc<RawSubmission>,
     pub accepted: Option<Arc<AcceptedPayload>>,
+    pub authority: Option<Arc<EffectiveAuthority>>,
     pub attempts: Vec<AttemptSnapshot>,
     pub retry: RetryEligibility,
     pub unavailable: bool,
@@ -401,6 +427,7 @@ impl AttemptState {
 
 struct SubmissionState {
     accepted: Option<Arc<AcceptedPayload>>,
+    authority: Option<Arc<EffectiveAuthority>>,
     attempts: Vec<AttemptState>,
     active: Option<ThreadAdmission>,
     retired: bool,
@@ -504,6 +531,7 @@ impl OrdinarySubmission {
             raw: Arc::new(raw),
             state: Mutex::new(SubmissionState {
                 accepted: None,
+                authority: None,
                 attempts: vec![AttemptState::new(attempt, AttemptKind::Initial, worker)],
                 active: Some(admission.clone()),
                 retired: false,
@@ -581,6 +609,7 @@ impl OrdinarySubmission {
             thread_id: self.0.thread_id.clone(),
             raw: self.0.raw.clone(),
             accepted: state.accepted.clone(),
+            authority: (!unavailable).then(|| state.authority.clone()).flatten(),
             attempts,
             retry,
             unavailable,
@@ -835,6 +864,52 @@ impl OrdinaryWorker {
             CommitFact::Preparing => Ok(FactUpdate::Unchanged),
             _ => Err(SubmissionError::InvalidTransition),
         }
+    }
+
+    pub fn bind_effective_authority(
+        &self,
+        model: ResolvedModel,
+        reasoning: FrozenReasoning,
+    ) -> Result<FactUpdate, SubmissionError> {
+        let mut state = self.lock()?;
+        self.submission.raw().validate_model(&model)?;
+        reasoning
+            .validate()
+            .map_err(|_| SubmissionError::PayloadMismatch)?;
+        if reasoning.provider != model.identity.provider
+            || reasoning.model != model.identity.model
+            || self
+                .submission
+                .raw()
+                .reasoning()
+                .is_some_and(|raw| raw.choice != reasoning.choice)
+            || vega_runtime::model_compat::freeze_choice(&model, reasoning.choice.clone())
+                .map_err(|_| SubmissionError::PayloadMismatch)?
+                != reasoning
+        {
+            return Err(SubmissionError::PayloadMismatch);
+        }
+        let authority = EffectiveAuthority { model, reasoning };
+        if let Some(existing) = &state.authority {
+            return if existing.as_ref() == &authority {
+                Ok(FactUpdate::Unchanged)
+            } else {
+                Err(SubmissionError::PayloadMismatch)
+            };
+        }
+        let current = state
+            .attempts
+            .last()
+            .ok_or(SubmissionError::InvalidTransition)?;
+        if !matches!(
+            current.facts.commit,
+            CommitFact::NotAttempted | CommitFact::Preparing
+        ) || state.accepted.is_some()
+        {
+            return Err(SubmissionError::InvalidTransition);
+        }
+        state.authority = Some(Arc::new(authority));
+        Ok(FactUpdate::Applied)
     }
 
     pub fn bind_accepted_payload(&self, text: String) -> Result<FactUpdate, SubmissionError> {
@@ -1252,6 +1327,141 @@ mod tests {
             persisted_text: payload.text().to_owned(),
             persisted_images: payload.images().to_vec(),
         }
+    }
+
+    fn effective_model(provider: &str, endpoint: &str) -> ResolvedModel {
+        use vega_runtime::model_compat::{
+            ModelApi, ModelRoute, decode_model_catalog, resolve_model,
+        };
+        let document = format!(
+            r#"{{"version":1,"models":[{{"provider":"{provider}","id":"model","api":"openai-completions","baseUrl":"{endpoint}","reasoning":true,"thinkingLevelMap":{{"low":"low","high":"high"}},"input":["text"]}}]}}"#
+        );
+        let catalog = decode_model_catalog(document.as_bytes()).unwrap();
+        let definition = catalog
+            .lookup(
+                &ModelRoute::new(ModelApi::ChatCompletions, endpoint).unwrap(),
+                &crate::types::ModelIdentity {
+                    provider: provider.into(),
+                    model: "model".into(),
+                },
+            )
+            .unwrap();
+        resolve_model(&definition, None).unwrap()
+    }
+
+    #[test]
+    fn profileless_retry_retains_first_effective_choice_and_rejects_provider_route_drift() {
+        let (submission, worker) = begin_raw(RawSubmission::new(
+            "raw".into(),
+            Vec::new(),
+            1,
+            "model".into(),
+            None,
+            None,
+        ))
+        .unwrap();
+        let model = effective_model("provider", "https://example.invalid/v1");
+        let frozen = vega_runtime::model_compat::freeze_choice(
+            &model,
+            crate::types::ReasoningChoice::Effort("low".into()),
+        )
+        .unwrap();
+        assert!(submission.snapshot().authority.is_none());
+        assert_eq!(
+            worker
+                .bind_effective_authority(model.clone(), frozen.clone())
+                .unwrap(),
+            FactUpdate::Applied
+        );
+        worker.bind_accepted_payload("accepted".into()).unwrap();
+        let attempt = worker.attempt_id();
+        worker
+            .complete(Err(SubmissionFailure::PreflightRejected))
+            .unwrap();
+        submission.seal(attempt).unwrap();
+        let retry = submission.try_retry(attempt).unwrap();
+        let authority = submission.snapshot().authority.unwrap();
+        assert_eq!(authority.reasoning(), &frozen);
+        authority.validate_current(&model).unwrap();
+        assert_eq!(
+            retry
+                .bind_effective_authority(model.clone(), frozen.clone())
+                .unwrap(),
+            FactUpdate::Unchanged
+        );
+        let changed_default = vega_runtime::model_compat::freeze_choice(
+            &model,
+            crate::types::ReasoningChoice::Effort("high".into()),
+        )
+        .unwrap();
+        assert!(matches!(
+            retry.bind_effective_authority(model, changed_default),
+            Err(SubmissionError::PayloadMismatch)
+        ));
+        for changed in [
+            effective_model("other-provider", "https://example.invalid/v1"),
+            effective_model("provider", "https://other.invalid/v1"),
+        ] {
+            assert!(matches!(
+                authority.validate_current(&changed),
+                Err(SubmissionError::PayloadMismatch)
+            ));
+            let reasoning =
+                vega_runtime::model_compat::freeze_choice(&changed, frozen.choice.clone()).unwrap();
+            assert!(matches!(
+                retry.bind_effective_authority(changed, reasoning),
+                Err(SubmissionError::PayloadMismatch)
+            ));
+        }
+        assert_eq!(submission.snapshot().accepted.unwrap().text(), "accepted");
+        assert_eq!(
+            submission.snapshot().authority.unwrap().reasoning(),
+            &frozen
+        );
+        retry
+            .complete(Err(SubmissionFailure::PreparationFailed))
+            .unwrap();
+    }
+
+    #[test]
+    fn effective_authority_rejects_raw_choice_mismatch_and_late_first_binding() {
+        let model = effective_model("provider", "https://example.invalid/v1");
+        let low = vega_runtime::model_compat::freeze_choice(
+            &model,
+            crate::types::ReasoningChoice::Effort("low".into()),
+        )
+        .unwrap();
+        let high = vega_runtime::model_compat::freeze_choice(
+            &model,
+            crate::types::ReasoningChoice::Effort("high".into()),
+        )
+        .unwrap();
+        let (_, worker) = begin_raw(RawSubmission::new(
+            "raw".into(),
+            Vec::new(),
+            1,
+            "model".into(),
+            None,
+            Some(low),
+        ))
+        .unwrap();
+        assert!(matches!(
+            worker.bind_effective_authority(model.clone(), high.clone()),
+            Err(SubmissionError::PayloadMismatch)
+        ));
+        worker.bind_accepted_payload("accepted".into()).unwrap();
+        let low = vega_runtime::model_compat::freeze_choice(
+            &model,
+            crate::types::ReasoningChoice::Effort("low".into()),
+        )
+        .unwrap();
+        assert!(matches!(
+            worker.bind_effective_authority(model, low),
+            Err(SubmissionError::InvalidTransition)
+        ));
+        worker
+            .complete(Err(SubmissionFailure::PreparationFailed))
+            .unwrap();
     }
 
     #[test]

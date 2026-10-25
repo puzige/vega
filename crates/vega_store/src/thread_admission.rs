@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::os::unix::fs::MetadataExt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use rusqlite::Connection;
@@ -52,6 +53,32 @@ struct AdmissionKey {
 struct Admission {
     key: AdmissionKey,
     token: Ulid,
+    title_started: AtomicBool,
+}
+
+#[derive(Clone)]
+pub struct AdmissionDrain(Weak<Admission>);
+
+impl AdmissionDrain {
+    pub fn is_released(&self) -> bool {
+        self.0.strong_count() == 0
+    }
+
+    pub fn is_title_draining(&self, database: DatabaseIdentity, thread: &str) -> bool {
+        self.0.upgrade().is_some_and(|owner| {
+            owner.key.database == database
+                && owner.key.thread == thread
+                && owner.title_started.load(Ordering::Acquire)
+        })
+    }
+}
+
+pub struct TitleAdmission(ThreadAdmission);
+
+impl TitleAdmission {
+    pub fn admission(&self) -> &ThreadAdmission {
+        &self.0
+    }
 }
 
 #[derive(Clone)]
@@ -67,6 +94,15 @@ impl std::fmt::Debug for ThreadAdmission {
 }
 
 impl ThreadAdmission {
+    pub fn drain(&self) -> AdmissionDrain {
+        AdmissionDrain(Arc::downgrade(&self.0))
+    }
+
+    pub fn into_title_drain(self) -> TitleAdmission {
+        self.0.title_started.store(true, Ordering::Release);
+        TitleAdmission(self)
+    }
+
     pub fn verifies(&self, database: DatabaseIdentity, thread: &str) -> bool {
         self.0.key.database == database && self.0.key.thread == thread
     }
@@ -106,6 +142,7 @@ fn try_acquire_in(
     let admission = Arc::new(Admission {
         key: key.clone(),
         token: Ulid::generate(),
+        title_started: AtomicBool::new(false),
     });
     admissions.insert(key, Arc::downgrade(&admission));
     Ok(Some(ThreadAdmission(admission)))

@@ -369,6 +369,46 @@ pub(crate) enum PricingWorkerKind {
 
 type SubagentReleaseReply = tokio::sync::oneshot::Sender<Result<(), vega_runtime::VegaError>>;
 
+pub(crate) enum QueueStartAdmission {
+    Ready(ThreadAdmission),
+    TitleDrain(vega_store::thread_admission::AdmissionDrain),
+    Blocked,
+}
+
+pub(crate) fn queue_start_admission(
+    database: vega_store::thread_admission::DatabaseIdentity,
+    thread_id: &str,
+    expected: Option<&vega_store::thread_admission::AdmissionDrain>,
+) -> Result<QueueStartAdmission, vega_store::thread_admission::AdmissionError> {
+    match vega_store::thread_admission::try_acquire(database, thread_id)? {
+        Some(owner) => Ok(QueueStartAdmission::Ready(owner)),
+        None => match expected.filter(|drain| drain.is_title_draining(database, thread_id)) {
+            Some(drain) => Ok(QueueStartAdmission::TitleDrain(drain.clone())),
+            None if expected.is_some_and(|drain| drain.is_released()) => Ok(
+                match vega_store::thread_admission::try_acquire(database, thread_id)? {
+                    Some(owner) => QueueStartAdmission::Ready(owner),
+                    None => QueueStartAdmission::Blocked,
+                },
+            ),
+            None => Ok(QueueStartAdmission::Blocked),
+        },
+    }
+}
+
+pub(crate) struct QueueDrainWait {
+    pub(crate) generation: u64,
+    pub(crate) stream: Entity<ConversationStream>,
+    pub(crate) message_id: String,
+    pub(crate) message_generation: String,
+    pub(crate) cancel: tokio_util::sync::CancellationToken,
+}
+
+impl Drop for QueueDrainWait {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct AppAgentController {
     pub(crate) ordinary_preparing: HashMap<String, tokio_util::sync::CancellationToken>,
@@ -376,6 +416,8 @@ pub(crate) struct AppAgentController {
     pub(crate) delegated_unbound: HashSet<String>,
     pub(crate) queue_streams: HashMap<String, Entity<ConversationStream>>,
     pub(crate) queue_dispatches: HashMap<String, String>,
+    pub(crate) run_drains: HashMap<String, vega_store::thread_admission::AdmissionDrain>,
+    pub(crate) queue_drain_waits: HashMap<String, QueueDrainWait>,
     pub(crate) queue_continue: HashMap<String, bool>,
     pub(crate) queue_delivered: HashSet<String>,
     pub(crate) queue_operations: HashMap<String, u64>,
@@ -391,6 +433,31 @@ pub(crate) struct AppAgentController {
 }
 
 impl AppAgentController {
+    pub(crate) fn begin_queue_drain_wait(
+        &mut self,
+        thread_id: &str,
+        stream: Entity<ConversationStream>,
+        message: &PendingMessage,
+    ) -> Option<(u64, tokio_util::sync::CancellationToken)> {
+        if self.queue_drain_waits.contains_key(thread_id) {
+            return None;
+        }
+        self.next_queue_operation = self.next_queue_operation.checked_add(1)?;
+        let generation = self.next_queue_operation;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        self.queue_drain_waits.insert(
+            thread_id.into(),
+            QueueDrainWait {
+                generation,
+                stream,
+                message_id: message.id.clone(),
+                message_generation: message.generation.clone(),
+                cancel: cancel.clone(),
+            },
+        );
+        Some((generation, cancel))
+    }
+
     pub(crate) fn begin_queue_operation(&mut self, thread_id: &str) -> Option<u64> {
         if self.queue_operations.contains_key(thread_id) {
             return None;
@@ -420,6 +487,9 @@ impl AppAgentController {
     }
 
     pub(crate) fn request_active_cancel(&self, thread_id: &str) {
+        if let Some(wait) = self.queue_drain_waits.get(thread_id) {
+            wait.cancel.cancel();
+        }
         if let Some(cancel) = self.ordinary_preparing.get(thread_id) {
             cancel.cancel();
         }
@@ -849,6 +919,52 @@ pub(crate) fn reasoning_for_provider_model(
     crate::reasoning_capabilities::freeze_reasoning_profile(resolved).map_err(|_| ())
 }
 
+pub(crate) fn ordinary_effective_authority(
+    run: &vega_conversation::agent::OrdinaryRun,
+    config: &vega_store::config::AppConfig,
+    path: &std::path::Path,
+) -> Result<Arc<EffectiveAuthority>, ()> {
+    let provider = unique_provider_for_model(config, run.submission.raw().model()).ok_or(())?;
+    let model = vega_conversation::model_capabilities::load_configured_model(
+        config,
+        path,
+        &provider.name,
+        run.submission.raw().model(),
+    )
+    .map_err(|_| ())?;
+    let snapshot = run.submission.snapshot();
+    if snapshot.unavailable {
+        return Err(());
+    }
+    if let Some(authority) = snapshot.authority {
+        authority.validate_current(&model).map_err(|_| ())?;
+        return Ok(authority);
+    }
+    let reasoning = match run.submission.raw().reasoning() {
+        Some(raw) => {
+            if raw.provider != provider.name || raw.model != model.identity.model {
+                return Err(());
+            }
+            vega_runtime::model_compat::freeze_choice(&model, raw.choice.clone()).map_err(|_| ())?
+        }
+        None => reasoning_for_provider_model(
+            &provider.name,
+            provider.api,
+            &provider.base_url,
+            &model.identity.model,
+            Some(&path.with_file_name(vega_store::reasoning::REASONING_FILE_NAME)),
+        )?,
+    };
+    run.worker
+        .bind_effective_authority(model, reasoning)
+        .map_err(|_| ())?;
+    let snapshot = run.submission.snapshot();
+    if snapshot.unavailable {
+        return Err(());
+    }
+    snapshot.authority.ok_or(())
+}
+
 pub(crate) fn commit_provider(
     thread: &Thread,
     config_path: Option<&std::path::Path>,
@@ -1029,7 +1145,9 @@ pub(crate) fn run_agent_worker_with_mcp(
         let reasoning_path = config_path
             .as_deref()
             .map(|path| path.with_file_name(vega_store::reasoning::REASONING_FILE_NAME));
-        let reasoning = match (reasoning, configured_provider.as_ref()) {
+        let reasoning = if let Some(ordinary) = &ordinary {
+            ordinary_effective_authority(ordinary, config.as_ref().ok_or(())?, config_path.as_deref().ok_or(())?)?.reasoning().clone()
+        } else { match (reasoning, configured_provider.as_ref()) {
             (Some(reasoning), Some(provider)) => {
                 if reasoning.model != thread.model || reasoning.provider != provider.name {
                     return Err(());
@@ -1054,7 +1172,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                 reasoning_path.as_deref(),
             )?,
             (_, None) => return Err(()),
-        };
+        }};
 
         let mut provider_known_credential = None::<String>;
         let provider_credential_reader: Option<CredentialReader> = config_path
@@ -1134,13 +1252,24 @@ pub(crate) fn run_agent_worker_with_mcp(
                 &thread.project_id,
             ));
             provider_known_credential = Some(key.clone());
+            let current_config = vega_store::config::read_from(config_path.as_deref().ok_or(())?).map_err(|_| ())?;
+            if ordinary.is_some() && unique_provider_for_model(&current_config, &thread.model).as_ref() != Some(&provider) {
+                return Err(());
+            }
             let model_snapshot = vega_conversation::model_capabilities::load_configured_model(
-                &vega_store::config::read_from(config_path.as_deref().ok_or(())?).map_err(|_| ())?,
+                &current_config,
                 config_path.as_deref().ok_or(())?,
                 &provider.name,
                 &thread.model,
             )
             .map_err(|_| ())?;
+            let model_snapshot = if let Some(ordinary) = &ordinary {
+                let snapshot = ordinary.submission.snapshot();
+                if snapshot.unavailable { return Err(()); }
+                let authority = snapshot.authority.ok_or(())?;
+                authority.validate_current(&model_snapshot).map_err(|_| ())?;
+                authority.model().clone()
+            } else { model_snapshot };
             let provider = vega_runtime::OpenAiProvider::new(provider.base_url, key)
                 .map(|transport| {
                     transport.with_responses_api(

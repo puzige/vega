@@ -80,6 +80,18 @@ F 固定可审查后接线：
 
 ## 6. 验证与交付
 
+### 2026-10-25 接线检查点的有界补充
+
+集成检查点 `5805080462bd77c4695ee1bb26a849a1b3cc3366` 已保存，不是完整 READY。下列补充闭合既有 A1–A12，不减少验收：
+
+- 自动标题保留原独立 capability 到实际结束；普通主运行结束后若队列因 title drain 暂时未获 thread admission，不把原 queue 标成失败/暂停，不提前释放 title 能力。仅此可识别的等待原因登记一次可取消的重分派唤醒；每次唤醒重新验证 thread/stream/queue generation、暂停/停止/权限状态和真实 admission。占用解除后按原队列一次分派，不在失败未知时无限盲重试，不改变全局调度策略。
+- raw reasoning 为 None 不代表每次重试可重新选择 provider/default。第一份实际解析成功的 provider identity、resolved model authority 与 effective FrozenReasoning 按 submission 一次绑定；后续 attempt 使用相同逻辑 choice/authority，配置变化不静默转 provider。凭据和当前安全可用性仍重验，原 route/model 失效显示可恢复错误，不借旧快照绕授权。first binding 在后台、先于 accepted payload/provider primary，UI pending 不等它。
+- 为验证真实列表/controller 的必要行为，允许仅开发期在 `vega_ui`/必要 `vega` 的 dev-dependencies 启用已经锁定 `gpui_kit` 的 `test-support` feature。只复用现有依赖，不升级/引入新产品依赖；不改通用 CI。先用正式历史用户行作阳性对照，再验证实际提交/回执和列表对象，不能用源码字符串或镜像 helper。所有测试和独占 feature/接线在真实云端验证留痕后移除，最终 head 仍须 Rust 0 发现/0 执行。此授权不允许本地编译或执行。
+- 固定 `5805080462bd77c4695ee1bb26a849a1b3cc3366` 的独审发现须闭合：child-specific admission 在 resume validation/create 写入前取得，贯穿 host/runtime/terminal persistence/release bookkeeping，所有 detached blocking mutation 持同一能力 clone。不能先写后取、runtime 后提前 drop，quarantine 不得凭空释放仍有副作用的 owner；两个生命周期边界的冲突 service mutation 必须拒绝。
+- history-window replacement 保留未决 ordinary 记录及可发现的内容/恢复控件；记录已跟踪不等于视觉行仍存在。按稳定 user ID 合并/重新投影，text/mixed/image-only 不丢失，已提交用户不重复，当前定位目标/锚点不被恢复投影抢走。旧 submission/attempt 的延迟或重复 Cancel 只取消自身 token/匹配控制器归属，不能 thread-wide 取消后来运行，也不能改变其 computer-use controls。
+- 上游 master `429c6a819fc5a30f8280afd2f6ed015d4682bf41` 的 fork/history privacy 与 artifact 改动不回退。集成冲突中 `restart_history_page` 先保留 fork 历史 guard 再按本卡 admission 决定可否 repair，忙时只读；store 同时导出 thread_fork/thread_admission。新结构字段按现有语义完整接线，不借合并扩大 fork 产品入口或放宽安全校验。
+
+
 保持完整 A1–A12，开发验证按风险选择必要真实生产路径，不造 toy controller。至少覆盖：扣住 prepare 的唯一可见 pending；同文新 revision/新附件保留；双击和重复 receipt；commit 前失败和 commit 后 actor失败的唯一 user/images；commit Unknown/Started但空输出/cleanup失败禁重投；取消与迟到事件；两窗口占用和 view销毁；真实列表对象/key/锚点；#535 queue/steering 与非普通路由保全。
 
 行为/存储/GPUI进程内测试只在 Actions；正式历史行阳性对照先证明 harness 可观测，不用源码字符串冒充 UI。必要测试本轮保留开发源码/patch/完整 SHA/真实结果，最终独立清理 Rust 测试及独占支持，再对最终 head 跑完整 required CI；Python/通用CI不改。无本地 Vega运行、cargo check/Clippy/build/test、打包或 CUA。真实 UI时延/系统集成仍由用户手测；CI不代表用户验收。

@@ -4,9 +4,9 @@ use vega_conversation::agent::OrdinaryRun;
 
 const ORDINARY_POLL: std::time::Duration = std::time::Duration::from_millis(4);
 
-struct OrdinaryPreparationRequest {
-    registered: OrdinaryWorker,
-    run: OrdinaryRun,
+pub(super) struct OrdinaryPreparationRequest {
+    pub(super) registered: OrdinaryWorker,
+    pub(super) run: OrdinaryRun,
     database: PathBuf,
     config: Option<PathBuf>,
     draft: Option<Thread>,
@@ -278,6 +278,14 @@ impl VegaWindow {
             expected: context.thread,
             skills,
             cancel,
+        };
+        #[cfg(test)]
+        let request = match self.ordinary_test_preparations.as_mut() {
+            Some(preparations) => {
+                preparations.push(request);
+                return;
+            }
+            None => request,
         };
         let unpublished = Arc::new(Mutex::new(Some(request)));
         let published = unpublished.clone();

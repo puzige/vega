@@ -59,7 +59,7 @@ impl AutomaticTitleRequest {
     }
 
     pub(crate) fn launch(
-        self,
+        mut self,
         database: PathBuf,
         thread_id: String,
         message_id: String,
@@ -68,10 +68,11 @@ impl AutomaticTitleRequest {
     ) {
         let _ = self.notifications.send(());
 
+        let title_drain = self.admission.take().map(|owner| owner.into_title_drain());
         let worker = std::thread::Builder::new()
             .name("vega-auto-title".into())
             .spawn(move || {
-                let _admission = self.admission.clone();
+                let _title_drain = title_drain;
                 let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -90,8 +91,10 @@ impl AutomaticTitleRequest {
                     );
                     return;
                 };
-                if self.admission.as_ref().is_none_or(|admission| {
-                    !admission.verifies(store.database_identity(), &thread_id)
+                if _title_drain.as_ref().is_none_or(|title| {
+                    !title
+                        .admission()
+                        .verifies(store.database_identity(), &thread_id)
                 }) {
                     return;
                 }
