@@ -2033,7 +2033,7 @@ impl SettingsView {
                         .child(self.provider_connection_row(
                             t("settings.provider.credentials"),
                             div().child(if self.available_key_refs.contains(&p.key_ref) {
-                                KEY_STORED_PLACEHOLDER
+                                key_stored_placeholder()
                             } else {
                                 t("settings.provider.key_required")
                             }),

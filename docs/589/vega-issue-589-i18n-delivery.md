@@ -26,8 +26,8 @@ Language changes must update existing views, not only newly created windows. Rev
 | A05: named interpolation | Catalog/argument static validation; implementation review; user reconnect/preview/count checks | Pending |
 | A06: UI and error coverage | Per-literal static inventory with explicit non-UI classifications; bilingual surface review | Pending |
 | A07: accessibility | Translated-name and keyboard-handler review; user keyboard/reader check | Pending |
-| Rust compile/lint and repository checks | Latest-head GitHub Actions `pr-check` | Not run yet |
-| Final Rust test inventory | Static inventory plus CI discovery/execution counts | Not obtained yet |
+| Rust compile/lint and repository checks | Latest-head GitHub Actions `pr-check` | First checkpoint failed compilation; corrected-head result pending |
+| Final Rust test inventory | Static inventory plus CI discovery/execution counts | No local Rust test sources; cloud counts not obtained because first discovery build failed |
 
 No Vega code, builds, compilation, packaging, or tests are executed locally. Local checks are limited to quick formatting, diffs, and static source/resource analysis. Static checks do not establish native rendering, persistence across real restarts, screen-reader behavior, or complete UI acceptance. No Rust test is added solely for this migration's process; final required CI still applies.
 
@@ -54,6 +54,16 @@ Generated-notice separation is specified in §3.1 before implementation. New pro
 
 At this checkpoint the parent ran `cargo fmt --all -- --check`, `git diff --check`, and `python3 scripts/check_i18n.py --json`: formatting/diff checks succeeded; the static inventory reported 1,750 keys per language, zero catalog/reference errors and zero UI/unreviewed Chinese literals. These checks do not compile Vega or execute tests.
 
-Independent reviews approved the repaired application boundary and domain cleanup/sidebar-error deltas at their frozen content versions. UI notice display/copy review found no additional notice-projection defect but identified a service-status equality type mismatch and the remaining Codex provenance gap. The equality repair uses a service-specific comparable failure type, preserving the status-change comparison rather than comparing translated prose. Codex metadata is specified before implementation; final integration and independent review remain pending. Foundation/settings and upstream compatibility review are separate open gates.
+Independent reviews approved the repaired application boundary and domain cleanup/sidebar-error deltas at their frozen content versions. UI notice display/copy review found no additional notice-projection defect but identified a service-status equality type mismatch and the remaining Codex provenance gap. The equality repair uses a service-specific comparable failure type, preserving the status-change comparison rather than comparing translated prose. Codex metadata is specified before implementation; final integration and independent review remain pending. The upstream integration and equality-repair reviews subsequently found no new P1/P2 defect within their frozen deltas. Foundation review identified and verified fixes for the removed credential-placeholder reference and known Skill diagnostic codes; final aggregate and cloud gates remain open.
+
+### First cloud cycle
+
+- Draft PR: [#614](https://github.com/puzige/vega/pull/614).
+- Checked head: `b26622f67d2319923f6bafc4636c8296b22ec851`.
+- Run: [40172382332](https://github.com/puzige/vega/actions/runs/40172382332).
+- Format and the existing Python script-check step succeeded. Clippy and Nextest's workspace discovery build failed to compile `vega_ui`; the required aggregate check failed. Rust discovery/execution counts were not obtained, so this is not a Rust test pass.
+- Original failed-log SHA-256: `7cecaf287f8ad891b32742518b0d58786a17c7f39f86ce22594957bd2a517c85`.
+- Product wiring causes: missing `SettingsText`/`t`/`t_args` imports in the MCP settings module; the removed placeholder constant; a sibling module calling a private scroll-restoration helper; four `String` values passed where interpolation expects borrowed strings. These are not external CI failures or acceptance changes.
+- Corrections preserve behavior: imports only, existing placeholder helper, module-scoped helper visibility and temporary borrows. No assertion, gate, test, runtime policy or acceptance criterion was weakened. Corrected-head cloud results remain pending.
 
 The intermediate content identities above are not final-version approvals. Final versions, current static commands, independent delta review, and cloud run/job results will be recorded on the PR when available. Unknown or unrun checks remain pending; CI success and merging do not imply user acceptance.

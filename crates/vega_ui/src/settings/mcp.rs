@@ -11,10 +11,11 @@ use vega_conversation::types::{
     McpServerForm, McpServerHealth, McpServerTransport, McpServerView,
 };
 use vega_conversation::{McpServerSettingsService, McpSettingsError};
+use vega_i18n::{t, t_args};
 use vega_theme::{Layout, Typography, theme};
 
 use super::{
-    NextMcpAction, PreviousMcpAction, SettingsView, TextInput, section_title,
+    NextMcpAction, PreviousMcpAction, SettingsText, SettingsView, TextInput, section_title,
     settings_action_chrome, settings_field, settings_group, settings_section, settings_status,
 };
 

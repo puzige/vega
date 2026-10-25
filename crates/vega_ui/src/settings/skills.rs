@@ -473,14 +473,11 @@ impl SettingsView {
                     )),
             );
         for candidate in &source.candidates {
-            let status = candidate.diagnostic.clone().unwrap_or_else(|| {
-                if candidate.model_winner {
-                    t("settings.skills.priority")
-                } else {
-                    t("settings.skills.reviewed")
-                }
-                .into()
-            });
+            let status = match candidate.diagnostic.as_deref() {
+                Some(diagnostic) => skill_diagnostic_label(diagnostic),
+                None if candidate.model_winner => t("settings.skills.priority"),
+                None => t("settings.skills.reviewed"),
+            };
             let mut row = div()
                 .id(format!("skills-candidate-{}-{}", source.id, candidate.name))
                 .flex()
@@ -767,6 +764,26 @@ fn scope_label(scope: SkillUiScope) -> &'static str {
         SkillUiScope::Project => t("settings.skills.scope.project"),
         SkillUiScope::VegaGlobal => t("settings.skills.scope.global"),
         SkillUiScope::Imported => t("settings.skills.scope.imported"),
+    }
+}
+
+fn skill_diagnostic_label(diagnostic: &str) -> &str {
+    match diagnostic {
+        "review_required" => t("settings.skills.diagnostic.review_required"),
+        "changed_review_required" => t("settings.skills.diagnostic.changed_review_required"),
+        "root_changed" => t("settings.skills.diagnostic.root_changed"),
+        "unsafe_path" => t("settings.skills.diagnostic.unsafe_path"),
+        "not_regular" => t("settings.skills.diagnostic.not_regular"),
+        "hardlink" => t("settings.skills.diagnostic.hardlink"),
+        "too_large" => t("settings.skills.diagnostic.too_large"),
+        "invalid_utf8" => t("settings.skills.diagnostic.invalid_utf8"),
+        "invalid_name" => t("settings.skills.diagnostic.invalid_name"),
+        "invalid_format" => t("settings.skills.diagnostic.invalid_format"),
+        "malformed_yaml" => t("settings.skills.diagnostic.malformed_yaml"),
+        "forbidden_tag" => t("settings.skills.diagnostic.forbidden_tag"),
+        "stale" => t("settings.skills.diagnostic.stale"),
+        "io" => t("settings.skills.diagnostic.io"),
+        _ => diagnostic,
     }
 }
 

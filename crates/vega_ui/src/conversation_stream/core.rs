@@ -806,7 +806,11 @@ impl ConversationStream {
         self.restore_scroll_anchor_at(anchor, item_ix)
     }
 
-    fn restore_scroll_anchor_at(&mut self, anchor: &ThreadScrollAnchor, item_ix: usize) -> bool {
+    pub(super) fn restore_scroll_anchor_at(
+        &mut self,
+        anchor: &ThreadScrollAnchor,
+        item_ix: usize,
+    ) -> bool {
         if anchor.following_tail {
             self.list.set_follow_mode(gpui_kit::FollowMode::Tail);
             return true;

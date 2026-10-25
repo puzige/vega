@@ -293,7 +293,7 @@ impl PreparationModel {
             CheckState::Failed(error) => push(
                 vega_i18n::t_args(
                     "ui.error_resolve_the_issue_then_check_again",
-                    &[("error", error.user_message())],
+                    &[("error", &error.user_message())],
                 ),
                 true,
             ),
@@ -317,7 +317,7 @@ impl PreparationModel {
             push(
                 vega_i18n::t_args(
                     "ui.last_check_failed_error",
-                    &[("error", error.user_message())],
+                    &[("error", &error.user_message())],
                 ),
                 true,
             );
@@ -331,7 +331,7 @@ impl PreparationModel {
             push(
                 vega_i18n::t_args(
                     "ui.error_while_closing_the_check_error_recovery",
-                    &[("error", error.user_message()), ("recovery", recovery)],
+                    &[("error", &error.user_message()), ("recovery", recovery)],
                 ),
                 true,
             );
@@ -345,7 +345,7 @@ impl PreparationModel {
             CleanupStatus::Failed(error) => push(
                 vega_i18n::t_args(
                     "ui.permission_check_cleanup_failed_error_computer_control_may",
-                    &[("error", error.user_message())],
+                    &[("error", &error.user_message())],
                 ),
                 true,
             ),
