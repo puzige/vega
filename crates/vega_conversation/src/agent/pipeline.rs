@@ -1,9 +1,6 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
-#[cfg(test)]
-mod protocol_language_tests;
-
 pub(crate) fn valid_automation_call_projection(tool: &str, input_json: &str) -> bool {
     matches!(tool, "get_goal" | "update_goal" | "schedule_wakeup")
         && input_json.len() <= 32 * 1024

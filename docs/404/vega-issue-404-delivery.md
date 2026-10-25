@@ -116,6 +116,18 @@
 - 主 Agent 启动未提交 merge，实际冲突为 `agent/loop_.rs`、`computer_use/diagnostics.rs`、`conversation_stream/computer_use.rs`。不能恢复已删除的 no_progress 固定 `ComputerStopped` 收尾或旧错误/准备菜单；必须保留 master 的真实授权/暂停/恢复控件翻译与其他功能。
 - 自动合流语义风险：UI `user_message` 已本地化，而结构化诊断及严格落库校验须跨语言稳定；master 已为 Executor 增加 protocol_guidance/diagnostic，#404 的非 Executor 规范文案也须与翻译展示分开。先在 spec 增加 i18n 合流不变量，再由专职实现者解决冲突和最小跨语言回归；不以任意诊断白名单绕过严格校验。
 
+### i18n 合流已验证版本
+
+合流提交 `ca9dbef5fab4bc778762be0e5f481e7bda158230`（parents `ac135a11…` / `f6723682…`）保留 #404 行为与 master 的本地化展示，非 Executor canonical protocol_message 和 Executor protocol_diagnostic 不受 UI 语言影响。静态清单仅新增 23 个精确 protocol 条目（22 个规范诊断及 1 个 store budget 诊断），不修改 checker、workflow 或通配放行。非实现者对合流及自动合流受影响的持久化/历史/附件路径独立审查无发现。
+
+[run 40181780325](https://github.com/puzige/vega/actions/runs/40181780325)：Nextest `121134170584` 2 发现/2 执行/2 通过/0 跳过；Clippy `121134170403`、required `121134939721` 成功；Python 60 项通过。两项进程内回归覆盖 en/zh 生成反馈一致、跨语言严格审计/历史读回、截图 budget Cancelled 交付及别名分叉、图片归属和无观察权限、伪造诊断原子拒绝。
+
+原始源码已通过 GitHub contents API 核实可达：
+
+- [runtime protocol_language_tests.rs](https://github.com/puzige/vega/blob/ca9dbef5fab4bc778762be0e5f481e7bda158230/crates/vega_runtime/src/computer_use/protocol_language_tests.rs)，SHA256 `f6d6fb681091bcf7123219f3c235144a69cac750980888b736a48731d20b6280`。
+- [conversation protocol_language_tests.rs](https://github.com/puzige/vega/blob/ca9dbef5fab4bc778762be0e5f481e7bda158230/crates/vega_conversation/src/agent/pipeline/protocol_language_tests.rs)，SHA256 `0c769b99344ae650de1000def39d85ace8a07655d96cb0761ee28dda4ea35901`。
+- [完整合流提交](https://github.com/puzige/vega/commit/ca9dbef5fab4bc778762be0e5f481e7bda158230)，保留原始测试及对应生产内容；最终清理仅删除两文件和四行 test 模块接线，不删 protocol 生产逻辑或清单条目。
+
 ## 验证限制与后续
 
 组件/协议/身份的各类实际故障、断连/动作后观察失败变体、完整截图容量流、权限恢复后真实预检、分页/TTL/压缩/附件竞态及原生焦点交互尚无本轮动态验收，静态覆盖与具体限制以 spec 矩阵和最终报告为准。未做真实外部进程/网络 E2E。

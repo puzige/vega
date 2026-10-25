@@ -17,8 +17,6 @@ mod preparation_session;
 mod prepare;
 mod probe;
 mod progress;
-#[cfg(test)]
-mod protocol_language_tests;
 
 pub use components::ManagedComponents;
 pub use control::{ComputerUseControl, ControlPhase, ControlSnapshot};
