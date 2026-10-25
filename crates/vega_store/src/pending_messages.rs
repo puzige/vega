@@ -1,6 +1,6 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PendingMessageRow {
     pub id: String,
     pub thread_id: String,
@@ -12,6 +12,10 @@ pub struct PendingMessageRow {
 }
 
 pub fn insert(conn: &Connection, row: &PendingMessageRow) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::PendingMessages,
+    )?;
     conn.execute(
         "INSERT INTO pending_messages (id, thread_id, ordinal, behavior, generation, payload, created_at) SELECT ?1, ?2, COALESCE(MAX(ordinal), -1) + 1, ?3, ?4, ?5, ?6 FROM pending_messages WHERE thread_id = ?2",
         params![row.id, row.thread_id, row.behavior, row.generation, row.payload, row.created_at],
@@ -70,6 +74,10 @@ pub fn promote(
     id: &str,
     generation: &str,
 ) -> rusqlite::Result<bool> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::PendingMessages,
+    )?;
     Ok(conn.execute("UPDATE pending_messages SET behavior = 'steer', generation = ?3 WHERE thread_id = ?1 AND id = ?2 AND state = 'pending'", params![thread_id, id, generation])? == 1)
 }
 
@@ -79,6 +87,10 @@ pub fn preserve_model_input(
     id: &str,
     content: &str,
 ) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::PendingMessages,
+    )?;
     conn.execute("UPDATE pending_messages SET model_content = ?3 WHERE thread_id = ?1 AND id = ?2 AND state = 'delivered'", params![thread_id, id, content])?;
     Ok(())
 }
@@ -89,10 +101,18 @@ pub fn claim_steer(
     id: &str,
     generation: &str,
 ) -> rusqlite::Result<bool> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::PendingMessages,
+    )?;
     Ok(conn.execute("UPDATE pending_messages SET state = 'claimed' WHERE thread_id = ?1 AND id = ?2 AND generation = ?3 AND behavior = 'steer' AND state = 'pending'", params![thread_id, id, generation])? == 1)
 }
 
 pub fn mark_delivered(conn: &Connection, thread_id: &str, id: &str) -> rusqlite::Result<bool> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::PendingMessages,
+    )?;
     Ok(conn.execute("UPDATE pending_messages SET state = 'delivered', payload = '' WHERE thread_id = ?1 AND id = ?2 AND state != 'delivered'", params![thread_id, id])? == 1)
 }
 
@@ -102,6 +122,10 @@ pub fn mark_accepted(
     id: &str,
     previous_assistant_id: &str,
 ) -> rusqlite::Result<bool> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::PendingMessages,
+    )?;
     Ok(conn.execute(
         "UPDATE pending_messages SET state = 'delivered', payload = '', accepted_after_assistant_id = ?3 \
          WHERE thread_id = ?1 AND id = ?2 AND state != 'delivered' \
@@ -111,6 +135,10 @@ pub fn mark_accepted(
 }
 
 pub fn remove(conn: &Connection, thread_id: &str, id: &str) -> rusqlite::Result<bool> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::PendingMessages,
+    )?;
     Ok(conn.execute(
         "DELETE FROM pending_messages WHERE thread_id = ?1 AND id = ?2 AND state = 'pending'",
         params![thread_id, id],
@@ -118,6 +146,10 @@ pub fn remove(conn: &Connection, thread_id: &str, id: &str) -> rusqlite::Result<
 }
 
 pub fn release_claims(conn: &Connection, thread_id: &str) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::PendingMessages,
+    )?;
     conn.execute(
         "UPDATE pending_messages SET state = 'pending' WHERE thread_id = ?1 AND state = 'claimed'",
         [thread_id],

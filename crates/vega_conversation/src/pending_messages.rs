@@ -253,13 +253,15 @@ impl RuntimeSteeringSource for QueueSteeringSource {
         let cancel = self.cancel.clone();
         async move {
             tokio::task::spawn_blocking(move || {
+                if cancel.is_cancelled() {
+                    return Ok(None);
+                }
                 let store = Store::open(database)?;
-                let tx = store.immediate_transaction()?;
-                let row = rows::next_steer(&tx, &thread_id, &generation)?;
+                let row = rows::next_steer(store.conn(), &thread_id, &generation)?;
                 let Some(row) = row else {
                     return Ok(None);
                 };
-                let message = decode(row).map_err(|_| runtime_failure())?;
+                let message = decode(row.clone()).map_err(|_| runtime_failure())?;
                 let refs = vega_tools::reference::resolve_bounded_references(
                     &workspace,
                     &message.content,
@@ -285,6 +287,12 @@ impl RuntimeSteeringSource for QueueSteeringSource {
                     exceptions.as_ref(),
                 );
                 if cancel.is_cancelled() {
+                    return Ok(None);
+                }
+                let tx = store.immediate_transaction()?;
+                if cancel.is_cancelled()
+                    || rows::next_steer(&tx, &thread_id, &generation)?.as_ref() != Some(&row)
+                {
                     return Ok(None);
                 }
                 if !rows::claim_steer(&tx, &thread_id, &message.id, &generation)? {

@@ -53,6 +53,10 @@ pub(crate) struct UserQuestionPanel {
 }
 
 impl UserQuestionPanel {
+    pub(crate) fn resolution(&self) -> vega_conversation::types::UserQuestionResolution {
+        self.pending.resolution()
+    }
+
     pub(crate) fn new(
         pending: PendingUserQuestion,
         composer_focus: FocusHandle,

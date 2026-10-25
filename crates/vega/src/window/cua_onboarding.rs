@@ -79,18 +79,24 @@ impl OnboardingHost {
 impl VegaWindow {
     pub(super) fn request_settings_preparation(
         &mut self,
-        pane: guidance::PermissionPane,
+        pane: Option<guidance::PermissionPane>,
         cx: &mut Context<Self>,
     ) {
-        cx.open_url(pane.url());
+        if let Some(pane) = pane {
+            cx.open_url(pane.url());
+        }
         self.sync_preparation(cx);
         if let Some(active) = &self.onboarding.active
             && active
                 .window
-                .update(cx, |card, _, cx| {
+                .update(cx, |card, window, cx| {
                     let open = card.is_open();
                     if open {
-                        card.seek_settings(pane, cx);
+                        if let Some(pane) = pane {
+                            card.seek_settings(pane, window, cx);
+                        } else {
+                            card.show_overview(window, cx);
+                        }
                     }
                     open
                 })
@@ -99,10 +105,12 @@ impl VegaWindow {
             return;
         }
         self.open_preparation(Origin::Settings, cx);
-        if let Some(active) = &self.onboarding.active {
+        if let Some(pane) = pane
+            && let Some(active) = &self.onboarding.active
+        {
             let _ = active
                 .window
-                .update(cx, |card, _, cx| card.seek_settings(pane, cx));
+                .update(cx, |card, window, cx| card.seek_settings(pane, window, cx));
         }
     }
 
@@ -118,7 +126,6 @@ impl VegaWindow {
         }
         let project =
             (!current.route_project_id().is_empty()).then(|| current.route_project_id().to_owned());
-        cx.open_url(guidance::PermissionPane::Accessibility.url());
         self.open_preparation(
             Origin::Task {
                 stream: stream.downgrade(),

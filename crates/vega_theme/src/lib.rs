@@ -315,6 +315,10 @@ pub struct Motion;
 
 impl Motion {
     pub const INTERACTION_DURATION_MS: u64 = 120;
+    pub const DISCLOSURE_TURN_MS: u64 = 120;
+    pub const TAB_SELECTION_MS: u64 = 120;
+    pub const COPY_SWAP_MS: u64 = 80;
+    pub const COPY_RECEIPT_MS: u64 = 1000;
     pub const THINKING_SHIMMER_MS: u64 = 1800;
 }
 
@@ -349,7 +353,7 @@ impl Layout {
     pub const CONVERSATION_DIVIDER_GAP: f32 = 4.5;
     pub const CONVERSATION_DIVIDER_HEIGHT: f32 = 1.0;
     pub const CONVERSATION_BODY_TOP: f32 = 16.0;
-    pub const CONVERSATION_PARAGRAPH_GAP: f32 = 15.5;
+    pub const CONVERSATION_PARAGRAPH_GAP: f32 = 14.0;
     pub const CONVERSATION_STAGE_TOP: f32 = 24.0;
     pub const CONVERSATION_TOOL_HEIGHT: f32 = 25.0;
     pub const CONVERSATION_MARKER_WIDTH: f32 = 6.0;
@@ -425,7 +429,7 @@ impl Layout {
     pub const MARKDOWN_PARAGRAPH_GAP: f32 = 12.0;
     pub const MARKDOWN_HEADING_BEFORE: f32 = 24.0;
     pub const MARKDOWN_HEADING_AFTER: f32 = 12.0;
-    pub const MARKDOWN_LIST_ITEM_GAP: f32 = 6.0;
+    pub const MARKDOWN_LIST_ITEM_GAP: f32 = 0.0;
     pub const MARKDOWN_LIST_INDENT: f32 = 24.0;
     pub const MARKDOWN_LIST_PARAGRAPH_GAP: f32 = 8.0;
     pub const MARKDOWN_CODE_PADDING: f32 = 12.0;
@@ -541,13 +545,22 @@ impl Layout {
     pub const SETTINGS_SWITCH_WIDTH: f32 = 32.0;
     /// Height of a Settings boolean switch.
     pub const SETTINGS_SWITCH_HEIGHT: f32 = 20.0;
-    pub const PREPARATION_CARD_WIDTH: f32 = 400.0;
-    pub const PREPARATION_CARD_HEIGHT: f32 = 140.0;
+    pub const PREPARATION_CARD_WIDTH: f32 = 560.0;
+    pub const PREPARATION_CARD_HEIGHT: f32 = 120.0;
     pub const PREPARATION_CARD_SHADOW_PADDING: f32 = 24.0;
-    pub const PREPARATION_APP_ICON_SIZE: f32 = 56.0;
-    pub const PREPARATION_APP_TARGET_WIDTH: f32 = 88.0;
-    pub const PREPARATION_APP_TARGET_HEIGHT: f32 = 72.0;
-    pub const PREPARATION_APP_LABEL_HEIGHT: f32 = 16.0;
+    pub const PREPARATION_OVERVIEW_WIDTH: f32 = 600.0;
+    pub const PREPARATION_OVERVIEW_HEIGHT: f32 = 440.0;
+    pub const PREPARATION_OVERVIEW_PADDING: f32 = 32.0;
+    pub const PREPARATION_OVERVIEW_ICON: f32 = 56.0;
+    pub const PREPARATION_OVERVIEW_TITLE_LINE: f32 = 34.0;
+    pub const PREPARATION_OVERVIEW_DESCRIPTION_WIDTH: f32 = 420.0;
+    pub const PREPARATION_OVERVIEW_DESCRIPTION_LINE: f32 = 21.0;
+    pub const PREPARATION_PERMISSION_HEIGHT: f32 = 84.0;
+    pub const PREPARATION_PERMISSION_ICON: f32 = 40.0;
+    pub const PREPARATION_APP_ICON_SIZE: f32 = 28.0;
+    pub const PREPARATION_APP_TARGET_HEIGHT: f32 = 42.0;
+    pub const PREPARATION_GUIDE_CONTROL: f32 = 32.0;
+    pub const PREPARATION_GUIDE_GAP: f32 = 12.0;
     pub const PREPARATION_CLOSE_SIZE: f32 = 24.0;
     /// Maximum width of a multi-section floating menu.
     pub const MENU_MAX_WIDTH: f32 = 350.0;

@@ -38,7 +38,7 @@ use vega_markdown::{
 };
 use vega_theme::{Layout, ThemeColors, Typography, theme};
 
-use crate::artifact_card::ArtifactCard;
+use crate::artifact_card::{ArtifactCard, ArtifactGroup};
 use crate::branch_selector::{BranchListRequested, BranchSelector};
 use crate::commit_panel::CommitPanel;
 use crate::file_selector::{
@@ -262,8 +262,11 @@ pub(crate) use composer_predictions::ComposerPredictionsEnabled;
 pub use composer_predictions::set_composer_predictions_enabled;
 mod composer_actions;
 use composer_actions::ComposerActions;
+mod code_drag;
+mod code_viewport;
 mod content;
 mod context_control;
+mod copy_receipt;
 pub use context_control::ContextUsageProjection;
 mod context_usage;
 pub use vega_conversation::types::{
@@ -282,6 +285,7 @@ mod run_notice;
 mod shimmer;
 mod sticky_disclosure;
 mod subagents;
+mod text_cache;
 use run_activity::{RunActivityChild, RunActivityGroup, RunActivityStatus};
 mod autolinks;
 mod inline_code;

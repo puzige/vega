@@ -1,4 +1,31 @@
 use super::*;
+use vega_store::write_coordination::PersistenceCategory;
+
+const PERSISTENCE_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const PERSISTENCE_BUSY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
+
+thread_local! {
+    static PERSISTENCE_BUSY_STARTED: std::cell::Cell<Option<std::time::Instant>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+fn persistence_busy_handler(count: i32) -> bool {
+    PERSISTENCE_BUSY_STARTED.with(|clock| {
+        if count == 0 || clock.get().is_none() {
+            clock.set(Some(std::time::Instant::now()));
+        }
+        let Some(started) = clock.get() else {
+            return false;
+        };
+        let remaining = PERSISTENCE_BUSY_TIMEOUT.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return false;
+        }
+        std::thread::sleep(remaining.min(PERSISTENCE_BUSY_INTERVAL));
+        started.elapsed() < PERSISTENCE_BUSY_TIMEOUT
+    })
+}
 
 #[derive(Clone)]
 pub(crate) struct DelegatedAuthority {
@@ -18,6 +45,7 @@ pub struct PersistenceActorConfig {
     pub(crate) delegated_authority: Option<DelegatedAuthority>,
     pub(crate) delegated_context_budget: Option<vega_runtime::ContextBudget>,
     pub(crate) user_questions: Option<Arc<dyn vega_runtime::RuntimeUserQuestionHook>>,
+    pub(crate) work_time_source: Option<crate::types::WorkTimeSource>,
     pub(crate) automation_claim: Option<crate::types::AutomationRunClaim>,
     pub(crate) automation_hook: Option<Arc<dyn vega_runtime::RuntimeAutomationHook>>,
     pub(crate) credential_continuation_id: Option<String>,
@@ -44,6 +72,11 @@ impl PersistenceActorConfig {
         hook: Arc<dyn vega_runtime::RuntimeUserQuestionHook>,
     ) -> Self {
         self.user_questions = Some(hook);
+        self
+    }
+
+    pub fn with_work_time_source(mut self, source: crate::types::WorkTimeSource) -> Self {
+        self.work_time_source = Some(source);
         self
     }
 
@@ -162,7 +195,11 @@ impl PersistenceActor {
         let (sender, mut receiver) = mpsc::channel(PERSISTENCE_CHANNEL_CAPACITY);
         let (ready, opened) = oneshot::channel();
         let task = tokio::task::spawn_blocking(move || {
-            let store = match Store::open(database_path) {
+            let store = match Store::open_with_busy_timeout(database_path, PERSISTENCE_BUSY_TIMEOUT)
+                .and_then(|store| {
+                    store.conn().busy_handler(Some(persistence_busy_handler))?;
+                    Ok(store)
+                }) {
                 Ok(store) => store,
                 Err(error) => {
                     let _ = ready.send(Err(()));
@@ -177,6 +214,7 @@ impl PersistenceActor {
                 match command {
                     PersistenceCommand::Snapshot { content, ack } => {
                         config.delay_command();
+                        let started = std::time::Instant::now();
                         let result =
                             messages::update_streaming_content(store.conn(), &message_id, &content)
                                 .map_err(VegaError::from)
@@ -189,6 +227,12 @@ impl PersistenceActor {
                         if result.is_ok() {
                             config.record_snapshot();
                         }
+                        log_persistence_result(
+                            &store,
+                            PersistenceCategory::Snapshot,
+                            started,
+                            &result,
+                        );
                         let _ = ack.send(result);
                     }
                     PersistenceCommand::Event {
@@ -198,6 +242,7 @@ impl PersistenceActor {
                         ack,
                     } => {
                         config.delay_command();
+                        let started = std::time::Instant::now();
                         let result = config
                             .check_event(&event)
                             .and_then(|()| {
@@ -293,6 +338,12 @@ impl PersistenceActor {
                                 Ok(())
                             })
                             .map_err(|error| error.at_runtime_stage(runtime_event_stage(&event)));
+                        log_persistence_result(
+                            &store,
+                            runtime_event_category(&event),
+                            started,
+                            &result,
+                        );
                         if result.is_ok()
                             && let RuntimeEvent::SteeringAccepted(input) = event.as_ref()
                         {
@@ -301,7 +352,22 @@ impl PersistenceActor {
                         let _ = ack.send(result);
                     }
                     PersistenceCommand::Diagnostic(event) => {
-                        let _ = vega_store::run_diagnostics::insert(store.conn(), &event);
+                        let started = std::time::Instant::now();
+                        let result = vega_store::run_diagnostics::insert(store.conn(), &event)
+                            .map_err(|error| match error {
+                                vega_store::run_diagnostics::DiagnosticError::Sql(error) => {
+                                    VegaError::from(error).at_runtime_stage(
+                                        vega_runtime::RuntimeFailureStage::EventPipeline,
+                                    )
+                                }
+                                _ => persistence_actor_error("diagnostic persistence failed"),
+                            });
+                        log_persistence_result(
+                            &store,
+                            PersistenceCategory::Diagnostic,
+                            started,
+                            &result,
+                        );
                     }
                 }
             }
@@ -405,6 +471,76 @@ pub(crate) fn persistence_actor_error(_message: impl Into<String>) -> VegaError 
     VegaError::RuntimeFailure(vega_runtime::RuntimeFailureDetail::new(
         vega_runtime::RuntimeFailureReason::Pipeline,
     ))
+}
+
+fn log_persistence_result<T>(
+    store: &Store,
+    category: PersistenceCategory,
+    started: std::time::Instant,
+    result: &Result<T, VegaError>,
+) {
+    let metrics = result.as_ref().err().map(VegaError::diagnostic_metrics);
+    vega_store::write_coordination::record_persistence(
+        store.conn(),
+        category,
+        started,
+        result.is_ok(),
+        metrics
+            .as_ref()
+            .and_then(|metrics| metrics.sqlite_extended_code),
+    );
+    tracing::debug!(
+        ?category,
+        outcome = if result.is_ok() {
+            "succeeded"
+        } else {
+            "failed"
+        },
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        runtime_stage = metrics.as_ref().and_then(|metrics| metrics.runtime_stage),
+        sqlite_primary_code = metrics.as_ref().and_then(|metrics| metrics.sqlite_code),
+        sqlite_extended_code = metrics
+            .as_ref()
+            .and_then(|metrics| metrics.sqlite_extended_code),
+    );
+}
+
+fn runtime_event_category(event: &RuntimeEvent) -> PersistenceCategory {
+    use PersistenceCategory as Category;
+    match event {
+        RuntimeEvent::AssistantResponseStarted { .. } => Category::ResponseStarted,
+        RuntimeEvent::ReasoningCompleted { .. } => Category::ReasoningCompleted,
+        RuntimeEvent::ResponseRetrying { .. } => Category::ResponseRetrying,
+        RuntimeEvent::SteeringAccepted(_) => Category::Steering,
+        RuntimeEvent::BuiltinSkillActivated(_) => Category::BuiltinSkill,
+        RuntimeEvent::ScreenshotDelivered { .. } => Category::Screenshot,
+        RuntimeEvent::ToolRoundCompleted { .. } => Category::ToolRound,
+        RuntimeEvent::AssistantResponseCompleted { .. } => Category::ResponseCompleted,
+        RuntimeEvent::DiagnosticAttempt(_) => Category::DiagnosticAttempt,
+        RuntimeEvent::ReasoningRetentionReleased => Category::ReasoningReleased,
+        RuntimeEvent::TextDelta(_) => Category::TextDelta,
+        RuntimeEvent::ThinkingDelta(_) => Category::ThinkingDelta,
+        RuntimeEvent::SummaryDelta(_) => Category::SummaryDelta,
+        RuntimeEvent::ToolCallProposed(_) => Category::ToolProposal,
+        RuntimeEvent::ToolCallValidationRejected { .. } => Category::ToolValidation,
+        RuntimeEvent::ToolCallConflict { .. } => Category::ToolConflict,
+        RuntimeEvent::ToolCallApproved { .. } => Category::ToolApproval,
+        RuntimeEvent::ToolCallRunning { .. } => Category::ToolRunning,
+        RuntimeEvent::ToolCallOutput { .. } => Category::ToolOutput,
+        RuntimeEvent::ToolCallFinished(_) | RuntimeEvent::ToolReadFinished { .. } => {
+            Category::ToolTerminal
+        }
+        RuntimeEvent::StageHandoff { .. } => Category::StageHandoff,
+        RuntimeEvent::SkillActivation { .. } => Category::SkillActivation,
+        RuntimeEvent::SkillSnapshot { .. } => Category::SkillSnapshot,
+        RuntimeEvent::UsageUpdated { .. } => Category::Usage,
+        RuntimeEvent::ContextCompactionUsageUpdated { .. } => Category::CompactionUsage,
+        RuntimeEvent::ContextCompactionStatusUpdated { .. } => Category::CompactionStatus,
+        RuntimeEvent::ContextAccountingUpdated(_) => Category::ContextAccounting,
+        RuntimeEvent::Finished(_) => Category::Finished,
+        RuntimeEvent::Interrupted => Category::Interrupted,
+        RuntimeEvent::Error(_) => Category::Error,
+    }
 }
 
 fn runtime_event_stage(event: &RuntimeEvent) -> vega_runtime::RuntimeFailureStage {

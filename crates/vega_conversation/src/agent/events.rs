@@ -7,6 +7,7 @@ pub(super) struct RuntimeEventContext<'a, F> {
     pub(super) event_sink: &'a mut F,
     pub(super) cancel: CancellationToken,
     pub(super) run_started_at: std::time::Instant,
+    pub(super) work_clock: &'a crate::types::WorkClock,
     pub(super) diagnostics: &'a super::diagnostics::DiagnosticsWriter,
     pub(super) thread_id: &'a str,
     pub(super) run_id: &'a str,
@@ -29,6 +30,7 @@ where
         event_sink,
         cancel,
         run_started_at,
+        work_clock,
         diagnostics,
         thread_id,
         run_id,
@@ -159,7 +161,7 @@ where
                     {
                         streamed_content.truncate(*text_start_bytes);
                     }
-                    let execution_duration_ms = terminal_execution_duration(&event, run_started_at);
+                    let execution_duration_ms = terminal_execution_duration(&event, work_clock);
                     match actor
                         .event(
                             event.clone(),
@@ -221,6 +223,7 @@ where
                                     ConversationEvent::RunStarted {
                                         message_id: input.assistant_message_id.clone(),
                                         started_at: run_started_at,
+                                        work_clock: Some(work_clock.clone()),
                                     },
                                 ];
                                 message_id = input.assistant_message_id.clone();
@@ -486,7 +489,7 @@ where
 
 fn terminal_execution_duration(
     event: &RuntimeEvent,
-    run_started_at: std::time::Instant,
+    work_clock: &crate::types::WorkClock,
 ) -> Option<u64> {
     matches!(
         event,
@@ -495,7 +498,7 @@ fn terminal_execution_duration(
             | RuntimeEvent::Interrupted
             | RuntimeEvent::Error(_)
     )
-    .then(|| u64::try_from(run_started_at.elapsed().as_millis()).unwrap_or(u64::MAX))
+    .then(|| u64::try_from(work_clock.finish().as_millis()).unwrap_or(u64::MAX))
 }
 
 fn with_terminal_execution_duration(
@@ -661,7 +664,7 @@ pub(crate) fn persist_runtime_event(
             response_id,
             call_ids,
         } => {
-            let transaction = store.conn().unchecked_transaction()?;
+            let transaction = store.immediate_transaction()?;
             for call_id in call_ids {
                 transaction.execute(
                     "INSERT OR IGNORE INTO tool_call_rounds (message_id, call_id, response_id) VALUES (?1, ?2, ?3)",

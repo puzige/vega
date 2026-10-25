@@ -29,8 +29,15 @@ pub fn recover_thread(
     thread_id: &str,
     now_ms: i64,
 ) -> Result<RecoveryCounts, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
     let owner = crate::delegated_ownership::acquire_for_thread(conn, thread_id)?;
-    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
     let counts = recover_thread_with_owner(&tx, thread_id, now_ms, owner.as_deref())?;
     tx.commit()?;
     Ok(counts)
@@ -53,11 +60,12 @@ pub fn recover_thread_with_owner(
     }
     let abandoned = delegated.as_ref().filter(|row| {
         matches!(row.state.as_str(), "running" | "cancelling")
-            || (row.state == "interrupted"
+            || (matches!(row.state.as_str(), "interrupted" | "completed" | "failed")
                 && crate::delegated_stages::release_state(tx, thread_id, &row.child_message_id)
                     .is_ok_and(|state| state == "unknown"))
     });
     let effects = abandoned
+        .filter(|row| !matches!(row.state.as_str(), "completed" | "failed"))
         .map(|row| crate::delegated_stages::unknown_effects(tx, thread_id, &row.child_message_id))
         .transpose()?;
     let counts = recover_stopped_with_owner(tx, thread_id, now_ms, owner)?;
@@ -73,14 +81,16 @@ pub fn recover_thread_with_owner(
                 &serde_json::json!([]),
             )?;
         }
-        crate::delegated_stages::final_checkpoint(
-            tx,
-            thread_id,
-            &row.child_message_id,
-            true,
-            effects.unwrap_or(serde_json::json!([])),
-            now_ms,
-        )?;
+        if !matches!(row.state.as_str(), "completed" | "failed") {
+            crate::delegated_stages::final_checkpoint(
+                tx,
+                thread_id,
+                &row.child_message_id,
+                true,
+                effects.unwrap_or(serde_json::json!([])),
+                now_ms,
+            )?;
+        }
         crate::delegated_stages::set_release(
             tx,
             thread_id,
@@ -97,6 +107,10 @@ pub fn recover_stopped_with_owner(
     now_ms: i64,
     owner: Option<&crate::delegated_ownership::DelegatedOwnership>,
 ) -> Result<RecoveryCounts, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        tx,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
     if crate::threads::find(tx, thread_id)?.is_some_and(|row| row.parent_thread_id.is_some())
         && !owner.is_some_and(|owner| {
             crate::delegated_ownership::database_path(tx)

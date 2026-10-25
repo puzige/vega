@@ -3,7 +3,7 @@
 use std::io;
 
 use rusqlite::types::Type;
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 mod responses;
 pub use responses::{AssistantResponseRow, completed_response_text, record_assistant_response};
@@ -64,10 +64,19 @@ pub fn next_seq(conn: &Connection, thread_id: &str) -> Result<i64, rusqlite::Err
 }
 
 pub fn insert(conn: &Connection, row: &MessageRow) -> Result<(), rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
     validate_message(row)?;
     let tx = conn
         .is_autocommit()
-        .then(|| Transaction::new_unchecked(conn, TransactionBehavior::Immediate))
+        .then(|| {
+            crate::write_coordination::WriteTransaction::new(
+                conn,
+                crate::write_coordination::WriteCategory::Messages,
+            )
+        })
         .transpose()?;
     conn.execute(
         "INSERT INTO messages (id, thread_id, seq, role, kind, content, status, created_at, \
@@ -102,6 +111,10 @@ pub fn finish(
     content: &str,
     status: &str,
 ) -> Result<usize, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
     conn.execute(
         "UPDATE messages SET content = ?1, status = ?2 WHERE id = ?3",
         params![content, status, id],
@@ -113,6 +126,10 @@ pub fn update_streaming_content(
     id: &str,
     content: &str,
 ) -> Result<usize, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
     conn.execute(
         "UPDATE messages SET content = ?1 WHERE id = ?2 AND status = 'streaming'",
         params![content, id],
@@ -126,7 +143,14 @@ pub fn finish_streaming(
     status: &str,
     execution_duration_ms: Option<i64>,
 ) -> Result<usize, rusqlite::Error> {
-    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
     let updated = finish_streaming_in_transaction(&tx, id, content, status, execution_duration_ms)?;
     tx.commit()?;
     Ok(updated)
@@ -139,6 +163,8 @@ pub fn finish_streaming_in_transaction(
     status: &str,
     execution_duration_ms: Option<i64>,
 ) -> Result<usize, rusqlite::Error> {
+    let _permit =
+        crate::write_coordination::acquire(tx, crate::write_coordination::WriteCategory::Messages)?;
     validate_terminal_duration(status, execution_duration_ms)?;
     let updated = tx.execute(
         "UPDATE messages SET content = ?1, status = ?2 WHERE id = ?3 AND status = 'streaming'",
@@ -169,7 +195,14 @@ pub fn complete_plan(
     now: i64,
     execution_duration_ms: Option<i64>,
 ) -> Result<(), PlanTransitionError> {
-    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
     let mode: Option<String> = tx
         .query_row(
             "SELECT mode FROM threads WHERE id = ?1",
@@ -228,6 +261,10 @@ pub fn review_plan(
     conn: &Connection,
     review: PlanReview<'_>,
 ) -> Result<PlanReviewResult, PlanTransitionError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
     let approved = match review.status {
         "approved" => true,
         "changes_requested" | "abandoned" => false,
@@ -236,7 +273,10 @@ pub fn review_plan(
     if approved != review.instruction.is_some() || (approved && review.note.is_some()) {
         return Err(PlanTransitionError::CorruptState);
     }
-    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Messages,
+    )?;
     let _ = validated_plans(&tx, review.thread_id)?;
     let current = find(&tx, review.plan_id)?;
     let Some(current) = current else {

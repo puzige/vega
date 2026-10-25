@@ -140,22 +140,26 @@ impl ConversationStream {
                 continue;
             };
             let (kind, preview) = match entry {
-                StreamEntry::User { lines, .. } => (
+                StreamEntry::User { .. } => (
                     MessageAnchorKind::User,
-                    preview_from_lines(
-                        lines
-                            .iter()
-                            .filter(|line| matches!(line.kind, LineKind::UserLine { .. })),
-                    ),
+                    self.text_cache
+                        .borrow_mut()
+                        .preview(entry_index, &identity.key, entry)
+                        .unwrap_or_default(),
                 ),
                 StreamEntry::UserImages { .. } => (MessageAnchorKind::User, "图片消息".to_string()),
-                StreamEntry::Assistant { model, .. } => (
+                StreamEntry::Assistant { .. } => (
                     MessageAnchorKind::Assistant,
-                    preview_from_lines(model.committed_lines.iter().chain(&model.pending_lines)),
+                    self.text_cache
+                        .borrow_mut()
+                        .preview(entry_index, &identity.key, entry)
+                        .unwrap_or_default(),
                 ),
                 StreamEntry::Tool { .. }
                 | StreamEntry::ToolGroup { .. }
-                | StreamEntry::Artifact { .. } => (MessageAnchorKind::Tool, "工具活动".to_string()),
+                | StreamEntry::ArtifactGroup { .. } => {
+                    (MessageAnchorKind::Tool, "工具活动".to_string())
+                }
                 StreamEntry::Plan { .. } => (MessageAnchorKind::Plan, "计划消息".to_string()),
                 StreamEntry::Summary { .. } => (MessageAnchorKind::Summary, "任务结果".to_string()),
                 StreamEntry::Subagents { .. }
@@ -173,7 +177,7 @@ impl ConversationStream {
                 entry_index,
                 message_id: message_id.to_string(),
                 kind,
-                preview: sanitize_anchor_preview(&preview),
+                preview,
             });
         }
         projections
@@ -216,9 +220,12 @@ impl ConversationStream {
             .retain(|identity, _| retained_identities.contains(identity.as_str()));
     }
 
-    pub(crate) fn message_anchor_geometry(&self, cx: &App) -> MessageAnchorGeometry {
-        let notices = self.run_notice_projection(cx);
-        let stage_top_insets = self.stage_top_insets(cx);
+    pub(crate) fn message_anchor_geometry(
+        &self,
+        stage_top_insets: &HashMap<usize, f32>,
+        cx: &App,
+    ) -> MessageAnchorGeometry {
+        let notices = &self.run_notices;
         let notice_width = self
             .workspace_width
             .map(|width| width - 2. * Layout::CONVERSATION_PADDING)
@@ -242,8 +249,8 @@ impl ConversationStream {
                     .unwrap_or_else(|| match entry {
                         StreamEntry::RunActivity { group } => self.estimated_run_height(group, cx),
                         StreamEntry::RunActivitySegment { group, segment } => group.read(cx).estimated_segment_height_with_top(*segment, notice_width, stage_top_insets.get(&index).copied().unwrap_or(Layout::CONVERSATION_STAGE_TOP), cx),
-                        StreamEntry::Tool { .. } | StreamEntry::ToolGroup { .. } | StreamEntry::ContextCompaction { .. } => estimate_stream_entry_height(entry, cx, self.workspace_width, identity.message_id.is_some()) + stage_top_insets.get(&index).copied().unwrap_or(0.),
-                        _ => estimate_stream_entry_height(entry, cx, self.workspace_width, identity.message_id.is_some()) + if self.final_copy_for_entry(index).is_some() { Layout::MESSAGE_COPY_FOOTER } else { 0. },
+                        StreamEntry::Tool { .. } | StreamEntry::ToolGroup { .. } | StreamEntry::ContextCompaction { .. } => self.estimated_entry_height(index, cx, identity.message_id.is_some()) + stage_top_insets.get(&index).copied().unwrap_or(0.),
+                        _ => self.estimated_entry_height(index, cx, identity.message_id.is_some()) + if self.copy_source_for_entry(index).is_some() { Layout::MESSAGE_COPY_FOOTER } else { 0. },
                     } + notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.))
             })
             .collect::<Vec<_>>();
@@ -303,6 +310,7 @@ impl ConversationStream {
 
     pub(crate) fn render_message_anchor_rail(
         &mut self,
+        stage_top_insets: &HashMap<usize, f32>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> (AnyElement, Option<AnyElement>, bool) {
@@ -326,7 +334,7 @@ impl ConversationStream {
         .absolute()
         .size(px(0.));
         self.capture_visible_entry_heights();
-        let geometry = self.message_anchor_geometry(cx);
+        let geometry = self.message_anchor_geometry(stage_top_insets, cx);
         let shown = geometry.should_show();
         self.message_anchor_rail_last_shown = shown;
         if !shown {
@@ -741,28 +749,7 @@ pub(super) fn estimate_entry_height(
         }
         StreamEntry::Tool { card } => card.read(cx).estimated_height(),
         StreamEntry::ToolGroup { group } => group.read(cx).estimated_height(cx),
-        StreamEntry::User { lines, .. } => {
-            let bubble_width = text_width * Layout::CONVERSATION_USER_RATIO
-                - 2. * Layout::CONVERSATION_USER_PADDING;
-            let user_chars_per_line =
-                (bubble_width / (Typography::CONVERSATION * 0.56)).max(12.0) as usize;
-            let rows = lines
-                .iter()
-                .filter(|line| matches!(line.kind, LineKind::UserLine { .. }))
-                .map(|line| {
-                    let chars = line
-                        .spans
-                        .iter()
-                        .map(|span| display_width(&span.text))
-                        .sum::<usize>();
-                    chars.div_ceil(user_chars_per_line).max(1)
-                })
-                .sum::<usize>();
-            rows.max(1) as f32 * line_height
-                + Layout::USER_MESSAGE_PADDING_TOP
-                + Layout::CONVERSATION_USER_BOTTOM
-                + 16.
-        }
+        StreamEntry::User { lines, .. } => estimate_user_height(lines, text_width),
         StreamEntry::Assistant { model, failure, .. } => {
             estimate_markdown_height(model, text_width)
                 + Layout::CONVERSATION_BODY_TOP
@@ -898,22 +885,39 @@ pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
     content_height + gaps + code_headers
 }
 
-pub(crate) fn estimate_stream_entry_height(
-    entry: &StreamEntry,
-    cx: &App,
-    width: Option<f32>,
-    owned: bool,
-) -> f32 {
-    if !owned {
-        return estimate_entry_height(entry, cx, width);
-    }
-    match entry {
-        StreamEntry::Summary { .. } => 0.,
-        StreamEntry::Assistant {
-            failure: Some(_), ..
-        } => (estimate_entry_height(entry, cx, width)
-            - Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT)
-            .max(0.),
-        _ => estimate_entry_height(entry, cx, width),
-    }
+pub(super) fn estimate_user_height(lines: &[StreamLine], text_width: f32) -> f32 {
+    let bubble_width =
+        text_width * Layout::CONVERSATION_USER_RATIO - 2. * Layout::CONVERSATION_USER_PADDING;
+    let user_chars_per_line = (bubble_width / (Typography::CONVERSATION * 0.56)).max(12.0) as usize;
+    let rows = lines
+        .iter()
+        .filter(|line| matches!(line.kind, LineKind::UserLine { .. }))
+        .map(|line| {
+            let chars = line
+                .spans
+                .iter()
+                .map(|span| display_width(&span.text))
+                .sum::<usize>();
+            chars.div_ceil(user_chars_per_line).max(1)
+        })
+        .sum::<usize>();
+    rows.max(1) as f32 * (Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT)
+        + Layout::USER_MESSAGE_PADDING_TOP
+        + Layout::CONVERSATION_USER_BOTTOM
+        + 16.
+}
+
+pub(super) fn text_preview(entry: &StreamEntry) -> Option<String> {
+    let preview = match entry {
+        StreamEntry::User { lines, .. } => preview_from_lines(
+            lines
+                .iter()
+                .filter(|line| matches!(line.kind, LineKind::UserLine { .. })),
+        ),
+        StreamEntry::Assistant { model, .. } => {
+            preview_from_lines(model.committed_lines.iter().chain(&model.pending_lines))
+        }
+        _ => return None,
+    };
+    Some(sanitize_anchor_preview(&preview))
 }

@@ -39,16 +39,19 @@ pub(crate) enum ArtifactTerminalWork {
     Capture {
         call_id: String,
         candidate: ArtifactCaptureCandidate,
+        owner: (String, u64),
     },
 }
 
 pub(crate) struct ArtifactProposal {
     pub(crate) generation: u64,
     pub(crate) call: Option<ToolCall>,
+    pub(crate) owner: Option<(String, u64)>,
 }
 
 pub(crate) struct ArtifactTerminalResult {
     pub(crate) captured: Option<(String, ArtifactProjection)>,
+    pub(crate) capture_error: Option<GitWorkspaceErrorCode>,
     pub(crate) cards: Vec<ArtifactProjection>,
 }
 
@@ -70,6 +73,11 @@ pub(crate) struct ArtifactOpenFence {
     pub(crate) lease: TrustedActionToken,
 }
 
+pub(crate) struct ArtifactTerminalOwner {
+    pub(crate) sequence: u64,
+    pub(crate) capture: Option<(String, (String, u64))>,
+}
+
 pub(crate) struct ActiveArtifactRoute {
     pub(crate) identity: ArtifactRouteIdentity,
     pub(crate) workspace: Arc<GitWorkspaceService>,
@@ -78,7 +86,7 @@ pub(crate) struct ActiveArtifactRoute {
     pub(crate) agent_generation: Option<u64>,
     pub(crate) proposals: HashMap<String, ArtifactProposal>,
     pub(crate) terminal_sequence: u64,
-    pub(crate) terminal_in_flight: Option<u64>,
+    pub(crate) terminal_in_flight: Option<ArtifactTerminalOwner>,
     pub(crate) terminal_queue: VecDeque<ArtifactTerminalJob>,
     pub(crate) cards: HashMap<ArtifactCardId, Entity<ArtifactCard>>,
     pub(crate) preview_sequence: u64,
@@ -240,12 +248,19 @@ pub(crate) fn run_artifact_terminal_worker(
                         job.sequence,
                         ArtifactTerminalResult {
                             captured: None,
+                            capture_error: matches!(
+                                &job.work,
+                                ArtifactTerminalWork::Capture { .. }
+                            )
+                            .then_some(failure.code()),
                             cards: service.cards(),
                         },
                     ));
                 }
                 let captured = match job.work {
-                    ArtifactTerminalWork::Capture { call_id, candidate } => service
+                    ArtifactTerminalWork::Capture {
+                        call_id, candidate, ..
+                    } => service
                         .capture_candidate(candidate, cancel.child_token())
                         .await
                         .map_err(|failure| failure.code())?
@@ -256,7 +271,14 @@ pub(crate) fn run_artifact_terminal_worker(
                     .reconcile(cancel)
                     .await
                     .map_err(|failure| failure.code())?;
-                Ok((job.sequence, ArtifactTerminalResult { captured, cards }))
+                Ok((
+                    job.sequence,
+                    ArtifactTerminalResult {
+                        captured,
+                        capture_error: None,
+                        cards,
+                    },
+                ))
             })
         });
     let _ = sender.send(result);

@@ -11,6 +11,7 @@ use gpui_kit::{
     transparent_black,
 };
 
+use super::code_drag::CodeDragSelection;
 use super::links::{LinkRange, fragment_link_ranges, register_link_interactions};
 use super::model::MessageCopy;
 
@@ -97,6 +98,25 @@ impl SelectionDocumentBuilder {
             paint_runs,
         }
         .into_any_element()
+    }
+
+    pub(super) fn code_drag_selection(&self, window: &Window, cx: &mut App) -> CodeDragSelection {
+        let runs = self.runs.clone();
+        CodeDragSelection::new(
+            self.copy.clone(),
+            self.focus.clone(),
+            self.copy.ensure_selection_handle(&self.focus, window, cx),
+            move |position| {
+                runs.borrow().iter().find_map(|run| {
+                    if !run.bounds.contains(&position) {
+                        return None;
+                    }
+                    let index = run.layout.index_for_position(position).ok()?;
+                    (index < run.content_range.len())
+                        .then_some((run.content_range.start + index) as u64)
+                })
+            },
+        )
     }
 
     pub(crate) fn append_literal(&mut self, text: &str) {
@@ -443,7 +463,7 @@ impl Element for SelectableMessage {
             })
             .collect::<Vec<_>>();
         let projection = self.handle.update_runs(&text_runs, cx);
-        if self.projected {
+        {
             let resolver_runs = self.runs.clone();
             self.handle.resolve_content_key_with(
                 move |point, _| {
@@ -488,29 +508,23 @@ impl Element for SelectableMessage {
                 cx,
             );
         }
-        let projected_range = self
-            .projected
-            .then(|| self.handle.snapshot(cx))
-            .flatten()
-            .and_then(|snapshot| {
-                let index = |endpoint: gpui_kit::base::TextSelectionEndpoint| {
-                    (endpoint.entity_id() == Some(self.handle.entity_id()))
-                        .then(|| endpoint.content_key().map(|key| key.value() as usize))
-                        .flatten()
-                };
-                let anchor = index(snapshot.anchor());
-                let cursor = index(snapshot.cursor());
-                match snapshot.coverage() {
-                    TextSelectionCoverage::Full => Some(0..self.content.len()),
-                    TextSelectionCoverage::FromStart => Some(0..anchor.or(cursor)?),
-                    TextSelectionCoverage::ToEnd => Some(anchor.or(cursor)?..self.content.len()),
-                    TextSelectionCoverage::Bounded => {
-                        Some(anchor?.min(cursor?)..anchor?.max(cursor?))
-                    }
-                }
-            });
+        let logical_range = self.handle.snapshot(cx).and_then(|snapshot| {
+            let index = |endpoint: gpui_kit::base::TextSelectionEndpoint| {
+                (endpoint.entity_id() == Some(self.handle.entity_id()))
+                    .then(|| endpoint.content_key().map(|key| key.value() as usize))
+                    .flatten()
+            };
+            let anchor = index(snapshot.anchor());
+            let cursor = index(snapshot.cursor());
+            match snapshot.coverage() {
+                TextSelectionCoverage::Full => Some(0..self.content.len()),
+                TextSelectionCoverage::FromStart => Some(0..anchor.or(cursor)?),
+                TextSelectionCoverage::ToEnd => Some(anchor.or(cursor)?..self.content.len()),
+                TextSelectionCoverage::Bounded => Some(anchor?.min(cursor?)..anchor?.max(cursor?)),
+            }
+        });
         let local = self.copy.local_selection_range();
-        let visible_selection = local.clone().or(projected_range);
+        let visible_selection = local.clone().or(logical_range);
         self.handle.set_local_selection(local.is_some(), cx);
         for (run, range) in runs.iter().zip(projection.ranges()) {
             *run.selected.borrow_mut() = if let Some(local) = &visible_selection {

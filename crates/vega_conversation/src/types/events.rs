@@ -395,6 +395,7 @@ pub enum ConversationEvent {
     RunStarted {
         message_id: MessageId,
         started_at: std::time::Instant,
+        work_clock: Option<super::WorkClock>,
     },
     RunContinued {
         previous_assistant_id: MessageId,

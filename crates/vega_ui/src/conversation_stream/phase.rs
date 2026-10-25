@@ -236,6 +236,38 @@ impl ConversationStream {
             .map(|(_, source)| source)
     }
 
+    pub(crate) fn copy_source_for_entry(&self, index: usize) -> Option<&MessageCopy> {
+        if let Some(source) = self.final_copy_for_entry(index) {
+            return Some(source);
+        }
+        if self.thread.backend != TaskBackend::Codex {
+            return None;
+        }
+        let StreamEntry::Assistant {
+            copy,
+            failure: None,
+            ..
+        } = self.entries.get(index)?
+        else {
+            return None;
+        };
+        let message_id = self
+            .entry_identities
+            .get(index)
+            .and_then(|identity| identity.message_id.as_deref());
+        if message_id.is_some_and(|id| self.run_failures.contains_key(id))
+            || self
+                .active_agent_message
+                .as_ref()
+                .is_some_and(|(active_id, active_index)| {
+                    *active_index == index || message_id == Some(active_id.as_str())
+                })
+        {
+            return None;
+        }
+        copy.has_text().then_some(copy)
+    }
+
     fn invalidate_copy_owner(&mut self, owner: Option<u64>) {
         if let Some(owner) = owner {
             let index = self.entries.iter().position(
@@ -325,9 +357,7 @@ impl ConversationStream {
                         group.read(cx).segment_children(*segment),
                         cx,
                     ) {
-                        if !matches!(child, RunActivityChild::Artifact(_)) {
-                            details.push((index, RunDetail::Operation(child)));
-                        }
+                        details.push((index, RunDetail::Operation(child)));
                     }
                 }
                 StreamEntry::Assistant { copy, .. } if group.read(cx).hides_copy(copy.id) => {
@@ -426,11 +456,7 @@ impl ConversationStream {
                     previous_assistant = false;
                 }
                 RunDetail::Assistant(entry_index) => {
-                    height += message_anchors::estimate_entry_height(
-                        &self.entries[*entry_index],
-                        cx,
-                        self.workspace_width,
-                    );
+                    height += self.estimated_entry_height(*entry_index, cx, false);
                     previous_assistant = true;
                 }
             }
@@ -508,15 +534,6 @@ impl ConversationStream {
                 offset_in_item: px(anchor.offset_in_item_px),
             });
             return true;
-        }
-        if let StreamEntry::RunActivitySegment { group, segment } = &self.entries[index]
-            && group
-                .read(cx)
-                .segment_children(*segment)
-                .iter()
-                .any(|child| matches!(child, RunActivityChild::Artifact(_)))
-        {
-            return false;
         }
         let Some(group) = self.entry_identities[index]
             .message_id

@@ -391,10 +391,12 @@ impl AgentRecord {
         let mut snapshot = self.snapshot.clone();
         if self.occupied {
             snapshot.ready_for_review = false;
-            if self.cancel.is_cancelled() {
-                snapshot.state = SubagentState::Cancelling;
-            } else if snapshot.state.is_terminal() {
-                snapshot.state = SubagentState::Running;
+            if !(snapshot.state.is_terminal() && snapshot.release_state == "unknown") {
+                if self.cancel.is_cancelled() {
+                    snapshot.state = SubagentState::Cancelling;
+                } else if snapshot.state.is_terminal() {
+                    snapshot.state = SubagentState::Running;
+                }
             }
         }
         snapshot

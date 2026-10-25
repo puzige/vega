@@ -688,6 +688,7 @@ impl ConversationStream {
         self.controller_runtime_error = None;
         self.entry_identities.clear();
         self.measured_entry_heights.clear();
+        self.text_cache.get_mut().clear();
         self.message_anchor_hovered = None;
         self.message_anchor_preview_hovered = None;
         self.message_anchor_keyboard_id = None;
@@ -699,6 +700,10 @@ impl ConversationStream {
         self.run_continuations.clear();
         self.run_responses.clear();
         self.artifact_cards.clear();
+        self.artifact_call_owners.clear();
+        self.artifact_history_generation = self.artifact_history_generation.wrapping_add(1);
+        self.artifact_groups.clear();
+        self.finished_artifact_turns.clear();
         self.plan_cards.clear();
         self.summary_cards.clear();
         self.active_agent_message = None;
@@ -1128,6 +1133,26 @@ impl ConversationStream {
         true
     }
 
+    fn invalidate_codex_copy_entries(&mut self, message_id: &str) {
+        if self.thread.backend != TaskBackend::Codex {
+            return;
+        }
+        let indexes = self
+            .entries
+            .iter()
+            .zip(&self.entry_identities)
+            .enumerate()
+            .filter_map(|(index, (entry, identity))| {
+                (matches!(entry, StreamEntry::Assistant { .. })
+                    && identity.message_id.as_deref() == Some(message_id))
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        for index in indexes {
+            self.invalidate_item(Some(index));
+        }
+    }
+
     fn finish_run_activity(
         &mut self,
         message_id: &str,
@@ -1155,6 +1180,7 @@ impl ConversationStream {
                 group.complete(status, execution_duration_ms, cx)
             });
         }
+        self.invalidate_codex_copy_entries(message_id);
     }
 
     /// Applies an already-durable shared lifecycle event. The UI never reads
@@ -1232,6 +1258,9 @@ impl ConversationStream {
                 self.append_pending_user(&pending_id, &message_id, seq, &content, images, cx);
             }
             ConversationEvent::MessageStarted { message_id, seq } => {
+                if self.finished_artifact_turns.contains(&message_id) {
+                    return;
+                }
                 if self.active_agent_message.is_some() {
                     self.apply_controller_error(cx);
                     return;
@@ -1274,11 +1303,14 @@ impl ConversationStream {
             ConversationEvent::RunStarted {
                 message_id,
                 started_at,
+                work_clock,
             } => {
                 if let Some((active_id, group)) = &self.active_run_activity
                     && active_id == &message_id
                 {
-                    group.update(cx, |group, cx| group.start_clock(started_at, cx));
+                    group.update(cx, |group, cx| {
+                        group.start_clock(started_at, work_clock, cx)
+                    });
                 }
             }
             ConversationEvent::AssistantResponseCompleted {
@@ -1439,6 +1471,7 @@ impl ConversationStream {
             | ConversationEvent::ContextCompactionStatus { .. }
             | ConversationEvent::ContextAccounting { .. } => {}
             ConversationEvent::ToolCallProposed { call } => {
+                self.register_artifact_call(&call.id);
                 if let Some(existing) = self.tool_cards.get(&call.id) {
                     existing.update(cx, |card, cx| {
                         if !card.matches_call(&call) {
@@ -1672,6 +1705,7 @@ impl ConversationStream {
             .active_agent_message
             .take()
             .filter(|(_, index)| *index != usize::MAX);
+        self.invalidate_codex_copy_entries(message_id);
         self.active_segment_has_text = false;
         self.active_segment_has_visible_text = false;
         self.active_segment_ordinal = 0;
@@ -1687,6 +1721,7 @@ impl ConversationStream {
         {
             self.active_run_activity = None;
         }
+        self.finish_artifact_turn(message_id, cx);
         self.timeout_permission(cx);
         self.cancel_user_questions(cx);
         cx.notify();

@@ -87,6 +87,7 @@ impl VegaWindow {
                     active.delegated_parent_thread = Some(parent_id.into());
                     active.queue_generation = queue_generation;
                 }
+                self.bind_question_attention(&view, cx);
                 self.agent_controller
                     .delegated_latest
                     .insert(thread_id.clone(), snapshot.message_id.clone());
@@ -370,6 +371,7 @@ impl VegaWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.bind_question_attention(view, cx);
         let view = view.clone();
         cx.subscribe(
             &view,

@@ -4,6 +4,28 @@ pub use vega_runtime::{
     UserQuestionAnswers, UserQuestionInput, UserQuestionOption,
 };
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct UserQuestionId(pub(crate) String);
+
+impl std::fmt::Display for UserQuestionId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UserQuestionResolution {
+    Pending,
+    Answered,
+    Cancelled,
+}
+
+#[derive(Clone, Debug)]
+pub enum UserQuestionAttention {
+    Pending { request_id: UserQuestionId },
+    Resolved { request_id: UserQuestionId },
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct UserQuestionHistoryText(pub(crate) String);
 

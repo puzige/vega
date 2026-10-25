@@ -195,6 +195,7 @@ impl QuoteOwner {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StreamCodeBlock {
+    pub(crate) identity: (u64, usize),
     pub(crate) language: Option<String>,
     pub(crate) code: Arc<str>,
 }
@@ -440,6 +441,7 @@ pub(crate) fn flatten_node(
         }
         RenderNode::CodeBlock { language, code } => {
             let code_block = Arc::new(StreamCodeBlock {
+                identity: (block_id, node_identity),
                 language: language.clone(),
                 code: code.as_str().into(),
             });
@@ -684,6 +686,7 @@ impl StreamCounters {
 /// while materializing each committed block exactly once per version.
 #[derive(Default)]
 pub(crate) struct StreamModel {
+    content_revision: u64,
     pub(crate) committed_ids: Vec<u64>,
     /// Parallel to `committed_ids`: the materialized version of each block
     /// (invalidation detection without per-frame HashMap lookups).
@@ -696,6 +699,10 @@ pub(crate) struct StreamModel {
 }
 
 impl StreamModel {
+    pub(crate) fn content_revision(&self) -> u64 {
+        self.content_revision
+    }
+
     /// Total row count (committed + pending).
     pub(crate) fn row_count(&self) -> usize {
         self.committed_lines.len() + self.pending_lines.len()
@@ -782,6 +789,9 @@ impl StreamModel {
             }
             self.pending_key = pending_key;
             changed = true;
+        }
+        if changed {
+            self.content_revision = self.content_revision.wrapping_add(1);
         }
         changed
     }
@@ -1129,9 +1139,8 @@ pub(crate) enum StreamEntry {
     ToolGroup {
         group: Entity<ToolActivityGroup>,
     },
-    /// One route-owned artifact, placed immediately after its exact tool.
-    Artifact {
-        card: Entity<ArtifactCard>,
+    ArtifactGroup {
+        group: Entity<ArtifactGroup>,
     },
     /// Sole active permission request/response handoff card.
     Permission {
@@ -1165,7 +1174,7 @@ impl StreamEntry {
             }
             StreamEntry::Tool { card } => card.read(cx).row_count(),
             StreamEntry::ToolGroup { group } => group.read(cx).row_count(cx),
-            StreamEntry::Artifact { card } => card.read(cx).row_count(),
+            StreamEntry::ArtifactGroup { group } => group.read(cx).row_count(),
             StreamEntry::Permission { card } => card.read(cx).row_count(),
             StreamEntry::Plan { card } => card.read(cx).row_count(),
             StreamEntry::Summary { card } => usize::from(
