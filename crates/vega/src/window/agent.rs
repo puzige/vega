@@ -1419,6 +1419,9 @@ impl VegaWindow {
             );
         });
         self.draft = Some(draft.clone());
+        if let Some((_, previous)) = &self.stream_view {
+            previous.update(cx, ConversationStream::suspend_decorative_overlays);
+        }
         self.stream_view = Some((draft.id.clone(), stream));
         cx.set_global(SelectedProject(Some(project_id)));
         cx.set_global(OpenedThread(Some(draft)));

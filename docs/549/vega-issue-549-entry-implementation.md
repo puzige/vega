@@ -1,0 +1,202 @@
+# #549 first verification slice — implementation handoff
+
+The initial handoff below is retained as historical evidence, including its original hashes and unexecuted-test status. Its present-tense version/PR statements describe that first freeze only. The [repair followup](#repair-followup--current-freeze) records the subsequent immutable source, actual cloud failure, review findings, updated baseline and current uncommitted delta; it does not retroactively validate the initial source.
+
+## Version and authority
+
+- Stage: shared overlay helper + E01 file menu + E11 command card only. This is not whole-card completion; E02–E10/E12–E13 and O01–O11 remain in the parent contract.
+- Contract: [overlay-entry spec](vega-issue-549-overlay-entry.md), already present at HEAD `2abbc608a9b7f8bd53e776936fd5416fd5f5de1a`; production base `572a3c6f1b50ea34c2214245dcd18ee3a70bb737`.
+- Branch: `feat/549-overlay-entry`. HEAD remains unchanged. All implementation files are uncommitted/unstaged; there is no implementation commit, PR, run, or merge to cite.
+- Single implementation writer; no delegation. Parent supplied completed fetch/update and takeover authorization. No fetch/rebase/index write/commit/push/Issue/PR/CI action was performed by this writer.
+- Source freeze verified at `2026-10-25T03:48:09Z`. No spec changes or product-acceptance deviations.
+
+## Implementation
+
+- `Motion::OVERLAY_ENTER_MS = 120`, Kit default easing and no delay.
+- `OverlayEntry` is clonable owner-held metadata: explicit open/close edges, revision, last actual surface-paint alpha, executor-clock close time, pending seed, settlement and an owner-lifetime activation observer. No registry, Presence, child/focus ownership, exit animation, close timer, or replacement engine.
+- Same-owner reopen at elapsed <=120ms reuses last paint; expired/unpainted/invalidated/new owners start at zero. Same-frame close/open is recorded independently of render's final boolean. Ordinary refreshes do not seed again. Mount-local Kit state can be reconstructed from retained owner paint.
+- The generic surface delegates identity, layout, prepaint, paint and accessibility to the original interactive element. It applies opacity immediately before delegating real paint and records alpha only afterward. Gating/bypass precedes seed; interruptions discard stale origins and surviving open surfaces settle at one.
+- The existing `decorative_value` interface remains intact. Its narrow internal seeded operation consumes the activation interruption once for seed+retarget; the seed cannot swallow the interruption.
+- E01 uses the original menu inside priority-2 deferred drawing, with unchanged positioning/content/input routes. File-query, close, accept, retry and invalidation edges update metadata; loading/results share one opening. Index failure snaps the whole surface. Reading-preview suspension is recorded at its accepted owner edge.
+- E11 stores metadata in persistent `AppPalette`, passing a handle to each new `CommandPalette`. Only the original inner card fades; backdrop remains immediate at its existing opacity. `PaletteClosed` records intent before render removes the view. The existing cancel/fence/focus cleanup body is shared by the production close method. Route mismatch invalidates continuity; search generation is not animation identity. Already-open refocus remains unchanged.
+- No changes to anchors, render_rows, rename, dependencies' versions, lockfile, registry/vendor, workflows, other entries or other worktrees.
+
+## Development-only verification definitions — NOT executed
+
+Nine new GPUI tests are defined, not compiled, discovered or executed:
+
+| Boundary | Defined checks |
+|---|---|
+| Shared helper (5 tests) | Full frame draw/clear; seed zero/intermediate/one; actual inherited child quad alpha; deferred geometry; closed/finished callback drain; reopen with/without closed draw at 0/120/121ms; elapsed-but-unpainted origin; owner replacement/invalidation; failure/hidden/Reduce Motion snap and no replay; activation round trip with an independent root-paint counter asserting no inactive frame |
+| Real E01 host (2 tests) | Real ConversationStream and file menu quads; loading-to-results continuity; acceptance at zero alpha and immediate removal/focus; accepted cancel and emitted cancellation; stale generation rejection; same-frame close/open; failure snap; invalidation reset |
+| Real E11 card + AppPalette (2 tests) | Real CommandPalette, persistent AppPalette metadata and production close/intent/route helpers in an IO-free host; view recreation with/without closed draw; unchanged backdrop alpha; already-open entity/refocus; cancellation and prior-focus restoration; failure snap and route continuity invalidation |
+
+Temporary support consists only of the three new test modules, their `#[cfg(test)] mod tests` declarations, one `#[cfg(test)]` debug-selector block in overlay prepaint, and dev-only `gpui_kit` test-support feature entries in the two crate manifests. The debug bounds observe real layout, not invented alpha. The child probe delegates production paint; quads do not prove glyph/SVG raster pixels.
+
+Cloud prerequisites and residuals:
+
+1. Parent must fix an accessible source commit/patch, open the draft PR and obtain Actions compilation/discovery/execution and independent review of that exact content. The existing no-feature-argument PR workflow is unchanged; dev dependency features supply test-support. Counts of discovered/executed/passed tests are **not obtained**.
+2. Sequential same-key seed/retarget, full host setup, paint observations and strict no-inactive-frame recovery still require first cloud execution. The activation test asserts the root paint count before/after the round trip; if the harness draws, diagnose the observation/activation route rather than relaxing that assertion. No #550 gap is accepted here.
+3. Tests deliberately do not instantiate full VegaWindow with updater/storage/background workers. E11 uses the real card/AppPalette and extracted production cleanup/route helpers, not a full app search/navigation integration test. Original full-app generation/search routing needs independent static review and later integration/manual verification.
+4. Elapsed time without paint is covered; a separate forced sampled-but-skipped-child-paint experiment is not defined. No result claims that experiment passed. Complete native trigger down/up, backdrop/input dispatch, AX/VoiceOver, OS Reduce Motion, glyph/SVG raster and long-stream behavior remain unverified/manual; no performance claim.
+5. Before master: preserve accessible development sources/results, remove all Rust tests and exclusive support above, independently inspect the final test-free head and obtain complete required CI with Rust 0 discovered/0 executed (`no Rust tests`, not behavioral PASS). Parent continues remaining entries separately.
+
+## Local static evidence
+
+Only low-CPU formatting/diff/source/manifest checks were executed. No Vega execution, compilation/check/Clippy/build/test/package/profile/CUA/install/restart occurred.
+
+- `rustfmt --edition 2024 --config skip_children=true <12 changed Rust paths>`: exit 0; direct formatter only, no Cargo invocation. Local formatter reports `rustfmt 1.9.0`.
+- `rustfmt --check --edition 2024 --config skip_children=true <same 12 paths>`: final exit 0. An earlier check found only two unformatted final test edits; formatting was applied and the final check passed.
+- `git diff --check`: final exit 0.
+- Inline Python static check using `tomllib`, source diff and explicit scope allowlist: exit 0; exactly 14 authorized source/manifest paths, two dev-only test-support entries, nine defined/non-ignored tests, no added code comments or production unwrap/expect.
+- `git diff --cached --exit-code`: exit 0; index unchanged. HEAD and branch were read back as above.
+- SHA-256 of `git diff --binary --no-ext-diff` (tracked changes only): `69cd20ed50c0dac819d67eb3ad430059b04f903a72b3ccb75ade6114604a57f5`.
+- SHA-256 of sorted `shasum -a 256` lines for the following 14 source/manifest paths (including new untracked sources, excluding this report): `ff65d917851835f58c36b9e5c1286727ffeceb206228e92f63e8384c58d6a333`.
+
+## Frozen file identities (SHA-256)
+
+```text
+38217def8e01b51a8c48a081ca492e5221723ad278c5a7f8d918ba12a4ef56cb  crates/vega/Cargo.toml
+dfca6b22f3c3acbb1c8792e126519c42beb2dc0be9f02077506f3e04f18b4b0b  crates/vega/src/app_palette.rs
+bffc75ebd28d7e145ea64d8f32ce11801effdeb7dd50357aa56b8065c7fe42e2  crates/vega/src/app_palette/tests.rs
+a3a864b6c9501cdc98666b3408d5db476ed7a394a2f570df0b74b2f8fc20b730  crates/vega_theme/src/lib.rs
+3f27cebbfc927e48576b21a78e2684c05ff4da14c2a70cb56e7851cd175edde5  crates/vega_ui/Cargo.toml
+3caa908067a7bf1b04565b44936267692b5a1021b4f4f5fd0c921a7abc0ac726  crates/vega_ui/src/command_palette.rs
+4861c2907c6d40844b094b76fe1fa6ce440fadde3879d8723d8128b441077c41  crates/vega_ui/src/conversation_stream/core.rs
+d5b21b3afcfcd86f90dfdb21781879af6a6e6b12fb053a857cb3631f5a3422ee  crates/vega_ui/src/conversation_stream/file_reference.rs
+fa8896cad66d9e1298f27b2dc9f4b25863ca16c40acb792b9dce4cd90d97c662  crates/vega_ui/src/conversation_stream/file_reference/tests.rs
+d5547496491d31ca4c14cb99218e8b68366d0cd7dd5f1a0627d97861123c4bf7  crates/vega_ui/src/conversation_stream/render.rs
+bdb9335e005bce8cea2acf2e1f72d34f5b8cf580effef740cb10c98a604e5a5b  crates/vega_ui/src/interaction.rs
+491b315a5700e3044f41bb352f3e2dbba7b44f73ece18fee6593246143d7f109  crates/vega_ui/src/interaction/decorative.rs
+9029828ecb7b8fa4d2515067c4314388611f2afe5ded931910a5b35b4ba67510  crates/vega_ui/src/interaction/overlay.rs
+e23e50814a10a77e5457eeefc5a19b506a95d5e173726e7e6c265a526bd06f69  crates/vega_ui/src/interaction/overlay/tests.rs
+```
+
+READY means this first-stage implementation is ready for parent inspection, not reviewed, cloud-green, merged or user-accepted. Writer stops all scope writes at handoff. Next: parent fixes this content, obtains independent review and Actions, addresses evidence-based failures, then coordinates the remaining entries.
+
+## Repair followup — current freeze
+
+### Immutable baseline and failure evidence
+
+- Previous frozen implementation: `9115ff4c034aee99e08fbc903c8b9d709b71f2ba`, Draft [PR #612](https://github.com/puzige/vega/pull/612). This is the source of the failed cloud attempt, not a successful behavior run.
+- Parent-inspected original [Actions run 40160001377](https://github.com/puzige/vega/actions/runs/40160001377): failure. Clippy job `121069369407` and Nextest job `121069369177` both failed at test compilation with `recursion limit reached while expanding #[test]`, `interaction/overlay/tests.rs:120`. Parent-supplied raw log SHA-256 identities are respectively `cb200a56aadeea0d83e8df8148cf2666ceb0ef7348b8ec36733934671a4b7b8d` and `4d708332184b0f53085e6a72f30a4d5e8f3e08db1be9d2c31dabb7adda95a287`. This writer did not query Actions or rerun either job. Discovery/execution counts were not obtained; nine definitions are not nine executed tests.
+- Independent review of that exact source was NOT READY with two P2 findings: retained loaded E01 menus lacked application visibility suspension; E11 task/preview success did not record accepted close time. These are product wiring omissions; the macro failure is a separate test-harness import fault. No acceptance was reduced.
+- Parent fetched/updated and normal-merged master `429c6a819fc5a30f8280afd2f6ed015d4682bf41` at `a8e1ef3c7e17027bbfc64ffe8a4d072e3effd1ea`, then recorded repair authorization/evidence in spec commit `265036a90d4f127d921975ea56e76201efd63a41`. Current branch remains `feat/549-overlay-entry`; clean starting HEAD and unchanged current HEAD are that full `265036a9` SHA.
+- Current authority is the parent-owned overlay-entry spec §5 at this HEAD, read before edits. Only E01/E11 and their shared first-stage support are repaired; no remaining entry is implemented. The #601 artifact groups and #518 Native fork production code are retained. The fixture supplies `None` for both new Thread provenance fields without altering upstream Thread production behavior.
+- One writer, no delegation. No fetch/merge/rebase/index mutation/commit/push/remote writes/Issue/PR/CI action by this writer. No new comments, dependencies, manifest features, versions, lockfile, registry/vendor, workflows or recursion-limit changes. Current changes are unstaged and uncommitted, not a new commit.
+
+### Repair delta
+
+1. Test import responsibility: all three affected development modules now explicitly import Kit types and their own parent symbols, with no facade, prelude or parent wildcard. Pinned Kit `lib.rs:84–93` warns about importing the test macro; pinned `gpui-pre-macros-0.3.4/src/test.rs:186/279` generates a bare `#[test]`. Those source facts were read locally; the repair leaves every existing `#[gpui_kit::test]` attribute and test body intact. There is no recursion_limit or attribute-semantics workaround.
+2. E01 visibility responsibility: `ConversationStream::suspend_decorative_overlays` only suspends its existing file-entry metadata. It does not close the business menu, invalidate its index, cancel workers, move focus, notify or modify artifact/permission behavior. Existing window observers call a narrow route-hidden helper on Settings/thread changes regardless of whether a file-index worker exists. Settings rendering also suspends the retained stream independently of whether `settings_view` was already cached. Both cached/new stream replacement paths suspend the departing entity, including same-thread/different-entity replacement. The existing Codex preflight replacement is the only additional direct `stream_view` assignment outside render; it also suspends the previous entity before replacement. Existing cancellation, capacity guards, hydration, artifact and permission code remain unchanged.
+3. E11 close-intent responsibility: task acceptance success and file-preview success now call the existing `request_close(cx)` at their original success branches. Preview payload assignment, route/generation fences, activation handling and notify/refresh ordering are otherwise unchanged. The only remaining `close_requested = true` assignment is in `request_close`; the false cleanup reset remains. The close timestamp is therefore captured at accepted intent, before a deferred render or reopen can rebase it.
+
+### Development regressions — definitions only
+
+Static comparison against current baseline HEAD found all **nine original test bodies and their attributes unchanged** after whitespace normalization. Two targeted definitions bring the source total to **11** (5 helper, 3 E01, 3 E11), with no dropped, ignored, weakened or renamed original assertions:
+
+- `loaded_file_menu_retained_across_page_and_thread_unmount_resumes_opaque`: a retained-host window owns two real ConversationStream entities and conditionally removes the original entity from the element tree. It loads a real file-menu result, paints zero then intermediate alpha, uses the public production suspension method at the host hide edge, completes two hidden frames (no surface debug bounds), waits 200ms, and restores the same loaded entity. Both Settings-like no-child and other-thread-child cases assert opaque restore, unchanged menu/snapshot/index generation/focus, and callback drain. This is an actual child unmount/restore, not a helper `visible=false` draw.
+- `accepted_async_close_expires_before_reopen_without_an_intervening_paint`: the existing real CommandPalette/AppPalette host paints zero then intermediate alpha. An asynchronous entity callback invokes the same production `request_close` helper now used by both accepted success branches. A one-pixel absolute paint counter asserts no intervening root paint through callback delivery and 121ms elapsed time. The open_palette-like reopen then recreates the view, cancels the old token, preserves focus behavior and must paint zero before reaching one after 120ms. It observes the accepted helper, not merely the final boolean, and does not use a forced closed draw.
+
+The E01 fixture is shared by the original and added cases and supplies the two upstream provenance `None` values. Existing temporary manifest test-support wiring, original strict no-inactive-paint assertions, production layout/deferred adapter and all helper implementation are unchanged. The E11 observation counter has an absolute one-pixel surface and does not change card geometry.
+
+### Current static evidence and limitations
+
+Only low-CPU source/diff/hash inspection and direct rustfmt ran. No Vega code execution, compilation, cargo check, Clippy, build, test, CUA, package, profile, install or restart occurred.
+
+- `rustfmt --edition 2024 --config skip_children=true` on the nine changed Rust files, then `rustfmt --check --edition 2024 --config skip_children=true` on those exact paths: exit **0** each; formatter `rustfmt 1.9.0`. The latest source formatting/check completed at `2026-10-25T04:35:00Z`.
+- `git diff --check`: exit **0**.
+- Inline Python static comparison/scope checks: exit **0**. It compares nine original test attributes/bodies after whitespace normalization, counts 11 definitions, rejects wildcard test imports/ignore/recursion_limit/added comments/production unwrap or expect, checks authorized changed paths, unchanged HEAD/branch and no untracked files, and verifies that all three accepted palette close producers use `request_close` with only one direct true assignment left.
+- `git diff --cached --exit-code`: exit **0**, unchanged index. Read-only HEAD/branch/status read-back confirms the above baseline and unstaged changes.
+- The exact source-only binary diff relative to this HEAD (`git diff --binary --no-ext-diff -- crates`) SHA-256 is `0f70fd6764fa60b0c586372b7ec992b0df4d3bd0e99be7d5672195446f64b5f0`. The sorted source-file SHA-256 manifest below, including its newline-terminated lines, hashes to `bd95357e9710e9e4d37db12e04b510b36f89bdb366b1c6ee07b2294624f9b652`. Full diff/report hashes are delivered separately to avoid a self-referential report hash.
+
+```text
+adba603d070d1d77c91d20062385b8849365ea996084af3273aa63999843a025  crates/vega/src/app_palette.rs
+ceba3abc8c2d57e2c1e4a21f6a21137779f99963a4ad0b90c461e4aa94b2d252  crates/vega/src/app_palette/tests.rs
+68b73c46f38e81d9adff5468b90db62c2c80e37051d6b8c4f6d67eb70e157a25  crates/vega/src/window/agent.rs
+519c69cb5ded5753901232b825e1f206245c26f10b0941813bb0122737c64695  crates/vega/src/window/mod.rs
+d327643bf735faeeea0cc8d57a33dc809c623c88e24b93231635d3ce5d18c5f9  crates/vega/src/window/navigation.rs
+45da7cd716d79684e902f7ba0a2bbab20d096ec352d554c72645a2b2c71acba4  crates/vega/src/window/render.rs
+b90b2b8289bfc338c78c7acbaba1a31a0566d24b2e6dd7aa33f8a4e5adbe6cdf  crates/vega_ui/src/conversation_stream/core.rs
+de4a55a8040a6f6c3d5be3de6faad2ac8010e408e1a838b3d9f8e6d09d7ec6ee  crates/vega_ui/src/conversation_stream/file_reference/tests.rs
+e43fd8a765792dff50078fa4c907ff3967185701d0e80acec9fb324dcebbd61e  crates/vega_ui/src/interaction/overlay/tests.rs
+```
+
+Cloud compilation/discovery/execution of this repair is **pending**, not passed; counts and new run/job identities are **not obtained**. Parent must commit this exact delta, obtain independent delta review and Actions on PR #612, and diagnose any remaining harness or product failure without weakening the preserved assertions. The E01 regression uses the real retained menu and production lifecycle seam, not a full VegaWindow/storage/worker instance; root Settings/thread observer and cached replacement integration still need independent inspection and later full-app/manual coverage. The E11 regression exercises the shared accepted helper asynchronously, not IO task/preview workers. Existing no-inactive-frame recovery, sequential keyed seeding and paint observations remain cloud prerequisites; no gap is inherited from #550. Separate sampled-but-unpainted-child instrumentation, full native input/AX/OS/glyph/SVG/long-stream acceptance remain unverified as recorded above.
+
+READY is limited to this repair delta being available for parent inspection. No spec edits or acceptance deviations. All scope writes stop after final static/read-back identity verification; parent owns commit/review/Actions and subsequent entries. Development Rust tests and their exclusive support still must be preserved as accessible source/results and removed before final master delivery with the required final-head empty-test CI gate.
+
+## Second harness repair — current freeze
+
+The initial and first-repair sections above are historical freezes. This section appends the next failure and its narrow test-layer repair; it does not rewrite the first source, failure, hashes or verification status.
+
+### Immutable baseline and supplied evidence
+
+- Clean starting and unchanged current HEAD: `48ba847b61081418ba61f2f790775b8ca470c3f1`, branch `feat/549-overlay-entry`. Parent completed fetch and verified that master `429c6a819fc5a30f8280afd2f6ed015d4682bf41` was already integrated. This writer did not fetch, merge, rebase, index, commit, push, query or mutate any remote, invoke CI, or delegate. The four Rust files below and this appended report are unstaged/uncommitted, not a new source commit.
+- Parent inspected original [Actions 40162645948](https://github.com/puzige/vega/actions/runs/40162645948), jobs `121077236110` and `121077236207`: test-macro recursion was fixed, but test compilation next failed with E0616, private `Interactivity.debug_selector` access at `interaction/overlay.rs:193`. Clippy additionally reported unused `gpui` imports in helper/E01 test modules. Parent-supplied raw log SHA-256 identities: `ef8add73c50448ab70fcf00026ef95bf3060503d70268dd1c8b6cf85292df6a8` and `56f852984be967a26040dde0085fb83df89210d13826afdd1676ca5c2144babe`. This writer did not independently download those logs. No behavior was discovered/executed by that failed attempt; counts were not obtained.
+- Parent reports independent delta review resolved both prior E01/E11 P2 production findings with no new production findings. Its new P2 is test delivery: the async fixture notified its displayed Host after accepted close, so test-support flush rendered cleanup before the no-paint assertions. These are harness/API faults, not grounds to alter acceptance or production notifications.
+- Scope is only the test-selector move in `overlay.rs`, imports in the three development test modules, asynchronous delivery phase setup in the E11 test, and this report. Parent spec, production consumers/cleanup/notifications, geometry, dependencies, versions, manifests, registry/vendor, CI and other entries are unchanged. No new comments, production unwrap/expect, allow/ignore, recursion-limit changes or assertions were introduced.
+
+### Responsible-layer repair and fixture boundary
+
+1. `OverlayEntry::surface` applies `inner.debug_selector(|| "overlay-entry-surface".into())` through the pinned public consuming `InteractiveElement` builder under `#[cfg(test)]`. The method now states the `InteractiveElement` bound already required to render an `OverlaySurface`. It shadows and retains the original surface, without a new box/event owner. Private prepaint field mutation is removed; layout/prepaint/paint/a11y delegation and the actual-paint alpha observer are otherwise identical. Existing debug-bounds and geometry assertions remain.
+2. Removed the unused explicit `gpui` import from all three modules, retaining explicit Kit type imports and every `#[gpui_kit::test]` attribute. Pinned `gpui-pre-macros` public `test` entry (`gpui_macros.rs:251–252`) calls the facade rewriter, whose `gpui_pre_facade_paths.rs:11–17,20–39,50–59` rewrites generated `gpui::` paths to the `gpui-kit` dependency. The app crate also has parent facade imports; this repair does not rely on those to introduce a test macro or keep an unused alias. Static source inspection is not a compiler/lint result.
+3. The delayed-paint case still asynchronously updates the real Host-owned AppPalette via `cx.spawn` and the production `request_close(cx)` helper. Only that fixture callback's `cx.notify()` is removed. Production `request_close` itself does not notify; both actual async success producers retain their original notify/refresh and payload/fence/cleanup behavior, reviewed statically rather than executed here. This test deliberately exercises acceptance/timestamp at the host boundary, not IO-worker delivery or a full `VegaWindow` render cycle.
+4. The fixture explicitly runs queued tasks before capturing the measured paint count, after delivering accepted intent, and after advancing 121ms. It does not call `simulate_next_frame`, refresh, draw, focus, emit a close event or notify during that measured gap. Both root-paint equality assertions, old-view identity, expired seed zero, canceled old token, replacement view, focus and final alpha-one assertions are unchanged. `advance_clock` runs scheduler tasks (`gpui-pre-scheduler::test_scheduler.rs:450–479`); it is not used as a no-task or no-paint bypass. Pending animation callbacks are intentionally not delivered until outside the measured interval: pinned `Window::request_animation_frame` queues an `on_next_frame` callback (`window.rs:2505–2541`), while TestWindow `frame_waker` only counts wakes and `schedule_frame` only marks demand (`platform/test/window.rs:362–380`). The real text input defines no timer/spawn in this path; its row-layout change can request a frame (`text_input/element.rs:528–546`), which is not explicitly delivered inside the gap. The original paint counter remains the cloud check against unintended draws; no runtime result is claimed.
+
+### Preserved verification and strict blocker
+
+- All **11** names/signatures/attributes remain: 5 helper, 3 E01, 3 E11. Static comparison against `48ba847b` found all **84 assertion macros** unchanged (18 helper, 37 E01, 29 E11), including no-paint/debug-bounds checks. The helper/E01 modules differ only in imports. AppPalette test bodies/helpers differ only in the authorized async callback and two task-flush boundaries; the strict activation test body is byte-identical. No allow, ignore, dropped case, rewritten expectation, relaxed threshold or limit workaround.
+- **BLOCKED — strict activation without an inactive paint, public harness route:** independent readonly diagnosis supplied by parent and confirmed in pinned source: test-support App update flush draws every dirty window synchronously (`app.rs:1712–1723`); activation callback refreshes the window (`window.rs:1862–1882`); TestPlatform queues activation notifications as foreground work (`platform/test/platform.rs:284–303`). Existing public activation delivery cannot batch those callbacks without triggering that flush. Advancing the clock also runs work and cannot bypass the barrier. The existing strict assertions are entirely unchanged, no #550 exception is transferred, no private framework state/fake callback is used, and this repair does not attempt an out-of-scope harness/framework change. Next Actions on the parent-committed source must first establish actual compilation/discovery/behavior; if it exposes this barrier, parent must report the exact public-harness prerequisite before expanding remaining entries. READY below does not mean this blocker is resolved or CI is green.
+- No Vega code execution/compilation/check/Clippy/build/test/package/profile/CUA/install/restart occurred locally. Current compilation/discovery/execution and pass/fail counts remain **pending/not obtained**. Existing manual/native/full-app/AX/OS/glyph/SVG/long-stream limitations above remain. Development Rust tests/exclusive wiring must still be preserved as accessible evidence then removed before final master delivery.
+
+### Current static checks and content identity
+
+- `rustfmt --edition 2024 --config skip_children=true` on exactly the four Rust paths below: exit **0**; direct formatter `rustfmt 1.9.0`, no Cargo invocation. Final `rustfmt --check --edition 2024 --config skip_children=true` on those same four paths: exit **0**.
+- `git diff --check`: exit **0**. `git diff --cached --exit-code`: exit **0**. Read-only `git ls-files --stage` SHA-256 remains `5042179d5076e63abafd81722cf98c67568464b311ddc513b076cdad964c18b9`; unchanged HEAD/branch and no untracked files verified.
+- Inline Python static preservation/scope/import/public-builder checks: final exit **0**, source verification at `2026-10-25T05:08:00Z`. It compares all definition lists and full assertion macro token text, then permits only the declared import/async-delivery edits and selector move against HEAD. Its initial exit **1** was a checker expectation error: it expected a braced callback instead of the equivalent contracted closure. The normalized diff was inspected, the comparison corrected, and rerun without modifying source for that mismatch. One exploratory `rg` command also exited **2** for a nonexistent `text_input.rs` (the module is a directory); another lookup used nonexistent macro `lib.rs` (the entry is `gpui_macros.rs`). Both were corrected by locating actual files, not by executing code or changing assertions. These exploratory failures are not compilation or behavior evidence.
+- Exact source-only uncommitted diff (`git diff --binary --no-ext-diff -- crates`) SHA-256: `2f1cde1051d2650d6df914fdc25ff2a2c558387760d629a781e3231754c28eed`. Sorted four-source-file hash manifest below, with newline-terminated lines, SHA-256: `ae9b571d71a566aecfecc9e2516c5eb515cb348478479399076974d1bfc5ed00`. Full diff/report hashes are supplied at final handoff to avoid self-reference.
+
+```text
+be8626eb6056417b28157edb409082d4414e19a72959b774605344c8de4bee3e  crates/vega/src/app_palette/tests.rs
+5ee6d4a6709b5a9a33bad5a4e6ffe415df7854215ff219e8b016dd42c555440a  crates/vega_ui/src/conversation_stream/file_reference/tests.rs
+1c2683ce8604d1f603d5d01d54933b5511a3472477a81e40eabbaed591b6305f  crates/vega_ui/src/interaction/overlay.rs
+5d3232d3cb47ec3417de3b1768bdda02d18d9e20a21529263b0ab63a958ce73b  crates/vega_ui/src/interaction/overlay/tests.rs
+```
+
+READY means only these concrete second harness repairs are available for parent inspection, independent delta review and Actions on PR #612. No product/spec/acceptance deviation and no remaining-entry implementation. Parent owns the next commit and cloud attempt; this writer stops all scope writes after final static/read-back verification.
+
+## Final feasible PaletteClosed fixture repair — current freeze
+
+The preceding sections remain immutable historical freezes. This append records the first supplied executed behavior results and the final authorized fixture-only delta; it does not rewrite earlier sources, failures or pending statuses as successes.
+
+### Immutable baseline and original cloud results
+
+- Clean starting and unchanged current HEAD: `6208f17773b37790158d5ff134d7632cf9fb15cb`, branch `feat/549-overlay-entry`, worktree `/Users/puzige/Workspace/worktrees/vega-549-overlay-entry`. Parent reports its last fetched master `429c6a819fc5a30f8280afd2f6ed015d4682bf41` is already integrated and no other writes are active. This writer did not fetch or mutate Git/index, query or write remotes, invoke CI, or delegate. Only `crates/vega/src/app_palette/tests.rs` and this report have unstaged/uncommitted changes; no new commit is claimed.
+- Parent read original [Actions 40164630721](https://github.com/puzige/vega/actions/runs/40164630721), Nextest job `121083049170`: **11 executed, 9 passed, 2 failed, 0 skipped across 15 binaries**. Parent-supplied raw Nextest log SHA-256: `69d331fa2c2610177c2e376b6c79049e197c510b0cb0c0dd0879b48f694e72d4`. Clippy job `121083049028` was **SUCCESS**, the Python groups reported **5 + 15 + 40 OK**, and required summary job `121083559874` was **failure**. This writer did not download or independently inspect those remote logs; these actual results are parent-supplied evidence, not local execution or results for the current uncommitted delta.
+- The nine passing cases include the async delayed-close fixture, all three real E01 cases, error bypass, owner isolation, real paint/callback observation and quick reopen. They do not establish whole-card acceptance or override either failure.
+- Failure 1: `activation_round_trip_without_an_inactive_paint_does_not_restore_entry`, `interaction/overlay/tests.rs:322`, root count **left 6 / right 5**. This confirms the previously diagnosed strict public-harness observation blocker; it is not waived.
+- Failure 2: `real_palette_card_reopens_from_owner_paint_across_view_recreation`, `app_palette/tests.rs:163`, expected true `host.palette.close_requested` was false. Parent traced the real child `PaletteClosed` emission through the fixture subscription: its extra `cx.notify()` made test-support flush render `Host::render`, which called production close/reset before the next controlled update could observe accepted intent. This is fixture phase delivery, not a demonstrated production loss of close intent.
+
+### Minimal responsible-layer delta and honest fixture boundary
+
+- Removed only `cx.notify()` from the **test Host's** `PaletteClosed` subscription. It still subscribes to the real `CommandPalette`, receives real `cx.emit(PaletteClosed)`, and calls the unchanged production `AppPalette::request_close(cx)` to record intent and its executor-clock timestamp. No direct boolean assignment, synthetic callback, new helper, new test or alternate acceptance path was introduced.
+- Static pinned-source inspection supports the seam: `Context::emit` only queues `Effect::Emit` (`gpui-pre-0.3.4/src/app/context.rs:765–779`); entity update does not implicitly notify (`app.rs:2815–2828`); event delivery invokes matching subscribers without an added notify (`app.rs:1796–1806`). `request_close` and `OverlayEntry::close` record metadata without notification. The fixture intentionally withholds its renderer notification at that host boundary, allowing accepted intent to be observed before `Host::open` performs the existing close/recreate/focus operation and notifies. This is the controlled no-closed-paint fixture seam, **not** a full `VegaWindow` event/render integration test.
+- Production `VegaWindow`'s real `PaletteClosed` subscription still calls `request_close(cx)` **and** `cx.notify()` (`app_palette.rs:196–199`); all production notifications, cancellation, generation, payload, cleanup and focus behavior remain byte-identical. No scheduling/clock/animation step or task-flush boundary was added in this repair. The earlier asynchronous fixture repair and all assertions remain unchanged; cloud must verify the current event seam rather than this report claiming it executed.
+
+### Static verification and exact source identity
+
+- `rustfmt --check --edition 2024 --config skip_children=true crates/vega/src/app_palette/tests.rs`: exit **0**, direct `rustfmt 1.9.0`; no Cargo invocation and no formatter mutation needed.
+- `git diff --check`: exit **0**. Read-only `git diff --cached --exit-code`: exit **0**. Index stage manifest SHA-256 remains `b84f524e541874e07a7f34ec2d547e03797421eaa5b79c168a92256abd09f10a`; HEAD/branch unchanged, no untracked files.
+- Inline Python static scope/preservation check: exit **0**. The full Rust file equals baseline with exactly that one subscription notification removed; all test bodies, attributes, names/signatures and **11 definitions / 84 assertion macros** are preserved (helper **5/18**, E01 **3/37**, E11 **3/29**). The entire helper and E01 test modules, including the strict activation body and assertions, are byte-identical. Imports are unchanged; no new comments, dependencies, CI changes, allow/ignore, limit increases, assertion edits, test cleanup or production changes. The report is append-only relative to HEAD.
+- Exact source-only diff (`git diff --binary --no-ext-diff -- crates/vega/src/app_palette/tests.rs`) SHA-256: `17d3928b938489f07bb1e8af56d1287995cb3c05b32dd482a2c15d546fe8e751`.
+- Current source file SHA-256: `b8c32ac82401f01b2ad1345e411acef7bca91c9c1cdf69f9f85321680cedd2b7  crates/vega/src/app_palette/tests.rs`.
+- Unchanged strict helper module SHA-256: `5d3232d3cb47ec3417de3b1768bdda02d18d9e20a21529263b0ab63a958ce73b  crates/vega_ui/src/interaction/overlay/tests.rs`. Final full diff/report hashes are supplied at handoff to avoid self-reference.
+
+### Confirmed strict blocker and next authorized verification
+
+**[BLOCKED] #549 | strict activation-without-inactive-paint cannot be constructed with the pinned public test harness.** Parent's original cloud root-count failure confirms an inactive frame occurred. Test-support `App::flush_effects` draws every dirty window synchronously (`app.rs:1712–1723`); window activation notifications refresh it (`window.rs:1862–1882`); the public test platform queues each activation notification separately (`platform/test/platform.rs:284–303`). The parent verified no feasible public batching/observation route; `advance_clock` runs tasks and is not a bypass. The complete strict test module and all its assertions are unchanged. No private framework access, fake activation callback, #550 exception, ignore, acceptance reduction or cleanup is authorized or used.
+
+No Vega execution, compilation, build/check/Clippy/test, CUA, install or restart occurred locally. The current one-line delta is **not behavior-verified**. Parent owns the commit, independent tiny delta review and one next Actions run on PR #612 to verify the corrected event fixture and isolate the strict failure; no next cloud result is claimed. The strict requirement needs an authorized observation capability that can deliver the activation round trip without painting inactive, or an explicit parent/user acceptance decision and corresponding spec revision before remaining-entry expansion. No such decision is made here. Other manual/full-app/AX/OS/glyph/SVG/long-stream limitations and the eventual development-test removal policy remain unchanged; no Rust test cleanup or merge is part of this repair.
+
+READY is limited to the minimal fixture/report delta being available for parent inspection. There is no production, parent-spec or acceptance deviation and no remaining-entry work. After final static/read-back identity verification this writer stops all scope writes; the unresolved strict blocker is reported, not repaired or hidden.

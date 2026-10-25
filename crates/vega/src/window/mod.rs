@@ -206,6 +206,7 @@ impl VegaWindow {
         })
         .detach();
         cx.observe_global::<OpenedThread>(|this, cx| {
+            this.suspend_hidden_stream_overlays(cx);
             let route_thread_id = cx
                 .global::<OpenedThread>()
                 .0
@@ -244,6 +245,7 @@ impl VegaWindow {
         })
         .detach();
         cx.observe_global::<SettingsOpen>(|this, cx| {
+            this.suspend_hidden_stream_overlays(cx);
             this.cancel_composer_prediction(cx);
             this.cancel_context_if_route_stale(cx);
             this.cancel_file_index_if_route_stale(cx);

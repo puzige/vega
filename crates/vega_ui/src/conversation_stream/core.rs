@@ -158,6 +158,7 @@ pub struct ConversationStream {
     /// cannot overwrite it or be overwritten by it.
     pub(crate) mcp_warning: Option<String>,
     pub(crate) file_selector: FileSelectorModel,
+    pub(crate) file_entry: crate::interaction::OverlayEntry,
     /// The latest bounded candidate projection for this thread's project.
     pub(crate) file_snapshot: FileIndexSnapshot,
     /// One bounded walk in flight / completed bookkeeping (one request per
@@ -249,11 +250,18 @@ pub(crate) struct PendingEcho {
 }
 
 impl ConversationStream {
+    pub fn suspend_decorative_overlays(&mut self, _: &mut Context<Self>) {
+        self.file_entry.suspend();
+    }
+
     pub fn set_reading_preview(&mut self, reading: bool, cx: &mut Context<Self>) {
         if self.reading_preview == reading {
             return;
         }
         self.reading_preview = reading;
+        if reading {
+            self.file_entry.suspend();
+        }
         for card in self.artifact_cards.values() {
             card.update(cx, |card, cx| card.set_reading_preview(reading, cx));
         }
@@ -582,6 +590,7 @@ impl ConversationStream {
             run_failures: HashMap::new(),
             mcp_warning: None,
             file_selector: FileSelectorModel::default(),
+            file_entry: crate::interaction::OverlayEntry::default(),
             file_snapshot: FileIndexSnapshot::default(),
             file_index_loading: false,
             file_index_loaded: false,

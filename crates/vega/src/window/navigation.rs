@@ -138,6 +138,19 @@ pub(crate) fn bind_shortcuts(window: AnyWindowHandle, root: WeakEntity<VegaWindo
 }
 
 impl VegaWindow {
+    pub(super) fn suspend_hidden_stream_overlays(&self, cx: &mut App) {
+        if let Some((thread_id, stream)) = &self.stream_view
+            && (cx.global::<SettingsOpen>().0
+                || cx
+                    .global::<OpenedThread>()
+                    .0
+                    .as_ref()
+                    .is_none_or(|thread| &thread.id != thread_id))
+        {
+            stream.update(cx, ConversationStream::suspend_decorative_overlays);
+        }
+    }
+
     fn draft_id(&self) -> Option<&str> {
         self.draft.as_ref().map(|draft| draft.id.as_str())
     }

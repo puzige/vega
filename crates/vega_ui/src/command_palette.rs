@@ -38,6 +38,7 @@ pub struct CommandPalette {
     loading: bool,
     error: Option<PaletteError>,
     scroll: ScrollHandle,
+    entry: crate::interaction::OverlayEntry,
 }
 impl CommandPalette {
     /// Construct with currently executable actions.
@@ -69,8 +70,14 @@ impl CommandPalette {
             loading: true,
             error: None,
             scroll: ScrollHandle::new(),
+            entry: crate::interaction::OverlayEntry::default(),
         }
     }
+    pub fn with_overlay_entry(mut self, entry: crate::interaction::OverlayEntry) -> Self {
+        self.entry = entry;
+        self
+    }
+
     /// Apply a bounded worker result; stale authority is rejected by the app first.
     pub fn apply(&mut self, result: Result<PaletteSearch, PaletteError>, cx: &mut Context<Self>) {
         self.loading = false;
@@ -199,6 +206,7 @@ impl Focusable for CommandPalette {
 }
 impl Render for CommandPalette {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.entry.sync(true, true, window, cx);
         let colors = theme(cx).colors;
         let entries = self.entries();
         let selected = self.selected;
@@ -215,140 +223,142 @@ impl Render for CommandPalette {
                 cx.listener(|_, _, _, cx| cx.emit(PaletteClosed)),
             )
             .child(
-                div()
-                    .id("command-palette")
-                    .key_context("CommandPalette")
-                    .w(px(Layout::COMMAND_PALETTE_WIDTH).min(
-                        window.viewport_size().width - px(Layout::COMMAND_PALETTE_SIDE_INSET * 2.0),
-                    ))
-                    .max_h(
-                        px(Layout::COMMAND_PALETTE_MAX_HEIGHT).min(
-                            (window.viewport_size().height
-                                - px(Layout::COMMAND_PALETTE_VERTICAL_RESERVE))
-                            .max(px(Layout::COMMAND_PALETTE_MIN_HEIGHT)),
-                        ),
-                    )
-                    .flex()
-                    .flex_col()
-                    .rounded(px(Layout::MENU_RADIUS))
-                    .bg(colors.bg_elevated)
-                    .border_1()
-                    .border_color(colors.border_subtle)
-                    .shadow_sm()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_action(cx.listener(Self::next))
-                    .on_action(cx.listener(Self::previous))
-                    .on_action(cx.listener(Self::accept))
-                    .on_action(cx.listener(Self::dismiss))
-                    .on_action(cx.listener(Self::scope_next))
-                    .child(div().p_3().child(self.input.clone()))
-                    .child(
-                        div().flex().gap_2().px_3().pb_2().children(
-                            [
-                                (PaletteScope::All, "全部"),
-                                (PaletteScope::Actions, "操作"),
-                                (PaletteScope::Tasks, "任务"),
-                                (PaletteScope::Files, "文件"),
-                            ]
-                            .into_iter()
-                            .enumerate()
-                            .map(|(index, (scope, label))| {
-                                div()
-                                    .id(("palette-scope", index))
-                                    .px_3()
-                                    .py_1()
-                                    .rounded_md()
-                                    .text_size(px(Typography::METADATA))
-                                    .bg(if self.scope == scope {
-                                        colors.bg_hover
-                                    } else {
-                                        colors.bg_elevated
-                                    })
-                                    .cursor_pointer()
-                                    .child(label.replace(['\n', '\r'], " "))
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(move |this, _, _, cx| {
-                                            this.scope = scope;
-                                            this.selected = 0;
-                                            this.scroll.scroll_to_item(0);
-                                            cx.notify();
-                                        }),
-                                    )
-                            }),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .id("palette-results")
-                            .track_scroll(&self.scroll)
-                            .overflow_y_scroll()
-                            .min_h_0()
-                            .children(entries.into_iter().enumerate().map(
-                                |(index, (label, detail, target))| {
+                self.entry.surface(
+                    div()
+                        .id("command-palette")
+                        .key_context("CommandPalette")
+                        .w(px(Layout::COMMAND_PALETTE_WIDTH).min(
+                            window.viewport_size().width
+                                - px(Layout::COMMAND_PALETTE_SIDE_INSET * 2.0),
+                        ))
+                        .max_h(
+                            px(Layout::COMMAND_PALETTE_MAX_HEIGHT).min(
+                                (window.viewport_size().height
+                                    - px(Layout::COMMAND_PALETTE_VERTICAL_RESERVE))
+                                .max(px(Layout::COMMAND_PALETTE_MIN_HEIGHT)),
+                            ),
+                        )
+                        .flex()
+                        .flex_col()
+                        .rounded(px(Layout::MENU_RADIUS))
+                        .bg(colors.bg_elevated)
+                        .border_1()
+                        .border_color(colors.border_subtle)
+                        .shadow_sm()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_action(cx.listener(Self::next))
+                        .on_action(cx.listener(Self::previous))
+                        .on_action(cx.listener(Self::accept))
+                        .on_action(cx.listener(Self::dismiss))
+                        .on_action(cx.listener(Self::scope_next))
+                        .child(div().p_3().child(self.input.clone()))
+                        .child(
+                            div().flex().gap_2().px_3().pb_2().children(
+                                [
+                                    (PaletteScope::All, "全部"),
+                                    (PaletteScope::Actions, "操作"),
+                                    (PaletteScope::Tasks, "任务"),
+                                    (PaletteScope::Files, "文件"),
+                                ]
+                                .into_iter()
+                                .enumerate()
+                                .map(|(index, (scope, label))| {
                                     div()
-                                        .id(("palette-result", index))
-                                        .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                                        .id(("palette-scope", index))
                                         .px_3()
-                                        .flex()
-                                        .items_center()
-                                        .gap_3()
-                                        .bg(if selected == index {
+                                        .py_1()
+                                        .rounded_md()
+                                        .text_size(px(Typography::METADATA))
+                                        .bg(if self.scope == scope {
                                             colors.bg_hover
                                         } else {
                                             colors.bg_elevated
                                         })
-                                        .text_size(px(Typography::SIDEBAR))
                                         .cursor_pointer()
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .overflow_hidden()
-                                                .child(label.replace(['\n', '\r'], " ")),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_color(colors.text_tertiary)
-                                                .text_size(px(Typography::METADATA))
-                                                .child(detail.replace(['\n', '\r'], " ")),
-                                        )
+                                        .child(label.replace(['\n', '\r'], " "))
                                         .on_mouse_up(
                                             MouseButton::Left,
-                                            cx.listener(move |_, _, _, cx| {
-                                                cx.emit(PaletteActivated(target.clone()))
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.scope = scope;
+                                                this.selected = 0;
+                                                this.scroll.scroll_to_item(0);
+                                                cx.notify();
                                             }),
                                         )
-                                },
-                            ))
-                            .tracked_scroll_edge_fade(
-                                self.scroll.clone(),
-                                colors.bg_elevated,
-                                ScrollFade::compact(),
+                                }),
                             ),
-                    )
-                    .when(self.loading, |view| {
-                        view.child(
-                            div()
-                                .px_4()
-                                .py_2()
-                                .text_size(px(Typography::METADATA))
-                                .child("正在搜索…"),
                         )
-                    })
-                    .when(
-                        self.error.is_some() || self.results.files_unavailable,
-                        |view| {
+                        .child(
+                            div()
+                                .id("palette-results")
+                                .track_scroll(&self.scroll)
+                                .overflow_y_scroll()
+                                .min_h_0()
+                                .children(entries.into_iter().enumerate().map(
+                                    |(index, (label, detail, target))| {
+                                        div()
+                                            .id(("palette-result", index))
+                                            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                                            .px_3()
+                                            .flex()
+                                            .items_center()
+                                            .gap_3()
+                                            .bg(if selected == index {
+                                                colors.bg_hover
+                                            } else {
+                                                colors.bg_elevated
+                                            })
+                                            .text_size(px(Typography::SIDEBAR))
+                                            .cursor_pointer()
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .overflow_hidden()
+                                                    .child(label.replace(['\n', '\r'], " ")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_color(colors.text_tertiary)
+                                                    .text_size(px(Typography::METADATA))
+                                                    .child(detail.replace(['\n', '\r'], " ")),
+                                            )
+                                            .on_mouse_up(
+                                                MouseButton::Left,
+                                                cx.listener(move |_, _, _, cx| {
+                                                    cx.emit(PaletteActivated(target.clone()))
+                                                }),
+                                            )
+                                    },
+                                ))
+                                .tracked_scroll_edge_fade(
+                                    self.scroll.clone(),
+                                    colors.bg_elevated,
+                                    ScrollFade::compact(),
+                                ),
+                        )
+                        .when(self.loading, |view| {
                             view.child(
                                 div()
                                     .px_4()
                                     .py_2()
-                                    .text_color(colors.text_secondary)
                                     .text_size(px(Typography::METADATA))
-                                    .child(
-                                        self.error
-                                            .map(|error| -> String {
-                                                match error {
+                                    .child("正在搜索…"),
+                            )
+                        })
+                        .when(
+                            self.error.is_some() || self.results.files_unavailable,
+                            |view| {
+                                view.child(
+                                    div()
+                                        .px_4()
+                                        .py_2()
+                                        .text_color(colors.text_secondary)
+                                        .text_size(px(Typography::METADATA))
+                                        .child(
+                                            self.error
+                                                .map(|error| -> String {
+                                                    match error {
                                                 PaletteError::Binary => {
                                                     "二进制文件不支持文本预览，请在 Finder 中查看"
                                                         .into()
@@ -369,27 +379,29 @@ impl Render for CommandPalette {
                                                     "无法读取结果，请重试或检查文件是否存在".into()
                                                 }
                                             }
-                                            })
-                                            .unwrap_or_else(|| {
-                                                "部分文件结果暂不可用，请重新搜索".into()
-                                            }),
-                                    ),
-                            )
-                        },
-                    )
-                    .when(!self.loading && self.entries().is_empty(), |view| {
-                        view.child(div().p_4().child("没有匹配结果"))
-                    })
-                    .child(
-                        div()
-                            .px_4()
-                            .py_2()
-                            .border_t_1()
-                            .border_color(colors.border_subtle)
-                            .text_size(px(Typography::METADATA))
-                            .text_color(colors.text_tertiary)
-                            .child("↑↓ 选择   ↵ 打开   Tab 切换范围   Esc 关闭"),
-                    ),
+                                                })
+                                                .unwrap_or_else(|| {
+                                                    "部分文件结果暂不可用，请重新搜索".into()
+                                                }),
+                                        ),
+                                )
+                            },
+                        )
+                        .when(!self.loading && self.entries().is_empty(), |view| {
+                            view.child(div().p_4().child("没有匹配结果"))
+                        })
+                        .child(
+                            div()
+                                .px_4()
+                                .py_2()
+                                .border_t_1()
+                                .border_color(colors.border_subtle)
+                                .text_size(px(Typography::METADATA))
+                                .text_color(colors.text_tertiary)
+                                .child("↑↓ 选择   ↵ 打开   Tab 切换范围   Esc 关闭"),
+                        ),
+                    self.error.is_some() || self.results.files_unavailable,
+                ),
             )
     }
 }
