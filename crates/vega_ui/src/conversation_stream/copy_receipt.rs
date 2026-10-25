@@ -7,8 +7,8 @@ use std::{
 
 use gpui_kit::{
     AnyElement, App, Bounds, Div, Element, ElementId, GlobalElementId, InspectorElementId,
-    InteractiveElement, IntoElement, LayoutId, Pixels, SharedString, Stateful, Task, Window, div,
-    prelude::*, px,
+    InteractiveElement, IntoElement, LayoutId, Pixels, SharedString, Stateful, Task,
+    TestSupportExt, Window, div, prelude::*, px,
 };
 use vega_theme::{Layout, Motion, ThemeColors};
 
@@ -194,6 +194,7 @@ impl CopyReceiptButton {
                 blend,
                 active: active.clone(),
             }
+            .test_support()
             .into_any_element(),
             binding,
             active,
@@ -293,6 +294,12 @@ impl IntoElement for ReceiptSurface {
 
     fn into_element(self) -> Self {
         self
+    }
+}
+
+impl InteractiveElement for ReceiptSurface {
+    fn interactivity(&mut self) -> &mut gpui_kit::Interactivity {
+        self.button.interactivity()
     }
 }
 
