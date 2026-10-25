@@ -721,34 +721,36 @@ impl VegaWindow {
 
     fn workspace_label(&self, key: &TabKey, cx: &App) -> String {
         match key {
-            TabKey::Subagents => "Subagents".into(),
+            TabKey::Subagents => vega_i18n::t("app.workspace.subagents").into(),
             TabKey::Image => self
                 .image_preview
                 .active
                 .as_ref()
                 .map(|active| active.image.read(cx).name().to_owned())
                 .unwrap_or_default(),
-            TabKey::Diff => "Review".into(),
+            TabKey::Diff => vega_i18n::t("app.workspace.review").into(),
             TabKey::Automation(key) => if key.kind == AutomationKind::Goal {
-                "编辑目标"
+                vega_i18n::t("app.workspace.edit_goal")
             } else {
-                "编辑循环"
+                vega_i18n::t("app.workspace.edit_loop")
             }
             .into(),
-            TabKey::Terminal(id) => format!("终端 {id}"),
+            TabKey::Terminal(id) => {
+                vega_i18n::t_args("app.workspace.terminal", &[("id", &id.to_string())])
+            }
             TabKey::File(id) => self
                 .workspace
                 .files
                 .get(id)
                 .map(|view| view.read(cx).title().to_string())
-                .unwrap_or_else(|| "文件".into()),
+                .unwrap_or_else(|| vega_i18n::t("app.workspace.file").into()),
             TabKey::Artifact(id) => self
                 .artifact_controller
                 .active
                 .as_ref()
                 .and_then(|active| active.cards.get(id))
                 .map(|card| card.read(cx).projection().label.clone())
-                .unwrap_or_else(|| "Preview".into()),
+                .unwrap_or_else(|| vega_i18n::t("app.workspace.preview").into()),
         }
     }
 
@@ -1019,7 +1021,7 @@ impl VegaWindow {
         let thread = self.shell_project_thread(cx);
         let close = icon_button(
             Icon::Close,
-            "关闭 Environment",
+            vega_i18n::t("app.workspace.close_environment"),
             colors,
             cx.listener(move |this, _, _, cx| {
                 if overlay {
@@ -1056,7 +1058,7 @@ impl VegaWindow {
                     .justify_between()
                     .text_size(px(Typography::SIDEBAR))
                     .text_color(colors.text_secondary)
-                    .child("Environment")
+                    .child(vega_i18n::t("app.workspace.environment"))
                     .child(close),
             );
         if let Some(label) = project_label {
@@ -1076,7 +1078,7 @@ impl VegaWindow {
         if thread.is_some() {
             card = card.child(environment_action(
                 "environment-review",
-                "Changes / Review",
+                vega_i18n::t("app.workspace.changes_review"),
                 Icon::Split,
                 colors,
                 cx.listener(|this, _, _, cx| {
@@ -1090,7 +1092,7 @@ impl VegaWindow {
         if self.shell_project_id(cx).is_some() {
             card = card.child(environment_action(
                 "environment-terminal",
-                "Local terminal",
+                vega_i18n::t("app.workspace.local_terminal"),
                 Icon::Terminal,
                 colors,
                 cx.listener(|this, _, window, cx| {
@@ -1177,7 +1179,10 @@ impl VegaWindow {
                 .clone();
             let close = icon_button(
                 Icon::Close,
-                format!("关闭 {}", self.workspace_label(&close_key, cx)),
+                vega_i18n::t_args(
+                    "app.workspace.close",
+                    &[("label", &self.workspace_label(&close_key, cx))],
+                ),
                 colors,
                 cx.listener(move |this, _, window, cx| {
                     this.workspace_close_tab(&close_key, window, cx);
@@ -1252,7 +1257,7 @@ impl VegaWindow {
         if review_selected {
             actions = actions.child(icon_button(
                 Icon::Document,
-                "提交更改",
+                vega_i18n::t("app.workspace.commit"),
                 colors,
                 cx.listener(|this, _, _, cx| this.workspace_open_commit(cx)),
             ));
@@ -1260,7 +1265,7 @@ impl VegaWindow {
         let actions = actions
             .child(icon_button(
                 Icon::Plus,
-                "新建工作区标签",
+                vega_i18n::t("app.workspace.new_tab"),
                 colors,
                 cx.listener(move |this, _, window, cx| {
                     this.workspace_toggle_menu(bottom, window, cx)
@@ -1269,9 +1274,9 @@ impl VegaWindow {
             .child(icon_button(
                 Icon::DockMove,
                 if bottom {
-                    "移到右侧"
+                    vega_i18n::t("app.workspace.move_right")
                 } else {
-                    "移到底部"
+                    vega_i18n::t("app.workspace.move_bottom")
                 },
                 colors,
                 cx.listener(move |this, _, window, cx| {
@@ -1281,9 +1286,9 @@ impl VegaWindow {
             .child(icon_button(
                 Icon::Maximize,
                 if self.workspace.maximized[index] {
-                    "还原工作区"
+                    vega_i18n::t("app.workspace.restore")
                 } else {
-                    "最大化工作区"
+                    vega_i18n::t("app.workspace.maximize")
                 },
                 colors,
                 cx.listener(move |this, _, window, cx| {
@@ -1315,7 +1320,7 @@ impl VegaWindow {
                 } else {
                     Icon::ChevronRight
                 },
-                "隐藏面板",
+                vega_i18n::t("app.workspace.hide_panel"),
                 colors,
                 cx.listener(move |this, _, window, cx| this.workspace_hide(index, window, cx)),
             ))
@@ -1585,7 +1590,7 @@ impl VegaWindow {
                     .top(px(40.))
                     .right(px(8.))
                     .text_color(colors.danger)
-                    .child("终端不可用：请选择项目，或关闭部分会话后重试"),
+                    .child(vega_i18n::t("app.workspace.terminal_unavailable")),
             );
         }
         if self.workspace.menu {
@@ -1652,12 +1657,12 @@ impl VegaWindow {
             for action in creation_actions {
                 menu = match action {
                     WorkspaceCreateAction::Subagents => menu.child(workspace_button(
-                        "Subagents",
+                        vega_i18n::t("app.workspace.subagents"),
                         colors,
                         cx.listener(|this, _, window, cx| this.open_subagent_panel(window, cx)),
                     )),
                     WorkspaceCreateAction::Review => menu.child(workspace_button(
-                        "Review · 工作区变更",
+                        vega_i18n::t("app.workspace.review_changes"),
                         colors,
                         cx.listener(|this, _, _, cx| {
                             this.workspace_open_diff(cx);
@@ -1666,7 +1671,7 @@ impl VegaWindow {
                         }),
                     )),
                     WorkspaceCreateAction::NewTerminal => menu.child(workspace_button(
-                        "终端 · 新建登录 shell",
+                        vega_i18n::t("app.workspace.new_shell"),
                         colors,
                         cx.listener(|this, _, window, cx| {
                             this.workspace_open_terminal(this.workspace.menu_bottom, window, cx);

@@ -35,7 +35,7 @@ pub fn parse_command(text: &str) -> Result<Option<AutomationCommand>, String> {
                 .then(|| budget.parse::<u64>().ok())
                 .flatten()
                 .filter(|value| *value > 0 && *value <= i64::MAX as u64)
-                .ok_or("预算须为正整数且不超过 9223372036854775807")?,
+                .ok_or(vega_i18n::t("domain.automation.parse.budget"))?,
         );
         rest = instruction.strip_prefix("-- ").unwrap_or(instruction);
     } else if kind == AutomationKind::Loop
@@ -49,7 +49,7 @@ pub fn parse_command(text: &str) -> Result<Option<AutomationCommand>, String> {
                     .strip_suffix(suffix)
                     .map(|number| (number, multiplier))
             })
-            .ok_or("间隔须为正整数加 s/m/h/d，例如 5m")?;
+            .ok_or(vega_i18n::t("domain.automation.parse.interval"))?;
         interval_seconds = Some(
             number
                 .chars()
@@ -58,18 +58,18 @@ pub fn parse_command(text: &str) -> Result<Option<AutomationCommand>, String> {
                 .flatten()
                 .and_then(|value| value.checked_mul(multiplier))
                 .filter(|value| (60..=86400).contains(value))
-                .ok_or("间隔须在 60 秒至 24 小时之间")?,
+                .ok_or(vega_i18n::t("domain.automation.parse.interval_range"))?,
         );
         rest = tail.strip_prefix("-- ").unwrap_or(tail);
     } else if first.starts_with("--") {
-        return Err("未知选项；要将控制词用作任务内容，请加 --".into());
+        return Err(vega_i18n::t("domain.automation.parse.unknown_option").into());
     }
     let instruction = rest.trim();
     if instruction.is_empty() {
-        return Err("请输入任务内容".into());
+        return Err(vega_i18n::t("domain.automation.parse.instruction").into());
     }
     if instruction.len() > 16 * 1024 {
-        return Err("任务内容不能超过 16 KiB".into());
+        return Err(vega_i18n::t("domain.automation.parse.instruction_size").into());
     }
     Ok(Some(AutomationCommand::Create {
         kind,

@@ -969,7 +969,7 @@ pub(crate) fn run_agent_worker_with_mcp(
             .with_read_state(file_read_state);
         let store = Store::open(&database_path).map_err(|_| ())?;
         store.migrate().map_err(|_| ())?;
-        vega_conversation::automation::pause_matching(&store, &thread.id, &automation_pauses, "已由你暂停").map_err(|_| ())?;
+        vega_conversation::automation::pause_matching(&store, &thread.id, &automation_pauses, "user_paused").map_err(|_| ())?;
         // Resolve provider identity once, before constructing the provider and
         // before entering the runtime. The resulting FrozenReasoning is moved
         // into the selected entry point and is never re-read during retries
@@ -1000,7 +1000,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                 .send(AgentUpdate::ComputerUseReady {
                     control: run.control.clone(),
                     owner: if thread.title.is_empty() {
-                        "未命名任务".into()
+                        vega_i18n::t("app.task.untitled").into()
                     } else {
                         thread.title.clone()
                     },
@@ -1475,7 +1475,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                 &store,
                 &automation_thread,
                 &automation_snapshot,
-                "本轮未能完成，请检查会话后恢复",
+                "run_incomplete",
             );
         }
     }

@@ -28,17 +28,17 @@ fn changed(root: &Path) {
 /// Content-free credential errors: never contain file contents or secret values.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum Error {
-    #[error("本地凭据不存在，请在设置中重新输入 API Key")]
+    #[error("{}", vega_i18n::t("domain.credential.missing"))]
     Missing,
-    #[error("本地凭据无法读取或保存，请检查访问权限")]
+    #[error("{}", vega_i18n::t("domain.credential.io"))]
     Io,
-    #[error("本地凭据文件格式损坏，原文件已保留")]
+    #[error("{}", vega_i18n::t("domain.credential.malformed"))]
     Malformed,
-    #[error("本地凭据超过大小限制")]
+    #[error("{}", vega_i18n::t("domain.credential.limit"))]
     Limit,
-    #[error("本地凭据路径、类型或权限不安全")]
+    #[error("{}", vega_i18n::t("domain.credential.unsafe"))]
     Unsafe,
-    #[error("当前平台尚不支持安全的本地凭据存储")]
+    #[error("{}", vega_i18n::t("domain.credential.unsupported"))]
     Unsupported,
 }
 

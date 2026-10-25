@@ -71,7 +71,7 @@ impl ToolFailure {
         value["stage"] = serde_json::json!(stage);
         value["execution_state"] = serde_json::json!(self.execution_state);
         if value.get("diagnostic").is_none() {
-            value["diagnostic"] = Value::String(self.error.user_message());
+            value["diagnostic"] = Value::String(self.error.protocol_message());
         }
         if let Some(guard) = self.guard {
             value["guard"] = serde_json::json!(guard);

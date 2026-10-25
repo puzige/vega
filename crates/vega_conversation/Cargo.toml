@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+vega_i18n.workspace = true
 html5ever.workspace = true
 image.workspace = true
 reqwest.workspace = true

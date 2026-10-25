@@ -29,6 +29,7 @@ mod cua_onboarding;
 mod diff;
 mod file_index;
 mod image_preview;
+mod localization;
 mod model_capabilities;
 mod model_catalog;
 mod model_context;
@@ -100,6 +101,7 @@ pub(crate) struct VegaWindow {
     pub(crate) composer_prediction: Option<composer_predictions::ComposerPredictionOwner>,
     pub(crate) updater: crate::updater::Updater,
     update_notice_dismissed: bool,
+    language: &'static str,
     navigation: navigation::Navigation,
     completion_attention: notifications::CompletionAttention,
     pub(crate) palette: crate::app_palette::AppPalette,
@@ -286,6 +288,7 @@ impl VegaWindow {
             composer_prediction: None,
             updater: crate::updater::Updater::default(),
             update_notice_dismissed: false,
+            language: vega_i18n::language(),
             navigation: navigation::Navigation::new(cx, None),
             completion_attention: notifications::CompletionAttention::default(),
             palette: crate::app_palette::AppPalette::default(),

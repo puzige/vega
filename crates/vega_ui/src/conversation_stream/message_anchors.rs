@@ -19,11 +19,11 @@ pub(crate) enum MessageAnchorKind {
 impl MessageAnchorKind {
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::User => "用户消息",
-            Self::Assistant => "助手消息",
-            Self::Tool => "工具活动",
-            Self::Plan => "计划消息",
-            Self::Summary => "任务结果",
+            Self::User => vega_i18n::t("ui.user_message"),
+            Self::Assistant => vega_i18n::t("ui.assistant_message"),
+            Self::Tool => vega_i18n::t("ui.tool_activity"),
+            Self::Plan => vega_i18n::t("ui.plan_message"),
+            Self::Summary => vega_i18n::t("ui.task_result"),
         }
     }
 }
@@ -147,7 +147,10 @@ impl ConversationStream {
                         .preview(entry_index, &identity.key, entry)
                         .unwrap_or_default(),
                 ),
-                StreamEntry::UserImages { .. } => (MessageAnchorKind::User, "图片消息".to_string()),
+                StreamEntry::UserImages { .. } => (
+                    MessageAnchorKind::User,
+                    vega_i18n::t("ui.image_message").to_string(),
+                ),
                 StreamEntry::Assistant { .. } => (
                     MessageAnchorKind::Assistant,
                     self.text_cache
@@ -157,11 +160,18 @@ impl ConversationStream {
                 ),
                 StreamEntry::Tool { .. }
                 | StreamEntry::ToolGroup { .. }
-                | StreamEntry::ArtifactGroup { .. } => {
-                    (MessageAnchorKind::Tool, "工具活动".to_string())
-                }
-                StreamEntry::Plan { .. } => (MessageAnchorKind::Plan, "计划消息".to_string()),
-                StreamEntry::Summary { .. } => (MessageAnchorKind::Summary, "任务结果".to_string()),
+                | StreamEntry::ArtifactGroup { .. } => (
+                    MessageAnchorKind::Tool,
+                    vega_i18n::t("ui.tool_activity").to_string(),
+                ),
+                StreamEntry::Plan { .. } => (
+                    MessageAnchorKind::Plan,
+                    vega_i18n::t("ui.plan_message").to_string(),
+                ),
+                StreamEntry::Summary { .. } => (
+                    MessageAnchorKind::Summary,
+                    vega_i18n::t("ui.task_result").to_string(),
+                ),
                 StreamEntry::Subagents { .. }
                 | StreamEntry::ContextCompaction { .. }
                 | StreamEntry::RunActivity { .. }
@@ -437,7 +447,9 @@ impl ConversationStream {
         let key_anchors = anchors.clone();
         let rail = div()
             .id("message-anchor-rail")
-            .aria_label("消息导航，使用上下键选择，Enter跳转，Esc关闭预览")
+            .aria_label(vega_i18n::t(
+                "ui.message_navigation_use_arrow_keys_to_select_enter",
+            ))
             .tab_stop(true)
             .track_focus(&self.message_anchor_focus)
             .absolute()
@@ -656,10 +668,10 @@ pub(crate) fn sanitize_anchor_preview(text: &str) -> String {
             .trim_matches(|ch: char| !ch.is_alphanumeric())
             .eq_ignore_ascii_case("bearer")
         {
-            safe.push("[凭据已隐藏]");
+            safe.push(vega_i18n::t("ui.credentials_hidden"));
             words.next();
         } else if looks_like_credential(word) {
-            safe.push("[凭据已隐藏]");
+            safe.push(vega_i18n::t("ui.credentials_hidden"));
         } else {
             safe.push(word);
         }

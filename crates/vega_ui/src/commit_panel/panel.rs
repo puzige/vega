@@ -33,7 +33,8 @@ impl Focusable for CommitPanel {
 impl CommitPanel {
     pub fn new(thread_id: String, project_id: String, cx: &mut Context<Self>) -> Self {
         let message = cx.new(|cx| {
-            TextInput::new_multiline(cx, "Commit message… (Enter newline · Cmd+Enter commit)", 4)
+            TextInput::new_multiline(cx, "", 4)
+                .with_placeholder_key("ui.commit_message_enter_newline_cmd_enter_commit")
                 .with_scroll_fade_on_base()
         });
         cx.observe(&message, |this, _, cx| {
@@ -422,7 +423,7 @@ impl Render for CommitPanel {
                         div()
                             .text_size(px(Typography::HEADING_BLOCK))
                             .text_color(colors.text_primary)
-                            .child("Commit changes"),
+                            .child(vega_i18n::t("ui.commit_changes")),
                     )
                     .child(
                         div()
@@ -443,7 +444,7 @@ impl Render for CommitPanel {
                                     let _ = this.request_close(cx);
                                 }),
                             )
-                            .child("Cancel"),
+                            .child(vega_i18n::t("ui.cancel")),
                     ),
             )
             .when_some(inline_error, |panel, code| {
@@ -451,7 +452,10 @@ impl Render for CommitPanel {
                     div()
                         .text_size(px(Typography::BODY))
                         .text_color(colors.danger)
-                        .child(format!("Commit unavailable: {code}")),
+                        .child(vega_i18n::t_args(
+                            "ui.commit_unavailable_code",
+                            &[("code", code)],
+                        )),
                 )
             })
             .child(
@@ -572,7 +576,7 @@ impl Render for CommitPanel {
                                     this.draft(&RequestCommitDraft, window, cx)
                                 }),
                             )
-                            .child("Generate message"),
+                            .child(vega_i18n::t("ui.generate_message")),
                     )
             })
             .child(
@@ -602,9 +606,9 @@ impl Render for CommitPanel {
                         )
                     })
                     .child(if ready {
-                        "Commit (⌘↵)"
+                        vega_i18n::t("ui.commit")
                     } else {
-                        "Prepare (⌘↵)"
+                        vega_i18n::t("ui.prepare")
                     }),
             )
             .into_any_element()
@@ -614,11 +618,11 @@ impl Render for CommitPanel {
 fn commit_error_label(code: CommitErrorCode) -> &'static str {
     match code {
         CommitErrorCode::GitUnavailable => {
-            "Git 2.40+ was not found. Install Homebrew Git and retry."
+            vega_i18n::t("ui.git_2_40_was_not_found_install_homebrew")
         }
-        CommitErrorCode::GitUnsupported => "Git 2.40+ is required. Upgrade Git and retry.",
+        CommitErrorCode::GitUnsupported => vega_i18n::t("ui.git_2_40_is_required_upgrade_git_and"),
         CommitErrorCode::GitExecutableChanged => {
-            "Git changed while Vega was running. Restart Vega and retry."
+            vega_i18n::t("ui.git_changed_while_vega_was_running_restart_vega")
         }
         _ => code.as_str(),
     }

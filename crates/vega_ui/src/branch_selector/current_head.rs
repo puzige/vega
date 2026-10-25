@@ -172,9 +172,9 @@ impl BranchSelector {
         match &self.current_head.state {
             Some(ProjectBranchState::Branch(label)) => label,
             Some(ProjectBranchState::Detached) => "detached",
-            Some(ProjectBranchState::NonGit) => "非 Git 文件夹",
-            Some(ProjectBranchState::Unknown) => "分支暂不可用",
-            None => "读取分支…",
+            Some(ProjectBranchState::NonGit) => vega_i18n::t("ui.not_a_git_folder"),
+            Some(ProjectBranchState::Unknown) => vega_i18n::t("ui.branch_unavailable"),
+            None => vega_i18n::t("ui.reading_branch"),
         }
     }
 }

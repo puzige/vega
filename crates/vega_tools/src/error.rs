@@ -402,9 +402,7 @@ impl fmt::Debug for BashError {
 impl fmt::Display for BashError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.code == BashErrorCode::CredentialProtectionRequired {
-            return formatter.write_str(
-                "此凭据调用需要受保护执行，请切换权限模式后继续 (credential_protection_required)",
-            );
+            return formatter.write_str(vega_i18n::t("domain.tool.credential_protection"));
         }
         write!(formatter, "bash failed ({})", self.code.as_str())
     }

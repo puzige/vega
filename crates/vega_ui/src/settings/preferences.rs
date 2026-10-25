@@ -9,6 +9,8 @@ impl SettingsView {
             return;
         }
         let Some(path) = self.config_path.clone() else {
+            self.error = Some(SettingsText::key("settings.config.path_unavailable"));
+            cx.notify();
             return;
         };
         let base = self.config.clone();
@@ -20,12 +22,19 @@ impl SettingsView {
             || base.defaults.permission_mode != candidate.defaults.permission_mode;
         self.provider_management.saving = true;
         let worker = cx.background_executor().spawn(async move {
-            if base.providers != candidate.providers { return Err("供应商编辑必须使用专用表单"); }
-            let mut edit = config::begin_edit(&path).map_err(|_| "配置读取失败")?;
+            if base.providers != candidate.providers {
+                return Err(SettingsText::key(
+                    "settings.preferences.provider_form_required",
+                ));
+            }
+            let mut edit = config::begin_edit(&path)
+                .map_err(|_| SettingsText::key("settings.config.read_failed"))?;
             macro_rules! patch {
                 ($($field:ident).+) => {
                     if base.$($field).+ != candidate.$($field).+ {
-                        if edit.config.$($field).+ != base.$($field).+ { return Err("配置已更改，请重新读取"); }
+                        if edit.config.$($field).+ != base.$($field).+ {
+                            return Err(SettingsText::key("settings.config.conflict"));
+                        }
                         edit.config.$($field).+ = candidate.$($field).+.clone();
                     }
                 };
@@ -37,11 +46,13 @@ impl SettingsView {
             patch!(defaults.model);
             patch!(defaults.permission_mode);
             patch!(ui.theme);
+            patch!(ui.language);
             patch!(ui.sidebar_collapsed);
             patch!(ui.sidebar_width);
             patch!(ui.projects_collapsed);
             patch!(ui.sessions_collapsed);
-            edit.save().map_err(|_| "配置保存失败")?;
+            edit.save()
+                .map_err(|_| SettingsText::key("settings.config.save_failed"))?;
             Ok(edit.config.clone())
         });
         cx.spawn(async move |this, cx| {
@@ -70,8 +81,14 @@ impl SettingsView {
                                 _ => vega_theme::Theme::system(cx),
                             });
                         }
+                        let language_changed = vega_i18n::language() != config.ui.language;
+                        vega_i18n::set_language(&config.ui.language);
                         this.config = config;
                         this.error = None;
+                        if language_changed {
+                            this.refresh_localized_inputs(cx);
+                            cx.refresh_windows();
+                        }
                         cx.emit(SettingsSaved {
                             replay_identity_changed,
                         });
@@ -82,7 +99,7 @@ impl SettingsView {
                             cx.emit(DesktopPreparationRequested { pane: None });
                         }
                     }
-                    Err(error) => this.error = Some(error.into()),
+                    Err(error) => this.error = Some(error),
                 }
                 cx.notify();
             });

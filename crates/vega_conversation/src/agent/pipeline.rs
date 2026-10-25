@@ -1,6 +1,9 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
+mod protocol_language_tests;
+
 pub(crate) fn valid_automation_call_projection(tool: &str, input_json: &str) -> bool {
     matches!(tool, "get_goal" | "update_goal" | "schedule_wakeup")
         && input_json.len() <= 32 * 1024
@@ -67,6 +70,7 @@ fn valid_mixed_skill_rejection_input(tool: &str, input_json: &str) -> bool {
                 id: "mixed-batch".to_string(),
                 tool: tool.to_string(),
                 input_json: input_json.to_string(),
+                codex_display: None,
             };
             crate::types::McpCallIdentity::from_tool_call(&call).is_some()
         }
@@ -822,14 +826,20 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         .as_ref()
         .map(|id| {
             if id != &user_message_id || uses_existing_user {
-                return Err(ConversationError::Store("待处理消息状态已变化".into()));
+                return Err(ConversationError::Store(
+                    vega_i18n::t("domain.pending.error.changed").into(),
+                ));
             }
             let row = vega_store::pending_messages::find(&transaction, &thread_id, id)
                 .map_err(runtime_store_error)?
-                .ok_or_else(|| ConversationError::Store("待处理消息已经交付".into()))?;
+                .ok_or_else(|| {
+                    ConversationError::Store(vega_i18n::t("domain.pending.error.delivered").into())
+                })?;
             let pending = crate::pending_messages::decode(row)?;
             if pending.images != images {
-                return Err(ConversationError::Store("待处理消息附件已变化".into()));
+                return Err(ConversationError::Store(
+                    vega_i18n::t("domain.pending.error.attachments").into(),
+                ));
             }
             Ok::<_, ConversationError>(pending.content)
         })
@@ -998,7 +1008,9 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         && !vega_store::pending_messages::mark_delivered(&transaction, &thread_id, id)
             .map_err(runtime_store_error)?
     {
-        return Err(ConversationError::Store("待处理消息已经交付".into()));
+        return Err(ConversationError::Store(
+            vega_i18n::t("domain.pending.error.delivered").into(),
+        ));
     }
     if let (Some(id), Some(content)) = (&config.pending_message_id, pending_model_content) {
         vega_store::pending_messages::preserve_model_input(&transaction, &thread_id, id, &content)
@@ -1035,18 +1047,21 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         .map_err(runtime_store_error)?;
     }
 
+    let mut redact_legacy = |text: &str, offsets: &[usize]| {
+        vega_runtime::redact_sensitive_credential_text_with_offsets_and_policy(
+            text,
+            &credential_values,
+            offsets,
+            config.credential_exceptions.as_ref(),
+        )
+    };
+    messages::remap_generated_notices_in_transaction(&transaction, &thread_id, &mut redact_legacy)
+        .map_err(runtime_store_error)?;
     let legacy_credential_cleanup_detected =
         vega_store::context_compaction::redact_legacy_thread_content(
             &transaction,
             &thread_id,
-            |text, offsets| {
-                vega_runtime::redact_sensitive_credential_text_with_offsets_and_policy(
-                    text,
-                    &credential_values,
-                    offsets,
-                    config.credential_exceptions.as_ref(),
-                )
-            },
+            &mut redact_legacy,
         )
         .map_err(runtime_store_error)?;
 
@@ -1610,6 +1625,7 @@ pub(crate) fn validate_recovered_projection(
                 id: call_id.to_string(),
                 tool: tool.to_string(),
                 input_json: input_json.to_string(),
+                codex_display: None,
             };
             if crate::types::McpCallIdentity::from_tool_call(&projected).is_none()
                 || exit_code.is_some()

@@ -109,6 +109,13 @@
 - [run 40178249738](https://github.com/puzige/vega/actions/runs/40178249738)：Nextest `121123523447` 3 发现/3 执行/3 通过/0 跳过，Clippy `121123523287`、required `121124160784` 成功，Python 60 项通过。包含 17 类错误证明/引用的原子拒绝、plain/legacy-budget/structured-budget 的公共 fork、reload、fork-of-fork、历史投影及下轮准备。
 - 该批原始 [fork_screenshot_tests.rs](https://github.com/puzige/vega/blob/652c390c59068e70af26f2a61636712b3e35c7ea/crates/vega_conversation/src/agent/fork_screenshot_tests.rs) 固定在完整 green head，SHA256 `d1888784de4b7953002fbd9ac88277fbec125a8b6e64b7f19be7a538d32de82f`，GitHub contents API 已核实 blob `5ed4e7ea3e160989687b9a39d9f3f72097fb99d2` 可达。[实现原始 patch](https://github.com/puzige/vega/commit/b4d2e70325bf9d2169115b540e93d18a24e7b53a.patch)、[观测修正 patch](https://github.com/puzige/vega/commit/652c390c59068e70af26f2a61636712b3e35c7ea.patch) 可恢复测试与当时生产行为。最后清理仅删除此测试文件及 conversation agent 的两行模块接线，不移除 store 生产校验。
 
+## 最终清理与 i18n master 合流
+
+- `ac135a11dd807c3694502eb0122dbee2ffd3c822` 最后删除 578 行 fork 开发测试、2 行模块接线并记录证据。非实现者独立复核确认无生产变化，420 个非 vendor Rust 文件静态清点无测试/支持/doctest 残留。
+- ac 的 Actions **未启动**，不可称为最终门禁通过。GitHub 状态变为 CONFLICTING；fetch 后 master 为 `f6723682f960f87941ffcd9cae477f4a5dbef777`，新增 #589 内嵌中英文界面，触及 runtime/诊断/UI/历史等本卡路径。
+- 主 Agent 启动未提交 merge，实际冲突为 `agent/loop_.rs`、`computer_use/diagnostics.rs`、`conversation_stream/computer_use.rs`。不能恢复已删除的 no_progress 固定 `ComputerStopped` 收尾或旧错误/准备菜单；必须保留 master 的真实授权/暂停/恢复控件翻译与其他功能。
+- 自动合流语义风险：UI `user_message` 已本地化，而结构化诊断及严格落库校验须跨语言稳定；master 已为 Executor 增加 protocol_guidance/diagnostic，#404 的非 Executor 规范文案也须与翻译展示分开。先在 spec 增加 i18n 合流不变量，再由专职实现者解决冲突和最小跨语言回归；不以任意诊断白名单绕过严格校验。
+
 ## 验证限制与后续
 
 组件/协议/身份的各类实际故障、断连/动作后观察失败变体、完整截图容量流、权限恢复后真实预检、分页/TTL/压缩/附件竞态及原生焦点交互尚无本轮动态验收，静态覆盖与具体限制以 spec 矩阵和最终报告为准。未做真实外部进程/网络 E2E。

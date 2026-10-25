@@ -1274,8 +1274,20 @@ where
                 "Agent turn limit ({}) reached; stopping without issuing another request.",
                 tool_config.turn_limit
             );
+            let text_start_bytes = final_text.len();
             final_text.push_str(&notice);
             emit!(events, sink, RuntimeEvent::TextDelta(notice.clone()));
+            if let Ok(limit) = u32::try_from(tool_config.turn_limit) {
+                emit!(
+                    events,
+                    sink,
+                    RuntimeEvent::GeneratedNotice {
+                        kind: RuntimeGeneratedNoticeKind::TurnLimit { limit },
+                        text_start_bytes,
+                        text_end_bytes: final_text.len(),
+                    }
+                );
+            }
             messages.push(ChatMessage::new(ChatRole::Assistant, notice));
             emit!(
                 events,

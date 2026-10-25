@@ -164,6 +164,7 @@ pub fn clone_prefix(
     for id in &owners {
         let new_id = mapped(&messages, id)?;
         copy_responses(tx, id, new_id, &call_map)?;
+        crate::messages::copy_generated_notices_in_transaction(tx, id, new_id)?;
         for (table, columns) in [
             ("image_attachments", "ordinal,encoded"),
             ("assistant_run_durations", "execution_duration_ms"),

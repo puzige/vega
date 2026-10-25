@@ -299,20 +299,47 @@ pub fn icon_button(
     icon_button_with_content(icon(kind, colors.text_secondary), label, colors, activate)
 }
 
-pub(crate) fn icon_button_with_content(
+pub(crate) fn localized_icon_button(
+    kind: Icon,
+    key: &'static str,
+    colors: vega_theme::ThemeColors,
+    activate: impl Fn(&(), &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
+) -> Interaction {
+    icon_button_with_id(
+        icon(kind, colors.text_secondary),
+        key,
+        vega_i18n::t(key),
+        colors,
+        activate,
+    )
+}
+
+fn icon_button_with_content(
     content: impl IntoElement,
     label: impl Into<gpui_kit::SharedString>,
     colors: vega_theme::ThemeColors,
     activate: impl Fn(&(), &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
 ) -> Interaction {
+    let label = label.into();
+    icon_button_with_id(content, label.clone(), label, colors, activate)
+}
+
+pub(crate) fn icon_button_with_id(
+    content: impl IntoElement,
+    id: impl Into<gpui_kit::SharedString>,
+    label: impl Into<gpui_kit::SharedString>,
+    colors: vega_theme::ThemeColors,
+    activate: impl Fn(&(), &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
+) -> Interaction {
     use gpui_kit::{MouseButton, div};
+    let id: gpui_kit::SharedString = id.into();
     let label = label.into();
     let tooltip_label = label.clone();
     let accessible_label = label.clone();
     let activate = std::rc::Rc::new(activate);
     let keyboard = activate.clone();
     div()
-        .id(label)
+        .id(id)
         .aria_label(accessible_label)
         .focusable()
         .tab_stop(true)

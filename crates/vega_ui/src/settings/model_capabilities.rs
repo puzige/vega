@@ -243,7 +243,7 @@ impl SettingsView {
         settings_actions()
             .child(self.capability_button(
                 format!("model-capability-save-{index}"),
-                "保存",
+                t("settings.action.save"),
                 ready && dirty,
                 ModelCapabilityFocusTarget::Save(index),
                 cx.listener(move |this, _, _, cx| this.save_model_capability(index, false, cx)),
@@ -251,7 +251,7 @@ impl SettingsView {
             ))
             .child(self.capability_button(
                 format!("model-capability-cancel-{index}"),
-                "取消",
+                t("settings.action.cancel"),
                 ready && dirty,
                 ModelCapabilityFocusTarget::Cancel(index),
                 cx.listener(|this, _, _, cx| this.cancel_model_capability(cx)),
@@ -259,7 +259,7 @@ impl SettingsView {
             ))
             .child(self.capability_button(
                 format!("model-capability-reset-{index}"),
-                "恢复自动",
+                t("settings.capabilities.reset"),
                 ready,
                 ModelCapabilityFocusTarget::Reset(index),
                 cx.listener(move |this, _, _, cx| this.save_model_capability(index, true, cx)),
@@ -275,14 +275,14 @@ impl SettingsView {
             _ => None,
         };
         let status = match &self.model_capabilities {
-            ModelCapabilitySettingsProjection::Loading => Some("正在读取模型能力…"),
-            ModelCapabilitySettingsProjection::Saving { .. } => Some("正在保存…"),
+            ModelCapabilitySettingsProjection::Loading => Some(t("settings.capabilities.loading")),
+            ModelCapabilitySettingsProjection::Saving { .. } => Some(t("settings.saving")),
             _ => None,
         };
         settings_section()
             .child(self.capability_button(
                 "model-capability-reload".into(),
-                "重新加载",
+                t("settings.action.reload"),
                 !matches!(
                     self.model_capabilities,
                     ModelCapabilitySettingsProjection::Saving { .. }
@@ -295,16 +295,18 @@ impl SettingsView {
             .children(error.map(|error| {
                 settings_status(
                     match error {
-                        ModelCapabilitySettingsErrorCode::Io => "模型能力读写失败，请重新加载",
+                        ModelCapabilitySettingsErrorCode::Io => t("settings.capabilities.error.io"),
                         ModelCapabilitySettingsErrorCode::Invalid => {
-                            "模型能力配置无效，请检查后重新加载"
+                            t("settings.capabilities.error.invalid")
                         }
                         ModelCapabilitySettingsErrorCode::Conflict => {
-                            "模型能力已被其他操作修改，请重新加载后重试"
+                            t("settings.capabilities.error.conflict")
                         }
-                        ModelCapabilitySettingsErrorCode::Busy => "模型能力正在保存",
+                        ModelCapabilitySettingsErrorCode::Busy => {
+                            t("settings.capabilities.error.busy")
+                        }
                         ModelCapabilitySettingsErrorCode::MissingModel => {
-                            "模型已被移除，请重新加载"
+                            t("settings.capabilities.error.missing")
                         }
                     },
                     colors.danger,
@@ -317,7 +319,10 @@ impl SettingsView {
     pub(crate) fn render_model_capability_efforts(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let mut section = settings_section()
-            .child(section_title("允许的思考等级", colors.text_primary))
+            .child(section_title(
+                t("settings.capabilities.efforts"),
+                colors.text_primary,
+            ))
             .child(self.capability_status(cx));
         for (index, model) in self.model_capability_models.clone().into_iter().enumerate() {
             if self
@@ -352,7 +357,10 @@ impl SettingsView {
                 let label = if supported {
                     effort_label(effort).to_string()
                 } else {
-                    format!("{}（不支持）", effort_label(effort))
+                    t_args(
+                        "settings.capabilities.unsupported",
+                        &[("label", effort_label(effort))],
+                    )
                 };
                 options = options.child(capability_control(
                     format!("model-capability-effort-{index}-{effort}"),
@@ -403,7 +411,7 @@ impl SettingsView {
             section = section
                 .child(capability_control(
                     format!("model-capability-image-{index}"),
-                    "图片输入".into(),
+                    t("settings.capabilities.image_input").into(),
                     Some(selected),
                     enabled,
                     self.model_capability_focus(&ModelCapabilityFocusTarget::Image(index)),
@@ -418,13 +426,13 @@ impl SettingsView {
 
 fn effort_label(effort: &str) -> &'static str {
     match effort {
-        "minimal" => "最少",
-        "low" => "低",
-        "medium" => "中",
-        "high" => "高",
-        "xhigh" => "很高",
-        "max" => "最高",
-        _ => "未识别档位",
+        "minimal" => t("settings.reasoning.effort.minimal"),
+        "low" => t("settings.reasoning.effort.low"),
+        "medium" => t("settings.reasoning.effort.medium"),
+        "high" => t("settings.reasoning.effort.high"),
+        "xhigh" => t("settings.reasoning.effort.xhigh"),
+        "max" => t("settings.reasoning.effort.max"),
+        _ => t("settings.reasoning.effort.unknown"),
     }
 }
 

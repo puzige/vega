@@ -58,9 +58,11 @@ impl VegaWindow {
                                 );
                             } else {
                                 view.update(cx, |view, cx| {
-                                    view.finish_save(
+                                    view.finish_save_localized(
                                         submitted,
-                                        Err("会话不可用，请重新打开".into()),
+                                        Err(vega_ui::localized_copy::LocalizedCopy::new(
+                                            "app.error.session_unavailable",
+                                        )),
                                         cx,
                                     )
                                 });
@@ -134,7 +136,13 @@ impl VegaWindow {
         cx: &mut Context<Self>,
     ) {
         if let Some((view, submitted)) = editor {
-            view.update(cx, |view, cx| view.finish_save(submitted, Err(error), cx));
+            view.update(cx, |view, cx| {
+                view.finish_save_localized(
+                    submitted,
+                    Err(crate::app_localization::localized_error(&error)),
+                    cx,
+                )
+            });
         } else {
             self.automation_error(stream, error, cx);
         }

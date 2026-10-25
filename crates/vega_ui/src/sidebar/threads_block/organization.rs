@@ -343,7 +343,9 @@ impl ThreadsBlock {
         if org.pending || task_mutation_busy(cx) {
             org.refresh_queued = true;
             if action.is_some() {
-                self.error = Some("组织正在保存，请稍后重试".into());
+                self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                    "ui.organization_is_being_saved_try_again_shortly",
+                ));
                 cx.notify();
             }
             return;
@@ -352,10 +354,11 @@ impl ThreadsBlock {
             return;
         }
         let database = with_store(cx, |store| {
-            store
-                .database_path()
-                .map(Path::to_path_buf)
-                .ok_or_else(|| "组织存储需要文件数据库".into())
+            store.database_path().map(Path::to_path_buf).ok_or_else(|| {
+                crate::localized_copy::LocalizedCopy::new(
+                    "ui.organization_storage_requires_a_file_backed_database",
+                )
+            })
         });
         let Ok(database) = database else {
             self.error = database.err();
@@ -406,7 +409,12 @@ impl ThreadsBlock {
                     group_id,
                     ..
                 }) => {
-                    let config = config::load().map_err(|e| e.to_string())?;
+                    let config = config::load().map_err(|error| {
+                        crate::localized_copy::LocalizedCopy::with_args(
+                            "ui.configuration_could_not_be_loaded_error",
+                            vec![("error", error.to_string().into())],
+                        )
+                    })?;
                     Some(SidebarOrganizationAction::CreateThreadInGroup {
                         project_id,
                         group_id,
@@ -416,7 +424,8 @@ impl ThreadsBlock {
                 }
                 action => action,
             };
-            let store = Store::open(database).map_err(|e| e.to_string())?;
+            let store =
+                Store::open(database).map_err(crate::localized_copy::LocalizedCopy::storage)?;
             match action {
                 Some(action) => service::apply(&store, revision, action),
                 None => service::snapshot(&store).map(|snapshot| SidebarOrganizationOutcome {
@@ -424,7 +433,7 @@ impl ThreadsBlock {
                     created_thread: None,
                 }),
             }
-            .map_err(|e| e.to_string())
+            .map_err(crate::localized_copy::LocalizedCopy::from)
         });
         cx.spawn(async move |this, cx| {
             let result = worker.await;
@@ -439,7 +448,7 @@ impl ThreadsBlock {
     fn finish_organization_request(
         &mut self,
         request: OrganizationRequestToken,
-        result: Result<SidebarOrganizationOutcome, String>,
+        result: Result<SidebarOrganizationOutcome, crate::localized_copy::LocalizedCopy>,
         cx: &mut Context<Self>,
     ) {
         let OrganizationRequestToken {
@@ -561,7 +570,9 @@ impl ThreadsBlock {
             .and_then(|id| org.snapshot.as_ref()?.groups.iter().find(|g| &g.id == id))
             .map(|g| g.name.clone())
             .unwrap_or_default();
-        let input = cx.new(|cx| TextInput::new(cx, "分组名称（1–64字）", false));
+        let input = cx.new(|cx| {
+            TextInput::new(cx, "", false).with_placeholder_key("ui.group_name_1_64_characters")
+        });
         input.update(cx, |input, cx| input.set_text(&name, cx));
         window.focus(&input.read(cx).focus_handle(cx), cx);
         org.editor = Some(GroupEditor { group_id, input });
@@ -576,7 +587,9 @@ impl ThreadsBlock {
         };
         let name = editor.input.read(cx).text().trim().to_string();
         if !(1..=64).contains(&name.chars().count()) {
-            self.error = Some("分组名称需为 1–64 个字符".into());
+            self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.group_names_must_contain_1_64_characters",
+            ));
             cx.notify();
             return;
         }
@@ -615,7 +628,9 @@ impl ThreadsBlock {
             return;
         }
         let Some(project_id) = cx.global::<SelectedProject>().0.clone() else {
-            self.error = Some("请先添加并选择项目，再在分组中新建任务".into());
+            self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.add_and_select_a_project_before_creating_a",
+            ));
             if let Some(org) = &self.organization {
                 org.projects.update(cx, ProjectsBlock::open_picker);
             }

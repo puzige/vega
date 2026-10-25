@@ -25,6 +25,18 @@ pub struct NavigationState {
     /// Short content-free navigation failure or capacity explanation.
     pub error: Option<&'static str>,
 }
+impl NavigationState {
+    pub fn error_message(&self) -> Option<&'static str> {
+        self.error.map(|message| {
+            if message == "ui.draft_capacity_reached_send_or_clear_the_current" {
+                vega_i18n::t(message)
+            } else {
+                message
+            }
+        })
+    }
+}
+
 impl Global for NavigationState {}
 /// Install focus-independent shortcuts with more-local text-editor overrides.
 pub fn init(cx: &mut App) {
@@ -80,9 +92,9 @@ pub fn controls(cx: &App, sidebar_visible: bool) -> AnyElement {
                     .unwrap_or_else(|| cx.focus_handle())
                     .tab_stop(enabled);
                 let name = if forward {
-                    "前进 (⌘])"
+                    vega_i18n::t("ui.forward")
                 } else {
-                    "后退 (⌘[)"
+                    vega_i18n::t("ui.back")
                 };
                 div()
                     .id(id)
@@ -169,8 +181,8 @@ fn search_control(cx: &App) -> AnyElement {
                 .small()
                 .size(px(Layout::TITLEBAR_CONTROL_SIZE))
                 .p_0()
-                .accessibility_label("搜索 (⌘K)")
-                .tooltip("搜索 (⌘K)")
+                .accessibility_label(vega_i18n::t("ui.search_k"))
+                .tooltip(vega_i18n::t("ui.search_k"))
                 .on_click(|_, window, cx| {
                     cx.stop_propagation();
                     window.dispatch_action(Box::new(crate::command_palette::OpenPalette), cx);
@@ -195,9 +207,9 @@ pub fn sidebar_toggle(cx: &App, sidebar_visible: bool) -> AnyElement {
 fn sidebar_control(cx: &App, sidebar_visible: bool) -> AnyElement {
     let colors = theme(cx).colors;
     let label = if sidebar_visible {
-        "隐藏侧栏 (⌘B)"
+        vega_i18n::t("ui.hide_sidebar_b")
     } else {
-        "显示侧栏 (⌘B)"
+        vega_i18n::t("ui.show_sidebar_b")
     };
     let focus = cx
         .try_global::<NavigationControlFocus>()
@@ -276,7 +288,7 @@ pub fn allow_task_navigation(target: Option<&str>, cx: &mut App) -> bool {
             .try_global::<NavigationState>()
             .cloned()
             .unwrap_or_default();
-        state.error = Some("草稿已达容量上限，请先发送或清空当前草稿再导航。");
+        state.error = Some("ui.draft_capacity_reached_send_or_clear_the_current");
         cx.set_global(state);
         cx.refresh_windows();
     }

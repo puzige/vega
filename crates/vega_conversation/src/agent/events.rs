@@ -708,6 +708,36 @@ pub(crate) fn persist_runtime_event(
                 },
             )?;
         }
+        RuntimeEvent::GeneratedNotice {
+            kind,
+            text_start_bytes,
+            text_end_bytes,
+        } => {
+            let (kind, turn_limit, delivered_images) = match kind {
+                vega_runtime::RuntimeGeneratedNoticeKind::TurnLimit { limit } => {
+                    ("turn_limit", Some(*limit), None)
+                }
+                vega_runtime::RuntimeGeneratedNoticeKind::ComputerStopped { delivered_images } => {
+                    ("computer_stopped", None, Some(*delivered_images))
+                }
+            };
+            let recorded = messages::record_generated_notice(
+                store.conn(),
+                message_id,
+                streamed_content,
+                &messages::GeneratedNoticeRow {
+                    message_id: message_id.to_string(),
+                    text_start_bytes: *text_start_bytes,
+                    text_end_bytes: *text_end_bytes,
+                    kind: kind.to_string(),
+                    turn_limit,
+                    delivered_images,
+                },
+            )?;
+            if !recorded {
+                return Err(runtime_state_error());
+            }
+        }
         RuntimeEvent::SkillSnapshot { binding, snapshot } => {
             persist_skill_snapshot(store, thread_id, message_id, binding, snapshot)?;
         }
@@ -1292,6 +1322,7 @@ pub(crate) fn validate_runtime_proposal(
             id: call.id.clone(),
             tool: call.name.clone(),
             input_json: call.input_json.clone(),
+            codex_display: None,
         };
         return crate::types::McpCallIdentity::from_tool_call(&projected)
             .map(|_| ())

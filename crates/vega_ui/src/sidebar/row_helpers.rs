@@ -36,15 +36,15 @@ pub fn render_delete_confirm_overlay(
                         .text_size(px(Typography::HEADING_CARD))
                         .font_weight(Typography::HEADING_CARD_WEIGHT)
                         .text_color(colors.text_primary)
-                        .child("删除会话"),
+                        .child(vega_i18n::t("ui.delete_conversation")),
                 )
                 .child(
                     div()
                         .text_size(px(Typography::SIDEBAR))
                         .text_color(colors.text_secondary)
-                        .child(format!(
-                            "确定删除「{}」？将同时删除该会话的全部消息与工具调用记录，且无法恢复。",
-                            thread_title(thread)
+                        .child(vega_i18n::t_args(
+                            "ui.delete_title_all_messages_and_tool_call_records",
+                            &[("title", &(thread_title(thread)).to_string())],
                         )),
                 )
                 .child(
@@ -71,7 +71,7 @@ pub fn render_delete_confirm_overlay(
                                         cx.refresh_windows();
                                     },
                                 )
-                                .child("取消"),
+                                .child(vega_i18n::t("ui.cancel")),
                         )
                         .child(
                             div()
@@ -86,12 +86,17 @@ pub fn render_delete_confirm_overlay(
                                 .on_mouse_up(
                                     MouseButton::Left,
                                     move |_: &MouseUpEvent, _window, cx: &mut App| {
-                                        if cx.global::<PendingDeleteConfirm>().0.as_ref().is_some_and(|thread| thread.id == thread_id) {
+                                        if cx
+                                            .global::<PendingDeleteConfirm>()
+                                            .0
+                                            .as_ref()
+                                            .is_some_and(|thread| thread.id == thread_id)
+                                        {
                                             sidebar.update(cx, Sidebar::confirm_pending_delete);
                                         }
                                     },
                                 )
-                                .child("删除"),
+                                .child(vega_i18n::t("ui.delete")),
                         ),
                 ),
         )
@@ -124,7 +129,10 @@ pub(crate) fn clear_opened_thread_of_project(project_id: &str, cx: &mut App) {
 }
 
 /// Inline danger bar (ui-spec §4.6: errors are inline, never modals).
-pub(crate) fn error_bar(message: String, colors: &ThemeColors) -> AnyElement {
+pub(crate) fn error_bar(
+    message: crate::localized_copy::LocalizedCopy,
+    colors: &ThemeColors,
+) -> AnyElement {
     div()
         .px_2()
         .py_1()
@@ -134,13 +142,13 @@ pub(crate) fn error_bar(message: String, colors: &ThemeColors) -> AnyElement {
         .border_color(colors.danger)
         .text_color(colors.danger)
         .text_size(px(Typography::SIDEBAR))
-        .child(message)
+        .child(message.render())
         .into_any_element()
 }
 
 pub(crate) fn thread_title(thread: &Thread) -> String {
     if thread.title.is_empty() {
-        "未命名任务".to_string()
+        vega_i18n::t("ui.untitled_task").to_string()
     } else {
         thread.title.clone()
     }

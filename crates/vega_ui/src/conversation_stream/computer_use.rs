@@ -83,7 +83,9 @@ impl ConversationStream {
             let click_context = context.clone();
             let key_context = context.clone();
             notice = notice
-                .child("请确认本任务可以访问这个浏览器标签页：")
+                .child(vega_i18n::t(
+                    "ui.confirm_that_this_task_may_access_this_browser",
+                ))
                 .child(target.label())
                 .child(
                     div()
@@ -121,7 +123,7 @@ impl ConversationStream {
                                 cx.notify();
                             }
                         }))
-                        .child("允许此标签页"),
+                        .child(vega_i18n::t("ui.allow_this_tab")),
                 );
         }
         if status.phase == ControlPhase::Paused {
@@ -130,7 +132,9 @@ impl ConversationStream {
             let click_context = context.clone();
             let key_context = context.clone();
             notice = notice
-                .child("电脑操作已暂停。准备好后可继续本任务。")
+                .child(vega_i18n::t(
+                    "ui.computer_control_is_paused_resume_this_task_when",
+                ))
                 .child(
                     div()
                         .id("conversation-computer-resume")
@@ -166,10 +170,10 @@ impl ConversationStream {
                                 cx.notify();
                             }
                         }))
-                        .child("继续"),
+                        .child(vega_i18n::t("ui.continue")),
                 );
         } else if status.phase == ControlPhase::Pausing {
-            notice = notice.child("正在交还控制…");
+            notice = notice.child(vega_i18n::t("ui.returning_control"));
         }
         Some(notice.into_any_element())
     }

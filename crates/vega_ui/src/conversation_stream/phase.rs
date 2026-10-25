@@ -48,6 +48,7 @@ impl RunResponses {
         let mut text = String::new();
         let mut owner = None;
         let mut failed = false;
+        let mut notices = Vec::new();
         for (entry, identity) in entries.iter().zip(identities) {
             if identity.message_id.as_deref() == Some(message_id)
                 && let StreamEntry::Assistant {
@@ -58,6 +59,11 @@ impl RunResponses {
                 } = entry
             {
                 failed |= failure.is_some();
+                notices.extend(
+                    copy.generated_notices()
+                        .into_iter()
+                        .map(|notice| notice.shifted(text.len())),
+                );
                 text.push_str(&copy.original_text());
                 if model.row_count() > 0 {
                     owner = Some((copy.id, text.len()));
@@ -77,17 +83,35 @@ impl RunResponses {
                 Some((
                     owner,
                     text.get(response.text_start_bytes..response.text_end_bytes)?,
+                    response.text_start_bytes..response.text_end_bytes,
                 ))
             });
-        self.final_copy = projection.map(|(owner, source)| {
+        self.final_copy = projection.map(|(owner, source, range)| {
             let copy = self
                 .final_copy
                 .as_ref()
                 .filter(|(previous, copy)| *previous == owner && copy.original_text() == source)
                 .map(|(_, copy)| copy.clone())
                 .unwrap_or_else(|| MessageCopy::new(source));
+            copy.set_generated_notices(
+                notices
+                    .iter()
+                    .filter_map(|notice| notice.within(range.clone()))
+                    .collect(),
+            );
             (owner, copy)
         });
+    }
+
+    pub(crate) fn refresh_generated_copy(
+        &mut self,
+        message_id: &str,
+        entries: &[StreamEntry],
+        identities: &[StreamEntryIdentity],
+    ) {
+        if self.final_copy.is_some() {
+            self.refresh_final_copy(message_id, entries, identities);
+        }
     }
 
     fn copy_owner(&self) -> Option<u64> {
@@ -317,7 +341,23 @@ impl ConversationStream {
                     && let Some(text) = text.get(response.text_start_bytes..response.text_end_bytes)
                     && !text.trim().is_empty()
                 {
-                    return Some(text.to_owned());
+                    let mut offset = 0;
+                    let notices = copies
+                        .iter()
+                        .flat_map(|copy| {
+                            let notices = copy
+                                .generated_notices()
+                                .into_iter()
+                                .map(|notice| notice.shifted(offset))
+                                .collect::<Vec<_>>();
+                            offset += copy.original_text().len();
+                            notices
+                        })
+                        .filter_map(|notice| {
+                            notice.within(response.text_start_bytes..response.text_end_bytes)
+                        })
+                        .collect::<Vec<_>>();
+                    return Some(generated_notice::project_text(text, &notices));
                 }
                 continue;
             }
@@ -329,7 +369,7 @@ impl ConversationStream {
                 {
                     continue;
                 }
-                let text = copy.original_text();
+                let text = copy.display_text();
                 if !text.trim().is_empty() {
                     return Some(text);
                 }
@@ -591,8 +631,13 @@ impl ConversationStream {
             && let Some((_, index)) = &self.active_agent_message
         {
             let index = *index;
-            if let Some(StreamEntry::Assistant { stream, model, .. }) = self.entries.get_mut(index)
-                && model.sync(&stream.snapshot(), &self.counters)
+            if let Some(StreamEntry::Assistant {
+                copy,
+                stream,
+                model,
+                ..
+            }) = self.entries.get_mut(index)
+                && copy.sync_model(stream, model, &self.counters)
             {
                 self.invalidate_item(Some(index));
             }

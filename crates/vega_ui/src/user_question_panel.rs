@@ -45,7 +45,7 @@ pub(crate) struct UserQuestionPanel {
     drafts: Vec<QuestionDraft>,
     page: usize,
     submitted: bool,
-    error: Option<String>,
+    error: Option<crate::localized_copy::LocalizedCopy>,
     option_focus: Vec<Vec<FocusHandle>>,
     controls: [FocusHandle; 4],
     composer_focus: FocusHandle,
@@ -67,7 +67,9 @@ impl UserQuestionPanel {
         let mut option_focus = Vec::new();
         for question in &input.questions {
             let note = cx.new(|cx| {
-                TextInput::new_multiline(cx, "Your answer or note", 2).with_tab_stop(true)
+                TextInput::new_multiline(cx, "", 2)
+                    .with_placeholder_key("ui.your_answer_or_note")
+                    .with_tab_stop(true)
             });
             cx.observe(&note, |this, _, cx| {
                 this.error = None;
@@ -141,7 +143,9 @@ impl UserQuestionPanel {
             return;
         }
         if self.answer(self.page, cx).is_none() {
-            self.error = Some("Choose an option or enter an answer.".into());
+            self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.choose_an_option_or_enter_an_answer",
+            ));
             cx.notify();
             return;
         }
@@ -158,7 +162,9 @@ impl UserQuestionPanel {
             let Some(answer) = self.answer(index, cx) else {
                 self.page = index;
                 self.focus_current_option(window, cx);
-                self.error = Some("Answer or skip this question before submitting.".into());
+                self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                    "ui.answer_or_skip_this_question_before_submitting",
+                ));
                 cx.notify();
                 return;
             };
@@ -172,11 +178,14 @@ impl UserQuestionPanel {
             }
             Ok(false) => {
                 self.submitted = true;
-                self.error = Some("Question interrupted.".into());
+                self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                    "ui.question_interrupted",
+                ));
             }
             Err(_) => {
-                self.error =
-                    Some("Answer could not be submitted. Check its length and try again.".into())
+                self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                    "ui.answer_could_not_be_submitted_check_its_length",
+                ))
             }
         }
         cx.notify();
@@ -303,7 +312,8 @@ impl Render for UserQuestionPanel {
         let mut options = div().flex().flex_col().gap_1();
         for index in 0..=question.options.len() {
             let option = question.options.get(index);
-            let source_label = option.map_or("Other", |option| option.label.as_str());
+            let source_label =
+                option.map_or(vega_i18n::t("ui.other"), |option| option.label.as_str());
             let recommended = source_label.ends_with(" (Recommended)");
             let label = source_label
                 .strip_suffix(" (Recommended)")
@@ -314,7 +324,10 @@ impl Render for UserQuestionPanel {
                 .id(("question-option", index))
                 .role(Role::Button)
                 .aria_label(if selected {
-                    format!("Selected: {source_label}")
+                    vega_i18n::t_args(
+                        "ui.selected_source_label",
+                        &[("source_label", source_label)],
+                    )
                 } else {
                     source_label.to_string()
                 })
@@ -370,7 +383,7 @@ impl Render for UserQuestionPanel {
                                             div()
                                                 .text_size(px(Typography::METADATA))
                                                 .text_color(colors.text_secondary)
-                                                .child("Recommended"),
+                                                .child(vega_i18n::t("ui.recommended")),
                                         )
                                     },
                                 ))
@@ -394,9 +407,9 @@ impl Render for UserQuestionPanel {
         let custom = draft.selected == Some(question.options.len());
         let can_advance = enabled && self.answer(self.page, cx).is_some();
         let primary = if self.page + 1 == self.input.questions.len() {
-            "Submit"
+            vega_i18n::t("ui.submit")
         } else {
-            "Next"
+            vega_i18n::t("ui.next")
         };
         let content = div()
             .id("question-content")
@@ -420,13 +433,23 @@ impl Render for UserQuestionPanel {
                         .flex_col()
                         .gap_1()
                         .key_context("UserQuestionNote")
-                        .child(if custom { "Your answer" } else { "Note" })
+                        .child(if custom {
+                            vega_i18n::t("ui.your_answer")
+                        } else {
+                            vega_i18n::t("ui.note")
+                        })
                         .when(enabled, |content| content.child(note))
                         .when(!enabled, |content| content.child(note_text)),
                 )
             })
             .when(!note_visible && draft.selected.is_some(), |content| {
-                content.child(self.button("Add note", PanelAction::Note, 3, enabled, cx))
+                content.child(self.button(
+                    vega_i18n::t("ui.add_note"),
+                    PanelAction::Note,
+                    3,
+                    enabled,
+                    cx,
+                ))
             })
             .tracked_scroll_edge_fade(
                 self.scroll.clone(),
@@ -484,7 +507,7 @@ impl Render for UserQuestionPanel {
             .children(
                 self.error
                     .as_ref()
-                    .map(|error| div().text_color(colors.danger).child(error.clone())),
+                    .map(|error| div().text_color(colors.danger).child(error.render())),
             )
             .child(
                 div()
@@ -492,12 +515,24 @@ impl Render for UserQuestionPanel {
                     .justify_between()
                     .items_center()
                     .gap_2()
-                    .child(self.button("Back", PanelAction::Back, 0, enabled && self.page > 0, cx))
+                    .child(self.button(
+                        vega_i18n::t("ui.back_en"),
+                        PanelAction::Back,
+                        0,
+                        enabled && self.page > 0,
+                        cx,
+                    ))
                     .child(
                         div()
                             .flex()
                             .gap_2()
-                            .child(self.button("Skip", PanelAction::Skip, 1, enabled, cx))
+                            .child(self.button(
+                                vega_i18n::t("ui.skip"),
+                                PanelAction::Skip,
+                                1,
+                                enabled,
+                                cx,
+                            ))
                             .child(self.button(primary, PanelAction::Advance, 2, can_advance, cx)),
                     ),
             )

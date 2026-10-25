@@ -5,7 +5,7 @@ use std::sync::{Arc, OnceLock};
 use vega_conversation::types::ImageAttachment;
 use vega_theme::{Layout, Typography, theme};
 
-use crate::icons::{Icon, icon, icon_button};
+use crate::icons::{Icon, icon};
 
 #[derive(Clone, Copy)]
 pub enum ImagePreviewAction {
@@ -27,12 +27,27 @@ pub struct ImagePreview {
     open_focus: FocusHandle,
     busy: bool,
     thumbnail_visible: bool,
-    status: Option<&'static str>,
+    status: Option<ImagePreviewStatus>,
     applications: Option<Vec<String>>,
     application_focuses: Vec<FocusHandle>,
     trigger_bounds: Option<Bounds<Pixels>>,
     dismissed_on_trigger: bool,
     focus_menu: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ImagePreviewStatus {
+    Text(&'static str),
+    Key(&'static str),
+}
+
+impl ImagePreviewStatus {
+    fn render(self) -> &'static str {
+        match self {
+            Self::Text(text) => text,
+            Self::Key(key) => vega_i18n::t(key),
+        }
+    }
 }
 
 impl EventEmitter<ImagePreviewAction> for ImagePreview {}
@@ -119,7 +134,7 @@ impl ImagePreview {
         self.thumbnail_focus.clone()
     }
     pub fn status(&self) -> Option<&'static str> {
-        self.status
+        self.status.map(ImagePreviewStatus::render)
     }
     pub fn busy(&self) -> bool {
         self.busy
@@ -136,20 +151,35 @@ impl ImagePreview {
     }
     pub fn finish(&mut self, status: Option<&'static str>, cx: &mut Context<Self>) {
         self.busy = false;
-        self.status = status;
+        self.status = status.map(ImagePreviewStatus::Text);
+        cx.notify();
+    }
+    pub fn finish_localized(&mut self, status: Option<&'static str>, cx: &mut Context<Self>) {
+        self.busy = false;
+        self.status = status.map(ImagePreviewStatus::Key);
         cx.notify();
     }
     pub fn set_applications(&mut self, names: Vec<String>, cx: &mut Context<Self>) {
         self.busy = false;
-        self.status = names
-            .is_empty()
-            .then_some("没有可用的应用，请保存到本地后打开");
+        self.status = names.is_empty().then_some(ImagePreviewStatus::Key(
+            "ui.no_apps_are_available_save_locally_then_open",
+        ));
         self.application_focuses = names
             .iter()
             .map(|_| cx.focus_handle().tab_stop(true))
             .collect();
         self.focus_menu = !names.is_empty();
         self.applications = (!names.is_empty()).then_some(names);
+        cx.notify();
+    }
+    pub fn refresh_application_labels(&mut self, names: Vec<String>, cx: &mut Context<Self>) {
+        let Some(applications) = self.applications.as_mut() else {
+            return;
+        };
+        if applications.len() != names.len() || *applications == names {
+            return;
+        }
+        *applications = names;
         cx.notify();
     }
     pub fn dismiss_menu(&mut self, cx: &mut Context<Self>) {
@@ -192,7 +222,10 @@ impl ImagePreview {
             .id(("image-thumbnail", view.entity_id()))
             .track_focus(&state.thumbnail_focus)
             .tab_stop(true)
-            .aria_label(format!("预览 {}", state.name))
+            .aria_label(vega_i18n::t_args(
+                "ui.preview_name",
+                &[("name", &state.name)],
+            ))
             .relative()
             .size(px(size))
             .flex_shrink_0()
@@ -240,9 +273,9 @@ impl Render for ImagePreview {
         }
         let colors = theme(cx).colors;
         let name = self.name.clone();
-        let save = icon_button(
+        let save = crate::icons::localized_icon_button(
             Icon::ArrowDown,
-            "保存到本地",
+            "ui.save_locally",
             colors,
             cx.listener(|this, _, _, cx| this.action(ImagePreviewAction::Save, cx)),
         )
@@ -275,7 +308,7 @@ impl Render for ImagePreview {
                     cx.stop_propagation();
                 }
             }))
-            .child("打开方式")
+            .child(vega_i18n::t("ui.open_with"))
             .child(icon(Icon::ChevronDown, colors.text_secondary))
             .child({
                 let view = cx.entity().downgrade();
@@ -384,7 +417,7 @@ impl Render for ImagePreview {
                     .child(open)
                     .child(save),
             )
-            .when_some(self.status, |el, status| {
+            .when_some(self.status(), |el, status| {
                 el.child(
                     div()
                         .px_3()
@@ -409,14 +442,18 @@ impl Render for ImagePreview {
                             .max_w(px(self.image.width() as f32))
                             .max_h(px(self.image.height() as f32))
                             .object_fit(ObjectFit::Contain)
-                            .with_loading(|| div().child("加载中").into_any_element())
+                            .with_loading(|| {
+                                div().child(vega_i18n::t("ui.loading")).into_any_element()
+                            })
                             .with_fallback(|| {
                                 div()
-                                    .child("图片无法显示，请保存到本地后打开")
+                                    .child(vega_i18n::t(
+                                        "ui.this_image_cannot_be_displayed_save_locally_then",
+                                    ))
                                     .into_any_element()
                             })
                             .into_any_element(),
-                        None => div().child("加载中").into_any_element(),
+                        None => div().child(vega_i18n::t("ui.loading")).into_any_element(),
                     }),
             )
             .children(menu.map(|menu| deferred(menu).with_priority(2)))

@@ -86,40 +86,43 @@ impl SettingsView {
             .child(self.usage_button(
                 "usage-refresh",
                 if self.usage.loading {
-                    "刷新中…"
+                    t("settings.usage.refreshing")
                 } else {
-                    "刷新"
+                    t("settings.action.refresh")
                 },
                 false,
                 |this, cx| this.request_usage_reload(cx),
                 cx,
             ))
             .children(
-                [("usage-7days", "近7日", 7), ("usage-30days", "近30日", 30)]
-                    .into_iter()
-                    .map(|(id, label, days)| {
-                        self.usage_button(
-                            id,
-                            label,
-                            (if self.usage.range_days == 30 { 30 } else { 7 }) == days,
-                            move |this, cx| {
-                                this.usage.range_days = days;
-                                cx.notify();
-                            },
-                            cx,
-                        )
-                    }),
+                [
+                    ("usage-7days", t("settings.usage.last_7_days"), 7),
+                    ("usage-30days", t("settings.usage.last_30_days"), 30),
+                ]
+                .into_iter()
+                .map(|(id, label, days)| {
+                    self.usage_button(
+                        id,
+                        label,
+                        (if self.usage.range_days == 30 { 30 } else { 7 }) == days,
+                        move |this, cx| {
+                            this.usage.range_days = days;
+                            cx.notify();
+                        },
+                        cx,
+                    )
+                }),
             )
             .child(
                 div()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_secondary)
-                    .child("应用用量 · 按 UTC 日期统计"),
+                    .child(t("settings.usage.utc")),
             );
         let mut page = settings_section().w_full().child(header);
         if self.usage.error {
             page = page.child(settings_status(
-                "使用统计读取失败，请刷新重试",
+                t("settings.usage.load_failed"),
                 colors.danger,
                 colors,
             ));
@@ -127,7 +130,7 @@ impl SettingsView {
         if let Some(data) = self.usage.dashboard.clone() {
             if data.lifetime.calls == 0 {
                 page = page.child(settings_status(
-                    "暂无使用记录。完成对话后将在这里显示实际用量。",
+                    t("settings.usage.empty"),
                     colors.text_secondary,
                     colors,
                 ));
@@ -136,7 +139,7 @@ impl SettingsView {
             }
         } else if !self.usage.error {
             page = page.child(settings_status(
-                "正在加载使用统计…",
+                t("settings.usage.loading"),
                 colors.text_secondary,
                 colors,
             ));
@@ -222,11 +225,17 @@ impl SettingsView {
             longest = longest.max(streak);
         }
         let metrics = [
-            ("累计 Tokens", compact(data.lifetime.total_tokens)),
-            ("累计估算费用", cost_label(&data.lifetime)),
-            ("单日峰值 · 近365日", compact(peak)),
-            ("活跃天数 · 近365日", active.to_string()),
-            ("最长连续天数 · 近365日", longest.to_string()),
+            (
+                t("settings.usage.lifetime_tokens"),
+                compact(data.lifetime.total_tokens),
+            ),
+            (
+                t("settings.usage.lifetime_cost"),
+                cost_label(&data.lifetime),
+            ),
+            (t("settings.usage.peak_day"), compact(peak)),
+            (t("settings.usage.active_days"), active.to_string()),
+            (t("settings.usage.longest_streak"), longest.to_string()),
         ];
         let metric_band = settings_group(colors)
             .flex_row()
@@ -249,13 +258,13 @@ impl SettingsView {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(div().child("使用活动 · 近365日"))
+                    .child(div().child(t("settings.usage.activity")))
                     .child(
                         div().flex().gap_1().children(
                             [
-                                ("usage-daily", "每日"),
-                                ("usage-weekly", "每周"),
-                                ("usage-cumulative", "累计"),
+                                ("usage-daily", t("settings.usage.daily")),
+                                ("usage-weekly", t("settings.usage.weekly")),
+                                ("usage-cumulative", t("settings.usage.cumulative")),
                             ]
                             .into_iter()
                             .enumerate()
@@ -304,8 +313,8 @@ impl SettingsView {
                     .justify_between()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_tertiary)
-                    .child("周一至周日 · 每列一周")
-                    .child("浅 → 深 · Tokens"),
+                    .child(t("settings.usage.heatmap_weeks"))
+                    .child(t("settings.usage.heatmap_scale")),
             );
         let models: Vec<_> = data
             .models
@@ -323,7 +332,10 @@ impl SettingsView {
                     .rev()
                     .collect();
                 (
-                    series.model.clone().unwrap_or_else(|| "其他模型".into()),
+                    series
+                        .model
+                        .clone()
+                        .unwrap_or_else(|| t("settings.usage.other_model").into()),
                     values,
                     palette(index, colors),
                 )
@@ -365,12 +377,15 @@ impl SettingsView {
                 div()
                     .flex()
                     .justify_between()
-                    .child("每日模型 Tokens")
+                    .child(t("settings.usage.daily_model_tokens"))
                     .child(
                         div()
                             .text_size(px(Typography::METADATA))
                             .text_color(colors.text_secondary)
-                            .child(format!("0 — {} Tokens", peak_model)),
+                            .child(t_args(
+                                "settings.usage.token_range",
+                                &[("count", &peak_model.to_string())],
+                            )),
                     ),
             )
             .child(
@@ -407,9 +422,12 @@ impl SettingsView {
                 .flex_col()
                 .gap_1()
                 .text_size(px(Typography::METADATA))
-                .child(div().text_color(colors.text_secondary).child(format!(
-                    "{} · 点击曲线查看当日用量",
-                    dates.get(selected).cloned().unwrap_or_default()
+                .child(div().text_color(colors.text_secondary).child(t_args(
+                    "settings.usage.chart_hint",
+                    &[(
+                        "date",
+                        dates.get(selected).map(String::as_str).unwrap_or_default(),
+                    )],
                 )))
                 .children(models.iter().map(|(name, values, color)| {
                     div()
@@ -417,10 +435,15 @@ impl SettingsView {
                         .gap_2()
                         .items_center()
                         .child(div().size(px(8.)).rounded_full().bg(*color))
-                        .child(format!(
-                            "{} · {} Tokens",
-                            name,
-                            values.get(selected).copied().unwrap_or(0)
+                        .child(t_args(
+                            "settings.usage.day_tokens",
+                            &[
+                                ("model", name),
+                                (
+                                    "count",
+                                    &(values.get(selected).copied().unwrap_or(0)).to_string(),
+                                ),
+                            ],
                         ))
                 })),
         );
@@ -455,7 +478,7 @@ impl SettingsView {
             .gap_3()
             .rounded(px(Layout::PANEL_RADIUS))
             .bg(colors.bg_subtle)
-            .child("模型用量")
+            .child(t("settings.usage.model_usage"))
             .child(
                 div()
                     .flex()
@@ -486,7 +509,7 @@ impl SettingsView {
                                         div()
                                             .text_size(px(Typography::METADATA))
                                             .text_color(colors.text_secondary)
-                                            .child("Tokens"),
+                                            .child(t("settings.usage.tokens")),
                                     ),
                             ),
                     )
@@ -496,7 +519,7 @@ impl SettingsView {
                 d.child(
                     div()
                         .text_color(colors.text_secondary)
-                        .child("此时间段暂无 Tokens 用量"),
+                        .child(t("settings.usage.no_tokens")),
                 )
             });
         div()
@@ -543,13 +566,19 @@ fn compact(value: u64) -> String {
 }
 fn cost_label(totals: &UsageTotals) -> String {
     if totals.calls == totals.unpriced_calls {
-        return "未计价".into();
+        return t("settings.usage.unpriced").into();
     }
     let cost = crate::summary_card::format_usd(vega_conversation::types::Microcents(
         totals.priced_cost_microcents,
     ));
     if totals.unpriced_calls > 0 {
-        format!("{cost} + {}次未计价", totals.unpriced_calls)
+        t_args(
+            "settings.usage.unpriced_calls",
+            &[
+                ("cost", &cost),
+                ("count", &totals.unpriced_calls.to_string()),
+            ],
+        )
     } else {
         cost
     }
