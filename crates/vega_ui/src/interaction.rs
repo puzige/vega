@@ -9,8 +9,10 @@ use gpui_kit::{
 use vega_theme::{Motion, ThemeColors};
 
 mod decorative;
+mod overlay;
 mod platform;
 pub use decorative::{decorative_transition, decorative_value};
+pub use overlay::{OverlayEntry, OverlaySurface};
 pub use platform::{install_system_motion, observe_system_motion, refresh_system_motion};
 
 pub trait InteractionExt: Sized {

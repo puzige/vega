@@ -768,23 +768,27 @@ impl ConversationStream {
         // bottom to its top, rather than covering the draft at bottom: 0.
         // Defer paint/hit-testing so the transcript cannot cover candidates.
         gpui_kit::deferred(
-            div()
-                .absolute()
-                .bottom(gpui_kit::relative(1.0))
-                .mb_2()
-                .left_0()
-                .w(px(Layout::MENU_MAX_WIDTH))
-                .max_w_full()
-                .occlude()
-                .flex()
-                .flex_col()
-                .rounded(px(Layout::MENU_RADIUS))
-                .border_1()
-                .border_color(colors.border_subtle)
-                .bg(colors.bg_elevated)
-                .text_color(colors.text_primary)
-                .shadow_sm()
-                .child(content),
+            self.file_entry.surface(
+                div()
+                    .id("file-reference-menu")
+                    .absolute()
+                    .bottom(gpui_kit::relative(1.0))
+                    .mb_2()
+                    .left_0()
+                    .w(px(Layout::MENU_MAX_WIDTH))
+                    .max_w_full()
+                    .occlude()
+                    .flex()
+                    .flex_col()
+                    .rounded(px(Layout::MENU_RADIUS))
+                    .border_1()
+                    .border_color(colors.border_subtle)
+                    .bg(colors.bg_elevated)
+                    .text_color(colors.text_primary)
+                    .shadow_sm()
+                    .child(content),
+                self.file_index_failure.is_some(),
+            ),
         )
         .with_priority(2)
         .into_any_element()
@@ -1359,6 +1363,12 @@ impl ConversationStream {
 
 impl Render for ConversationStream {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.file_entry.sync(
+            self.file_selector.is_open() || self.file_selector_wanted || self.file_index_loading,
+            !self.reading_preview,
+            window,
+            cx,
+        );
         if !self.reading_preview {
             self.reconcile_pending_focus(window, cx);
         }

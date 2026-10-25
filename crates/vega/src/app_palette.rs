@@ -11,6 +11,7 @@ type Route = (Option<String>, Option<String>);
 #[derive(Default)]
 pub(crate) struct AppPalette {
     pub(crate) view: Option<Entity<CommandPalette>>,
+    entry: vega_ui::interaction::OverlayEntry,
     prior_focus: Option<FocusHandle>,
     route: Option<Route>,
     generation: u64,
@@ -22,6 +23,34 @@ pub(crate) struct AppPalette {
     close_requested: bool,
     preview: Option<(Route, String, PaletteFilePreview)>,
 }
+
+impl AppPalette {
+    fn invalidate_route(&self, current: &Route) {
+        if self.route.as_ref().is_some_and(|origin| origin != current) {
+            self.entry.invalidate();
+        }
+    }
+
+    fn request_close(&mut self, cx: &App) {
+        self.entry.close(cx);
+        self.close_requested = true;
+    }
+
+    fn close(&mut self, window: &mut Window, cx: &mut App) {
+        self.entry.close(cx);
+        self.cancel.cancel();
+        self.generation = self.generation.wrapping_add(1);
+        self.view = None;
+        self.pending_query = None;
+        self.target = None;
+        self.activation = None;
+        self.close_requested = false;
+        if let Some(focus) = self.prior_focus.take() {
+            window.focus(&focus, cx);
+        }
+    }
+}
+
 fn route(cx: &App) -> Route {
     (
         cx.global::<SelectedProject>().0.clone(),
@@ -122,6 +151,7 @@ impl VegaWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.palette.invalidate_route(&route(cx));
         if self.palette.view.is_some()
             && (self.palette.close_requested || self.palette.route.as_ref() != Some(&route(cx)))
         {
@@ -151,7 +181,9 @@ impl VegaWindow {
                 actions.push(PaletteAction::Preview);
             }
         }
-        let view = cx.new(|cx| CommandPalette::new(actions, cx));
+        self.palette.entry.sync(true, true, window, cx);
+        let entry = self.palette.entry.clone();
+        let view = cx.new(|cx| CommandPalette::new(actions, cx).with_overlay_entry(entry));
         cx.subscribe(&view, |this, _, event: &PaletteQueryChanged, cx| {
             this.search_palette(event.0.clone(), cx)
         })
@@ -162,7 +194,7 @@ impl VegaWindow {
         })
         .detach();
         cx.subscribe(&view, |this, _, _: &PaletteClosed, cx| {
-            this.palette.close_requested = true;
+            this.palette.request_close(cx);
             cx.notify();
         })
         .detach();
@@ -172,16 +204,7 @@ impl VegaWindow {
         cx.notify();
     }
     fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.palette.cancel.cancel();
-        self.palette.generation = self.palette.generation.wrapping_add(1);
-        self.palette.view = None;
-        self.palette.pending_query = None;
-        self.palette.target = None;
-        self.palette.activation = None;
-        self.palette.close_requested = false;
-        if let Some(focus) = self.palette.prior_focus.take() {
-            window.focus(&focus, cx);
-        }
+        self.palette.close(window, cx);
         cx.notify();
     }
     fn search_palette(&mut self, query: String, cx: &mut Context<Self>) {
@@ -229,11 +252,15 @@ impl VegaWindow {
     }
     /// Render-loop hook applies window-bearing actions and completed read-only panes.
     pub(crate) fn sync_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.palette.invalidate_route(&route(cx));
         if self.palette.view.is_some()
             && (self.palette.close_requested || self.palette.route.as_ref() != Some(&route(cx)))
         {
             self.close_palette(window, cx);
         }
+        self.palette
+            .entry
+            .sync(self.palette.view.is_some(), true, window, cx);
         if let Some((origin, project, preview)) = self.palette.preview.take() {
             if route(cx) != origin {
                 return;
@@ -431,3 +458,6 @@ fn worker<T: Send + 'static>(
     })
     .detach();
 }
+
+#[cfg(test)]
+mod tests;

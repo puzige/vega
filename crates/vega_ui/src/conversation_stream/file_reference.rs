@@ -58,6 +58,7 @@ impl ConversationStream {
     /// The app controller cancels the worker separately; this method only
     /// fences UI state and clears route-scoped cache.
     pub fn invalidate_file_index(&mut self, cx: &mut Context<Self>) {
+        self.file_entry.invalidate();
         let _ = self.next_file_index_generation();
         self.file_index_loading = false;
         self.file_index_loaded = false;
@@ -74,6 +75,7 @@ impl ConversationStream {
     }
 
     pub(crate) fn close_file_selector_and_cancel(&mut self, cx: &mut Context<Self>) {
+        self.file_entry.close(cx);
         let should_cancel = self.file_index_loading;
         self.file_selector_wanted = false;
         self.file_selector.close();
@@ -97,6 +99,7 @@ impl ConversationStream {
 
     pub(crate) fn sync_at_query(&mut self, input: &Entity<TextInput>, cx: &mut Context<Self>) {
         if self.thread.is_standalone() {
+            self.file_entry.invalidate();
             self.file_selector_wanted = false;
             self.file_selector.close();
             self.file_index_loading = false;
@@ -109,6 +112,7 @@ impl ConversationStream {
         let query = input.read(cx).trailing_at_query().map(|(_, query)| query);
         match query {
             None => {
+                self.file_entry.close(cx);
                 let should_cancel = self.file_index_loading;
                 self.file_selector_wanted = false;
                 self.file_selector.close();
@@ -128,6 +132,7 @@ impl ConversationStream {
                 cx.notify();
             }
             Some(query) => {
+                self.file_entry.open(cx);
                 self.file_selector_wanted = true;
                 if !self.file_index_loaded
                     && !self.file_index_loading
@@ -242,6 +247,7 @@ impl ConversationStream {
             self.close_file_selector_and_cancel(cx);
             return;
         };
+        self.file_entry.open(cx);
         self.file_selector_wanted = true;
         self.file_selector.close();
         self.file_index_loaded = false;
@@ -279,6 +285,7 @@ impl ConversationStream {
         cx: &mut Context<Self>,
     ) {
         if let Some(path) = self.file_selector.accept() {
+            self.file_entry.close(cx);
             self.file_selector_wanted = false;
             self.input
                 .update(cx, |input, cx| input.complete_at_query(&path, cx));
@@ -288,6 +295,7 @@ impl ConversationStream {
 
     pub(crate) fn on_selector_click(&mut self, index: usize, cx: &mut Context<Self>) {
         if let Some(path) = self.file_selector.accept_at(index) {
+            self.file_entry.close(cx);
             self.file_selector_wanted = false;
             self.input
                 .update(cx, |input, cx| input.complete_at_query(&path, cx));
@@ -295,3 +303,6 @@ impl ConversationStream {
         cx.notify();
     }
 }
+
+#[cfg(test)]
+mod tests;

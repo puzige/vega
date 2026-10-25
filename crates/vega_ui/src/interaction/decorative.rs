@@ -33,6 +33,18 @@ pub fn decorative_value(
     window: &mut Window,
     cx: &mut App,
 ) -> MotionValue<f32> {
+    seeded_decorative_value(id, (target, None), duration, visible, window, cx)
+}
+
+pub(super) fn seeded_decorative_value(
+    id: SharedString,
+    value: (f32, Option<f32>),
+    duration: Duration,
+    visible: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> MotionValue<f32> {
+    let (target, seed) = value;
     window.with_element_namespace(id, |window| {
         let channel = window.use_keyed_state("decorative-lifecycle", cx, |window, cx| {
             let activation_subscription = cx.observe_window_activation(
@@ -60,6 +72,21 @@ pub fn decorative_value(
             window,
             cx,
         );
+        if !interrupted
+            && visible
+            && window.is_window_active()
+            && !cx.reduce_motion()
+            && !duration.is_zero()
+            && let Some(seed) = seed
+        {
+            transition_with_status(
+                "decorative-sampler",
+                seed,
+                Transition::new(Duration::ZERO),
+                window,
+                cx,
+            );
+        }
         transition_with_status("decorative-sampler", target, policy, window, cx)
     })
 }
