@@ -835,7 +835,11 @@ async fn ordinary_stop_drains_real_worker_and_duplicate_late_batches_cannot_touc
             b_anchor.identity
         );
         assert_eq!(
-            b_stream.read_with(cx, |stream, cx| stream.composer_input().read(cx).text()),
+            b_stream.read_with(cx, |stream, cx| stream
+                .composer_input()
+                .read(cx)
+                .text()
+                .to_owned()),
             "B route draft"
         );
         assert!(!b_stream.read_with(cx, |stream, _| stream.has_active_agent()));
