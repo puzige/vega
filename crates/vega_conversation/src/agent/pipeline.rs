@@ -1,6 +1,10 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
+#[path = "cua_recovery_tests.rs"]
+mod cua_recovery_tests;
+
 pub(crate) fn valid_automation_call_projection(tool: &str, input_json: &str) -> bool {
     matches!(tool, "get_goal" | "update_goal" | "schedule_wakeup")
         && input_json.len() <= 32 * 1024
@@ -1221,6 +1225,123 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     })
 }
 
+fn valid_computer_use_output(
+    tool: &str,
+    output: &str,
+    status: RuntimeToolStatus,
+    approval: &ApprovalAudit,
+) -> bool {
+    if output.len() > 2048 || approval.note.is_some() {
+        return false;
+    }
+    if output == vega_runtime::computer_use::SUPERSEDED_CONTROL_OUTPUT {
+        return status == RuntimeToolStatus::Cancelled
+            && approval.decision == Approval::Once
+            && approval.source == ApprovalSource::ComputerUse;
+    }
+    if approval.decision
+        != if status == RuntimeToolStatus::Rejected {
+            Approval::Deny
+        } else {
+            Approval::Once
+        }
+    {
+        return false;
+    }
+    let structured = serde_json::from_str::<serde_json::Value>(output).ok();
+    if structured
+        .as_ref()
+        .is_some_and(|value| value.get("code").is_some() && value.get("execution_state").is_some())
+    {
+        return matches!(
+            status,
+            RuntimeToolStatus::Rejected | RuntimeToolStatus::Failed | RuntimeToolStatus::Cancelled
+        ) && approval.source == ApprovalSource::ComputerUse
+            && vega_runtime::computer_use::valid_error_output(
+                tool,
+                output,
+                status == RuntimeToolStatus::Rejected,
+            );
+    }
+    if let Some(value) = structured {
+        let Some(object) = value.as_object() else {
+            return false;
+        };
+        if value["code"] == "observation_budget_exceeded" {
+            return approval.source == ApprovalSource::ComputerUse
+                && status == RuntimeToolStatus::Failed
+                && object.len() == 5
+                && value["executed"].is_boolean()
+                && value["deferred"] == true
+                && value["retryable"] == true
+                && value["next_step"] == "use_current_results_then_request_remaining_windows";
+        }
+        let model_projection = match object.get("model_projection") {
+            None => object.len() == 7,
+            Some(projection) => {
+                object.len() == 8
+                    && projection["code"] == "observation_budget_exceeded"
+                    && (vega_runtime::computer_use::valid_error_output(
+                        tool,
+                        &projection.to_string(),
+                        false,
+                    ) || (projection
+                        .as_object()
+                        .is_some_and(|object| object.len() == 5)
+                        && projection["executed"] == true
+                        && projection["deferred"] == true
+                        && projection["retryable"] == true
+                        && projection["next_step"]
+                            == "use_current_results_then_request_remaining_windows"))
+            }
+        };
+        return tool == "ComputerScreenshot"
+            && status == RuntimeToolStatus::Success
+            && approval.source == ApprovalSource::ComputerUse
+            && model_projection
+            && value["status"] == "delivered"
+            && value["delivery"] == "conversation_image_attachment"
+            && value["saved_in_history"] == true
+            && value["read_only"] == true
+            && value["unchanged"].is_boolean()
+            && value["next_step"] == "continue_remaining_requested_work_or_finish"
+            && value["artifact_id"].as_str().is_some_and(|id| {
+                id.strip_prefix("screenshot:")
+                    .is_some_and(|suffix| !suffix.is_empty())
+            });
+    }
+    match status {
+        RuntimeToolStatus::Success => approval.source == ApprovalSource::ComputerUse
+            && output.strip_prefix("completed; observation_id=").is_some_and(|rest| {
+                rest.split_once(';').is_some_and(|(id, suffix)| {
+                    !id.is_empty() && matches!(suffix,
+                        " observation images and page data are ephemeral and are not retained in history."
+                        | " window directory is ephemeral and is not retained in history.")
+                })
+            }),
+        RuntimeToolStatus::Failed => approval.source == ApprovalSource::ComputerUse
+            && (output.starts_with("Tool error: computer use:")
+                || output.starts_with("Tool error: computer use not_dispatched:")
+                || output.starts_with("outcome_unknown:")
+                || matches!(output, vega_runtime::CALL_ID_CONFLICT_OUTPUT
+                    | "Tool error: credential safety check unavailable")),
+        RuntimeToolStatus::Rejected => match approval.source {
+            ApprovalSource::ComputerUse => output.starts_with("Tool error: computer use:")
+                || output.starts_with("Tool error: computer use not_dispatched:"),
+            ApprovalSource::RunMode => output == "Tool error: computer use denied by run mode"
+                || output == "Tool error: denied: unavailable tool"
+                || output == "Tool error: denied by run mode",
+            ApprovalSource::Recovery => output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT,
+            ApprovalSource::Validation => output == "Tool error: mixed Skill load batch rejected other tools",
+            _ => false,
+        },
+        RuntimeToolStatus::Cancelled => approval.source == ApprovalSource::ComputerUse
+            && (matches!(output, vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT
+                | vega_store::recovery::RECOVERY_CANCELLED_OUTPUT)
+                || output.starts_with("outcome_unknown:")),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn validate_recovered_projection(
     project_id: &str,
@@ -1370,7 +1491,8 @@ pub(crate) fn validate_recovered_projection(
         {
             return Err(corrupt());
         }
-        if !vega_runtime::computer_use::ComputerUseAudit::valid(input_json)
+        if !vega_runtime::computer_use::ComputerUseAudit::valid_for_tool(tool, input_json)
+            || !valid_computer_use_output(tool, output, status, approval)
             || output.len() > 2048
             || exit_code.is_some()
             || duration_ms.is_some()

@@ -9,6 +9,7 @@ mod backend;
 mod components;
 mod control;
 mod diagnostics;
+mod feedback;
 pub mod guide;
 mod media;
 mod ownership;
@@ -16,10 +17,13 @@ mod preparation_session;
 mod prepare;
 mod probe;
 mod progress;
+#[cfg(test)]
+mod recovery_tests;
 
 pub use components::ManagedComponents;
 pub use control::{ComputerUseControl, ControlPhase, ControlSnapshot};
 pub use diagnostics::ExecutorFailure;
+pub use feedback::valid_error_output;
 pub use media::{Observation, ToolObservationSource};
 pub use prepare::{
     ComponentState, DirectCapture, DirectCaptureReason, ExtensionState, PermissionState,
@@ -27,6 +31,8 @@ pub use prepare::{
 };
 pub use probe::PreparationProbe;
 
+use feedback::ExecutionState;
+pub(crate) use feedback::ToolFailure;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -133,7 +139,7 @@ impl ComputerUseError {
         }
     }
 
-    pub(crate) fn feedback(self) -> String {
+    fn feedback_value(self) -> Value {
         let (code, retryable, next, field) = match self {
             Self::InvalidAction => ("invalid_arguments", true, "correct_parameters", None),
             Self::InvalidArguments(field) => {
@@ -160,11 +166,15 @@ impl ComputerUseError {
                 "refresh_directory",
                 Some("target_id"),
             ),
-            Self::ObservationBudget { executed } => return json!({"code":"observation_budget_exceeded","executed":executed,"deferred":true,"retryable":true,"next_step":"use_current_results_then_request_remaining_windows"}).to_string(),
-            Self::Superseded => return SUPERSEDED_CONTROL_OUTPUT.into(),
+            Self::ObservationBudget { executed } => {
+                return json!({"code":"observation_budget_exceeded","executed":executed,"deferred":true,"retryable":true,"next_step":"use_current_results_then_request_remaining_windows","field":null});
+            }
+            Self::Superseded => {
+                return serde_json::from_str(SUPERSEDED_CONTROL_OUTPUT).unwrap_or(Value::Null);
+            }
             Self::NoProgress => ("no_progress", false, "stop_and_report", None),
             Self::ScreenshotLimit => ("screenshot_limit", false, "stop_and_report", None),
-            Self::Executor(error) => return error.feedback(),
+            Self::Executor(error) => return error.feedback_value(),
             Self::Permissions => ("permissions_missing", false, "open_system_settings", None),
             Self::Unavailable
             | Self::MissingComponents
@@ -188,7 +198,6 @@ impl ComputerUseError {
             }
         };
         serde_json::json!({"code":code,"retryable":retryable,"next_step":next,"field":field})
-            .to_string()
     }
 }
 
@@ -228,6 +237,12 @@ impl Target {
             Self::Browser { title, url, .. } => format!("{title} — {url}"),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Readiness {
+    Ready,
+    Unavailable(ComputerUseError),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -342,12 +357,12 @@ impl ComputerUseRun {
         epoch: u64,
         cancel: &CancellationToken,
     ) -> Result<(), ComputerUseError> {
+        self.check_available(cancel).await?;
+        self.check_request_epoch(epoch, cancel)?;
         let capability = Self::tool_capability(name).ok_or(ComputerUseError::InvalidAction)?;
         if !self.enabled(capability) {
             return Err(ComputerUseError::NotReady);
         }
-        self.wait_ready(cancel).await?;
-        self.check_request_epoch(epoch, cancel)?;
         let token = match self.control.action_token(epoch) {
             Ok(token) => token,
             Err(error) => {
@@ -393,15 +408,16 @@ impl ComputerUseRun {
         arguments: Value,
         epoch: u64,
         cancel: &CancellationToken,
-    ) -> Result<String, ComputerUseError> {
-        let capability = Self::tool_capability(name).ok_or(ComputerUseError::InvalidAction)?;
+    ) -> Result<String, ToolFailure> {
+        self.check_available(cancel)
+            .await
+            .map_err(|error| self.failure_for_call(name, error))?;
+        self.check_request_epoch(epoch, cancel)
+            .map_err(|error| self.failure_for_call(name, error))?;
+        let capability = Self::tool_capability(name)
+            .ok_or_else(|| self.failure_for_call(name, ComputerUseError::InvalidAction))?;
         if !self.enabled(capability) {
-            return Err(ComputerUseError::NotReady);
-        }
-        self.wait_ready(cancel).await?;
-        self.check_request_epoch(epoch, cancel)?;
-        if capability == Capability::Desktop && self.no_progress() {
-            return Err(ComputerUseError::NoProgress);
+            return Err(self.failure_for_call(name, ComputerUseError::NotReady));
         }
         let previous = self
             .control
@@ -415,38 +431,66 @@ impl ComputerUseRun {
             .or_else(|| previous.as_ref().map(|item| item.target.clone()));
         let attempt = progress::Attempt::new(name, &arguments, target.as_ref(), previous.as_ref());
         let mut backend = self.backend.lock().await;
-        self.check_request_epoch(epoch, cancel)?;
+        self.check_request_epoch(epoch, cancel)
+            .map_err(|error| self.failure_for_call(name, error))?;
         let mut result = backend
             .execute(self, epoch, name, call_id, arguments, cancel)
             .await;
         drop(backend);
-        if result == Err(ComputerUseError::Superseded) {
+        if result.as_ref().is_err_and(|failure| failure.superseded()) {
             return result;
         }
-        if capability == Capability::Desktop {
+        if capability == Capability::Desktop
+            && !result
+                .as_ref()
+                .is_err_and(|failure| failure.execution_state == ExecutionState::OutcomeUnknown)
+        {
             let after = self
                 .control
                 .snapshot()
                 .observations
                 .into_iter()
                 .find(|item| item.call_id == call_id);
+            let dispatch_started = result.as_ref().map_or_else(
+                |failure| failure.execution_state != ExecutionState::NotDispatched,
+                |_| true,
+            );
             let stopped = self
                 .progress
                 .lock()
-                .map_err(|_| ComputerUseError::Unavailable)?
+                .map_err(|_| self.failure_for_call(name, ComputerUseError::Unavailable))?
                 .finish(
                     attempt,
                     &result,
                     after.as_ref(),
                     self.screenshot_delivered(call_id),
+                    dispatch_started,
                 );
-            if stopped {
-                self.control.fail(epoch, ComputerUseError::NoProgress);
-                result = Err(ComputerUseError::NoProgress);
+            if let Some(guard) = stopped {
+                let error = if result
+                    .as_ref()
+                    .is_err_and(|failure| failure.error == ComputerUseError::ScreenshotLimit)
+                {
+                    ComputerUseError::ScreenshotLimit
+                } else {
+                    ComputerUseError::NoProgress
+                };
+                let mut failure = ToolFailure::new(
+                    error,
+                    capability,
+                    diagnostics::Stage::Progress,
+                    if dispatch_started {
+                        ExecutionState::Failed
+                    } else {
+                        ExecutionState::NotDispatched
+                    },
+                );
+                failure.guard = Some(guard);
+                result = Err(failure);
             }
         }
-        if let Err(error) = &result
-            && self.record_failure(name, capability, epoch, *error)
+        if let Err(failure) = &result
+            && self.record_failure(name, capability, epoch, failure.error)
         {
             self.cleanup_revoked().await;
         }
@@ -466,12 +510,11 @@ impl ComputerUseRun {
     ) -> Result<(), ComputerUseError> {
         let status = self.control.status();
         if cancel.is_cancelled()
-            || matches!(
-                status.phase,
-                ControlPhase::Stopping | ControlPhase::Stopped | ControlPhase::Failed
-            )
+            || matches!(status.phase, ControlPhase::Stopping | ControlPhase::Stopped)
         {
             Err(ComputerUseError::Cancelled)
+        } else if status.phase == ControlPhase::Failed {
+            Err(status.error.unwrap_or(ComputerUseError::Unavailable))
         } else if status.epoch != epoch {
             Err(ComputerUseError::Superseded)
         } else {
@@ -487,20 +530,48 @@ impl ComputerUseRun {
                 | ControlPhase::Connecting
                 | ControlPhase::AwaitingApproval
                 | ControlPhase::Running
+                | ControlPhase::Failed
         )
         .then_some(status.epoch)
     }
 
-    pub(crate) fn no_progress(&self) -> bool {
-        self.progress
-            .lock()
-            .is_ok_and(|progress| progress.stopped())
+    async fn check_available(&self, cancel: &CancellationToken) -> Result<(), ComputerUseError> {
+        match self.wait_ready(cancel).await? {
+            Readiness::Ready => Ok(()),
+            Readiness::Unavailable(error) => Err(error),
+        }
     }
 
-    pub(crate) fn has_delivered_screenshots(&self) -> bool {
-        self.screenshots
-            .lock()
-            .is_ok_and(|screenshots| screenshots.iter().any(|capture| capture.delivered))
+    pub(crate) fn error_feedback(
+        &self,
+        name: &str,
+        error: ComputerUseError,
+        executed: bool,
+    ) -> String {
+        let mut failure = self.failure_for_call(name, error);
+        if executed {
+            failure.execution_state = ExecutionState::Failed;
+        }
+        failure.feedback()
+    }
+
+    fn failure_for_call(&self, name: &str, error: ComputerUseError) -> ToolFailure {
+        let mut failure = ToolFailure::before_dispatch(name, error);
+        let status = self.control.status();
+        if status.phase == ControlPhase::Failed {
+            failure.capability = status.capability.unwrap_or(failure.capability);
+        }
+        if matches!(
+            error,
+            ComputerUseError::NoProgress | ComputerUseError::ScreenshotLimit
+        ) {
+            failure.guard = self
+                .progress
+                .lock()
+                .ok()
+                .and_then(|progress| progress.stopped());
+        }
+        failure
     }
 
     pub(crate) fn screenshot(&self, call_id: &str) -> Option<(crate::ImageAttachment, u64)> {
@@ -570,7 +641,8 @@ impl ComputerUseRun {
                     || capture.aliases.iter().any(|alias| alias == call_id))
         })?;
         let mut receipt = screenshot_receipt_value(&capture.call_id, capture.call_id != call_id);
-        receipt["model_projection"] = serde_json::from_str(&error.feedback()).ok()?;
+        receipt["model_projection"] =
+            serde_json::from_str(&self.error_feedback("ComputerScreenshot", error, true)).ok()?;
         Some(receipt.to_string())
     }
 
@@ -627,8 +699,16 @@ impl ComputerUseRun {
                 .map(|capture| capture.image.clone())
                 .collect::<Vec<_>>();
             images.push(image.clone());
-            crate::images::validate_images(&images)
-                .map_err(|_| ComputerUseError::ScreenshotLimit)?;
+            if crate::images::validate_images(&images).is_err() {
+                self.progress
+                    .lock()
+                    .map_err(|_| ComputerUseError::Unavailable)?
+                    .screenshot_limit(
+                        images.len(),
+                        images.iter().map(|image| image.bytes().len()).sum(),
+                    );
+                return Err(ComputerUseError::ScreenshotLimit);
+            }
             screenshots.push(ScreenshotCapture {
                 call_id: observation.call_id.clone(),
                 image: image.clone(),
@@ -700,19 +780,21 @@ impl ComputerUseRun {
 
     pub(crate) async fn monitor(&self, lifetime: CancellationToken, cancel: CancellationToken) {
         let mut changes = self.control.subscribe();
+        let mut cleaned_failure_epoch = None;
         loop {
-            match self.control.status().phase {
+            let status = self.control.status();
+            match status.phase {
                 ControlPhase::Pausing => {
                     self.cleanup_revoked().await;
                 }
-                ControlPhase::Stopping => {
+                ControlPhase::Stopping | ControlPhase::Stopped => {
                     cancel.cancel();
                     self.cleanup_revoked().await;
                     break;
                 }
-                ControlPhase::Failed => {
+                ControlPhase::Failed if cleaned_failure_epoch != Some(status.epoch) => {
                     self.cleanup_revoked().await;
-                    break;
+                    cleaned_failure_epoch = Some(status.epoch);
                 }
                 _ => {}
             }
@@ -724,20 +806,32 @@ impl ComputerUseRun {
         }
     }
 
-    pub async fn wait_ready(&self, cancel: &CancellationToken) -> Result<(), ComputerUseError> {
+    pub async fn wait_ready(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<Readiness, ComputerUseError> {
         let mut changes = self.control.subscribe();
         loop {
-            match self.control.status().phase {
+            if cancel.is_cancelled() {
+                return Err(ComputerUseError::Cancelled);
+            }
+            let status = self.control.status();
+            match status.phase {
                 ControlPhase::Pausing => {
                     if !self.cleanup_revoked().await {
-                        return Err(ComputerUseError::Unavailable);
+                        return Ok(Readiness::Unavailable(ComputerUseError::Unavailable));
                     }
                 }
                 ControlPhase::Paused => {}
-                ControlPhase::Stopping | ControlPhase::Stopped | ControlPhase::Failed => {
+                ControlPhase::Stopping | ControlPhase::Stopped => {
                     return Err(ComputerUseError::Cancelled);
                 }
-                _ => return Ok(()),
+                ControlPhase::Failed => {
+                    return Ok(Readiness::Unavailable(
+                        status.error.unwrap_or(ComputerUseError::Unavailable),
+                    ));
+                }
+                _ => return Ok(Readiness::Ready),
             }
             tokio::select! { biased; _ = cancel.cancelled() => return Err(ComputerUseError::Cancelled), result = changes.changed() => { result.map_err(|_| ComputerUseError::Cancelled)?; } }
         }
@@ -786,6 +880,14 @@ impl ComputerUseRun {
         let reads = self.batch_reads();
         let evidence = self.text_evidence();
         for message in messages {
+            if message.role == crate::ChatRole::Tool
+                && serde_json::from_str::<Value>(&message.content).is_ok_and(|value| {
+                    value.get("code").is_some() && value.get("execution_state").is_some()
+                })
+            {
+                message.images.clear();
+                continue;
+            }
             if message.role == crate::ChatRole::Tool
                 && message.content.starts_with("[External tool observation;")
                 && let Some(observation) = current
@@ -947,6 +1049,25 @@ impl ComputerUseAudit {
         use sha2::{Digest, Sha256};
         serde_json::json!({"kind":"computer_use","version":1,"action":action,"argument_bytes":input.len(),"argument_digest":format!("{:x}", Sha256::digest(input.as_bytes()))}).to_string()
     }
+    pub fn valid_for_tool(name: &str, input: &str) -> bool {
+        Self::valid(input)
+            && serde_json::from_str::<Self>(input).is_ok_and(|audit| match name {
+                "ComputerObserve" | "BrowserObserve" => audit.action == "observe",
+                "ComputerScreenshot" => audit.action == "screenshot",
+                "ComputerAct" | "BrowserAct" => matches!(
+                    audit.action.as_str(),
+                    "click"
+                        | "type_text"
+                        | "press_key"
+                        | "hotkey"
+                        | "scroll"
+                        | "navigate"
+                        | "invalid"
+                ),
+                _ => false,
+            })
+    }
+
     pub fn valid(input: &str) -> bool {
         serde_json::from_str::<Self>(input).is_ok_and(|audit| {
             audit.kind == "computer_use"

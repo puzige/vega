@@ -240,6 +240,7 @@ impl ComputerUseControl {
     fn revoke(&self, phase: ControlPhase, expected_epoch: Option<u64>) -> bool {
         if let Ok(mut state) = self.0.state.lock() {
             if matches!(state.phase, ControlPhase::Stopped | ControlPhase::Stopping)
+                || (state.phase == ControlPhase::Failed && phase == ControlPhase::Pausing)
                 || expected_epoch.is_some_and(|epoch| {
                     state.epoch != epoch || state.phase != ControlPhase::Running
                 })
@@ -439,8 +440,9 @@ impl ComputerUseControl {
                 | ControlPhase::Paused
                 | ControlPhase::Stopping
                 | ControlPhase::Stopped
+                | ControlPhase::Failed
         ) {
-            return Err(ComputerUseError::NotReady);
+            return Err(state.error.unwrap_or(ComputerUseError::NotReady));
         }
         *owner = Some(self.0.run_id.clone());
         state.capability = Some(capability);
@@ -729,17 +731,24 @@ impl ComputerUseControl {
     }
 
     pub(crate) fn fail(&self, expected_epoch: u64, error: ComputerUseError) {
+        self.fail_inner(expected_epoch, error, false);
+    }
+
+    pub(super) fn fail_dispatched_action(&self, expected_epoch: u64, error: ComputerUseError) {
+        self.fail_inner(expected_epoch, error, true);
+    }
+
+    fn fail_inner(&self, expected_epoch: u64, error: ComputerUseError, dispatched_action: bool) {
         if let Ok(mut state) = self.0.state.lock() {
-            if state.epoch != expected_epoch {
-                return;
-            }
-            if matches!(
-                state.phase,
-                ControlPhase::Pausing
-                    | ControlPhase::Paused
-                    | ControlPhase::Stopping
-                    | ControlPhase::Stopped
-            ) {
+            if (!dispatched_action && state.epoch != expected_epoch)
+                || (dispatched_action && state.epoch < expected_epoch)
+                || matches!(
+                    state.phase,
+                    ControlPhase::Stopping | ControlPhase::Stopped | ControlPhase::Failed
+                )
+                || (!dispatched_action
+                    && matches!(state.phase, ControlPhase::Pausing | ControlPhase::Paused))
+            {
                 return;
             }
             state.epoch = state.epoch.saturating_add(1);

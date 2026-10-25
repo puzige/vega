@@ -533,7 +533,10 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
         };
     }
     if vega_runtime::computer_use::ComputerUseRun::tool_capability(&call.tool).is_some() {
-        if !vega_runtime::computer_use::ComputerUseAudit::valid(&call.input_json) {
+        if !vega_runtime::computer_use::ComputerUseAudit::valid_for_tool(
+            &call.tool,
+            &call.input_json,
+        ) {
             return ToolCardInputProjection::Corrupt;
         }
         let value: serde_json::Value = serde_json::from_str(&call.input_json).unwrap_or_default();
@@ -828,7 +831,19 @@ pub fn tool_card_result_projection(
         ToolCardInputProjection::UserQuestion { input } => {
             user_question_result_projection(input, result)
         }
-        ToolCardInputProjection::ComputerUse { .. } => {
+        ToolCardInputProjection::ComputerUse { tool, .. } => {
+            let invalid_structured_error =
+                serde_json::from_str::<serde_json::Value>(&result.output).is_ok_and(|value| {
+                    value.get("code").is_some() && value.get("execution_state").is_some()
+                }) && (result.status == ToolCallStatus::Success
+                    || !vega_runtime::computer_use::valid_error_output(
+                        tool,
+                        &result.output,
+                        result.status == ToolCallStatus::Rejected,
+                    ));
+            if invalid_structured_error {
+                return ToolCardResultProjection::Corrupt;
+            }
             let superseded = result.output.len() <= 2048
                 && serde_json::from_str::<serde_json::Value>(&result.output)
                     .ok()

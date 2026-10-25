@@ -1,7 +1,9 @@
 use super::{Capability, ComputerUseError as Error};
+use serde::{Deserialize, Serialize};
 use vega_mcp::{ManagedResult, McpError};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(super) enum Stage {
     Initialize,
     Permissions,
@@ -13,9 +15,18 @@ pub(super) enum Stage {
     Screenshot,
     Action,
     ActionPreflight,
+    Progress,
 }
 
 impl Stage {
+    pub(super) fn for_tool(name: &str) -> Self {
+        match name {
+            "ComputerAct" | "BrowserAct" => Self::ActionPreflight,
+            "ComputerScreenshot" => Self::Screenshot,
+            _ => Self::Observe,
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             Self::Initialize => "initialize",
@@ -28,6 +39,7 @@ impl Stage {
             Self::Screenshot => "screenshot",
             Self::Action => "action",
             Self::ActionPreflight => "action_preflight",
+            Self::Progress => "progress",
         }
     }
 }
@@ -76,6 +88,52 @@ pub(super) enum Class {
 }
 
 impl Class {
+    pub(super) fn from_code(code: &str) -> Option<Self> {
+        [
+            Self::Unknown,
+            Self::Transport,
+            Self::Timeout,
+            Self::Cancelled,
+            Self::Protocol,
+            Self::LimitExceeded,
+            Self::RpcRejected,
+            Self::PermissionsMissing,
+            Self::AccessibilityPermissionMissing,
+            Self::ScreenRecordingPermissionMissing,
+            Self::PolicyDenied,
+            Self::ExtensionMissing,
+            Self::ExtensionConnection,
+            Self::BrowserMissing,
+            Self::AttachFailed,
+            Self::CdpCommandFailed,
+            Self::TargetUnavailable,
+            Self::TargetCount,
+            Self::TargetFormat,
+            Self::TargetNotCurrent,
+            Self::AxUnavailable,
+            Self::AxTimeout,
+            Self::ObservationIdentityMismatch,
+            Self::ScreenshotUnverified,
+            Self::CaptureUnavailable,
+            Self::CaptureFrameMismatch,
+            Self::CaptureBindingFailed,
+            Self::CapturePublicationFailed,
+            Self::AxAppLaunching,
+            Self::AxWindowUnresolved,
+            Self::DegradedUnknown,
+            Self::NoObservationContent,
+            Self::StaleObservation,
+            Self::BackgroundUnavailable,
+            Self::OffSpaceOrAxUnresolved,
+            Self::MinimizedOrHiddenWindow,
+            Self::SamePidKeyboardAmbiguity,
+            Self::InvalidCoordinates,
+            Self::InvalidImage,
+        ]
+        .into_iter()
+        .find(|class| class.code() == code)
+    }
+
     pub(super) fn code(self) -> &'static str {
         match self {
             Self::Unknown => "unknown",
@@ -226,7 +284,15 @@ impl ExecutorFailure {
         }
     }
 
-    pub(super) fn feedback(self) -> String {
+    pub(super) fn capability(self) -> Capability {
+        self.capability
+    }
+
+    pub(super) fn stage(self) -> Stage {
+        self.stage
+    }
+
+    pub(super) fn feedback_value(self) -> serde_json::Value {
         let retryable = recoverable_observe(Error::Executor(self));
         let next = if matches!(
             self.class,
@@ -240,7 +306,7 @@ impl ExecutorFailure {
         } else {
             "stop_and_report"
         };
-        serde_json::json!({"code":self.class.code(),"retryable":retryable,"next_step":next,"field":serde_json::Value::Null,"diagnostic":self.to_string()}).to_string()
+        serde_json::json!({"code":self.class.code(),"retryable":retryable,"next_step":next,"field":serde_json::Value::Null,"diagnostic":self.to_string()})
     }
 }
 

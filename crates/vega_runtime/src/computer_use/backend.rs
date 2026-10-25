@@ -2,6 +2,7 @@ use super::{
     Capability, ComputerUseError as Error, ComputerUseRun, DesktopTarget, ManagedComponents,
     Observation, Target, ToolObservationSource,
     diagnostics::{self, Class, Stage, checked},
+    feedback::{ExecutionState, ToolFailure},
     media::decode_image,
 };
 use serde_json::{Value, json};
@@ -19,10 +20,13 @@ use vega_mcp::{LocalServer, ManagedClient};
 pub(super) struct Backends {
     desktop: Option<Desktop>,
     browser: Option<Browser>,
+    #[cfg(test)]
+    pub(super) test_driver: Option<super::recovery_tests::Driver>,
 }
 struct Dispatch<'a> {
     cancel: &'a CancellationToken,
     started: bool,
+    input_started: bool,
 }
 
 enum CaptureMode {
@@ -137,12 +141,10 @@ fn action_unknown(
     capability: Capability,
     stage: Stage,
     error: Error,
-) -> String {
+) -> Error {
     let error = diagnostics::context(capability, stage, error);
-    run.control.fail(epoch, error);
-    format!(
-        "outcome_unknown: the action may have been dispatched. Do not retry. The user must inspect the target. {error}"
-    )
+    run.control.fail_dispatched_action(epoch, error);
+    error
 }
 
 impl Backends {
@@ -150,6 +152,10 @@ impl Backends {
         &mut self,
         cancel: &CancellationToken,
     ) -> Result<Vec<DesktopTarget>, Error> {
+        #[cfg(test)]
+        if let Some(driver) = &self.test_driver {
+            return driver.windows();
+        }
         self.desktop
             .as_mut()
             .ok_or(Error::NotReady)?
@@ -163,6 +169,10 @@ impl Backends {
         args: Value,
         cancel: &CancellationToken,
     ) -> Result<vega_mcp::ManagedResult, vega_mcp::McpError> {
+        #[cfg(test)]
+        if let Some(driver) = &self.test_driver {
+            return driver.call(name, args);
+        }
         self.desktop
             .as_mut()
             .and_then(|desktop| desktop.client.as_mut())
@@ -179,27 +189,52 @@ impl Backends {
         call_id: &str,
         arguments: Value,
         root_cancel: &CancellationToken,
-    ) -> Result<String, Error> {
-        run.check_request_epoch(epoch, root_cancel)?;
+    ) -> Result<String, ToolFailure> {
+        run.check_request_epoch(epoch, root_cancel)
+            .map_err(|error| ToolFailure::before_dispatch(name, error))?;
         let token = match run.control.action_token(epoch) {
             Ok(token) => token,
             Err(error) => {
-                run.check_request_epoch(epoch, root_cancel)?;
-                return Err(error);
+                run.check_request_epoch(epoch, root_cancel)
+                    .map_err(|error| ToolFailure::before_dispatch(name, error))?;
+                return Err(ToolFailure::before_dispatch(name, error));
             }
         };
         let mut dispatch = Dispatch {
             cancel: &token,
             started: false,
+            input_started: false,
         };
         let result = tokio::select! { biased;
             _ = root_cancel.cancelled() => { run.control.stop(); Err(Error::Cancelled) },
             result = self.execute_inner(run,epoch,name,call_id,arguments,&mut dispatch) => result,
         };
         if !dispatch.started && matches!(result, Err(Error::Cancelled | Error::NotReady)) {
-            run.check_request_epoch(epoch, root_cancel)?;
+            run.check_request_epoch(epoch, root_cancel)
+                .map_err(|error| ToolFailure::before_dispatch(name, error))?;
         }
-        result
+        result.map_err(|error| {
+            let capability = ComputerUseRun::tool_capability(name).unwrap_or(Capability::Desktop);
+            let error = if dispatch.input_started {
+                let error = diagnostics::context(capability, Stage::Action, error);
+                run.control.fail_dispatched_action(epoch, error);
+                error
+            } else {
+                error
+            };
+            ToolFailure::new(
+                error,
+                capability,
+                Stage::for_tool(name),
+                if dispatch.input_started {
+                    ExecutionState::OutcomeUnknown
+                } else if dispatch.started {
+                    ExecutionState::Failed
+                } else {
+                    ExecutionState::NotDispatched
+                },
+            )
+        })
     }
 
     async fn execute_inner(
@@ -231,6 +266,7 @@ impl Backends {
             run.control.check_epoch(epoch)?;
             run.consume_observations();
             dispatch.started = true;
+            dispatch.input_started = true;
             let dispatched = match capability {
                 Capability::Desktop => self.desktop_call(tool, mapped, cancel).await,
                 Capability::Browser => {
@@ -245,12 +281,12 @@ impl Backends {
             let result = match checked(capability, Stage::Action, dispatched) {
                 Ok(result) => result,
                 Err(error) => {
-                    return Ok(action_unknown(run, epoch, capability, Stage::Action, error));
+                    return Err(action_unknown(run, epoch, capability, Stage::Action, error));
                 }
             };
             drop(result);
             if run.control.check_epoch(epoch).is_err() {
-                return Ok(action_unknown(
+                return Err(action_unknown(
                     run,
                     epoch,
                     capability,
@@ -261,7 +297,7 @@ impl Backends {
             if capability == Capability::Browser
                 && let Err(error) = self.refresh_browser_target(run, epoch, cancel, true).await
             {
-                return Ok(action_unknown(
+                return Err(action_unknown(
                     run,
                     epoch,
                     capability,
@@ -283,7 +319,7 @@ impl Backends {
                 Ok(id) => Ok(format!(
                     "completed; observation_id={id}; observation images and page data are ephemeral and are not retained in history."
                 )),
-                Err(error) => Ok(action_unknown(
+                Err(error) => Err(action_unknown(
                     run,
                     epoch,
                     capability,
@@ -408,6 +444,16 @@ impl Backends {
         epoch: u64,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
+        #[cfg(test)]
+        if let Some(driver) = &self.test_driver {
+            if run.control.status().phase == super::ControlPhase::Disconnected {
+                driver.connected();
+                run.control.begin(capability)?;
+                run.control
+                    .connected(epoch, capability, Target::DesktopCatalog)?;
+            }
+            return Ok(());
+        }
         if match capability {
             Capability::Desktop => self.desktop.is_some(),
             Capability::Browser => {

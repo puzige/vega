@@ -701,6 +701,7 @@ struct PendingHistoricalTool {
 struct PendingToolContext {
     source: Option<crate::tool_context::ToolIdentity>,
     wire: Option<crate::tool_context::ToolIdentity>,
+    computer_use: bool,
 }
 
 impl PartialEq for ChatMessage {
@@ -1346,7 +1347,14 @@ pub fn project_model_messages(messages: &[ChatMessage]) -> Result<Vec<ChatMessag
                 tool_identities
                     .entry(call.id.clone())
                     .or_default()
-                    .push_back(PendingToolContext { source, wire });
+                    .push_back(PendingToolContext {
+                        source,
+                        wire,
+                        computer_use: crate::computer_use::ComputerUseRun::tool_capability(
+                            &call.name,
+                        )
+                        .is_some(),
+                    });
             }
         }
         let historical_result = message.role == ChatRole::Tool
@@ -1540,6 +1548,9 @@ pub fn project_model_messages(messages: &[ChatMessage]) -> Result<Vec<ChatMessag
         }
         if let Some(guidance) = next.runtime_guidance.take()
             && next.role == ChatRole::Tool
+            && !tool_identity
+                .as_ref()
+                .is_some_and(|identity| identity.computer_use)
         {
             next.content.push_str(&guidance.text());
         }

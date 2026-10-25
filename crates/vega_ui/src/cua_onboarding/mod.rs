@@ -5,7 +5,6 @@ pub mod lifecycle;
 pub(crate) mod model;
 mod native;
 pub mod placement;
-pub mod retention;
 mod session;
 
 pub use card::{GuidanceCard, OpenError, open};

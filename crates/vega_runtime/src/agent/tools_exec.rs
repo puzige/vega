@@ -141,9 +141,11 @@ impl PreparedRuntimeCall {
 
     pub(crate) async fn superseded_after_wait(&self, cancel: &CancellationToken) -> bool {
         if let Self::ComputerUse { run, epoch, .. } = self {
-            run.wait_ready(cancel).await.is_ok()
-                && run.check_request_epoch(*epoch, cancel)
-                    == Err(crate::computer_use::ComputerUseError::Superseded)
+            matches!(
+                run.wait_ready(cancel).await,
+                Ok(crate::computer_use::Readiness::Ready)
+            ) && run.check_request_epoch(*epoch, cancel)
+                == Err(crate::computer_use::ComputerUseError::Superseded)
         } else {
             false
         }
@@ -862,9 +864,25 @@ pub(crate) async fn authorize_call(
             arguments,
             epoch,
         } => {
+            if cancel.is_cancelled() {
+                return Ok(Authorization::Terminal(terminal_result(
+                    call,
+                    run.error_feedback(
+                        &call.name,
+                        crate::computer_use::ComputerUseError::Cancelled,
+                        false,
+                    ),
+                    RuntimeToolStatus::Rejected,
+                    Some(RuntimeApprovalAudit {
+                        decision: RuntimeApprovalDecision::Deny,
+                        note: None,
+                        source: RuntimeApprovalSource::ComputerUse,
+                        danger: None,
+                    }),
+                )));
+            }
             if config.run_mode != RuntimeRunMode::Execute
                 || config.permission_mode == RuntimePermissionMode::ReadOnly
-                || cancel.is_cancelled()
             {
                 return Ok(Authorization::Terminal(terminal_result(
                     call,
@@ -893,15 +911,7 @@ pub(crate) async fn authorize_call(
                 }
                 Err(error) => Ok(Authorization::Terminal(terminal_result(
                     call,
-                    format!(
-                        "Tool error: computer use{}: {}",
-                        if error == crate::computer_use::ComputerUseError::NoProgress {
-                            ""
-                        } else {
-                            " not_dispatched"
-                        },
-                        error.feedback()
-                    ),
+                    run.error_feedback(&call.name, error, false),
                     RuntimeToolStatus::Rejected,
                     Some(RuntimeApprovalAudit {
                         decision: RuntimeApprovalDecision::Deny,
@@ -1573,48 +1583,19 @@ pub(crate) async fn execute_prepared_waiting(
             .await
         {
             Ok(output) => {
-                let failed = output.starts_with("outcome_unknown:");
-                let mut result = terminal_result(
-                    &call,
-                    output,
-                    if failed {
-                        RuntimeToolStatus::Failed
-                    } else {
-                        RuntimeToolStatus::Success
-                    },
-                    None,
-                );
-                if !failed {
-                    result.truncated = Some(false);
-                }
+                let mut result = terminal_result(&call, output, RuntimeToolStatus::Success, None);
+                result.truncated = Some(false);
                 (result, cancel.is_cancelled())
             }
-            Err(crate::computer_use::ComputerUseError::Superseded) => (
+            Err(failure) => (
                 terminal_result(
                     &call,
-                    crate::computer_use::SUPERSEDED_CONTROL_OUTPUT.into(),
-                    RuntimeToolStatus::Cancelled,
-                    None,
-                ),
-                cancel.is_cancelled(),
-            ),
-            Err(error) => (
-                terminal_result(
-                    &call,
-                    if error == crate::computer_use::ComputerUseError::Cancelled {
-                        "outcome_unknown: control was cancelled; do not retry a potentially dispatched action".into()
+                    failure.feedback(),
+                    if failure.superseded() {
+                        RuntimeToolStatus::Cancelled
                     } else {
-                        format!(
-                            "Tool error: computer use{}: {}",
-                            if error == crate::computer_use::ComputerUseError::NoProgress {
-                                ""
-                            } else {
-                                " not_dispatched"
-                            },
-                            error.feedback()
-                        )
+                        RuntimeToolStatus::Failed
                     },
-                    RuntimeToolStatus::Failed,
                     None,
                 ),
                 cancel.is_cancelled(),

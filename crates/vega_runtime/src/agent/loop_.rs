@@ -1320,7 +1320,10 @@ where
         }
 
         if let Some(run) = &tool_config.computer_use {
-            if run.wait_ready(&cancel).await.is_err() {
+            if matches!(
+                run.wait_ready(&cancel).await,
+                Err(crate::computer_use::ComputerUseError::Cancelled)
+            ) {
                 cancel.cancel();
             }
             run.trim_messages(&mut messages);
@@ -1821,7 +1824,10 @@ where
         let mut bounded_turn_reasoning_bytes = 0usize;
         let mut retained_reasoning_bytes = 0usize;
         if let Some(run) = &tool_config.computer_use
-            && run.wait_ready(&cancel).await.is_err()
+            && matches!(
+                run.wait_ready(&cancel).await,
+                Err(crate::computer_use::ComputerUseError::Cancelled)
+            )
         {
             cancel.cancel();
         }
@@ -1854,8 +1860,13 @@ where
         );
         let computer_use_epoch = if let Some(run) = &tool_config.computer_use {
             loop {
-                if run.wait_ready(&cancel).await.is_err() {
-                    cancel.cancel();
+                match run.wait_ready(&cancel).await {
+                    Ok(crate::computer_use::Readiness::Unavailable(_)) => {
+                        run.trim_messages(&mut messages);
+                        break run.ready_model_epoch();
+                    }
+                    Err(crate::computer_use::ComputerUseError::Cancelled) => cancel.cancel(),
+                    _ => {}
                 }
                 if cancel.is_cancelled() {
                     run.trim_messages(&mut messages);
@@ -2547,7 +2558,10 @@ where
             );
         }
         if let Some(run) = &tool_config.computer_use {
-            if run.wait_ready(&cancel).await.is_err() {
+            if matches!(
+                run.wait_ready(&cancel).await,
+                Err(crate::computer_use::ComputerUseError::Cancelled)
+            ) {
                 cancel.cancel();
             }
             run.trim_messages(&mut messages);
@@ -3177,10 +3191,17 @@ where
                         (
                             terminal_result(
                                 &call,
-                                crate::computer_use::ComputerUseError::ObservationBudget {
-                                    executed: false,
-                                }
-                                .feedback(),
+                                tool_config
+                                    .computer_use
+                                    .as_ref()
+                                    .ok_or_else(|| safe_prepare_error(&call.name))?
+                                    .error_feedback(
+                                        &call.name,
+                                        crate::computer_use::ComputerUseError::ObservationBudget {
+                                            executed: false,
+                                        },
+                                        false,
+                                    ),
                                 RuntimeToolStatus::Failed,
                                 Some(audit),
                             ),
@@ -3321,7 +3342,7 @@ where
                     result.output = receipt;
                 } else {
                     result.status = RuntimeToolStatus::Failed;
-                    result.output = error.feedback();
+                    result.output = run.error_feedback(&call.name, error, true);
                     run.discard_pending_screenshot(&call.id);
                 }
             }
@@ -3435,39 +3456,6 @@ where
                 },
             );
 
-            if !cancelled_while_running
-                && !cancel.is_cancelled()
-                && tool_config
-                    .computer_use
-                    .as_ref()
-                    .is_some_and(|run| run.no_progress())
-            {
-                let message = if tool_config
-                    .computer_use
-                    .as_ref()
-                    .is_some_and(|run| run.has_delivered_screenshots())
-                {
-                    "已有截图保留在对话中。后续电脑操作连续未取得进展，已停止重复操作。请根据最后一个工具结果处理尚未完成的工作。"
-                } else {
-                    "电脑操作连续未取得进展，已停止本轮自动操作。请根据对话中的错误修正目标或参数后重新发起；不会继续重复点击或换用脚本。"
-                };
-                final_text.push_str(message);
-                emit!(events, sink, RuntimeEvent::TextDelta(message.into()));
-                emit!(
-                    events,
-                    sink,
-                    RuntimeEvent::Finished(RuntimeFinishReason::End)
-                );
-                return Ok(outcome(
-                    events,
-                    messages,
-                    final_text,
-                    tool_call_count,
-                    executed_tool_call_count,
-                    false,
-                    false,
-                ));
-            }
             if cancelled_while_running || cancel.is_cancelled() {
                 emit!(events, sink, RuntimeEvent::Interrupted);
                 return Ok(outcome(
