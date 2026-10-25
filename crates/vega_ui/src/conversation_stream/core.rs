@@ -1,5 +1,5 @@
 use super::*;
-use crate::cua_onboarding::lifecycle::{EntryLifecycle, TaskContext};
+use crate::cua_onboarding::lifecycle::TaskContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModelPickerLevel {
@@ -34,11 +34,7 @@ pub struct ConversationStream {
     pub(crate) automation: super::automation::AutomationUi,
     pub(crate) privacy: super::privacy::PrivacyPanel,
     pub(crate) computer_use_control: Option<vega_conversation::types::ComputerUseControl>,
-    pub(crate) computer_use_entry: EntryLifecycle,
     pub(crate) computer_use_task: TaskContext,
-    pub(crate) computer_use_diagnostic: Option<(u64, String)>,
-    pub(crate) computer_use_notice_generation: u64,
-    pub(crate) computer_use_diagnostic_focus: FocusHandle,
     pub(crate) context_control: context_control::ContextControl,
     pub(crate) attachments: Vec<(u64, attachments::ImagePreview)>,
     pub(crate) attachment_generation: u64,
@@ -467,8 +463,7 @@ impl ConversationStream {
             },
         )
         .detach();
-        let mut computer_use_entry = EntryLifecycle::default();
-        let computer_use_task = computer_use_entry.begin_task(&thread.id);
+        let computer_use_task = TaskContext::new(&thread.id);
         Self {
             prediction_waiting_for_queue: false,
             prediction_owner: None,
@@ -481,11 +476,7 @@ impl ConversationStream {
             delegated_run_active: false,
             context_control: context_control::ContextControl::new(cx),
             computer_use_control: None,
-            computer_use_entry,
             computer_use_task,
-            computer_use_diagnostic: None,
-            computer_use_notice_generation: 0,
-            computer_use_diagnostic_focus: cx.focus_handle(),
             attachments: Vec::new(),
             attachment_generation: 0,
             attachment_import_pending: false,

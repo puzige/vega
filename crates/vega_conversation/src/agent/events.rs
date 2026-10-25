@@ -258,7 +258,13 @@ where
                                 event_sink(&output)?;
                                 events.push(output);
                             }
-                            if let Some(converted) = from_runtime_event(&message_id, &event) {
+                            let unpublished_screenshot = matches!(&event,
+                                RuntimeEvent::ScreenshotDelivered { delivered, .. }
+                                    if !delivered.load(std::sync::atomic::Ordering::Acquire)
+                            );
+                            if !unpublished_screenshot
+                                && let Some(converted) = from_runtime_event(&message_id, &event)
+                            {
                                 let converted = with_terminal_execution_duration(
                                     converted,
                                     execution_duration_ms,
@@ -641,24 +647,30 @@ pub(crate) fn persist_runtime_event(
             control,
             epoch,
             cancel,
+            delivered,
         } => {
             crate::attachments::validate_images(std::slice::from_ref(image))
                 .map_err(|_| safe_audit_error("ComputerScreenshot"))?;
-            control
-                .commit_delivery(*epoch, || {
-                    if cancel.is_cancelled() {
-                        return Err(safe_audit_error("ComputerScreenshot"));
-                    }
-                    vega_store::computer_use_delivery::insert_screenshot(
-                        store.conn(),
-                        thread_id,
-                        message_id,
-                        call_id,
-                        image.bytes(),
-                    )
-                    .map_err(|error| storage_or_audit_error(error, "ComputerScreenshot"))
-                })
-                .map_err(|_| safe_audit_error("ComputerScreenshot"))??;
+            let committed = control.commit_delivery(*epoch, || -> Result<(), VegaError> {
+                if cancel.is_cancelled() {
+                    return Ok(());
+                }
+                vega_store::computer_use_delivery::insert_screenshot(
+                    store.conn(),
+                    thread_id,
+                    message_id,
+                    call_id,
+                    image.bytes(),
+                )
+                .map_err(|error| storage_or_audit_error(error, "ComputerScreenshot"))?;
+                delivered.store(true, std::sync::atomic::Ordering::Release);
+                Ok(())
+            });
+            match committed {
+                Ok(result) => result?,
+                Err(vega_runtime::computer_use::ComputerUseError::Cancelled) => {}
+                Err(_) => return Err(safe_audit_error("ComputerScreenshot")),
+            }
         }
         RuntimeEvent::ToolRoundCompleted {
             response_id,

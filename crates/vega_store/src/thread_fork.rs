@@ -374,11 +374,123 @@ fn copy_delivery(
 }
 
 fn validate_images(conn: &Connection, thread: &str) -> Result<(), ForkError> {
-    let invalid:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM image_attachments a JOIN messages m ON m.id=a.message_id LEFT JOIN computer_screenshot_artifacts s ON s.message_id=a.message_id AND s.ordinal=a.ordinal LEFT JOIN tool_calls c ON c.id=s.call_id WHERE m.thread_id=?1 AND NOT COALESCE(((m.role='user' AND s.call_id IS NULL) OR (m.role='assistant' AND c.message_id=m.id AND c.thread_id=m.thread_id AND c.tool='ComputerScreenshot' AND c.status='success')),0)) ",[thread],|row|row.get(0))?;
+    let invalid:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM image_attachments a JOIN messages m ON m.id=a.message_id LEFT JOIN computer_screenshot_artifacts s ON s.message_id=a.message_id AND s.ordinal=a.ordinal LEFT JOIN tool_calls c ON c.id=s.call_id WHERE m.thread_id=?1 AND NOT COALESCE(((m.role='user' AND s.call_id IS NULL) OR (m.role='assistant' AND c.message_id=m.id AND c.thread_id=m.thread_id AND c.tool='ComputerScreenshot')),0)) ",[thread],|row|row.get(0))?;
     if invalid {
         return Err(corrupt("invalid image owner"));
     }
+    let captures = conn.prepare("SELECT s.call_id FROM computer_screenshot_artifacts s JOIN messages m ON m.id=s.message_id WHERE m.thread_id=?1 AND m.role='assistant'")?
+        .query_map([thread], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for capture in captures {
+        if !valid_screenshot_capture(conn, &capture)? {
+            return Err(corrupt("invalid image owner"));
+        }
+    }
     Ok(())
+}
+
+fn valid_screenshot_capture(conn: &Connection, call_id: &str) -> Result<bool, ForkError> {
+    let Some(call) = crate::tool_calls::find_state(conn, call_id)? else {
+        return Ok(false);
+    };
+    let attached: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM computer_screenshot_artifacts s JOIN image_attachments a ON a.message_id=s.message_id AND a.ordinal=s.ordinal JOIN messages m ON m.id=s.message_id JOIN tool_calls c ON c.id=s.call_id WHERE c.id=?1 AND c.message_id=m.id AND c.thread_id=m.thread_id AND m.role='assistant' AND length(a.encoded)>0)", [call_id], |row| row.get(0))?;
+    if call.tool != "ComputerScreenshot" || !attached {
+        return Ok(false);
+    }
+    if call.status == "success" {
+        return Ok(true);
+    }
+    Ok(call.status == "cancelled" && valid_delivered_screenshot(&call, call_id, call_id))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScreenshotApproval {
+    decision: String,
+    note: serde_json::Value,
+    source: String,
+    danger: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScreenshotInputAudit {
+    kind: String,
+    version: u32,
+    action: String,
+    argument_bytes: usize,
+    argument_digest: String,
+}
+
+fn valid_delivered_screenshot(
+    call: &crate::tool_calls::ToolCallState,
+    call_id: &str,
+    capture: &str,
+) -> bool {
+    if call.tool != "ComputerScreenshot"
+        || !matches!(call.status.as_str(), "success" | "cancelled")
+        || call.exit_code.is_some()
+        || call.duration_ms.is_some()
+    {
+        return false;
+    }
+    let Some(approval) = call
+        .approval
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<ScreenshotApproval>(raw).ok())
+    else {
+        return false;
+    };
+    if approval.decision != "once"
+        || approval.source != "computer_use"
+        || !approval.note.is_null()
+        || !approval.danger.is_null()
+    {
+        return false;
+    }
+    let Ok(input) = serde_json::from_str::<ScreenshotInputAudit>(&call.input_json) else {
+        return false;
+    };
+    if input.kind != "computer_use"
+        || input.version != 1
+        || input.action != "screenshot"
+        || input.argument_bytes > 256 * 1024
+        || input.argument_digest.len() != 64
+        || !input
+            .argument_digest
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return false;
+    }
+    let Some(output) = call
+        .output_text
+        .as_deref()
+        .filter(|output| output.len() <= 2048)
+    else {
+        return false;
+    };
+    let Ok(mut receipt) = serde_json::from_str::<serde_json::Value>(output) else {
+        return false;
+    };
+    if let Some(projection) = receipt
+        .as_object_mut()
+        .and_then(|object| object.remove("model_projection"))
+    {
+        let legacy = serde_json::json!({"code":"observation_budget_exceeded","executed":true,"deferred":true,"retryable":true,"next_step":"use_current_results_then_request_remaining_windows"});
+        let mut structured = legacy.clone();
+        structured["capability"] = "desktop".into();
+        structured["stage"] = "screenshot".into();
+        structured["execution_state"] = "failed".into();
+        structured["field"] = serde_json::Value::Null;
+        structured["diagnostic"] =
+            "本批观察已达到容量限制，请先使用已有结果，再分批读取其余窗口。".into();
+        if projection != legacy && projection != structured {
+            return false;
+        }
+    }
+    receipt
+        == serde_json::json!({"status":"delivered","artifact_id":format!("screenshot:{capture}"),"delivery":"conversation_image_attachment","saved_in_history":true,"read_only":true,"unchanged":call_id != capture,"next_step":"continue_remaining_requested_work_or_finish"})
 }
 
 fn screenshot_receipt(
@@ -406,9 +518,15 @@ fn screenshot_receipt(
         return Err(corrupt("invalid screenshot artifact identity"));
     };
     let new_capture = mapped(calls, capture)?;
-    let valid:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM computer_screenshot_artifacts s JOIN tool_calls c ON c.id=s.call_id JOIN tool_calls a ON a.id=?1 JOIN messages cm ON cm.id=c.message_id JOIN messages am ON am.id=a.message_id WHERE s.call_id=?2 AND c.thread_id=a.thread_id AND c.tool='ComputerScreenshot' AND c.status='success' AND (cm.seq<am.seq OR (cm.seq=am.seq AND c.seq<=a.seq)))",params![alias,capture],|row|row.get(0))?;
-    if !valid {
+    let valid:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM computer_screenshot_artifacts s JOIN tool_calls c ON c.id=s.call_id JOIN tool_calls a ON a.id=?1 JOIN messages cm ON cm.id=c.message_id JOIN messages am ON am.id=a.message_id WHERE s.call_id=?2 AND c.thread_id=a.thread_id AND c.tool='ComputerScreenshot' AND (cm.seq<am.seq OR (cm.seq=am.seq AND c.seq<=a.seq)))",params![alias,capture],|row|row.get(0))?;
+    if !valid || !valid_screenshot_capture(conn, capture)? {
         return Err(corrupt("unresolved screenshot capture"));
+    }
+    if crate::tool_calls::find_state(conn, capture)?.is_some_and(|call| call.status == "cancelled")
+        && !crate::tool_calls::find_state(conn, alias)?
+            .is_some_and(|call| valid_delivered_screenshot(&call, alias, capture))
+    {
+        return Err(corrupt("invalid screenshot receipt"));
     }
     references.push(HistoricalReference {
         field: "artifact_id".into(),
