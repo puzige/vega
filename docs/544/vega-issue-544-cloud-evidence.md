@@ -227,3 +227,9 @@ fetch 现见 master `921d735ca0dda3f17ab99ea4949002a1fdc44ab4`，含 compaction 
 固定 `312076558d13360193fcb85e66fef36a4d464663`（tree `a302c9688dfa40ee548bffd00c9addeef3259e9c`）新增三控件观察和双正文断言后，独审确认正文观察修正未弱化、58测试保留，但报告 shared pending_button 返回 Stateful<Div> 与 Observed 包装不匹配。父复读锁定 gpui-base0.6.1 observe.rs 的 feature-sensitive ObservedElement 别名及 gpui-kit base re-export，确认此 API 接线缺陷。
 
 [Actions 40200944424](https://github.com/puzige/vega/actions/runs/40200944424) failure：Nextest `121191800988`、Clippy `121191801185`、required `121192508212` failure，Python60 OK，Rust未完成发现/执行。父读取两 job 原始日志：E0308 与独审一致；另两处 E0599 是 Observed 不支持应用 InteractionExt::interaction_surface（该 trait 只实现 Stateful<Div>）。不是业务缺陷或 runner 故障。最小修复：shared helper 返回已有 ObservedElement<Stateful<Div>>；Stop/running-send 在既有 interaction_surface 之后 test_support，再绑定原 focus。保留产品交互 wrapper、观察、真实焦点和全部断言，不扩通用交互 API。两文件定向1.98 rustfmt/check及diff exit0；测试未改，待新head Actions及独审增量。最终清理须还原该别名并去观察接线/导入。
+
+### 5bfb4f73：57/58 与剩余 i18n 观察错误
+
+完整 HEAD `5bfb4f7392f67ff0abb39ee369c374e19d38c008`，tree `3139834b3cd0ccc78c73a76ad3f1fa69e31a9648`。窄增量独审无新发现：别名 feature 兼容，Interaction 实现满足观察 wrapper，focus 传递给 inner，58测试未变；两文件格式/diff0。独审不代表运行通过。
+
+[Actions 40201631700](https://github.com/puzige/vega/actions/runs/40201631700) failure，Clippy `121193848734` success（fmt含），Nextest `121193848868` failure，required `121194652443` failure；Python60 OK。Rust58发现/58执行/57通过/1失败/0跳过。三控件测试（Stop、Continue timeout、running Composer）均通过。唯一失败 UI ordinary_tests.rs648，actual Cancel / expected 取消；父复读同测试剩余硬编码、生产 ordinary_controls 和双语 catalog，确认遗留中文标签观察错误，而非取消行为或默认语言缺陷。将同一断言的 Cancel/Check status 两分支改为生产实际 catalog lookup，保 visible、分支语义与全部后续断言；无其他中文标签残留，58定义保留。没有本地执行、删测或同字节重试。

@@ -647,7 +647,11 @@ fn history_replacement_retains_pending_and_failed_text_mixed_and_image_only_rows
                 assert!(control.visible());
                 assert_eq!(
                     control.label(),
-                    Some(if failed { "核实状态" } else { "取消" })
+                    Some(vega_i18n::t(if failed {
+                        "ui.ordinary_send.check_status"
+                    } else {
+                        "ui.cancel"
+                    }))
                 );
             })
             .unwrap();
