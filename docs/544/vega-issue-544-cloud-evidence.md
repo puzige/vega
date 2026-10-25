@@ -221,3 +221,9 @@ fetch 现见 master `921d735ca0dda3f17ab99ea4949002a1fdc44ab4`，含 compaction 
 [Actions 40199681162](https://github.com/puzige/vega/actions/runs/40199681162) completed/failure，Clippy `121187999583` success（含 fmt），Nextest `121187999454` failure，required `121189358266` failure。Python 5+15+40=60 OK。Rust 已实际发现58、执行58、54通过、4失败、0跳过。七 public-entry 回归全部通过，completed ordinary activity 排序新回归通过；不以部分通过称全卡 GREEN。
 
 父读取原始失败 stdout/stderr 并核对锁定 gpui-kit0.6.1 test.rs 与当前/上游 render_rows.rs：三项 app 控件测试报 Registered paths none（composer-stop、pending-resume、composer-running-send），真实控件有 id 但未 test_support 注册；这是观察接线故障，补三个真实构造点（shared pending_button 同时覆盖 remove），不改其行为/可达性断言。第四项 history replacement 阳性对照把 visible_text 当原始全文，实际既有 user_message_lines 使用 trim_end_matches newline；修为同时 assert original_text 完整及展示正文遵循该既有规范，不改变生产裁剪、不删内容检查。target_changed 编辑被拒后重读再定点修正，未重放未知写入。全部58定义保留，三文件定向格式/diff待最终复核；无本地执行、不改通用CI、不重跑同字节求绿。
+
+### 31207655 观察包装编译缺陷
+
+固定 `312076558d13360193fcb85e66fef36a4d464663`（tree `a302c9688dfa40ee548bffd00c9addeef3259e9c`）新增三控件观察和双正文断言后，独审确认正文观察修正未弱化、58测试保留，但报告 shared pending_button 返回 Stateful<Div> 与 Observed 包装不匹配。父复读锁定 gpui-base0.6.1 observe.rs 的 feature-sensitive ObservedElement 别名及 gpui-kit base re-export，确认此 API 接线缺陷。
+
+[Actions 40200944424](https://github.com/puzige/vega/actions/runs/40200944424) failure：Nextest `121191800988`、Clippy `121191801185`、required `121192508212` failure，Python60 OK，Rust未完成发现/执行。父读取两 job 原始日志：E0308 与独审一致；另两处 E0599 是 Observed 不支持应用 InteractionExt::interaction_surface（该 trait 只实现 Stateful<Div>）。不是业务缺陷或 runner 故障。最小修复：shared helper 返回已有 ObservedElement<Stateful<Div>>；Stop/running-send 在既有 interaction_surface 之后 test_support，再绑定原 focus。保留产品交互 wrapper、观察、真实焦点和全部断言，不扩通用交互 API。两文件定向1.98 rustfmt/check及diff exit0；测试未改，待新head Actions及独审增量。最终清理须还原该别名并去观察接线/导入。

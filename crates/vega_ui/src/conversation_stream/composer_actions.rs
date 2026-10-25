@@ -802,8 +802,6 @@ impl ConversationStream {
         let colors = theme(cx).colors;
         div()
             .id("composer-stop")
-            .test_support()
-            .track_focus(&self.action_focus[1])
             .tab_stop(true)
             .aria_label(if self.actions.stopping {
                 vega_i18n::t("ui.stopping")
@@ -827,6 +825,8 @@ impl ConversationStream {
                 colors.accent,
                 !self.actions.stopping,
             )
+            .test_support()
+            .track_focus(&self.action_focus[1])
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| this.request_composer_stop(cx)),

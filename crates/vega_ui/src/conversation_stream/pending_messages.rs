@@ -513,7 +513,11 @@ impl ConversationStream {
         }
     }
 
-    fn pending_button(&self, button: PendingButton, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn pending_button(
+        &self,
+        button: PendingButton,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::base::ObservedElement<Stateful<Div>> {
         let colors = theme(cx).colors;
         let PendingButton {
             id,
@@ -596,12 +600,10 @@ impl ConversationStream {
         };
         div()
             .id("composer-running-send")
-            .test_support()
             .role(Role::Button)
             .aria_label(label)
             .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
             .key_context("PendingMessageControl")
-            .track_focus(&self.action_focus[1])
             .tab_stop(true)
             .size(px(Layout::COMPOSER_SEND_SIZE))
             .flex_shrink_0()
@@ -630,6 +632,8 @@ impl ConversationStream {
                 colors.accent,
                 enabled,
             )
+            .test_support()
+            .track_focus(&self.action_focus[1])
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
