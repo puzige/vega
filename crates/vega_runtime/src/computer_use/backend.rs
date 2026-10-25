@@ -20,8 +20,8 @@ use vega_mcp::{LocalServer, ManagedClient};
 pub(super) struct Backends {
     desktop: Option<Desktop>,
     browser: Option<Browser>,
-    #[cfg(test)]
-    pub(super) test_driver: Option<super::recovery_tests::Driver>,
+    #[cfg(any(test, debug_assertions))]
+    pub(super) test_driver: Option<super::recovery_test_support::Driver>,
 }
 struct Dispatch<'a> {
     cancel: &'a CancellationToken,
@@ -152,7 +152,7 @@ impl Backends {
         &mut self,
         cancel: &CancellationToken,
     ) -> Result<Vec<DesktopTarget>, Error> {
-        #[cfg(test)]
+        #[cfg(any(test, debug_assertions))]
         if let Some(driver) = &self.test_driver {
             return driver.windows();
         }
@@ -169,7 +169,7 @@ impl Backends {
         args: Value,
         cancel: &CancellationToken,
     ) -> Result<vega_mcp::ManagedResult, vega_mcp::McpError> {
-        #[cfg(test)]
+        #[cfg(any(test, debug_assertions))]
         if let Some(driver) = &self.test_driver {
             return driver.call(name, args);
         }
@@ -444,7 +444,7 @@ impl Backends {
         epoch: u64,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
-        #[cfg(test)]
+        #[cfg(any(test, debug_assertions))]
         if let Some(driver) = &self.test_driver {
             if run.control.status().phase == super::ControlPhase::Disconnected {
                 driver.connected();

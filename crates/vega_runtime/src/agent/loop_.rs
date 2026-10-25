@@ -3329,6 +3329,9 @@ where
                     && cancel.is_cancelled())
             {
                 result.status = RuntimeToolStatus::Cancelled;
+                if crate::computer_use::ComputerUseRun::tool_capability(&call.name).is_some() {
+                    result.truncated = None;
+                }
             }
             let mut project_observation = result.status == RuntimeToolStatus::Success;
             if project_observation
@@ -3342,6 +3345,7 @@ where
                     result.output = receipt;
                 } else {
                     result.status = RuntimeToolStatus::Failed;
+                    result.truncated = None;
                     result.output = run.error_feedback(&call.name, error, true);
                     run.discard_pending_screenshot(&call.id);
                 }

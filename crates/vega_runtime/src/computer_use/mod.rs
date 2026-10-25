@@ -17,6 +17,8 @@ mod preparation_session;
 mod prepare;
 mod probe;
 mod progress;
+#[cfg(any(test, debug_assertions))]
+pub mod recovery_test_support;
 #[cfg(test)]
 mod recovery_tests;
 

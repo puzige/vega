@@ -148,6 +148,7 @@ pub fn valid_error_output(name: &str, output: &str, rejected: bool) -> bool {
         ComputerUseError::ReadOnlyObservation,
         ComputerUseError::StaleObservation,
         ComputerUseError::TargetExpired,
+        ComputerUseError::TargetChanged,
         ComputerUseError::ObservationBudget { executed: false },
         ComputerUseError::ObservationBudget { executed: true },
         ComputerUseError::NoProgress,

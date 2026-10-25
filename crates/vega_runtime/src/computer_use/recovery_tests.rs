@@ -9,78 +9,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::Duration;
 
-#[derive(Default)]
-struct DriverState {
-    permissions: [bool; 2],
-    connections: usize,
-    calls: Vec<String>,
-    windows: usize,
-    unknown_action: bool,
-    pause_on_action: Option<ComputerUseControl>,
-}
-
-#[derive(Clone)]
-pub(super) struct Driver(Arc<Mutex<DriverState>>);
-
-impl Driver {
-    fn new(permissions: [bool; 2], unknown_action: bool) -> Self {
-        Self(Arc::new(Mutex::new(DriverState {
-            permissions,
-            unknown_action,
-            ..DriverState::default()
-        })))
-    }
-
-    pub(super) fn connected(&self) {
-        self.0.lock().unwrap().connections += 1;
-    }
-
-    pub(super) fn windows(&self) -> Result<Vec<DesktopTarget>, ComputerUseError> {
-        self.0.lock().unwrap().windows += 1;
-        Ok(vec![DesktopTarget {
-            selection_id: "driver-reference".into(),
-            application: "Example".into(),
-            bundle_id: "example.test".into(),
-            pid: 7,
-            window_id: 11,
-            title: "Private window text".into(),
-        }])
-    }
-
-    pub(super) fn call(
-        &self,
-        name: &str,
-        _: Value,
-    ) -> Result<vega_mcp::ManagedResult, vega_mcp::McpError> {
-        let mut state = self.0.lock().unwrap();
-        state.calls.push(name.into());
-        if name == "check_permissions" {
-            return Ok(vega_mcp::ManagedResult {
-                text: Vec::new(),
-                images: Vec::new(),
-                is_error: false,
-                structured: Some(
-                    json!({"accessibility":state.permissions[0],"screen_recording":state.permissions[1]}),
-                ),
-            });
-        }
-        if state.unknown_action && name == "click" {
-            if let Some(control) = &state.pause_on_action {
-                control.pause();
-            }
-            return Err(vega_mcp::McpError::Timeout);
-        }
-        panic!("unexpected managed call: {name}");
-    }
-}
-
-async fn configured_run(driver: &Driver) -> ComputerUseRun {
-    let mut run = ComputerUseRun::new(true, false);
-    run.control =
-        ComputerUseControl::with_authority(Arc::new(ownership::OwnershipAuthority::default()));
-    run.backend.lock().await.test_driver = Some(driver.clone());
-    run
-}
+use super::recovery_test_support::{Driver, configured_run};
 
 fn request(run: ComputerUseRun) -> AgentRequest {
     AgentRequest {

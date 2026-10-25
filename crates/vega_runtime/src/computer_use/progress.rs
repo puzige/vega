@@ -482,17 +482,11 @@ impl ProgressGuard {
                 return self.stop(trigger, usize::from(count), 3, result, dispatch_started);
             }
         }
-        let Some(after) =
-            after.filter(|observation| matches!(observation.target, Target::Desktop(_)))
-        else {
-            return None;
-        };
+        let after = after.filter(|observation| matches!(observation.target, Target::Desktop(_)))?;
         self.failures.retain(|key, _| {
             !key.starts_with(&format!("{}:{}:", attempt.target, attempt.operation))
         });
-        let Some(action) = attempt.action else {
-            return None;
-        };
+        let action = attempt.action?;
         if attempt.state.is_none() || attempt.state != state(after) {
             self.actions.remove(&attempt.target);
             if attempt.state.is_some() {
