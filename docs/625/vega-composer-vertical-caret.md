@@ -14,9 +14,9 @@ User clarified that keyboard Up cannot move the Composer caret upward. `TextInpu
 
 ## Implementation plan
 
-1. Add Up/Down and Shift variants to TextInput actions, bindings and listeners.
+1. Add Up/Down and Shift variants to TextInput actions, bindings and listeners. TextInput Up excludes Composer (which routes history before caret movement); both unmodified arrows exclude FileSelect and ComposerActions so deeper TextInput contexts cannot outrank popup navigation.
 2. Retain a separate complete shaped-line cache from prepaint, with content revision validity, while leaving the visible-line mouse/paint cache unchanged. Store preferred x together with selection/revision so nonvertical selection or content changes naturally invalidate it.
-3. Navigate using shaped glyph positions and existing UTF-8 boundary handling. Clamp a soft-wrap end to the preceding grapheme when necessary so the caret cannot resolve onto the following visual line.
+3. Navigate using the platform text shaper's glyph-cluster indices rather than stepping Unicode scalar values. Clamp a soft-wrap end to the last shaped cluster start when necessary so the caret cannot resolve onto the following visual line or inside a composed emoji cluster.
 4. Let Composer's existing Up handler delegate to TextInput when history recall is not allowed, without changing popup binding precedence.
 
 ## Verification and delivery
@@ -25,4 +25,4 @@ Local: rustfmt on changed Rust files, diff/whitespace checks and static call-cha
 
 ## Change record
 
-Initial spec established before implementation for issue #625.
+Initial spec established before implementation for issue #625. Independent review identified context-free binding precedence and scalar-based soft-wrap correction defects; revised routing and native glyph-cluster correction before the repair. Acceptance unchanged.

@@ -389,7 +389,16 @@ impl TextInput {
                 .get(target_row + 1)
                 .is_some_and(|next| next.start == offset)
         {
-            offset = self.previous_boundary(offset).max(target.start);
+            let last_cluster = target
+                .line
+                .runs
+                .iter()
+                .flat_map(|run| run.glyphs.iter())
+                .map(|glyph| glyph.index)
+                .filter(|index| *index < target.len)
+                .max()
+                .unwrap_or_default();
+            offset = target.start + last_cluster;
         }
         if extend {
             self.select_to(offset, cx);
