@@ -397,6 +397,11 @@ impl Layout {
     pub const READING_NAVIGATION_PADDING: f32 = 4.0;
     pub const READING_NAVIGATION_PADDING_X: f32 = 12.0;
     pub const READING_NAVIGATION_GAP: f32 = 8.0;
+    pub const ARTIFACT_HEADER_HEIGHT: f32 = 44.0;
+    pub const ARTIFACT_ROW_HEIGHT: f32 = 36.0;
+    pub const ARTIFACT_ACTION_SIZE: f32 = 24.0;
+    pub const ARTIFACT_BORDER: f32 = 1.0;
+    pub const ARTIFACT_VISIBLE_FILES: usize = 3;
     pub const DISCLOSURE_HEADER_HEIGHT: f32 = 28.0;
     pub const DISCLOSURE_TRAILING_SLOT: f32 = 24.0;
     pub const DISCLOSURE_PADDING_X: f32 = 8.0;

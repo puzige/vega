@@ -52,7 +52,21 @@ impl ConversationStream {
         if let Some(group) = self.artifact_groups.get(message_id) {
             return group.clone();
         }
-        let group = cx.new(|_| ArtifactGroup::new(message_id.to_owned()));
+        let group = cx.new(|_| {
+            ArtifactGroup::new(
+                message_id.to_owned(),
+                OpenWorkspaceDiffRequested {
+                    thread_id: self.thread.id.clone(),
+                    project_id: self.thread.project_id.clone(),
+                },
+                self.reading_preview,
+                self.thread.is_standalone(),
+            )
+        });
+        cx.subscribe(&group, |this, _, _: &OpenWorkspaceDiffRequested, cx| {
+            this.emit_open_diff(cx);
+        })
+        .detach();
         cx.observe(&group, |this, group, cx| {
             let index = this.entry_index_where(|entry| {
                 matches!(entry, StreamEntry::ArtifactGroup { group: owned } if owned == &group)
