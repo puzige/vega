@@ -303,35 +303,7 @@ fn assemble(
     let mut entries = project_rows(&page)?;
     append_skill_history(store, thread_id, &page, &mut entries)?;
 
-    if attach_summary
-        && let Some(summary) = crate::summary::latest_task_summary(store, thread_id, None)?
-        && let Some(position) = entries.iter().rposition(|entry| {
-            matches!(
-                entry,
-                HistoryEntry::AssistantText { message_id, .. }
-                    | HistoryEntry::Tool { message_id, .. }
-                    if *message_id == summary.message_id
-            )
-        })
-    {
-        let assistant_seq = match &entries[position] {
-            HistoryEntry::AssistantText { seq, .. } => *seq,
-            HistoryEntry::Tool { .. } => page
-                .rows
-                .iter()
-                .find(|row| row.id == summary.message_id)
-                .map(|row| row.seq)
-                .ok_or_else(|| ConversationError::CorruptRow("summary owner missing".into()))?,
-            _ => unreachable!("position matched an owner entry"),
-        };
-        entries.insert(
-            position + 1,
-            HistoryEntry::Summary {
-                seq: assistant_seq,
-                summary,
-            },
-        );
-    }
+    append_task_summary(store, thread_id, &page, &mut entries, attach_summary)?;
     for row in page.rows.iter().filter(|row| row.role == "assistant") {
         if let Some(receipt) = vega_store::credential_continuation::find(store.conn(), &row.id)
             .map_err(|error| ConversationError::Store(error.to_string()))?
@@ -374,6 +346,45 @@ fn assemble(
         newer_cursor: page.newer_cursor,
         newest_seq,
     })
+}
+
+fn append_task_summary(
+    store: &Store,
+    thread_id: &str,
+    page: &MessagePage,
+    entries: &mut Vec<HistoryEntry>,
+    attach_summary: bool,
+) -> Result<(), ConversationError> {
+    if attach_summary
+        && let Some(summary) = crate::summary::latest_task_summary(store, thread_id, None)?
+        && let Some(position) = entries.iter().rposition(|entry| {
+            matches!(
+                entry,
+                HistoryEntry::AssistantText { message_id, .. }
+                    | HistoryEntry::Tool { message_id, .. }
+                    if *message_id == summary.message_id
+            )
+        })
+    {
+        let assistant_seq = match &entries[position] {
+            HistoryEntry::AssistantText { seq, .. } => *seq,
+            HistoryEntry::Tool { .. } => page
+                .rows
+                .iter()
+                .find(|row| row.id == summary.message_id)
+                .map(|row| row.seq)
+                .ok_or_else(|| ConversationError::CorruptRow("summary owner missing".into()))?,
+            _ => unreachable!("position matched an owner entry"),
+        };
+        entries.insert(
+            position + 1,
+            HistoryEntry::Summary {
+                seq: assistant_seq,
+                summary,
+            },
+        );
+    }
+    Ok(())
 }
 
 fn append_skill_history(
@@ -902,7 +913,12 @@ pub fn latest_historical_history_page(
     thread: &str,
     limit: usize,
 ) -> Result<crate::types::HistoricalHistoryPage, ConversationError> {
-    historical_history_page_before(store, thread, PageCursor::Head, limit)
+    assemble_historical(
+        store,
+        thread,
+        page_read(store, thread, PageCursor::Head, limit)?,
+        true,
+    )
 }
 
 pub fn historical_history_page_before(
@@ -911,7 +927,12 @@ pub fn historical_history_page_before(
     cursor: PageCursor,
     limit: usize,
 ) -> Result<crate::types::HistoricalHistoryPage, ConversationError> {
-    assemble_historical(store, thread, page_read(store, thread, cursor, limit)?)
+    assemble_historical(
+        store,
+        thread,
+        page_read(store, thread, cursor, limit)?,
+        false,
+    )
 }
 
 pub fn historical_history_page_after(
@@ -921,7 +942,7 @@ pub fn historical_history_page_after(
     limit: usize,
 ) -> Result<crate::types::HistoricalHistoryPage, ConversationError> {
     let page = messages::page_after(store.conn(), thread, cursor, limit).map_err(page_failure)?;
-    assemble_historical(store, thread, page)
+    assemble_historical(store, thread, page, true)
 }
 
 pub fn historical_history_page_containing_message(
@@ -932,7 +953,7 @@ pub fn historical_history_page_containing_message(
 ) -> Result<Option<crate::types::HistoricalHistoryPage>, ConversationError> {
     messages::page_containing_message(store.conn(), thread, message, limit)
         .map_err(page_failure)?
-        .map(|page| assemble_historical(store, thread, page))
+        .map(|page| assemble_historical(store, thread, page, true))
         .transpose()
 }
 
@@ -940,6 +961,7 @@ fn assemble_historical(
     store: &Store,
     thread: &str,
     mut page: MessagePage,
+    attach_summary: bool,
 ) -> Result<crate::types::HistoricalHistoryPage, ConversationError> {
     use crate::types::{HistoricalHistoryEntry, HistoricalHistoryPage};
     project_page_privacy(store, thread, &mut page)?;
@@ -1039,6 +1061,7 @@ fn assemble_historical(
         }
     })?;
     append_skill_history(store, thread, &page, &mut entries)?;
+    append_task_summary(store, thread, &page, &mut entries, attach_summary)?;
     let entries = entries
         .into_iter()
         .map(|entry| {

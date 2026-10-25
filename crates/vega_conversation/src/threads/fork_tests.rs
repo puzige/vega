@@ -918,6 +918,82 @@ fn escaped_archive_credentials_are_projected_scanned_cleaned_and_versioned() {
 }
 
 #[test]
+fn headless_summary_attachment_matches_ordinary_page_policies_without_writes() {
+    let (store, _workspace) = database();
+    let fork = fork_thread(&store, "source", "a1").unwrap();
+    let second = fork_thread(&store, &fork.id, &owner(&store, &fork.id, 2)).unwrap();
+    let before = snapshot(&store);
+    for thread in ["source", &fork.id, &second.id] {
+        let run_id = owner(&store, thread, 2);
+        let pages = [
+            (
+                history::latest_history_page(&store, thread, 1).unwrap(),
+                history::latest_historical_history_page(&store, thread, 1).unwrap(),
+                1,
+            ),
+            (
+                history::history_page_after(&store, thread, 1, 1).unwrap(),
+                history::historical_history_page_after(&store, thread, 1, 1).unwrap(),
+                1,
+            ),
+            (
+                history::history_page_containing_message(&store, thread, &run_id, 1)
+                    .unwrap()
+                    .unwrap(),
+                history::historical_history_page_containing_message(&store, thread, &run_id, 1)
+                    .unwrap()
+                    .unwrap(),
+                1,
+            ),
+            (
+                history::history_page_before(&store, thread, PageCursor::Before(3), 1).unwrap(),
+                history::historical_history_page_before(&store, thread, PageCursor::Before(3), 1)
+                    .unwrap(),
+                0,
+            ),
+            (
+                history::history_page_before(&store, thread, PageCursor::Head, 1).unwrap(),
+                history::historical_history_page_before(&store, thread, PageCursor::Head, 1)
+                    .unwrap(),
+                0,
+            ),
+            (
+                history::history_page_after(&store, thread, 0, 1).unwrap(),
+                history::historical_history_page_after(&store, thread, 0, 1).unwrap(),
+                0,
+            ),
+        ];
+        for (ordinary, headless, summary_count) in pages {
+            assert_eq!(
+                headless.entries,
+                ordinary
+                    .entries
+                    .into_iter()
+                    .map(HistoricalHistoryEntry::Ordinary)
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(headless.older_cursor, ordinary.older_cursor);
+            assert_eq!(headless.newer_cursor, ordinary.newer_cursor);
+            assert_eq!(headless.newest_seq, ordinary.newest_seq);
+            assert_eq!(
+                headless
+                    .entries
+                    .iter()
+                    .filter(|entry| matches!(
+                        entry,
+                        HistoricalHistoryEntry::Ordinary(history::HistoryEntry::Summary { .. })
+                    ))
+                    .count(),
+                summary_count
+            );
+        }
+    }
+    assert_eq!(snapshot(&store), before);
+    no_authority(&store, &fork.id);
+    no_authority(&store, &second.id);
+}
+
+#[test]
 fn ordinary_skill_audits_survive_forks_and_headless_timeline_without_authority() {
     let (store, _workspace) = database();
     let hash = "a".repeat(64);
@@ -1060,7 +1136,14 @@ fn ordinary_skill_audits_survive_forks_and_headless_timeline_without_authority()
                 .entries
         );
         assert_eq!(
-            page.entries,
+            page.entries
+                .iter()
+                .filter(|entry| !matches!(
+                    entry,
+                    HistoricalHistoryEntry::Ordinary(history::HistoryEntry::Summary { .. })
+                ))
+                .cloned()
+                .collect::<Vec<_>>(),
             history::historical_history_page_before(&store, thread, PageCursor::Before(3), 1)
                 .unwrap()
                 .entries
