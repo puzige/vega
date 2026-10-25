@@ -17,6 +17,8 @@ pub enum ConversationError {
     Store(String),
     #[error("invalid task identity")]
     InvalidTaskIdentity,
+    #[error("historical delegation requires the headless historical reader")]
+    UnsupportedHistoricalConsumer,
     #[error("invalid Codex session creation transition")]
     InvalidCodexSessionTransition,
     /// The referenced thread does not exist.
