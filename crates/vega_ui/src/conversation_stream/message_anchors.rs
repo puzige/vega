@@ -236,6 +236,7 @@ impl ConversationStream {
         cx: &App,
     ) -> MessageAnchorGeometry {
         let notices = &self.run_notices;
+        let mcp_notices = &self.mcp_notices;
         let notice_width = self
             .workspace_width
             .map(|width| width - 2. * Layout::CONVERSATION_PADDING)
@@ -251,7 +252,8 @@ impl ConversationStream {
                     return 0.;
                 }
                 if self.compaction_failure_is_represented(index) {
-                    return notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.);
+                    return notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.)
+                        + mcp_notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.);
                 }
                 self.measured_entry_heights
                     .get(&identity.key)
@@ -261,7 +263,8 @@ impl ConversationStream {
                         StreamEntry::RunActivitySegment { group, segment } => group.read(cx).estimated_segment_height_with_top(*segment, notice_width, stage_top_insets.get(&index).copied().unwrap_or(Layout::CONVERSATION_STAGE_TOP), cx),
                         StreamEntry::Tool { .. } | StreamEntry::ToolGroup { .. } | StreamEntry::ContextCompaction { .. } => self.estimated_entry_height(index, cx, identity.message_id.is_some()) + stage_top_insets.get(&index).copied().unwrap_or(0.),
                         _ => self.estimated_entry_height(index, cx, identity.message_id.is_some()) + if self.copy_source_for_entry(index).is_some() { Layout::MESSAGE_COPY_FOOTER } else { 0. },
-                    } + notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.))
+                    } + notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.)
+                        + mcp_notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.))
             })
             .collect::<Vec<_>>();
         let total_height = entry_heights.iter().sum::<f32>();
