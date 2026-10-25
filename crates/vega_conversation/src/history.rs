@@ -169,6 +169,7 @@ impl AssistantStatus {
 /// Result of one hydration projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryPage {
+    pub interrupted_tail: Option<crate::types::InterruptedAssistant>,
     pub subagents: Vec<crate::types::SubagentSnapshot>,
     /// Entries in ascending seq position (oldest → newest).
     pub entries: Vec<HistoryEntry>,
@@ -431,6 +432,7 @@ fn assemble(
         }
     }
     Ok(HistoryPage {
+        interrupted_tail: interrupted_tail(store, thread_id)?,
         subagents: crate::subagents::history(store, thread_id)?
             .into_iter()
             .filter(|agent| {
@@ -909,4 +911,15 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
         input,
         result,
     }
+}
+
+pub fn interrupted_tail(
+    store: &Store,
+    thread_id: &str,
+) -> Result<Option<crate::types::InterruptedAssistant>, ConversationError> {
+    messages::interrupted_tail(store.conn(), thread_id)
+        .map(|tail| {
+            tail.map(|(message_id, seq)| crate::types::InterruptedAssistant { message_id, seq })
+        })
+        .map_err(|error| ConversationError::Store(error.to_string()))
 }

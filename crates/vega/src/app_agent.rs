@@ -34,6 +34,7 @@ pub(crate) enum PendingAgentRun {
     UserMessage(UserSubmission),
     ApprovedPlan(String),
     CredentialContinuation(String),
+    InterruptedAssistant(InterruptedAssistant),
 }
 
 /// Frozen explicit user payload, never reconstructed from a later UI draft.
@@ -1443,6 +1444,74 @@ pub(crate) fn run_agent_worker_with_mcp(
                                 pending_message_id.clone(),
                                 steering_source.clone(),
                             ),
+                        pricing_catalog,
+                        Some(reasoning),
+                        mcp_servers,
+                    ),
+                )
+            }
+            PendingAgentRun::InterruptedAssistant(expected) => {
+                let provider = guard_provider(make_provider()?);
+                if cancel.is_cancelled() {
+                    return Err(());
+                }
+                let mcp_servers = match &mcp_service {
+                    Some(service) => runtime
+                        .block_on(async {
+                            tokio::select! {
+                                biased;
+                                _ = cancel.cancelled() => Err(()),
+                                readiness = service.ready_for_run() => readiness.map_err(|_| ()),
+                            }
+                        })
+                        .map(|readiness| {
+                            if !readiness.unavailable.is_empty() {
+                                let _ =
+                                    sender.send(AgentUpdate::McpUnavailable(readiness.unavailable));
+                            }
+                            readiness.ready_servers
+                        })?,
+                    None => Vec::new(),
+                };
+                let mcp_servers = mcp_servers
+                    .into_iter()
+                    .map(|server| {
+                        let server = server.with_known_credentials(
+                            provider_known_credential.clone().into_iter().collect(),
+                        );
+                        match (
+                            provider_known_credential.as_ref(),
+                            &provider_credential_reader,
+                        ) {
+                            (Some(_), Some(reader)) => {
+                                server.with_known_credentials_reader(reader.clone())
+                            }
+                            _ => server,
+                        }
+                    })
+                    .collect();
+                if cancel.is_cancelled() {
+                    return Err(());
+                }
+                runtime.block_on(
+                    vega_conversation::agent::resume_interrupted_assistant_with_mcp(
+                        &store,
+                        provider.as_ref(),
+                        &tools,
+                        &thread.id,
+                        &expected,
+                        &system_prompt,
+                        cancel,
+                        &permission_queue,
+                        event_sink,
+                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint)
+                            .with_subagent_host(subagent_host.clone())
+                            .with_turn_limit(turn_limit)
+                            .with_computer_use(computer_use.clone())
+                            .with_owner_credential_reader(owner_credential_reader.clone())
+                            .with_credential_exceptions(Some(credential_exceptions.clone()))
+                            .with_user_questions(Arc::new(user_questions.clone()))
+                            .with_pending_input(None, steering_source.clone()),
                         pricing_catalog,
                         Some(reasoning),
                         mcp_servers,

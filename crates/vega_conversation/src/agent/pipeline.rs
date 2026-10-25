@@ -674,7 +674,11 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             ));
         }
     }
-    if !uses_existing_user && config.credential_continuation_id.is_none() && !config.delegated {
+    if !uses_existing_user
+        && config.credential_continuation_id.is_none()
+        && config.interrupted_assistant.is_none()
+        && !config.delegated
+    {
         let tx = store.immediate_transaction().map_err(runtime_store_error)?;
         vega_store::recovery::recover_thread_with_owner(
             &tx,
@@ -695,6 +699,38 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     let thread = vega_store::threads::find(&transaction, &thread_id)
         .map_err(runtime_store_error)?
         .ok_or_else(|| ConversationError::NotFound(thread_id.clone()))?;
+    if let Some(expected) = &config.interrupted_assistant {
+        let tail =
+            messages::interrupted_tail(&transaction, &thread_id).map_err(runtime_store_error)?;
+        if uses_existing_user
+            || config.delegated
+            || config.credential_continuation_id.is_some()
+            || config.pending_message_id.is_some()
+            || config.automation_claim.is_some()
+            || !user_content.is_empty()
+            || !images.is_empty()
+            || tail
+                .as_ref()
+                .is_none_or(|(id, seq)| id != &expected.message_id || *seq != expected.seq)
+            || messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?
+                != expected.seq.checked_add(1).ok_or_else(|| {
+                    ConversationError::CorruptRow("interrupted sequence overflow".into())
+                })?
+        {
+            return Err(ConversationError::CorruptRow(
+                "interrupted task changed; reopen the task before resuming".into(),
+            ));
+        }
+    }
+    let user_message_id = if let Some(expected) = &config.interrupted_assistant {
+        transaction.query_row(
+            "SELECT id FROM messages WHERE thread_id = ?1 AND role = 'user' AND seq < ?2 ORDER BY seq DESC LIMIT 1",
+            (&thread_id, expected.seq),
+            |row| row.get::<_, String>(0),
+        ).map_err(runtime_store_error)?
+    } else {
+        user_message_id
+    };
     vega_store::delegated_stages::redact_payloads(&transaction, &thread_id, |text| {
         vega_runtime::redact_sensitive_credential_text_with_policy(
             text,
@@ -946,7 +982,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                 "approved instruction has no matching plan".to_string(),
             ));
         }
-    } else if continuation.is_none() {
+    } else if continuation.is_none() && config.interrupted_assistant.is_none() {
         let user_seq = messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
         messages::insert(
             &transaction,

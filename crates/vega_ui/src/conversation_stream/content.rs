@@ -94,6 +94,7 @@ impl ConversationStream {
     }
 
     pub fn apply_history_page(&mut self, page: HistoryPage, cx: &mut Context<Self>) {
+        self.interrupted_tail = page.interrupted_tail.clone();
         let subagents = page.subagents.clone();
         let was_empty = self.entries.is_empty();
         self.ensure_entry_identities();
@@ -125,6 +126,7 @@ impl ConversationStream {
     }
 
     pub fn apply_newer_history_page(&mut self, page: HistoryPage, cx: &mut Context<Self>) {
+        self.interrupted_tail = page.interrupted_tail.clone();
         let subagents = page.subagents.clone();
         self.ensure_entry_identities();
         let anchor = self.scroll_anchor_snapshot();
@@ -1268,6 +1270,8 @@ impl ConversationStream {
                 self.append_pending_user(&pending_id, &message_id, seq, &content, images, cx);
             }
             ConversationEvent::MessageStarted { message_id, seq } => {
+                self.composer_resume_pending = false;
+                self.interrupted_tail = None;
                 if self.finished_artifact_turns.contains(&message_id) {
                     return;
                 }

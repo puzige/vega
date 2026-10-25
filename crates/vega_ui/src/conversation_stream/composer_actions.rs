@@ -193,6 +193,88 @@ impl ComposerActions {
 }
 
 impl ConversationStream {
+    pub fn apply_interrupted_tail(
+        &mut self,
+        tail: Option<vega_conversation::types::InterruptedAssistant>,
+        cx: &mut Context<Self>,
+    ) {
+        self.interrupted_tail = tail;
+        cx.notify();
+    }
+
+    pub fn finish_composer_resume_request(&mut self, cx: &mut Context<Self>) {
+        self.composer_resume_pending = false;
+        cx.notify();
+    }
+
+    pub fn can_resume_composer(&self, cx: &App) -> bool {
+        !self.composer_resume_pending && self.composer_resume_available(cx)
+    }
+
+    pub fn owns_composer_resume_request(
+        &self,
+        request: &ComposerResumeRequested,
+        cx: &App,
+    ) -> bool {
+        self.composer_resume_pending
+            && request.thread_id == self.thread.id
+            && self.interrupted_tail.as_ref() == Some(&request.expected)
+            && self.composer_resume_available(cx)
+    }
+
+    fn composer_resume_available(&self, cx: &App) -> bool {
+        self.thread.backend == TaskBackend::Native
+            && self.interrupted_tail.is_some()
+            && !self.reading_preview
+            && !self.actions.running
+            && !self.actions.stopping
+            && !self.composer_submit_pending
+            && self.input.read(cx).text().is_empty()
+            && self.attachments.is_empty()
+            && !self.attachment_import_pending
+            && !self.pending_queue.busy
+            && self.pending_queue.messages.is_empty()
+            && !self.context_operation_busy()
+            && self.actions.pending_mode.is_none()
+            && !self.approved_not_started
+            && !self.trusted_action_busy
+            && !self.skill_mutation_pending
+            && self.model_selection_pending.is_none()
+            && !self.permission_queue().has_pending()
+            && !self.has_pending_user_question()
+    }
+
+    pub(crate) fn shows_composer_resume(&self, cx: &App) -> bool {
+        self.thread.backend == TaskBackend::Native
+            && self.interrupted_tail.is_some()
+            && self.input.read(cx).text().is_empty()
+            && self.attachments.is_empty()
+    }
+
+    pub(crate) fn request_composer_resume(&mut self, cx: &mut Context<Self>) {
+        if !self.can_resume_composer(cx) || self.input.read(cx).is_composing() {
+            return;
+        }
+        let Some(expected) = self.interrupted_tail.clone() else {
+            return;
+        };
+        self.close_composer_popovers(cx);
+        self.composer_resume_pending = true;
+        cx.emit(ComposerResumeRequested {
+            thread_id: self.thread.id.clone(),
+            expected,
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn activate_composer_primary(&mut self, cx: &mut Context<Self>) {
+        if self.shows_composer_resume(cx) {
+            self.request_composer_resume(cx);
+        } else {
+            self.submit_message(cx);
+        }
+    }
+
     pub(crate) fn close_composer_popovers(&mut self, cx: &mut Context<Self>) {
         self.pending_ui.menu = None;
         self.context_control.open = false;
@@ -235,6 +317,7 @@ impl ConversationStream {
         self.timeout_permission(cx);
         self.cancel_user_questions(cx);
         self.actions.running = false;
+        self.composer_resume_pending = false;
         self.actions.restore_focus = self.actions.stopping;
         self.actions.stopping = false;
         let stopped = self.actions.terminal_cancelled.unwrap_or(cancelled);
@@ -412,9 +495,7 @@ impl ConversationStream {
                 }
             }
         }
-        if self.actions.running || self.composer_submit_pending {
-            controls.push(self.action_focus[1].clone());
-        }
+        controls.push(self.action_focus[1].clone());
         controls.extend(self.automation_focuses());
         controls.extend(
             self.active_skill_focuses

@@ -760,7 +760,9 @@ where
         &prepared.project_id,
         thread_id,
         &prepared.assistant_message_id,
-        persisted_user_message_id.is_none() && continuation.is_none(),
+        persisted_user_message_id.is_none()
+            && continuation.is_none()
+            && actor_config.interrupted_assistant.is_none(),
     );
     let skill_launch = match skill_launch {
         Ok(launch) => launch,
@@ -1366,6 +1368,57 @@ where
     actor_config.pending_message_id = None;
     actor_config.automatic_title = None;
     run_thread_task_with_images_reasoning_and_mcp(
+        store,
+        provider,
+        tools,
+        thread_id,
+        "",
+        system_prompt,
+        cancel,
+        permission_hook,
+        event_sink,
+        actor_config,
+        None,
+        pricing_catalog,
+        reasoning,
+        Vec::new(),
+        mcp_servers,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn resume_interrupted_assistant_with_mcp<F>(
+    store: &Store,
+    provider: &dyn Provider,
+    tools: &vega_tools::Tools,
+    thread_id: &str,
+    expected: &crate::types::InterruptedAssistant,
+    system_prompt: &str,
+    cancel: CancellationToken,
+    permission_hook: &dyn PermissionHook,
+    event_sink: F,
+    mut actor_config: PersistenceActorConfig,
+    pricing_catalog: Option<vega_token::PricingCatalog>,
+    reasoning: Option<FrozenReasoning>,
+    mcp_servers: Vec<vega_runtime::McpReadyServer>,
+) -> Result<ConversationRun, ConversationError>
+where
+    F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
+{
+    if actor_config.credential_continuation_id.is_some()
+        || actor_config.pending_message_id.is_some()
+        || actor_config.delegated
+        || actor_config.automation_claim.is_some()
+    {
+        return Err(ConversationError::CorruptRow(
+            "interrupted resume identity mismatch".into(),
+        ));
+    }
+    actor_config.interrupted_assistant = Some(expected.clone());
+    actor_config.pending_message_id = None;
+    actor_config.automatic_title = None;
+    run_thread_task_with_automation_inner(
         store,
         provider,
         tools,

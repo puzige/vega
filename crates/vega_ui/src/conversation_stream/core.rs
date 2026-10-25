@@ -133,6 +133,8 @@ pub struct ConversationStream {
     /// Submitted drafts, scoped to this thread view.
     pub(crate) composer_history: Vec<String>,
     pub(crate) composer_submit_pending: bool,
+    pub(crate) composer_resume_pending: bool,
+    pub(crate) interrupted_tail: Option<vega_conversation::types::InterruptedAssistant>,
     pub(crate) pending_queue: PendingQueueProjection,
     pub(crate) pending_behavior_override: Option<PendingMessageBehavior>,
     pub(crate) pending_submission_revision: Option<u64>,
@@ -232,6 +234,7 @@ impl EventEmitter<MessageLocationRequested> for ConversationStream {}
 impl EventEmitter<FileIndexRequested> for ConversationStream {}
 impl EventEmitter<FileIndexCancelled> for ConversationStream {}
 impl EventEmitter<ComposerStopRequested> for ConversationStream {}
+impl EventEmitter<ComposerResumeRequested> for ConversationStream {}
 impl EventEmitter<FileIndexRetryRequested> for ConversationStream {}
 impl EventEmitter<ComposerDefaultsRequested> for ConversationStream {}
 impl EventEmitter<ThreadModelSelectionRequested> for ConversationStream {}
@@ -552,6 +555,8 @@ impl ConversationStream {
             meter: ConversationMeter::default(),
             composer_history: Vec::new(),
             composer_submit_pending: false,
+            composer_resume_pending: false,
+            interrupted_tail: None,
             automation: super::automation::AutomationUi::default(),
             pending_queue: PendingQueueProjection::default(),
             pending_behavior_override: None,

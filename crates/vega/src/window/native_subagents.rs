@@ -496,6 +496,13 @@ impl VegaWindow {
         view.update(cx, ConversationStream::request_skill_projection);
         cx.subscribe(
             &view,
+            |this, stream, request: &ComposerResumeRequested, cx| {
+                this.resume_composer(stream.clone(), request, cx);
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &view,
             |this, stream, request: &ComposerStopRequested, cx| {
                 this.stop_composer(stream.clone(), request, cx);
             },
