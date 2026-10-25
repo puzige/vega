@@ -13,6 +13,18 @@ impl ThreadsBlock {
         };
         let mut items = Vec::new();
         match menu {
+            OrganizationMenu::Layout => {
+                for (view, label) in [
+                    (SidebarProjectView::ByProject, "按项目"),
+                    (SidebarProjectView::Timeline, "扁平列表"),
+                ] {
+                    let selected = snapshot.preferences.project_view == view;
+                    items.push((
+                        format!("{} {label}", if selected { "✓" } else { "  " }),
+                        MenuCommand::ProjectView(view),
+                    ));
+                }
+            }
             OrganizationMenu::Group(id) => {
                 items.push(("新建任务".into(), MenuCommand::NewTask(id.clone())));
                 items.push(("重命名".into(), MenuCommand::Rename(id.clone())));
@@ -76,6 +88,21 @@ impl ThreadsBlock {
         }
         items
     }
+    fn close_organization_menu(
+        &mut self,
+        restore_focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(org) = self.organization.as_mut() {
+            if restore_focus && matches!(org.menu, Some(OrganizationMenu::Layout)) {
+                window.focus(&org.layout_focus, cx);
+            }
+            org.menu = None;
+            org.menu_anchor = None;
+        }
+        cx.notify();
+    }
     fn activate_organization_menu(
         &mut self,
         index: usize,
@@ -85,12 +112,12 @@ impl ThreadsBlock {
         let Some((_, command)) = self.organization_menu_items().get(index).cloned() else {
             return;
         };
-        if let Some(org) = self.organization.as_mut() {
-            org.menu = None;
-            org.menu_anchor = None;
-        }
+        self.close_organization_menu(true, window, cx);
         match command {
             MenuCommand::Apply(action) => self.submit_organization(action, cx),
+            MenuCommand::ProjectView(view) => {
+                self.control_action(render::Control::ProjectView(view), window, cx);
+            }
             MenuCommand::Rename(id) => self.edit_group(Some(id), window, cx),
             MenuCommand::NewTask(id) => self.new_group_task(id, cx),
             MenuCommand::RemoveProject(id) => {
@@ -114,6 +141,7 @@ impl ThreadsBlock {
         let items = self.organization_menu_items();
         let title = match org.menu {
             Some(OrganizationMenu::Group(_)) => "分组操作",
+            Some(OrganizationMenu::Layout) => "布局",
             _ => "项目操作",
         };
         let menu = div()
@@ -140,12 +168,8 @@ impl ThreadsBlock {
             .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    if let Some(org) = this.organization.as_mut() {
-                        org.menu = None;
-                        org.menu_anchor = None;
-                    }
-                    cx.notify();
+                cx.listener(|this, _, window, cx| {
+                    this.close_organization_menu(false, window, cx);
                 }),
             )
             .tracked_scroll_edge_fade(
@@ -155,13 +179,9 @@ impl ThreadsBlock {
             )
             // VegaWindow binds Escape to CloseSettings before raw key_down.
             // Handle the action in this focused menu so it cannot reach the route.
-            .on_action(cx.listener(|this, _: &CloseSettings, _, cx| {
-                if let Some(org) = this.organization.as_mut() {
-                    org.menu = None;
-                    org.menu_anchor = None;
-                }
+            .on_action(cx.listener(|this, _: &CloseSettings, window, cx| {
+                this.close_organization_menu(true, window, cx);
                 cx.stop_propagation();
-                cx.notify();
             }))
             .on_key_down(
                 cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
@@ -182,10 +202,7 @@ impl ThreadsBlock {
                                 (org.menu_index + 1) % count
                             }
                         }
-                        "escape" => {
-                            org.menu = None;
-                            org.menu_anchor = None;
-                        }
+                        "escape" => this.close_organization_menu(true, window, cx),
                         "enter" | "space" => {
                             let index = org.menu_index;
                             this.activate_organization_menu(index, window, cx);

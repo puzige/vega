@@ -33,6 +33,7 @@ pub(super) struct Organization {
     menu: Option<OrganizationMenu>,
     menu_anchor: Option<(gpui_kit::Point<gpui_kit::Pixels>, Anchor)>,
     menu_focus: FocusHandle,
+    layout_focus: FocusHandle,
     menu_index: usize,
     menu_scroll: gpui_kit::ScrollHandle,
     archive: bool,
@@ -129,6 +130,7 @@ enum OrganizationMenu {
     #[allow(dead_code)]
     Group(String),
     Project(String),
+    Layout,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OrganizationSection {
@@ -140,6 +142,7 @@ pub(crate) const PROJECT_TASKS_PAGE: usize = 5;
 #[derive(Clone)]
 enum MenuCommand {
     Apply(SidebarOrganizationAction),
+    ProjectView(SidebarProjectView),
     Rename(String),
     NewTask(String),
     RemoveProject(String),
@@ -173,6 +176,7 @@ impl ThreadsBlock {
             menu: None,
             menu_anchor: None,
             menu_focus: cx.focus_handle(),
+            layout_focus: cx.focus_handle(),
             menu_index: 0,
             menu_scroll: gpui_kit::ScrollHandle::new(),
             archive: false,

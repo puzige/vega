@@ -1,10 +1,10 @@
 # Issue #588：侧边栏视图真实分派（按项目 / 扁平列表）
 
 - Issue：[#588](https://github.com/puzige/vega/issues/588)
-- 看板：Vega Desktop，Status=Backlog，Size=M
+- 看板：Vega Desktop，Size=M；当前状态以 Issue / Project 为准
 - 基线：`a100f730`（origin/master）
 - 规则：[AGENTS](../../AGENTS.md)、[执行总纲](../vega-exec-guide.md)、[设计守则](../vega-design-guidelines.md)
-- 状态：规格已冻结，待实现。本地不编译、不测试。
+- 状态：规格已冻结，实现见 [PR #606](https://github.com/puzige/vega/pull/606)；云端门禁及用户手测结果以 PR / Issue 记录为准。本地不编译、不测试。
 
 ## 1. 问题
 
@@ -76,7 +76,7 @@ case `project`: return e.projectKey == null || !b.has(e.projectKey);
 
 - `render_organization` 始终保留现有已固定段；按 `preferences.project_view` 分派，`ByProject` 保留项目与最近任务，`Timeline` 只渲染统一任务列表。
 - 复用最近任务的行、归档开关及 `recents_visible` / `recents_total` 分页；扁平模式包含所有项目归属，排除已固定任务后调用 `sorted_threads`，不按日期分桶。
-- 在任务分区标题提供键盘可访问的布局选择，明确显示“按项目 / 扁平列表”及当前选择；写入现有 `SetPreferences` 持久化链路，切换时重置列表显示窗口为 `RECENTS_PAGE`。
+- 在现有任务分区标题栏提供键盘可访问的布局菜单，不增加常驻行、不移动任务列表起点；菜单明确显示“按项目 / 扁平列表”及当前选择。写入现有 `SetPreferences` 持久化链路，切换成功后重置列表显示窗口为 `RECENTS_PAGE`。
 - 清理未使用的旧 group/project/timeline 渲染投影及其独占 helper，保留当前生产调用所需 helper；不接入本卡以外的 Groups 模式。移除掩盖该投影的模块级 `allow(dead_code)`，无关既存死代码不扩大清理。
 - 扁平模式的滚动增长只影响可见的统一列表，不推进隐藏的项目任务窗口。项目删除、默认值、排序、存储 schema 及分页常量不变。
 

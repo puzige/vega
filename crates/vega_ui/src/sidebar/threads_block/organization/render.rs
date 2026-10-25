@@ -135,106 +135,6 @@ impl ThreadsBlock {
         }
         cx.notify();
     }
-    pub(super) fn organization_control(
-        &self,
-        id: impl Into<String>,
-        label: impl Into<String>,
-        action: Control,
-        selected: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = theme(cx).colors;
-        let id = id.into();
-        let label = label.into();
-        let aria = if selected {
-            format!("{label}，已选择")
-        } else {
-            label.clone()
-        };
-        let keyboard_action = action.clone();
-        let button_bounds =
-            matches!(&action, Control::Menu(_)).then(|| Rc::new(Cell::new(None::<Bounds<Pixels>>)));
-        let mouse_bounds = button_bounds.clone();
-        let keyboard_bounds = button_bounds.clone();
-        let control = div()
-            .id(ElementId::Name(id.clone().into()))
-            .focusable()
-            .tab_stop(true)
-            .role(gpui_kit::Role::Button)
-            .aria_label(aria)
-            .aria_selected(selected)
-            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-            .px_2()
-            .rounded_lg()
-            .flex()
-            .items_center()
-            .text_size(px(Typography::SIDEBAR))
-            .text_color(if selected {
-                colors.text_primary
-            } else {
-                colors.text_secondary
-            })
-            .cursor_pointer()
-            .interactive(colors, true, selected)
-            .focus_visible(move |style| {
-                style
-                    .bg(if selected {
-                        colors.bg_active
-                    } else {
-                        colors.bg_hover
-                    })
-                    .shadow(vec![gpui_kit::BoxShadow {
-                        color: colors.accent.into(),
-                        offset: point(px(0.), px(0.)),
-                        blur_radius: px(0.),
-                        spread_radius: px(1.),
-                        inset: true,
-                    }])
-            })
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _, window, cx| {
-                    if cx.has_active_drag() {
-                        return;
-                    }
-                    cx.stop_propagation();
-                    this.control_action_from_button(
-                        action.clone(),
-                        mouse_bounds.as_ref().and_then(|bounds| bounds.get()),
-                        window,
-                        cx,
-                    );
-                }),
-            )
-            .on_key_down(
-                cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "enter" || event.keystroke.key == "space" {
-                        cx.stop_propagation();
-                        this.control_action_from_button(
-                            keyboard_action.clone(),
-                            keyboard_bounds.as_ref().and_then(|bounds| bounds.get()),
-                            window,
-                            cx,
-                        );
-                    }
-                }),
-            )
-            .child(label)
-            .when_some(button_bounds, |control, bounds| {
-                let button_geometry = gpui_kit::ScrollHandle::new();
-                control.relative().track_scroll(&button_geometry).child(
-                    gpui_kit::canvas(
-                        move |_, _, _| bounds.set(Some(button_geometry.bounds())),
-                        |_, (), _, _| {},
-                    )
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full(),
-                )
-            });
-        control.into_any_element()
-    }
     pub(in crate::sidebar::threads_block) fn render_organization(
         &mut self,
         _: &mut Window,
@@ -534,6 +434,10 @@ impl ThreadsBlock {
         let colors = theme(cx).colors;
         let label = "最近任务";
         let project_view = snapshot.preferences.project_view;
+        let layout_label = match project_view {
+            SidebarProjectView::ByProject => "布局：按项目",
+            SidebarProjectView::Timeline => "布局：扁平列表",
+        };
         let threads: Vec<_> = self
             .eligible_threads(show_archived)
             .into_iter()
@@ -562,6 +466,24 @@ impl ThreadsBlock {
                     .flex()
                     .items_center()
                     .gap_1()
+                    .child(
+                        self.vector_control(
+                            "organization-layout-menu",
+                            layout_label,
+                            crate::icons::Icon::Summary,
+                            Control::Menu(OrganizationMenu::Layout),
+                            false,
+                            cx,
+                        )
+                        .role(gpui_kit::Role::Button)
+                        .when_some(self.organization.as_ref(), |control, org| {
+                            control.track_focus(&org.layout_focus).when(
+                                matches!(org.menu, Some(OrganizationMenu::Layout)),
+                                |control| control.bg(colors.bg_active),
+                            )
+                        })
+                        .tooltip(move |_, cx| crate::icons::tooltip(layout_label, cx)),
+                    )
                     .child(self.archive_control(!header_actions_visible, cx))
                     .child(self.vector_control(
                         "organization-new-session",
@@ -582,27 +504,6 @@ impl ThreadsBlock {
             .map(|thread| thread.id.clone());
         let empty = threads.is_empty();
 
-        let layout = div()
-            .id("organization-layout")
-            .flex()
-            .items_center()
-            .gap_1()
-            .children(
-                [
-                    ("by-project", "按项目", SidebarProjectView::ByProject),
-                    ("timeline", "扁平列表", SidebarProjectView::Timeline),
-                ]
-                .into_iter()
-                .map(|(id, label, view)| {
-                    self.organization_control(
-                        format!("organization-layout-{id}"),
-                        label,
-                        Control::ProjectView(view),
-                        project_view == view,
-                        cx,
-                    )
-                }),
-            );
         self.recents_total = threads.len();
         let rows = threads
             .into_iter()
@@ -639,7 +540,6 @@ impl ThreadsBlock {
             .flex_col()
             .flex_shrink_0()
             .child(header)
-            .child(layout)
             .child(
                 div()
                     .id("organization-recents-scroll")
