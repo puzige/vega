@@ -780,3 +780,374 @@ fn hidden_historical_fields_are_scanned_redacted_and_fingerprinted() {
     );
     no_authority(&store, &fork.id);
 }
+
+#[test]
+fn escaped_archive_credentials_are_projected_scanned_cleaned_and_versioned() {
+    let store = database();
+    let secret = format!("sk-proj-{}", "synthetic".repeat(8));
+    let escaped = secret.replacen('s', r"\u0073", 1);
+    let receipt = serde_json::json!({"agent": {
+        "agent_id": secret, "message_id": secret, "name": secret, "state": "done",
+        "result": secret, "release_state": secret, "checkpoint": {"id": secret,
+            "payload": {"summary": secret, "artifacts": [{"path": secret, "read_call_id": secret}],
+                "evidence_call_ids": [secret]}}
+    }})
+    .to_string()
+    .replace(&secret, &escaped);
+    let input = format!(r#"{{"task":"{escaped}","name":"{escaped}"}}"#);
+    assert!(vega_runtime::inspect_credential_text(&receipt, &[]).is_empty());
+    assert!(!vega_runtime::inspect_credential_text(&secret, &[]).is_empty());
+    call(&store, "spawn", "a1", 1, "spawn_agent", &input, &receipt);
+    let fork = fork_thread(&store, "source", "a1").unwrap();
+    let source_before = snapshot(&store);
+    let source_fingerprint =
+        vega_store::credential_privacy::source_fingerprint(store.conn(), "source").unwrap();
+    for thread in ["source", fork.id.as_str()] {
+        let page = history::latest_historical_history_page(&store, thread, 2).unwrap();
+        let (input, result) = page
+            .entries
+            .iter()
+            .find_map(|entry| match entry {
+                HistoricalHistoryEntry::Delegation {
+                    input_json, result, ..
+                } => Some((input_json, result)),
+                _ => None,
+            })
+            .unwrap();
+        let summary = &result.agents[0];
+        for text in [
+            input.as_str(),
+            result.receipt.as_deref().unwrap(),
+            summary.historical_agent_id.as_deref().unwrap(),
+            summary.historical_message_id.as_deref().unwrap(),
+            summary.name.as_deref().unwrap(),
+            summary.result.as_deref().unwrap(),
+            summary.release_state.as_deref().unwrap(),
+            summary.checkpoint_json.as_deref().unwrap(),
+        ] {
+            assert!(!text.contains(&secret));
+            assert!(!text.contains(&escaped));
+            assert!(vega_runtime::inspect_credential_text(text, &[]).is_empty());
+        }
+        assert!(
+            result
+                .references
+                .iter()
+                .all(|reference| !reference.source_id.contains(&secret))
+        );
+    }
+    assert_eq!(snapshot(&store), source_before);
+    store.conn().execute("UPDATE historical_tool_receipts SET source_thread_id=?1,source_message_id=?1,source_call_id=?1 WHERE thread_id=?2", (&secret, &fork.id)).unwrap();
+    let fields = vega_store::credential_privacy::fields(store.conn(), &fork.id).unwrap();
+    for field in [
+        "historical.input",
+        "historical.output",
+        "historical.references",
+        "historical.identity",
+    ] {
+        let (_, _, text) = fields
+            .iter()
+            .find(|(_, candidate, _)| candidate == field)
+            .unwrap();
+        assert!(
+            vega_runtime::inspect_credential_text(text, &[])
+                .iter()
+                .any(|finding| finding.rule_id == "credential_format")
+        );
+    }
+    let privacy =
+        vega_store::credential_privacy::source_fingerprint(store.conn(), &fork.id).unwrap();
+    let context = context_compaction::load_source_version(store.conn(), &fork.id)
+        .unwrap()
+        .fingerprint;
+    let equivalent = receipt.replace(r"\u0073k", r"\u0073\u006b");
+    store
+        .conn()
+        .execute(
+            "UPDATE historical_tool_receipts SET output_text=?1 WHERE thread_id=?2",
+            (&equivalent, &fork.id),
+        )
+        .unwrap();
+    assert_ne!(
+        privacy,
+        vega_store::credential_privacy::source_fingerprint(store.conn(), &fork.id).unwrap()
+    );
+    assert_ne!(
+        context,
+        context_compaction::load_source_version(store.conn(), &fork.id)
+            .unwrap()
+            .fingerprint
+    );
+    let expected =
+        vega_store::credential_privacy::source_fingerprint(store.conn(), &fork.id).unwrap();
+    vega_store::credential_privacy::clean(store.conn(), &fork.id, &expected, |text, offsets| {
+        vega_runtime::redact_sensitive_credential_text_with_offsets(text, &[], offsets)
+    })
+    .unwrap();
+    for (_, field, text) in vega_store::credential_privacy::fields(store.conn(), &fork.id).unwrap()
+    {
+        if field.starts_with("historical.") {
+            assert!(
+                vega_runtime::inspect_credential_text(&text, &[]).is_empty(),
+                "{field}"
+            );
+            assert!(!text.contains(&secret));
+        }
+    }
+    let archives = vega_store::thread_fork::historical_receipts(store.conn(), &fork.id).unwrap();
+    let archive = &archives[0];
+    let output: serde_json::Value =
+        serde_json::from_str(archive.output_text.as_deref().unwrap()).unwrap();
+    assert_ne!(output["agent"]["name"].as_str(), Some(secret.as_str()));
+    assert_ne!(
+        output["agent"]["checkpoint"]["payload"]["summary"].as_str(),
+        Some(secret.as_str())
+    );
+    assert_ne!(archive.source_thread_id, secret);
+    assert_ne!(
+        expected,
+        vega_store::credential_privacy::source_fingerprint(store.conn(), &fork.id).unwrap()
+    );
+    assert_eq!(
+        source_fingerprint,
+        vega_store::credential_privacy::source_fingerprint(store.conn(), "source").unwrap()
+    );
+    no_authority(&store, &fork.id);
+}
+
+#[test]
+fn ordinary_skill_audits_survive_forks_and_headless_timeline_without_authority() {
+    let store = database();
+    let hash = "a".repeat(64);
+    for (name, origin, status, time) in [
+        ("analysis", "model", "loaded", 100),
+        ("review", "explicit_user", "loaded", 101),
+        ("review", "explicit_user", "revoked", 102),
+        ("failed", "model", "unavailable", 103),
+    ] {
+        vega_store::skills::append_activation_audit(
+            store.conn(),
+            vega_store::skills::NewSkillActivationAudit {
+                run_id: "a1",
+                thread_id: "source",
+                name,
+                source_scope: Some("project"),
+                content_sha256: Some(&hash),
+                origin,
+                status,
+                created_at: time,
+            },
+        )
+        .unwrap();
+    }
+    let ordinary = history::latest_history_page(&store, "source", 2).unwrap();
+    let headless = history::latest_historical_history_page(&store, "source", 2).unwrap();
+    assert_eq!(
+        headless.entries,
+        ordinary
+            .entries
+            .iter()
+            .cloned()
+            .map(HistoricalHistoryEntry::Ordinary)
+            .collect::<Vec<_>>()
+    );
+    delegation(&store);
+    assert_eq!(
+        history::latest_history_page(&store, "source", 2)
+            .unwrap()
+            .entries
+            .iter()
+            .filter(|entry| matches!(entry, history::HistoryEntry::SkillActivation { .. }))
+            .count(),
+        2
+    );
+    message(&store, "suffix", 3, "assistant", "later");
+    vega_store::skills::append_activation_audit(
+        store.conn(),
+        vega_store::skills::NewSkillActivationAudit {
+            run_id: "suffix",
+            thread_id: "source",
+            name: "later",
+            source_scope: Some("project"),
+            content_sha256: Some(&hash),
+            origin: "model",
+            status: "loaded",
+            created_at: 104,
+        },
+    )
+    .unwrap();
+    let source_audits = vega_store::skills::list_activation_audits(store.conn(), "source").unwrap();
+    let source_page =
+        history::historical_history_page_before(&store, "source", PageCursor::Before(3), 1)
+            .unwrap();
+    let fork = fork_thread(&store, "source", "a1").unwrap();
+    let second = fork_thread(&store, &fork.id, &owner(&store, &fork.id, 2)).unwrap();
+    for thread in [&fork.id, &second.id] {
+        let run_id = owner(&store, thread, 2);
+        let audits = vega_store::skills::list_activation_audits(store.conn(), thread).unwrap();
+        assert_eq!(audits.len(), 4);
+        for (audit, original) in audits.iter().zip(&source_audits) {
+            assert_eq!(audit.run_id, run_id);
+            assert_eq!(audit.thread_id, *thread);
+            assert_ne!(audit.id, original.id);
+            assert_eq!(
+                (
+                    &audit.name,
+                    &audit.source_scope,
+                    &audit.content_sha256,
+                    &audit.origin,
+                    &audit.status,
+                    audit.created_at
+                ),
+                (
+                    &original.name,
+                    &original.source_scope,
+                    &original.content_sha256,
+                    &original.origin,
+                    &original.status,
+                    original.created_at
+                )
+            );
+        }
+        let page = history::latest_historical_history_page(&store, thread, 1).unwrap();
+        let activations = |page: &crate::types::HistoricalHistoryPage| {
+            page.entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    HistoricalHistoryEntry::Ordinary(history::HistoryEntry::SkillActivation {
+                        activation,
+                        ..
+                    }) => Some(activation.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let actual = activations(&page);
+        let mut expected = activations(&source_page);
+        for activation in &mut expected {
+            activation.run_id = run_id.clone();
+        }
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), 2);
+        assert_eq!(actual[0].status, history::SkillHistoryStatus::Loaded);
+        assert_eq!(actual[1].status, history::SkillHistoryStatus::Revoked);
+        assert!(
+            actual.iter().all(|activation| activation.verification
+                == history::SkillHistoryVerification::Unavailable)
+        );
+        let delegation_index = page
+            .entries
+            .iter()
+            .position(|entry| matches!(entry, HistoricalHistoryEntry::Delegation { .. }))
+            .unwrap();
+        let skill_index = page
+            .entries
+            .iter()
+            .position(|entry| {
+                matches!(
+                    entry,
+                    HistoricalHistoryEntry::Ordinary(history::HistoryEntry::SkillActivation { .. })
+                )
+            })
+            .unwrap();
+        assert!(skill_index > delegation_index);
+        assert_eq!(
+            page.entries,
+            history::historical_history_page_after(&store, thread, 1, 1)
+                .unwrap()
+                .entries
+        );
+        assert_eq!(
+            page.entries,
+            history::historical_history_page_before(&store, thread, PageCursor::Before(3), 1)
+                .unwrap()
+                .entries
+        );
+        assert_eq!(
+            page.entries,
+            history::historical_history_page_containing_message(&store, thread, &run_id, 1)
+                .unwrap()
+                .unwrap()
+                .entries
+        );
+        no_authority(&store, thread);
+        assert_eq!(
+            count(
+                &store,
+                "SELECT COUNT(*) FROM pragma_foreign_key_check WHERE ?1 IS NOT NULL",
+                thread
+            ),
+            0
+        );
+    }
+    let after = vega_store::skills::list_activation_audits(store.conn(), "source").unwrap();
+    assert_eq!(after.len(), source_audits.len());
+    for (after, before) in after.iter().zip(source_audits) {
+        assert_eq!(
+            (after.id, &after.run_id, &after.name, &after.status),
+            (before.id, &before.run_id, &before.name, &before.status)
+        );
+    }
+}
+
+#[test]
+fn both_cross_thread_tool_ownership_mismatches_refuse_atomically() {
+    for inverse in [false, true] {
+        let store = database();
+        store.conn().execute_batch("INSERT INTO threads(id,project_id,model,created_at,updated_at) VALUES('other','project','model',1,1); INSERT INTO messages(id,thread_id,seq,role,content,status,created_at) VALUES('other-assistant','other',1,'assistant','other','done',1)").unwrap();
+        call(&store, "mismatched", "a1", 1, "read", "{}", "result");
+        if inverse {
+            store
+                .conn()
+                .execute_batch(
+                    "UPDATE tool_calls SET message_id='other-assistant' WHERE id='mismatched'",
+                )
+                .unwrap();
+        } else {
+            store
+                .conn()
+                .execute_batch("UPDATE tool_calls SET thread_id='other' WHERE id='mismatched'")
+                .unwrap();
+        }
+        let before = snapshot(&store);
+        assert!(matches!(
+            fork_thread(&store, "source", "a1"),
+            Err(ForkThreadError::Refused(ForkError::CorruptHistory(_)))
+        ));
+        assert_eq!(snapshot(&store), before);
+        assert_eq!(
+            count(
+                &store,
+                "SELECT COUNT(*) FROM pragma_foreign_key_check WHERE ?1 IS NOT NULL",
+                "source"
+            ),
+            0
+        );
+    }
+    let store = database();
+    store.conn().execute_batch("INSERT INTO threads(id,project_id,model,created_at,updated_at) VALUES('other','project','model',1,1)").unwrap();
+    message(&store, "suffix", 3, "assistant", "later");
+    call(&store, "suffix-call", "suffix", 1, "read", "{}", "result");
+    store
+        .conn()
+        .execute_batch("UPDATE tool_calls SET thread_id='other' WHERE id='suffix-call'")
+        .unwrap();
+    let fork = fork_thread(&store, "source", "a1").unwrap();
+    assert_eq!(
+        count(
+            &store,
+            "SELECT COUNT(*) FROM messages WHERE thread_id=?1",
+            &fork.id
+        ),
+        2
+    );
+    assert_eq!(
+        count(
+            &store,
+            "SELECT COUNT(*) FROM tool_calls WHERE thread_id=?1",
+            &fork.id
+        ),
+        0
+    );
+    no_authority(&store, &fork.id);
+}

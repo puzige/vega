@@ -75,6 +75,18 @@ pub fn fields(conn: &Connection, thread: &str) -> rusqlite::Result<Vec<(String, 
     values.extend(conn.prepare("SELECT message_id,'historical.model',model_content FROM historical_message_delivery WHERE thread_id=?1 AND model_content IS NOT NULL UNION ALL SELECT call_id,'historical.input',input_json FROM historical_tool_receipts WHERE thread_id=?1 UNION ALL SELECT call_id,'historical.output',output_text FROM historical_tool_receipts WHERE thread_id=?1 AND output_text IS NOT NULL UNION ALL SELECT call_id,'historical.references',references_json FROM historical_tool_receipts WHERE thread_id=?1 UNION ALL SELECT call_id,'historical.identity',json_array(source_thread_id,source_message_id,source_call_id) FROM historical_tool_receipts WHERE thread_id=?1")?
         .query_map([thread], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?);
+    for (_, field, text) in &mut values {
+        if matches!(
+            field.as_str(),
+            "historical.input"
+                | "historical.output"
+                | "historical.references"
+                | "historical.identity"
+        ) && let Ok(value) = serde_json::from_str::<serde_json::Value>(text)
+        {
+            *text = serde_json::to_string(&value).map_err(|_| rusqlite::Error::InvalidQuery)?;
+        }
+    }
     Ok(values)
 }
 
@@ -260,12 +272,14 @@ where
     crate::context_compaction::redact_legacy_thread_content(&tx, thread, &mut redact)?;
     for (id, field, value) in fields(&tx, thread)? {
         let changed = match field.as_str() {
-            "message" | "plan.note" | "pending.model" | "pending.content" | "historical.model"
-            | "historical.output" => redact(&value, &[]).0,
+            "message" | "plan.note" | "pending.model" | "pending.content" | "historical.model" => {
+                redact(&value, &[]).0
+            }
             "tool.input"
             | "stage.payload"
             | "stage.reconciliations"
             | "historical.input"
+            | "historical.output"
             | "historical.references"
             | "historical.identity" => {
                 fn visit<F: FnMut(&str, &[usize]) -> (String, Vec<usize>)>(
@@ -296,13 +310,18 @@ where
                         _ => {}
                     }
                 }
-                let mut json: serde_json::Value = serde_json::from_str(&value).map_err(|_| {
-                    rusqlite::Error::InvalidParameterName("invalid historical tool input".into())
-                })?;
-                visit(&mut json, &mut redact);
-                serde_json::to_string(&json).map_err(|_| {
-                    rusqlite::Error::InvalidParameterName("invalid historical tool input".into())
-                })?
+                match serde_json::from_str::<serde_json::Value>(&value) {
+                    Ok(mut json) => {
+                        visit(&mut json, &mut redact);
+                        serde_json::to_string(&json).map_err(|_| rusqlite::Error::InvalidQuery)?
+                    }
+                    Err(_) if field == "historical.output" => redact(&value, &[]).0,
+                    Err(_) => {
+                        return Err(rusqlite::Error::InvalidParameterName(
+                            "invalid historical tool input".into(),
+                        ));
+                    }
+                }
             }
             _ => continue,
         };

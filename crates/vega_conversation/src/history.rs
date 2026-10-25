@@ -301,37 +301,7 @@ fn assemble(
     project_page_privacy(store, thread_id, &mut page)?;
     let newest_seq = page.rows.last().map(|row| row.seq);
     let mut entries = project_rows(&page)?;
-    if let (Some(oldest), Some(newest)) = (page.rows.first(), page.rows.last()) {
-        let records =
-            skills::load_history_page_records(store.conn(), thread_id, oldest.seq, newest.seq)
-                .map_err(|error| ConversationError::Store(error.to_string()))?;
-        let by_run = project_skill_history(records);
-        // Insert after each owning assistant's final text/tool segment. This
-        // preserves the ordinary user/tool timeline and never creates a fake
-        // tool call for an explicitly preloaded Skill.
-        for row in page.rows.iter().rev().filter(|row| row.role == "assistant") {
-            let Some(activations) = by_run.get(&row.id) else {
-                continue;
-            };
-            let Some(position) = entries.iter().rposition(|entry| match entry {
-                HistoryEntry::AssistantText { message_id, .. }
-                | HistoryEntry::Tool { message_id, .. } => message_id == &row.id,
-                HistoryEntry::Plan { plan, .. } => plan.id == row.id,
-                _ => false,
-            }) else {
-                continue;
-            };
-            for activation in activations.iter().rev() {
-                entries.insert(
-                    position + 1,
-                    HistoryEntry::SkillActivation {
-                        seq: row.seq,
-                        activation: activation.clone(),
-                    },
-                );
-            }
-        }
-    }
+    append_skill_history(store, thread_id, &page, &mut entries)?;
 
     if attach_summary
         && let Some(summary) = crate::summary::latest_task_summary(store, thread_id, None)?
@@ -404,6 +374,44 @@ fn assemble(
         newer_cursor: page.newer_cursor,
         newest_seq,
     })
+}
+
+fn append_skill_history(
+    store: &Store,
+    thread_id: &str,
+    page: &MessagePage,
+    entries: &mut Vec<HistoryEntry>,
+) -> Result<(), ConversationError> {
+    if let (Some(oldest), Some(newest)) = (page.rows.first(), page.rows.last()) {
+        let records =
+            skills::load_history_page_records(store.conn(), thread_id, oldest.seq, newest.seq)
+                .map_err(|error| ConversationError::Store(error.to_string()))?;
+        let by_run = project_skill_history(records);
+        for row in page.rows.iter().rev().filter(|row| row.role == "assistant") {
+            let Some(activations) = by_run.get(&row.id) else {
+                continue;
+            };
+            let Some(position) = entries.iter().rposition(|entry| match entry {
+                HistoryEntry::AssistantText { message_id, .. }
+                | HistoryEntry::Tool { message_id, .. } => message_id == &row.id,
+                HistoryEntry::Plan { plan, .. } => plan.id == row.id,
+                _ => false,
+            }) else {
+                continue;
+            };
+            for activation in activations.iter().rev() {
+                entries.insert(
+                    position + 1,
+                    HistoryEntry::SkillActivation {
+                        seq: row.seq,
+                        activation: activation.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn project_skill_history(
@@ -961,12 +969,16 @@ fn assemble_historical(
             |archive| projection.json(&archive.input_json),
         );
         let receipt = archive.map_or_else(
-            || call.output_text.clone(),
+            || {
+                call.output_text
+                    .as_deref()
+                    .map(|text| project_historical_receipt(&projection, text))
+            },
             |archive| {
                 archive
                     .output_text
                     .as_ref()
-                    .map(|text| projection.text(text))
+                    .map(|text| project_historical_receipt(&projection, text))
             },
         );
         let mut references = archive.map_or_else(Vec::new, |archive| {
@@ -1011,7 +1023,7 @@ fn assemble_historical(
             },
         );
     }
-    let entries = project_rows_with(&page, &|call| {
+    let mut entries = project_rows_with(&page, &|call| {
         if delegations.contains_key(&call.id) {
             HistoryEntry::Tool {
                 seq: call.seq,
@@ -1025,23 +1037,39 @@ fn assemble_historical(
         } else {
             tool_entry(call)
         }
-    })?
-    .into_iter()
-    .map(|entry| {
-        if let HistoryEntry::Tool { call_id, .. } = &entry
-            && let Some(delegation) = delegations.remove(call_id)
-        {
-            return delegation;
-        }
-        HistoricalHistoryEntry::Ordinary(entry)
-    })
-    .collect();
+    })?;
+    append_skill_history(store, thread, &page, &mut entries)?;
+    let entries = entries
+        .into_iter()
+        .map(|entry| {
+            if let HistoryEntry::Tool { call_id, .. } = &entry
+                && let Some(delegation) = delegations.remove(call_id)
+            {
+                return delegation;
+            }
+            HistoricalHistoryEntry::Ordinary(entry)
+        })
+        .collect();
     Ok(HistoricalHistoryPage {
         entries,
         older_cursor: page.older_cursor,
         newer_cursor: page.newer_cursor,
         newest_seq: page.rows.last().map(|row| row.seq),
     })
+}
+
+fn project_historical_receipt(
+    projection: &crate::privacy::DisplayProjection,
+    text: &str,
+) -> String {
+    let projected = projection.json(text);
+    match (
+        serde_json::from_str::<serde_json::Value>(text),
+        serde_json::from_str::<serde_json::Value>(&projected),
+    ) {
+        (Ok(original), Ok(safe)) if original == safe => text.into(),
+        _ => projected,
+    }
 }
 
 fn decode_historical_delegation(

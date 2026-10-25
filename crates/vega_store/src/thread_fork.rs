@@ -129,7 +129,7 @@ pub fn clone_prefix(
         .iter()
         .map(|call| (call.0.clone(), fresh_id()))
         .collect();
-    let orphan: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM tool_calls c JOIN messages m ON m.id=c.message_id WHERE m.thread_id=?1 AND m.seq<=?2 AND (c.thread_id<>?1 OR m.role<>'assistant'))", params![source_thread_id,cutoff.seq], |row| row.get(0))?;
+    let orphan: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM tool_calls c JOIN messages m ON m.id=c.message_id WHERE m.thread_id=?1 AND m.seq<=?2 AND (c.thread_id<>?1 OR m.role<>'assistant')) OR EXISTS(SELECT 1 FROM tool_calls c JOIN messages m ON m.id=c.message_id WHERE c.thread_id=?1 AND m.thread_id<>?1)", params![source_thread_id,cutoff.seq], |row| row.get(0))?;
     if orphan {
         return Err(corrupt("invalid tool owner"));
     }
@@ -171,6 +171,7 @@ pub fn clone_prefix(
         ] {
             tx.execute(&format!("INSERT INTO {table}(message_id,{columns}) SELECT ?1,{columns} FROM {table} WHERE message_id=?2"),params![new_id,id])?;
         }
+        tx.execute("INSERT INTO skill_activation_audits(run_id,thread_id,name,source_scope,content_sha256,origin,status,created_at) SELECT ?1,?2,name,source_scope,content_sha256,origin,status,created_at FROM skill_activation_audits WHERE thread_id=?3 AND run_id=?4 ORDER BY id",params![new_id,destination,source_thread_id,id])?;
         copy_delivery(tx, source_thread_id, &destination, id, new_id, &messages)?;
     }
     for (id, owner, tool, _, _) in &calls {
