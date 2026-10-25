@@ -4,14 +4,16 @@ use crate::types::{ConversationError, HistoricalHistoryEntry};
 use vega_store::messages::PageCursor;
 use vega_store::thread_fork::ForkError;
 
-fn database() -> Store {
+fn database() -> (Store, tempfile::TempDir) {
+    let workspace = tempfile::tempdir().unwrap();
     let store = Store::open(":memory:").unwrap();
     store.migrate().unwrap();
-    store.conn().execute_batch("INSERT INTO projects(id,path,name,created_at,last_opened_at) VALUES('project','/historical-only','project',1,1); INSERT INTO threads(id,project_id,title,model,mode,permission_mode,created_at,updated_at) VALUES('source','project','Original','model','execute','full_access',1,2)").unwrap();
+    store.conn().execute("INSERT INTO projects(id,path,name,created_at,last_opened_at) VALUES('project',?1,'project',1,1)", [workspace.path().to_str().unwrap()]).unwrap();
+    store.conn().execute_batch("INSERT INTO threads(id,project_id,title,model,mode,permission_mode,created_at,updated_at) VALUES('source','project','Original','model','execute','full_access',1,2)").unwrap();
     message(&store, "u1", 1, "user", "visible 用户");
     message(&store, "a1", 2, "assistant", "说明✓最终答案");
     store.conn().execute_batch("INSERT INTO assistant_responses VALUES('a1','comment',0,9,'commentary'); INSERT INTO assistant_responses VALUES('a1','final',9,21,'final'); INSERT INTO assistant_run_durations VALUES('a1',42)").unwrap();
-    store
+    (store, workspace)
 }
 
 fn message(store: &Store, id: &str, seq: i64, role: &str, content: &str) {
@@ -183,7 +185,7 @@ fn assert_canonical_parity(store: &Store, source: &str, destination: &str) {
 
 #[test]
 fn completed_unicode_prefix_is_atomic_fresh_and_independent() {
-    let store = database();
+    let (store, workspace) = database();
     store.conn().execute_batch("UPDATE messages SET kind='plan',plan_status='changes_requested',plan_review_note='请修改',plan_reviewed_at=123 WHERE id='a1'; INSERT INTO credential_privacy_exceptions VALUES('source','rule','fingerprint')").unwrap();
     call(
         &store,
@@ -220,7 +222,7 @@ fn completed_unicode_prefix_is_atomic_fresh_and_independent() {
     assert!(!fork.pinned && !fork.unread && fork.parent_thread_id.is_none());
     assert_eq!(
         task_workspace_root(&store, &fork.id).unwrap(),
-        std::path::PathBuf::from("/historical-only")
+        workspace.path()
     );
     assert!(
         list_threads(&store, "project", None)
@@ -311,7 +313,7 @@ fn completed_unicode_prefix_is_atomic_fresh_and_independent() {
 
 #[test]
 fn delivered_model_and_cross_page_continuations_survive_repeated_forks() {
-    let store = database();
+    let (store, _workspace) = database();
     message(&store, "u2", 3, "user", "visible steering");
     message(&store, "a2", 4, "assistant", "done");
     store.conn().execute_batch("INSERT INTO assistant_responses VALUES('a2','f2',0,4,'final'); INSERT INTO pending_messages(id,thread_id,ordinal,behavior,generation,payload,model_content,state,created_at,accepted_after_assistant_id) VALUES('u2','source',1,'steer','live-generation','{}','actual model 用户','delivered',3,'a1')").unwrap();
@@ -369,7 +371,7 @@ fn delegation(store: &Store) -> String {
 
 #[test]
 fn historical_delegation_is_typed_paginated_and_never_a_live_snapshot() {
-    let store = database();
+    let (store, _workspace) = database();
     let receipt = delegation(&store);
     let ordinary = history::latest_history_page(&store, "source", 2).unwrap();
     assert!(ordinary.entries.iter().any(|entry| matches!(
@@ -467,7 +469,7 @@ fn historical_delegation_is_typed_paginated_and_never_a_live_snapshot() {
 
 #[test]
 fn wait_list_and_checkpoint_receipts_remain_inert_and_exact() {
-    let store = database();
+    let (store, _workspace) = database();
     let receipt = delegation(&store);
     let agent: serde_json::Value =
         serde_json::from_str::<serde_json::Value>(&receipt).unwrap()["agent"].clone();
@@ -527,7 +529,7 @@ fn wait_list_and_checkpoint_receipts_remain_inert_and_exact() {
 
 #[test]
 fn screenshot_aliases_keep_the_original_capture_and_trailing_receipt_text() {
-    let store = database();
+    let (store, _workspace) = database();
     let mut bytes = std::io::Cursor::new(Vec::new());
     image::DynamicImage::new_rgb8(1, 1)
         .write_to(&mut bytes, image::ImageFormat::Png)
@@ -643,7 +645,7 @@ fn screenshot_aliases_keep_the_original_capture_and_trailing_receipt_text() {
 
 #[test]
 fn refusals_and_late_storage_failure_leave_no_destination() {
-    let store = database();
+    let (store, _workspace) = database();
     assert!(matches!(
         fork_thread(&store, "absent", "a1"),
         Err(ForkThreadError::Refused(ForkError::MissingSource))
@@ -713,7 +715,7 @@ fn refusals_and_late_storage_failure_leave_no_destination() {
 
 #[test]
 fn hidden_historical_fields_are_scanned_redacted_and_fingerprinted() {
-    let store = database();
+    let (store, _workspace) = database();
     delegation(&store);
     store.conn().execute_batch("INSERT INTO pending_messages(id,thread_id,ordinal,behavior,generation,payload,model_content,state,created_at) VALUES('u1','source',1,'queue','live','{}','hidden SECRET','delivered',1)").unwrap();
     let fork = fork_thread(&store, "source", "a1").unwrap();
@@ -783,7 +785,7 @@ fn hidden_historical_fields_are_scanned_redacted_and_fingerprinted() {
 
 #[test]
 fn escaped_archive_credentials_are_projected_scanned_cleaned_and_versioned() {
-    let store = database();
+    let (store, _workspace) = database();
     let secret = format!("sk-proj-{}", "synthetic".repeat(8));
     let escaped = secret.replacen('s', r"\u0073", 1);
     let receipt = serde_json::json!({"agent": {
@@ -917,7 +919,7 @@ fn escaped_archive_credentials_are_projected_scanned_cleaned_and_versioned() {
 
 #[test]
 fn ordinary_skill_audits_survive_forks_and_headless_timeline_without_authority() {
-    let store = database();
+    let (store, _workspace) = database();
     let hash = "a".repeat(64);
     for (name, origin, status, time) in [
         ("analysis", "model", "loaded", 100),
@@ -1093,7 +1095,7 @@ fn ordinary_skill_audits_survive_forks_and_headless_timeline_without_authority()
 #[test]
 fn both_cross_thread_tool_ownership_mismatches_refuse_atomically() {
     for inverse in [false, true] {
-        let store = database();
+        let (store, _workspace) = database();
         store.conn().execute_batch("INSERT INTO threads(id,project_id,model,created_at,updated_at) VALUES('other','project','model',1,1); INSERT INTO messages(id,thread_id,seq,role,content,status,created_at) VALUES('other-assistant','other',1,'assistant','other','done',1)").unwrap();
         call(&store, "mismatched", "a1", 1, "read", "{}", "result");
         if inverse {
@@ -1124,7 +1126,7 @@ fn both_cross_thread_tool_ownership_mismatches_refuse_atomically() {
             0
         );
     }
-    let store = database();
+    let (store, _workspace) = database();
     store.conn().execute_batch("INSERT INTO threads(id,project_id,model,created_at,updated_at) VALUES('other','project','model',1,1)").unwrap();
     message(&store, "suffix", 3, "assistant", "later");
     call(&store, "suffix-call", "suffix", 1, "read", "{}", "result");
