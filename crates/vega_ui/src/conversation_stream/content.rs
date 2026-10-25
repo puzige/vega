@@ -128,6 +128,10 @@ impl ConversationStream {
             self.apply_subagent(snapshot, cx);
         }
         self.restore_subagent_request_entries();
+        self.order_ordinary_history_entries();
+        if !anchor.following_tail {
+            self.restore_scroll_anchor(&anchor);
+        }
         cx.notify();
     }
 
@@ -153,6 +157,10 @@ impl ConversationStream {
             self.apply_subagent(snapshot, cx);
         }
         self.restore_subagent_request_entries();
+        self.order_ordinary_history_entries();
+        if !anchor.following_tail {
+            self.restore_scroll_anchor(&anchor);
+        }
         cx.notify();
     }
 
@@ -255,6 +263,24 @@ impl ConversationStream {
                     message_id,
                     images,
                 } => {
+                    let identity =
+                        self.durable_entry_identity(&message_id, "user-images", Some(seq));
+                    if let Some(index) = self
+                        .entry_identities
+                        .iter()
+                        .position(|existing| existing.key == identity.key)
+                    {
+                        self.entry_identities[index].sequence = Some(seq);
+                        let unchanged = matches!(&self.entries[index], StreamEntry::UserImages { images: current }
+                            if current.iter().map(|image| &image.image).eq(images.iter()));
+                        if !unchanged {
+                            self.entries[index] = StreamEntry::UserImages {
+                                images: self.history_image_previews(images, cx),
+                            };
+                            self.invalidate_item(Some(index));
+                        }
+                        continue;
+                    }
                     hydrated.push(StreamEntry::UserImages {
                         images: self.history_image_previews(images, cx),
                     });
@@ -269,6 +295,23 @@ impl ConversationStream {
                     message_id,
                     content,
                 } => {
+                    let identity = self.durable_entry_identity(&message_id, "user-text", Some(seq));
+                    if let Some(index) = self
+                        .entry_identities
+                        .iter()
+                        .position(|existing| existing.key == identity.key)
+                    {
+                        self.entry_identities[index].sequence = Some(seq);
+                        if ordinary_submissions::update_user_history_text(
+                            &mut self.entries[index],
+                            &content,
+                            &mut self.user_block_seq,
+                        ) {
+                            self.text_cache.get_mut().retire(&identity.key);
+                            self.invalidate_item(Some(index));
+                        }
+                        continue;
+                    }
                     let block_id = self.user_block_seq;
                     self.user_block_seq += 1;
                     hydrated.push(StreamEntry::User {
@@ -714,7 +757,7 @@ impl ConversationStream {
             cx.notify();
             return false;
         }
-        self.entries.clear();
+        let ordinary_entries = self.take_ordinary_history_entries();
         self.assistant_role_rows.clear();
         self.run_notices.clear();
         self.response_checkpoint = None;
@@ -761,6 +804,7 @@ impl ConversationStream {
         self.deferred_permission = None;
         self.hydration = HistoryHydration::default();
         self.apply_history_page(page, cx);
+        self.restore_ordinary_history_entries(ordinary_entries, cx);
         if let Some(anchor) = restore_anchor
             && (self.restore_process_anchor(anchor, cx) || self.restore_scroll_anchor(anchor))
         {

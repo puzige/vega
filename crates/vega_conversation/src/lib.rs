@@ -10,6 +10,7 @@ pub mod link_preview;
 pub mod plans;
 mod pricing;
 pub mod summary;
+mod thread_access;
 pub mod threads;
 pub mod types;
 mod usage_dashboard;
@@ -44,6 +45,7 @@ pub use mcp_settings::{McpRunReadiness, McpServerSettingsService, McpSettingsErr
 mod skill_settings;
 pub use skill_settings::{SkillSettingsError, SkillSettingsService};
 
+pub mod ordinary_submissions;
 pub mod pending_messages;
 
 pub mod privacy;

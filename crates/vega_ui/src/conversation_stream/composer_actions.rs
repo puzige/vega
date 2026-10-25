@@ -243,6 +243,12 @@ impl ConversationStream {
         stopped
     }
 
+    pub(super) fn reset_composer_stopping_if_idle(&mut self) {
+        if !self.actions.running && !self.composer_submit_pending {
+            self.actions.stopping = false;
+        }
+    }
+
     pub(crate) fn record_composer_terminal(&mut self, message_id: &str, cancelled: bool) {
         if self
             .active_agent_message
@@ -255,7 +261,11 @@ impl ConversationStream {
 
     /// Explicit user cancellation; the app validates the route and cancels its exact worker.
     pub fn request_composer_stop(&mut self, cx: &mut Context<Self>) {
-        if (!self.actions.running && !self.composer_submit_pending) || self.actions.stopping {
+        if (!self.actions.running
+            && !self.composer_submit_pending
+            && !self.has_cancellable_queue_wait())
+            || self.actions.stopping
+        {
             return;
         }
         self.actions.stopping = true;
@@ -413,7 +423,8 @@ impl ConversationStream {
                 }
             }
         }
-        if self.actions.running || self.composer_submit_pending {
+        if self.actions.running || self.composer_submit_pending || self.has_cancellable_queue_wait()
+        {
             controls.push(self.action_focus[1].clone());
         }
         controls.extend(self.automation_focuses());
@@ -790,7 +801,6 @@ impl ConversationStream {
         let colors = theme(cx).colors;
         div()
             .id("composer-stop")
-            .track_focus(&self.action_focus[1])
             .tab_stop(true)
             .aria_label(if self.actions.stopping {
                 vega_i18n::t("ui.stopping")
@@ -814,6 +824,7 @@ impl ConversationStream {
                 colors.accent,
                 !self.actions.stopping,
             )
+            .track_focus(&self.action_focus[1])
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| this.request_composer_stop(cx)),

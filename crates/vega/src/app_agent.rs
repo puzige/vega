@@ -40,6 +40,7 @@ pub(crate) enum PendingAgentRun {
 pub(crate) struct UserSubmission {
     pub content: String,
     pub images: Vec<vega_conversation::types::ImageAttachment>,
+    pub ordinary: Option<Box<crate::ordinary_submission::OrdinaryLaunch>>,
 }
 
 impl From<String> for UserSubmission {
@@ -47,6 +48,7 @@ impl From<String> for UserSubmission {
         Self {
             content,
             images: Vec::new(),
+            ordinary: None,
         }
     }
 }
@@ -165,6 +167,7 @@ pub(crate) struct ActiveAgentRun {
     pub(crate) completion_outcome: Option<RunCompletionOutcome>,
     pub(crate) delegated_message_id: Option<String>,
     pub(crate) delegated_parent_thread: Option<String>,
+    pub(crate) ordinary_attempt: Option<(SubmissionId, AttemptId)>,
     pub(crate) queue_generation: String,
     pub(crate) question_notifications: HashMap<UserQuestionId, Option<SharedString>>,
     pub(crate) queue_delivery: Option<PendingMessage>,
@@ -367,11 +370,55 @@ pub(crate) enum PricingWorkerKind {
 
 type SubagentReleaseReply = tokio::sync::oneshot::Sender<Result<(), vega_runtime::VegaError>>;
 
+pub(crate) enum QueueStartAdmission {
+    Ready(ThreadAdmission),
+    TitleDrain(vega_store::thread_admission::AdmissionDrain),
+    Blocked,
+}
+
+pub(crate) fn queue_start_admission(
+    database: vega_store::thread_admission::DatabaseIdentity,
+    thread_id: &str,
+    expected: Option<&vega_store::thread_admission::AdmissionDrain>,
+) -> Result<QueueStartAdmission, vega_store::thread_admission::AdmissionError> {
+    match vega_store::thread_admission::try_acquire(database, thread_id)? {
+        Some(owner) => Ok(QueueStartAdmission::Ready(owner)),
+        None => match expected.filter(|drain| drain.is_title_draining(database, thread_id)) {
+            Some(drain) => Ok(QueueStartAdmission::TitleDrain(drain.clone())),
+            None if expected.is_some_and(|drain| drain.is_released()) => Ok(
+                match vega_store::thread_admission::try_acquire(database, thread_id)? {
+                    Some(owner) => QueueStartAdmission::Ready(owner),
+                    None => QueueStartAdmission::Blocked,
+                },
+            ),
+            None => Ok(QueueStartAdmission::Blocked),
+        },
+    }
+}
+
+pub(crate) struct QueueDrainWait {
+    pub(crate) generation: u64,
+    pub(crate) stream: Entity<ConversationStream>,
+    pub(crate) message_id: String,
+    pub(crate) message_generation: String,
+    pub(crate) cancel: tokio_util::sync::CancellationToken,
+}
+
+impl Drop for QueueDrainWait {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct AppAgentController {
+    pub(crate) ordinary_preparing: HashMap<String, tokio_util::sync::CancellationToken>,
+    pub(crate) ordinary_requests: HashSet<u64>,
     pub(crate) delegated_unbound: HashSet<String>,
     pub(crate) queue_streams: HashMap<String, Entity<ConversationStream>>,
     pub(crate) queue_dispatches: HashMap<String, String>,
+    pub(crate) run_drains: HashMap<String, vega_store::thread_admission::AdmissionDrain>,
+    pub(crate) queue_drain_waits: HashMap<String, QueueDrainWait>,
     pub(crate) queue_continue: HashMap<String, bool>,
     pub(crate) queue_delivered: HashSet<String>,
     pub(crate) queue_operations: HashMap<String, u64>,
@@ -387,6 +434,31 @@ pub(crate) struct AppAgentController {
 }
 
 impl AppAgentController {
+    pub(crate) fn begin_queue_drain_wait(
+        &mut self,
+        thread_id: &str,
+        stream: Entity<ConversationStream>,
+        message: &PendingMessage,
+    ) -> Option<(u64, tokio_util::sync::CancellationToken)> {
+        if self.queue_drain_waits.contains_key(thread_id) {
+            return None;
+        }
+        self.next_queue_operation = self.next_queue_operation.checked_add(1)?;
+        let generation = self.next_queue_operation;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        self.queue_drain_waits.insert(
+            thread_id.into(),
+            QueueDrainWait {
+                generation,
+                stream,
+                message_id: message.id.clone(),
+                message_generation: message.generation.clone(),
+                cancel: cancel.clone(),
+            },
+        );
+        Some((generation, cancel))
+    }
+
     pub(crate) fn begin_queue_operation(&mut self, thread_id: &str) -> Option<u64> {
         if self.queue_operations.contains_key(thread_id) {
             return None;
@@ -416,7 +488,30 @@ impl AppAgentController {
     }
 
     pub(crate) fn request_active_cancel(&self, thread_id: &str) {
+        if let Some(wait) = self.queue_drain_waits.get(thread_id) {
+            wait.cancel.cancel();
+        }
+        if let Some(cancel) = self.ordinary_preparing.get(thread_id) {
+            cancel.cancel();
+        }
         if let Some(active) = self.active.get(thread_id) {
+            if let Some(control) = &active.computer_use {
+                control.stop();
+            }
+            active.cancel.cancel();
+        }
+    }
+
+    pub(crate) fn request_ordinary_cancel(
+        &self,
+        thread_id: &str,
+        submission: SubmissionId,
+        attempt: AttemptId,
+    ) {
+        crate::ordinary_submission::cancel(submission, attempt);
+        if let Some(active) = self.active.get(thread_id)
+            && active.ordinary_attempt == Some((submission, attempt))
+        {
             if let Some(control) = &active.computer_use {
                 control.stop();
             }
@@ -476,6 +571,7 @@ impl AppAgentController {
                 completion_outcome: None,
                 delegated_message_id: None,
                 delegated_parent_thread: None,
+                ordinary_attempt: None,
                 queue_generation: ulid::Ulid::generate().to_string(),
                 question_notifications: HashMap::new(),
                 queue_delivery: None,
@@ -842,6 +938,52 @@ pub(crate) fn reasoning_for_provider_model(
     crate::reasoning_capabilities::freeze_reasoning_profile(resolved).map_err(|_| ())
 }
 
+pub(crate) fn ordinary_effective_authority(
+    run: &vega_conversation::agent::OrdinaryRun,
+    config: &vega_store::config::AppConfig,
+    path: &std::path::Path,
+) -> Result<Arc<EffectiveAuthority>, ()> {
+    let provider = unique_provider_for_model(config, run.submission.raw().model()).ok_or(())?;
+    let model = vega_conversation::model_capabilities::load_configured_model(
+        config,
+        path,
+        &provider.name,
+        run.submission.raw().model(),
+    )
+    .map_err(|_| ())?;
+    let snapshot = run.submission.snapshot();
+    if snapshot.unavailable {
+        return Err(());
+    }
+    if let Some(authority) = snapshot.authority {
+        authority.validate_current(&model).map_err(|_| ())?;
+        return Ok(authority);
+    }
+    let reasoning = match run.submission.raw().reasoning() {
+        Some(raw) => {
+            if raw.provider != provider.name || raw.model != model.identity.model {
+                return Err(());
+            }
+            vega_runtime::model_compat::freeze_choice(&model, raw.choice.clone()).map_err(|_| ())?
+        }
+        None => reasoning_for_provider_model(
+            &provider.name,
+            provider.api,
+            &provider.base_url,
+            &model.identity.model,
+            Some(&path.with_file_name(vega_store::reasoning::REASONING_FILE_NAME)),
+        )?,
+    };
+    run.worker
+        .bind_effective_authority(model, reasoning)
+        .map_err(|_| ())?;
+    let snapshot = run.submission.snapshot();
+    if snapshot.unavailable {
+        return Err(());
+    }
+    snapshot.authority.ok_or(())
+}
+
 pub(crate) fn commit_provider(
     thread: &Thread,
     config_path: Option<&std::path::Path>,
@@ -914,7 +1056,7 @@ pub(crate) fn run_agent_worker_with_mcp(
     database_path: std::path::PathBuf,
     project_path: std::path::PathBuf,
     thread: Thread,
-    run: PendingAgentRun,
+    mut run: PendingAgentRun,
     permission_queue: vega_conversation::agent::PermissionQueue,
     user_questions: vega_conversation::agent::UserQuestionQueue,
     cancel: tokio_util::sync::CancellationToken,
@@ -933,7 +1075,15 @@ pub(crate) fn run_agent_worker_with_mcp(
     queue_context: Option<PendingRunContext>,
     automation_pauses: Vec<AutomationTask>,
     replay_registry: Option<vega_conversation::agent::ReplaySessionRegistry>,
+    admission: ThreadAdmission,
 ) {
+    let ordinary = match &mut run {
+        PendingAgentRun::UserMessage(submission) => submission
+            .ordinary
+            .as_mut()
+            .and_then(|launch| launch.take_run()),
+        _ => None,
+    };
     let automation_claim = match &run {
         PendingAgentRun::Automation(claim) => Some(claim.as_ref().clone()),
         _ => None,
@@ -1014,7 +1164,9 @@ pub(crate) fn run_agent_worker_with_mcp(
         let reasoning_path = config_path
             .as_deref()
             .map(|path| path.with_file_name(vega_store::reasoning::REASONING_FILE_NAME));
-        let reasoning = match (reasoning, configured_provider.as_ref()) {
+        let reasoning = if let Some(ordinary) = &ordinary {
+            ordinary_effective_authority(ordinary, config.as_ref().ok_or(())?, config_path.as_deref().ok_or(())?)?.reasoning().clone()
+        } else { match (reasoning, configured_provider.as_ref()) {
             (Some(reasoning), Some(provider)) => {
                 if reasoning.model != thread.model || reasoning.provider != provider.name {
                     return Err(());
@@ -1039,7 +1191,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                 reasoning_path.as_deref(),
             )?,
             (_, None) => return Err(()),
-        };
+        }};
 
         let mut provider_known_credential = None::<String>;
         let provider_credential_reader: Option<CredentialReader> = config_path
@@ -1119,13 +1271,24 @@ pub(crate) fn run_agent_worker_with_mcp(
                 &thread.project_id,
             ));
             provider_known_credential = Some(key.clone());
+            let current_config = vega_store::config::read_from(config_path.as_deref().ok_or(())?).map_err(|_| ())?;
+            if ordinary.is_some() && unique_provider_for_model(&current_config, &thread.model).as_ref() != Some(&provider) {
+                return Err(());
+            }
             let model_snapshot = vega_conversation::model_capabilities::load_configured_model(
-                &vega_store::config::read_from(config_path.as_deref().ok_or(())?).map_err(|_| ())?,
+                &current_config,
                 config_path.as_deref().ok_or(())?,
                 &provider.name,
                 &thread.model,
             )
             .map_err(|_| ())?;
+            let model_snapshot = if let Some(ordinary) = &ordinary {
+                let snapshot = ordinary.submission.snapshot();
+                if snapshot.unavailable { return Err(()); }
+                let authority = snapshot.authority.ok_or(())?;
+                authority.validate_current(&model_snapshot).map_err(|_| ())?;
+                authority.model().clone()
+            } else { model_snapshot };
             let provider = vega_runtime::OpenAiProvider::new(provider.base_url, key)
                 .map(|transport| {
                     transport.with_responses_api(
@@ -1172,7 +1335,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                     context.generation.clone(),
                     owner_credential_reader.clone(),
                     cancel.clone(),
-                ).with_credential_exceptions(credential_exceptions.clone()),
+                ).with_thread_admission(admission.clone()).with_credential_exceptions(credential_exceptions.clone()),
             ) as Arc<dyn vega_runtime::RuntimeSteeringSource>
         });
         let pending_message_id = queue_context.and_then(|context| context.message_id);
@@ -1186,6 +1349,10 @@ pub(crate) fn run_agent_worker_with_mcp(
 
                 let title_source = content.clone();
 
+                let accepted = ordinary.as_ref().and_then(|run| run.submission.snapshot().accepted);
+                let content = if let Some(accepted) = accepted {
+                    accepted.text().to_owned()
+                } else {
                 let refs = match vega_tools::reference::resolve_bounded_references(
                     &project_path,
                     &content,
@@ -1208,7 +1375,16 @@ pub(crate) fn run_agent_worker_with_mcp(
                         content
                     )
                 };
+                if let Some(ordinary) = &ordinary {
+                    ordinary.worker.bind_accepted_payload(content.clone()).map_err(|_| ())?;
+                }
+                content
+                };
                 let provider = guard_provider(make_provider()?);
+                if let Some(ordinary) = &ordinary {
+                    let model = provider.model_snapshot().ok_or(())?;
+                    ordinary.submission.raw().validate_model(&model).map_err(|_| ())?;
+                }
                 if automation_claim.is_none()
                     && thread.parent_thread_id.is_none()
                     && thread.backend == TaskBackend::Native
@@ -1286,6 +1462,8 @@ pub(crate) fn run_agent_worker_with_mcp(
                         event_sink,
                         replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint)
                             .with_subagent_host(subagent_host.clone())
+                            .with_thread_admission(admission.clone())
+                            .with_ordinary_submission(ordinary.clone())
                             .with_automation_claim(automation_claim.clone())
                             .with_automatic_title(automatic_title)
                             .with_turn_limit(turn_limit)
@@ -1365,6 +1543,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         Some(reasoning),
                         mcp_servers,
                         replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint)
+                            .with_thread_admission(admission.clone())
                             .with_subagent_host(subagent_host.clone())
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
@@ -1433,6 +1612,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         &permission_queue,
                         event_sink,
                         replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint)
+                            .with_thread_admission(admission.clone())
                             .with_subagent_host(subagent_host.clone())
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
@@ -1482,6 +1662,25 @@ pub(crate) fn run_agent_worker_with_mcp(
     if let Some(run) = &computer_use {
         run.control.stop();
     }
+    if let Some(ordinary) = ordinary {
+        let snapshot = ordinary.submission.snapshot();
+        if snapshot.attempts.last().is_some_and(|attempt| {
+            attempt.primary == PrimaryFact::Started
+                && !attempt.abnormal
+                && matches!(attempt.commit, CommitFact::Committed(_))
+        }) {
+            crate::ordinary_submission::retire_context(ordinary.submission.id());
+        }
+        crate::ordinary_submission::finish_root(
+            ordinary,
+            if success {
+                Ok(())
+            } else {
+                Err(SubmissionFailure::PreparationFailed)
+            },
+        );
+    }
+    drop(admission);
     let _ = sender.send(AgentUpdate::Finished {
         success,
         reference_failure,

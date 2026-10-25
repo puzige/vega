@@ -336,17 +336,26 @@ impl ConversationStream {
                                 row.child(self.render_running_send(can_send, cx))
                             })
                             .when(
-                                (self.actions.running || self.composer_submit_pending)
+                                (self.actions.running
+                                    || self.composer_submit_pending
+                                    || self.has_cancellable_queue_wait())
                                     && !self.shows_running_send(cx),
                                 |row| row.child(self.render_composer_stop(cx)),
                             )
                             .when(
-                                !self.actions.running && !self.composer_submit_pending,
+                                !self.actions.running
+                                    && !self.composer_submit_pending
+                                    && !self.has_cancellable_queue_wait(),
                                 |row| {
                                     row.child(
                                         div()
                                             .id("composer-send")
                                             .aria_label(vega_i18n::t("ui.send"))
+                                            .when(self.ordinary_pending_before_run(), |button| {
+                                                button.aria_description(vega_i18n::t(
+                                                    "ui.ordinary_send.preparing_description",
+                                                ))
+                                            })
                                             .track_focus(&self.action_focus[1])
                                             .tab_stop(true)
                                             .flex_shrink_0()
@@ -1588,6 +1597,9 @@ impl Render for ConversationStream {
                                                         None => div().into_any_element(),
                                                     }
                                                 };
+                                                let item = if let Some(controls) = this.ordinary_controls(index, cx) {
+                                                    div().w_full().flex().flex_col().child(item).child(controls).into_any_element()
+                                                } else { item };
                                                 let item = if let Some(notice) =
                                                     this.run_notices.get(&index)
                                                 {

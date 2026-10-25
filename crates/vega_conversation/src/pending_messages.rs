@@ -194,9 +194,15 @@ pub struct QueueSteeringSource {
     credentials: vega_runtime::CredentialReader,
     exceptions: Option<vega_runtime::CredentialExceptionFilter>,
     cancel: CancellationToken,
+    admission: Option<crate::types::ThreadAdmission>,
 }
 
 impl QueueSteeringSource {
+    pub fn with_thread_admission(mut self, admission: crate::types::ThreadAdmission) -> Self {
+        self.admission = Some(admission);
+        self
+    }
+
     pub fn with_credential_exceptions(
         mut self,
         filter: vega_runtime::CredentialExceptionFilter,
@@ -220,6 +226,7 @@ impl QueueSteeringSource {
             credentials,
             exceptions: None,
             cancel,
+            admission: None,
         }
     }
 }
@@ -253,12 +260,23 @@ impl RuntimeSteeringSource for QueueSteeringSource {
         let credentials = Arc::clone(&self.credentials);
         let exceptions = self.exceptions.clone();
         let cancel = self.cancel.clone();
+        let admission = self.admission.clone();
         async move {
             tokio::task::spawn_blocking(move || {
                 if cancel.is_cancelled() {
                     return Ok(None);
                 }
                 let store = Store::open(database)?;
+                let _admission = match admission {
+                    Some(admission)
+                        if admission.verifies(store.database_identity(), &thread_id) =>
+                    {
+                        admission
+                    }
+                    Some(_) => return Err(runtime_failure()),
+                    None => crate::thread_access::acquire(&store, &thread_id)
+                        .map_err(|_| runtime_failure())?,
+                };
                 let row = rows::next_steer(store.conn(), &thread_id, &generation)?;
                 let Some(row) = row else {
                     return Ok(None);

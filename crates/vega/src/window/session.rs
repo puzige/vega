@@ -276,20 +276,6 @@ impl VegaWindow {
             .is_some_and(|draft| draft.id == thread_id)
     }
 
-    pub(crate) fn materialize_draft(
-        &mut self,
-        thread: &Thread,
-        cx: &mut Context<Self>,
-    ) -> Result<(), String> {
-        match &cx.global::<VegaStore>().0 {
-            Ok(store) => vega_conversation::threads::materialize_draft(store, thread)
-                .map_err(|error| error.to_string())?,
-            Err(error) => return Err(error.clone()),
-        };
-        self.draft = None;
-        Ok(())
-    }
-
     pub(crate) fn apply_thread_model_selection(
         &mut self,
         stream: Entity<ConversationStream>,

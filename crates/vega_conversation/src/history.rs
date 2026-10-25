@@ -199,6 +199,13 @@ pub fn restart_history_page(
     limit: usize,
 ) -> Result<HistoryPage, ConversationError> {
     guard_legacy_history(store, thread_id)?;
+    let admission = vega_store::thread_admission::try_acquire(store.database_identity(), thread_id)
+        .map_err(|_| {
+            ConversationError::Store(vega_i18n::t("domain.ordinary_send.access_unavailable").into())
+        })?;
+    let Some(_admission) = admission else {
+        return latest_history_page(store, thread_id, limit);
+    };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as i64)

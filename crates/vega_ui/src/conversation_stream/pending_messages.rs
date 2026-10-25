@@ -43,6 +43,7 @@ pub(crate) struct PendingQueueUi {
     error: Option<crate::localized_copy::LocalizedCopy>,
     pub(super) resume_focus: FocusHandle,
     pub(super) recover_focus: FocusHandle,
+    wait: Option<(u64, tokio_util::sync::CancellationToken)>,
     menu_focus: [FocusHandle; 2],
     scroll: ScrollHandle,
     restore_focus: bool,
@@ -57,6 +58,7 @@ impl PendingQueueUi {
             error: None,
             resume_focus: cx.focus_handle().tab_stop(true),
             recover_focus: cx.focus_handle().tab_stop(true),
+            wait: None,
             menu_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             scroll: ScrollHandle::new(),
             restore_focus: false,
@@ -107,6 +109,37 @@ fn echo_entry_identity(thread_id: &str, pending_id: &str, kind: &str) -> StreamE
 impl EventEmitter<PendingQueueRequested> for ConversationStream {}
 
 impl ConversationStream {
+    pub fn set_pending_queue_wait(
+        &mut self,
+        generation: u64,
+        cancel: tokio_util::sync::CancellationToken,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_ui.wait = Some((generation, cancel));
+        self.reset_composer_stopping_if_idle();
+        cx.notify();
+    }
+
+    pub fn clear_pending_queue_wait(&mut self, generation: u64, cx: &mut Context<Self>) {
+        if self
+            .pending_ui
+            .wait
+            .as_ref()
+            .is_some_and(|(current, _)| *current == generation)
+        {
+            self.pending_ui.wait = None;
+            self.reset_composer_stopping_if_idle();
+            cx.notify();
+        }
+    }
+
+    pub(super) fn has_cancellable_queue_wait(&self) -> bool {
+        self.pending_ui
+            .wait
+            .as_ref()
+            .is_some_and(|(_, cancel)| !cancel.is_cancelled())
+    }
+
     pub fn apply_pending_queue(
         &mut self,
         projection: PendingQueueProjection,
@@ -565,7 +598,6 @@ impl ConversationStream {
             .aria_label(label)
             .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
             .key_context("PendingMessageControl")
-            .track_focus(&self.action_focus[1])
             .tab_stop(true)
             .size(px(Layout::COMPOSER_SEND_SIZE))
             .flex_shrink_0()
@@ -594,6 +626,7 @@ impl ConversationStream {
                 colors.accent,
                 enabled,
             )
+            .track_focus(&self.action_focus[1])
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {

@@ -127,6 +127,11 @@ const SYSTEM_ERROR_KEYS: &[&str] = &[
     "domain.automation.parse.interval_range",
     "domain.automation.parse.unknown_option",
     "domain.conversation.unsupported_historical_consumer",
+    "domain.ordinary_send.access_unavailable",
+    "domain.ordinary_send.stop_before_change",
+    "domain.ordinary_send.facts_unavailable",
+    "domain.ordinary_send.history_changed",
+    "domain.ordinary_send.submission_unavailable",
     "domain.pending.error.attachments",
     "domain.pending.error.changed",
     "domain.pending.error.delivered",
@@ -144,6 +149,11 @@ const SYSTEM_ERROR_KEYS: &[&str] = &[
 ];
 
 const STORE_ERROR_DETAILS: &[&str] = &[
+    "domain.ordinary_send.access_unavailable",
+    "domain.ordinary_send.stop_before_change",
+    "domain.ordinary_send.facts_unavailable",
+    "domain.ordinary_send.history_changed",
+    "domain.ordinary_send.submission_unavailable",
     "domain.pending.error.attachments",
     "domain.pending.error.changed",
     "domain.pending.error.delivered",

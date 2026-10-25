@@ -1,6 +1,16 @@
 use super::*;
 
 impl VegaWindow {
+    pub(super) fn clear_pending_title_wait(&mut self, thread_id: &str, cx: &mut App) -> bool {
+        let Some(wait) = self.agent_controller.queue_drain_waits.remove(thread_id) else {
+            return false;
+        };
+        wait.stream.update(cx, |stream, cx| {
+            stream.clear_pending_queue_wait(wait.generation, cx)
+        });
+        true
+    }
+
     fn queue_database(&self, cx: &App) -> Option<PathBuf> {
         cx.global::<VegaStore>()
             .0
@@ -10,21 +20,42 @@ impl VegaWindow {
             .map(std::path::Path::to_path_buf)
     }
 
-    fn project_pending_queue(
+    pub(super) fn project_pending_queue(
         &mut self,
         thread_id: &str,
         stream: &Entity<ConversationStream>,
         mut projection: PendingQueueProjection,
         cx: &mut Context<Self>,
     ) {
-        let error = projection
-            .error
-            .as_deref()
-            .map(crate::app_localization::localized_error);
+        let error = projection.error.as_deref().map(|error| {
+            [
+                "ui.ordinary_send.queue_occupied",
+                "ui.ordinary_send.queue_finishing",
+            ]
+            .into_iter()
+            .find(|key| *key == error || vega_i18n::t(key) == error)
+            .map(vega_ui::localized_copy::LocalizedCopy::new)
+            .unwrap_or_else(|| crate::app_localization::localized_error(error))
+        });
         let delivered = &self.agent_controller.queue_delivered;
         projection
             .messages
             .retain(|message| !delivered.contains(&message.id));
+        if self
+            .agent_controller
+            .queue_drain_waits
+            .get(thread_id)
+            .is_some_and(|wait| {
+                projection.paused
+                    || wait.stream != *stream
+                    || projection.messages.first().is_none_or(|message| {
+                        message.id != wait.message_id
+                            || message.generation != wait.message_generation
+                    })
+            })
+        {
+            self.clear_pending_title_wait(thread_id, cx);
+        }
         projection.committed_generation = self
             .agent_controller
             .active
@@ -525,12 +556,20 @@ impl VegaWindow {
         .detach();
     }
 
-    fn continue_pending_queue(
+    pub(super) fn continue_pending_queue(
         &mut self,
         thread_id: &str,
         stream: &Entity<ConversationStream>,
         cx: &mut Context<Self>,
     ) {
+        if self
+            .agent_controller
+            .queue_drain_waits
+            .get(thread_id)
+            .is_some_and(|wait| wait.cancel.is_cancelled())
+        {
+            self.clear_pending_title_wait(thread_id, cx);
+        }
         let projection = stream.read(cx).pending_queue();
         if projection.paused
             || projection.busy
@@ -551,16 +590,47 @@ impl VegaWindow {
         let Some(message) = projection.messages.first().cloned() else {
             return;
         };
+        if self
+            .agent_controller
+            .queue_drain_waits
+            .contains_key(thread_id)
+        {
+            return;
+        }
+        let database = match &cx.global::<VegaStore>().0 {
+            Ok(store) => store.database_identity(),
+            Err(_) => return,
+        };
+        let admission = match queue_start_admission(
+            database,
+            thread_id,
+            self.agent_controller.run_drains.get(thread_id),
+        ) {
+            Ok(QueueStartAdmission::Ready(owner)) => owner,
+            Ok(QueueStartAdmission::TitleDrain(drain)) => {
+                self.wait_for_pending_title_drain(thread_id, stream, message, drain, cx);
+                return;
+            }
+            Ok(QueueStartAdmission::Blocked) | Err(_) => {
+                let mut projection = stream.read(cx).pending_queue().clone();
+                projection.paused = true;
+                projection.error = Some(vega_i18n::t("ui.ordinary_send.queue_occupied").into());
+                self.project_pending_queue(thread_id, stream, projection, cx);
+                return;
+            }
+        };
         self.agent_controller
             .queue_dispatches
             .insert(thread_id.into(), message.id.clone());
-        self.start_agent_run(
+        self.start_agent_run_with_admission(
             stream.clone(),
             thread_id,
             PendingAgentRun::UserMessage(UserSubmission {
                 content: message.content,
                 images: message.images,
+                ordinary: None,
             }),
+            Some(admission),
             cx,
         );
         if !self.agent_controller.active.contains_key(thread_id) {
@@ -569,6 +639,107 @@ impl VegaWindow {
             projection.paused = true;
             self.project_pending_queue(thread_id, stream, projection, cx);
         }
+    }
+
+    fn wait_for_pending_title_drain(
+        &mut self,
+        thread_id: &str,
+        stream: &Entity<ConversationStream>,
+        message: PendingMessage,
+        drain: vega_store::thread_admission::AdmissionDrain,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((generation, cancel)) =
+            self.agent_controller
+                .begin_queue_drain_wait(thread_id, stream.clone(), &message)
+        else {
+            return;
+        };
+        stream.update(cx, |stream, cx| {
+            stream.set_pending_queue_wait(generation, cancel.clone(), cx)
+        });
+        let thread_id = thread_id.to_owned();
+        let stream = stream.clone();
+        let started = cx.background_executor().now();
+        cx.spawn(async move |this, cx| {
+            loop {
+                if cancel.is_cancelled() {
+                    let _ = this.update(cx, |this, cx| {
+                        if this
+                            .agent_controller
+                            .queue_drain_waits
+                            .get(&thread_id)
+                            .is_some_and(|wait| wait.generation == generation)
+                        {
+                            this.clear_pending_title_wait(&thread_id, cx);
+                        }
+                    });
+                    return;
+                }
+                let released = drain.is_released();
+                let expired = cx
+                    .background_executor()
+                    .now()
+                    .saturating_duration_since(started)
+                    >= std::time::Duration::from_secs(30);
+                if released || expired {
+                    let _ = this.update(cx, |this, cx| {
+                        let valid = this
+                            .agent_controller
+                            .queue_drain_waits
+                            .get(&thread_id)
+                            .is_some_and(|wait| {
+                                wait.generation == generation
+                                    && wait.stream == stream
+                                    && wait.message_id == message.id
+                                    && wait.message_generation == message.generation
+                                    && !wait.cancel.is_cancelled()
+                            });
+                        if !valid {
+                            return;
+                        }
+                        this.clear_pending_title_wait(&thread_id, cx);
+                        let projection = stream.read(cx).pending_queue();
+                        if this.agent_controller.queue_streams.get(&thread_id) != Some(&stream)
+                            || projection.messages.first().is_none_or(|head| {
+                                head.id != message.id || head.generation != message.generation
+                            })
+                            || !this
+                                .agent_controller
+                                .queue_continue
+                                .get(&thread_id)
+                                .copied()
+                                .unwrap_or(false)
+                            || projection.paused
+                            || projection.busy
+                            || this.agent_controller.active.contains_key(&thread_id)
+                            || this
+                                .agent_controller
+                                .queue_operations
+                                .contains_key(&thread_id)
+                            || stream.read(cx).permission_queue().has_pending()
+                            || stream.read(cx).has_pending_user_question()
+                        {
+                            return;
+                        }
+                        if released {
+                            this.continue_pending_queue(&thread_id, &stream, cx);
+                        } else {
+                            let mut projection = stream.read(cx).pending_queue().clone();
+                            projection.paused = true;
+                            projection.error =
+                                Some(vega_i18n::t("ui.ordinary_send.queue_finishing").into());
+                            this.project_pending_queue(&thread_id, &stream, projection, cx);
+                        }
+                    });
+                    return;
+                }
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(10))
+                    .await;
+            }
+        })
+        .detach();
     }
 
     pub(crate) fn owns_pending_dispatch(

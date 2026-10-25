@@ -15,6 +15,7 @@ pub struct AutomaticTitleRequest {
     provider: Arc<dyn Provider>,
     cancel: CancellationToken,
     notifications: mpsc::Sender<()>,
+    admission: Option<vega_store::thread_admission::ThreadAdmission>,
 }
 
 impl std::fmt::Debug for AutomaticTitleRequest {
@@ -37,7 +38,16 @@ impl AutomaticTitleRequest {
             provider,
             cancel,
             notifications,
+            admission: None,
         }
+    }
+
+    pub(crate) fn with_thread_admission(
+        mut self,
+        admission: vega_store::thread_admission::ThreadAdmission,
+    ) -> Self {
+        self.admission = Some(admission);
+        self
     }
 
     pub(crate) fn fallback(&self) -> String {
@@ -45,7 +55,7 @@ impl AutomaticTitleRequest {
     }
 
     pub(crate) fn launch(
-        self,
+        mut self,
         database: PathBuf,
         thread_id: String,
         message_id: String,
@@ -54,9 +64,11 @@ impl AutomaticTitleRequest {
     ) {
         let _ = self.notifications.send(());
 
+        let title_drain = self.admission.take().map(|owner| owner.into_title_drain());
         let worker = std::thread::Builder::new()
             .name("vega-auto-title".into())
             .spawn(move || {
+                let _title_drain = title_drain;
                 let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -75,6 +87,13 @@ impl AutomaticTitleRequest {
                     );
                     return;
                 };
+                if _title_drain.as_ref().is_none_or(|title| {
+                    !title
+                        .admission()
+                        .verifies(store.database_identity(), &thread_id)
+                }) {
+                    return;
+                }
 
                 if let Some((input, output, cache_read, cache_write)) = usage {
                     let quote = pricing.as_ref().and_then(|catalog| {

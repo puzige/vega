@@ -295,3 +295,8 @@
 "domain.usage.corruptdata" = "Stored usage contains invalid values"
 "domain.usage.overflow" = "Usage totals exceed the supported range"
 "domain.usage.unavailable" = "Usage database is unavailable"
+"domain.ordinary_send.access_unavailable" = "Conversation access is unavailable. Try again later."
+"domain.ordinary_send.stop_before_change" = "Stop the current task before changing it."
+"domain.ordinary_send.facts_unavailable" = "The send state is unavailable. Check its status before retrying."
+"domain.ordinary_send.history_changed" = "The conversation changed. Open its history before sending again."
+"domain.ordinary_send.submission_unavailable" = "This send is no longer available. Check its status before retrying."

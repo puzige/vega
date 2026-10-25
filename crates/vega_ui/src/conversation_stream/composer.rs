@@ -1,6 +1,8 @@
 use super::*;
 use gpui_kit::Focusable;
 
+static NEXT_SUBMISSION_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 impl ConversationStream {
     pub fn register_artifact_call(&mut self, call_id: &str) -> bool {
         let Some((message_id, _)) = &self.active_agent_message else {
@@ -274,6 +276,7 @@ impl ConversationStream {
             && (!self.input.read(cx).text().is_empty() || !self.attachments.is_empty())
             && !self.attachment_import_pending
             && !self.composer_submit_pending
+            && !self.ordinary_pending_before_run()
             && !self.approved_not_started
             && !self.trusted_action_busy
             && !self.skill_mutation_pending
@@ -296,6 +299,9 @@ impl ConversationStream {
             .then(|| self.input.read(cx).content_revision());
         self.submitted_attachments = self.attachments.clone();
         cx.emit(ComposerSubmitted {
+            request_id: NEXT_SUBMISSION_REQUEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            draft_revision: self.input.read(cx).content_revision(),
+            attachment_ids: self.attachments.iter().map(|(id, _)| *id).collect(),
             pending_behavior: self
                 .actions
                 .running

@@ -36,6 +36,7 @@ mod model_context;
 mod native_subagents;
 pub(crate) mod navigation;
 mod notifications;
+mod ordinary_send;
 mod pending_messages;
 mod pricing;
 mod privacy;
@@ -191,7 +192,20 @@ pub(crate) struct VegaWindow {
 
 impl VegaWindow {
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
+        Self::new_with_services(cx, true)
+    }
+
+    fn new_with_services(cx: &mut Context<Self>, startup_services: bool) -> Self {
         cx.on_release(|this, cx| {
+            let waiting_threads: Vec<_> = this
+                .agent_controller
+                .queue_drain_waits
+                .keys()
+                .cloned()
+                .collect();
+            for thread_id in waiting_threads {
+                this.clear_pending_title_wait(&thread_id, cx);
+            }
             this.onboarding.close(cx);
             if cx
                 .try_global::<crate::automation_controller::AutomationGlobal>()
@@ -213,6 +227,16 @@ impl VegaWindow {
                 .0
                 .as_ref()
                 .map(|thread| thread.id.clone());
+            let stale_waits: Vec<_> = this
+                .agent_controller
+                .queue_drain_waits
+                .keys()
+                .filter(|thread_id| Some(thread_id.as_str()) != route_thread_id.as_deref())
+                .cloned()
+                .collect();
+            for thread_id in stale_waits {
+                this.clear_pending_title_wait(&thread_id, cx);
+            }
             if this
                 .composer_prediction
                 .as_ref()
@@ -342,8 +366,10 @@ impl VegaWindow {
             model_catalog_generation: 0,
             deferred_model_refresh: None,
         };
-        window.start_pricing_load(cx);
-        window.start_updater(cx);
+        if startup_services {
+            window.start_pricing_load(cx);
+            window.start_updater(cx);
+        }
         window
     }
 
@@ -352,6 +378,10 @@ impl VegaWindow {
         self.image_preview.retire();
         self.context_controller.cancel();
         self.window_alive.store(false, Ordering::SeqCst);
+        self.agent_controller.queue_drain_waits.clear();
+        for (_, cancel) in self.agent_controller.ordinary_preparing.drain() {
+            cancel.cancel();
+        }
         for (_, active) in self.agent_controller.active.drain() {
             if let Some(control) = &active.computer_use {
                 control.stop();

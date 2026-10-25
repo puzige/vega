@@ -301,6 +301,7 @@ pub fn set_thread_status(
     thread_id: &str,
     status: ThreadStatus,
 ) -> Result<(), ConversationError> {
+    let _admission = crate::thread_access::acquire(store, thread_id)?;
     let tx = store.immediate_transaction().map_err(store_error)?;
     let updated = store::set_status(&tx, thread_id, status.as_str()).map_err(store_error)?;
     if updated == 0 {
@@ -333,6 +334,7 @@ pub fn set_thread_mode(
     thread_id: &str,
     mode: ThreadMode,
 ) -> Result<Thread, ConversationError> {
+    let _admission = crate::thread_access::acquire(store, thread_id)?;
     let updated =
         store::set_mode(store.conn(), thread_id, mode.as_str(), now_ms()).map_err(store_error)?;
     if updated == 0 {
@@ -360,6 +362,7 @@ pub fn set_thread_permission_mode(
     thread_id: &str,
     mode: PermissionMode,
 ) -> Result<Thread, ConversationError> {
+    let _admission = crate::thread_access::acquire(store, thread_id)?;
     let updated = store::set_permission_mode(store.conn(), thread_id, mode.as_str(), now_ms())
         .map_err(store_error)?;
     if updated == 0 {
@@ -373,6 +376,7 @@ pub fn set_thread_model(
     thread_id: &str,
     model: &str,
 ) -> Result<Thread, ConversationError> {
+    let _admission = crate::thread_access::acquire(store, thread_id)?;
     if model.is_empty() {
         return Err(ConversationError::NotFound(thread_id.to_string()));
     }
@@ -385,12 +389,18 @@ pub fn set_thread_model(
 }
 
 pub fn delete_thread(store: &Store, thread_id: &str) -> Result<(), ConversationError> {
+    let _admission = crate::thread_access::acquire(store, thread_id)?;
     let is_child = store::find(store.conn(), thread_id)
         .map_err(store_error)?
         .is_some_and(|thread| thread.parent_thread_id.is_some());
+    let children =
+        vega_store::subagents::list(store.conn(), thread_id, None).map_err(store_error)?;
+    let _child_admissions = children
+        .iter()
+        .map(|child| crate::thread_access::acquire(store, &child.child_thread_id))
+        .collect::<Result<Vec<_>, _>>()?;
     if (is_child && crate::subagents::is_live(store, thread_id))
-        || vega_store::subagents::list(store.conn(), thread_id, None)
-            .map_err(store_error)?
+        || children
             .iter()
             .any(|child| crate::subagents::is_live(store, &child.child_thread_id))
     {
@@ -418,6 +428,10 @@ pub fn update_thread(
     if update.is_empty() {
         return Ok(());
     }
+    let _admission = update
+        .status
+        .map(|_| crate::thread_access::acquire(store, thread_id))
+        .transpose()?;
     let tx = store.immediate_transaction().map_err(store_error)?;
     let updated = store::update(
         &tx,
