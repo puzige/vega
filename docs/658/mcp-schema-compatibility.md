@@ -22,3 +22,7 @@ Actual Chrome DevTools MCP 1.12.0 tools/list and installed application version r
 ## Review hardening
 
 HTTP schemas containing references receive a conservative whole-document header inventory after normal extraction. If any `x-mcp-header` marker was not extracted, reject the definition, including markers hidden in annotation data that could be reference targets. This intentionally rejects the ambiguous combination of references and header-shaped annotation data rather than silently treating it as safe. Reference-free annotation data is unaffected; stdio is unaffected. No references are followed by this bounded structural inventory, so cycles and encoded/noncanonical reference targets cannot bypass it.
+
+## Delivery evidence
+
+Development regressions are preserved at [43a6cc16b51a17011beed2d0306885a50df79bf6](https://github.com/puzige/vega/blob/43a6cc16b51a17011beed2d0306885a50df79bf6/crates/vega_mcp/src/wire.rs). [Actions run 40365773079](https://github.com/puzige/vega/actions/runs/40365773079) passed Clippy and 5 tests (5 passed, 0 skipped). Independent review cleared that implementation including the reference-header hardening. Development tests are removed for delivery; final-head required CI and no Rust tests (0 discovered / 0 executed) remain a separate merge gate. Local validation used formatting and diff checks only. Actual application integration remains pending user verification.
