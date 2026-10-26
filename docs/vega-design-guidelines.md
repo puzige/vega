@@ -131,7 +131,7 @@ hover 不是唯一操作路径；focus、菜单打开和上下文菜单提供等
 
 主窗口、Settings、Workspace、Terminal、Environment 共享图标、状态、排版和动作密度；本轮不新增无关功能。
 
-- Sidebar 保留项目/置顶/最近任务的唯一投影、渐进展开和已有任务操作。静止任务行不增加常驻相对时间；尾部状态与操作按 v3 固定槽位替换。
+- Sidebar 保留项目/置顶/最近任务的唯一投影、渐进展开和已有任务操作。静止任务行不增加常驻相对时间；尾部状态与操作按 v3 固定槽位替换。分组标题 `Pinned / Projects / Recents` 使用 14px/500，比 13px 行标题高一级，保持弱色弱化层级。
 - Settings footer 收紧外层，按钮本体圆角与内距不变。顶部搜索、前进后退、原生 traffic lights 与拖拽区保留。
 - 全局尾部三个窗口控制仍由窗口管理；保留 [R46](vega-r46-window-anchored-shell-slots.md) 的 104px 预留与动作语义。
 - Environment 默认折叠，宽窄切换、Workspace Dock/最大化、终端焦点与 PTY 身份保持 [#141](141/vega-issue-141-environment-default-collapsed.md)、[R44](vega-r44-terminal-panel-logic.md) 的契约。
