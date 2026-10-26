@@ -137,7 +137,8 @@ running                                  → Stop
 - 图标用现有 `Icon::Play`。#589 已合入，主按钮、loading 态及 tooltip 使用 `ui.composer_resume` 国际化 key（Resume / 继续），不修改其他恢复动作的文案。
 - 2026-10-26 同步 master：保留 ordinary submission 的准备、取消、恢复与用户回显契约；Resume 不接管 ordinary pending/recovery，也不创建 ordinary user 行。历史末尾候选从 composer 使用的当前历史投影与队列恢复路径刷新，不能取分页内旧行；未接入 composer 的历史 fork 投影不在本卡扩展。
 - 2026-10-26 独立审查补充 A02/A05 边界：worker 必须沿用 controller 已持有的线程 admission，不能重新竞争自身占用。开发回归从应用实际配置入口携带已持有 admission 启动，观察一次 MessageStarted/模型请求、无新增 user 与旧请求拒绝。
-- A01/A02 准备期停止边界：新 assistant 已提交、尚未发送 MessageStarted 时停止 Resume，须落为 Interrupted 而非 Failed；不得调用 provider，旧行和工具不变，释放运行占用后实际尾行仍可继续。该修正仅限本卡 Resume，不改 ordinary/Plan/凭据路径的既有清理契约。开发回归在此边界确定性取消。
+- A01/A02 准备期停止边界：新 assistant 已提交、尚未发送 MessageStarted 时停止 Resume，须落为 Interrupted 而非 Failed；不得调用 provider，旧行和工具不变，释放运行占用后实际尾行仍可继续。开发回归在此边界确定性取消。
+- 2026-10-26 同步 master `dee2009d8cbe93f3765ea8360a1239da9df2d972`（#632/#654）：上游已统一准备期停止为 `finish_prepared_terminal(..., "interrupted", ...)` 并发送 Interrupted 事件。沿用该共享实现与停止行投影，不另留 Resume 专属清理分支；保留本卡确定性回归，追加事件身份校验。ordinary/Plan/凭据路径遵循此新基线，不由本卡改写。
 
 ## 6. 验证与交付
 

@@ -217,7 +217,10 @@ impl ConversationStream {
                     ..
                 } if duration.is_some()
                     || activity_runs.contains(message_id)
-                    || continuation_runs.contains(message_id) =>
+                    || continuation_runs.contains(message_id)
+                    // A stopped turn may carry no measured duration; its stop
+                    // line must still be restored after reload.
+                    || *status == vega_conversation::history::AssistantStatus::Interrupted =>
                 {
                     Some((message_id.clone(), (*status, *duration)))
                 }
@@ -1290,8 +1293,49 @@ impl ConversationStream {
             group.update(cx, |group, cx| {
                 group.complete(status, execution_duration_ms, cx)
             });
+        } else if status == RunActivityStatus::Interrupted {
+            // A stop that produced no assistant output never opened a run
+            // header, so the turn would otherwise end without any visible
+            // terminal state. Project the same single stop line here.
+            self.push_terminal_stop_entry(message_id, execution_duration_ms, cx);
         }
         self.invalidate_codex_copy_entries(message_id);
+    }
+
+    /// Appends the terminal stop line for a turn whose run header was never
+    /// created, keeping it in the conversation flow after that user message.
+    fn push_terminal_stop_entry(
+        &mut self,
+        message_id: &str,
+        execution_duration_ms: Option<u64>,
+        cx: &mut Context<Self>,
+    ) {
+        let identity = self.durable_entry_identity(message_id, "run-activity", None);
+        if self
+            .entry_identities
+            .iter()
+            .any(|existing| existing.key == identity.key)
+        {
+            return;
+        }
+        let group = cx.new(|cx| {
+            RunActivityGroup::new(
+                RunActivityStatus::Interrupted,
+                execution_duration_ms,
+                false,
+                cx,
+            )
+        });
+        self.observe_run_activity_group(&group, cx);
+        let index = self.entries.len();
+        self.entries.push(StreamEntry::RunActivity {
+            group: group.clone(),
+        });
+        self.list_append(index);
+        self.set_entry_identity(index, identity);
+        self.run_activity_groups
+            .insert(message_id.to_string(), group);
+        cx.notify();
     }
 
     /// Applies an already-durable shared lifecycle event. The UI never reads

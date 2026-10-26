@@ -428,6 +428,7 @@ async fn resume_cancelled_after_commit_remains_resumable_without_starting_provid
         ..Default::default()
     }.with_thread_admission(admission.clone());
     let mut started = 0;
+    let mut interrupted = Vec::new();
     let result = resume_interrupted_assistant_with_mcp(
         &fixture.store,
         &provider,
@@ -440,6 +441,9 @@ async fn resume_cancelled_after_commit_remains_resumable_without_starting_provid
         |event| {
             if matches!(event, ConversationEvent::MessageStarted { .. }) {
                 started += 1;
+            }
+            if let ConversationEvent::Interrupted { message_id, .. } = event {
+                interrupted.push(message_id.clone());
             }
             Ok(())
         },
@@ -460,6 +464,7 @@ async fn resume_cancelled_after_commit_remains_resumable_without_starting_provid
     assert_eq!(after.len(), 3);
     assert_eq!(after[2].2, "assistant");
     assert_eq!(after[2].3, "interrupted");
+    assert_eq!(interrupted, vec![after[2].0.clone()]);
     assert_eq!(after.iter().filter(|row| row.2 == "user").count(), 1);
     assert_eq!(
         tool_calls::terminal_results(fixture.store.conn(), "thread").expect("preserved tools"),
