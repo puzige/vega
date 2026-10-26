@@ -1121,6 +1121,12 @@ impl ConversationStream {
                     {
                         Some(index)
                     }
+                    StreamEntry::Tool { card }
+                        if card.read(cx).is_subagent_invocation()
+                            && this.entry_owner_group(index) == Some(&group) =>
+                    {
+                        Some(index)
+                    }
                     StreamEntry::ContextCompaction { .. }
                         if this
                             .entry_identities

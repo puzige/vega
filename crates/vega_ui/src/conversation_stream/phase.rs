@@ -414,6 +414,15 @@ impl ConversationStream {
                 StreamEntry::Assistant { copy, .. } if group.read(cx).hides_copy(copy.id) => {
                     details.push((index, RunDetail::Assistant(index)));
                 }
+                StreamEntry::Tool { card }
+                    if card.read(cx).is_subagent_invocation()
+                        && self.entry_owner_group(index) == Some(group) =>
+                {
+                    details.push((
+                        index,
+                        RunDetail::Operation(RunActivityChild::Tool(card.clone())),
+                    ));
+                }
                 _ => {}
             }
         }
@@ -530,9 +539,11 @@ impl ConversationStream {
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
+        let details = self.run_details(&group, cx);
+        let attached_details = !details.is_empty();
         let details = if group.read(cx).expanded() {
             let mut previous_assistant = false;
-            self.run_details(&group, cx)
+            details
                 .into_iter()
                 .enumerate()
                 .map(|(detail_index, (_, detail))| match detail {
@@ -566,7 +577,7 @@ impl ConversationStream {
         } else {
             Vec::new()
         };
-        RunActivityGroup::render_with_details(group, details, window, cx)
+        RunActivityGroup::render_with_details(group, details, attached_details, window, cx)
     }
 
     pub(crate) fn restore_process_anchor(
@@ -705,12 +716,28 @@ impl ConversationStream {
         }
     }
 
+    pub(crate) fn entry_owner_group(&self, index: usize) -> Option<&Entity<RunActivityGroup>> {
+        self.entry_identities
+            .get(index)
+            .and_then(|identity| identity.message_id.as_ref())
+            .and_then(|owner| self.run_activity_groups.get(owner))
+    }
+
     pub(crate) fn process_entry_hidden(&self, index: usize, cx: &App) -> bool {
         if self.compaction_failure_resolved(index) {
             return true;
         }
         if let Some(StreamEntry::RunActivity { group }) = self.entries.get(index) {
             return group.read(cx).header_hidden();
+        }
+        if let Some(StreamEntry::Tool { card }) = self.entries.get(index)
+            && card.read(cx).is_subagent_invocation()
+            && self.entry_owner_group(index).is_some_and(|owner| {
+                let owner = owner.read(cx);
+                owner.process_in_details() && !owner.header_hidden()
+            })
+        {
+            return true;
         }
         if let Some(StreamEntry::RunActivitySegment { group, segment }) = self.entries.get(index) {
             return group.read(cx).segment_row_count(*segment, cx) == 0;

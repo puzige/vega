@@ -1316,12 +1316,13 @@ impl RunActivityGroup {
         } else {
             Vec::new()
         };
-        Self::render_with_details(group, details, window, cx)
+        Self::render_with_details(group, details, false, window, cx)
     }
 
     pub(crate) fn render_with_details(
         group: Entity<Self>,
         details: Vec<AnyElement>,
+        attached_details: bool,
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
@@ -1335,7 +1336,9 @@ impl RunActivityGroup {
         let label = group_ref.label();
         let status_color = colors.conversation_clock;
         let can_expand = group_ref.process_in_details()
-            && (group_ref.has_children() || !group_ref.process_copies.is_empty());
+            && (group_ref.has_children()
+                || !group_ref.process_copies.is_empty()
+                || attached_details);
         let scroll = group_ref.scroll.clone();
         let focus = group_ref.focus.clone();
         let clock = group.downgrade();
