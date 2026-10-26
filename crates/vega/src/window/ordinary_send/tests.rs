@@ -1,5 +1,6 @@
 use super::{OrdinaryPreparationOutcome, OrdinaryPreparationRequest, take_preparation_owner};
 use crate::ordinary_submission::OrdinaryPreparationOwner;
+use gpui_kit::gpui;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,6 +22,17 @@ use vega_store::config::{self, AppConfig, ProviderConfig};
 fn navigation_return_reuses_preparing_entity_and_committed_authority(
     cx: &mut gpui_kit::TestAppContext,
 ) {
+    navigation_receipt_order(cx, false);
+}
+
+#[gpui_kit::test]
+fn navigation_receipt_while_away_preserves_route_and_reloads_authority(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    navigation_receipt_order(cx, true);
+}
+
+fn navigation_receipt_order(cx: &mut gpui_kit::TestAppContext, receipt_while_away: bool) {
     use crate::window::VegaWindow;
     use gpui_kit::{AppContext, Render};
     use vega_ui::conversation_stream::ConversationStream;
@@ -73,17 +85,29 @@ fn navigation_return_reuses_preparing_entity_and_committed_authority(
                     cancel: CancellationToken::new(),
                 },
             );
-            let other = fixture.draft();
+            let other_source = fixture.draft();
+            let other_outcome = fixture
+                .request(&other_source, Some(other_source.clone()))
+                .prepare();
+            let other = other_outcome
+                .materialized
+                .as_ref()
+                .expect("persisted destination")
+                .thread
+                .clone();
+            drop(other_outcome);
             cx.set_global(OpenedThread(Some(other.clone())));
             drop(owner.render(window, cx));
             assert_ne!(owner.stream_view.as_ref().expect("other view").1, original);
-            cx.set_global(OpenedThread(Some(source.clone())));
-            drop(owner.render(window, cx));
-            assert_eq!(
-                owner.stream_view.as_ref().expect("returned view").1,
-                original
-            );
-            assert!(owner.owns_stream_request(&original, &source.id, cx));
+            if !receipt_while_away {
+                cx.set_global(OpenedThread(Some(source.clone())));
+                drop(owner.render(window, cx));
+                assert_eq!(
+                    owner.stream_view.as_ref().expect("returned view").1,
+                    original
+                );
+                assert!(owner.owns_stream_request(&original, &source.id, cx));
+            }
             assert!(
                 take_preparation_owner(
                     &mut owner.agent_controller.ordinary_preparing,
@@ -96,6 +120,15 @@ fn navigation_return_reuses_preparing_entity_and_committed_authority(
             owner.apply_ordinary_materialization(&original, attempt, receipt, cx);
             assert!(owner.draft.is_none());
             assert_eq!(original.read(cx).thread_snapshot(), durable);
+            if receipt_while_away {
+                assert_eq!(cx.global::<OpenedThread>().0.as_ref(), Some(&other));
+                let reopened =
+                    get_thread(&fixture.store(), &source.id).expect("resolve durable route");
+                cx.set_global(OpenedThread(Some(reopened)));
+                drop(owner.render(window, cx));
+                let visible = &owner.stream_view.as_ref().expect("durable view").1;
+                assert_eq!(visible.read(cx).thread_snapshot(), durable);
+            }
             assert_eq!(cx.global::<OpenedThread>().0.as_ref(), Some(&durable));
             assert!(durable.full_access_grant.is_some());
         })
