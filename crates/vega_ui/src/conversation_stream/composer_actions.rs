@@ -1,7 +1,7 @@
 //! Small local composer commands; all durable changes still use thread settings.
 use super::*;
 use crate::interaction::InteractionExt;
-use gpui_kit::Focusable;
+use gpui_kit::{Focusable, Role};
 use vega_conversation::types::{ComputerUseControl, ControlPhase};
 
 /// Thread-mode `+`-menu rows, in the order the slash parser also accepts.
@@ -244,7 +244,10 @@ impl ConversationStream {
     }
 
     pub(super) fn reset_composer_stopping_if_idle(&mut self) {
-        if !self.actions.running && !self.composer_submit_pending {
+        if !self.actions.running
+            && !self.composer_submit_pending
+            && !self.ordinary_pending_before_run()
+        {
             self.actions.stopping = false;
         }
     }
@@ -263,15 +266,18 @@ impl ConversationStream {
     pub fn request_composer_stop(&mut self, cx: &mut Context<Self>) {
         if (!self.actions.running
             && !self.composer_submit_pending
+            && !self.ordinary_pending_before_run()
             && !self.has_cancellable_queue_wait())
             || self.actions.stopping
         {
             return;
         }
         self.actions.stopping = true;
-        cx.emit(ComposerStopRequested {
-            thread_id: self.thread.id.clone(),
-        });
+        if !self.cancel_ordinary_pending(cx) {
+            cx.emit(ComposerStopRequested {
+                thread_id: self.thread.id.clone(),
+            });
+        }
         cx.notify();
     }
 
@@ -423,7 +429,10 @@ impl ConversationStream {
                 }
             }
         }
-        if self.actions.running || self.composer_submit_pending || self.has_cancellable_queue_wait()
+        if self.actions.running
+            || self.composer_submit_pending
+            || self.ordinary_pending_before_run()
+            || self.has_cancellable_queue_wait()
         {
             controls.push(self.action_focus[1].clone());
         }
@@ -801,6 +810,7 @@ impl ConversationStream {
         let colors = theme(cx).colors;
         div()
             .id("composer-stop")
+            .role(Role::Button)
             .tab_stop(true)
             .aria_label(if self.actions.stopping {
                 vega_i18n::t("ui.stopping")
@@ -817,6 +827,9 @@ impl ConversationStream {
             .justify_center()
             .bg(colors.accent)
             .text_color(colors.brand_on_accent)
+            .border_1()
+            .border_color(gpui_kit::transparent_black())
+            .focus_visible(move |style| style.border_color(colors.brand_on_accent))
             .when(!self.actions.stopping, |button| button.cursor_pointer())
             .interaction_surface(
                 colors.accent,
@@ -825,10 +838,7 @@ impl ConversationStream {
                 !self.actions.stopping,
             )
             .track_focus(&self.action_focus[1])
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.request_composer_stop(cx)),
-            )
+            .on_click(cx.listener(|this, _, _, cx| this.request_composer_stop(cx)))
             .child(crate::icons::icon(
                 crate::icons::Icon::Close,
                 colors.brand_on_accent,

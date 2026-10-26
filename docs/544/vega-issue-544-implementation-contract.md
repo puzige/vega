@@ -76,6 +76,8 @@ F 固定可审查后接线：
 
 确认只补 message ID/seq/状态，不换 key/MessageCopy/选择，不重复 list_append 或滚动。历史分页按稳定 user ID 去重；现有同一 view 的确认保留对象，新 view 可重新建视觉对象但先按 durable ID 合并再投影未决记录。记录存在于进程 registry，不靠同一 view 永存。
 
+2026-10-26 用户手测反馈修订：正常 Pending 不渲染气泡下的 `Pending / Cancel`，Composer 改用既有 Stop/Stopping 控件表达等待与取消，不新增常驻状态文案。可编辑下一稿、禁止重复普通发送，Stop 按当前 submission+attempt 精确取消；终态恢复 Composer，进入运行后保持 Queue/Send-now 路由和语义。不改 commit/receipt、快照、历史或重试资格。
+
 失败气泡下仅出现当前可操作的错误/Retry；Unknown 显示核实动作而非盲重发。Retry/核实事件携 submission+attempt；只重试旧快照、不从新 Composer 取值、不覆盖新草稿。按钮有文字名称、键盘焦点与 Enter/Space，disabled原因可获取。取消后内容保留；已提交不回滚历史。未提交可重试，已提交但未启动按 G 安全恢复，Started 后沿既有停止/继续语义，不冒充一次新 user。
 
 ## 6. 验证与交付

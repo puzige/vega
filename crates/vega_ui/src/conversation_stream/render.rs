@@ -338,6 +338,7 @@ impl ConversationStream {
                             .when(
                                 (self.actions.running
                                     || self.composer_submit_pending
+                                    || self.ordinary_pending_before_run()
                                     || self.has_cancellable_queue_wait())
                                     && !self.shows_running_send(cx),
                                 |row| row.child(self.render_composer_stop(cx)),
@@ -345,17 +346,13 @@ impl ConversationStream {
                             .when(
                                 !self.actions.running
                                     && !self.composer_submit_pending
+                                    && !self.ordinary_pending_before_run()
                                     && !self.has_cancellable_queue_wait(),
                                 |row| {
                                     row.child(
                                         div()
                                             .id("composer-send")
                                             .aria_label(vega_i18n::t("ui.send"))
-                                            .when(self.ordinary_pending_before_run(), |button| {
-                                                button.aria_description(vega_i18n::t(
-                                                    "ui.ordinary_send.preparing_description",
-                                                ))
-                                            })
                                             .track_focus(&self.action_focus[1])
                                             .tab_stop(true)
                                             .flex_shrink_0()

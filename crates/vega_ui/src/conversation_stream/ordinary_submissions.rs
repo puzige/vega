@@ -62,6 +62,27 @@ impl ConversationStream {
                 .any(|row| matches!(row.state, OrdinaryStatus::Pending))
     }
 
+    pub(super) fn cancel_ordinary_pending(&self, cx: &mut Context<Self>) -> bool {
+        if self.actions.running {
+            return false;
+        }
+        let Some(row) = self
+            .ordinary
+            .iter()
+            .rev()
+            .find(|row| matches!(row.state, OrdinaryStatus::Pending))
+        else {
+            return false;
+        };
+        cx.emit(OrdinaryActionRequested {
+            thread_id: self.thread.id.clone(),
+            submission: row.submission.id(),
+            attempt: row.attempt,
+            action: OrdinaryAction::Cancel,
+        });
+        true
+    }
+
     pub fn begin_ordinary_pending(
         &mut self,
         submission: OrdinarySubmission,
@@ -380,6 +401,7 @@ impl ConversationStream {
             }
         }
         if changed {
+            self.reset_composer_stopping_if_idle();
             cx.notify();
         }
     }
@@ -424,12 +446,7 @@ impl ConversationStream {
             return None;
         }
         let (message, label, action) = match row.state {
-            OrdinaryStatus::Committed => return None,
-            OrdinaryStatus::Pending => (
-                "ui.ordinary_send.pending",
-                "ui.cancel",
-                OrdinaryAction::Cancel,
-            ),
+            OrdinaryStatus::Pending | OrdinaryStatus::Committed => return None,
             OrdinaryStatus::Unknown => (
                 "ui.ordinary_send.unknown",
                 "ui.ordinary_send.check_status",
