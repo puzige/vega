@@ -67,6 +67,7 @@ enum McpAction {
     Transport(McpTransportChoice),
     Auth(McpAuthChoice),
     ToggleLoopback,
+    ToggleRejected(String),
     Save,
     SaveBearer,
     SaveLocalSecret,
@@ -193,6 +194,7 @@ pub(crate) struct McpSettingsState {
     pub(super) oauth_flow_id: Option<String>,
     pub(super) oauth_waiting: bool,
     focuses: HashMap<String, FocusHandle>,
+    expanded_rejections: std::collections::HashSet<String>,
     pub(super) generation: u64,
 }
 
@@ -269,6 +271,7 @@ impl McpSettingsState {
             oauth_flow_id: None,
             oauth_waiting: false,
             focuses: HashMap::new(),
+            expanded_rejections: std::collections::HashSet::new(),
             generation: 0,
         }
     }
@@ -702,6 +705,13 @@ impl SettingsView {
     }
 
     fn mcp_action(&mut self, action: McpAction, cx: &mut gpui_kit::Context<Self>) {
+        if let McpAction::ToggleRejected(id) = &action {
+            if !self.mcp.expanded_rejections.remove(id) {
+                self.mcp.expanded_rejections.insert(id.clone());
+            }
+            cx.notify();
+            return;
+        }
         let revoke = match &action {
             McpAction::Disable { .. }
             | McpAction::Ask(
@@ -739,6 +749,7 @@ impl SettingsView {
             return;
         }
         match action {
+            McpAction::ToggleRejected(_) => {}
             McpAction::Reload => self.mcp_operation(McpOperation::Reload, cx),
             McpAction::Add(choice) => self.mcp_begin_editor(None, choice, cx),
             McpAction::Edit(id) => {
@@ -1114,10 +1125,16 @@ impl SettingsView {
                             McpOperationOutput::Tested(preview) => {
                                 if let Some(id) = tested_id {
                                     let count = preview.tool_names.len();
+                                    let rejected = preview.rejected_tools.len();
                                     this.mcp.preview.insert(id, preview);
                                     if this.mcp.message.is_none() {
                                         this.mcp.message = Some(SettingsText::args(
-                                            "settings.mcp.test_result",
+                                            if count == 0 && rejected > 0 {
+                                                this.mcp.message_error = true;
+                                                "settings.mcp.test_rejected"
+                                            } else {
+                                                "settings.mcp.test_result"
+                                            },
                                             &[("count", &count.to_string())],
                                         ));
                                     }
@@ -1496,15 +1513,26 @@ impl SettingsView {
             .map(|preview| preview.rejected_tools.as_slice())
             .unwrap_or(&row.rejected_tools);
         if !rejected.is_empty() {
-            card = card.child(
-                div()
-                    .id(format!("mcp-rejected-tools-{id}"))
-                    .text_color(colors.warning)
-                    .child(t_args(
-                        "settings.mcp.rejected_tools",
-                        &[("tools", &(rejected.join(t("settings.list_separator"))))],
-                    )),
-            );
+            let expanded = self.mcp.expanded_rejections.contains(&id);
+            let count = rejected.len().to_string();
+            let details = expanded.then(|| rejected.join("\n"));
+            card = card.child(self.mcp_button(
+                t_args(
+                    if expanded {
+                        "settings.mcp.hide_rejected"
+                    } else {
+                        "settings.mcp.show_rejected"
+                    },
+                    &[("count", &count)],
+                ),
+                format!("mcp-rejected-tools-{id}"),
+                McpAction::ToggleRejected(id.clone()),
+                true,
+                cx,
+            ));
+            if let Some(details) = details {
+                card = card.child(div().text_color(colors.warning).child(details));
+            }
         }
         if is_oauth {
             card = card.child(div().text_color(colors.warning).child(
