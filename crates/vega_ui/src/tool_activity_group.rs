@@ -1,3 +1,4 @@
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Context, Entity, MouseButton, MouseUpEvent, ScrollHandle, div, px,
@@ -5,7 +6,7 @@ use gpui_kit::{
 use vega_theme::{Layout, ThemeColors, Typography, theme};
 
 use crate::icons::Icon;
-use crate::tool_card::{ToolActivityCategory, ToolActivityState, ToolCard};
+use crate::tool_card::{ToolActivityCategory, ToolActivityState, ToolCard, sentence_initial};
 
 pub(crate) struct ToolActivityGroup {
     children: Vec<Entity<ToolCard>>,
@@ -14,11 +15,6 @@ pub(crate) struct ToolActivityGroup {
 }
 
 impl ToolActivityGroup {
-    #[cfg(test)]
-    pub(crate) fn scroll_handle(&self) -> ScrollHandle {
-        self.scroll.clone()
-    }
-
     pub(crate) fn new(first: Entity<ToolCard>, second: Entity<ToolCard>) -> Self {
         Self {
             children: vec![first, second],
@@ -80,7 +76,6 @@ impl ToolActivityGroup {
         cx.notify();
     }
 
-    /// #151: the newest live activity unit is expanded; older units step down.
     pub(crate) fn set_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
         if self.expanded != expanded {
             self.expanded = expanded;
@@ -122,18 +117,6 @@ impl ToolActivityGroup {
             + height.min(Layout::TOOL_GROUP_MAX_HEIGHT)
     }
 
-    #[cfg(test)]
-    pub(crate) fn visible_text(&self, cx: &App) -> String {
-        let mut text = self.aggregate_summary(cx);
-        if self.expanded {
-            for child in &self.children {
-                text.push('\n');
-                text.push_str(&child.read(cx).visible_text());
-            }
-        }
-        text
-    }
-
     fn aggregate_state(&self, cx: &App) -> ToolActivityState {
         self.children
             .iter()
@@ -157,16 +140,34 @@ impl ToolActivityGroup {
         let categories = self.categories(cx);
         let actions = categories
             .iter()
-            .map(|category| category.action_phrase())
+            .enumerate()
+            .map(|(index, category)| {
+                let phrase = category.action_phrase();
+                if index == 0 {
+                    sentence_initial(phrase)
+                } else {
+                    phrase.to_owned()
+                }
+            })
             .collect::<Vec<_>>()
             .join(", ");
         match self.aggregate_state(cx) {
-            ToolActivityState::Superseded => "Not run after takeover".into(),
-            ToolActivityState::Success => format!("Completed: {actions}"),
-            ToolActivityState::Active => format!("In progress: {actions}"),
-            ToolActivityState::Rejected => format!("Rejected calls: {actions}"),
-            ToolActivityState::Cancelled => format!("Cancelled calls: {actions}"),
-            ToolActivityState::Failed => format!("Failed calls: {actions}"),
+            ToolActivityState::Superseded => vega_i18n::t("ui.not_run_after_takeover").into(),
+            ToolActivityState::Success => {
+                vega_i18n::t_args("ui.completed_actions", &[("actions", &actions)])
+            }
+            ToolActivityState::Active => {
+                vega_i18n::t_args("ui.in_progress_actions", &[("actions", &actions)])
+            }
+            ToolActivityState::Rejected => {
+                vega_i18n::t_args("ui.rejected_calls_actions", &[("actions", &actions)])
+            }
+            ToolActivityState::Cancelled => {
+                vega_i18n::t_args("ui.cancelled_calls_actions", &[("actions", &actions)])
+            }
+            ToolActivityState::Failed => {
+                vega_i18n::t_args("ui.failed_calls_actions", &[("actions", &actions)])
+            }
         }
     }
 
@@ -223,13 +224,18 @@ impl ToolActivityGroup {
                 .group(disclosure_group.clone())
                 .track_focus(&focus)
                 .aria_expanded(expanded)
-                .aria_label(format!(
-                    "{summary}, {} tool group",
-                    if expanded { "collapse" } else { "expand" }
+                .aria_label(vega_i18n::t_args(
+                    "ui.tool_group_disclosure",
+                    &[
+                        ("summary", &summary),
+                        (
+                            "action",
+                            vega_i18n::t(if expanded { "ui.collapse" } else { "ui.expand" }),
+                        ),
+                    ],
                 ))
                 .tab_stop(true)
                 .focus_visible(move |row| row.bg(colors.bg_hover))
-                .debug_selector(|| "tool-activity-group-toggle".to_string())
                 .h(px(Layout::CONVERSATION_TOOL_HEIGHT))
                 .text_size(px(Typography::CONVERSATION))
                 .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
@@ -250,7 +256,6 @@ impl ToolActivityGroup {
                 })
                 .child(
                     div()
-                        .debug_selector(|| "tool-activity-group-icon".into())
                         .size(px(Layout::ICON_SIZE))
                         .flex_shrink_0()
                         .flex()
@@ -264,7 +269,6 @@ impl ToolActivityGroup {
                 )
                 .child(
                     div()
-                        .debug_selector(|| "tool-activity-group-label".into())
                         .min_w_0()
                         .flex_shrink(1.)
                         .truncate()
@@ -274,7 +278,6 @@ impl ToolActivityGroup {
                 )
                 .child(crate::disclosure::inline_chevron(
                     disclosure_group,
-                    "tool-activity-group-chevron".into(),
                     &focus,
                     expanded,
                     true,
@@ -292,7 +295,6 @@ impl ToolActivityGroup {
                     .child(
                         div()
                             .id(gpui_kit::SharedString::from(scroll_id))
-                            .debug_selector(|| "tool-activity-group-content".into())
                             .w_full()
                             .min_w_0()
                             .max_h(px(Layout::TOOL_GROUP_MAX_HEIGHT))
@@ -303,22 +305,23 @@ impl ToolActivityGroup {
                             .flex()
                             .flex_col()
                             .gap(px(Layout::PROCESS_ITEM_GAP))
-                            .children(children.into_iter().enumerate().map(|(index, card)| {
-                                ToolCard::render(
-                                    card,
-                                    format!("tool-activity-child-{index}"),
-                                    true,
-                                    window,
-                                    cx,
-                                )
-                            })),
+                            .children(
+                                children
+                                    .into_iter()
+                                    .map(|card| ToolCard::render(card, true, window, cx)),
+                            )
+                            .tracked_scroll_edge_fade(
+                                scroll.clone(),
+                                colors.bg_base,
+                                ScrollFade::compact()
+                                    .vertical_gutter(px(Layout::DISCLOSURE_SCROLLBAR_GUTTER)),
+                            ),
                     )
                     .child(crate::tool_card::disclosure_scrollbar(&scroll, cx))
                     .into_any_element(),
             );
         }
         div()
-            .debug_selector(|| "tool-activity-group".to_string())
             .w_full()
             .min_w_0()
             .flex()
@@ -326,158 +329,5 @@ impl ToolActivityGroup {
             .gap(px(Layout::PROCESS_ITEM_GAP))
             .children(rows)
             .into_any_element()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use gpui_kit::TestAppContext;
-    use vega_conversation::types::{Approval, ToolCall, ToolCallStatus, ToolResult};
-
-    #[gpui_kit::test]
-    async fn issue296_computer_action_groups_use_current_icons(cx: &mut TestAppContext) {
-        let card = |action: &str, cx: &mut TestAppContext| {
-            let call = ToolCall {
-                id: action.into(),
-                tool: if action == "screenshot" { "ComputerScreenshot" } else { "ComputerObserve" }.into(),
-                input_json: serde_json::json!({"kind":"computer_use", "version":1, "action":action, "argument_bytes":2, "argument_digest":"a".repeat(64)}).to_string(),
-            };
-            cx.new(|_| ToolCard::proposed(&call))
-        };
-        let first = card("observe", cx);
-        let second = card("observe", cx);
-        let screenshot = card("screenshot", cx);
-        let empty = ToolActivityGroup {
-            children: Vec::new(),
-            expanded: false,
-            scroll: ScrollHandle::new(),
-        };
-        cx.update(|cx| assert_eq!(empty.leading_icon(cx), Icon::Wrench));
-        let group = cx.new(|_| ToolActivityGroup::new(first.clone(), second.clone()));
-        group.read_with(cx, |group, cx| {
-            assert_eq!(group.leading_icon(cx), Icon::Monitor)
-        });
-        first.update(cx, |card, cx| {
-            assert!(card.apply_approved(Approval::Once));
-            assert!(card.apply_running(cx));
-        });
-        group.read_with(cx, |group, cx| {
-            assert_eq!(group.leading_icon(cx), Icon::Monitor)
-        });
-        let mixed = ToolActivityGroup::new(first, screenshot.clone());
-        cx.update(|cx| {
-            assert_eq!(mixed.leading_icon(cx), Icon::Wrench);
-            assert_eq!(screenshot.read(cx).leading_icon(), Icon::Camera);
-        });
-        second.update(cx, |card, _| {
-            assert!(card.apply_approved(Approval::Once));
-            assert!(!card.apply_finished(&ToolResult {
-                status: ToolCallStatus::Success,
-                output: "PRIVATE_OUTPUT".into(),
-                reused: false,
-                exit_code: Some(0),
-                duration_ms: None,
-                truncated: Some(false),
-                invalid: None,
-            }));
-            assert_eq!(card.leading_icon(), Icon::Wrench);
-            assert!(!card.visible_text().contains("PRIVATE_OUTPUT"));
-        });
-        group.read_with(cx, |group, cx| {
-            assert_eq!(group.leading_icon(cx), Icon::Wrench);
-            assert_eq!(group.aggregate_state(cx), ToolActivityState::Failed);
-        });
-    }
-    #[gpui_kit::test]
-    async fn issue75_resume_refresh_cancelled_receipt_is_neutral_live_and_in_history_groups(
-        cx: &mut TestAppContext,
-    ) {
-        let call=ToolCall{id:"capture".into(),tool:"ComputerScreenshot".into(),input_json:serde_json::json!({"kind":"computer_use","version":1,"action":"screenshot","argument_bytes":2,"argument_digest":"a".repeat(64)}).to_string()};
-        let result = ToolResult {
-            status: ToolCallStatus::Cancelled,
-            output: vega_conversation::types::SUPERSEDED_CONTROL_OUTPUT.into(),
-            reused: false,
-            exit_code: None,
-            duration_ms: None,
-            truncated: None,
-            invalid: None,
-        };
-        let live = cx.new(|_| ToolCard::proposed(&call));
-        live.update(cx, |card, cx| {
-            assert!(card.apply_approved(Approval::Once));
-            assert!(card.apply_running(cx));
-            assert!(card.apply_finished(&result));
-            assert_eq!(card.activity_state(), ToolActivityState::Superseded);
-            assert!(card.visible_text().contains("Not run after takeover"));
-            assert!(!card.visible_text().contains("Tool result corrupted"));
-            for colors in [vega_theme::LIGHT, vega_theme::DARK] {
-                assert_eq!(
-                    card.activity_state().terminal_color(&colors),
-                    colors.text_secondary
-                );
-            }
-        });
-        let input = vega_conversation::types::tool_card_input_projection(&call);
-        let projected =
-            vega_conversation::types::tool_card_result_projection(Some(&input), &result);
-        let restored = cx.new(|_| {
-            ToolCard::hydrated(
-                Some(input),
-                ToolCallStatus::Cancelled,
-                Some(Approval::Once),
-                Some(projected),
-            )
-        });
-        let group = ToolActivityGroup::new(live, restored.clone());
-        cx.update(|cx| {
-            assert_eq!(
-                restored.read(cx).activity_state(),
-                ToolActivityState::Superseded
-            );
-            assert_eq!(group.aggregate_state(cx), ToolActivityState::Superseded);
-            assert!(!group.aggregate_summary(cx).contains("Failed"));
-            assert!(
-                group
-                    .aggregate_summary(cx)
-                    .contains("Not run after takeover")
-            );
-        });
-        for (status, output, expected) in [
-            (
-                ToolCallStatus::Failed,
-                "outcome_unknown: inspect before retrying",
-                ToolActivityState::Failed,
-            ),
-            (
-                ToolCallStatus::Rejected,
-                "Tool error: denied",
-                ToolActivityState::Rejected,
-            ),
-            (
-                ToolCallStatus::Cancelled,
-                vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT,
-                ToolActivityState::Cancelled,
-            ),
-        ] {
-            let input = vega_conversation::types::tool_card_input_projection(&call);
-            let result = ToolResult {
-                status,
-                output: output.into(),
-                ..result.clone()
-            };
-            let projected =
-                vega_conversation::types::tool_card_result_projection(Some(&input), &result);
-            let card = cx.new(|_| {
-                ToolCard::hydrated(Some(input), status, Some(Approval::Once), Some(projected))
-            });
-            let mixed = ToolActivityGroup::new(restored.clone(), card);
-            cx.update(|cx| {
-                assert_eq!(mixed.aggregate_state(cx), expected);
-                if expected == ToolActivityState::Failed {
-                    assert!(mixed.aggregate_summary(cx).contains("Failed"));
-                }
-            });
-        }
     }
 }

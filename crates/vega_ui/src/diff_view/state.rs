@@ -17,27 +17,14 @@ impl DiffView {
             rows: Vec::new(),
             hunk_indexes: Vec::new(),
             current_hunk: None,
+            rendered_language: vega_i18n::language(),
             focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
         }
     }
 
-    pub fn thread_id(&self) -> &str {
-        &self.thread_id
-    }
-
-    pub fn project_id(&self) -> &str {
-        &self.project_id
-    }
-
     pub fn generation(&self) -> Option<u64> {
         self.snapshot.as_ref().map(|snapshot| snapshot.generation)
-    }
-
-    pub fn snapshot_stats(&self) -> Option<WorkspaceStats> {
-        self.snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.stats.clone())
     }
 
     pub fn layout(&self) -> DiffLayout {
@@ -50,18 +37,6 @@ impl DiffView {
 
     pub fn row_count(&self) -> usize {
         self.rows.len()
-    }
-
-    pub fn is_refreshing(&self) -> bool {
-        self.refreshing
-    }
-
-    pub fn is_refresh_progress_visible(&self) -> bool {
-        self.show_refresh_progress
-    }
-
-    pub fn refresh_error(&self) -> Option<GitWorkspaceErrorCode> {
-        self.refresh_error
     }
 
     pub fn projection_error(&self) -> Option<GitWorkspaceErrorCode> {
@@ -270,10 +245,8 @@ impl DiffView {
             if let Some((error_file, code)) = self.projection_error
                 && error_file == file.id
             {
-                self.rows.push(PreparedRow::ProjectionError {
-                    id: file.id,
-                    text: error_label(code).to_owned(),
-                });
+                self.rows
+                    .push(PreparedRow::ProjectionError { id: file.id, code });
                 continue;
             }
             let Some(projection) = self
@@ -282,7 +255,7 @@ impl DiffView {
                 .filter(|item| item.file_id == file.id)
             else {
                 self.rows.push(PreparedRow::Message {
-                    text: "Loading diff…".to_owned(),
+                    key: "ui.loading_diff",
                     danger: false,
                 });
                 continue;

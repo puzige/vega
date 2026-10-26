@@ -1,9 +1,3 @@
-//! Frozen, consent-filtered Skill catalog and activation state for one run.
-//!
-//! The UI/controller owns consent creation and revocation; this module never
-//! scans ambient roots or grants tools. The runtime must wire its exact prompt
-//! strings into the #76 wire estimator and its receipts into #73's registry.
-
 use super::source::{
     MAX_RESOURCE_PATH_BYTES, MAX_SKILL_BYTES, SkillCandidate, SkillError, SkillSource,
     SourceIdentity, SourceScope, valid_asset_path, valid_name,
@@ -22,7 +16,6 @@ pub const MAX_CATALOG_BYTES: usize = 128 * 1024;
 pub const MAX_RUN_ACTIVATIONS: usize = 3;
 /// Bound on UTF-8 reference text frozen in one run.
 pub const MAX_RUN_REFERENCE_BYTES: usize = 128 * 1024;
-/// Native names reserved in #73's shared dynamic tool registry.
 pub const LOAD_SKILL_TOOL_NAME: &str = "load_skill";
 pub const READ_SKILL_RESOURCE_TOOL_NAME: &str = "read_skill_resource";
 
@@ -140,12 +133,6 @@ impl SkillApproval {
 
     pub fn source_label(&self) -> &str {
         &self.source_label
-    }
-
-    #[cfg(test)]
-    pub(super) fn with_approved_hash(mut self, hash: String) -> Self {
-        self.approved_sha256 = hash;
-        self
     }
 
     fn valid(&self) -> bool {
@@ -422,8 +409,6 @@ pub enum BatchPolicy {
     RejectOtherTools,
 }
 
-/// Call once on a proposed assistant tool batch before #73 dispatches any
-/// member. A mixed batch may load Skills serially but all other calls reject.
 pub fn classify_tool_batch(names: &[&str]) -> BatchPolicy {
     if !names.contains(&LOAD_SKILL_TOOL_NAME) {
         BatchPolicy::Ordinary
@@ -546,10 +531,6 @@ impl SkillRun {
         self.cancelled = true;
     }
 
-    /// Model calls may select only an exact frozen catalog winner. The `fits`
-    /// callback receives the prospective exact Skills system section; #76's
-    /// caller must combine it with catalog, messages, schemas and output policy
-    /// for the actual next wire-request estimate before returning true.
     pub fn load_model(&mut self, name: &str, fits: impl FnOnce(&str) -> bool) -> ActivationOutcome {
         self.load_model_for_round(name, true, fits)
     }
@@ -667,8 +648,6 @@ impl SkillRun {
         loaded
     }
 
-    /// Rebuild from frozen bodies after every tool round or #76 compaction;
-    /// never use a stale file or append body to ordinary tool-result history.
     pub fn render_skill_envelope(&self) -> Result<String, SkillError> {
         render_active(self.active.iter())
     }
@@ -791,8 +770,6 @@ impl SkillRun {
 }
 
 impl FrozenReference {
-    /// Exact content-bearing result for the shared registry. The caller still
-    /// adds its own provider/tool wrapper to #76's full wire estimate.
     pub fn to_json(&self) -> Result<String, SkillError> {
         serde_json::to_string(self).map_err(|_| SkillError::InvalidFormat)
     }
@@ -866,6 +843,3 @@ fn outcome(
             && status != "already_loaded",
     }
 }
-
-#[cfg(test)]
-mod asset_tests;

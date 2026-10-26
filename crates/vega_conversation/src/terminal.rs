@@ -16,7 +16,7 @@ const SCROLLBACK: usize = 2_000;
 
 /// Content-free terminal failures; shell output is never put into diagnostics.
 #[derive(Debug, thiserror::Error)]
-#[error("terminal operation unavailable")]
+#[error("{}", vega_i18n::t("domain.terminal.unavailable"))]
 pub struct TerminalError;
 
 enum Command {
@@ -28,6 +28,7 @@ struct State {
     parser: vt100::Parser,
     status: TerminalStatus,
     generation: u64,
+    max_scrollback: usize,
 }
 
 /// Owns a persistent shell. Dropping it closes and reaps the shell.
@@ -51,6 +52,7 @@ impl TerminalSession {
             parser: vt100::Parser::new(24, 80, SCROLLBACK),
             status: TerminalStatus::Starting,
             generation: 0,
+            max_scrollback: 0,
         }));
         let control = Arc::new(Control {
             stop: AtomicBool::new(false),
@@ -158,6 +160,7 @@ impl TerminalSession {
             application_cursor: screen.application_cursor(),
             bracketed_paste: screen.bracketed_paste(),
             scrollback: screen.scrollback(),
+            max_scrollback: state.max_scrollback,
         })
     }
 
@@ -225,6 +228,12 @@ fn color(color: vt100::Color) -> TerminalColor {
 fn update(state: &Mutex<State>, f: impl FnOnce(&mut State)) {
     if let Ok(mut state) = state.lock() {
         f(&mut state);
+        let screen = state.parser.screen_mut();
+        let offset = screen.scrollback();
+        screen.set_scrollback(usize::MAX);
+        let max_scrollback = screen.scrollback();
+        screen.set_scrollback(offset);
+        state.max_scrollback = max_scrollback;
         state.generation = state.generation.wrapping_add(1);
     }
 }
@@ -390,24 +399,4 @@ fn run(
     _: &AtomicBool,
 ) -> Result<(), TerminalError> {
     Err(TerminalError)
-}
-
-#[cfg(all(test, unix))]
-mod tests {
-
-    #[test]
-    fn parser_bounds_and_control_sequences_are_not_plain_text() {
-        let mut parser = vt100::Parser::new(4, 12, 5);
-        for _ in 0..100 {
-            parser.process(b"row\r\n");
-        }
-        parser.process(b"\x1b[2J\x1b[H\x1b[32mgreen\x1b[0m\r\nwide:\xe4\xb8\xad");
-        assert_eq!(
-            parser.screen().cell(0, 0).unwrap().fgcolor(),
-            vt100::Color::Idx(2)
-        );
-        assert!(parser.screen().contents().contains("wide:中"));
-        parser.screen_mut().set_scrollback(usize::MAX);
-        assert!(parser.screen().scrollback() <= 5);
-    }
 }

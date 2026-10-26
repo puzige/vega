@@ -1,6 +1,5 @@
 use super::*;
 
-/// Poll interval for the model-selection persistence worker (R1).
 pub(crate) const MODEL_SELECTION_POLL: std::time::Duration = std::time::Duration::from_millis(4);
 
 type ReasoningAuthority = (
@@ -9,14 +8,12 @@ type ReasoningAuthority = (
 );
 type ModelCatalogLoadResult = Result<
     (
-        Vec<String>,
+        Vec<ModelOption>,
         Vec<ReasoningProfileProjection>,
         Option<ReasoningSettingsErrorCode>,
         Option<ReasoningAuthority>,
-        // R69 R3: the config's `defaults` travel with the catalog so the home
-        // draft takes its model/permission from the same `config::load()`
-        // source `create_task` used, without any config IO during render.
         NewTaskDefaults,
+        Option<vega_store::config::AppConfig>,
     ),
     (),
 >;
@@ -52,6 +49,14 @@ fn finish_thread_model_selection(
         return;
     }
 
+    let replay_model_changed = outcome
+        .as_ref()
+        .is_ok_and(|thread| stream.read(cx).displayed_model() != thread.model);
+    if replay_model_changed
+        && let Some(sessions) = cx.try_global::<crate::app_agent::AppReplaySessions>()
+    {
+        sessions.0.invalidate_thread(thread_id);
+    }
     let settings_open = cx.global::<SettingsOpen>().0;
     let current_route = !settings_open && window.owns_stream_request(stream, thread_id, cx);
     if current_route {
@@ -83,8 +88,7 @@ fn finish_thread_model_selection(
                     return;
                 };
                 cx.set_global(OpenedThread(Some(current.clone())));
-                // R69 R5: the draft is the row materialization will INSERT, so
-                // an accepted in-memory model change must land there too.
+
                 window.mirror_draft(&current);
                 stream.update(cx, |stream, cx| {
                     stream.apply_thread_model_acknowledged(
@@ -168,11 +172,6 @@ impl VegaWindow {
         finish_thread_model_selection(self, &stream, &thread_id, lease, request_id, outcome, cx);
     }
 
-    /// R69 R5: mirrors an accepted in-memory thread projection onto the
-    /// window's draft. The draft is the value materialization INSERTs (R8), so
-    /// every draft-route field update must land here as well as on
-    /// `OpenedThread` — otherwise the model/mode/permission the user picked
-    /// would be lost at first submit. A durable route is a no-op.
     pub(crate) fn mirror_draft(&mut self, thread: &Thread) {
         if self
             .draft
@@ -194,9 +193,6 @@ impl VegaWindow {
                 .is_some_and(|v| v.0)
     }
 
-    /// Cmd+N entry point: navigates to the home draft route (R69 R14). The
-    /// sidebar [新建任务] button and the command palette share this handler.
-    /// No durable row is written here: the draft materializes on first submit.
     pub(crate) fn open_new_thread(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar.update(cx, Sidebar::create_thread);
     }
@@ -223,18 +219,6 @@ impl VegaWindow {
         cx.notify();
     }
 
-    /// R69 R1/R2/R4: resolves the thread the content column renders.
-    ///
-    /// A durable route resolves to itself. The home route (and the window's
-    /// own draft route) resolves to the single lazy draft, which is built on
-    /// first use, reused on every re-entry, and re-bound to the current
-    /// [`SelectedProject`] **without changing its id** — so the composer draft
-    /// text keyed by that id survives a project switch (R4).
-    ///
-    /// Defaults come from the already-loaded [`NewTaskDefaults`] global, so
-    /// this performs no config IO during render (R3 / A2-14). The
-    /// `OpenedThread` projection is written only when it actually changes, so
-    /// a steady draft route does not notify observers on every frame.
     pub(crate) fn resolve_route_thread(&mut self, cx: &mut Context<Self>) -> Thread {
         let opened = cx
             .try_global::<OpenedThread>()
@@ -292,47 +276,6 @@ impl VegaWindow {
             .is_some_and(|draft| draft.id == thread_id)
     }
 
-    /// R69 R8-R11: persists the draft under **its own id** exactly once.
-    ///
-    /// The route identity is untouched (`OpenedThread.0.id` and the
-    /// `stream_view` cache key are the same before and after), so the cached
-    /// `ConversationStream` — composer text and focus included — is never
-    /// rebuilt (R9). On failure the draft stays installed so the caller can
-    /// preserve the text and surface the error (R10); on success the draft is
-    /// released, which is what makes a second submit a no-op (R11).
-    ///
-    /// R69 M4: the row is stamped at the submit instant inside the conversation
-    /// layer. `OpenedThread` is deliberately **not** rewritten here: the only
-    /// reader of `created_at` is the sidebar's "Created" sort, which projects
-    /// durable rows, and the run's own completion re-reads the authoritative
-    /// thread anyway (`reload_thread_state`). Writing the global mid-submit
-    /// would fire the `OpenedThread` observer and flip the next render onto the
-    /// durable path (starting the branch/artifact controllers) while the run is
-    /// still starting — a side effect this route did not have before.
-    pub(crate) fn materialize_draft(
-        &mut self,
-        thread: &Thread,
-        cx: &mut Context<Self>,
-    ) -> Result<(), String> {
-        match &cx.global::<VegaStore>().0 {
-            Ok(store) => vega_conversation::threads::materialize_draft(store, thread)
-                .map_err(|error| error.to_string())?,
-            Err(error) => return Err(error.clone()),
-        };
-        self.draft = None;
-        Ok(())
-    }
-
-    /// R1 (A2-14/S8-T47): the in-session model selection. The view emits the
-    /// intent only; this handler installs the existing trusted-action
-    /// single-flight gate first, then persists the durable `threads.model`
-    /// through the conversation service on a worker thread and acknowledges
-    /// with the re-read authoritative thread. The app-level
-    /// config.defaults.model (Settings 的"新任务默认模型") is NOT touched.
-    /// #60 R1: not-uniquely-configured models are rejected before any
-    /// write; an active run or another trusted action refuses the change.
-    /// Every outcome (ack/fail/worker-lost) releases exactly the owner token
-    /// echoed by the request.
     pub(crate) fn apply_thread_model_selection(
         &mut self,
         stream: Entity<ConversationStream>,
@@ -360,10 +303,7 @@ impl VegaWindow {
             });
             return;
         }
-        // Existing fail-closed gates: an active run or any in-flight trusted
-        // action must not race a run-configuration change; the same applies
-        // while Settings route is open or an approved plan has not started
-        // (pending plan/review/permission per R1 constraint 5).
+
         if cx.global::<SettingsOpen>().0
             || stream.read(cx).model_selection_blocked(cx)
             || self
@@ -377,14 +317,7 @@ impl VegaWindow {
             });
             return;
         }
-        // #60 R1: optional price metadata does not decide model availability.
-        // Unique configured provider gate: the model must resolve to exactly
-        // one configured provider (same rule the real submit path applies).
-        // This is a file read, so it happens in the bounded worker below,
-        // AFTER the busy owner is held — never on the UI thread.
-        // Single-flight owner BEFORE any async work: submit, approved-plan
-        // starts and conflicting trusted actions are blocked until the
-        // exact owner token is released on every exit path.
+
         let Some(lease) =
             self.trusted_actions
                 .acquire(TrustedActionKind::ModelSelection, 0, request.request_id)
@@ -406,12 +339,7 @@ impl VegaWindow {
             });
             return;
         }
-        // R69 R5: on the draft route the same gates and the same worker run
-        // (provider uniqueness stays a worker-side config read), but the
-        // durable `threads.model` write is replaced by an in-memory
-        // projection. The draft carries the new model into the INSERT that
-        // first submit performs (R8), so nothing is lost and no row is
-        // written before the user sends anything.
+
         let draft = self.draft_for_route(&request.thread_id);
         let config_path = self.composer_config_path();
         let database_path = if draft.is_some() {
@@ -443,29 +371,16 @@ impl VegaWindow {
         }
         let worker_request = request.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
-        #[cfg(test)]
-        let worker_gate = self.model_selection_worker_gate.take();
         let spawned = std::thread::Builder::new()
             .name("vega-thread-model".into())
             .spawn(move || {
-                #[cfg(test)]
-                if let Some(gate) = worker_gate {
-                    gate.wait();
-                }
-                // R1 constraints 3+7: provider uniqueness and the durable
-                // SQLite write both run in this bounded worker on owned
-                // profile paths (config file + store file); no Keychain or
-                // provider/network access ever happens on this path.
                 let outcome = (|| {
                     let config = vega_store::config::read_from(&config_path)
                         .map_err(|error| error.to_string())?;
                     if unique_provider_for_model(&config, &worker_request.model).is_none() {
                         return Err("model is not uniquely configured".to_string());
                     }
-                    // R69: the draft route stops after validation and returns
-                    // its own thread with the new model. The caller projects it
-                    // into `OpenedThread` and the window's draft; the row is
-                    // written by first submit.
+
                     if let Some(draft) = draft {
                         let mut next = draft;
                         next.model = worker_request.model;
@@ -543,24 +458,23 @@ impl VegaWindow {
         }
     }
 
-    /// The composer config file path from the current environment (R1): the
-    /// worker reads/validates the provider config from this owned file
-    /// instead of any synchronous global read on the UI thread. Production
-    /// uses the resolved config root; the E2E fixture hands its owned temp
-    /// config through the existing cfg(test) seam pattern (no env changes).
     pub(crate) fn composer_config_path(&self) -> Option<std::path::PathBuf> {
-        #[cfg(test)]
-        if let Some(path) = &self.model_selection_config_override {
-            return Some(path.clone());
-        }
         vega_store::paths::config_dir().map(|dir| dir.join("config.toml"))
     }
 
-    /// Refreshes the app model catalog after Settings has durably saved a
-    /// config mutation. The worker rereads the file and re-applies the
-    /// pricing/uniqueness projection; it never changes the current thread's
-    /// durable model or emits an R1 acknowledgement.
-    pub(crate) fn on_settings_saved(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn on_settings_saved(
+        &mut self,
+        replay_identity_changed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.composer_prediction_config_generation =
+            self.composer_prediction_config_generation.wrapping_add(1);
+        self.cancel_composer_prediction(cx);
+        if replay_identity_changed
+            && let Some(sessions) = cx.try_global::<crate::app_agent::AppReplaySessions>()
+        {
+            sessions.0.invalidate_all();
+        }
         self.load_running_message_default(cx);
         if self.reasoning_save_pending.is_some() {
             // The reasoning worker owns the independent authority until its
@@ -585,6 +499,7 @@ impl VegaWindow {
             } else {
                 self.reasoning_settings_projection()
             };
+            self.request_model_capability_reload(settings.clone(), cx);
             settings.update(cx, |settings, cx| {
                 settings.apply_reasoning_projection(projection, cx)
             });
@@ -629,10 +544,7 @@ impl VegaWindow {
         }
     }
 
-    /// #60 R1: configured, uniquely resolvable models remain available even
-    /// without accounting metadata. Config IO stays in the worker below.
-    /// The existing method name is retained for compatibility with callers.
-    pub(crate) fn model_options_for_pricing(&self) -> Vec<String> {
+    pub(crate) fn model_options_for_pricing(&self) -> Vec<ModelOption> {
         self.configured_models.clone().unwrap_or_default()
     }
 
@@ -654,22 +566,17 @@ impl VegaWindow {
         self.model_catalog_loading = true;
         let generation = self.model_catalog_generation;
         let (sender, receiver) = mpsc::sync_channel(1);
-        #[cfg(test)]
-        let worker_gate = self.model_catalog_worker_gate.take();
         let worker = std::thread::Builder::new()
             .name("vega-model-catalog".into())
             .spawn(move || {
-                #[cfg(test)]
-                if let Some(gate) = worker_gate {
-                    gate.wait();
-                }
                 let result = vega_store::config::read_from(&config_path)
                     .map(|config| {
-                        let mut models = Vec::new();
+                        let mut models: Vec<ModelOption> = Vec::new();
                         let mut reasoning_profiles = Vec::new();
                         let mut reasoning_error = None;
                         let mut reasoning_authority = None;
-                        let reasoning_path = config_path.with_file_name("reasoning.toml");
+                        let reasoning_path =
+                            config_path.with_file_name(vega_store::reasoning::REASONING_FILE_NAME);
                         let reasoning =
                             match super::reasoning::read_reasoning_authority(&reasoning_path) {
                                 Ok((reasoning, snapshot)) => {
@@ -682,20 +589,31 @@ impl VegaWindow {
                                     None
                                 }
                             };
+                        let capabilities =
+                            vega_store::model_capabilities::read_from(&config_path.with_file_name(
+                                vega_store::model_capabilities::MODEL_CAPABILITY_FILE_NAME,
+                            ));
+                        if capabilities.is_err() {
+                            reasoning_error = Some(ReasoningSettingsErrorCode::Invalid);
+                            reasoning_authority = None;
+                        }
                         for provider in config.providers.iter().filter(|provider| provider.enabled)
                         {
                             for model in &provider.models {
-                                if !models.contains(model)
+                                if !models.iter().any(|option| option.model == model.as_str())
                                     && unique_provider_for_model(&config, model).is_some()
                                 {
-                                    models.push(model.clone());
+                                    models.push(ModelOption {
+                                        provider: provider.name.clone(),
+                                        model: model.clone(),
+                                    });
                                     let profile = reasoning.as_ref().and_then(|reasoning| {
                                         reasoning
                                             .profile(&provider.name, model)
                                             .map(ReasoningProfileProjection::from_store)
                                     });
                                     let profile = match profile {
-                                        Some(Ok(profile)) => profile,
+                                        Some(Ok(profile)) => Some(profile),
                                         Some(Err(_)) => {
                                             reasoning_error =
                                                 Some(ReasoningSettingsErrorCode::Invalid);
@@ -707,15 +625,33 @@ impl VegaWindow {
                                             // could silently fall back to the
                                             // provider default.
                                             reasoning_authority = None;
+                                            Some(ReasoningProfileProjection::unknown(
+                                                provider.name.clone(),
+                                                model.clone(),
+                                            ))
+                                        }
+                                        None => None,
+                                    };
+                                    let profile =
+                                        crate::reasoning_capabilities::resolve_reasoning_profile(
+                                            &provider.name,
+                                            provider.api,
+                                            &provider.base_url,
+                                            model,
+                                            profile,
+                                            &capabilities.as_ref().cloned().unwrap_or_default(),
+                                        );
+                                    let profile = match profile {
+                                        Ok(profile) => profile,
+                                        Err(_) => {
+                                            reasoning_error =
+                                                Some(ReasoningSettingsErrorCode::Invalid);
+                                            reasoning_authority = None;
                                             ReasoningProfileProjection::unknown(
                                                 provider.name.clone(),
                                                 model.clone(),
                                             )
                                         }
-                                        None => ReasoningProfileProjection::unknown(
-                                            provider.name.clone(),
-                                            model.clone(),
-                                        ),
                                     };
                                     reasoning_profiles.push(profile);
                                 }
@@ -730,6 +666,7 @@ impl VegaWindow {
                                 model: config.defaults.model.clone(),
                                 permission_mode: config.defaults.permission_mode.clone(),
                             },
+                            Some(config),
                         )
                     })
                     .map_err(|_| ());
@@ -772,25 +709,40 @@ impl VegaWindow {
             return;
         }
         self.model_catalog_loading = false;
-        let (models, reasoning_profiles, reasoning_error, reasoning_authority, defaults) =
-            match result {
-                Ok(result) => result,
-                Err(()) => (
-                    Vec::new(),
-                    Vec::new(),
-                    Some(ReasoningSettingsErrorCode::Io),
-                    None,
-                    // A malformed/unreadable config keeps the missing-config
-                    // template values, which is exactly what `create_task`'s
-                    // error path would have produced.
-                    NewTaskDefaults::default(),
-                ),
-            };
+        let (
+            models,
+            reasoning_profiles,
+            reasoning_error,
+            reasoning_authority,
+            defaults,
+            loaded_config,
+        ) = match result {
+            Ok(result) => result,
+            Err(()) => (
+                Vec::new(),
+                Vec::new(),
+                Some(ReasoningSettingsErrorCode::Io),
+                None,
+                NewTaskDefaults::default(),
+                None,
+            ),
+        };
+        if let Some(config) = &loaded_config
+            && self.loaded_replay_config.as_ref().is_some_and(|previous| {
+                previous.providers != config.providers
+                    || previous.credential_bindings != config.credential_bindings
+                    || previous.agent != config.agent
+                    || previous.defaults != config.defaults
+            })
+            && let Some(sessions) = cx.try_global::<crate::app_agent::AppReplaySessions>()
+        {
+            sessions.0.invalidate_all();
+        }
+        if loaded_config.is_some() {
+            self.loaded_replay_config = loaded_config;
+        }
         self.configured_models = Some(models);
-        // R69 R3: the draft's defaults follow the same config source as the
-        // eager create path. Only a route that has not started yet takes the
-        // new values; an existing draft keeps whatever the user already saw
-        // and can edit, so a catalog refresh never rewrites a live draft.
+
         let defaults_changed = cx.try_global::<NewTaskDefaults>() != Some(&defaults);
         if defaults_changed {
             cx.set_global(defaults.clone());
@@ -967,6 +919,7 @@ impl VegaWindow {
                 }
                 Self::apply_thread_and_plans(&stream, refresh.thread, refresh.plans, cx);
                 if let Some(instruction_message_id) = approved_instruction_id {
+                    self.sidebar.update(cx, Sidebar::reload_sessions);
                     self.start_agent_run(
                         stream,
                         &request.thread_id,

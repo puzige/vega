@@ -1,5 +1,11 @@
-use super::super::{inline_code, selection::SelectionDocumentBuilder};
+use super::super::{
+    code_viewport::{CodeScrollHandle, CodeViewport},
+    inline_code,
+    links::{LinkRange, fragment_link_ranges, link_ranges},
+    selection::SelectionDocumentBuilder,
+};
 use super::*;
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use gpui_kit::{
     AvailableSpace, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, LayoutId,
     Pixels, Point, Size, TextAlign, TextStyleRefinement, WindowTextSystem, point, size,
@@ -32,8 +38,7 @@ pub(super) struct ThinkingBody {
     pending_follow: Option<bool>,
     prepared_epoch: u64,
     pub(super) painted: Rc<Cell<bool>>,
-    rendered: Rc<Cell<usize>>,
-    horizontal_scrolls: Rc<RefCell<std::collections::HashMap<usize, ScrollHandle>>>,
+    horizontal_scrolls: Rc<RefCell<std::collections::HashMap<usize, CodeScrollHandle>>>,
 }
 
 impl ThinkingBody {
@@ -46,7 +51,6 @@ impl ThinkingBody {
 
     pub(super) fn evict(&mut self) {
         self.replace_source();
-        self.rendered.set(0);
         self.painted.set(false);
     }
 
@@ -257,7 +261,6 @@ impl ThinkingBlock {
         let colors = theme(cx).colors;
         let selection_color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
         let prepared = self.body.prepared.clone();
-        let rendered = self.body.rendered.clone();
         let style = PreparationStyle {
             width: px(0.),
             font: window.text_style().font(),
@@ -275,7 +278,6 @@ impl ThinkingBlock {
             let element = BodyElement {
                 prepared,
                 document: document.clone(),
-                rendered,
                 horizontal_scrolls: self.body.horizontal_scrolls.clone(),
             };
             document.wrap(element.into_any_element(), window, cx)
@@ -285,7 +287,6 @@ impl ThinkingBlock {
         let content = render_rows::selection_context_menu(
             div()
                 .id("thinking-content")
-                .debug_selector(|| "thinking-content".into())
                 .relative()
                 .max_h(px(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT))
                 .overflow_x_hidden()
@@ -300,9 +301,15 @@ impl ThinkingBlock {
                 .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
                 .text_color(colors.text_secondary)
                 .child(body)
+                .tracked_scroll_edge_fade(
+                    scroll.clone(),
+                    colors.bg_base,
+                    ScrollFade::compact().vertical_gutter(px(Layout::DISCLOSURE_SCROLLBAR_GUTTER)),
+                )
                 .into_any_element(),
             &self.source_copy,
             true,
+            self.message_actions_enabled,
         );
         VisibilityElement {
             content,
@@ -312,52 +319,6 @@ impl ThinkingBlock {
         }
         .into_any_element()
     }
-
-    #[cfg(test)]
-    pub(crate) fn test_body_preparing(&self) -> bool {
-        self.body.task.is_some()
-    }
-    #[cfg(test)]
-    pub(crate) fn test_body_fragment_count(&self) -> usize {
-        self.body.prepared.as_ref().map_or(0, |body| {
-            body.blocks.iter().map(|block| block.fragments.len()).sum()
-        })
-    }
-    #[cfg(test)]
-    pub(crate) fn test_body_rendered_count(&self) -> usize {
-        self.body.rendered.get()
-    }
-    #[cfg(test)]
-    pub(crate) fn test_body_revision(&self) -> u64 {
-        self.body.prepared_revision
-    }
-    #[cfg(test)]
-    pub(crate) fn test_horizontal_scroll(&self) -> Option<ScrollHandle> {
-        self.body
-            .horizontal_scrolls
-            .borrow()
-            .values()
-            .find(|scroll| scroll.max_offset().x > px(0.))
-            .cloned()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_prepared_text(&self) -> Option<Arc<str>> {
-        self.body.prepared.as_ref().map(|body| body.text.clone())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_replace_source(&mut self, source: &str, cx: &mut Context<Self>) {
-        self.text = source.into();
-        self.raw_window = window::SourceWindow::default();
-        self.source_identity = self.source_identity.wrapping_add(1);
-        self.thinking_has_content = source.chars().any(|ch| !ch.is_whitespace());
-        self.body.replace_source();
-        self.source_copy.replace_text(source);
-        self.source_revision = self.source_revision.wrapping_add(1);
-        self.prepare_body(cx);
-        cx.notify();
-    }
 }
 
 #[derive(Clone)]
@@ -366,6 +327,7 @@ struct PreparedFragment {
     logical_range: Range<usize>,
     bounds: Bounds<Pixels>,
     runs: Vec<TextRun>,
+    links: Vec<LinkRange>,
     font_size: Pixels,
     line_height: Pixels,
     line_width: Pixels,
@@ -399,6 +361,7 @@ struct PreparedBody {
     width: Pixels,
     height: Pixels,
     blocks: Arc<[PreparedBlock]>,
+    rails: Arc<[Decoration]>,
     horizontal_ranges: Arc<[(Range<usize>, usize)]>,
     colors: ThemeColors,
 }
@@ -420,13 +383,9 @@ impl PreparedBody {
             .iter()
             .chain(&model.pending_lines)
             .collect();
-        let lists: HashSet<_> = lines
-            .iter()
-            .filter(|line| line.kind == LineKind::ListItem)
-            .map(|line| line.block_id)
-            .collect();
         let mut content = String::new();
         let mut blocks = Vec::new();
+        let mut rails: Vec<((u64, usize), Decoration)> = Vec::new();
         let mut y = px(0.);
         let mut previous_text: Option<&StreamLine> = None;
         let mut index = 0;
@@ -436,14 +395,39 @@ impl PreparedBody {
             y += px(render_rows::markdown_block_gap(
                 previous,
                 line,
-                lists.contains(&line.block_id),
-                previous.is_some_and(|line| lists.contains(&line.block_id)),
+                line.in_list,
+                previous.is_some_and(|line| line.in_list),
             ));
-            let inset = if lists.contains(&line.block_id) && line.kind != LineKind::ListItem {
-                px((line.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT)
-            } else {
-                px(0.)
-            };
+            let quote_marker_depth = line.list_marker_quote_depth();
+            let list_inset =
+                if line.in_list && (!line.starts_list_item() || quote_marker_depth.is_some()) {
+                    px(line.list_content_inset())
+                } else {
+                    px(0.)
+                };
+            let gutter = px(2. + Layout::MARKDOWN_CODE_PADDING);
+            let mut inset = list_inset + gutter * line.quotes.len() as f32;
+            if (line.kind == LineKind::Code && line.starts_list_item())
+                || quote_marker_depth.is_some()
+            {
+                append_separator(&mut content, previous_text, line);
+                let mut marker = PreparedBlock {
+                    origin: point(
+                        gutter * quote_marker_depth.unwrap_or(line.quotes.len()) as f32,
+                        y,
+                    ),
+                    ..Default::default()
+                };
+                let width = layout_list_marker(&mut marker, &mut content, line, style, text_system);
+                marker.size = size(
+                    width,
+                    px(Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT),
+                );
+                if quote_marker_depth.is_none() {
+                    inset += width;
+                }
+                blocks.push(marker);
+            }
             let block_style = PreparationStyle {
                 width: (style.width - inset).max(px(1.)),
                 ..style.clone()
@@ -456,14 +440,16 @@ impl PreparedBody {
             if line.kind == LineKind::Code {
                 block.horizontal = true;
                 block.code = true;
+                let start = index;
                 let mut row_y = px(Layout::MARKDOWN_CODE_PADDING);
                 let mut width = style.width;
                 while index < lines.len()
-                    && lines[index].block_id == line.block_id
-                    && lines[index].kind == LineKind::Code
+                    && (index == start || lines[index].continues_code_block(line))
                 {
                     let row = lines[index];
-                    append_separator(&mut content, previous_text, row);
+                    if index != start || !line.starts_list_item() {
+                        append_separator(&mut content, previous_text, row);
+                    }
                     previous_text = Some(row);
                     let height = layout_text(
                         &mut block,
@@ -497,53 +483,12 @@ impl PreparedBody {
                         color: style.colors.border_subtle,
                     });
                 } else {
-                    append_separator(&mut content, previous_text, line);
-                    previous_text = Some(line);
-                    if line.kind == LineKind::ListItem {
-                        content.push_str(&"  ".repeat(line.depth));
-                        x = px(line.depth as f32 * Layout::MARKDOWN_LIST_INDENT);
-                        layout_text(
-                            &mut block,
-                            &mut content,
-                            &[StreamSpan {
-                                text: format!("{} ", line.marker),
-                                style: SpanStyle::Plain,
-                            }],
-                            LineKind::Paragraph,
-                            point(x, px(0.)),
-                            None,
-                            false,
-                            style,
-                            text_system,
-                        );
-                        block.source_ranges.pop();
-                        x += px(Layout::MARKDOWN_LIST_INDENT);
-                        if let Some(checked) = line.checked {
-                            let start = block.fragments.len();
-                            layout_text(
-                                &mut block,
-                                &mut content,
-                                &[StreamSpan {
-                                    text: if checked { "[x]" } else { "[ ]" }.into(),
-                                    style: SpanStyle::Plain,
-                                }],
-                                LineKind::Paragraph,
-                                point(x, px(0.)),
-                                None,
-                                false,
-                                style,
-                                text_system,
-                            );
-                            block.source_ranges.pop();
-                            x = block
-                                .fragments
-                                .get(start)
-                                .map_or(x, |fragment| fragment.bounds.right() + px(4.));
-                            content.push(' ');
-                        }
+                    if quote_marker_depth.is_none() {
+                        append_separator(&mut content, previous_text, line);
                     }
-                    if line.kind == LineKind::Quote {
-                        x += px(2. + Layout::MARKDOWN_CODE_PADDING);
+                    previous_text = Some(line);
+                    if line.starts_list_item() && quote_marker_depth.is_none() {
+                        x = layout_list_marker(&mut block, &mut content, line, style, text_system);
                     }
                     let height = layout_text(
                         &mut block,
@@ -557,12 +502,6 @@ impl PreparedBody {
                         text_system,
                     );
                     block.size = size(style.width, height);
-                    if line.kind == LineKind::Quote {
-                        block.decorations.push(Decoration {
-                            bounds: Bounds::new(point(px(0.), px(0.)), size(px(2.), height)),
-                            color: style.colors.border_subtle,
-                        });
-                    }
                 }
                 index += 1;
             }
@@ -574,6 +513,28 @@ impl PreparedBody {
                     .then(left.range.start.cmp(&right.range.start))
             });
             y += block.size.height;
+            for (depth, owner) in line.quotes.iter().enumerate() {
+                if let Some((_, rail)) = rails
+                    .iter_mut()
+                    .find(|(identity, _)| *identity == owner.identity)
+                {
+                    rail.bounds.size.height = y - rail.bounds.top();
+                } else {
+                    rails.push((
+                        owner.identity,
+                        Decoration {
+                            bounds: Bounds::new(
+                                point(
+                                    px(owner.list_inset()) + gutter * depth as f32,
+                                    block.origin.y,
+                                ),
+                                size(px(2.), block.size.height),
+                            ),
+                            color: style.colors.border_subtle,
+                        },
+                    ));
+                }
+            }
             blocks.push(block);
         }
         let mut mapper = vega_markdown::SourceTextMap::new(source);
@@ -617,6 +578,7 @@ impl PreparedBody {
             width: style.width,
             height: y,
             blocks: blocks.into(),
+            rails: rails.into_iter().map(|(_, rail)| rail).collect(),
             horizontal_ranges: horizontal_ranges.into(),
             colors: style.colors,
         }
@@ -722,13 +684,67 @@ impl PreparedBody {
     }
 }
 
+fn layout_list_marker(
+    block: &mut PreparedBlock,
+    content: &mut String,
+    line: &StreamLine,
+    style: &PreparationStyle,
+    text_system: &WindowTextSystem,
+) -> Pixels {
+    content.push_str(&"  ".repeat(line.depth));
+    let mut x = px(line.depth as f32 * Layout::MARKDOWN_LIST_INDENT);
+    layout_text(
+        block,
+        content,
+        &[StreamSpan {
+            text: format!("{} ", line.marker),
+            style: SpanStyle::Plain,
+            link: None,
+            link_occurrence: None,
+        }],
+        LineKind::Paragraph,
+        point(x, px(0.)),
+        None,
+        false,
+        style,
+        text_system,
+    );
+    block.source_ranges.pop();
+    x += px(Layout::MARKDOWN_LIST_INDENT);
+    if let Some(checked) = line.checked {
+        let start = block.fragments.len();
+        layout_text(
+            block,
+            content,
+            &[StreamSpan {
+                text: if checked { "[x]" } else { "[ ]" }.into(),
+                style: SpanStyle::Plain,
+                link: None,
+                link_occurrence: None,
+            }],
+            LineKind::Paragraph,
+            point(x, px(0.)),
+            None,
+            false,
+            style,
+            text_system,
+        );
+        block.source_ranges.pop();
+        x = block
+            .fragments
+            .get(start)
+            .map_or(x, |fragment| fragment.bounds.right() + px(4.));
+        content.push(' ');
+    }
+    x
+}
+
 fn append_separator(content: &mut String, previous: Option<&StreamLine>, line: &StreamLine) {
     if let Some(previous) = previous {
-        let same = previous.block_id == line.block_id
-            && matches!(
-                (previous.kind, line.kind),
-                (LineKind::Code, LineKind::Code) | (LineKind::ListItem, LineKind::ListItem)
-            );
+        let same = line.continues_code_block(previous)
+            || (previous.block_id == line.block_id
+                && previous.kind == LineKind::ListItem
+                && line.kind == LineKind::ListItem);
         content.push_str(if same { "\n" } else { "\n\n" });
     }
 }
@@ -840,8 +856,10 @@ fn layout_text(
         .ceil()
         / style.scale);
     let runs = render_rows::block_text_runs(spans, text_style, &style.colors);
-    let run_index = inline_code::RunIndex::new(runs.clone());
-    if runs.iter().any(|run| run.background_color.is_some()) {
+    let mut links = link_ranges(spans);
+    super::super::links::own_links(&mut links, &format!("thinking-{start}"));
+    let run_index = inline_code::RunIndex::new(runs.clone()).with_links(links.clone());
+    if !links.is_empty() || runs.iter().any(|run| run.background_color.is_some()) {
         let flow = inline_code::shape_flow(
             &text.clone().into(),
             &run_index,
@@ -855,6 +873,7 @@ fn layout_text(
                 block,
                 &text,
                 &run_index,
+                &links,
                 start,
                 logical_range.clone(),
                 fragment.range,
@@ -885,6 +904,7 @@ fn layout_text(
                 block,
                 &text,
                 &run_index,
+                &links,
                 start,
                 logical_range.clone(),
                 offset + from..offset + to,
@@ -908,6 +928,7 @@ fn add_fragment(
     block: &mut PreparedBlock,
     text: &str,
     runs: &inline_code::RunIndex,
+    links: &[LinkRange],
     start: usize,
     logical: Range<usize>,
     range: Range<usize>,
@@ -960,6 +981,7 @@ fn add_fragment(
                 size((right - x).max(px(0.)), line_height),
             ),
             runs: runs.slice(from..end),
+            links: fragment_link_ranges(links, &(from..end)),
             font_size,
             line_height,
             line_width,
@@ -969,10 +991,9 @@ fn add_fragment(
 }
 
 struct BodyElement {
-    horizontal_scrolls: Rc<RefCell<std::collections::HashMap<usize, ScrollHandle>>>,
+    horizontal_scrolls: Rc<RefCell<std::collections::HashMap<usize, CodeScrollHandle>>>,
     prepared: Arc<PreparedBody>,
     document: SelectionDocumentBuilder,
-    rendered: Rc<Cell<usize>>,
 }
 
 impl IntoElement for BodyElement {
@@ -1013,7 +1034,6 @@ impl Element for BodyElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Vec<AnyElement> {
-        self.rendered.set(0);
         let mask = window.content_mask().bounds;
         let first = self.prepared.blocks.partition_point(|block| {
             bounds.top() + block.origin.y - self.prepared.y_offset + block.size.height
@@ -1029,28 +1049,39 @@ impl Element for BodyElement {
                 prepared: self.prepared.clone(),
                 block: index,
                 document: self.document.clone(),
-                rendered: self.rendered.clone(),
             };
             let mut element = if block.horizontal {
+                let scroll = self
+                    .horizontal_scrolls
+                    .borrow_mut()
+                    .entry(index)
+                    .or_default()
+                    .clone();
                 div()
-                    .id(("thinking-horizontal", index))
                     .w(self.prepared.width - block.origin.x)
                     .h(block.size.height)
-                    .track_scroll(
-                        &self
-                            .horizontal_scrolls
-                            .borrow_mut()
-                            .entry(index)
-                            .or_default()
-                            .clone(),
-                    )
-                    .overflow_x_scroll()
-                    .overflow_y_hidden()
                     .when(block.code, |row| {
                         row.bg(self.prepared.colors.code_bg)
                             .rounded(px(Layout::TOOL_DETAIL_RADIUS))
                     })
-                    .child(content)
+                    .child(
+                        CodeViewport::new(
+                            ("thinking-horizontal", index),
+                            content,
+                            if block.code {
+                                self.prepared.colors.code_bg
+                            } else {
+                                self.prepared.colors.bg_base
+                            },
+                        )
+                        .scroll(scroll)
+                        .selection(
+                            block
+                                .code
+                                .then(|| self.document.code_drag_selection(window, cx)),
+                        )
+                        .height(block.size.height),
+                    )
                     .into_any_element()
             } else {
                 content.into_any_element()
@@ -1072,12 +1103,21 @@ impl Element for BodyElement {
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         _: &mut (),
         elements: &mut Vec<AnyElement>,
         window: &mut Window,
         cx: &mut App,
     ) {
+        for rail in self.prepared.rails.iter() {
+            let rect = Bounds::new(
+                bounds.origin + rail.bounds.origin - point(px(0.), self.prepared.y_offset),
+                rail.bounds.size,
+            );
+            if !rect.intersect(&window.content_mask().bounds).is_empty() {
+                window.paint_quad(gpui_kit::fill(rect, rail.color));
+            }
+        }
         for element in elements {
             element.paint(window, cx);
         }
@@ -1088,7 +1128,6 @@ struct FragmentsElement {
     prepared: Arc<PreparedBody>,
     block: usize,
     document: SelectionDocumentBuilder,
-    rendered: Rc<Cell<usize>>,
 }
 impl IntoElement for FragmentsElement {
     type Element = Self;
@@ -1166,6 +1205,10 @@ impl Element for FragmentsElement {
             let mut element = self.document.append_positioned(
                 text,
                 runs,
+                fragment_link_ranges(
+                    &fragment.links,
+                    &(start - fragment.range.start..fragment.range.len()),
+                ),
                 range,
                 fragment
                     .logical_range
@@ -1198,7 +1241,6 @@ impl Element for FragmentsElement {
                     );
                 },
             );
-            self.rendered.set(self.rendered.get() + 1);
             elements.push(element);
         }
         elements
@@ -1327,7 +1369,3 @@ impl Element for VisibilityElement {
         self.content.paint(window, cx);
     }
 }
-
-#[cfg(test)]
-#[path = "thinking_body_window_tests.rs"]
-mod window_tests;

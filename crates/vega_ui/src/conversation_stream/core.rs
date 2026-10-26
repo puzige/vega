@@ -1,32 +1,17 @@
 use super::*;
+use crate::cua_onboarding::lifecycle::TaskContext;
 
-/// R59 §3 R1–R3: which level of the model picker is showing.
-///
-/// With tiers, the model button opens the slider and its title opens the list
-/// (R59). Without tiers, the button opens the list directly (I68). The views
-/// are **mutually exclusive by construction**. R57 mounted the
-/// slider as the model menu's last child, which put both on screen at once
-/// (R59 §1 D1/D2/D3); this single enum is what replaces that pair of
-/// independent booleans.
-///
-/// One value means one mounted layer. `render_model_picker_layers` matches on
-/// this enum and mounts exactly one floating layer, so no frame can ever hold
-/// both (R59 A3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModelPickerLevel {
     /// Nothing is mounted.
     #[default]
     Closed,
-    /// The thinking-tier slider card for models with tiers (R59 R1).
     Slider,
     /// The model list, reached from the slider title or directly when tiers are absent.
     List,
 }
 
 impl ModelPickerLevel {
-    /// Whether any level is mounted. The composer's trigger and its popover
-    /// exclusivity both read this instead of the R57 boolean, and the
-    /// application acceptance harness reads it through the public accessor.
     pub fn is_open(self) -> bool {
         !matches!(self, Self::Closed)
     }
@@ -36,11 +21,21 @@ impl ModelPickerLevel {
 /// the virtualized message stream, and the fixed-bottom Composer. One entity
 /// per open thread; rebuilt by the window root when another thread opens.
 pub struct ConversationStream {
+    pub(crate) ordinary: Vec<super::ordinary_submissions::OrdinaryRow>,
+    pub(crate) prediction_waiting_for_queue: bool,
+    pub(crate) prediction_owner: Option<super::composer_predictions::ComposerPredictionOwner>,
+    pub(crate) prediction_generation: u64,
+    pub(crate) prediction_completed: Option<String>,
+    pub(crate) reading_preview: bool,
+    pub(crate) subagent_executions:
+        HashMap<(String, String), vega_conversation::types::SubagentSnapshot>,
+    pub(crate) subagent_groups: HashMap<String, Entity<super::subagents::SubagentGroup>>,
+    pub(crate) subagent_parent_focus: FocusHandle,
+    pub(crate) delegated_run_active: bool,
+    pub(crate) automation: super::automation::AutomationUi,
     pub(crate) privacy: super::privacy::PrivacyPanel,
     pub(crate) computer_use_control: Option<vega_conversation::types::ComputerUseControl>,
-    pub(crate) computer_use_diagnostic: Option<(u64, String)>,
-    pub(crate) computer_use_notice_generation: u64,
-    pub(crate) computer_use_diagnostic_focus: FocusHandle,
+    pub(crate) computer_use_task: TaskContext,
     pub(crate) context_control: context_control::ContextControl,
     pub(crate) attachments: Vec<(u64, attachments::ImagePreview)>,
     pub(crate) attachment_generation: u64,
@@ -48,17 +43,16 @@ pub struct ConversationStream {
     pub(crate) attachment_error: Option<&'static str>,
     pub(crate) submitted_attachments: Vec<(u64, attachments::ImagePreview)>,
     pub(crate) thread: Thread,
-    /// 消息块列表（T18）：user 回显与 assistant 流交替，顺序即会话顺序。
     pub(crate) entries: Vec<StreamEntry>,
     pub(crate) assistant_role_rows: Vec<bool>,
     pub(crate) counters: Arc<StreamCounters>,
-    /// Variable-height list state (S8-T44/C4): one item per semantic entry,
-    /// natural heights. The same state owns the scroll position and the P4
-    /// tail-follow semantics (`FollowMode::Tail`).
     pub(crate) list: gpui_kit::ListState,
     pub(crate) foreground_height: Pixels,
     pub(crate) entry_identities: Vec<StreamEntryIdentity>,
     pub(crate) measured_entry_heights: HashMap<String, f32>,
+    pub(crate) rendered_language: &'static str,
+    pub(super) text_cache: std::cell::RefCell<super::text_cache::TextCache>,
+    pub(crate) message_anchor_layout: super::message_anchors::MessageAnchorLayout,
     pub(crate) message_anchor_hovered: Option<String>,
     pub(crate) message_anchor_rail_hovered: bool,
     pub(crate) message_anchor_preview_hovered: Option<String>,
@@ -78,15 +72,26 @@ pub struct ConversationStream {
     /// Opaque provider call ids are retained only as non-rendered map keys.
     pub(crate) tool_cards: HashMap<String, Entity<ToolCard>>,
     pub(crate) run_responses: HashMap<String, phase::RunResponses>,
+    pub(crate) generated_notices: HashMap<String, Vec<generated_notice::GeneratedNoticeSpan>>,
     pub(crate) run_activity_groups: HashMap<String, Entity<RunActivityGroup>>,
-    /// Exact call id to its sole inline artifact card.
+    pub(crate) run_continuations: HashMap<String, vega_conversation::types::RunContinuation>,
     pub(crate) artifact_cards: HashMap<String, Entity<ArtifactCard>>,
+    pub(crate) artifact_call_owners: HashMap<String, Option<String>>,
+    pub(crate) artifact_history_generation: u64,
+    pub(crate) artifact_groups: HashMap<String, Entity<ArtifactGroup>>,
+    pub(crate) finished_artifact_turns: HashSet<String>,
     /// Route-owned safe branch selector; Git authority remains in the app controller.
     pub(crate) branch_selector: Entity<BranchSelector>,
     /// IO-free canonical commit panel; repository authority stays in app/headless.
     pub(crate) commit_panel: Entity<CommitPanel>,
     /// Concrete runtime permission hook shared by the owning conversation.
     pub(crate) permission_queue: PermissionQueue,
+    pub(crate) user_question_queue: vega_conversation::agent::UserQuestionQueue,
+    pub(crate) deferred_user_question: Option<vega_conversation::agent::PendingUserQuestion>,
+    pub(crate) active_user_question: Option<Entity<crate::user_question_panel::UserQuestionPanel>>,
+    pub(crate) active_user_question_call_id: Option<String>,
+    pub(crate) user_question_attention: Option<vega_conversation::types::UserQuestionId>,
+    pub(crate) _user_question_listener_task: gpui_kit::Task<()>,
     /// Request retained after the queue listener wakes before its durable
     /// ToolCallProposed event reaches this stream.
     pub(crate) deferred_permission: Option<PendingPermission>,
@@ -97,12 +102,7 @@ pub struct ConversationStream {
     pub(crate) active_permission_call_id: Option<String>,
     /// Plan ids are opaque map keys; card content is a typed projection.
     pub(crate) plan_cards: HashMap<String, Entity<PlanCard>>,
-    /// Sole applied per-task cost summary keyed by assistant message id
-    /// (S7-T40); duplicate/later stale applications are ignored.
     pub(crate) summary_cards: HashMap<String, Entity<SummaryCard>>,
-    /// Scroll-up hydration state (S8-T45/C7): keyset cursor of the oldest
-    /// loaded page, in-flight flag, and the failure pause. The stream itself
-    /// never queries SQLite — pages arrive as typed projections.
     pub(crate) hydration: HistoryHydration,
     pub(crate) message_location_status: Option<MessageLocationStatus>,
     /// Exact active durable assistant id and its stream-entry index.
@@ -113,6 +113,8 @@ pub struct ConversationStream {
     pub(crate) active_agent_sequence: Option<i64>,
     pub(crate) active_segment_ordinal: usize,
     pub(crate) active_response_start: Option<usize>,
+    pub(crate) active_response_id: Option<String>,
+    pub(crate) response_reasoning_completed: bool,
     pub(crate) response_checkpoint: Option<network_retry::ResponseCheckpoint>,
     pub(crate) network_retry: Option<(String, u32, u32)>,
     /// Whether the current Markdown segment contains text; a tool boundary
@@ -126,9 +128,6 @@ pub struct ConversationStream {
     /// Most recently finished assistant entry, retained until the typed Plan
     /// projection can replace it in place.
     pub(crate) last_finished_agent_message: Option<(String, usize)>,
-    /// Bounded token/cost meter projection (S7-T39/C3/C4). Pure shared
-    /// `vega_conversation::types` state: no IO, no persistence; the Composer
-    /// renders its snapshot and every update is checked arithmetic only.
     pub(crate) meter: ConversationMeter,
     /// Submitted drafts, scoped to this thread view.
     pub(crate) composer_history: Vec<String>,
@@ -137,6 +136,7 @@ pub struct ConversationStream {
     pub(crate) pending_behavior_override: Option<PendingMessageBehavior>,
     pub(crate) pending_submission_revision: Option<u64>,
     pub(crate) pending_ui: pending_messages::PendingQueueUi,
+    pub(crate) pending_echoes: Vec<PendingEcho>,
     pub(crate) skill_projection: Option<SkillComposerProjection>,
     pub(crate) skill_projection_generation: u64,
     pub(crate) skill_mutation_pending: bool,
@@ -149,15 +149,12 @@ pub struct ConversationStream {
     pub(crate) history_draft: Option<String>,
     pub(crate) approved_not_started: bool,
     pub(crate) trusted_action_busy: bool,
-    pub(crate) controller_error: Option<String>,
+    pub(crate) controller_error: Option<crate::localized_copy::LocalizedCopy>,
     pub(crate) controller_runtime_error: Option<(String, RunFailureKind)>,
     pub(crate) run_failures: HashMap<String, RunFailureKind>,
     pub(crate) run_notices: HashMap<usize, super::run_notice::RunNotice>,
-    /// Nonfatal run-start MCP omission. Kept separate so a provider failure
-    /// cannot overwrite it or be overwritten by it.
-    pub(crate) mcp_warning: Option<String>,
-    /// Bounded `@file` selector model (A2-12). Pure UI state over the typed
-    /// [`FileIndexSnapshot`]; the app layer owns the filesystem walk.
+    pub(crate) run_mcp_unavailable: HashMap<String, usize>,
+    pub(crate) mcp_notices: HashMap<usize, super::run_notice::RunNotice>,
     pub(crate) file_selector: FileSelectorModel,
     /// The latest bounded candidate projection for this thread's project.
     pub(crate) file_snapshot: FileIndexSnapshot,
@@ -176,52 +173,21 @@ pub struct ConversationStream {
     pub(crate) file_index_failure: Option<FileIndexFailureCode>,
     /// Keyboard stop for the visible failed-index Retry action.
     pub(crate) file_retry_focus: FocusHandle,
-    /// Provider/model/thinking composer defaults (A2-14). Display state for
-    /// the selector; authority is the app-level config seam.
     pub(crate) composer_defaults: ComposerDefaults,
-    /// R57 P3: the thinking-tier slider (P2a), shown as a picker layer when tiers exist.
-    /// It reads the exact `(provider, model)` profile the stream already
-    /// received through [`Self::apply_reasoning_profile`]; this entity owns no
-    /// store handle and performs no IO.
     pub(crate) thinking_slider: Entity<ThinkingSlider>,
-    /// Priced model options for the selector (from the T36 pricing catalog
-    /// via the app layer's typed projection; zero file IO here).
-    pub(crate) model_options: Vec<String>,
-    /// R59 R1–R3: which model-picker level is mounted, if any.
-    ///
-    /// A single three-state value replaces R57's `model_selector_open`
-    /// boolean, so the tier slider and the model list are mutually exclusive
-    /// by construction: `render_model_picker_layers` matches on this and
-    /// mounts exactly one floating layer per frame (R59 A3).
+    pub(crate) model_options: Vec<ModelOption>,
     pub(crate) model_picker_level: ModelPickerLevel,
-    /// Scroll state for the model list. The list carries an
-    /// explicit `max_h` (R59 R5), so a long catalog scrolls inside the layer
-    /// and the highlighted row is kept in view during keyboard navigation.
     pub(crate) model_menu_scroll: ScrollHandle,
     pub(crate) compact_workspace: bool,
     pub(crate) workspace_width: Option<f32>,
     pub(crate) project_label: String,
-    /// Window-owned R69 draft route, never inferred from a durable `Thread`.
     pub(crate) draft_route: bool,
-    /// R49 utility-bar project menu rows (`(id, name)`), loaded from the same
-    /// store query the sidebar's `ProjectsBlock` renders and only while the
-    /// folder chip's menu is being opened — never during a frame.
     pub(crate) utility_projects: Vec<(String, String)>,
-    /// Whether the R49 folder chip's project menu is visible.
     pub(crate) utility_projects_open: bool,
-    /// R62 R10: the folder chip's menu filter query. Display-only state for
-    /// the visible rows — selecting a row still means "switch to it", filtered
-    /// or not (R62 R11).
     pub(crate) utility_project_query: String,
     pub(crate) backend_selector_open: bool,
     pub(crate) codex_mode_confirmed: bool,
-    /// R62 R10: the folder chip's menu search field. An entity rather than a
-    /// string because the field is a real editable input with IME support;
-    /// `utility_project_query` mirrors its text for the row filter.
     pub(crate) utility_project_search: Entity<TextInput>,
-    /// R62 R7: whether the bottom row's permission picker is mounted. The
-    /// second entry (`+` menu) and this one share the same request path and
-    /// the same `thread.permission_mode`, so the two can never disagree.
     pub(crate) permission_picker_open: bool,
     pub(crate) model_selector_highlight: usize,
     pub(crate) context_usage_focus: FocusHandle,
@@ -231,19 +197,12 @@ pub struct ConversationStream {
     pub(crate) context_usage_tooltip_hovered: bool,
     pub(crate) context_usage_open: bool,
     pub(crate) context_usage_dismissed: bool,
-    /// Keyboard focus stop for the model selector trigger (A2-14).
     pub(crate) model_focus: FocusHandle,
-    /// In-flight in-session model selection (R1): `Some((request_id, model))`
-    /// while persistence is in flight. Blocks submit/thinking until the
-    /// exact-owner acknowledgement or failure lands.
     pub(crate) model_selection_pending: Option<(u64, String)>,
     /// Exact app-level owner for the in-flight model save. This is separate
     /// from `trusted_action_busy`, which also represents branch, commit, and
     /// artifact operations.
     pub(crate) model_selection_save_owner: Option<u64>,
-    /// Monotonic request-id counter for model-selection intents (R1). The
-    /// app echoes it back so late callbacks can never release another
-    /// request's owner.
     pub(crate) next_model_request_id: u64,
     /// Keyboard-accessible return-to-tail action shown after the user scrolls
     /// away from the live bottom (P4).
@@ -252,10 +211,12 @@ pub struct ConversationStream {
     pub(crate) _permission_listener_task: gpui_kit::Task<()>,
 }
 
+impl EventEmitter<crate::cua_onboarding::PreparationRequested> for ConversationStream {}
 impl EventEmitter<ImagePreviewRequested> for ConversationStream {}
 impl EventEmitter<PlanReviewRequested> for ConversationStream {}
 impl EventEmitter<ThreadSettingsRequested> for ConversationStream {}
 impl EventEmitter<ComposerSubmitted> for ConversationStream {}
+impl EventEmitter<super::ordinary_submissions::OrdinaryActionRequested> for ConversationStream {}
 impl EventEmitter<SkillComposerProjectionRequested> for ConversationStream {}
 impl EventEmitter<SkillComposerMutationRequested> for ConversationStream {}
 impl EventEmitter<ContextSettingsRequested> for ConversationStream {}
@@ -278,17 +239,49 @@ impl EventEmitter<TaskBackendSelectionRequested> for ConversationStream {}
 pub(crate) struct InjectionState {
     /// Which assistant entry the replayer feeds.
     pub(crate) entry_index: usize,
-    /// The public mock replayer (vega_markdown::replay，T18 公共化).
     pub(crate) replay: MockReplay,
 }
 
+pub(crate) struct PendingEcho {
+    pub(crate) pending_id: String,
+    pub(crate) indices: Vec<usize>,
+}
+
 impl ConversationStream {
+    pub fn set_reading_preview(&mut self, reading: bool, cx: &mut Context<Self>) {
+        if self.reading_preview == reading {
+            return;
+        }
+        self.reading_preview = reading;
+        for card in self.artifact_cards.values() {
+            card.update(cx, |card, cx| card.set_reading_preview(reading, cx));
+        }
+        for group in self.artifact_groups.values() {
+            group.update(cx, |group, cx| {
+                group.set_review_availability(reading, self.thread.is_standalone(), cx);
+            });
+        }
+        self.hydration.loading = false;
+        self.hydration.paused = false;
+        self.hydration.paused_direction = None;
+        self.foreground_height = px(0.);
+        self.measured_entry_heights.clear();
+        self.list.remeasure();
+        cx.notify();
+    }
+
     /// Projects the host column width without rebuilding composer state.
     pub fn set_workspace_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        let automation_compact = self.automation_compact();
         let width_changed = self
             .workspace_width
             .is_some_and(|previous| (previous - width).abs() > 0.5);
         self.workspace_width = Some(width);
+        if automation_compact != self.automation_compact()
+            && !self.automation.projection.tasks.is_empty()
+        {
+            cx.notify();
+        }
         if width_changed && !self.entries.is_empty() {
             self.measured_entry_heights.clear();
             self.ensure_entry_identities();
@@ -305,9 +298,6 @@ impl ConversationStream {
         }
     }
 
-    /// Builds the view for `thread` with an empty in-memory stream (S3 无消息
-    /// 持久化：会话内容由流式注入与 Composer 回显产生，不落库；重启后清空
-    /// 是预期行为).
     pub fn new(thread: Thread, cx: &mut Context<Self>) -> Self {
         Self::new_with_permission_queue(thread, PermissionQueue::new(), cx)
     }
@@ -318,17 +308,31 @@ impl ConversationStream {
         permission_queue: PermissionQueue,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::new_with_request_queues(
+            thread,
+            permission_queue,
+            vega_conversation::agent::UserQuestionQueue::new(),
+            cx,
+        )
+    }
+
+    pub fn new_with_request_queues(
+        thread: Thread,
+        permission_queue: PermissionQueue,
+        user_question_queue: vega_conversation::agent::UserQuestionQueue,
+        cx: &mut Context<Self>,
+    ) -> Self {
         cx.observe_global::<RunningMessageDefault>(|_, cx| cx.notify())
             .detach();
         let input = cx.new(|cx| {
-            TextInput::new_multiline(cx, "描述任务，或用 @ 引用文件", COMPOSER_ROWS)
+            TextInput::new_multiline(cx, "", COMPOSER_ROWS)
+                .with_placeholder_key("ui.describe_a_task_or_use_to_reference_files")
                 .with_image_paste()
         });
         let branch_selector = cx.new(|cx| {
             let mut selector =
                 BranchSelector::new(thread.id.clone(), thread.project_id.clone(), cx);
-            // R49: the composer utility bar is this selector's only mount
-            // point, so it always renders the borderless chip chrome.
+
             selector.set_chip_chrome(true);
             selector
         });
@@ -344,18 +348,27 @@ impl ConversationStream {
         .detach();
         let commit_panel =
             cx.new(|cx| CommitPanel::new(thread.id.clone(), thread.project_id.clone(), cx));
-        // R62 R10: the folder chip's menu search field. Bare chrome, because
-        // the menu row around it draws the surface; the query is mirrored into
-        // `utility_project_query` and only filters the visible rows.
-        let utility_project_search =
-            cx.new(|cx| TextInput::new(cx, "搜索项目", false).with_bare_chrome());
+
+        let utility_project_search = cx.new(|cx| {
+            TextInput::new(cx, "", false)
+                .with_placeholder_key("ui.search_projects")
+                .with_bare_chrome()
+        });
         cx.observe(&utility_project_search, |this, input, cx| {
             this.sync_utility_project_query(&input, cx);
         })
         .detach();
         // 空输入禁用发送 + `@` 触发的文件选择跟随输入内容变化：输入内容
         // 变化即重渲染 Composer。
+        cx.observe_global::<ComposerPredictionsEnabled>(|this, cx| {
+            this.invalidate_composer_prediction(cx);
+            cx.notify();
+        })
+        .detach();
+        cx.observe_self(|this, cx| this.reconcile_composer_prediction(cx))
+            .detach();
         cx.observe(&input, |this, input, cx| {
+            this.reconcile_composer_prediction(cx);
             this.sync_composer_actions(&input, cx);
             this.sync_at_query(&input, cx);
         })
@@ -367,11 +380,28 @@ impl ConversationStream {
             },
         )
         .detach();
+        let mut question_listener = user_question_queue.subscribe();
+        let user_question_listener_task = cx.spawn(async move |this, cx| {
+            while question_listener.changed().await {
+                if this
+                    .update(cx, |this, cx| {
+                        this.reconcile_composer_prediction(cx);
+                        this.install_pending_user_question(cx);
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
         let mut listener = permission_queue.subscribe();
         let permission_listener_task = cx.spawn(async move |this, cx| {
             while listener.changed().await {
                 let alive = this
-                    .update(cx, |this, cx| this.install_pending_permission(cx))
+                    .update(cx, |this, cx| {
+                        this.reconcile_composer_prediction(cx);
+                        this.install_pending_permission(cx);
+                    })
                     .is_ok();
                 if !alive {
                     break;
@@ -413,12 +443,7 @@ impl ConversationStream {
         let list = gpui_kit::ListState::new(0, gpui_kit::ListAlignment::Top, px(600.0));
         list.set_follow_mode(gpui_kit::FollowMode::Tail);
         let initial_model = thread.model.clone();
-        // R57 P3: the tier slider starts with the durable thread model and no
-        // tiers. The exact profile arrives later through
-        // `apply_reasoning_profile` (the same app worker that already feeds
-        // the composer's reasoning state), so no capability is guessed here.
-        // R58: no Off position either, for the same reason — R2 requires a
-        // declared disabled capability before the position may appear.
+
         let thinking_slider =
             cx.new(|cx| ThinkingSlider::new(initial_model.clone(), Vec::new(), false, "", "", cx));
         // The slider owns its knob and emits the user's intent; the stream
@@ -431,7 +456,7 @@ impl ConversationStream {
             },
         )
         .detach();
-        // R59 R2/R3: the slider's title row is the only entry to level two.
+
         cx.subscribe(
             &thinking_slider,
             |this, _, _: &ThinkingSliderTitleActivated, cx| {
@@ -439,17 +464,26 @@ impl ConversationStream {
             },
         )
         .detach();
+        let computer_use_task = TaskContext::new(&thread.id);
         Self {
+            prediction_waiting_for_queue: false,
+            prediction_owner: None,
+            prediction_generation: 0,
+            prediction_completed: None,
+            reading_preview: false,
+            subagent_groups: HashMap::new(),
+            subagent_executions: HashMap::new(),
+            subagent_parent_focus: cx.focus_handle().tab_stop(true),
+            delegated_run_active: false,
             context_control: context_control::ContextControl::new(cx),
             computer_use_control: None,
-            computer_use_diagnostic: None,
-            computer_use_notice_generation: 0,
-            computer_use_diagnostic_focus: cx.focus_handle(),
+            computer_use_task,
             attachments: Vec::new(),
             attachment_generation: 0,
             attachment_import_pending: false,
             attachment_error: None,
             submitted_attachments: Vec::new(),
+            ordinary: Vec::new(),
             thread,
             entries: Vec::new(),
             counters: Arc::new(StreamCounters::default()),
@@ -460,7 +494,10 @@ impl ConversationStream {
                 + Layout::COMPOSER_PADDING_BOTTOM),
             entry_identities: Vec::new(),
             measured_entry_heights: HashMap::new(),
+            rendered_language: vega_i18n::language(),
+            text_cache: Default::default(),
             assistant_role_rows: Vec::new(),
+            message_anchor_layout: super::message_anchors::MessageAnchorLayout::default(),
             message_anchor_hovered: None,
             message_anchor_rail_hovered: false,
             message_anchor_preview_hovered: None,
@@ -476,11 +513,23 @@ impl ConversationStream {
             user_block_seq: USER_BLOCK_BASE,
             tool_cards: HashMap::new(),
             run_responses: HashMap::new(),
+            generated_notices: HashMap::new(),
             run_activity_groups: HashMap::new(),
+            run_continuations: HashMap::new(),
             artifact_cards: HashMap::new(),
+            artifact_call_owners: HashMap::new(),
+            artifact_history_generation: 0,
+            artifact_groups: HashMap::new(),
+            finished_artifact_turns: HashSet::new(),
             branch_selector,
             commit_panel,
             permission_queue,
+            user_question_queue,
+            deferred_user_question: None,
+            active_user_question: None,
+            active_user_question_call_id: None,
+            user_question_attention: None,
+            _user_question_listener_task: user_question_listener_task,
             deferred_permission: None,
             active_permission: None,
             active_permission_call_id: None,
@@ -495,6 +544,8 @@ impl ConversationStream {
             active_agent_sequence: None,
             active_segment_ordinal: 0,
             active_response_start: None,
+            active_response_id: None,
+            response_reasoning_completed: false,
             response_checkpoint: None,
             network_retry: None,
             active_thinking: None,
@@ -507,10 +558,12 @@ impl ConversationStream {
             meter: ConversationMeter::default(),
             composer_history: Vec::new(),
             composer_submit_pending: false,
+            automation: super::automation::AutomationUi::default(),
             pending_queue: PendingQueueProjection::default(),
             pending_behavior_override: None,
             pending_submission_revision: None,
             pending_ui: pending_messages::PendingQueueUi::new(cx),
+            pending_echoes: Vec::new(),
             skill_projection: None,
             skill_projection_generation: 0,
             skill_mutation_pending: false,
@@ -528,7 +581,8 @@ impl ConversationStream {
             controller_runtime_error: None,
             run_notices: HashMap::new(),
             run_failures: HashMap::new(),
-            mcp_warning: None,
+            run_mcp_unavailable: HashMap::new(),
+            mcp_notices: HashMap::new(),
             file_selector: FileSelectorModel::default(),
             file_snapshot: FileIndexSnapshot::default(),
             file_index_loading: false,
@@ -537,8 +591,7 @@ impl ConversationStream {
             file_selector_wanted: false,
             file_index_failure: None,
             file_retry_focus: cx.focus_handle().tab_stop(true),
-            // R1: a reopened stream starts from the durable thread model so
-            // its first rendered chip cannot lag behind `threads.model`.
+
             composer_defaults: ComposerDefaults {
                 model: initial_model,
                 thinking: "provider_default".to_string(),
@@ -576,14 +629,6 @@ impl ConversationStream {
         }
     }
 
-    // ── variable-height list maintenance (S8-T44/C4) ────────────────────────
-    //
-    // One list item per semantic entry. Structural entry mutations notify the
-    // list through `splice`; content mutations through `remeasure_items`
-    // (Absolute scroll anchor: the pixel offset into the scroll-top item is
-    // preserved, keeping anchor drift <1px). Frozen items are never touched.
-
-    /// Registers `entries.len() - previous_len` appended items with the list.
     pub(crate) fn list_append(&mut self, previous_len: usize) {
         let count = self.entries.len();
         debug_assert!(count >= previous_len);
@@ -595,7 +640,7 @@ impl ConversationStream {
         }
     }
 
-    fn refresh_assistant_roles(&mut self) {
+    pub(super) fn refresh_assistant_roles(&mut self) {
         let mut needs_role = true;
         self.assistant_role_rows = self
             .entries
@@ -611,6 +656,39 @@ impl ConversationStream {
             .collect();
     }
 
+    fn shift_tracked_entry_indices(&mut self, adjust: impl Fn(&mut usize)) {
+        if let Some((_, index)) = &mut self.active_agent_message {
+            adjust(index);
+        }
+        if let Some((_, index)) = &mut self.last_finished_agent_message {
+            adjust(index);
+        }
+        if let Some(injection) = &mut self.injecting {
+            adjust(&mut injection.entry_index);
+        }
+        for echo in &mut self.pending_echoes {
+            for index in &mut echo.indices {
+                adjust(index);
+            }
+        }
+    }
+
+    pub(crate) fn shift_entry_indices(&mut self, removed: usize, count: usize) {
+        self.shift_tracked_entry_indices(|index| {
+            if *index != usize::MAX && *index > removed {
+                *index = index.saturating_sub(count);
+            }
+        });
+    }
+
+    pub(crate) fn grow_entry_indices(&mut self, inserted: usize, count: usize) {
+        self.shift_tracked_entry_indices(|index| {
+            if *index != usize::MAX && *index >= inserted {
+                *index = index.saturating_add(count);
+            }
+        });
+    }
+
     pub(crate) fn ensure_entry_identities(&mut self) {
         while self.entry_identities.len() < self.entries.len() {
             let identity = self.new_local_identity();
@@ -623,6 +701,7 @@ impl ConversationStream {
         self.ensure_entry_identities();
         if let Some(slot) = self.entry_identities.get_mut(index) {
             self.measured_entry_heights.remove(&slot.key);
+            self.text_cache.get_mut().retire(&slot.key);
             *slot = identity;
         }
     }
@@ -634,6 +713,8 @@ impl ConversationStream {
         StreamEntryIdentity {
             key: format!("route:{}:{}:local:{}", route_id.len(), route_id, local_id),
             message_id: None,
+            pending_id: None,
+            echo_kind: None,
             sequence: None,
         }
     }
@@ -656,6 +737,8 @@ impl ConversationStream {
                 kind
             ),
             message_id: Some(message_id.to_string()),
+            pending_id: None,
+            echo_kind: None,
             sequence,
         }
     }
@@ -676,6 +759,8 @@ impl ConversationStream {
                 call_id
             ),
             message_id: message_id.map(str::to_string),
+            pending_id: None,
+            echo_kind: None,
             sequence,
         }
     }
@@ -715,7 +800,11 @@ impl ConversationStream {
         self.restore_scroll_anchor_at(anchor, item_ix)
     }
 
-    fn restore_scroll_anchor_at(&mut self, anchor: &ThreadScrollAnchor, item_ix: usize) -> bool {
+    pub(super) fn restore_scroll_anchor_at(
+        &mut self,
+        anchor: &ThreadScrollAnchor,
+        item_ix: usize,
+    ) -> bool {
         if anchor.following_tail {
             self.list.set_follow_mode(gpui_kit::FollowMode::Tail);
             return true;
@@ -744,10 +833,6 @@ impl ConversationStream {
         self.list.splice(index..index, 1);
     }
 
-    /// Registers `count` items prepended above the loaded history
-    /// (S8-T45/C7). `splice` shifts `logical_scroll_top` by the insert
-    /// count while keeping the pixel offset into the scroll-top item, so
-    /// the page-boundary anchor is exact (drift <1px by construction).
     pub(crate) fn list_prepend(&mut self, count: usize) {
         if count > 0 {
             self.refresh_assistant_roles();
@@ -770,6 +855,7 @@ impl ConversationStream {
         if index < self.entry_identities.len() {
             let identity = self.entry_identities.remove(index);
             self.measured_entry_heights.remove(&identity.key);
+            self.text_cache.get_mut().retire(&identity.key);
         }
         self.list.splice(index..index + 1, 0);
     }
@@ -812,10 +898,6 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// Applies the authoritative persisted thread settings after a request.
-    /// The composer's displayed model always mirrors the durable
-    /// `threads.model` (R1): the selection chip is a projection of the
-    /// authoritative thread, never an independent optimistic value.
     pub fn apply_thread(&mut self, thread: Thread, cx: &mut Context<Self>) {
         if thread.id == self.thread.id && thread.project_id == self.thread.project_id {
             if thread.model != self.thread.model {
@@ -894,6 +976,10 @@ impl ConversationStream {
         &self.thread.project_id
     }
 
+    pub fn thread_snapshot(&self) -> Thread {
+        self.thread.clone()
+    }
+
     pub fn task_backend(&self) -> TaskBackend {
         self.thread.backend
     }
@@ -922,15 +1008,13 @@ impl ConversationStream {
             panel.rebind_draft_project(&thread.project_id, cx);
         });
         self.invalidate_file_index(cx);
+        self.begin_computer_use_task(cx);
         self.thread = thread;
         self.project_label = label;
         cx.notify();
         true
     }
 
-    /// Projects only a renamed title onto the cached route entity. The window
-    /// root uses this when Sidebar updates `OpenedThread`; keeping the update
-    /// field-scoped preserves the R1 model authority and any pending owner.
     pub fn apply_thread_title(&mut self, thread: &Thread, cx: &mut Context<Self>) {
         if thread.id != self.thread.id || thread.project_id != self.thread.project_id {
             return;
@@ -1065,7 +1149,10 @@ impl ConversationStream {
                 .entries
                 .iter()
                 .rposition(|entry| matches!(entry, StreamEntry::User { .. }))
-            && matches!(&self.entries[index], StreamEntry::User { copy, .. } if copy.original_text() == "[凭据检查不可用]")
+            && self.entry_identities.get(index).is_some_and(|identity| {
+                identity.message_id.is_none() && identity.pending_id.is_none()
+            })
+            && matches!(&self.entries[index], StreamEntry::User { copy, .. } if copy.live_projection_unavailable())
         {
             let block = self.user_block_seq;
             self.user_block_seq += 1;
@@ -1086,20 +1173,32 @@ impl ConversationStream {
     pub fn apply_controller_error(&mut self, cx: &mut Context<Self>) {
         self.actions.pending_mode = None;
         self.controller_runtime_error = None;
-        self.controller_error = Some("操作未保存，请重试".into());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(
+            "ui.changes_were_not_saved_try_again",
+        ));
         cx.notify();
     }
 
     pub fn apply_codex_route_error(&mut self, message: &'static str, cx: &mut Context<Self>) {
+        self.apply_codex_route_failure(message.into(), cx);
+    }
+
+    pub fn apply_codex_route_failure(
+        &mut self,
+        failure: crate::localized_copy::LocalizedCopy,
+        cx: &mut Context<Self>,
+    ) {
         self.controller_runtime_error = None;
-        self.controller_error = Some(message.into());
+        self.controller_error = Some(failure);
         cx.notify();
     }
 
     /// Keeps the exact in-flight submission intact when a duplicate send arrives.
     pub fn apply_agent_busy(&mut self, cx: &mut Context<Self>) {
         self.controller_runtime_error = None;
-        self.controller_error = Some("此对话正在执行，请等待完成或停止当前任务".into());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(
+            "ui.this_conversation_is_running_wait_for_it_to",
+        ));
         cx.notify();
     }
 
@@ -1107,8 +1206,9 @@ impl ConversationStream {
     pub fn apply_credential_error(&mut self, cx: &mut Context<Self>) {
         self.reject_composer_submission(cx);
         self.controller_runtime_error = None;
-        self.controller_error =
-            Some("本地凭据缺失或无法读取，请在设置中重新填写 API Key 后重试".into());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(
+            "ui.local_credentials_are_missing_or_unreadable_re_enter",
+        ));
         cx.notify();
     }
 
@@ -1122,7 +1222,7 @@ impl ConversationStream {
     ) {
         self.reject_composer_submission(cx);
         self.controller_runtime_error = None;
-        self.controller_error = Some(failure.message());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::Preflight(failure));
         cx.notify();
     }
 
@@ -1132,12 +1232,6 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// Projects the exact provider/model capability loaded by the app worker
-    /// onto this route. A profile refresh also resets the displayed choice to
-    /// its persisted preference, keeping model switches deterministic.
-    ///
-    /// R57 P3: the same projection feeds the tier slider, so the card and the
-    /// composer always name one model and one tier list.
     pub fn apply_reasoning_profile(
         &mut self,
         profile: ReasoningProfileProjection,
@@ -1173,27 +1267,16 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// R57 P3: re-projects the model name, the model's declared tiers, and the
-    /// current/default tier onto the slider.
-    ///
-    /// The tiers are exactly the profile's own `efforts` (R7) — a model that
-    /// declares three tiers renders three dots, never the reference's fixed
-    /// seven. A profile that declares no legal effort vocabulary
-    /// (`Unsupported`/`Unknown`, or an empty list) renders nothing (R12).
-    /// The name and the tier list come from the same projection, so the card
-    /// cannot name one model while showing another model's tiers.
-    ///
-    /// R58: the Off position is a *view* flag, not a tier. `supports_off`
-    /// carries the same `supports_disabled` + `disabled_wire` pairing the
-    /// store and runtime validators enforce, so the slider can only offer Off
-    /// where the wire can actually carry it (R2). `current` stays the persisted
-    /// preference string, so `"disabled"` selects the Off position (R4).
     pub(crate) fn sync_thinking_slider(&mut self, cx: &mut Context<Self>) {
         let (model_name, tiers, supports_off, default_tier) =
             match self.composer_defaults.reasoning.as_ref() {
                 Some(profile) => (
                     profile.model.clone(),
-                    declared_tiers(profile.support, &profile.efforts),
+                    if profile.supports_enabled {
+                        vec!["enabled".into()]
+                    } else {
+                        declared_tiers(profile.support, &profile.efforts)
+                    },
                     supports_off_position(profile),
                     preferred_tier_name(&profile.preference)
                         .unwrap_or_default()
@@ -1217,20 +1300,6 @@ impl ConversationStream {
         }
     }
 
-    /// R57 P3: routes one slider selection onto the existing
-    /// `ComposerDefaultsRequested` save path.
-    ///
-    /// The event is refused unless it names the profile the composer currently
-    /// projects *and* a choice that profile actually permits, so an invalid
-    /// preference can never reach the reasoning authority or a later run's
-    /// frozen snapshot. Nothing is persisted here: the app handler owns the
-    /// durable write and re-projects the authoritative profile back through
-    /// [`Self::apply_reasoning_profile`].
-    ///
-    /// R58: the event carries a persisted *choice name*. [`OFF_CHOICE_NAME`]
-    /// (`"disabled"`) is accepted only when the profile declares the disabled
-    /// operation (R2) — the same pairing the store validator enforces — and is
-    /// stored as the preference string `"disabled"`, never as an effort.
     fn apply_thinking_tier_selected(
         &mut self,
         event: &ThinkingTierSelected,
@@ -1242,8 +1311,12 @@ impl ConversationStream {
         if profile.model != event.model || self.composer_defaults.thinking == event.choice {
             return;
         }
-        let accepted = if event.choice == OFF_CHOICE_NAME {
+        let accepted = if event.choice == "provider_default" {
+            true
+        } else if event.choice == OFF_CHOICE_NAME {
             supports_off_position(profile)
+        } else if event.choice == "enabled" {
+            profile.supports_enabled
         } else {
             profile.efforts.iter().any(|effort| effort == &event.choice)
         };
@@ -1270,10 +1343,11 @@ impl ConversationStream {
         let Some(profile) = self.composer_defaults.reasoning.as_ref() else {
             return Ok(None);
         };
-        let mut frozen = profile
+        let mut selected = profile.clone();
+        selected.preference = reasoning_choice_for_name(&self.composer_defaults.thinking);
+        let frozen = selected
             .freeze()
             .map_err(|_| ReasoningSubmitError::Invalid)?;
-        frozen.choice = reasoning_choice_for_name(&self.composer_defaults.thinking);
         frozen
             .validate()
             .map_err(|_| ReasoningSubmitError::Invalid)?;
@@ -1283,27 +1357,31 @@ impl ConversationStream {
     /// Reports an unresolved reasoning authority to the app run gate. A
     /// missing profile remains a valid provider-default state and returns
     /// `false` here.
+    pub fn model_snapshot_for_submit(
+        &self,
+    ) -> Result<Option<Box<vega_conversation::types::ResolvedModel>>, ReasoningSubmitError> {
+        self.frozen_reasoning_for_submit()?;
+        Ok(self
+            .composer_defaults
+            .reasoning
+            .as_ref()
+            .and_then(|profile| profile.model_snapshot.clone()))
+    }
+
     pub fn reasoning_unavailable(&self) -> bool {
         self.composer_defaults.reasoning_unavailable
     }
 
-    /// Installs configured model options for the composer selector (#60 R1).
-    /// The app supplies the catalog; the stream never reads config files.
-    pub fn apply_model_options(&mut self, options: Vec<String>, cx: &mut Context<Self>) {
+    pub fn apply_model_options(&mut self, options: Vec<ModelOption>, cx: &mut Context<Self>) {
         self.model_options = options;
         self.model_selector_highlight = self
             .model_options
             .iter()
-            .position(|model| *model == self.composer_defaults.model)
+            .position(|option| option.model == self.composer_defaults.model)
             .unwrap_or(0);
         cx.notify();
     }
 
-    /// Emits the in-session model selection intent (R1): the displayed model
-    /// stays authoritative until the app acknowledges the durable save.
-    /// Single owner at a time; while a selection is pending, further
-    /// selections are refused and the request id carries the exact owner
-    /// identity through the acknowledgement.
     pub fn request_model_selection(&mut self, model: &str, cx: &mut Context<Self>) {
         // A branch/commit/artifact operation uses the same generic busy flag.
         // Refuse at the UI boundary so an invalid event cannot install a
@@ -1326,10 +1404,6 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// Applies the authoritative thread after the durable model save (R1):
-    /// only the exact request owner and the owning thread accept it, so a
-    /// late or stale callback can never write another thread's state or
-    /// release a newer selection's owner.
     pub fn apply_thread_model_acknowledged(
         &mut self,
         thread_id: &str,
@@ -1368,20 +1442,13 @@ impl ConversationStream {
         self.thread = projected;
         self.model_selection_pending = None;
         self.clear_model_selection_save_owner(request_id, cx);
-        // R59 R3: the durable acknowledgement closes the picker. A model change
-        // is a completed round trip, so leaving a level mounted would strand
-        // the user on a layer whose selection is already applied.
+
         self.model_picker_level = ModelPickerLevel::Closed;
         self.controller_runtime_error = None;
         self.controller_error = None;
         cx.notify();
     }
 
-    /// Applies a failed in-session model save (R1): the durable/displayed
-    /// model is preserved exactly as it was (the write failed closed, so the
-    /// previous authoritative value still stands), the failure is shown and
-    /// the exact request owner is released. A late or stale callback for
-    /// another request or another thread never lands.
     pub fn apply_thread_model_failed(
         &mut self,
         thread_id: &str,
@@ -1400,15 +1467,12 @@ impl ConversationStream {
         self.model_selection_pending = None;
         self.clear_model_selection_save_owner(request_id, cx);
         self.controller_runtime_error = None;
-        self.controller_error = Some("模型选择保存失败，请重试".into());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(
+            "ui.could_not_save_the_model_selection_try_again",
+        ));
         cx.notify();
     }
 
-    /// Enter/Space on the focused model selector trigger (A2-14).
-    ///
-    /// R59 R1 / I68: the trigger opens the slider when tiers exist, otherwise
-    /// it opens the model list directly. Only the list keeps the pre-existing
-    /// "Enter accepts the highlighted model" behaviour.
     pub(crate) fn on_activate_model(
         &mut self,
         _: &ActivateModel,
@@ -1438,34 +1502,31 @@ impl ConversationStream {
             cx.notify();
             return;
         }
-        if let Some(model) = self
+        if let Some(option) = self
             .model_options
             .get(self.model_selector_highlight)
             .cloned()
         {
-            self.select_model_option(&model, cx);
+            self.select_model_option(&option.model, cx);
         }
         cx.notify();
     }
 
-    /// R59 R1: mounts the tier slider (level one) and focuses its scroll
-    /// state on the current model, so keyboard navigation of the list level
-    /// starts from the durable selection.
     pub(crate) fn open_model_picker_slider(&mut self, cx: &mut Context<Self>) {
         self.model_picker_level = ModelPickerLevel::Slider;
         self.model_selector_highlight = self
             .model_options
             .iter()
-            .position(|model| *model == self.thread.model)
+            .position(|option| option.model == self.thread.model)
             .unwrap_or(0);
         self.model_menu_scroll
-            .scroll_to_item(self.model_selector_highlight);
+            .scroll_to_item(model_picker_row_index(
+                &self.model_options,
+                self.model_selector_highlight,
+            ));
         cx.notify();
     }
 
-    /// R59 R2/R3: the slider's title row was activated, so level one is
-    /// replaced by level two. The slider unmounts in the same frame the list
-    /// mounts, which is what makes the two levels mutually exclusive (A3).
     pub(crate) fn on_thinking_slider_title_activated(
         &mut self,
         _: &ThinkingSliderTitleActivated,
@@ -1486,10 +1547,13 @@ impl ConversationStream {
         self.model_selector_highlight = self
             .model_options
             .iter()
-            .position(|model| *model == self.thread.model)
+            .position(|option| option.model == self.thread.model)
             .unwrap_or(0);
         self.model_menu_scroll
-            .scroll_to_item(self.model_selector_highlight);
+            .scroll_to_item(model_picker_row_index(
+                &self.model_options,
+                self.model_selector_highlight,
+            ));
         cx.notify();
     }
 
@@ -1507,7 +1571,10 @@ impl ConversationStream {
         }
         self.model_selector_highlight = self.model_selector_highlight.saturating_sub(1);
         self.model_menu_scroll
-            .scroll_to_item(self.model_selector_highlight);
+            .scroll_to_item(model_picker_row_index(
+                &self.model_options,
+                self.model_selector_highlight,
+            ));
         cx.notify();
     }
 
@@ -1519,11 +1586,13 @@ impl ConversationStream {
             self.model_selector_highlight += 1;
         }
         self.model_menu_scroll
-            .scroll_to_item(self.model_selector_highlight);
+            .scroll_to_item(model_picker_row_index(
+                &self.model_options,
+                self.model_selector_highlight,
+            ));
         cx.notify();
     }
 
-    /// Esc closes whichever level is mounted (R59 R3).
     pub(crate) fn on_model_close(
         &mut self,
         _: &CloseModel,
@@ -1534,22 +1603,6 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// R59 R3/A4: picking a model **closes** the picker.
-    ///
-    /// The spec leaves this to the implementer ("回到滑块（或关闭）") and asks
-    /// for the reason. Closing is the reading that cannot lie: the model change
-    /// starts a durable save, and until `apply_reasoning_profile` re-projects
-    /// the new model's capability the mounted slider would still be showing the
-    /// **previous** model's tier ladder under the new model's name. The trigger
-    /// already carries the honest feedback for that window (`保存中…`), so
-    /// unmounting both levels is strictly more truthful than returning to a
-    /// stale card. A **tier** selection is a different case and keeps the
-    /// picker open (R58 R8): that write does not change which model the slider
-    /// describes.
-    ///
-    /// This agrees with [`Self::apply_thread_model_acknowledged`], which also
-    /// closes on the durable acknowledgement, so no path can leave the picker
-    /// mounted on a selection that has already been applied.
     pub(crate) fn select_model_option(&mut self, model: &str, cx: &mut Context<Self>) {
         if self.model_selection_pending.is_some()
             || self.model_selection_save_busy()
@@ -1564,27 +1617,31 @@ impl ConversationStream {
     /// Displays a bounded provider/runner failure after durable preparation.
     pub fn apply_agent_error(&mut self, cx: &mut Context<Self>) {
         self.controller_runtime_error = None;
-        self.controller_error = Some("执行未完成，可安全重试".into());
-        // S7-T39: run-scoped estimate state never survives a failure path.
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(
+            "ui.the_run_did_not_finish_you_can_safely",
+        ));
+
         self.meter.end_run();
         cx.notify();
     }
 
-    /// An enabled-but-unavailable MCP server contributes no tools to this
-    /// run. The count is enough to disclose the omission; the Settings page
-    /// owns the per-server code and no remote error body enters Composer.
     pub fn apply_mcp_unavailable(
         &mut self,
+        message_id: &str,
         diagnostics: &[vega_conversation::types::McpServerDiagnostic],
         cx: &mut Context<Self>,
     ) {
-        if diagnostics.is_empty() {
+        let count = diagnostics
+            .iter()
+            .map(|diagnostic| &diagnostic.server_id)
+            .collect::<HashSet<_>>()
+            .len();
+        if count == 0 || self.run_mcp_unavailable.get(message_id) == Some(&count) {
             return;
         }
-        self.mcp_warning = Some(format!(
-            "{} 个已启用的 MCP 服务器不可用，本轮不提供其工具；请在设置 → MCP 查看详情",
-            diagnostics.len()
-        ));
+        self.run_mcp_unavailable
+            .insert(message_id.to_owned(), count);
+        self.refresh_run_notices(cx);
         cx.notify();
     }
 
@@ -1626,7 +1683,7 @@ impl ConversationStream {
             return;
         }
         self.controller_runtime_error = message_id.map(|id| (id.to_owned(), failure));
-        self.controller_error = Some(failure.message());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::Run(failure));
         self.meter.end_run();
         cx.notify();
     }
@@ -1640,14 +1697,11 @@ impl ConversationStream {
         cx: &mut Context<Self>,
     ) {
         self.controller_runtime_error = None;
-        self.controller_error = Some(code.message().into());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::Reference(code));
         self.meter.end_run();
         cx.notify();
     }
 
-    /// Installs the frozen per-run provisional estimator (S7-T39/C3 run
-    /// ownership). Called by the app exactly once per agent run, immediately
-    /// after `agent_controller.begin`.
     pub fn install_meter_estimator(
         &mut self,
         estimator: Option<RunUsageEstimator>,
@@ -1657,22 +1711,11 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// Restores the calibrated counter baseline from the durable checked
-    /// aggregate (S7-T39/C4 restart recovery). Called once when a stream
-    /// entity is constructed for a thread with priced usage history.
     pub fn restore_meter(&mut self, usage: RestoredUsage, cx: &mut Context<Self>) {
         self.meter.restore(usage);
         cx.notify();
     }
 
-    /// Current counter projection (C4): the Composer renders exactly this.
-    pub fn meter_snapshot(&self) -> MeterSnapshot {
-        self.meter.snapshot()
-    }
-
-    /// Feeds one conversation event through the meter projection, fenced by
-    /// the same acceptance rules the stream applies (S7-T39 thread/run fence:
-    /// late or stale-message events never calibrate or estimate).
     pub(crate) fn feed_meter(&mut self, event: &ConversationEvent, cx: &mut Context<Self>) {
         let accepted = match event {
             ConversationEvent::MessageStarted { .. } => self.active_agent_message.is_none(),
@@ -1703,15 +1746,18 @@ impl ConversationStream {
             | ConversationEvent::ToolCallFinished { .. } => true,
             ConversationEvent::PendingMessageDelivered { .. }
             | ConversationEvent::RunStarted { .. }
+            | ConversationEvent::RunContinued { .. }
             | ConversationEvent::AssistantResponseStarted { .. }
             | ConversationEvent::AssistantResponseCompleted { .. }
+            | ConversationEvent::GeneratedNotice { .. }
+            | ConversationEvent::ReasoningCompleted { .. }
             | ConversationEvent::ThinkingDelta { .. }
             | ConversationEvent::SummaryDelta { .. }
             | ConversationEvent::SkillActivated { .. }
             | ConversationEvent::ScreenshotDelivered { .. }
             | ConversationEvent::ContextCompactionStatus { .. }
             | ConversationEvent::ContextAccounting { .. } => false,
-            // R7: app accepts these only after its thread/run ownership fence.
+
             ConversationEvent::ContextCompactionUsageUpdated { .. } => true,
         };
         if accepted && self.meter.apply(event) {
@@ -1722,34 +1768,17 @@ impl ConversationStream {
 
 fn reasoning_choice_name(choice: &ReasoningChoice) -> String {
     match choice {
+        ReasoningChoice::Enabled => "enabled".into(),
         ReasoningChoice::ProviderDefault => "provider_default".to_string(),
         ReasoningChoice::Disabled => "disabled".to_string(),
         ReasoningChoice::Effort(effort) => effort.clone(),
     }
 }
 
-/// Whether the slider may offer the Off position for one profile (R58 R2).
-///
-/// Mirrors the pairing `vega_store::reasoning::ReasoningProfile::validate` and
-/// `FrozenReasoning::validate` enforce: `supports_disabled` **and** a declared
-/// `disabled_wire`. Offering Off on a profile that only sets one of the two
-/// would let the UI emit a request the provider rejects, so the slider stays
-/// conservative and hides Off entirely.
-///
-/// `ReasoningProfileProjection` is produced by `from_store`, which runs the
-/// store validator first, so a projected profile normally satisfies this by
-/// construction. The check is repeated here because the projection is a public
-/// type that tests and other callers construct directly.
 pub(crate) fn supports_off_position(profile: &ReasoningProfileProjection) -> bool {
     profile.supports_disabled && profile.disabled_wire.is_some()
 }
 
-/// The tiers the slider must render for one profile (R57 P3 / R7).
-///
-/// Only a profile whose capability is a real declaration contributes tiers:
-/// `Unsupported`/`Unknown` carry no legal effort vocabulary, so they render no
-/// slider (R12) rather than guessing one. The profile's own `efforts` order is
-/// preserved, because that order is also the dot order.
 pub(crate) fn declared_tiers(support: ReasoningSupport, efforts: &[String]) -> Vec<String> {
     if matches!(
         support,
@@ -1760,18 +1789,9 @@ pub(crate) fn declared_tiers(support: ReasoningSupport, efforts: &[String]) -> V
     efforts.to_vec()
 }
 
-/// The tier name a persisted preference names, when it names one at all.
-///
-/// `provider_default` and `disabled` are not tiers, so they carry no name and
-/// the slider resolves through its own fallback rules instead — exactly like a
-/// declared effort the model no longer supports.
-///
-/// R58: this feeds the slider's *fallback* tier, not its current selection.
-/// The current selection travels as the raw preference string
-/// (`composer_defaults.thinking`), so `"disabled"` still lands on the Off
-/// position (R4) even though it has no tier name here.
 pub(crate) fn preferred_tier_name(preference: &ReasoningChoice) -> Option<&str> {
     match preference {
+        ReasoningChoice::Enabled => Some("enabled"),
         ReasoningChoice::Effort(effort) => Some(effort.as_str()),
         ReasoningChoice::ProviderDefault | ReasoningChoice::Disabled => None,
     }
@@ -1779,6 +1799,7 @@ pub(crate) fn preferred_tier_name(preference: &ReasoningChoice) -> Option<&str> 
 
 fn reasoning_choice_for_name(name: &str) -> ReasoningChoice {
     match name {
+        "enabled" => ReasoningChoice::Enabled,
         "disabled" => ReasoningChoice::Disabled,
         "provider_default" | "" | "off" => ReasoningChoice::ProviderDefault,
         effort => ReasoningChoice::Effort(effort.to_string()),

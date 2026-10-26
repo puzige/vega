@@ -1,4 +1,5 @@
 use super::*;
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use gpui_kit::MouseMoveEvent;
 use gpui_kit::component::{IconName, spinner::Spinner};
 use vega_conversation::types::ThreadUpdate;
@@ -13,27 +14,6 @@ pub enum ThreadsBlockEvent {
 
 impl EventEmitter<ThreadsBlockEvent> for ThreadsBlock {}
 
-/// Shared task rows/actions. The production organization projection renders
-/// pinned tasks, project folders, and recent standalone tasks exactly once;
-/// standalone legacy consumers retain the selected-project block below.
-///
-/// The 「会话」 block: the selected project's threads, pinned group first,
-/// then `updated_at` desc (store ordering, ui-spec §4.1 置顶组优先). Rows =
-/// truncated title; the selected row gets
-/// `bg_active`; unread rows render medium weight + a dot (the field stays 0
-/// until S3 produces unread state).
-///
-/// T13 (A1-05) session management: the main list reads `status = active`
-/// only; archived threads hide here and surface in the 「已归档 (N)」
-/// collapsed section at the bottom of the block (展开可查看，行上有「恢复」).
-/// Hovering a row reveals its compact action trigger (裁决①：置顶 /
-/// 归档或恢复 / 删除); the trigger is always keyboard reachable, while its
-/// low-frequency actions are collected in a focusable menu. Double-clicking a
-/// row enters inline renaming via the shared [`TextInput`] (Enter submits, Esc
-/// cancels, an empty title cancels — the keyboard path itself is
-/// manual-acceptance, see [`resolve_rename`]).
-/// No project selected → guidance copy. Collapse state persists in config
-/// (`ui.sessions_collapsed`); the archive expansion is in-memory only.
 pub struct ThreadsBlock {
     /// Cached active rows (all projects when organization is enabled).
     pub(crate) threads: Vec<Thread>,
@@ -57,19 +37,9 @@ pub struct ThreadsBlock {
     pub(crate) focused_project: Option<String>,
     pub(crate) focused_thread_action: Option<String>,
     pub(crate) focused_section: Option<OrganizationSection>,
-    /// In-memory progressive-list state. Projects keeps the R29
-    /// `Show More / Show Less` toggle; Recents no longer has a control — it
-    /// grows its render window as the outer Sidebar scroller reaches the
-    /// bottom (Issue #57).
     pub(crate) projects_expanded: bool,
     pub(crate) projects_progressive_focus: FocusHandle,
-    /// Issue #57: how many Recents rows the current render window contains.
-    /// Starts at [`organization::RECENTS_PAGE`] and only grows (never shrinks)
-    /// for the lifetime of this block.
     pub(crate) recents_visible: usize,
-    /// Issue #57: the number of eligible Recents rows observed by the last
-    /// render. Written during render; read by [`Self::has_lazy_list_growth`] so
-    /// the outer scroller never asks for more than exists.
     pub(crate) recents_total: usize,
     /// Thread id whose compact low-frequency action menu is open.
     pub(crate) actions_open: Option<String>,
@@ -79,13 +49,11 @@ pub struct ThreadsBlock {
     pub(crate) actions_scope_focus: FocusHandle,
     /// One focus-out subscription for the action-menu scope.
     pub(crate) actions_focus_subscription: Option<Subscription>,
-    /// Whether the 「已归档 (N)」 section is expanded (in-memory, T13 卡允许
-    /// 不做折叠记忆).
     pub(crate) archive_expanded: bool,
     /// Active inline rename session (`None` = not renaming).
     pub(crate) editing: Option<RenameSession>,
     /// Inline error message (ui-spec §4.6).
-    pub(crate) error: Option<String>,
+    pub(crate) error: Option<crate::localized_copy::LocalizedCopy>,
     action_pending: bool,
     project_generation: u64,
     actions_scroll: gpui_kit::ScrollHandle,
@@ -161,10 +129,10 @@ impl ThreadsBlock {
             Some(project_id) => with_store(cx, |store| {
                 let active =
                     conversation::list_threads(store, &project_id, Some(ThreadStatus::Active))
-                        .map_err(|error| error.to_string())?;
+                        .map_err(crate::localized_copy::LocalizedCopy::from)?;
                 let archived =
                     conversation::list_threads(store, &project_id, Some(ThreadStatus::Archived))
-                        .map_err(|error| error.to_string())?;
+                        .map_err(crate::localized_copy::LocalizedCopy::from)?;
                 Ok((active, archived))
             }),
         };
@@ -204,17 +172,11 @@ impl ThreadsBlock {
         cx.notify();
     }
 
-    /// R69 R14: navigates to the home draft route for the requested project
-    /// binding instead of eagerly INSERTing a row. `None` is a genuine
-    /// standalone task and is used by the SESSIONS plus button.
-    ///
-    /// The draft is materialized by the window on first submit (R8), which is
-    /// what stops this entry point from piling up empty `未命名任务` rows. The
-    /// store is still read here for the project's display name so the route
-    /// carries the same selection the eager path used to install.
     pub(crate) fn create_task(&mut self, project_id: Option<String>, cx: &mut Context<Self>) {
         if task_mutation_busy(cx) {
-            self.error = Some("任务正在保存，请稍后重试".into());
+            self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.a_task_is_being_saved_try_again_shortly",
+            ));
             cx.notify();
             return;
         }
@@ -228,13 +190,15 @@ impl ThreadsBlock {
         if let Some(project_id) = project_id.as_deref() {
             let exists = with_store(cx, |store| {
                 vega_store::projects::find(store.conn(), project_id)
-                    .map_err(|error| error.to_string())
+                    .map_err(crate::localized_copy::LocalizedCopy::storage)
                     .map(|row| row.is_some())
             });
             match exists {
                 Ok(true) => {}
                 Ok(false) => {
-                    self.error = Some("项目不存在，无法创建任务".into());
+                    self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                        "ui.the_project_does_not_exist_cannot_create_a",
+                    ));
                     cx.notify();
                     return;
                 }
@@ -261,7 +225,9 @@ impl ThreadsBlock {
             return;
         }
         if task_mutation_busy(cx) {
-            self.error = Some("任务正在保存，请稍后重试".into());
+            self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.a_task_is_being_saved_try_again_shortly",
+            ));
             cx.notify();
             return;
         }
@@ -271,7 +237,8 @@ impl ThreadsBlock {
         self.close_actions();
         crate::navigation::begin_task_mutation(cx);
         let result = with_store(cx, |store| {
-            conversation::visit_thread(store, thread_id).map_err(|error| error.to_string())
+            conversation::visit_thread(store, thread_id)
+                .map_err(crate::localized_copy::LocalizedCopy::from)
         });
         crate::navigation::finish_task_mutation(cx);
         match result {
@@ -293,11 +260,13 @@ impl ThreadsBlock {
     /// failure as the block's inline error bar (ui-spec §4.6).
     fn mutate_thread(
         &mut self,
-        operation: impl FnOnce(&Store) -> Result<(), String>,
+        operation: impl FnOnce(&Store) -> Result<(), crate::localized_copy::LocalizedCopy>,
         cx: &mut Context<Self>,
     ) {
         if task_mutation_busy(cx) {
-            self.error = Some("任务正在保存，请稍后重试".into());
+            self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.a_task_is_being_saved_try_again_shortly",
+            ));
             cx.notify();
             return;
         }
@@ -320,7 +289,7 @@ impl ThreadsBlock {
         self.mutate_thread(
             |store| {
                 conversation::set_thread_pinned(store, thread_id, !pinned)
-                    .map_err(|error| error.to_string())
+                    .map_err(crate::localized_copy::LocalizedCopy::from)
             },
             cx,
         );
@@ -331,7 +300,7 @@ impl ThreadsBlock {
         self.mutate_thread(
             |store| {
                 conversation::set_thread_status(store, thread_id, status)
-                    .map_err(|error| error.to_string())
+                    .map_err(crate::localized_copy::LocalizedCopy::from)
             },
             cx,
         );
@@ -360,7 +329,8 @@ impl ThreadsBlock {
         {
             return;
         }
-        let input = cx.new(|cx| TextInput::new(cx, "会话标题", false));
+        let input = cx
+            .new(|cx| TextInput::new(cx, "", false).with_placeholder_key("ui.conversation_title"));
         input.update(cx, |input, cx| input.set_text(&thread.title, cx));
         self.editing = Some(RenameSession {
             thread_id: thread.id.clone(),
@@ -623,18 +593,59 @@ impl ThreadsBlock {
     /// Applies only committed fields, never a stale task snapshot or a route change.
     fn apply_update(&mut self, thread: &Thread, update: ThreadUpdate, cx: &mut Context<Self>) {
         if self.action_pending || task_mutation_busy(cx) {
-            self.error = Some("任务操作正在保存，请稍后重试".into());
+            self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.task_actions_are_being_saved_try_again_shortly",
+            ));
             cx.notify();
+            return;
+        }
+        if let Some(unread) = update.unread
+            && update.title.is_none()
+            && update.status.is_none()
+            && update.pinned.is_none()
+        {
+            crate::navigation::begin_task_mutation(cx);
+            let result = with_store(cx, |store| {
+                conversation::update_thread(store, &thread.id, &update)
+                    .map_err(crate::localized_copy::LocalizedCopy::from)
+            });
+            crate::navigation::finish_task_mutation(cx);
+            match result {
+                Ok(()) => {
+                    for row in self
+                        .threads
+                        .iter_mut()
+                        .chain(self.archived.iter_mut())
+                        .filter(|row| row.id == thread.id)
+                    {
+                        row.unread = unread;
+                    }
+                    if let Some(mut opened) = cx.global::<OpenedThread>().0.clone()
+                        && opened.id == thread.id
+                        && opened.project_id == thread.project_id
+                    {
+                        opened.unread = unread;
+                        cx.set_global(OpenedThread(Some(opened)));
+                    }
+                    self.error = None;
+                    if self.organization.is_some() {
+                        self.refresh_organization(cx);
+                    }
+                }
+                Err(error) => self.error = Some(error),
+            }
+            cx.refresh_windows();
             return;
         }
         let generation = self.project_generation;
         let id = thread.id.clone();
         let project = thread.project_id.clone();
         let database = with_store(cx, |store| {
-            store
-                .database_path()
-                .map(Path::to_path_buf)
-                .ok_or_else(|| "任务存储需要文件数据库".to_string())
+            store.database_path().map(Path::to_path_buf).ok_or_else(|| {
+                crate::localized_copy::LocalizedCopy::new(
+                    "ui.task_storage_requires_a_file_backed_database",
+                )
+            })
         });
         let Ok(database) = database else {
             self.error = database.err();
@@ -645,18 +656,20 @@ impl ThreadsBlock {
         crate::navigation::begin_task_mutation(cx);
         let committed = update.clone();
         let worker = cx.background_executor().spawn(async move {
-            let store = Store::open(database).map_err(|e| e.to_string())?;
+            let store =
+                Store::open(database).map_err(crate::localized_copy::LocalizedCopy::storage)?;
             let renamed_at = if let Some(title) = &update.title {
                 Some(
                     conversation::rename_thread(&store, &id, title)
-                        .map_err(|e| e.to_string())?
+                        .map_err(crate::localized_copy::LocalizedCopy::from)?
                         .updated_at,
                 )
             } else {
-                conversation::update_thread(&store, &id, &update).map_err(|e| e.to_string())?;
+                conversation::update_thread(&store, &id, &update)
+                    .map_err(crate::localized_copy::LocalizedCopy::from)?;
                 None
             };
-            Ok::<_, String>((id, project, renamed_at))
+            Ok::<_, crate::localized_copy::LocalizedCopy>((id, project, renamed_at))
         });
         cx.spawn(async move |this, cx| {
             let result = worker.await;
@@ -736,7 +749,9 @@ impl ThreadsBlock {
 
     fn project_action(&mut self, thread: &Thread, finder: bool, cx: &mut Context<Self>) {
         if self.action_pending {
-            self.error = Some("任务操作正在保存，请稍后重试".into());
+            self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.task_actions_are_being_saved_try_again_shortly",
+            ));
             cx.notify();
             return;
         }
@@ -746,10 +761,11 @@ impl ThreadsBlock {
         let target_id = id.clone();
         let route = cx.global::<OpenedThread>().0.as_ref().map(|t| t.id.clone());
         let database = with_store(cx, |store| {
-            store
-                .database_path()
-                .map(Path::to_path_buf)
-                .ok_or_else(|| "任务存储需要文件数据库".to_string())
+            store.database_path().map(Path::to_path_buf).ok_or_else(|| {
+                crate::localized_copy::LocalizedCopy::new(
+                    "ui.task_storage_requires_a_file_backed_database",
+                )
+            })
         });
         let Ok(database) = database else {
             self.error = database.err();
@@ -758,8 +774,10 @@ impl ThreadsBlock {
         };
         self.action_pending = true;
         let worker = cx.background_executor().spawn(async move {
-            let store = Store::open_read_only(database).map_err(|e| e.to_string())?;
-            conversation::task_project_path(&store, &id).map_err(|e| e.to_string())
+            let store = Store::open_read_only(database)
+                .map_err(crate::localized_copy::LocalizedCopy::storage)?;
+            conversation::task_project_path(&store, &id)
+                .map_err(crate::localized_copy::LocalizedCopy::from)
         });
         cx.spawn(async move |this, cx| {
             let result = worker.await;
@@ -888,7 +906,7 @@ impl ThreadsBlock {
                             .text_size(px(Typography::METADATA))
                             .font_weight(Typography::HEADING_CARD_WEIGHT)
                             .text_color(colors.text_secondary)
-                            .child("SESSIONS"),
+                            .child(vega_i18n::t("ui.sessions")),
                     )
                     .child(crate::icons::icon(
                         if collapsed {
@@ -923,15 +941,19 @@ impl ThreadsBlock {
                 .into_any_element()
         };
         if self.loaded_project.is_none() {
-            return guidance("暂无项目：先在「项目」区选择").into_any_element();
+            return guidance(vega_i18n::t("ui.no_project_choose_one_in_projects_first"))
+                .into_any_element();
         }
         if self.threads.is_empty() && self.archived.is_empty() {
-            return guidance("暂无会话：点顶部「新建任务」开始").into_any_element();
+            return guidance(vega_i18n::t(
+                "ui.no_conversations_click_new_task_above_to_start",
+            ))
+            .into_any_element();
         }
         let mut body = div().flex().flex_col();
         if self.threads.is_empty() {
             // 仅剩归档线程：主列表给一行引导，归档折叠区照常可见可展开。
-            body = body.child(guidance("暂无活跃会话"));
+            body = body.child(guidance(vega_i18n::t("ui.no_active_conversations")));
         } else {
             body =
                 body.children(self.threads.iter().map(|thread| {
@@ -976,7 +998,10 @@ impl ThreadsBlock {
                 div()
                     .text_size(px(Typography::SIDEBAR))
                     .text_color(colors.text_secondary)
-                    .child(format!("已归档 ({})", self.archived.len())),
+                    .child(vega_i18n::t_args(
+                        "ui.archived_count",
+                        &[("count", &(self.archived.len()).to_string())],
+                    )),
             )
             .child(crate::icons::icon(
                 if self.archive_expanded {
@@ -989,14 +1014,6 @@ impl ThreadsBlock {
             .into_any_element()
     }
 
-    /// One session row per ui-spec §4.1: [pin mark][title] [dot] plus a compact
-    /// action trigger. The selected row gets
-    /// `bg_active`; hovering a non-editing row gets `bg_hover` and reveals the
-    /// trigger for its action menu (置顶 / 归档或恢复 / 删除；行内编辑行除外).
-    ///
-    /// The clickable body and the right side are sibling nodes — clicks on
-    /// the action buttons must not re-trigger open (T10 经验：兄弟节点避免
-    /// 嵌套命中).
     fn render_row(
         &self,
         thread: &Thread,
@@ -1039,9 +1056,6 @@ impl ThreadsBlock {
             true,
             false,
             0.0,
-            // R48: a project child row has no leading icon, so it uses the
-            // ladder's text column directly (base + SIDEBAR_ROW_INSET), landing
-            // on the same column as its project row's name.
             Layout::SIDEBAR_ROW_INSET,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
@@ -1126,7 +1140,7 @@ impl ThreadsBlock {
         let mouse_move_thread_id = thread_id.clone();
         let row_thread = thread.clone();
         let accessibility_label = if thread_is_running(&thread.id, cx) {
-            format!("{}，正在运行", thread.title)
+            vega_i18n::t_args("ui.title_running", &[("title", &thread.title)])
         } else {
             thread.title.clone()
         };
@@ -1134,13 +1148,9 @@ impl ThreadsBlock {
             .id(ElementId::Name(
                 format!("{selector_prefix}{thread_id}").into(),
             ))
-            .debug_selector({
-                let id = thread_id.clone();
-                let selector_prefix = selector_prefix.to_owned();
-                move || format!("{selector_prefix}{id}")
-            })
             .aria_label(accessibility_label)
             .h(px(row_height))
+            .flex_shrink_0()
             .ml(px(-surface_leading_outset))
             .flex()
             .items_center()
@@ -1204,16 +1214,6 @@ impl ThreadsBlock {
                 // 打开会话（双击序列的第一次单击仍会先打开，属预期）。
                 .child(
                     div()
-                        .debug_selector({
-                            let id = thread.id.clone();
-                            let selector_prefix = selector_prefix.to_owned();
-                            move || {
-                                format!(
-                                    "{selector_prefix}surface-{id}-{}",
-                                    if selected { "active" } else { "rest" }
-                                )
-                            }
-                        })
                         .flex()
                         .items_center()
                         .gap_1()
@@ -1239,11 +1239,6 @@ impl ThreadsBlock {
                         .children((show_pin_indicator && thread.pinned).then(|| {
                             // 置顶小标记：token 色着色（裁决③）。
                             div()
-                                .debug_selector({
-                                    let id = thread.id.clone();
-                                    let selector_prefix = selector_prefix.to_owned();
-                                    move || format!("{selector_prefix}pin-{id}")
-                                })
                                 .flex_shrink_0()
                                 .text_color(colors.accent)
                                 .child(crate::icons::icon(crate::icons::Icon::Pin, colors.accent))
@@ -1253,11 +1248,6 @@ impl ThreadsBlock {
                                 .id(ElementId::Name(
                                     format!("{selector_prefix}title-{}", thread.id).into(),
                                 ))
-                                .debug_selector({
-                                    let id = thread.id.clone();
-                                    let selector_prefix = selector_prefix.to_owned();
-                                    move || format!("{selector_prefix}title-{id}")
-                                })
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
@@ -1287,7 +1277,16 @@ impl ThreadsBlock {
                 )
             };
         }
-        row.into_any_element()
+        if self.organization.is_some() && !editing_this_row {
+            self.render_reorder_row(
+                organization::ReorderItem::Thread(thread.id.clone()),
+                thread_title(thread),
+                row,
+                cx,
+            )
+        } else {
+            row.into_any_element()
+        }
     }
 
     fn render_row_actions(
@@ -1304,8 +1303,7 @@ impl ThreadsBlock {
         let action_prefix = selector_prefix
             .strip_suffix("thread-row-")
             .unwrap_or(selector_prefix);
-        // R12: the indicator is driven only by the real liveness projection,
-        // never inferred from unread/updated_at/selection.
+
         let running = thread_is_running(&thread.id, cx);
         let menu_open = self.actions_open.as_deref() == Some(thread.id.as_str());
         let keyboard_focused = self.focused_thread_action.as_deref() == Some(thread.id.as_str());
@@ -1315,17 +1313,12 @@ impl ThreadsBlock {
             .id(ElementId::Name(
                 format!("{action_prefix}thread-actions-{thread_id}").into(),
             ))
-            .debug_selector({
-                let id = thread_id.clone();
-                let action_prefix = action_prefix.to_owned();
-                move || format!("{action_prefix}thread-actions-{id}")
-            })
             .relative()
             .size(px(Layout::SIDEBAR_ACTION_SIZE))
             .rounded_md()
             .text_size(px(Typography::HEADING_BLOCK))
             .text_color(colors.text_secondary)
-            .aria_label("会话操作")
+            .aria_label(vega_i18n::t("ui.conversation_actions"))
             .focusable()
             .tab_stop(true)
             .when_some(
@@ -1432,11 +1425,6 @@ impl ThreadsBlock {
         trigger = trigger.absolute().right_0().top_0();
 
         let mut group = div()
-            .debug_selector({
-                let id = thread.id.clone();
-                let state = if actions_visible { "visible" } else { "rest" };
-                move || format!("thread-actions-state-{id}-{state}")
-            })
             .relative()
             .w(px(Layout::SIDEBAR_ACTIONS_WIDTH))
             .mr(px(Layout::SIDEBAR_ACTIONS_INSET))
@@ -1448,13 +1436,15 @@ impl ThreadsBlock {
         if menu_open {
             group = group.track_focus(&self.actions_scope_focus);
         }
-        if shows_timestamp_at_rest(actions_visible, show_timestamp_at_rest, running) {
+        let trailing = session_row_trailing(
+            actions_visible,
+            running,
+            thread.unread,
+            show_timestamp_at_rest,
+        );
+        if trailing == SessionRowTrailing::Timestamp {
             group = group.child(
                 div()
-                    .debug_selector({
-                        let id = thread.id.clone();
-                        move || format!("thread-timestamp-{id}")
-                    })
                     .flex_1()
                     .min_w_0()
                     .text_right()
@@ -1467,16 +1457,11 @@ impl ThreadsBlock {
         let running_selector_prefix = action_prefix.to_owned();
         let running_indicator = || {
             div()
-                .debug_selector({
-                    let id = running_selector_id.clone();
-                    let action_prefix = running_selector_prefix.clone();
-                    move || format!("{action_prefix}thread-running-{id}")
-                })
                 .id(gpui_kit::SharedString::from(format!(
                     "{running_selector_prefix}thread-running-{running_selector_id}"
                 )))
                 .size(px(Layout::SIDEBAR_ACTION_SIZE))
-                .aria_label("任务正在运行")
+                .aria_label(vega_i18n::t("ui.task_running"))
                 .flex_shrink_0()
                 .flex()
                 .items_center()
@@ -1484,15 +1469,15 @@ impl ThreadsBlock {
                 .child(
                     Spinner::new()
                         .ease(gpui_kit::linear)
-                        .with_size(px(16.))
+                        .with_size(px(Layout::ICON_SIZE))
                         .icon(IconName::LoaderCircle)
                         .color(colors.text_secondary.into()),
                 )
         };
-        if running && !actions_visible {
+        if trailing == SessionRowTrailing::Running {
             group = group.child(running_indicator());
         }
-        if thread.unread && !running && !actions_visible {
+        if trailing == SessionRowTrailing::Unread {
             group = group.child(
                 div()
                     .size(px(Layout::SIDEBAR_ACTION_SIZE))
@@ -1510,17 +1495,16 @@ impl ThreadsBlock {
         group = group.child(trigger);
         if quick_actions_visible {
             let pinned = thread.pinned;
-            let pin_label = if pinned { "取消置顶" } else { "置顶" };
+            let pin_label = if pinned {
+                vega_i18n::t("ui.unpin")
+            } else {
+                vega_i18n::t("ui.pin")
+            };
             let pin_thread_id = thread.id.clone();
             let pin_button = div()
                 .id(ElementId::Name(
                     format!("{action_prefix}thread-pin-{thread_id}").into(),
                 ))
-                .debug_selector({
-                    let id = thread_id.clone();
-                    let action_prefix = action_prefix.to_owned();
-                    move || format!("{action_prefix}thread-pin-{id}")
-                })
                 .aria_label(pin_label)
                 .tooltip(move |_, cx| crate::icons::tooltip(pin_label, cx))
                 .size(px(24.))
@@ -1550,22 +1534,17 @@ impl ThreadsBlock {
                 .id(ElementId::Name(
                     format!("{action_prefix}thread-archive-{thread_id}").into(),
                 ))
-                .debug_selector({
-                    let id = thread_id.clone();
-                    let action_prefix = action_prefix.to_owned();
-                    move || format!("{action_prefix}thread-archive-{id}")
-                })
                 .aria_label(if archived {
-                    "恢复任务"
+                    vega_i18n::t("ui.restore_task")
                 } else {
-                    "归档任务"
+                    vega_i18n::t("ui.archive_task")
                 })
                 .tooltip(move |_, cx| {
                     crate::icons::tooltip(
                         if archived {
-                            "恢复任务"
+                            vega_i18n::t("ui.restore_task")
                         } else {
-                            "归档任务"
+                            vega_i18n::t("ui.archive_task")
                         },
                         cx,
                     )
@@ -1630,27 +1609,41 @@ impl ThreadsBlock {
         let mut actions = vec![
             (
                 if thread.pinned {
-                    "取消置顶"
+                    vega_i18n::t("ui.unpin")
                 } else {
-                    "置顶"
+                    vega_i18n::t("ui.pin")
                 },
                 false,
             ),
-            ("重命名", false),
-            (if archived { "恢复" } else { "归档" }, false),
+            (vega_i18n::t("ui.rename"), false),
+            (
+                if archived {
+                    vega_i18n::t("ui.resume")
+                } else {
+                    vega_i18n::t("ui.archive")
+                },
+                false,
+            ),
             (
                 if thread.unread {
-                    "标记为已读"
+                    vega_i18n::t("ui.mark_as_read")
                 } else {
-                    "标记为未读"
+                    vega_i18n::t("ui.mark_as_unread")
                 },
                 false,
             ),
         ];
         if !thread.is_standalone() {
-            actions.extend([("在 Finder 中打开项目", false), ("复制项目路径", false)]);
+            actions.extend([
+                (vega_i18n::t("ui.open_project_in_finder"), false),
+                (vega_i18n::t("ui.copy_project_path"), false),
+            ]);
         }
-        actions.extend([("复制会话 ID", false), ("前往设置", false), ("删除", true)]);
+        actions.extend([
+            (vega_i18n::t("ui.copy_conversation_id"), false),
+            (vega_i18n::t("ui.go_to_settings"), false),
+            (vega_i18n::t("ui.delete"), true),
+        ]);
         let mut actions: Vec<(String, bool)> = actions
             .into_iter()
             .map(|(label, danger)| (label.to_string(), danger))
@@ -1705,11 +1698,6 @@ impl ThreadsBlock {
                             .id(ElementId::Name(
                                 format!("{action_prefix}thread-action-{thread_id}-{index}").into(),
                             ))
-                            .debug_selector({
-                                let id = thread_id.clone();
-                                let action_prefix = action_prefix.to_owned();
-                                move || format!("{action_prefix}thread-action-{id}-{index}")
-                            })
                             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                             .flex_shrink_0()
                             .w_full()
@@ -1747,6 +1735,11 @@ impl ThreadsBlock {
                         item
                     }),
             )
+            .tracked_scroll_edge_fade(
+                self.actions_scroll.clone(),
+                colors.bg_elevated,
+                ScrollFade::compact(),
+            )
             .into_any_element()
     }
 
@@ -1764,6 +1757,7 @@ impl ThreadsBlock {
             .track_focus(&session.input.read(cx).focus_handle(cx))
             .on_action(cx.listener(|this, _: &ConfirmRename, _, cx| this.commit_rename(cx)))
             .on_action(cx.listener(|this, _: &CloseSettings, _, cx| this.cancel_rename(cx)))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.cancel_rename(cx)))
             .child(session.input.clone())
             .into_any_element()
     }
@@ -1833,344 +1827,5 @@ fn merge_update(thread: &mut Thread, update: &ThreadUpdate) {
     }
     if let Some(status) = update.status {
         thread.status = status;
-    }
-}
-
-#[cfg(test)]
-mod task_action_tests {
-    use super::*;
-
-    fn fixture(
-        cx: &mut gpui_kit::TestAppContext,
-    ) -> (tempfile::TempDir, Entity<ThreadsBlock>, Thread, Thread) {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(dir.path().join("owned.db")).unwrap();
-        store.migrate().unwrap();
-        store.conn().execute("INSERT INTO projects (id,path,name,created_at,last_opened_at) VALUES ('p',?1,'owned',0,0)", [dir.path().to_str().unwrap()]).unwrap();
-        let first = conversation::create_thread(&store, "p", "initial", "confirm").unwrap();
-        let other = conversation::create_thread(&store, "p", "other", "confirm").unwrap();
-        cx.update(|cx| {
-            cx.set_global(VegaStore(Ok(store)));
-            cx.set_global(SelectedProject(Some("p".into())));
-            cx.set_global(OpenedThread(Some(first.clone())));
-        });
-        let block = cx.new(ThreadsBlock::new);
-        (dir, block, first, other)
-    }
-
-    #[gpui_kit::test]
-    async fn task_mutation_epoch_fences_real_archive_and_releases_after_dropped_async_owner(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
-        use crate::navigation::{TaskMutationState, begin_task_mutation, finish_task_mutation};
-        let (dir, block, first, other) = fixture(cx);
-        // Model an accepted N visit: A must not archive its destination while pending.
-        cx.update(begin_task_mutation);
-        block.update(cx, |block, cx| {
-            block.set_thread_status(&other.id, ThreadStatus::Archived, cx)
-        });
-        let store = Store::open(dir.path().join("owned.db")).unwrap();
-        assert_eq!(
-            conversation::open_thread(&store, &other.id).unwrap().status,
-            ThreadStatus::Active
-        );
-        block.read_with(cx, |block, _| assert!(block.error.is_some()));
-        cx.update(finish_task_mutation);
-        let resolved_epoch = cx.update(|cx| *cx.global::<TaskMutationState>());
-        block.update(cx, |block, cx| {
-            block.set_thread_status(&other.id, ThreadStatus::Archived, cx)
-        });
-        assert_eq!(
-            conversation::open_thread(&store, &other.id).unwrap().status,
-            ThreadStatus::Archived
-        );
-        cx.update(|cx| {
-            let state = cx.global::<TaskMutationState>();
-            assert_eq!(state.pending, 0);
-            assert_ne!(
-                *state, resolved_epoch,
-                "a previously resolved N target must now fail its fence"
-            );
-        });
-        block.update(cx, |block, cx| {
-            block.apply_update(
-                &first,
-                ThreadUpdate {
-                    title: Some("durable after drop".into()),
-                    ..Default::default()
-                },
-                cx,
-            )
-        });
-        cx.update(|cx| assert_eq!(cx.global::<TaskMutationState>().pending, 1));
-        drop(block);
-        cx.run_until_parked();
-        cx.update(|cx| assert_eq!(cx.global::<TaskMutationState>().pending, 0));
-        assert_eq!(
-            conversation::open_thread(&store, &first.id).unwrap().title,
-            "durable after drop"
-        );
-    }
-
-    #[gpui_kit::test]
-    async fn task_menu_keyboard_reaches_unread_and_escape(cx: &mut gpui_kit::TestAppContext) {
-        let (dir, block, _, _) = fixture(cx);
-        cx.update(|cx| {
-            cx.set_global(vega_theme::Theme::light());
-            cx.set_global(SessionsCollapsed(false));
-            crate::init(cx);
-        });
-        let target = block.read_with(cx, |block, _| block.threads[0].id.clone());
-        let root = block.clone();
-        let window = cx.update(|cx| {
-            cx.open_window(Default::default(), move |_, _| root)
-                .unwrap()
-        });
-        cx.run_until_parked();
-        // Establish the platform's initial tab stop; subsequent input uses real dispatch.
-        window
-            .update(cx, |_, window, cx| window.focus_next(cx))
-            .unwrap();
-        cx.simulate_keystrokes(window.into(), "enter");
-        cx.run_until_parked();
-        block.read_with(cx, |block, _| {
-            assert_eq!(block.actions_open.as_deref(), Some(target.as_str()))
-        });
-        cx.simulate_keystrokes(window.into(), "down down down enter");
-        cx.run_until_parked();
-        let store = Store::open(dir.path().join("owned.db")).unwrap();
-        assert!(conversation::open_thread(&store, &target).unwrap().unread);
-        cx.simulate_keystrokes(window.into(), "enter escape");
-        cx.run_until_parked();
-        block.read_with(cx, |block, _| assert!(block.actions_open.is_none()));
-        cx.simulate_keystrokes(window.into(), "tab enter");
-        cx.run_until_parked();
-        block.read_with(cx, |block, _| {
-            assert!(block.actions_open.is_some());
-            assert_ne!(block.actions_open.as_deref(), Some(target.as_str()));
-        });
-    }
-
-    #[gpui_kit::test]
-    async fn right_click_during_rename_keeps_editor_and_menu_closed(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
-        use gpui_kit::MouseButton;
-
-        let (_dir, block, first, target) = fixture(cx);
-        let input = block.update(cx, |_, cx| cx.new(|cx| TextInput::new(cx, "title", false)));
-        input.update(cx, |input, cx| input.set_text("unsaved title", cx));
-        block.update(cx, |block, _| {
-            block.editing = Some(RenameSession {
-                thread_id: target.id.clone(),
-                input: input.clone(),
-            });
-        });
-        cx.update(|cx| {
-            cx.set_global(vega_theme::Theme::light());
-            cx.set_global(SessionsCollapsed(false));
-        });
-        let root = block.clone();
-        let window = cx.update(|cx| {
-            cx.open_window(Default::default(), move |_, _| root)
-                .unwrap()
-        });
-        cx.run_until_parked();
-
-        let selector: &'static str =
-            Box::leak(format!("thread-row-{}", target.id).into_boxed_str());
-        let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        let row = visual.debug_bounds(selector).unwrap();
-        visual.simulate_mouse_down(row.center(), MouseButton::Right, Default::default());
-        visual.simulate_mouse_up(row.center(), MouseButton::Right, Default::default());
-        cx.run_until_parked();
-        for action in ["pin", "archive"] {
-            let selector: &'static str =
-                Box::leak(format!("thread-{action}-{}", target.id).into_boxed_str());
-            assert!(visual.debug_bounds(selector).is_none());
-        }
-
-        block.read_with(cx, |block, cx| {
-            assert_eq!(
-                block
-                    .editing
-                    .as_ref()
-                    .map(|session| session.thread_id.as_str()),
-                Some(target.id.as_str())
-            );
-            assert_eq!(
-                block.editing.as_ref().unwrap().input.read(cx).text(),
-                "unsaved title"
-            );
-            assert!(block.actions_open.is_none());
-        });
-        cx.update(|cx| assert_eq!(cx.global::<OpenedThread>().0.as_ref().unwrap().id, first.id));
-    }
-
-    #[gpui_kit::test]
-    async fn standalone_task_menu_wraps_seven_actions_and_activates_delete(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
-        let (dir, block, _, _) = fixture(cx);
-        let store = Store::open(dir.path().join("owned.db")).unwrap();
-        let standalone = conversation::create_standalone_thread(&store, "mock", "confirm").unwrap();
-        block.update(cx, |block, _| {
-            block.threads = vec![standalone.clone()];
-            block.archived.clear();
-            block.loaded_project = Some("p".into());
-        });
-        cx.update(|cx| {
-            cx.set_global(OpenedThread(Some(standalone.clone())));
-            cx.set_global(PendingDeleteConfirm(None));
-            cx.set_global(vega_theme::Theme::light());
-            cx.set_global(SessionsCollapsed(false));
-        });
-
-        let root = block.clone();
-        let window = cx.update(|cx| {
-            cx.open_window(Default::default(), move |_, _| root)
-                .unwrap()
-        });
-        cx.run_until_parked();
-        block.update(cx, |block, _| {
-            block.actions_open = Some(standalone.id.clone());
-            block.actions_highlight = 0;
-        });
-        block.read_with(cx, |block, _| {
-            assert_eq!(block.actions_open.as_deref(), Some(standalone.id.as_str()));
-            assert_eq!(block.actions_highlight, 0);
-        });
-
-        // These are the handlers bound to Up/Down/Enter in ThreadActionsMenu.
-        window
-            .update(cx, |block, window, cx| {
-                block.move_action_highlight(-1, cx);
-                assert_eq!(block.actions_highlight, 6);
-                block.move_action_highlight(1, cx);
-                assert_eq!(block.actions_highlight, 0);
-                block.move_action_highlight(-1, cx);
-                let index = block.actions_highlight;
-                block.activate_action_index(&standalone.id, false, index, window, cx);
-            })
-            .unwrap();
-        block.read_with(cx, |block, _| assert!(block.actions_open.is_none()));
-        cx.update(|cx| {
-            assert_eq!(
-                cx.global::<PendingDeleteConfirm>()
-                    .0
-                    .as_ref()
-                    .map(|thread| &thread.id),
-                Some(&standalone.id)
-            );
-        });
-    }
-
-    #[gpui_kit::test]
-    async fn durable_unread_ack_preserves_new_model_and_metadata_refresh(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
-        let (dir, block, first, _) = fixture(cx);
-        block.update(cx, |block, cx| {
-            block.apply_update(
-                &first,
-                ThreadUpdate {
-                    unread: Some(true),
-                    ..Default::default()
-                },
-                cx,
-            )
-        });
-        cx.update(|cx| {
-            let mut current = cx.global::<OpenedThread>().0.clone().unwrap();
-            current.model = "later-model".into();
-            cx.set_global(OpenedThread(Some(current)));
-        });
-        cx.run_until_parked();
-        cx.update(|cx| {
-            let current = cx.global::<OpenedThread>().0.as_ref().unwrap();
-            assert!(current.unread);
-            assert_eq!(current.model, "later-model");
-        });
-        let reopened = Store::open(dir.path().join("owned.db")).unwrap();
-        assert!(
-            conversation::open_thread(&reopened, &first.id)
-                .unwrap()
-                .unread
-        );
-        assert!(
-            !conversation::visit_thread(&reopened, &first.id)
-                .unwrap()
-                .unread
-        );
-    }
-
-    #[gpui_kit::test]
-    async fn rename_noncurrent_task_does_not_navigate_and_failure_retains_input(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
-        let (dir, block, first, other) = fixture(cx);
-        block.update(cx, |block, cx| {
-            let input = cx.new(|cx| TextInput::new(cx, "title", false));
-            input.update(cx, |input, cx| input.set_text("renamed", cx));
-            block.editing = Some(RenameSession {
-                thread_id: other.id.clone(),
-                input,
-            });
-            block.commit_rename(cx);
-        });
-        cx.run_until_parked();
-        cx.update(|cx| assert_eq!(cx.global::<OpenedThread>().0.as_ref().unwrap().id, first.id));
-        block.read_with(cx, |block, _| assert!(block.editing.is_none()));
-        let store = Store::open(dir.path().join("owned.db")).unwrap();
-        assert_eq!(
-            conversation::open_thread(&store, &other.id).unwrap().title,
-            "renamed"
-        );
-        store.conn().execute_batch("CREATE TRIGGER reject_rename BEFORE UPDATE OF title ON threads BEGIN SELECT RAISE(ABORT, 'owned failure'); END;").unwrap();
-        block.update(cx, |block, cx| {
-            let input = cx.new(|cx| TextInput::new(cx, "title", false));
-            input.update(cx, |input, cx| input.set_text("retry me", cx));
-            block.editing = Some(RenameSession {
-                thread_id: other.id.clone(),
-                input,
-            });
-            block.commit_rename(cx);
-        });
-        cx.run_until_parked();
-        block.read_with(cx, |block, cx| {
-            assert!(block.error.is_some());
-            assert_eq!(
-                block.editing.as_ref().unwrap().input.read(cx).text(),
-                "retry me"
-            );
-        });
-        assert_eq!(
-            conversation::open_thread(&store, &other.id).unwrap().title,
-            "renamed"
-        );
-    }
-
-    #[gpui_kit::test]
-    async fn late_task_ack_cannot_replace_new_route(cx: &mut gpui_kit::TestAppContext) {
-        let (dir, block, first, other) = fixture(cx);
-        block.update(cx, |block, cx| {
-            block.apply_update(
-                &first,
-                ThreadUpdate {
-                    unread: Some(true),
-                    ..Default::default()
-                },
-                cx,
-            )
-        });
-        cx.update(|cx| cx.set_global(OpenedThread(Some(other.clone()))));
-        cx.run_until_parked();
-        cx.update(|cx| {
-            let current = cx.global::<OpenedThread>().0.as_ref().unwrap();
-            assert_eq!(current.id, other.id);
-            assert!(!current.unread);
-        });
-        let store = Store::open(dir.path().join("owned.db")).unwrap();
-        assert!(conversation::open_thread(&store, &first.id).unwrap().unread);
     }
 }

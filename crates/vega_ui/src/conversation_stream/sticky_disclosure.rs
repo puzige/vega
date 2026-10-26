@@ -9,6 +9,10 @@ use gpui_kit::{
 pub(crate) struct StickyState(Rc<Cell<bool>>);
 
 impl StickyState {
+    pub(crate) fn pinned_indicator(&self) -> Rc<Cell<bool>> {
+        self.0.clone()
+    }
+
     pub(crate) fn pinned(&self) -> bool {
         self.0.get()
     }

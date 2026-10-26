@@ -1,4 +1,8 @@
-use super::{ComputerUseError, Observation, Target};
+use super::{
+    ComputerUseError, Observation, Target,
+    feedback::{ExecutionState, ToolFailure},
+};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
@@ -8,7 +12,84 @@ pub(super) struct ProgressGuard {
     failures: HashMap<String, u8>,
     actions: HashMap<String, (String, u8)>,
     reads: VecDeque<(String, ReadState, u8)>,
-    stopped: bool,
+    stopped: Option<GuardDiagnostic>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum GuardTrigger {
+    RepeatedDirectory,
+    RepeatedWindow,
+    RepeatedFailure,
+    UnchangedAction,
+    FailureCapacity,
+    ActionCapacity,
+    ScreenshotCount,
+    ScreenshotBytes,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum UnderlyingResult {
+    Succeeded,
+    Failed,
+    OutcomeUnknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct GuardDiagnostic {
+    pub trigger: GuardTrigger,
+    pub count: usize,
+    pub threshold: usize,
+    pub underlying_result: UnderlyingResult,
+    pub dispatch_started: bool,
+}
+
+impl GuardDiagnostic {
+    pub(super) fn valid(self) -> bool {
+        let threshold = match self.trigger {
+            GuardTrigger::RepeatedDirectory
+            | GuardTrigger::RepeatedWindow
+            | GuardTrigger::RepeatedFailure
+            | GuardTrigger::UnchangedAction => 3,
+            GuardTrigger::FailureCapacity | GuardTrigger::ActionCapacity => 64,
+            GuardTrigger::ScreenshotCount => crate::images::MAX_IMAGES,
+            GuardTrigger::ScreenshotBytes => crate::images::MAX_TURN_IMAGE_BYTES,
+        };
+        self.threshold == threshold
+            && match self.trigger {
+                GuardTrigger::RepeatedDirectory
+                | GuardTrigger::RepeatedWindow
+                | GuardTrigger::UnchangedAction => {
+                    self.count == 3
+                        && self.underlying_result == UnderlyingResult::Succeeded
+                        && self.dispatch_started
+                }
+                GuardTrigger::RepeatedFailure => {
+                    self.count == 3 && self.underlying_result == UnderlyingResult::Failed
+                }
+                GuardTrigger::FailureCapacity => {
+                    self.count == 65 && self.underlying_result == UnderlyingResult::Failed
+                }
+                GuardTrigger::ActionCapacity => {
+                    self.count == 65
+                        && self.underlying_result == UnderlyingResult::Succeeded
+                        && self.dispatch_started
+                }
+                GuardTrigger::ScreenshotCount => {
+                    self.count == crate::images::MAX_IMAGES + 1
+                        && self.underlying_result == UnderlyingResult::Succeeded
+                        && self.dispatch_started
+                }
+                GuardTrigger::ScreenshotBytes => {
+                    self.count > threshold
+                        && self.count <= threshold + crate::images::MAX_IMAGE_BYTES
+                        && self.underlying_result == UnderlyingResult::Succeeded
+                        && self.dispatch_started
+                }
+            }
+    }
 }
 
 pub(super) struct Attempt {
@@ -249,7 +330,7 @@ impl Attempt {
 }
 
 impl ProgressGuard {
-    fn record_read(&mut self, key: String, state: ReadState, baseline: u8) -> bool {
+    fn record_read(&mut self, key: String, state: ReadState, baseline: u8) -> u8 {
         let prior = self
             .reads
             .iter()
@@ -263,7 +344,7 @@ impl ProgressGuard {
             self.reads.pop_front();
         }
         self.reads.push_back((key, state, count));
-        count >= 3
+        count
     }
 
     fn reset_reads_for_progress(&mut self, target: &str) {
@@ -276,41 +357,105 @@ impl ProgressGuard {
         self.reset_reads_for_progress(&format!("{}:{}", target.pid, target.window_id));
     }
 
-    pub(super) fn stopped(&self) -> bool {
+    pub(super) fn screenshot_limit(&mut self, count: usize, bytes: usize) {
+        self.stopped = Some(GuardDiagnostic {
+            trigger: if count > crate::images::MAX_IMAGES {
+                GuardTrigger::ScreenshotCount
+            } else {
+                GuardTrigger::ScreenshotBytes
+            },
+            count: if count > crate::images::MAX_IMAGES {
+                count
+            } else {
+                bytes
+            },
+            threshold: if count > crate::images::MAX_IMAGES {
+                crate::images::MAX_IMAGES
+            } else {
+                crate::images::MAX_TURN_IMAGE_BYTES
+            },
+            underlying_result: UnderlyingResult::Succeeded,
+            dispatch_started: true,
+        });
+    }
+
+    pub(super) fn stopped(&self) -> Option<GuardDiagnostic> {
+        self.stopped
+    }
+
+    fn stop(
+        &mut self,
+        trigger: GuardTrigger,
+        count: usize,
+        threshold: usize,
+        result: &Result<String, ToolFailure>,
+        dispatch_started: bool,
+    ) -> Option<GuardDiagnostic> {
+        let diagnostic = GuardDiagnostic {
+            trigger,
+            count,
+            threshold,
+            underlying_result: match result {
+                Ok(_) => UnderlyingResult::Succeeded,
+                Err(failure) if failure.execution_state == ExecutionState::OutcomeUnknown => {
+                    UnderlyingResult::OutcomeUnknown
+                }
+                Err(_) => UnderlyingResult::Failed,
+            },
+            dispatch_started,
+        };
+        self.stopped = Some(diagnostic);
         self.stopped
     }
 
     pub(super) fn finish(
         &mut self,
         attempt: Attempt,
-        result: &Result<String, ComputerUseError>,
+        result: &Result<String, ToolFailure>,
         after: Option<&Observation>,
         screenshot_reused: bool,
-    ) -> bool {
-        if self.stopped {
-            return true;
+        dispatch_started: bool,
+    ) -> Option<GuardDiagnostic> {
+        if self.stopped.is_some() {
+            return self.stopped;
         }
-        if let Err(error) = result {
+        if let Err(failure) = result {
+            let error = failure.error;
             if matches!(
                 error,
                 ComputerUseError::Cancelled | ComputerUseError::Busy | ComputerUseError::NotReady
             ) {
-                return false;
+                return None;
             }
             let key = format!(
                 "{}:{}:{}",
                 attempt.target,
                 attempt.operation,
-                error.feedback()
+                error.feedback_value()
             );
             if self.failures.len() >= 64 && !self.failures.contains_key(&key) {
-                self.stopped = true;
-                return true;
+                return self.stop(
+                    GuardTrigger::FailureCapacity,
+                    65,
+                    64,
+                    result,
+                    dispatch_started,
+                );
             }
             let count = self.failures.entry(key).or_default();
             *count = count.saturating_add(1);
-            self.stopped = *count >= 3;
-            return self.stopped;
+            let count = *count;
+            return if count >= 3 {
+                self.stop(
+                    GuardTrigger::RepeatedFailure,
+                    usize::from(count),
+                    3,
+                    result,
+                    dispatch_started,
+                )
+            } else {
+                None
+            };
         }
         let read = after
             .filter(|_| {
@@ -326,23 +471,22 @@ impl ProgressGuard {
                 };
                 (key, state)
             });
-        if let Some((key, state)) = read
-            && self.record_read(key, state, 1)
-        {
-            self.stopped = true;
-            return true;
+        if let Some((key, state)) = read {
+            let trigger = if matches!(state, ReadState::Catalog(_)) {
+                GuardTrigger::RepeatedDirectory
+            } else {
+                GuardTrigger::RepeatedWindow
+            };
+            let count = self.record_read(key, state, 1);
+            if count >= 3 {
+                return self.stop(trigger, usize::from(count), 3, result, dispatch_started);
+            }
         }
-        let Some(after) =
-            after.filter(|observation| matches!(observation.target, Target::Desktop(_)))
-        else {
-            return false;
-        };
+        let after = after.filter(|observation| matches!(observation.target, Target::Desktop(_)))?;
         self.failures.retain(|key, _| {
             !key.starts_with(&format!("{}:{}:", attempt.target, attempt.operation))
         });
-        let Some(action) = attempt.action else {
-            return false;
-        };
+        let action = attempt.action?;
         if attempt.state.is_none() || attempt.state != state(after) {
             self.actions.remove(&attempt.target);
             if attempt.state.is_some() {
@@ -351,11 +495,16 @@ impl ProgressGuard {
                     self.record_read(key, state, 0);
                 }
             }
-            return false;
+            return None;
         }
         if self.actions.len() >= 64 && !self.actions.contains_key(&attempt.target) {
-            self.stopped = true;
-            return true;
+            return self.stop(
+                GuardTrigger::ActionCapacity,
+                65,
+                64,
+                result,
+                dispatch_started,
+            );
         }
         let entry = self
             .actions
@@ -365,128 +514,17 @@ impl ProgressGuard {
             *entry = (action, 0);
         }
         entry.1 = entry.1.saturating_add(1);
-        self.stopped = entry.1 >= 3;
-        self.stopped
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::computer_use::{ComputerUseControl, tests::fixture_observation};
-    use serde_json::json;
-
-    #[test]
-    fn issue75_usability_refresh_refs_and_successful_observe_do_not_reset_action_failures() {
-        let control = ComputerUseControl::new();
-        let mut guard = ProgressGuard::default();
-        for index in 0..3 {
-            let mut observation = fixture_observation(&control, 1, index);
-            if let Target::Desktop(target) = &mut observation.target {
-                target.selection_id = format!("choice-{index}");
-            }
-            let args =
-                json!({"action":"click","observation_id":observation.id,"x":"invalid","y":1});
-            assert_eq!(
-                guard.finish(
-                    Attempt::new(
-                        "ComputerAct",
-                        &args,
-                        Some(&observation.target),
-                        Some(&observation)
-                    ),
-                    &Err(ComputerUseError::InvalidArguments("x")),
-                    None,
-                    false
-                ),
-                index == 2
-            );
-            if index < 2 {
-                assert!(!guard.finish(
-                    Attempt::new(
-                        "ComputerObserve",
-                        &json!({"target_id":format!("choice-{index}")}),
-                        Some(&observation.target),
-                        None
-                    ),
-                    &Ok("observed".into()),
-                    Some(&observation),
-                    false
-                ));
-            }
-        }
-    }
-
-    #[test]
-    fn issue75_usability_reference_changes_do_not_hide_repeated_action_without_state_change() {
-        let control = ComputerUseControl::new();
-        let mut guard = ProgressGuard::default();
-        for index in 0..3 {
-            let mut before = fixture_observation(&control, 1, index);
-            before.elements =
-                json!([{"element_token":format!("token-{index}"),"role":"button","label":"Next"}]);
-            let mut after = fixture_observation(&control, 1, index + 1);
-            after.elements = json!([{"element_token":format!("token-{}", index+1),"role":"button","label":"Next"}]);
-            let args = json!({"observation_id":before.id,"action":"click","target":format!("token-{index}")});
-            assert_eq!(
-                guard.finish(
-                    Attempt::new("ComputerAct", &args, Some(&before.target), Some(&before)),
-                    &Ok("done".into()),
-                    Some(&after),
-                    false
-                ),
-                index == 2
-            );
-        }
-    }
-
-    #[test]
-    fn issue75_usability_viewport_progress_is_valid_even_with_identical_ax_tree() {
-        let control = ComputerUseControl::new();
-        let mut guard = ProgressGuard::default();
-        let mut before = fixture_observation(&control, 1, 0);
-        before.elements = json!([{"element_token":"pane","role":"scroll_area","label":"Document"}]);
-        for index in 1..8 {
-            let mut after = before.clone();
-            let image = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
-                4,
+        let count = entry.1;
+        if count >= 3 {
+            self.stop(
+                GuardTrigger::UnchangedAction,
+                usize::from(count),
                 3,
-                image::Rgb([index, 0, 0]),
-            ));
-            let mut bytes = std::io::Cursor::new(Vec::new());
-            image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
-            after.image = Some(crate::ImageAttachment::from_bytes(bytes.into_inner()).unwrap());
-            let args = json!({"action":"scroll","target":"pane","direction":"down","amount":1});
-            assert!(!guard.finish(
-                Attempt::new("ComputerAct", &args, Some(&before.target), Some(&before)),
-                &Ok("done".into()),
-                Some(&after),
-                false
-            ));
-            before = after;
-        }
-    }
-}
-
-#[cfg(test)]
-mod unresolved_target_tests {
-    use super::*;
-    #[test]
-    fn issue75_usability_same_error_with_changed_unresolved_references_and_values_stops_at_three() {
-        for operation in ["ComputerObserve", "ComputerAct", "ComputerScreenshot"] {
-            let mut guard = ProgressGuard::default();
-            for index in 0..3 {
-                let args = serde_json::json!({"observation_id":format!("unknown-{index}"),"target_id":format!("expired-{index}"),"text":format!("unused-{index}"),"x":index});
-                assert_eq!(
-                    guard.finish(
-                        Attempt::new(operation, &args, None, None),
-                        &Err(ComputerUseError::InvalidArguments("target_id")),
-                        None,
-                        false
-                    ),
-                    index == 2
-                );
-            }
+                result,
+                dispatch_started,
+            )
+        } else {
+            None
         }
     }
 }

@@ -1,27 +1,16 @@
-//! Settings view (A1-10 UI skeleton): provider list, add-provider form, and
-//! default model / permission mode pickers.
-//!
-//! The view is opened with Cmd+, ([`OpenSettings`]) and closed with Esc or
-//! the back button ([`CloseSettings`]); whether it replaces the session
-//! placeholder is tracked by the [`SettingsOpen`] global, following the
-//! global pattern proven in T07. It loads the config from the config root
-//! (`vega_store::paths`, tech-spec §6) when constructed and saves it back on
-//! every mutation, so configuration survives a restart.
-//!
-//! Credentials never appear in the UI: the key form field is masked while
-//! typing; cached actual local references decide the stored/re-entry badge.
-//! Values persist only in the owner-only plaintext local credential store.
-
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Div, Entity, EventEmitter, FocusHandle, Focusable, Global, MouseButton,
     MouseUpEvent, Window, actions, div, px, relative,
 };
 use vega_conversation::types::{
-    PricingDraftReason, PricingEntryKind, PricingEntryProjection, PricingMutation, PricingNotice,
-    PricingRateInputs, PricingSettingsErrorCode, PricingSettingsProjection, ReasoningChoice,
-    ReasoningDisabledWire, ReasoningProfileProjection, ReasoningProtocol, ReasoningSupport,
+    ModelCapabilityOverride, ModelCapabilityPatch, ModelCapabilityProjection,
+    ModelCapabilitySettingsErrorCode, ModelCapabilitySettingsProjection, PricingDraftReason,
+    PricingEntryKind, PricingEntryProjection, PricingMutation, PricingNotice, PricingRateInputs,
+    PricingSettingsErrorCode, PricingSettingsProjection, REASONING_EFFORTS, ReasoningChoice,
+    ReasoningProfileProjection, ReasoningSupport,
 };
+use vega_i18n::{t, t_args};
 use vega_store::config::{self, AppConfig, ProviderConfig};
 use vega_store::context_compaction::ModelContextPolicy;
 use vega_store::keystore;
@@ -67,9 +56,17 @@ pub struct PricingDiscardRequested {
 }
 
 /// Emitted after a Settings config mutation has been written successfully.
-/// The app uses this as the boundary to refresh its model catalog; it never
-/// carries a credential or requests an in-session model change.
-pub struct SettingsSaved;
+pub struct SettingsSaved {
+    pub replay_identity_changed: bool,
+}
+
+pub struct DesktopPreparationRequested {
+    pub pane: Option<crate::cua_onboarding::PermissionPane>,
+}
+
+pub struct NativePreparationSettingsRequested(pub bool);
+
+impl Global for NativePreparationSettingsRequested {}
 
 /// Settings never opens SQLite itself. The app worker resolves this exact
 /// provider/model policy and sends it back to the active editor.
@@ -108,7 +105,6 @@ pub enum ReasoningSettingsErrorCode {
     Busy,
 }
 
-/// Typed projection of the independent reasoning.toml authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReasoningSettingsProjection {
     Loading,
@@ -134,18 +130,18 @@ pub struct ReasoningProfileSaveRequested {
     pub profile: ReasoningProfileProjection,
 }
 
-/// Requests a fresh worker-side reasoning.toml read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReasoningReloadRequested;
 
-/// User-selectable capability templates. A template only supplies an
-/// explicit declaration; it is never inferred from a provider URL or model
-/// name. The resulting fields remain editable before the worker saves them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReasoningTemplate {
-    OpenAi,
-    Zhipu,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelCapabilitySaveRequested {
+    pub generation: u64,
+    pub operation_id: u64,
+    pub base: ModelCapabilityProjection,
+    pub patch: ModelCapabilityPatch,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelCapabilityReloadRequested;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PricingEditorKind {
@@ -173,25 +169,13 @@ pub(crate) enum PricingFocusTarget {
     Cancel,
 }
 
-/// Keyboard focus targets for the thinking capability editor. The target is
-/// rebuilt with the exact provider/model projection, so a stale failed draft
-/// cannot be applied to a different profile by index alone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ReasoningFocusTarget {
     Reload,
-    Template {
+    Preference {
         index: usize,
-        template: ReasoningTemplate,
+        choice: ReasoningChoice,
     },
-    Protocol(usize),
-    Support(usize),
-    Effort {
-        index: usize,
-        effort: &'static str,
-    },
-    Preference(usize),
-    Disabled(usize),
-    Replay(usize),
 }
 
 /// Whether the settings view currently replaces the session placeholder.
@@ -210,16 +194,23 @@ const PERMISSION_MODES: [&str; 4] = ["readonly", "confirm", "auto", "full_access
 
 /// Status placeholder shown only when the local store contains the reference;
 /// the key value itself is never rendered (safety red line).
-const KEY_STORED_PLACEHOLDER: &str = "•••••••已存储";
+fn key_stored_placeholder() -> &'static str {
+    t("settings.credentials.stored")
+}
 
 mod agents;
 /// The settings view: a plain page with the provider list, the add-provider
 /// form, and the default pickers. Holds its own form input buffers, so it
 /// must be cached by the parent across re-renders (it is rebuilt — reloading
 mod helpers;
+mod localization;
+use localization::{SettingsText, permission_mode_label};
 mod mcp;
+mod model_capabilities;
 mod model_catalog;
+pub use model_capabilities::ModelCapabilityFocusTarget;
 mod model_configuration;
+mod motion;
 use model_configuration::SettingsDestination;
 mod preferences;
 mod provider_management;
@@ -230,9 +221,6 @@ mod skills;
 mod state;
 mod usage;
 pub use usage::UsageReloadRequested;
-
-#[cfg(test)]
-mod tests;
 
 pub use helpers::all_models;
 pub(crate) use helpers::*;

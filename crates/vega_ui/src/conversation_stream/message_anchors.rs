@@ -19,11 +19,11 @@ pub(crate) enum MessageAnchorKind {
 impl MessageAnchorKind {
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::User => "用户消息",
-            Self::Assistant => "助手消息",
-            Self::Tool => "工具活动",
-            Self::Plan => "计划消息",
-            Self::Summary => "任务结果",
+            Self::User => vega_i18n::t("ui.user_message"),
+            Self::Assistant => vega_i18n::t("ui.assistant_message"),
+            Self::Tool => vega_i18n::t("ui.tool_activity"),
+            Self::Plan => vega_i18n::t("ui.plan_message"),
+            Self::Summary => vega_i18n::t("ui.task_result"),
         }
     }
 }
@@ -62,6 +62,73 @@ impl MessageAnchorGeometry {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct MessageAnchorLayout {
+    top_index: usize,
+    top_offset: Pixels,
+    viewport: gpui_kit::Bounds<Pixels>,
+    foreground_height: Pixels,
+    item_count: usize,
+    at_tail: bool,
+    measured_heights: Vec<(usize, f32)>,
+}
+
+impl MessageAnchorLayout {
+    fn capture(list: &gpui_kit::ListState, foreground_height: Pixels) -> Self {
+        let viewport = list.viewport_bounds();
+        let viewport_height = f32::from(viewport.size.height - foreground_height);
+        if !f32::from(viewport.size.width).is_finite()
+            || viewport.size.width <= px(0.)
+            || !viewport_height.is_finite()
+            || viewport_height <= 0.
+            || foreground_height < px(0.)
+        {
+            return Self::default();
+        }
+        let top = list.logical_scroll_top();
+        let item_count = list.item_count();
+        let end = top
+            .item_ix
+            .saturating_add(MESSAGE_ANCHOR_MEASUREMENT_SCAN_LIMIT)
+            .min(item_count);
+        let mut measured_heights = Vec::new();
+        for index in top.item_ix..end {
+            let Some(bounds) = list.bounds_for_item(index) else {
+                if index > top.item_ix {
+                    break;
+                }
+                continue;
+            };
+            let height = f32::from(bounds.size.height);
+            if bounds.size.width > px(0.) && height.is_finite() && height > 0. {
+                measured_heights.push((index, height));
+            }
+        }
+        let reading_bottom = viewport.bottom() - foreground_height;
+        let at_tail = top.item_ix < item_count
+            && (top.item_ix..item_count).all(|index| {
+                list.bounds_for_item(index).is_some_and(|bounds| {
+                    bounds.size.width > px(0.)
+                        && bounds.size.height >= px(0.)
+                        && bounds.bottom() <= reading_bottom
+                })
+            });
+        Self {
+            top_index: top.item_ix,
+            top_offset: top.offset_in_item,
+            viewport,
+            foreground_height,
+            item_count,
+            at_tail,
+            measured_heights,
+        }
+    }
+
+    fn viewport_height(&self) -> f32 {
+        f32::from(self.viewport.size.height - self.foreground_height).max(0.)
+    }
+}
+
 impl ConversationStream {
     pub(crate) fn message_anchor_projections(&self) -> Vec<MessageAnchorProjection> {
         let mut projections = Vec::new();
@@ -73,25 +140,40 @@ impl ConversationStream {
                 continue;
             };
             let (kind, preview) = match entry {
-                StreamEntry::User { lines, .. } => (
+                StreamEntry::User { .. } => (
                     MessageAnchorKind::User,
-                    preview_from_lines(
-                        lines
-                            .iter()
-                            .filter(|line| matches!(line.kind, LineKind::UserLine { .. })),
-                    ),
+                    self.text_cache
+                        .borrow_mut()
+                        .preview(entry_index, &identity.key, entry)
+                        .unwrap_or_default(),
                 ),
-                StreamEntry::UserImages { .. } => (MessageAnchorKind::User, "图片消息".to_string()),
-                StreamEntry::Assistant { model, .. } => (
+                StreamEntry::UserImages { .. } => (
+                    MessageAnchorKind::User,
+                    vega_i18n::t("ui.image_message").to_string(),
+                ),
+                StreamEntry::Assistant { .. } => (
                     MessageAnchorKind::Assistant,
-                    preview_from_lines(model.committed_lines.iter().chain(&model.pending_lines)),
+                    self.text_cache
+                        .borrow_mut()
+                        .preview(entry_index, &identity.key, entry)
+                        .unwrap_or_default(),
                 ),
                 StreamEntry::Tool { .. }
                 | StreamEntry::ToolGroup { .. }
-                | StreamEntry::Artifact { .. } => (MessageAnchorKind::Tool, "工具活动".to_string()),
-                StreamEntry::Plan { .. } => (MessageAnchorKind::Plan, "计划消息".to_string()),
-                StreamEntry::Summary { .. } => (MessageAnchorKind::Summary, "任务结果".to_string()),
-                StreamEntry::ContextCompaction { .. }
+                | StreamEntry::ArtifactGroup { .. } => (
+                    MessageAnchorKind::Tool,
+                    vega_i18n::t("ui.tool_activity").to_string(),
+                ),
+                StreamEntry::Plan { .. } => (
+                    MessageAnchorKind::Plan,
+                    vega_i18n::t("ui.plan_message").to_string(),
+                ),
+                StreamEntry::Summary { .. } => (
+                    MessageAnchorKind::Summary,
+                    vega_i18n::t("ui.task_result").to_string(),
+                ),
+                StreamEntry::Subagents { .. }
+                | StreamEntry::ContextCompaction { .. }
                 | StreamEntry::RunActivity { .. }
                 | StreamEntry::RunActivitySegment { .. }
                 | StreamEntry::Permission { .. }
@@ -105,7 +187,7 @@ impl ConversationStream {
                 entry_index,
                 message_id: message_id.to_string(),
                 kind,
-                preview: sanitize_anchor_preview(&preview),
+                preview,
             });
         }
         projections
@@ -124,10 +206,6 @@ impl ConversationStream {
                 }
                 continue;
             };
-            // During a list remeasure GPUI can temporarily return stale row
-            // bounds with a zero width. Those sizes no longer describe a
-            // useful line-wrap measurement, so retain the last valid cache
-            // entry (or use the bounded content estimate below).
             if bounds.size.width <= px(0.) {
                 continue;
             }
@@ -154,11 +232,11 @@ impl ConversationStream {
 
     pub(crate) fn message_anchor_geometry(
         &self,
+        stage_top_insets: &HashMap<usize, f32>,
         cx: &App,
-        fallback_viewport_height: f32,
     ) -> MessageAnchorGeometry {
-        let notices = self.run_notice_projection(cx);
-        let stage_top_insets = self.stage_top_insets(cx);
+        let notices = &self.run_notices;
+        let mcp_notices = &self.mcp_notices;
         let notice_width = self
             .workspace_width
             .map(|width| width - 2. * Layout::CONVERSATION_PADDING)
@@ -174,7 +252,8 @@ impl ConversationStream {
                     return 0.;
                 }
                 if self.compaction_failure_is_represented(index) {
-                    return notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.);
+                    return notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.)
+                        + mcp_notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.);
                 }
                 self.measured_entry_heights
                     .get(&identity.key)
@@ -182,9 +261,10 @@ impl ConversationStream {
                     .unwrap_or_else(|| match entry {
                         StreamEntry::RunActivity { group } => self.estimated_run_height(group, cx),
                         StreamEntry::RunActivitySegment { group, segment } => group.read(cx).estimated_segment_height_with_top(*segment, notice_width, stage_top_insets.get(&index).copied().unwrap_or(Layout::CONVERSATION_STAGE_TOP), cx),
-                        StreamEntry::Tool { .. } | StreamEntry::ToolGroup { .. } | StreamEntry::ContextCompaction { .. } => estimate_stream_entry_height(entry, cx, self.workspace_width, identity.message_id.is_some()) + stage_top_insets.get(&index).copied().unwrap_or(0.),
-                        _ => estimate_stream_entry_height(entry, cx, self.workspace_width, identity.message_id.is_some()),
-                    } + notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.))
+                        StreamEntry::Tool { .. } | StreamEntry::ToolGroup { .. } | StreamEntry::ContextCompaction { .. } => self.estimated_entry_height(index, cx, identity.message_id.is_some()) + stage_top_insets.get(&index).copied().unwrap_or(0.),
+                        _ => self.estimated_entry_height(index, cx, identity.message_id.is_some()) + if self.copy_source_for_entry(index).is_some() { Layout::MESSAGE_COPY_FOOTER } else { 0. },
+                    } + notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.)
+                        + mcp_notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.))
             })
             .collect::<Vec<_>>();
         let total_height = entry_heights.iter().sum::<f32>();
@@ -211,21 +291,22 @@ impl ConversationStream {
             }
             prefix += height;
         }
-        let top = self.list.logical_scroll_top();
+        let layout = &self.message_anchor_layout;
         let current_prefix = entry_heights
             .iter()
-            .take(top.item_ix.min(entry_heights.len()))
+            .take(layout.top_index.min(entry_heights.len()))
             .sum::<f32>();
-        let current_offset = if top.item_ix < entry_heights.len() {
-            f32::from(top.offset_in_item).clamp(0.0, entry_heights[top.item_ix])
+        let current_offset = if layout.top_index < entry_heights.len() {
+            f32::from(layout.top_offset).clamp(0.0, entry_heights[layout.top_index])
         } else {
             0.0
         };
-        let measured_viewport_height = f32::from(self.list.viewport_bounds().size.height);
-        let viewport_height = if measured_viewport_height > 0.0 {
-            (measured_viewport_height - f32::from(self.foreground_height)).max(0.)
+        let viewport_height = if layout.foreground_height == self.foreground_height
+            && layout.item_count == self.entries.len()
+        {
+            layout.viewport_height()
         } else {
-            fallback_viewport_height.max(0.0)
+            0.0
         };
         MessageAnchorGeometry {
             anchors,
@@ -242,37 +323,60 @@ impl ConversationStream {
 
     pub(crate) fn render_message_anchor_rail(
         &mut self,
+        stage_top_insets: &HashMap<usize, f32>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> (AnyElement, Option<AnyElement>, bool) {
+        let list = self.list.clone();
+        let foreground_height = self.foreground_height;
+        let stream = cx.entity().downgrade();
+        let observer = gpui_kit::canvas(
+            move |_, _, cx| {
+                let layout = MessageAnchorLayout::capture(&list, foreground_height);
+                cx.defer(move |cx| {
+                    let _ = stream.update(cx, |stream, cx| {
+                        if stream.message_anchor_layout != layout {
+                            stream.message_anchor_layout = layout;
+                            cx.notify();
+                        }
+                    });
+                });
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size(px(0.));
         self.capture_visible_entry_heights();
-        let geometry = self
-            .message_anchor_geometry(cx, (f32::from(window.bounds().size.height) - 260.).max(0.));
+        let geometry = self.message_anchor_geometry(stage_top_insets, cx);
         let shown = geometry.should_show();
         self.message_anchor_rail_last_shown = shown;
         if !shown {
-            return (div().into_any_element(), None, false);
+            return (observer.into_any_element(), None, false);
         }
         let anchors = geometry
             .anchors
             .iter()
             .map(|anchor| (anchor.message_id.clone(), anchor.fraction))
             .collect::<Vec<_>>();
-        let top_index = self.list.logical_scroll_top().item_ix;
-        let current_id = geometry
-            .anchors
-            .iter()
-            .rev()
-            .find(|anchor| anchor.entry_index <= top_index)
-            .or_else(|| geometry.anchors.first())
-            .map(|anchor| anchor.message_id.clone());
-        let focused = self.message_anchor_focus.is_focused(window);
+        let current_id = if self.message_anchor_layout.at_tail {
+            geometry.anchors.last()
+        } else {
+            geometry
+                .anchors
+                .iter()
+                .rev()
+                .find(|anchor| anchor.entry_index <= self.message_anchor_layout.top_index)
+                .or_else(|| geometry.anchors.first())
+        }
+        .map(|anchor| anchor.message_id.clone());
+        let keyboard_focused =
+            self.message_anchor_focus.is_focused(window) && window.last_input_was_keyboard();
         let selected_id = self
             .message_anchor_preview_hovered
             .clone()
             .or_else(|| self.message_anchor_hovered.clone())
             .or_else(|| {
-                focused
+                keyboard_focused
                     .then(|| {
                         self.message_anchor_keyboard_id
                             .clone()
@@ -290,7 +394,7 @@ impl ConversationStream {
         let count = anchors.len().min(Layout::MESSAGE_ANCHOR_VISIBLE_COUNT);
         let max_start = anchors.len().saturating_sub(count);
         if !self.message_anchor_rail_hovered && self.message_anchor_preview_hovered.is_none() {
-            let target = if focused {
+            let target = if keyboard_focused {
                 selected_index.unwrap_or(current_index)
             } else {
                 current_index
@@ -346,8 +450,9 @@ impl ConversationStream {
         let key_anchors = anchors.clone();
         let rail = div()
             .id("message-anchor-rail")
-            .debug_selector(|| "message-anchor-rail".into())
-            .aria_label("消息导航，使用上下键选择，Enter跳转，Esc关闭预览")
+            .aria_label(vega_i18n::t(
+                "ui.message_navigation_use_arrow_keys_to_select_enter",
+            ))
             .tab_stop(true)
             .track_focus(&self.message_anchor_focus)
             .absolute()
@@ -449,7 +554,6 @@ impl ConversationStream {
                             || current_id.as_deref() == Some(id.as_str());
                         div()
                             .id(gpui_kit::SharedString::from(format!("message-anchor-{id}")))
-                            .debug_selector(move || format!("message-anchor-item-{id}"))
                             .aria_label(anchor_preview_label(anchor))
                             .w_full()
                             .h(px(Layout::CONVERSATION_MARKER_PITCH))
@@ -497,6 +601,7 @@ impl ConversationStream {
                             )
                     }),
             )
+            .child(observer)
             .into_any_element();
         (rail, preview, false)
     }
@@ -515,7 +620,6 @@ fn render_message_anchor_preview(
 ) -> AnyElement {
     div()
         .id("message-anchor-preview")
-        .debug_selector(|| "message-anchor-preview".into())
         .aria_label(label.clone())
         .w(px(width))
         .max_h(px(Layout::MESSAGE_ANCHOR_PREVIEW_HEIGHT))
@@ -567,10 +671,10 @@ pub(crate) fn sanitize_anchor_preview(text: &str) -> String {
             .trim_matches(|ch: char| !ch.is_alphanumeric())
             .eq_ignore_ascii_case("bearer")
         {
-            safe.push("[凭据已隐藏]");
+            safe.push(vega_i18n::t("ui.credentials_hidden"));
             words.next();
         } else if looks_like_credential(word) {
-            safe.push("[凭据已隐藏]");
+            safe.push(vega_i18n::t("ui.credentials_hidden"));
         } else {
             safe.push(word);
         }
@@ -647,6 +751,9 @@ pub(super) fn estimate_entry_height(
         .clamp(1., Layout::CONVERSATION_MAX_WIDTH);
     let line_height = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
     match entry {
+        StreamEntry::Subagents { group } => {
+            group.read(cx).row_count(cx) as f32 * Layout::DISCLOSURE_HEADER_HEIGHT
+        }
         StreamEntry::RunActivity { group } => group.read(cx).estimated_header_height(),
         StreamEntry::RunActivitySegment { group, segment } => {
             group.read(cx).estimated_segment_height(
@@ -657,28 +764,8 @@ pub(super) fn estimate_entry_height(
         }
         StreamEntry::Tool { card } => card.read(cx).estimated_height(),
         StreamEntry::ToolGroup { group } => group.read(cx).estimated_height(cx),
-        StreamEntry::User { lines, .. } => {
-            let bubble_width = text_width * Layout::CONVERSATION_USER_RATIO
-                - 2. * Layout::CONVERSATION_USER_PADDING;
-            let user_chars_per_line =
-                (bubble_width / (Typography::CONVERSATION * 0.56)).max(12.0) as usize;
-            let rows = lines
-                .iter()
-                .filter(|line| matches!(line.kind, LineKind::UserLine { .. }))
-                .map(|line| {
-                    let chars = line
-                        .spans
-                        .iter()
-                        .map(|span| display_width(&span.text))
-                        .sum::<usize>();
-                    chars.div_ceil(user_chars_per_line).max(1)
-                })
-                .sum::<usize>();
-            rows.max(1) as f32 * line_height
-                + Layout::USER_MESSAGE_PADDING_TOP
-                + Layout::CONVERSATION_USER_BOTTOM
-                + 16.
-        }
+        StreamEntry::ArtifactGroup { group } => group.read(cx).estimated_height(),
+        StreamEntry::User { lines, .. } => estimate_user_height(lines, text_width),
         StreamEntry::Assistant { model, failure, .. } => {
             estimate_markdown_height(model, text_width)
                 + Layout::CONVERSATION_BODY_TOP
@@ -702,69 +789,83 @@ pub(super) fn estimate_entry_height(
                 return 0.;
             }
             let label = context_compaction_label(record.status, record.failure, *restored);
-            let failed = record.status == vega_conversation::types::ContextCompactionStatus::Failed;
-            let width = if failed {
-                text_width
-            } else {
-                (text_width - Layout::ICON_SIZE - Layout::CONVERSATION_INLINE_GAP).max(1.)
-            };
-            let columns = (width / (Typography::BODY * 0.56)).max(1.) as usize;
-            (display_width(&label).div_ceil(columns).max(1) as f32
-                * Typography::BODY
-                * Typography::BODY_LINE_HEIGHT)
-                .max(Layout::DISCLOSURE_HEADER_HEIGHT)
+            if record.status == vega_conversation::types::ContextCompactionStatus::Failed {
+                let columns = (text_width / (Typography::BODY * 0.56)).max(1.) as usize;
+                return (display_width(&label).div_ceil(columns).max(1) as f32
+                    * Typography::BODY
+                    * Typography::BODY_LINE_HEIGHT)
+                    .max(Layout::DISCLOSURE_HEADER_HEIGHT);
+            }
+            estimate_compaction_activity_height(&label, text_width)
         }
         StreamEntry::SkillActivation { .. } => 30.0,
         _ => (entry.row_count(cx).max(1) as f32 * ROW_HEIGHT + 12.0).max(30.0),
     }
 }
 
+pub(super) fn estimate_compaction_activity_height(label: &str, width: f32) -> f32 {
+    let line_height = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
+    let width = (width - Layout::ICON_SIZE - Layout::CONVERSATION_INLINE_GAP).max(1.);
+    let columns = (width / (Typography::CONVERSATION * 0.56)).max(1.) as usize;
+    let vertical_padding = (Layout::CONVERSATION_TOOL_HEIGHT - line_height) / 2.;
+    (display_width(label).div_ceil(columns).max(1) as f32 * line_height + 2. * vertical_padding)
+        .max(Layout::CONVERSATION_TOOL_HEIGHT)
+}
+
 pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
     let line_height = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
-    let chars_per_line = (width / (Typography::CONVERSATION * 0.56)).max(12.0) as usize;
     let lines = model
         .committed_lines
         .iter()
         .chain(&model.pending_lines)
         .collect::<Vec<_>>();
-    let list_blocks = lines
-        .iter()
-        .filter(|line| line.kind == LineKind::ListItem)
-        .map(|line| line.block_id)
-        .collect::<HashSet<_>>();
     let gaps = lines
         .iter()
         .enumerate()
         .map(|(index, line)| {
             let previous = index.checked_sub(1).map(|index| lines[index]);
-            if line.kind == LineKind::Code
-                && previous.is_some_and(|previous| {
-                    previous.kind == LineKind::Code && previous.block_id == line.block_id
-                })
-            {
+            if previous.is_some_and(|previous| line.continues_code_block(previous)) {
                 return 0.;
             }
             render_rows::markdown_block_gap(
                 previous,
                 line,
-                list_blocks.contains(&line.block_id),
-                previous.is_some_and(|line| list_blocks.contains(&line.block_id)),
+                line.in_list,
+                previous.is_some_and(|line| line.in_list),
             )
         })
         .sum::<f32>();
+    let code_headers = lines
+        .iter()
+        .enumerate()
+        .filter(|(index, line)| {
+            line.kind == LineKind::Code
+                && line.code_block.is_some()
+                && index
+                    .checked_sub(1)
+                    .is_none_or(|previous| !line.continues_code_block(lines[previous]))
+        })
+        .count() as f32
+        * (Layout::COPY_ACTION_SIZE
+            + Layout::COPY_ACTION_GAP
+            + 2.0 * Layout::MARKDOWN_CODE_PADDING);
     let content_height = model
         .committed_lines
         .iter()
         .chain(&model.pending_lines)
         .map(|line| {
+            if line.kind == LineKind::Code {
+                return Typography::CODE * Typography::CODE_LINE_HEIGHT;
+            }
             if let Some(table) = &line.table {
-                let inset =
-                    if list_blocks.contains(&line.block_id) && line.kind != LineKind::ListItem {
-                        (line.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT
-                    } else {
-                        0.0
-                    };
-                let widths = table.column_widths(width - inset);
+                let inset = if line.kind != LineKind::ListItem {
+                    line.list_content_inset()
+                } else {
+                    0.0
+                };
+                let widths = table.column_widths(
+                    width - inset - line.quotes.len() as f32 * (2. + Layout::MARKDOWN_CODE_PADDING),
+                );
                 return table
                     .rows
                     .iter()
@@ -794,28 +895,51 @@ pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
                 .iter()
                 .map(|span| display_width(&span.text))
                 .sum::<usize>();
+            let quote_inset = line.quotes.len() as f32 * (2. + Layout::MARKDOWN_CODE_PADDING);
+            let list_inset = line.list_content_inset();
+            let minimum_capacity = if line.quotes.is_empty() { 12. } else { 1. };
+            let chars_per_line = ((width - quote_inset - list_inset)
+                / (Typography::CONVERSATION * 0.56))
+                .max(minimum_capacity) as usize;
             chars.div_ceil(chars_per_line).max(1) as f32 * line_height
         })
         .sum::<f32>();
-    content_height + gaps
+    content_height + gaps + code_headers
 }
 
-pub(crate) fn estimate_stream_entry_height(
-    entry: &StreamEntry,
-    cx: &App,
-    width: Option<f32>,
-    owned: bool,
-) -> f32 {
-    if !owned {
-        return estimate_entry_height(entry, cx, width);
-    }
-    match entry {
-        StreamEntry::Summary { .. } => 0.,
-        StreamEntry::Assistant {
-            failure: Some(_), ..
-        } => (estimate_entry_height(entry, cx, width)
-            - Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT)
-            .max(0.),
-        _ => estimate_entry_height(entry, cx, width),
-    }
+pub(super) fn estimate_user_height(lines: &[StreamLine], text_width: f32) -> f32 {
+    let bubble_width =
+        text_width * Layout::CONVERSATION_USER_RATIO - 2. * Layout::CONVERSATION_USER_PADDING;
+    let user_chars_per_line = (bubble_width / (Typography::CONVERSATION * 0.56)).max(12.0) as usize;
+    let rows = lines
+        .iter()
+        .filter(|line| matches!(line.kind, LineKind::UserLine { .. }))
+        .map(|line| {
+            let chars = line
+                .spans
+                .iter()
+                .map(|span| display_width(&span.text))
+                .sum::<usize>();
+            chars.div_ceil(user_chars_per_line).max(1)
+        })
+        .sum::<usize>();
+    rows.max(1) as f32 * (Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT)
+        + Layout::USER_MESSAGE_PADDING_TOP
+        + Layout::CONVERSATION_USER_BOTTOM
+        + 16.
+}
+
+pub(super) fn text_preview(entry: &StreamEntry) -> Option<String> {
+    let preview = match entry {
+        StreamEntry::User { lines, .. } => preview_from_lines(
+            lines
+                .iter()
+                .filter(|line| matches!(line.kind, LineKind::UserLine { .. })),
+        ),
+        StreamEntry::Assistant { model, .. } => {
+            preview_from_lines(model.committed_lines.iter().chain(&model.pending_lines))
+        }
+        _ => return None,
+    };
+    Some(sanitize_anchor_preview(&preview))
 }

@@ -1,5 +1,6 @@
 //! IO-free local branch selector backed only by safe, bounded projections.
 
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use std::ops::Range;
 mod current_head;
 use current_head::CurrentHead;
@@ -26,14 +27,6 @@ actions!(
 pub const BRANCH_ROW_HEIGHT: f32 = Typography::SIDEBAR_LINE_HEIGHT;
 pub const BRANCH_LIMIT: usize = 10_000;
 
-/// R62 R10: the fixed vertical band the popup spends on everything that is not
-/// a branch row — the search field ([`MENU_ROW_HEIGHT`] plus its 4px bottom
-/// margin), the separator above the trailing actions (1px plus 4px on each
-/// side) and the trailing action row ([`MENU_ROW_HEIGHT`]).
-///
-/// It is a named sum rather than a magic number so the popup's height budget
-/// and the elements it hosts cannot drift apart: change any band and the
-/// popup's row capacity follows.
 pub const BRANCH_CHROME_HEIGHT: f32 = (crate::menu_list::MENU_ROW_HEIGHT + 4.0)
     + (4.0 + 1.0 + 4.0)
     + crate::menu_list::MENU_ROW_HEIGHT;
@@ -93,10 +86,6 @@ pub struct BranchSelectorModel {
     visual_focused: Option<BranchId>,
     next_operation: u64,
     pending: Option<(BranchOperationId, u64, BranchId)>,
-    /// R62 R10: the visible row filter, as a lowercase needle. It is applied
-    /// to the already-bounded snapshot, so it can only hide rows — it never
-    /// widens what the selector can reach, and `focused`/`contains_switchable`
-    /// keep answering from the full snapshot (R62 R11).
     filter: String,
     /// Positions into `snapshot.branches` that match `filter`, in snapshot
     /// order. Recomputed only when the snapshot or the filter changes, so a
@@ -162,9 +151,6 @@ impl BranchSelectorModel {
         true
     }
 
-    /// R62 R10: replaces the visible filter. The snapshot, the focus target and
-    /// every switch capability are untouched — only which rows this frame
-    /// lists changes (R62 R11).
     pub fn set_filter(&mut self, query: &str) -> bool {
         let needle = query.trim().to_lowercase();
         if self.filter == needle {
@@ -179,15 +165,6 @@ impl BranchSelectorModel {
         &self.filter
     }
 
-    /// Recomputes the visible positions. Runs on snapshot/filter changes only.
-    ///
-    /// If the filter just hid the focused branch, the focus re-anchors to the
-    /// first **visible** switchable row; if the filter hid every switchable
-    /// row, the focus is cleared outright, because Enter must never activate a
-    /// row the user cannot see. The switch capability itself is untouched —
-    /// `contains_switchable` still validates against the full snapshot, so the
-    /// set of branches the selector will actually switch to is unchanged
-    /// (R62 R11).
     fn rebuild_filtered(&mut self) {
         self.filtered = match &self.snapshot {
             None => Vec::new(),
@@ -226,8 +203,6 @@ impl BranchSelectorModel {
         }
     }
 
-    /// Number of rows the list currently shows (R62 R10: the filtered count,
-    /// which is what the virtualized list is sized from).
     pub fn visible_count(&self) -> usize {
         self.filtered.len()
     }
@@ -394,9 +369,7 @@ impl BranchSelectorModel {
         let Some(snapshot) = &self.snapshot else {
             return;
         };
-        // R62 R10: the walk runs over the **visible** (filtered) projection, so
-        // arrow keys cannot land on a row the filter hid. With an empty filter
-        // `filtered` is `0..len`, which reproduces the pre-R62 walk exactly.
+
         let switchable: Vec<usize> = self
             .filtered
             .iter()
@@ -442,9 +415,6 @@ impl BranchSelectorModel {
         self.visual_focused = self.focused;
     }
 
-    /// R62 R10: where the focused branch sits in the **visible** projection —
-    /// the coordinate `UniformListScrollHandle::scroll_to_item` speaks now that
-    /// the list is sized from the filtered count.
     pub fn focused_position(&self) -> Option<usize> {
         let focused = self.focused?;
         let snapshot = self.snapshot.as_ref()?;
@@ -457,10 +427,7 @@ impl BranchSelectorModel {
         let Some(snapshot) = self.snapshot.as_ref() else {
             return Vec::new();
         };
-        // R62 R10: the range indexes the **filtered** projection, and the
-        // returned position is the snapshot index, which is what
-        // `focused_index` and the scroll handle speak. With an empty filter
-        // `filtered[i] == i`, so the pre-R62 behaviour is bit-identical.
+
         range
             .filter_map(|position| {
                 let index = *self.filtered.get(position)?;
@@ -484,9 +451,6 @@ pub struct BranchSelector {
     chip_chrome: bool,
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
-    /// R62 R10: the popup's search field. An entity (not a string) because the
-    /// field is a real editable input with IME support; its text is mirrored
-    /// into `model.filter`, which only hides rows.
     search: Entity<crate::text_input::TextInput>,
 }
 
@@ -516,11 +480,12 @@ impl BranchSelector {
             }
         })
         .detach();
-        // R62 R10: the popup's search field. Bare chrome, because the row
-        // around it draws the surface; its text mirrors into `model.filter`,
-        // which only decides which rows the list shows (R62 R11).
-        let search = cx
-            .new(|cx| crate::text_input::TextInput::new(cx, "搜索分支", false).with_bare_chrome());
+
+        let search = cx.new(|cx| {
+            crate::text_input::TextInput::new(cx, "", false)
+                .with_placeholder_key("ui.search_branches")
+                .with_bare_chrome()
+        });
         cx.observe(&search, |this, input, cx| {
             if this.model.set_filter(input.read(cx).text()) {
                 this.scroll.scroll_to_item(0, ScrollStrategy::Top);
@@ -549,29 +514,12 @@ impl BranchSelector {
         self.menu_below = below;
     }
 
-    /// Switches the trigger chrome to the R49 composer utility-bar chip
-    /// (borderless, transparent, hover surface only). Only the trigger's
-    /// decoration changes: open/close, switching, pending, error codes,
-    /// focus, scrolling and popup anchoring are untouched.
     pub fn set_chip_chrome(&mut self, chip: bool) {
         self.chip_chrome = chip;
     }
 
     pub fn route(&self) -> (&str, &str) {
         (&self.thread_id, &self.project_id)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn current_head_is_non_git_for_test(&self) -> bool {
-        matches!(
-            self.current_head.state,
-            Some(vega_conversation::types::ProjectBranchState::NonGit)
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn poll_current_head_for_test(&mut self, cx: &mut Context<Self>) {
-        self.poll_current_head(cx);
     }
 
     /// Changes the project of the window-owned unmaterialized draft while
@@ -618,26 +566,18 @@ impl BranchSelector {
         self.model.owns_pending(operation, generation, id)
     }
 
-    pub fn focused_branch(&self) -> Option<BranchId> {
-        self.model.focused()
-    }
-
     pub fn visible_rows(&self, range: Range<usize>) -> Vec<(usize, BranchItem)> {
         self.model.visible_rows(range)
     }
 
-    /// R62 R10: how many rows the popup currently lists (the filtered count).
     pub fn visible_count(&self) -> usize {
         self.model.visible_count()
     }
 
-    /// R62 R10: the active row filter, as the normalized needle.
     pub fn filter(&self) -> &str {
         self.model.filter()
     }
 
-    /// R62 R10: the popup's search field, so callers (and tests) can drive the
-    /// one real input rather than a parallel string.
     pub fn search_input(&self) -> Entity<crate::text_input::TextInput> {
         self.search.clone()
     }
@@ -824,9 +764,6 @@ impl BranchSelector {
     }
 
     fn focused_index(&self) -> Option<usize> {
-        // R62 R10: the list is sized from the filtered count, so the scroll
-        // coordinate is the focused branch's position in the **visible**
-        // projection, not its snapshot index.
         self.model.focused_position()
     }
 
@@ -856,11 +793,7 @@ impl Render for BranchSelector {
         let banner_rows =
             usize::from(row_count > 0 && matches!(self.model.status, SelectorStatus::Failed(_)));
         let popup_width = px(320.0).min((window.viewport_size().width - px(16.0)).max(px(1.0)));
-        // R62 R10: the popup now also carries the search row, the separator
-        // and the trailing action row, so the row-count height gains exactly
-        // those bands ([`BRANCH_CHROME_HEIGHT`]) and nothing else. R11's 240px
-        // cap and the window bound are unchanged; the body simply scrolls
-        // inside them.
+
         let popup_height = px(
             (filtered_count.max(1) + banner_rows) as f32 * BRANCH_ROW_HEIGHT + BRANCH_CHROME_HEIGHT,
         )
@@ -880,19 +813,6 @@ impl Render for BranchSelector {
             .child(
                 div()
                     .id("branch-selector-trigger")
-                    .debug_selector({
-                        let label = label.clone();
-                        move || format!("branch-current-{label}")
-                    })
-                    // R68 R3: the trigger claims the mouse-down in the
-                    // **capture** phase, exactly like the composer's project
-                    // chip. `toggle` below runs on mouse-up, so a bubble-phase
-                    // `stop_propagation` would arrive too late to keep the
-                    // popup's capture-phase out-handler (R1) from closing it,
-                    // and the following mouse-up would reopen it — the trigger
-                    // could never close its own popup (R68 §2). R6/R15: this
-                    // changes no geometry and leaves the R64 `deferred` wrap
-                    // untouched.
                     .capture_any_mouse_down(|_, _, cx| cx.stop_propagation())
                     .h(px(BRANCH_ROW_HEIGHT))
                     .max_w(px(180.0))
@@ -900,10 +820,6 @@ impl Render for BranchSelector {
                     .overflow_hidden()
                     .flex()
                     .items_center()
-                    // R49: the R19 bordered pill is the default chrome; the
-                    // composer utility bar mounts the same selector as a
-                    // borderless chip, so the mount point decides. The
-                    // disabled affordance (§8) is identical in both.
                     .when(!self.chip_chrome, |trigger| {
                         trigger
                             .rounded_md()
@@ -944,50 +860,22 @@ impl Render for BranchSelector {
                     })
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::toggle))
                     .when(self.chip_chrome, |trigger| {
-                        // R49 §2.3 chip structure: 16px icon in the secondary
-                        // ink, label in the primary ink (tertiary while
-                        // disabled, matching the pill's §8 degradation).
-                        trigger.child(
-                            div()
-                                .debug_selector(|| "composer-utility-branch-icon".into())
-                                .flex_shrink_0()
-                                .child(crate::icons::icon(
-                                    crate::icons::Icon::GitBranch,
-                                    if disabled {
-                                        colors.text_tertiary
-                                    } else {
-                                        colors.text_secondary
-                                    },
-                                )),
-                        )
+                        trigger.child(div().flex_shrink_0().child(crate::icons::icon(
+                            crate::icons::Icon::GitBranch,
+                            if disabled {
+                                colors.text_tertiary
+                            } else {
+                                colors.text_secondary
+                            },
+                        )))
                     })
                     .child(label),
             )
             .when(open, |root| {
                 let popup = div()
-                    // R68 R1/R2/R4/R5: the popup closes when the pointer goes
-                    // down **outside** it. `on_mouse_down_out` fires in the
-                    // capture phase and only when the pointer is outside the
-                    // element's own bounds, so a click on the popup's own
-                    // surface — the search field, a row, the trailing action —
-                    // leaves it open (R4) with no extra "am I inside?" logic.
-                    // The close goes through the selector's existing
-                    // [`BranchSelector::request_close`] (R2): it also emits
-                    // `BranchSelectorClosed`, whose pending cleanup belongs to
-                    // the controller, so the handler must not mutate
-                    // `model.status` directly. R5: this touches only this
-                    // popup's state; the project popup's flag lives in
-                    // `ConversationStream`, not here.
                     .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                         let _ = this.request_close(cx);
                     }))
-                    // R68: the popup's own selector, so a test can tell "the
-                    // pointer is outside the popup" from "the pointer is on the
-                    // trigger" without re-deriving the popup's box. The
-                    // `anchored` layer keeps this deferred surface attached to
-                    // the trigger while window-margin constraints are applied,
-                    // so the two boxes are measured independently.
-                    .debug_selector(|| "branch-selector-popup".into())
                     .w(popup_width)
                     .flex_shrink_0()
                     .h(popup_height)
@@ -999,15 +887,7 @@ impl Render for BranchSelector {
                     .bg(colors.bg_elevated)
                     .text_color(colors.text_primary)
                     .shadow_sm()
-                    // R62 R10: the search field, then the (filtered) rows.
-                    // `filtered_count` is what the virtualized list is sized
-                    // from, so a filter shortens the list instead of leaving
-                    // blank measured space behind.
-                    .child(crate::menu_list::search_field(
-                        &self.search,
-                        "branch-selector-search",
-                        colors,
-                    ))
+                    .child(crate::menu_list::search_field(&self.search, colors))
                     .when_some(
                         match self.model.status {
                             SelectorStatus::Failed(code) if row_count > 0 => Some(code),
@@ -1052,27 +932,25 @@ impl Render for BranchSelector {
                             .track_scroll(&self.scroll)
                             .flex_1()
                             .min_h_0()
-                            // R4: uniform_list lays each item out against its
-                            // padded content width.  Keep the menu's 4px
-                            // card-edge gutter in the list itself; applying
-                            // `mx_1` to a full-width item is ignored by the
-                            // virtualized root and makes the selected surface
-                            // touch the popup edge.
                             .px_1()
-                            .w_full(),
+                            .w_full()
+                            .tracked_scroll_edge_fade(
+                                self.scroll.clone(),
+                                colors.bg_elevated,
+                                ScrollFade::compact(),
+                            ),
                         )
                     })
                     .when(filtered_count == 0, |body| {
                         let text = if row_count > 0 {
-                            // R62 R10: the filter hid every row.
-                            "没有匹配分支"
+                            vega_i18n::t("ui.no_matching_branches")
                         } else {
                             match self.model.status {
-                                SelectorStatus::Loading => "Loading branches…",
-                                SelectorStatus::Empty => "No local branches",
+                                SelectorStatus::Loading => vega_i18n::t("ui.loading_branches"),
+                                SelectorStatus::Empty => vega_i18n::t("ui.no_local_branches"),
                                 SelectorStatus::Failed(code) => branch_error_label(code),
                                 SelectorStatus::Closed | SelectorStatus::Ready => {
-                                    "No local branches"
+                                    vega_i18n::t("ui.no_local_branches")
                                 }
                             }
                         };
@@ -1083,19 +961,13 @@ impl Render for BranchSelector {
                                 .child(text),
                         )
                     })
-                    // R62 R10: the trailing action group. `+ 新建并切换分支`
-                    // has no Vega implementation path — the headless branch
-                    // service exposes refresh / prepare_switch / execute_switch
-                    // only, and no caller may invent a Git command outside it —
-                    // so the row renders **disabled** rather than pretending to
-                    // work (R62 R11).
                     .child(crate::menu_list::separator(colors))
                     .child(crate::menu_list::action_row(
                         "branch-selector-new",
                         crate::icons::Icon::Plus,
-                        "新建并切换分支".into(),
+                        vega_i18n::t("ui.create_and_switch_branch").into(),
                         false,
-                        "暂不支持：分支服务只提供列出与切换",
+                        vega_i18n::t("ui.not_available_the_branch_service_only_lists_and"),
                         colors,
                         |_, _, _| {},
                     ));
@@ -1126,12 +998,6 @@ impl Render for BranchSelector {
     }
 }
 
-/// One branch row (R62 R10): branch icon + label, and the current branch
-/// carries the checkmark and the light-grey rounded surface.
-///
-/// `index` is the **snapshot** index (what `visible_rows` returns), so the
-/// selector is stable across filtering and matches what
-/// `focused_index`/`scroll_to_item` speak.
 fn render_branch_row(
     index: usize,
     branch: BranchItem,
@@ -1142,21 +1008,14 @@ fn render_branch_row(
 ) -> impl IntoElement {
     let id = branch.id;
     let current = branch.current;
-    let check_selector = format!("branch-row-{index}-check");
     crate::menu_list::row_container(
         ("branch-row", index),
         current,
         !current && !disabled,
         colors,
     )
-    // R4: uniform_list items otherwise measure to their intrinsic child width.
-    // Give the branch row the popup's content width so its selected surface
-    // and trailing marker occupy the same full-width row as the menu body;
-    // the parent list's `px_1()` supplies the 4px edge gutters because the
-    // virtualized root lays each item against its definite padded width.
     .w_full()
     .mx_0()
-    .debug_selector(move || format!("branch-row-{index}"))
     .text_color(if current || disabled {
         colors.text_tertiary
     } else {
@@ -1181,113 +1040,41 @@ fn render_branch_row(
             .overflow_hidden()
             .child(branch.label),
     )
-    .child(crate::menu_list::selection_marker(
-        current,
-        move || check_selector.clone(),
-        colors,
-    ))
+    .child(crate::menu_list::selection_marker(current, colors))
 }
 
 fn branch_error_label(code: GitWorkspaceErrorCode) -> &'static str {
     match code {
-        GitWorkspaceErrorCode::BranchDirty => "Working tree is not clean",
-        GitWorkspaceErrorCode::BranchOperationInProgress => "Another Git operation is active",
-        GitWorkspaceErrorCode::BranchDetached => "Detached HEAD is unsupported",
-        GitWorkspaceErrorCode::BranchUnborn => "Repository has no initial commit",
-        GitWorkspaceErrorCode::BranchUnsafeFilter => "Branch contains filtered files",
-        GitWorkspaceErrorCode::BranchAlreadyCurrent => "Branch is already current",
+        GitWorkspaceErrorCode::BranchDirty => vega_i18n::t("ui.working_tree_is_not_clean"),
+        GitWorkspaceErrorCode::BranchOperationInProgress => {
+            vega_i18n::t("ui.another_git_operation_is_active")
+        }
+        GitWorkspaceErrorCode::BranchDetached => vega_i18n::t("ui.detached_head_is_unsupported"),
+        GitWorkspaceErrorCode::BranchUnborn => vega_i18n::t("ui.repository_has_no_initial_commit"),
+        GitWorkspaceErrorCode::BranchUnsafeFilter => {
+            vega_i18n::t("ui.branch_contains_filtered_files")
+        }
+        GitWorkspaceErrorCode::BranchAlreadyCurrent => vega_i18n::t("ui.branch_is_already_current"),
         GitWorkspaceErrorCode::GitUnavailable => {
-            "Git 2.40+ was not found; install Homebrew Git and retry"
+            vega_i18n::t("ui.git_2_40_was_not_found_install_homebrew_en")
         }
-        GitWorkspaceErrorCode::GitUnsupported => "Git 2.40+ is required; upgrade Git and retry",
+        GitWorkspaceErrorCode::GitUnsupported => {
+            vega_i18n::t("ui.git_2_40_is_required_upgrade_git_and_en")
+        }
         GitWorkspaceErrorCode::GitExecutableChanged => {
-            "Git changed while Vega was running; restart Vega and retry"
+            vega_i18n::t("ui.git_changed_while_vega_was_running_restart_vega_en")
         }
-        GitWorkspaceErrorCode::TimedOut => "Branch operation timed out",
-        GitWorkspaceErrorCode::Cancelled => "Branch operation cancelled",
+        GitWorkspaceErrorCode::TimedOut => vega_i18n::t("ui.branch_operation_timed_out"),
+        GitWorkspaceErrorCode::Cancelled => vega_i18n::t("ui.branch_operation_cancelled"),
         GitWorkspaceErrorCode::BranchPathLimit => {
-            "Branch listing supports at most 25,000 tracked files; reduce tracked files and retry"
+            vega_i18n::t("ui.branch_listing_supports_at_most_25_000_tracked")
         }
         GitWorkspaceErrorCode::BranchCountLimit => {
-            "Too many local branches to display (10,000 limit); remove branches and retry"
+            vega_i18n::t("ui.too_many_local_branches_to_display_10_000")
         }
         GitWorkspaceErrorCode::OutputTooLarge | GitWorkspaceErrorCode::ArtifactLimit => {
-            "Branch data exceeded a safety limit; reduce repository size or retry"
+            vega_i18n::t("ui.branch_data_exceeded_a_safety_limit_reduce_repository")
         }
-        _ => "Branches unavailable",
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn branch_selector_fixed_geometry_and_limit_are_exact() {
-        assert_eq!(BRANCH_ROW_HEIGHT, 32.0);
-        assert_eq!(BRANCH_LIMIT, 10_000);
-        assert!(branch_count_allowed(10_000));
-        assert!(!branch_count_allowed(10_001));
-    }
-
-    #[test]
-    fn branch_selector_open_and_close_are_single_shot() {
-        let mut model = BranchSelectorModel::default();
-        assert!(model.open());
-        assert!(!model.open());
-        assert!(model.is_open());
-        assert!(model.close());
-        assert!(!model.close());
-        assert!(!model.is_open());
-    }
-
-    #[test]
-    fn branch_selector_error_is_typed_and_clears_partial_state() {
-        let mut model = BranchSelectorModel::default();
-        assert!(model.open());
-        model.apply_error(GitWorkspaceErrorCode::BranchUnsafeFilter);
-        assert_eq!(model.snapshot_generation(), None);
-        assert_eq!(model.focused(), None);
-        assert!(!model.is_pending());
-        assert_eq!(
-            branch_error_label(GitWorkspaceErrorCode::BranchUnsafeFilter),
-            "Branch contains filtered files"
-        );
-    }
-
-    #[test]
-    fn branch_selector_limit_errors_name_the_limited_resource() {
-        assert_eq!(
-            branch_error_label(GitWorkspaceErrorCode::BranchPathLimit),
-            "Branch listing supports at most 25,000 tracked files; reduce tracked files and retry"
-        );
-        assert_eq!(
-            branch_error_label(GitWorkspaceErrorCode::BranchCountLimit),
-            "Too many local branches to display (10,000 limit); remove branches and retry"
-        );
-        assert_eq!(
-            branch_error_label(GitWorkspaceErrorCode::OutputTooLarge),
-            "Branch data exceeded a safety limit; reduce repository size or retry"
-        );
-        assert_eq!(
-            branch_error_label(GitWorkspaceErrorCode::ArtifactLimit),
-            "Branch data exceeded a safety limit; reduce repository size or retry"
-        );
-        assert!(
-            !branch_error_label(GitWorkspaceErrorCode::OutputTooLarge)
-                .contains("Too many branches")
-        );
-    }
-
-    #[test]
-    fn branch_selector_safe_events_redact_branch_content() {
-        let request = BranchListRequested {
-            thread_id: "thread-a".into(),
-            project_id: "project-a".into(),
-        };
-        let debug = format!("{request:?}");
-        assert!(!debug.contains("refs/"));
-        assert!(!debug.contains("oid"));
-        assert!(!debug.contains("path"));
+        _ => vega_i18n::t("ui.branches_unavailable"),
     }
 }

@@ -6,6 +6,7 @@ use vega_conversation::types::{AssistantResponseKind, AssistantResponseMetadata}
 pub(crate) struct RunResponses {
     responses: Vec<AssistantResponseMetadata>,
     invalid: bool,
+    final_copy: Option<(u64, MessageCopy)>,
 }
 
 impl RunResponses {
@@ -36,6 +37,95 @@ impl RunResponses {
             final_seen = response.kind == AssistantResponseKind::Final;
         }
         Some(&self.responses)
+    }
+
+    pub(crate) fn refresh_final_copy(
+        &mut self,
+        message_id: &str,
+        entries: &[StreamEntry],
+        identities: &[StreamEntryIdentity],
+    ) {
+        let mut text = String::new();
+        let mut owner = None;
+        let mut failed = false;
+        let mut notices = Vec::new();
+        for (entry, identity) in entries.iter().zip(identities) {
+            if identity.message_id.as_deref() == Some(message_id)
+                && let StreamEntry::Assistant {
+                    copy,
+                    model,
+                    failure,
+                    ..
+                } = entry
+            {
+                failed |= failure.is_some();
+                notices.extend(
+                    copy.generated_notices()
+                        .into_iter()
+                        .map(|notice| notice.shifted(text.len())),
+                );
+                text.push_str(&copy.original_text());
+                if model.row_count() > 0 {
+                    owner = Some((copy.id, text.len()));
+                }
+            }
+        }
+        let projection = (!failed)
+            .then(|| self.validated(&text))
+            .flatten()
+            .and_then(|responses| {
+                responses
+                    .iter()
+                    .find(|response| response.kind == AssistantResponseKind::Final)
+            })
+            .and_then(|response| {
+                let (owner, _) = owner.filter(|(_, end)| *end > response.text_start_bytes)?;
+                Some((
+                    owner,
+                    text.get(response.text_start_bytes..response.text_end_bytes)?,
+                    response.text_start_bytes..response.text_end_bytes,
+                ))
+            });
+        self.final_copy = projection.map(|(owner, source, range)| {
+            let copy = self
+                .final_copy
+                .as_ref()
+                .filter(|(previous, copy)| *previous == owner && copy.original_text() == source)
+                .map(|(_, copy)| copy.clone())
+                .unwrap_or_else(|| MessageCopy::new(source));
+            copy.set_generated_notices(
+                notices
+                    .iter()
+                    .filter_map(|notice| notice.within(range.clone()))
+                    .collect(),
+            );
+            (owner, copy)
+        });
+    }
+
+    pub(crate) fn refresh_generated_copy(
+        &mut self,
+        message_id: &str,
+        entries: &[StreamEntry],
+        identities: &[StreamEntryIdentity],
+    ) {
+        if self.final_copy.is_some() {
+            self.refresh_final_copy(message_id, entries, identities);
+        }
+    }
+
+    fn copy_owner(&self) -> Option<u64> {
+        self.final_copy.as_ref().map(|(owner, _)| *owner)
+    }
+
+    pub(crate) fn clear_final_copy(&mut self) -> Option<u64> {
+        self.final_copy.take().map(|(owner, _)| owner)
+    }
+
+    pub(crate) fn rollback(&mut self, start: usize) {
+        self.final_copy = None;
+        self.responses
+            .retain(|response| response.text_end_bytes <= start);
     }
 }
 
@@ -152,6 +242,153 @@ fn operation_top_inset(index: usize, previous_assistant: bool) -> f32 {
 }
 
 impl ConversationStream {
+    pub(crate) fn final_copy_for_entry(&self, index: usize) -> Option<&MessageCopy> {
+        let StreamEntry::Assistant {
+            copy,
+            failure: None,
+            ..
+        } = self.entries.get(index)?
+        else {
+            return None;
+        };
+        let message_id = self.entry_identities.get(index)?.message_id.as_ref()?;
+        self.run_responses
+            .get(message_id)?
+            .final_copy
+            .as_ref()
+            .filter(|(owner, _)| *owner == copy.id)
+            .map(|(_, source)| source)
+    }
+
+    pub(crate) fn message_actions_enabled(&self) -> bool {
+        !self.actions.running && self.active_agent_message.is_none()
+    }
+
+    pub(crate) fn message_interaction(&self) -> render_rows::MessageInteraction<'_> {
+        render_rows::MessageInteraction {
+            focus: &self.selection_focus,
+            actions_enabled: self.message_actions_enabled(),
+        }
+    }
+
+    pub(crate) fn copy_source_for_entry(&self, index: usize) -> Option<&MessageCopy> {
+        if let Some(source) = self.final_copy_for_entry(index) {
+            return Some(source);
+        }
+        if self.thread.backend != TaskBackend::Codex {
+            return None;
+        }
+        let StreamEntry::Assistant {
+            copy,
+            failure: None,
+            ..
+        } = self.entries.get(index)?
+        else {
+            return None;
+        };
+        let message_id = self
+            .entry_identities
+            .get(index)
+            .and_then(|identity| identity.message_id.as_deref());
+        if message_id.is_some_and(|id| self.run_failures.contains_key(id))
+            || self
+                .active_agent_message
+                .as_ref()
+                .is_some_and(|(active_id, active_index)| {
+                    *active_index == index || message_id == Some(active_id.as_str())
+                })
+        {
+            return None;
+        }
+        copy.has_text().then_some(copy)
+    }
+
+    fn invalidate_copy_owner(&mut self, owner: Option<u64>) {
+        if let Some(owner) = owner {
+            let index = self.entries.iter().position(
+                |entry| matches!(entry, StreamEntry::Assistant { copy, .. } if copy.id == owner),
+            );
+            self.invalidate_item(index);
+        }
+    }
+
+    pub(crate) fn clear_final_copy(&mut self, message_id: &str) -> bool {
+        let owner = self
+            .run_responses
+            .get_mut(message_id)
+            .and_then(RunResponses::clear_final_copy);
+        self.invalidate_copy_owner(owner);
+        owner.is_some()
+    }
+
+    pub fn completion_response(&self, message_ids: &[String], cx: &App) -> Option<String> {
+        for message_id in message_ids.iter().rev() {
+            let copies = self
+                .entries
+                .iter()
+                .zip(&self.entry_identities)
+                .filter_map(|(entry, identity)| {
+                    if identity.message_id.as_ref() != Some(message_id) {
+                        return None;
+                    }
+                    match entry {
+                        StreamEntry::Assistant { copy, .. } => Some(copy),
+                        _ => None,
+                    }
+                })
+                .collect::<Vec<_>>();
+            if let Some(responses) = self.run_responses.get(message_id) {
+                let text = copies
+                    .iter()
+                    .map(|copy| copy.original_text())
+                    .collect::<String>();
+                let Some(responses) = responses.validated(&text) else {
+                    continue;
+                };
+                if let Some(response) = responses
+                    .iter()
+                    .rev()
+                    .find(|response| response.kind == AssistantResponseKind::Final)
+                    && let Some(text) = text.get(response.text_start_bytes..response.text_end_bytes)
+                    && !text.trim().is_empty()
+                {
+                    let mut offset = 0;
+                    let notices = copies
+                        .iter()
+                        .flat_map(|copy| {
+                            let notices = copy
+                                .generated_notices()
+                                .into_iter()
+                                .map(|notice| notice.shifted(offset))
+                                .collect::<Vec<_>>();
+                            offset += copy.original_text().len();
+                            notices
+                        })
+                        .filter_map(|notice| {
+                            notice.within(response.text_start_bytes..response.text_end_bytes)
+                        })
+                        .collect::<Vec<_>>();
+                    return Some(generated_notice::project_text(text, &notices));
+                }
+                continue;
+            }
+            for copy in copies.into_iter().rev() {
+                if self
+                    .run_activity_groups
+                    .get(message_id)
+                    .is_some_and(|group| group.read(cx).hides_copy(copy.id))
+                {
+                    continue;
+                }
+                let text = copy.display_text();
+                if !text.trim().is_empty() {
+                    return Some(text);
+                }
+            }
+        }
+        None
+    }
+
     pub(crate) fn run_details(
         &self,
         group: &Entity<RunActivityGroup>,
@@ -171,9 +408,7 @@ impl ConversationStream {
                         group.read(cx).segment_children(*segment),
                         cx,
                     ) {
-                        if !matches!(child, RunActivityChild::Artifact(_)) {
-                            details.push((index, RunDetail::Operation(child)));
-                        }
+                        details.push((index, RunDetail::Operation(child)));
                     }
                 }
                 StreamEntry::Assistant { copy, .. } if group.read(cx).hides_copy(copy.id) => {
@@ -200,7 +435,11 @@ impl ConversationStream {
                     | StreamEntry::ContextCompaction { .. }
             ) {
                 let top = match previous_visible.and_then(|previous| self.entries.get(previous)) {
-                    Some(StreamEntry::RunActivity { .. }) => Layout::CONVERSATION_BODY_TOP,
+                    Some(
+                        StreamEntry::RunActivity { .. }
+                        | StreamEntry::User { .. }
+                        | StreamEntry::UserImages { .. },
+                    ) => Layout::CONVERSATION_BODY_TOP,
                     Some(StreamEntry::Assistant { .. }) => Layout::CONVERSATION_STAGE_TOP,
                     _ => 0.,
                 };
@@ -228,7 +467,12 @@ impl ConversationStream {
                     }
                     insets.insert(
                         index,
-                        if previous_clock.get(owner) == Some(&true) {
+                        if previous_clock.get(owner) == Some(&true)
+                            || matches!(
+                                previous_visible.and_then(|previous| self.entries.get(previous)),
+                                Some(StreamEntry::User { .. } | StreamEntry::UserImages { .. })
+                            )
+                        {
                             Layout::CONVERSATION_BODY_TOP
                         } else {
                             Layout::CONVERSATION_STAGE_TOP
@@ -272,11 +516,7 @@ impl ConversationStream {
                     previous_assistant = false;
                 }
                 RunDetail::Assistant(entry_index) => {
-                    height += message_anchors::estimate_entry_height(
-                        &self.entries[*entry_index],
-                        cx,
-                        self.workspace_width,
-                    );
+                    height += self.estimated_entry_height(*entry_index, cx, false);
                     previous_assistant = true;
                 }
             }
@@ -304,28 +544,20 @@ impl ConversationStream {
                             .min_w_0()
                             .flex_shrink_0()
                             .pt(px(top))
-                            .debug_selector(move || format!("run-detail-row-{detail_index}"))
                             .child(RunActivityGroup::render_child(child, window, cx))
                             .into_any_element()
                     }
                     RunDetail::Assistant(index) => {
                         previous_assistant = true;
-                        let selector = match &self.entries[index] {
-                            StreamEntry::Assistant { copy, .. } => {
-                                format!("run-process-message-{}", copy.id)
-                            }
-                            _ => format!("run-process-entry-{index}"),
-                        };
                         gpui_kit::div()
                             .w_full()
                             .min_w_0()
                             .flex_shrink_0()
-                            .debug_selector(move || selector.clone())
                             .child(render_rows::render_entry_with_selection(
                                 &self.entries[index],
                                 window,
                                 cx,
-                                &self.selection_focus,
+                                self.message_interaction(),
                             ))
                             .into_any_element()
                     }
@@ -362,15 +594,6 @@ impl ConversationStream {
                 offset_in_item: px(anchor.offset_in_item_px),
             });
             return true;
-        }
-        if let StreamEntry::RunActivitySegment { group, segment } = &self.entries[index]
-            && group
-                .read(cx)
-                .segment_children(*segment)
-                .iter()
-                .any(|child| matches!(child, RunActivityChild::Artifact(_)))
-        {
-            return false;
         }
         let Some(group) = self.entry_identities[index]
             .message_id
@@ -415,9 +638,27 @@ impl ConversationStream {
         {
             return;
         }
+        if response.kind == AssistantResponseKind::Final
+            && let Some((_, index)) = &self.active_agent_message
+        {
+            let index = *index;
+            if let Some(StreamEntry::Assistant {
+                copy,
+                stream,
+                model,
+                ..
+            }) = self.entries.get_mut(index)
+                && copy.sync_model(stream, model, &self.counters)
+            {
+                self.invalidate_item(Some(index));
+            }
+        }
         let responses = self.run_responses.entry(message_id.to_owned()).or_default();
+        let previous_copy = responses.copy_owner();
         let closes_response = response.kind == AssistantResponseKind::Commentary;
         let inserted = responses.push(response);
+        responses.refresh_final_copy(message_id, &self.entries, &self.entry_identities);
+        let next_copy = responses.copy_owner();
         let copies = process_copies(message_id, responses, &self.entries, &self.entry_identities);
         if let Some(group) = self.run_activity_groups.get(message_id) {
             group.update(cx, |group, cx| {
@@ -457,16 +698,47 @@ impl ConversationStream {
                 self.close_active_segment_at_response(text.len());
             }
         }
+        if previous_copy != next_copy {
+            self.invalidate_copy_owner(previous_copy);
+            self.invalidate_copy_owner(next_copy);
+            cx.notify();
+        }
     }
 
     pub(crate) fn process_entry_hidden(&self, index: usize, cx: &App) -> bool {
         if self.compaction_failure_resolved(index) {
             return true;
         }
-        if matches!(self.entries.get(index), Some(StreamEntry::ContextCompaction { record, .. })
-            if matches!(record.status, vega_conversation::types::ContextCompactionStatus::Succeeded | vega_conversation::types::ContextCompactionStatus::Cancelled))
+        if let Some(StreamEntry::RunActivity { group }) = self.entries.get(index) {
+            return group.read(cx).header_hidden();
+        }
+        if let Some(StreamEntry::RunActivitySegment { group, segment }) = self.entries.get(index) {
+            return group.read(cx).segment_row_count(*segment, cx) == 0;
+        }
+        if let Some(StreamEntry::ContextCompaction { model, record, .. }) = self.entries.get(index)
         {
-            return true;
+            use vega_conversation::types::ContextCompactionStatus as Status;
+            if matches!(record.status, Status::Succeeded | Status::Cancelled) {
+                return true;
+            }
+            if record.status == Status::Compacting {
+                return self
+                    .entry_identities
+                    .get(index)
+                    .and_then(|identity| identity.message_id.as_ref())
+                    .and_then(|owner| self.run_activity_groups.get(owner))
+                    .is_some_and(|group| {
+                        group
+                            .read(cx)
+                            .compaction_segment(model, record.generation)
+                            .is_some_and(|projected| {
+                                self.entries.iter().any(|entry| {
+                                    matches!(entry, StreamEntry::RunActivitySegment { group: owned, segment }
+                                        if owned == group && *segment == projected)
+                                })
+                            })
+                    });
+            }
         }
         let Some(StreamEntry::Assistant {
             copy,

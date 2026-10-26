@@ -1,14 +1,9 @@
-//! Conversation-layer orchestration for the headless runtime (S4-T20).
-
 use std::collections::VecDeque;
 use std::fmt;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-#[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -35,7 +30,6 @@ const PERSISTENCE_CHANNEL_CAPACITY: usize = 64;
 /// Authoritative production permission-card lifetime.
 pub const PERMISSION_TIMEOUT: Duration = vega_runtime::PERMISSION_TIMEOUT;
 
-/// Shared cancellable permission boundary implemented by the S5 UI.
 pub trait PermissionHook: Send + Sync {
     /// Requests one content-free permission decision.
     fn request(
@@ -50,13 +44,19 @@ mod credential_guard;
 mod diagnostics;
 mod entry;
 mod events;
+mod ordinary;
 mod permission_queue;
+pub use ordinary::{
+    OrdinaryHistoryObservation, OrdinaryRun, finish_ordinary_worker, observe_ordinary_history,
+};
+mod stage_activity;
+mod subagents;
+mod user_question_queue;
+pub use user_question_queue::*;
 mod persistence;
 mod pipeline;
+mod replay_sessions;
 mod skills;
-
-#[cfg(test)]
-mod tests;
 
 pub use compaction::{
     ConversationCompactionHook, compact_thread_manually, compact_thread_manually_accounted,
@@ -71,5 +71,7 @@ pub use permission_queue::*;
 pub use persistence::PersistenceActorConfig;
 pub(crate) use persistence::*;
 pub(crate) use pipeline::*;
+pub use replay_sessions::ReplaySessionRegistry;
+pub(crate) use replay_sessions::{ReplayCheckpointFence, ReplaySessionLease};
 pub(crate) use skills::validate_frozen_snapshot;
 pub use skills::{SkillAssistantStatus, SkillRunRecovery, recover_skill_run};

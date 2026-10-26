@@ -1,0 +1,196 @@
+{
+  "head": "7d1066901e9f488cc81e825bb035df6dea7936ee",
+  "tree_source": "https://github.com/puzige/vega/tree/7d1066901e9f488cc81e825bb035df6dea7936ee/crates",
+  "tree_sha256": "2d1970802095dea2c4a9c7c9c02b26fef98274820eaadc2707482ea7ab31c0ab",
+  "files": [
+    {
+      "file": "crates/vega/src/app_model_compatibility_tests.rs",
+      "git_blob": "1ed2b73f5ee073d4ec850544d95e191891f7fdd2",
+      "sha256": "d042b8d5c107fdca86d0c04a4ced71189b608f74b8c06fd4a0f14444a92638b9"
+    },
+    {
+      "file": "crates/vega/src/window/model_capability_tests.rs",
+      "git_blob": "7236194dc8845a5706bfd75f14d91f0ea83c95b7",
+      "sha256": "dc7ee68420020e722d79458be036c8e4ce446f74c5219ca784a37655a0c1c29b"
+    },
+    {
+      "file": "crates/vega/src/window/model_context_compatibility_tests.rs",
+      "git_blob": "50aae4c79db3cb91052c1200a2f76399a6365449",
+      "sha256": "8d74c473d38ad9994a5c8fa7c76e01b0e51cfb408d537b362181532f281fc80c"
+    },
+    {
+      "file": "crates/vega_conversation/src/agent/compaction.rs",
+      "git_blob": "87ef59d936c660d55394cd910f4ab6a2eaa04fbf",
+      "sha256": "6b31abae7aeded0d8e63d38aa817325dc8b2c77710b69317f44f3223d33bd07d"
+    },
+    {
+      "file": "crates/vega_conversation/src/agent/credential_guard.rs",
+      "git_blob": "86bf31a9be10cc3bd75424031e4cb14e8cdd06c6",
+      "sha256": "3f157eb62c304e4b2af3bd6e234dd8864b82c519747a83495982a5ded5ed75ea"
+    },
+    {
+      "file": "crates/vega_conversation/src/agent/pipeline.rs",
+      "git_blob": "3d2381afb6861242172859349bdb6c9cbbb98065",
+      "sha256": "47e8a7942b8bfdef3cf2ddcea95011a0010af07a99002f2c09b489a528aa5e82"
+    },
+    {
+      "file": "crates/vega_conversation/src/model_compatibility_tests/automatic_titles.rs",
+      "git_blob": "5d30cd9baf07050a04755216631eccac8cc57c4e",
+      "sha256": "dc9bdc06f50b2de21de2b07774e5083e7ae902adbc760a33b958b2ad6b823e19"
+    },
+    {
+      "file": "crates/vega_conversation/src/model_compatibility_tests/compaction.rs",
+      "git_blob": "d5b7def8455e014a56bca61ef15ca9a9e1118627",
+      "sha256": "dfd1afb00611980b92880f4e74330714cfed17ea641ee2d9fcbbf7311e77f359"
+    },
+    {
+      "file": "crates/vega_conversation/src/model_compatibility_tests/composer_predictions.rs",
+      "git_blob": "6cf7d4ce5118a8983f9b68ad675b67de33883f48",
+      "sha256": "c2a060f21d121a8ce63bba7b3a2b4707d39b5305eba3f9f6ca1179b4fa4dba37"
+    },
+    {
+      "file": "crates/vega_conversation/src/model_compatibility_tests/lifecycle.rs",
+      "git_blob": "81f493f3c8a6795e7e3c1adb303e73ba89af769e",
+      "sha256": "760bdef74c9ef5b743c4bfb19cb07f2161e4f1b96d3b0bb94405765da72ebf85"
+    },
+    {
+      "file": "crates/vega_conversation/src/model_compatibility_tests/mod.rs",
+      "git_blob": "1c16c518476cd58b906e7d276935541d6e112fda",
+      "sha256": "e884ea2fe999ffc9b81ef7f4d2551b4606935bf3054e44d307b8bca7ce5a0e67"
+    },
+    {
+      "file": "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs",
+      "git_blob": "bbd3934e48f6977f9576c64bc6e2efa3e11376b9",
+      "sha256": "56a79a4357d4a05af99dcddf36c6f3ce0aba7052aa9541397538901f94b5b77b"
+    },
+    {
+      "file": "crates/vega_conversation/src/model_compatibility_tests/trusted_git.rs",
+      "git_blob": "8d1163509583526bf2905b08f56a579a8624b84d",
+      "sha256": "6bfd433288121a7a0be35ba7cf101c47ecf9d0dbaa54e04a1a975daff0aa0d47"
+    },
+    {
+      "file": "crates/vega_runtime/src/agent/tools_exec.rs",
+      "git_blob": "3d77c1238bfed252440aea3ab1d5e52c0b7cc440",
+      "sha256": "b0c23bb1099c0c535b003da09e6dbb3812f05548ca1854b60de4a7b2ecd827eb"
+    },
+    {
+      "file": "crates/vega_runtime/src/computer_use/desktop_test_support.rs",
+      "git_blob": "80123ff822adf7b5b5535edb0b337394e5e14de7",
+      "sha256": "32e83ef7599b4e5d7411d255dfa533c4cff839fef92d76ca99e16d6b8d68a1b2"
+    },
+    {
+      "file": "crates/vega_runtime/src/model_compat/pi-ai-0.84.4.json",
+      "git_blob": "869b3bb0bd7ddd99fe02053fdf249d7a52bc134b",
+      "sha256": "3c7bfe4d340715cdba2ddc689d7e302ba62f51377025d622fe33cb223bdae1f1"
+    },
+    {
+      "file": "crates/vega_runtime/src/model_compat/pi-ai-0.84.4.sources.json",
+      "git_blob": "42120bbf74af0ed699c361070a2d9fc46bdd538e",
+      "sha256": "82970e4c6963371aeffaab90a3d6d17e975718981120d553ffc2a48a615bf72c"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/catalog.rs",
+      "git_blob": "7625a548b7598e73082f80c54e79515cc885725b",
+      "sha256": "774d899b2ddab3f9838f6c90c56ffa69fc0953b5c7d9d465bb096437ced86125"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/chat.rs",
+      "git_blob": "768451e0be478e04efcebc92e30e2f372d3af566",
+      "sha256": "eefa7e808fe19ca71c7c2487259eecd1002c9efe731d7e4513767d12bd651c09"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/errors.rs",
+      "git_blob": "6dc490a2dd3d5e883937bbef321becff7b756c45",
+      "sha256": "6f4e446cea780eff89b7e7d7fb478ee7b9250f8388fba9888ec75f1a783d8fd9"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/fixtures/blue.png",
+      "git_blob": "236593f5e73cd239855cc935bbbcd960d3725123",
+      "sha256": "45d23cee87293ea99af26093ec3ad3acde66cb7969d3d3fd73798642d6453845"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/fixtures/native-models.json",
+      "git_blob": "6d7c1a396fe73e393fd3e2d2fd41e33012a12fde",
+      "sha256": "8987a9a0dbacf211062e8563ae98c9e65419ce5a3e81de565b3a1e254aae5942"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/fixtures/red.png",
+      "git_blob": "7fe353aff85bba90505ca1c17a5ab3e6eaf52f14",
+      "sha256": "d28c139bba718d60154960eaca75535a5cc5b59fe2153e998a29251e8e5f4667"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/http.rs",
+      "git_blob": "e47cee124f7621245b635cc80f1d55412ce298d9",
+      "sha256": "9cb03a1de68f940890dc7335933e7e538b73213c0d713a80c08bf9f3752a74f8"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs",
+      "git_blob": "1ad81eb233713097f119d607c578387b03d33599",
+      "sha256": "3eab92d775c5798f615c3ae6b04032f906ea4b60a663eacf1108b36b0a6e384f"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/mod.rs",
+      "git_blob": "a2b14e1fc8936abf5eff5e2a7897307287ecf24e",
+      "sha256": "552f08c5e8388d374667a6d7a24f138c12bd58f0861da7e8f89fcbbcc2cceab6"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/responses.rs",
+      "git_blob": "97240e8c2d2d4837693cb95a0ff42d504730c616",
+      "sha256": "dff3cf83f3f9bd8c3b499c3d3e1b0b848a3caa9d59c22b3d4ab5e2b4e2a8352e"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/stream.rs",
+      "git_blob": "45fe731f1ea5463c44755792c4cb57380edfb9bb",
+      "sha256": "701c6f36e787262f25fa75633a4a86d13c4cc5acdcc56359e865525ed0658880"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/compatibility_tests/transport.rs",
+      "git_blob": "c9c3b32b446de45755fcd0cc3f2c05fa9710e57f",
+      "sha256": "7898e813bafad0259623281619384f9d39a3b76bf809d05f67d4670618580905"
+    },
+    {
+      "file": "crates/vega_store/src/model_capability_tests.rs",
+      "git_blob": "f4a7513236d04c65a6fdecad27ee94891d259cd0",
+      "sha256": "65bc8ede847d8bd2ca586b2b14d1b13ca8f407386300aa0289cec90db1a3aec1"
+    },
+    {
+      "file": "crates/vega_ui/src/conversation_stream/model_capability_tests.rs",
+      "git_blob": "a8024ab88375536a1a043364bb85957a7e0f382e",
+      "sha256": "c0d47c954cbf9661c3fd726736d2b1f7e9c3533da92652ef3fdea1c6e5220cd5"
+    },
+    {
+      "file": "crates/vega_ui/src/settings/model_capability_tests.rs",
+      "git_blob": "048acbc8e5e2781ba829b65444d190fba320f584",
+      "sha256": "6e5794c7d2176050e9dd978a01d7fe4503dac14ec8c420ae23357850717a4612"
+    },
+    {
+      "file": "docs/494/vega-issue-494-frozen-model-compat-tests.json",
+      "git_blob": "c4732145e3b353ddea559e5fe0c3944a1a07e603",
+      "sha256": "59105217ffc4096445de39a03976ea00ad8d2f106f73df616294a9cddcfedef7"
+    },
+    {
+      "file": "docs/494/vega-issue-494-pi-source-cases.json",
+      "git_blob": "c7f93c0eee901d764551382c947973b2b225cb0b",
+      "sha256": "72025cc1b4cf7e3e8b2c40f83ca2d83dc52a878fb8994c1bed7cf3a2b9c14bb0"
+    }
+  ],
+  "patch_url": "https://github.com/puzige/vega/commit/7d1066901e9f488cc81e825bb035df6dea7936ee.patch",
+  "patch_read_api": "https://api.github.com/repos/puzige/vega/commits/7d1066901e9f488cc81e825bb035df6dea7936ee",
+  "patch_read_accept": "application/vnd.github.patch",
+  "patch_bytes": 4132,
+  "patch_sha256": "f38b117c6750552ef297eaef1e8507c6b51020481f371c302795175d6f821d81",
+  "previous_patches": [
+    {
+      "head": "4bd6e6111d05929e131eb44c2cafcaf745148437",
+      "url": "https://github.com/puzige/vega/commit/4bd6e6111d05929e131eb44c2cafcaf745148437.patch",
+      "bytes": 40146,
+      "sha256": "1aea7dff73ce76c33dd33fce75aa8cf449d7031e2d3bc1439357d6f263a659c0"
+    },
+    {
+      "head": "636d3104a3322de1a7475c364d287f6a2edc9e5d",
+      "url": "https://github.com/puzige/vega/commit/636d3104a3322de1a7475c364d287f6a2edc9e5d.patch",
+      "bytes": 63824,
+      "sha256": "82cb047cc47db23c7960ace4e57318588ea577f6520db4d91756c5d133284892"
+    }
+  ]
+}

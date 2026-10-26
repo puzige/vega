@@ -13,27 +13,32 @@ use super::*;
 #[derive(Debug, thiserror::Error)]
 pub enum ConversationError {
     /// A store/IO failure, reported with the underlying error message.
-    #[error("store error: {0}")]
+    #[error("{}", vega_i18n::t_args("domain.conversation.store", &[("detail", .0)]))]
     Store(String),
-    #[error("invalid task identity")]
+    #[error("{}", vega_i18n::t("domain.conversation.invalid_task"))]
     InvalidTaskIdentity,
-    #[error("invalid Codex session creation transition")]
+    #[error(
+        "{}",
+        vega_i18n::t("domain.conversation.unsupported_historical_consumer")
+    )]
+    UnsupportedHistoricalConsumer,
+    #[error("{}", vega_i18n::t("domain.conversation.invalid_codex"))]
     InvalidCodexSessionTransition,
     /// The referenced thread does not exist.
-    #[error("thread not found: {0}")]
+    #[error("{}", vega_i18n::t_args("domain.conversation.not_found", &[("id", .0)]))]
     NotFound(String),
     /// No project row exists yet, so a thread cannot be created.
-    #[error("no project exists; register a project first")]
+    #[error("{}", vega_i18n::t("domain.conversation.no_project"))]
     NoProject,
     /// A row carries a value outside the DDL vocabulary (e.g. `mode`).
-    #[error("corrupt thread row: {0}")]
+    #[error("{}", vega_i18n::t_args("domain.conversation.corrupt", &[("detail", .0)]))]
     CorruptRow(String),
     /// Execute selection was blocked until the current Plan is reviewed.
-    #[error("pending plan must be reviewed before execute mode")]
+    #[error("{}", vega_i18n::t("domain.conversation.pending_plan"))]
     PendingPlan,
     /// Headless runtime/provider/persistence failure with its structured kind
     /// and fields preserved for callers.
-    #[error("runtime error: {0}")]
+    #[error("{}", vega_i18n::t_args("domain.conversation.runtime", &[("detail", &.0.to_string())]))]
     Runtime(Arc<vega_runtime::VegaError>),
 }
 
@@ -148,7 +153,6 @@ pub enum ApprovalSource {
     ReadonlyTool,
     /// Startup recovery.
     Recovery,
-    /// Exact S4 bare value read through the legacy branch.
     Legacy,
 }
 
@@ -227,7 +231,6 @@ pub enum ApprovalCodecError {
     /// Fields form an impossible permission audit.
     #[error("invalid approval audit semantics")]
     InvalidSemantics,
-    /// Legacy audits are read-only and cannot be emitted by S5.
     #[error("legacy approval audit cannot be encoded")]
     LegacyWrite,
 }
@@ -287,7 +290,6 @@ pub(crate) struct DangerWireWrite<'a> {
 }
 
 impl ApprovalAudit {
-    /// Decodes exact S5 JSON or the exact S4 bare `once|always|deny` values.
     pub fn from_json(raw: &str) -> Result<Self, ApprovalCodecError> {
         if let Some(decision) = Approval::parse(raw) {
             return Ok(Self {
@@ -337,7 +339,6 @@ impl ApprovalAudit {
         Ok(audit)
     }
 
-    /// Encodes the canonical strict four-field S5 JSON shape.
     pub fn to_json(&self) -> Result<String, ApprovalCodecError> {
         if self.source == ApprovalSource::Legacy {
             return Err(ApprovalCodecError::LegacyWrite);
@@ -560,6 +561,11 @@ pub fn permission_decision_to_runtime(
     }
 }
 
-/// `RunMode` name used by the tech spec; the persisted implementation was
-/// introduced as [`ThreadMode`] in S2.
 pub type RunMode = ThreadMode;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PermissionPresentation {
+    WaitingForTool,
+    Mismatch,
+    Ready,
+}

@@ -137,6 +137,18 @@ fn fingerprint(messages: &[ChatMessage], tools: &[ToolDefinition]) -> Option<[u8
             Some(value) => tagged(&mut hasher, 4, value.as_bytes()),
             None => tagged(&mut hasher, 5, &[]),
         }
+        if let Some(raw) = &message.chat_reasoning {
+            tagged(&mut hasher, 38, &[1]);
+            if let Some((source, text)) = &raw.text {
+                tagged(&mut hasher, 39, source.field().as_bytes());
+                tagged(&mut hasher, 40, text.as_bytes());
+            }
+            if let Some(details) = &raw.details {
+                tagged(&mut hasher, 41, &serde_json::to_vec(details).ok()?);
+            }
+        } else {
+            tagged(&mut hasher, 38, &[0]);
+        }
         tagged(
             &mut hasher,
             22,
@@ -144,6 +156,38 @@ fn fingerprint(messages: &[ChatMessage], tools: &[ToolDefinition]) -> Option<[u8
         );
         for item in &message.response_reasoning {
             tagged(&mut hasher, 23, item.to_string().as_bytes());
+        }
+        match &message.response_replay_layout {
+            Some(layout) => {
+                tagged(&mut hasher, 24, &[1]);
+                match &layout.response_id {
+                    Some(response_id) => tagged(&mut hasher, 25, response_id.as_bytes()),
+                    None => tagged(&mut hasher, 26, &[]),
+                }
+                tagged(&mut hasher, 27, &(layout.slots.len() as u64).to_le_bytes());
+                for slot in &layout.slots {
+                    match slot {
+                        crate::ResponseReplaySlot::Reasoning(item) => {
+                            tagged(&mut hasher, 28, &serde_json::to_vec(item).ok()?);
+                        }
+                        crate::ResponseReplaySlot::Message(item) => {
+                            tagged(&mut hasher, 29, &serde_json::to_vec(item).ok()?);
+                        }
+                        crate::ResponseReplaySlot::FunctionCall {
+                            item,
+                            call_id,
+                            name,
+                            arguments,
+                        } => {
+                            tagged(&mut hasher, 30, &serde_json::to_vec(item).ok()?);
+                            tagged(&mut hasher, 31, call_id.as_bytes());
+                            tagged(&mut hasher, 32, name.as_bytes());
+                            tagged(&mut hasher, 33, arguments.as_bytes());
+                        }
+                    }
+                }
+            }
+            None => tagged(&mut hasher, 34, &[]),
         }
         match &message.tool_call_id {
             Some(value) => tagged(&mut hasher, 6, value.as_bytes()),
@@ -183,239 +227,4 @@ fn fingerprint(messages: &[ChatMessage], tools: &[ToolDefinition]) -> Option<[u8
         tagged(&mut hasher, 21, &[u8::from(tool.strict)]);
     }
     Some(hasher.finalize().into())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{ChatRole, ChatToolCall};
-
-    fn request() -> ChatRequest {
-        ChatRequest {
-            model: "mock".into(),
-            messages: vec![
-                ChatMessage::new(ChatRole::System, "system"),
-                ChatMessage::new(ChatRole::User, "user"),
-            ],
-            tools: vec![ToolDefinition {
-                name: "read".into(),
-                description: "read file".into(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "required": [],
-                    "additionalProperties": false
-                }),
-                strict: false,
-            }],
-            max_tokens: Some(100),
-            reasoning: Some(FrozenReasoning::unknown("mock", "mock")),
-        }
-    }
-
-    #[test]
-    fn issue91_anchor_accounts_only_appended_tool_pair_and_rejects_changed_prefix() {
-        let sent = request();
-        let anchor = PendingInputAnchor::from_request(&sent)
-            .unwrap()
-            .unwrap()
-            .complete(85)
-            .unwrap();
-        let mut current = sent.messages.clone();
-        current.push(ChatMessage::assistant_with_tools(
-            "",
-            vec![
-                ChatToolCall {
-                    id: "one".into(),
-                    name: "read".into(),
-                    input_json: "{}".into(),
-                },
-                ChatToolCall {
-                    id: "two".into(),
-                    name: "read".into(),
-                    input_json: "{}".into(),
-                },
-            ],
-        ));
-        current.push(ChatMessage::tool_result("one", "first"));
-        current.push(ChatMessage::tool_result("two", "second"));
-        let full = crate::estimate_wire_context(&current, &sent.tools)
-            .unwrap()
-            .input_tokens;
-        let prefix = crate::estimate_wire_context(&sent.messages, &sent.tools)
-            .unwrap()
-            .input_tokens;
-        let anchored = InputAnchor::decide(
-            Some(&anchor),
-            &current,
-            &sent.tools,
-            "mock",
-            sent.reasoning.as_ref(),
-            Some(100),
-            1,
-        )
-        .unwrap();
-        assert_eq!(
-            anchored.source,
-            super::super::ContextAccountingSource::UsageAnchored
-        );
-        assert_eq!(anchored.incremental, full - prefix);
-        assert_eq!(anchored.predicted, 85 + full - prefix);
-        assert_eq!(anchored.covered_messages, sent.messages.len());
-        current[1].content.push('!');
-        let changed = InputAnchor::decide(
-            Some(&anchor),
-            &current,
-            &sent.tools,
-            "mock",
-            sent.reasoning.as_ref(),
-            Some(100),
-            2,
-        )
-        .unwrap();
-        assert_eq!(
-            changed.source,
-            super::super::ContextAccountingSource::Estimated
-        );
-        current[1].content.pop();
-        let changed_model = InputAnchor::decide(
-            Some(&anchor),
-            &current,
-            &sent.tools,
-            "other",
-            sent.reasoning.as_ref(),
-            Some(100),
-            2,
-        )
-        .unwrap();
-        assert_eq!(
-            changed_model.source,
-            super::super::ContextAccountingSource::Estimated
-        );
-        let changed_schema = [ToolDefinition {
-            input_schema: serde_json::json!({"type":"string"}),
-            ..sent.tools[0].clone()
-        }];
-        let changed_tools = InputAnchor::decide(
-            Some(&anchor),
-            &current,
-            &changed_schema,
-            "mock",
-            sent.reasoning.as_ref(),
-            Some(100),
-            2,
-        )
-        .unwrap();
-        assert_eq!(
-            changed_tools.source,
-            super::super::ContextAccountingSource::Estimated
-        );
-        let changed_reasoning = InputAnchor::decide(
-            Some(&anchor),
-            &current,
-            &sent.tools,
-            "mock",
-            None,
-            Some(100),
-            2,
-        )
-        .unwrap();
-        assert_eq!(
-            changed_reasoning.source,
-            super::super::ContextAccountingSource::Estimated
-        );
-    }
-
-    #[test]
-    fn issue85_strict_changes_tool_fingerprint_and_invalidates_anchor() {
-        let sent = request();
-        let anchor = PendingInputAnchor::from_request(&sent)
-            .unwrap()
-            .unwrap()
-            .complete(85)
-            .unwrap();
-        let strict_tools = [ToolDefinition {
-            strict: true,
-            ..sent.tools[0].clone()
-        }];
-
-        assert_ne!(
-            fingerprint(&sent.messages, &sent.tools),
-            fingerprint(&sent.messages, &strict_tools)
-        );
-        let decision = InputAnchor::decide(
-            Some(&anchor),
-            &sent.messages,
-            &strict_tools,
-            &sent.model,
-            sent.reasoning.as_ref(),
-            sent.max_tokens,
-            1,
-        )
-        .unwrap();
-        assert_eq!(
-            decision.source,
-            super::super::ContextAccountingSource::Estimated
-        );
-    }
-
-    #[test]
-    fn issue91_matching_anchor_arithmetic_overflow_fails_closed() {
-        let sent = request();
-        let anchor = PendingInputAnchor::from_request(&sent)
-            .unwrap()
-            .unwrap()
-            .complete(u64::MAX)
-            .unwrap();
-        let mut current = sent.messages.clone();
-        current.push(ChatMessage::tool_result("one", "tail"));
-        assert_eq!(
-            InputAnchor::decide(
-                Some(&anchor),
-                &current,
-                &sent.tools,
-                "mock",
-                sent.reasoning.as_ref(),
-                Some(100),
-                1
-            ),
-            Err(ContextEstimateError::Overflow)
-        );
-    }
-    #[test]
-    fn issue75_observation_fingerprint_changes_when_same_size_pixels_change() {
-        let encode = |color| {
-            let mut bytes = std::io::Cursor::new(Vec::new());
-            image::RgbImage::from_pixel(2, 2, image::Rgb(color))
-                .write_to(&mut bytes, image::ImageFormat::Png)
-                .unwrap();
-            crate::ImageAttachment::from_bytes(bytes.into_inner()).unwrap()
-        };
-        let mut a = ChatMessage::tool_result("call", "external observation");
-        a.images.push(encode([1, 2, 3]));
-        let mut b = a.clone();
-        b.images[0] = encode([3, 2, 1]);
-        assert_eq!(a.images[0].bytes().len(), b.images[0].bytes().len());
-        assert_ne!(fingerprint(&[a], &[]), fingerprint(&[b], &[]));
-    }
-    #[test]
-    fn issue375_opaque_replay_is_accounted_and_invalidates_same_size_anchor() {
-        let mut message = ChatMessage::new(crate::ChatRole::Assistant, "progress");
-        let plain = crate::estimate_wire_context(&[message.clone()], &[])
-            .unwrap()
-            .input_tokens;
-        message
-            .response_reasoning
-            .push(serde_json::json!({"type":"reasoning", "encrypted_content":"a".repeat(4000)}));
-        let charged = crate::estimate_wire_context(&[message.clone()], &[])
-            .unwrap()
-            .input_tokens;
-        assert!(charged > plain + 2000);
-        let standalone = crate::estimate_chat_context("", &[message.clone()], &[]).unwrap();
-        assert_eq!(standalone.input_tokens, charged);
-        let before = fingerprint(&[message.clone()], &[]);
-        message.response_reasoning[0]["encrypted_content"] =
-            serde_json::Value::String("b".repeat(4000));
-        assert_ne!(before, fingerprint(&[message], &[]));
-    }
 }

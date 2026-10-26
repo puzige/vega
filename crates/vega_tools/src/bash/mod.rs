@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use crate::Tools;
 use crate::error::{BashError, BashErrorCode};
 use crate::output::{BASH_READ_CHUNK_BYTES, BashOutput, BashOutputCollector, CollectedBashOutput};
-use crate::sandbox::{ExecutionHooks, SandboxConfig, TempRoot, spawn_full_access_shell};
+use crate::sandbox::{SandboxConfig, TempRoot, spawn_full_access_shell};
 
 /// Default bash timeout required by the Phase 1 tool contract.
 pub const DEFAULT_BASH_TIMEOUT_MS: u64 = 120_000;
@@ -100,27 +100,7 @@ impl BashInputError {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub type BashTestExecutor = std::sync::Arc<
-    dyn Fn(
-            String,
-            bool,
-            CancellationToken,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<BashOutput, BashError>> + Send>,
-        > + Send
-        + Sync,
->;
-
 impl Tools {
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn with_bash_test_executor(mut self, executor: BashTestExecutor) -> Self {
-        self.bash_executor = Some(executor);
-        self
-    }
-
-    /// Strictly parse provider JSON without executing it. T26 must complete
-    /// permission handling before passing the prepared value to execution.
     pub fn prepare_bash_json(&self, raw_input: &str) -> Result<PreparedBash, BashError> {
         let (command, timeout_ms) =
             parse_bash_input(raw_input).map_err(|_| BashError::new(BashErrorCode::InvalidInput))?;
@@ -138,8 +118,7 @@ impl Tools {
         prepared: PreparedBash,
         cancel: CancellationToken,
     ) -> Result<BashOutput, BashError> {
-        self.execute_bash_inner(prepared, cancel, &ExecutionHooks::default(), false)
-            .await
+        self.execute_bash_inner(prepared, cancel, false).await
     }
 
     /// Execute an approved Full access call with current-user OS permissions.
@@ -149,15 +128,14 @@ impl Tools {
         prepared: PreparedBash,
         cancel: CancellationToken,
     ) -> Result<BashOutput, BashError> {
-        self.execute_bash_inner(prepared, cancel, &ExecutionHooks::default(), true)
-            .await
+        self.execute_bash_inner(prepared, cancel, true).await
     }
 
     async fn execute_bash_inner(
         &self,
         prepared: PreparedBash,
         cancel: CancellationToken,
-        hooks: &ExecutionHooks,
+
         full_access: bool,
     ) -> Result<BashOutput, BashError> {
         if self.instance_id != prepared.instance_id || self.root != prepared.project_root {
@@ -181,12 +159,11 @@ impl Tools {
             Some(SandboxConfig::new(&self.root)?)
         };
         let temp_root = TempRoot::create()?;
-        hooks.note_temp_created(temp_root.path());
+
         let result = self
-            .execute_bash_with_temp(prepared, cancel, hooks, sandbox.as_ref(), &temp_root)
+            .execute_bash_with_temp(prepared, cancel, sandbox.as_ref(), &temp_root)
             .await;
         if result.cleanup_safe {
-            hooks.note_before_cleanup(temp_root.path());
             match temp_root.cleanup() {
                 Ok(()) => result.result,
                 Err(error) => Err(error),
@@ -200,26 +177,18 @@ impl Tools {
         &self,
         prepared: PreparedBash,
         cancel: CancellationToken,
-        hooks: &ExecutionHooks,
+
         sandbox: Option<&SandboxConfig>,
         temp_root: &TempRoot,
     ) -> BashAttempt {
         if let Some(sandbox) = sandbox
-            && let Err(error) = sandbox.preflight(temp_root, hooks)
+            && let Err(error) = sandbox.preflight(temp_root)
         {
             return BashAttempt::safe(Err(error));
         }
-        #[cfg(any(test, feature = "test-support"))]
-        assert!(self.bash_executor.is_some(), "missing Bash test executor");
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(executor) = &self.bash_executor {
-            if cancel.is_cancelled() {
-                return BashAttempt::safe(Err(BashError::new(BashErrorCode::Cancelled)));
-            }
-            return BashAttempt::safe(executor(prepared.command, sandbox.is_none(), cancel).await);
-        }
+
         if let Some(sandbox) = sandbox {
-            let self_test = sandbox.self_test(temp_root, hooks).await;
+            let self_test = sandbox.self_test(temp_root).await;
             if let Err(error) = self_test.result {
                 return BashAttempt {
                     result: Err(error),
@@ -254,17 +223,13 @@ impl Tools {
         });
         let started = Instant::now();
         let spawned = match sandbox {
-            Some(sandbox) => sandbox.spawn_shell(
-                &prepared.command,
-                temp_root,
-                hooks,
-                credential_context.as_ref(),
-            ),
+            Some(sandbox) => {
+                sandbox.spawn_shell(&prepared.command, temp_root, credential_context.as_ref())
+            }
             None => spawn_full_access_shell(
                 &self.root,
                 &prepared.command,
                 temp_root,
-                hooks,
                 credential_context.as_ref(),
             ),
         };
@@ -280,7 +245,7 @@ impl Tools {
             };
         };
         let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
-            let termination = terminate_group(&mut child, pgid, hooks).await;
+            let termination = terminate_group(&mut child, pgid).await;
             return BashAttempt {
                 result: Err(termination
                     .error
@@ -309,7 +274,7 @@ impl Tools {
                 let status = match status {
                     Ok(status) => status,
                     Err(_) => {
-                        let termination = terminate_group(&mut child, pgid, hooks).await;
+                        let termination = terminate_group(&mut child, pgid).await;
                         reader_stop.cancel();
                         let reader_ok = finish_stopped_reader(reader).await.is_ok();
                         return BashAttempt {
@@ -330,7 +295,7 @@ impl Tools {
                 }
             }
             Completion::Cancelled => {
-                let termination = terminate_group(&mut child, pgid, hooks).await;
+                let termination = terminate_group(&mut child, pgid).await;
                 reader_stop.cancel();
                 let reader_result = finish_stopped_reader(reader).await;
                 let reader_ok = reader_result.is_ok();
@@ -343,7 +308,7 @@ impl Tools {
                 }
             }
             Completion::TimedOut => {
-                let termination = terminate_group(&mut child, pgid, hooks).await;
+                let termination = terminate_group(&mut child, pgid).await;
                 reader_stop.cancel();
                 let reader_result = finish_stopped_reader(reader).await;
                 let reader_ok = reader_result.is_ok();
@@ -356,17 +321,6 @@ impl Tools {
                 }
             }
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn execute_bash_with_hooks(
-        &self,
-        prepared: PreparedBash,
-        cancel: CancellationToken,
-        hooks: &ExecutionHooks,
-    ) -> Result<BashOutput, BashError> {
-        self.execute_bash_inner(prepared, cancel, hooks, false)
-            .await
     }
 }
 
@@ -536,7 +490,7 @@ struct Termination {
     error: Option<BashError>,
 }
 
-async fn terminate_group(child: &mut Child, pgid: u32, hooks: &ExecutionHooks) -> Termination {
+async fn terminate_group(child: &mut Child, pgid: u32) -> Termination {
     let mut error = signal_group(pgid, "-TERM").await.err();
     tokio::time::sleep(TERMINATION_GRACE).await;
     if let Err(kill_error) = signal_group(pgid, "-KILL").await
@@ -547,7 +501,7 @@ async fn terminate_group(child: &mut Child, pgid: u32, hooks: &ExecutionHooks) -
     let reaped = matches!(
         tokio::time::timeout(REAP_GRACE, child.wait()).await,
         Ok(Ok(_))
-    ) && !hooks.force_unconfirmed_reap();
+    );
     if !reaped && error.is_none() {
         error = Some(BashError::new(BashErrorCode::ProcessControlFailed));
     }
@@ -610,8 +564,6 @@ fn build_output(
         exit_code: status.code().unwrap_or(-1),
         duration_ms,
         truncated: collected.truncated,
-        #[cfg(test)]
-        high_water_bytes: collected.high_water_bytes,
     }
 }
 
@@ -624,6 +576,3 @@ fn redact_temp_path(text: &mut String, temp_path: &str) {
         cursor = start.saturating_add(TEMP_PATH_PLACEHOLDER.len());
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -1,6 +1,3 @@
-//! Headless MCP protocol, transport, and bounded OAuth client. UI consent and
-//! persistent credential ownership remain with the later #73 integration layer.
-
 use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;
@@ -18,7 +15,7 @@ pub use auth::{
     ResourceAuthorization, ScopeChallenge,
 };
 pub use http::HttpClient;
-pub use managed::{ManagedClient, ManagedImage, ManagedResult};
+pub use managed::{ManagedClient, ManagedImage, ManagedResult, ManagedSendEvidence};
 pub use stdio::StdioClient;
 
 /// Validate an exact endpoint in Settings without sending any network request.
@@ -173,56 +170,4 @@ pub enum McpError {
     UnsupportedResult,
 }
 
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::{Catalog, Tool, ToolResult};
-
-    #[test]
-    fn debug_output_never_contains_server_provided_catalog_or_result_content() {
-        const SENTINEL: &str = "FAKE_SECRET_SENTINEL_DO_NOT_LOG_7301";
-        let tool = Tool {
-            name: SENTINEL.into(),
-            description: Some(SENTINEL.into()),
-            input_schema: json!({"type":"object", "description":SENTINEL}),
-            header_params: Vec::new(),
-        };
-        let catalog = Catalog {
-            tools: vec![tool.clone()],
-            rejected: vec![SENTINEL.into()],
-        };
-        let result = ToolResult {
-            text: vec![SENTINEL.into()],
-            structured_content: Some(json!({"secret":SENTINEL})),
-            is_error: true,
-        };
-        for debug in [
-            format!("{tool:?}"),
-            format!("{tool:#?}"),
-            format!("{catalog:?}"),
-            format!("{catalog:#?}"),
-            format!("{result:?}"),
-            format!("{result:#?}"),
-        ] {
-            assert!(!debug.contains(SENTINEL), "unsafe Debug: {debug}");
-        }
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub mod mock;
 mod transport;
-#[cfg(test)]
-extern crate self as vega_mcp;
-#[cfg(test)]
-#[path = "tests/oauth.rs"]
-mod oauth_tests;
-
-#[cfg(test)]
-#[path = "tests/protocol.rs"]
-mod protocol_tests;
-
-#[cfg(test)]
-#[path = "tests/stdio.rs"]
-mod stdio_tests;

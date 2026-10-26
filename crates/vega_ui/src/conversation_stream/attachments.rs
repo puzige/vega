@@ -1,4 +1,3 @@
-//! Issue 63 R1–R4: explicit, bounded attachment intents owned by this stream.
 use super::*;
 use gpui_kit::{ClipboardEntry, ClipboardItem, ExternalPaths, Image, PathPromptOptions};
 use std::path::PathBuf;
@@ -32,8 +31,7 @@ pub(crate) fn image_name(prefix: &str, ordinal: usize, image: &ImageAttachment) 
     format!("{prefix}-{ordinal}.{extension}")
 }
 
-const IMPORT_ERROR: &str =
-    "图片添加失败：请选择有效的 PNG、JPEG 或 WebP；最多 4 张，单张 8 MiB，总计 16 MiB。";
+const IMPORT_ERROR: &str = "ui.could_not_add_images_choose_valid_png_jpeg";
 
 impl ConversationStream {
     pub(crate) fn history_image_previews(
@@ -45,7 +43,7 @@ impl ConversationStream {
             .into_iter()
             .enumerate()
             .map(|(index, image)| {
-                let name = image_name("图片", index + 1, &image);
+                let name = image_name("image", index + 1, &image);
                 let preview = ImagePreview::new(image, name, cx);
                 self.observe_image(&preview.view, cx);
                 preview
@@ -123,7 +121,6 @@ impl ConversationStream {
     pub(crate) fn paste_images(&mut self, item: Arc<ClipboardItem>, cx: &mut Context<Self>) {
         self.import_images(
             move || {
-                // R3: reject aggregate cardinality/bytes before any decoder work.
                 let mut count = 0usize;
                 let mut bytes = 0usize;
                 for entry in item.entries() {
@@ -191,7 +188,7 @@ impl ConversationStream {
             files: true,
             directories: false,
             multiple: true,
-            prompt: Some("选择 PNG、JPEG 或 WebP 图片".into()),
+            prompt: Some(vega_i18n::t("ui.choose_png_jpeg_or_webp_images").into()),
         });
         cx.spawn(async move |this, cx| {
             let result = picked.await;
@@ -253,7 +250,7 @@ impl ConversationStream {
                         for image in images {
                             this.attachment_generation = this.attachment_generation.wrapping_add(1);
                             let name =
-                                image_name("图片", this.attachment_generation as usize, &image);
+                                image_name("image", this.attachment_generation as usize, &image);
                             let preview = ImagePreview::new(image, name, cx);
                             this.observe_image(&preview.view, cx);
                             this.attachments.push((this.attachment_generation, preview));
@@ -269,7 +266,6 @@ impl ConversationStream {
     }
 
     fn remove_image(&mut self, id: u64, cx: &mut Context<Self>) {
-        // R4: retire pending work before editing the batch; ACK clears IDs only.
         self.attachment_generation = self.attachment_generation.wrapping_add(1);
         self.attachment_import_pending = false;
         self.attachments.retain(|(owned, _)| *owned != id);
@@ -285,7 +281,6 @@ impl ConversationStream {
     pub(crate) fn render_attachments(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         div()
-            .debug_selector(|| "composer-attachments".into())
             .flex()
             .flex_col()
             .gap_2()
@@ -297,27 +292,30 @@ impl ConversationStream {
                     .children(self.attachments.iter().map(|(id, image)| {
                         let id = *id;
                         div().relative().child(thumbnail(image, cx)).child(
-                            crate::icons::icon_button(
-                                crate::icons::Icon::Close,
-                                format!("移除图片 {id}"),
+                            crate::icons::icon_button_with_id(
+                                crate::icons::icon(
+                                    crate::icons::Icon::Close,
+                                    colors.text_secondary,
+                                ),
+                                format!("remove-image-{id}"),
+                                vega_i18n::t_args("ui.remove_image_id", &[("id", &id.to_string())]),
                                 colors,
                                 cx.listener(move |this, _, _, cx| this.remove_image(id, cx)),
                             )
                             .absolute()
                             .top_0()
                             .right_0()
-                            .debug_selector(move || format!("remove-image-{id}"))
                             .bg(colors.bg_elevated)
                             .rounded_full(),
                         )
                     })),
             )
             .when(self.attachment_import_pending, |el| {
-                el.child("正在添加图片…")
+                el.child(vega_i18n::t("ui.adding_images"))
             })
             .when_some(self.attachment_error, |el, message| {
                 el.child(render_rows::status_notice(
-                    message.to_string(),
+                    vega_i18n::t(message).to_string(),
                     colors.danger,
                     &colors,
                 ))
@@ -328,7 +326,6 @@ impl ConversationStream {
 
 fn thumbnail(image: &ImagePreview, cx: &App) -> AnyElement {
     div()
-        .debug_selector(|| "attachment-thumbnail".into())
         .child(crate::image_preview::ImagePreview::thumbnail(
             &image.view,
             cx,
@@ -338,7 +335,6 @@ fn thumbnail(image: &ImagePreview, cx: &App) -> AnyElement {
 
 pub(crate) fn render_user_images(images: &[ImagePreview], cx: &App) -> AnyElement {
     div()
-        .debug_selector(|| "user-message-images".into())
         .w_full()
         .pt(px(Layout::USER_MESSAGE_PADDING_TOP))
         .pb(px(Layout::MESSAGE_PADDING_BOTTOM))

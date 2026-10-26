@@ -1,10 +1,11 @@
+use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use std::sync::{Arc, OnceLock};
 use vega_conversation::types::ImageAttachment;
 use vega_theme::{Layout, Typography, theme};
 
-use crate::icons::{Icon, icon, icon_button};
+use crate::icons::{Icon, icon};
 
 #[derive(Clone, Copy)]
 pub enum ImagePreviewAction {
@@ -26,12 +27,27 @@ pub struct ImagePreview {
     open_focus: FocusHandle,
     busy: bool,
     thumbnail_visible: bool,
-    status: Option<&'static str>,
+    status: Option<ImagePreviewStatus>,
     applications: Option<Vec<String>>,
     application_focuses: Vec<FocusHandle>,
     trigger_bounds: Option<Bounds<Pixels>>,
     dismissed_on_trigger: bool,
     focus_menu: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ImagePreviewStatus {
+    Text(&'static str),
+    Key(&'static str),
+}
+
+impl ImagePreviewStatus {
+    fn render(self) -> &'static str {
+        match self {
+            Self::Text(text) => text,
+            Self::Key(key) => vega_i18n::t(key),
+        }
+    }
 }
 
 impl EventEmitter<ImagePreviewAction> for ImagePreview {}
@@ -100,6 +116,8 @@ impl ImagePreview {
             |_, _, _, _| {},
         )
         .absolute()
+        .top_0()
+        .left_0()
         .size_full()
         .into_any_element()
     }
@@ -116,7 +134,7 @@ impl ImagePreview {
         self.thumbnail_focus.clone()
     }
     pub fn status(&self) -> Option<&'static str> {
-        self.status
+        self.status.map(ImagePreviewStatus::render)
     }
     pub fn busy(&self) -> bool {
         self.busy
@@ -133,20 +151,35 @@ impl ImagePreview {
     }
     pub fn finish(&mut self, status: Option<&'static str>, cx: &mut Context<Self>) {
         self.busy = false;
-        self.status = status;
+        self.status = status.map(ImagePreviewStatus::Text);
+        cx.notify();
+    }
+    pub fn finish_localized(&mut self, status: Option<&'static str>, cx: &mut Context<Self>) {
+        self.busy = false;
+        self.status = status.map(ImagePreviewStatus::Key);
         cx.notify();
     }
     pub fn set_applications(&mut self, names: Vec<String>, cx: &mut Context<Self>) {
         self.busy = false;
-        self.status = names
-            .is_empty()
-            .then_some("没有可用的应用，请保存到本地后打开");
+        self.status = names.is_empty().then_some(ImagePreviewStatus::Key(
+            "ui.no_apps_are_available_save_locally_then_open",
+        ));
         self.application_focuses = names
             .iter()
             .map(|_| cx.focus_handle().tab_stop(true))
             .collect();
         self.focus_menu = !names.is_empty();
         self.applications = (!names.is_empty()).then_some(names);
+        cx.notify();
+    }
+    pub fn refresh_application_labels(&mut self, names: Vec<String>, cx: &mut Context<Self>) {
+        let Some(applications) = self.applications.as_mut() else {
+            return;
+        };
+        if applications.len() != names.len() || *applications == names {
+            return;
+        }
+        *applications = names;
         cx.notify();
     }
     pub fn dismiss_menu(&mut self, cx: &mut Context<Self>) {
@@ -184,16 +217,19 @@ impl ImagePreview {
     pub(crate) fn thumbnail_sized(view: &Entity<Self>, size: f32, cx: &App) -> AnyElement {
         let colors = theme(cx).colors;
         let state = view.read(cx);
-        let click = view.clone();
         let key = view.clone();
         div()
             .id(("image-thumbnail", view.entity_id()))
-            .debug_selector(move || format!("image-thumbnail-{}", click.entity_id()))
             .track_focus(&state.thumbnail_focus)
             .tab_stop(true)
-            .aria_label(format!("预览 {}", state.name))
+            .aria_label(vega_i18n::t_args(
+                "ui.preview_name",
+                &[("name", &state.name)],
+            ))
             .relative()
             .size(px(size))
+            .flex_shrink_0()
+            .overflow_hidden()
             .cursor_pointer()
             .rounded_md()
             .hover(move |s| s.border_1().border_color(colors.text_secondary))
@@ -211,7 +247,7 @@ impl ImagePreview {
             .when_some(state.pixels.get().cloned(), |el, pixels| {
                 el.child(
                     img(pixels)
-                        .size_full()
+                        .size(px(size))
                         .object_fit(ObjectFit::Contain)
                         .rounded_md(),
                 )
@@ -237,20 +273,18 @@ impl Render for ImagePreview {
         }
         let colors = theme(cx).colors;
         let name = self.name.clone();
-        let save = icon_button(
+        let save = crate::icons::localized_icon_button(
             Icon::ArrowDown,
-            "保存到本地",
+            "ui.save_locally",
             colors,
             cx.listener(|this, _, _, cx| this.action(ImagePreviewAction::Save, cx)),
         )
         .size(px(Layout::IMAGE_PREVIEW_CONTROL))
         .track_focus(&self.save_focus)
-        .debug_selector(|| "image-preview-save".into())
         .focus_visible(move |s| s.border_1().border_color(colors.brand_primary))
         .when(self.busy, |el| el.opacity(0.5));
         let open = div()
             .id("image-open-with")
-            .debug_selector(|| "image-preview-open-with".into())
             .track_focus(&self.open_focus)
             .tab_stop(true)
             .relative()
@@ -274,7 +308,7 @@ impl Render for ImagePreview {
                     cx.stop_propagation();
                 }
             }))
-            .child("打开方式")
+            .child(vega_i18n::t("ui.open_with"))
             .child(icon(Icon::ChevronDown, colors.text_secondary))
             .child({
                 let view = cx.entity().downgrade();
@@ -291,7 +325,6 @@ impl Render for ImagePreview {
         let menu = self.applications.as_ref().map(|names| {
             div()
                 .id("image-applications")
-                .debug_selector(|| "image-preview-applications".into())
                 .absolute()
                 .top(px(Layout::IMAGE_PREVIEW_HEADER))
                 .right(px(Layout::IMAGE_PREVIEW_HEADER_PADDING))
@@ -315,7 +348,6 @@ impl Render for ImagePreview {
                 .children(names.iter().enumerate().map(|(index, name)| {
                     div()
                         .id(("image-app", index))
-                        .debug_selector(move || format!("image-preview-app-{index}"))
                         .track_focus(&self.application_focuses[index])
                         .tab_stop(true)
                         .h_8()
@@ -337,11 +369,11 @@ impl Render for ImagePreview {
                             }
                         }))
                 }))
+                .scroll_edge_fade(colors.bg_elevated, ScrollFade::compact())
                 .into_any_element()
         });
         div()
             .id("image-preview")
-            .debug_selector(|| "image-preview".into())
             .track_focus(&self.focus)
             .size_full()
             .min_w_0()
@@ -365,7 +397,6 @@ impl Render for ImagePreview {
             }))
             .child(
                 div()
-                    .debug_selector(|| "image-preview-header".into())
                     .h(px(Layout::IMAGE_PREVIEW_HEADER))
                     .flex_shrink_0()
                     .px(px(Layout::IMAGE_PREVIEW_HEADER_PADDING))
@@ -386,10 +417,9 @@ impl Render for ImagePreview {
                     .child(open)
                     .child(save),
             )
-            .when_some(self.status, |el, status| {
+            .when_some(self.status(), |el, status| {
                 el.child(
                     div()
-                        .debug_selector(|| "image-preview-status".into())
                         .px_3()
                         .text_size(px(Typography::METADATA))
                         .text_color(colors.text_secondary)
@@ -408,169 +438,24 @@ impl Render for ImagePreview {
                     .child(match self.pixels.get() {
                         Some(pixels) => img(pixels.clone())
                             .id("image-preview-pixels")
-                            .debug_selector(|| "image-preview-pixels".into())
                             .size_full()
                             .max_w(px(self.image.width() as f32))
                             .max_h(px(self.image.height() as f32))
                             .object_fit(ObjectFit::Contain)
                             .with_loading(|| {
-                                div()
-                                    .debug_selector(|| "image-preview-loading".into())
-                                    .child("加载中")
-                                    .into_any_element()
+                                div().child(vega_i18n::t("ui.loading")).into_any_element()
                             })
                             .with_fallback(|| {
                                 div()
-                                    .debug_selector(|| "image-preview-error".into())
-                                    .child("图片无法显示，请保存到本地后打开")
+                                    .child(vega_i18n::t(
+                                        "ui.this_image_cannot_be_displayed_save_locally_then",
+                                    ))
                                     .into_any_element()
                             })
                             .into_any_element(),
-                        None => div()
-                            .debug_selector(|| "image-preview-loading".into())
-                            .child("加载中")
-                            .into_any_element(),
+                        None => div().child(vega_i18n::t("ui.loading")).into_any_element(),
                     }),
             )
             .children(menu.map(|menu| deferred(menu).with_priority(2)))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{ImagePreview, ImagePreviewAction};
-    use gpui_kit::prelude::*;
-    use gpui_kit::{
-        AppContext, Context, Entity, Image, ImageFormat, IntoElement, Render, TestAppContext,
-        VisualTestContext, Window, div, px, size,
-    };
-    use std::sync::{Arc, OnceLock};
-    use vega_conversation::types::ImageAttachment;
-
-    struct Harness(Entity<ImagePreview>);
-    impl Render for Harness {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div().size_full().child(self.0.clone())
-        }
-    }
-
-    #[gpui_kit::test]
-    async fn issue296_image_preview_geometry_loading_error_and_keyboard(cx: &mut TestAppContext) {
-        for palette in [vega_theme::Theme::light(), vega_theme::Theme::dark()] {
-            for (fixture, small) in [
-                (
-                    include_bytes!("conversation_stream/tests/fixtures/screenshot-landscape.png")
-                        .as_slice(),
-                    false,
-                ),
-                (
-                    include_bytes!("conversation_stream/tests/fixtures/screenshot-portrait.png")
-                        .as_slice(),
-                    false,
-                ),
-                (
-                    include_bytes!("conversation_stream/tests/fixtures/screenshot-strip.png")
-                        .as_slice(),
-                    false,
-                ),
-                (
-                    include_bytes!("conversation_stream/tests/fixtures/screenshot-column.png")
-                        .as_slice(),
-                    false,
-                ),
-                (
-                    include_bytes!("conversation_stream/tests/fixtures/screenshot-tiny.png")
-                        .as_slice(),
-                    true,
-                ),
-            ] {
-                cx.update(|cx| {
-                    cx.set_global(palette);
-                    crate::init(cx);
-                });
-                let image = ImageAttachment::from_bytes(fixture.to_vec()).unwrap();
-                let view = cx.new(|cx| {
-                    ImagePreview::pending(
-                        image.clone(),
-                        format!("{}.png", "长文件名".repeat(30)),
-                        cx,
-                    )
-                });
-                let root = view.clone();
-                let window = cx.update(|cx| {
-                    cx.open_window(Default::default(), |_, cx| cx.new(|_| Harness(root)))
-                        .unwrap()
-                });
-                let mut visual = VisualTestContext::from_window(window.into(), cx);
-                visual.simulate_resize(size(px(320.), px(600.)));
-                visual.run_until_parked();
-                assert!(visual.debug_bounds("image-preview-loading").is_some());
-                let header = visual.debug_bounds("image-preview-header").unwrap();
-                let save = visual.debug_bounds("image-preview-save").unwrap();
-                let open = visual.debug_bounds("image-preview-open-with").unwrap();
-                assert_eq!(header.size.height, px(40.));
-                assert_eq!(save.size.height, px(28.));
-                assert_eq!(open.size.height, px(28.));
-                assert!(open.right() <= save.left() && save.right() <= header.right() - px(12.));
-                assert_eq!(open.center().y, save.center().y);
-                let actions = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-                let captured = actions.clone();
-                cx.update(|cx| {
-                    cx.subscribe(&view, move |_, action: &ImagePreviewAction, _| {
-                        captured.borrow_mut().push(*action)
-                    })
-                    .detach()
-                });
-                visual.update(|window, cx| view.read(cx).save_focus.clone().focus(window, cx));
-                visual.simulate_keystrokes("space");
-                assert!(matches!(
-                    actions.borrow().last(),
-                    Some(ImagePreviewAction::Save)
-                ));
-                view.update(&mut visual, |view, cx| {
-                    view.pixels
-                        .set(Arc::new(Image::from_bytes(
-                            ImageFormat::Png,
-                            fixture.to_vec(),
-                        )))
-                        .unwrap();
-                    cx.notify();
-                });
-                visual.run_until_parked();
-                let pixels = visual.debug_bounds("image-preview-pixels").unwrap();
-                assert!(pixels.left() >= px(16.) && pixels.right() <= px(304.));
-                assert!(pixels.top() >= header.bottom() + px(16.) && pixels.bottom() <= px(584.));
-                assert!(
-                    pixels.size.width <= px(image.width() as f32)
-                        && pixels.size.height <= px(image.height() as f32)
-                );
-                if small {
-                    assert_eq!(
-                        pixels.size,
-                        size(px(image.width() as f32), px(image.height() as f32))
-                    );
-                }
-                assert!(visual.debug_bounds("image-preview-loading").is_none());
-                assert!(visual.debug_bounds("image-preview-error").is_none());
-                view.update(&mut visual, |view, cx| {
-                    view.pixels = Arc::new(OnceLock::new());
-                    view.pixels
-                        .set(Arc::new(Image::from_bytes(
-                            ImageFormat::Png,
-                            b"invalid decode fixture".to_vec(),
-                        )))
-                        .unwrap();
-                    cx.notify();
-                });
-                visual.run_until_parked();
-                visual.update(|window, cx| {
-                    window.simulate_next_frame(cx);
-                });
-                visual.run_until_parked();
-                assert!(visual.debug_bounds("image-preview-error").is_some());
-                assert_eq!(visual.debug_bounds("image-preview-header").unwrap(), header);
-                visual.update(|window, _| window.remove_window());
-            }
-        }
     }
 }

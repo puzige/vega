@@ -1,11 +1,12 @@
+use super::code_drag::CodeDragSelection;
+use super::code_viewport::CodeViewport;
+use super::copy_receipt::{CopyReceiptButton, CopySource};
+use super::links::link_ranges;
 use super::selection::SelectionDocumentBuilder;
 use super::*;
 use crate::icons::{Icon, icon};
+use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
 
-/// Materializes a user echo block (T18 消息块结构): the 「你」 label, one
-/// line per source line (blank lines preserved as empty spans), and a
-/// trailing spacer. The item model renders these as ONE natural-height bubble
-/// ([`user_message_item`]); the flat form stays for row accounting and tests.
 pub(crate) fn user_message_lines(block_id: u64, text: &str) -> Vec<StreamLine> {
     let mut lines = vec![StreamLine::new(block_id, LineKind::UserLabel)];
     let trimmed = text.trim_end_matches('\n');
@@ -19,19 +20,13 @@ pub(crate) fn user_message_lines(block_id: u64, text: &str) -> Vec<StreamLine> {
                 last: index + 1 == count,
             },
         );
-        line.spans = coalesce(vec![StreamSpan {
-            text: (*part).to_string(),
-            style: SpanStyle::Plain,
-        }]);
+        line.spans = autolinks::text_spans(part);
         lines.push(line);
     }
     lines.push(StreamLine::new(block_id, LineKind::Spacer));
     lines
 }
 
-/// #117: the compaction row's icon and color. Every state shares one glyph
-/// (Lucide `text-select`), so the row never changes shape as the operation
-/// advances; only failure is recolored and the label carries the transition.
 pub(crate) fn context_compaction_visual(
     status: vega_conversation::types::ContextCompactionStatus,
     colors: &ThemeColors,
@@ -53,10 +48,12 @@ pub(crate) fn context_compaction_label(
     context_control::status_label_for(status, failure).to_owned()
 }
 
-/// Renders one visible semantic entry as a single variable-height list item
-/// (S8-T44/C4: 一项=一个 user/assistant/tool/permission/plan/artifact/
-/// summary item 的自然高度). Per-frame: clone-only element assembly from
-/// cached materialization — no markdown re-materialization here (P3).
+#[derive(Clone, Copy)]
+pub(crate) struct MessageInteraction<'a> {
+    pub(crate) focus: &'a FocusHandle,
+    pub(crate) actions_enabled: bool,
+}
+
 pub(crate) fn render_entry(entry: &StreamEntry, window: &mut Window, cx: &mut App) -> AnyElement {
     render_entry_internal(entry, window, cx, None, false)
 }
@@ -65,21 +62,20 @@ pub(crate) fn render_entry_with_selection(
     entry: &StreamEntry,
     window: &mut Window,
     cx: &mut App,
-    focus: &FocusHandle,
+    interaction: MessageInteraction<'_>,
 ) -> AnyElement {
-    render_entry_internal(entry, window, cx, Some(focus), false)
+    render_entry_internal(entry, window, cx, Some(interaction), false)
 }
 
 pub(crate) fn render_stream_entry(
     entry: &StreamEntry,
-    index: usize,
     suppress_run_notices: bool,
     process_top: f32,
     window: &mut Window,
     cx: &mut App,
-    focus: &FocusHandle,
+    interaction: MessageInteraction<'_>,
 ) -> AnyElement {
-    let body = render_entry_internal(entry, window, cx, Some(focus), suppress_run_notices);
+    let body = render_entry_internal(entry, window, cx, Some(interaction), suppress_run_notices);
     if matches!(
         entry,
         StreamEntry::Tool { .. }
@@ -103,14 +99,7 @@ pub(crate) fn render_stream_entry(
         .min_w_0()
         .flex()
         .flex_col()
-        .child(
-            div()
-                .debug_selector(move || format!("assistant-body-{index}"))
-                .w_full()
-                .min_w_0()
-                .flex_shrink_0()
-                .child(body),
-        )
+        .child(div().w_full().min_w_0().flex_shrink_0().child(body))
         .into_any_element()
 }
 
@@ -125,15 +114,52 @@ pub(crate) fn process_surface(_colors: &ThemeColors) -> gpui_kit::Div {
         .gap(px(Layout::PROCESS_ITEM_GAP))
 }
 
+pub(crate) fn render_compaction_activity(
+    label: impl IntoElement,
+    colors: &ThemeColors,
+) -> AnyElement {
+    let (glyph, color) = context_compaction_visual(
+        vega_conversation::types::ContextCompactionStatus::Compacting,
+        colors,
+    );
+    let line_height = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
+    let vertical_padding = (Layout::CONVERSATION_TOOL_HEIGHT - line_height) / 2.;
+    div()
+        .w_full()
+        .flex_shrink_0()
+        .min_w_0()
+        .min_h(px(Layout::CONVERSATION_TOOL_HEIGHT))
+        .py(px(vertical_padding))
+        .flex()
+        .items_start()
+        .gap(px(Layout::CONVERSATION_INLINE_GAP))
+        .text_size(px(Typography::CONVERSATION))
+        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
+        .text_color(color)
+        .child(
+            div()
+                .w(px(Layout::ICON_SIZE))
+                .h(px(line_height))
+                .flex()
+                .items_center()
+                .justify_center()
+                .flex_shrink_0()
+                .child(icon(glyph, color)),
+        )
+        .child(div().min_w_0().flex_1().whitespace_normal().child(label))
+        .into_any_element()
+}
+
 fn render_entry_internal(
     entry: &StreamEntry,
     window: &mut Window,
     cx: &mut App,
-    focus: Option<&FocusHandle>,
+    interaction: Option<MessageInteraction<'_>>,
     suppress_run_notices: bool,
 ) -> AnyElement {
     let colors = theme(cx).colors;
     match entry {
+        StreamEntry::Subagents { group } => group.clone().into_any_element(),
         StreamEntry::RunActivity { group } => RunActivityGroup::render(group.clone(), window, cx),
         StreamEntry::RunActivitySegment { group, segment } => {
             RunActivityGroup::render_segment(group.clone(), *segment, window, cx)
@@ -150,7 +176,6 @@ fn render_entry_internal(
             }
             if record.status == vega_conversation::types::ContextCompactionStatus::Failed {
                 return div()
-                    .debug_selector(|| "context-compaction-row".into())
                     .w_full()
                     .min_w_0()
                     .child(plain_error_notice(
@@ -159,53 +184,25 @@ fn render_entry_internal(
                     ))
                     .into_any_element();
             }
-            let (glyph, color) = context_compaction_visual(record.status, &colors);
-            let restored = *restored;
-            let label = context_compaction_label(record.status, record.failure, restored);
-            div()
-                .debug_selector(|| "context-compaction-row".into())
-                .w_full()
-                .flex_shrink_0()
-                .min_w_0()
-                .min_h(px(Layout::DISCLOSURE_HEADER_HEIGHT))
-                .flex()
-                .items_start()
-                .gap(px(Layout::CONVERSATION_INLINE_GAP))
-                .text_size(px(Typography::BODY))
-                .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
-                .text_color(color)
-                .child(
-                    div()
-                        .debug_selector(|| "context-compaction-icon-slot".into())
-                        .w(px(Layout::ICON_SIZE))
-                        .h(px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
-                        .flex()
-                        .items_center()
-                        .flex_shrink_0()
-                        .child(icon(glyph, color)),
-                )
-                .child(
-                    div()
-                        .debug_selector(move || {
-                            if restored {
-                                "context-compaction-restored".into()
-                            } else {
-                                "context-compaction-live".into()
-                            }
-                        })
-                        .min_w_0()
-                        .flex_1()
-                        .whitespace_normal()
-                        .child(label),
-                )
-                .into_any_element()
+            render_compaction_activity(
+                context_compaction_label(record.status, record.failure, *restored),
+                &colors,
+            )
         }
         StreamEntry::User { lines, copy } => {
-            if let Some(focus) = focus {
-                selectable_user_message(lines, copy, focus, &colors, window, cx)
+            let body = if let Some(interaction) = interaction {
+                selectable_user_message(lines, copy, interaction, &colors, window, cx)
             } else {
-                message_with_copy(user_message_item(lines, &colors), copy, true, colors)
-            }
+                user_message_item(lines, &colors)
+            };
+            message_with_copy(
+                body,
+                copy,
+                copy.id,
+                true,
+                colors,
+                interaction.is_none_or(|interaction| interaction.actions_enabled),
+            )
         }
         StreamEntry::UserImages { images } => attachments::render_user_images(images, cx),
         StreamEntry::Screenshot { card } => card.clone().into_any_element(),
@@ -215,52 +212,39 @@ fn render_entry_internal(
             copy,
             ..
         } => {
-            if let Some(focus) = focus {
+            if let Some(interaction) = interaction {
                 selectable_markdown_message(
                     model,
                     failure.filter(|_| !suppress_run_notices),
                     copy,
-                    focus,
+                    interaction,
                     &colors,
                     window,
                     cx,
                 )
             } else {
-                message_with_copy(
-                    markdown_item(model, failure.filter(|_| !suppress_run_notices), &colors),
-                    copy,
-                    false,
-                    colors,
+                markdown_message_item(
+                    model,
+                    failure.filter(|_| !suppress_run_notices),
+                    &colors,
+                    &format!("assistant-message-{}", copy.id),
+                    Some(copy.id),
                 )
             }
         }
         StreamEntry::Tool { card } => {
             let card = card.clone();
             process_surface(&colors)
-                .debug_selector(|| "standalone-tool-process".into())
-                .child(ToolCard::render(
-                    card,
-                    "tool-activity-single-row".to_string(),
-                    false,
-                    window,
-                    cx,
-                ))
+                .child(ToolCard::render(card, false, window, cx))
                 .into_any_element()
         }
         StreamEntry::ToolGroup { group } => {
             let group = group.clone();
             process_surface(&colors)
-                .debug_selector(|| "standalone-tool-group-process".into())
                 .child(ToolActivityGroup::render(group, window, cx))
                 .into_any_element()
         }
-        StreamEntry::Artifact { card } => {
-            let card = card.clone();
-            let row_count = card.read(cx).row_count();
-            card_rows_item(row_count, move |row| {
-                ArtifactCard::render_row(card.clone(), row, window, cx)
-            })
-        }
+        StreamEntry::ArtifactGroup { group } => ArtifactGroup::render(group.clone(), window, cx),
         StreamEntry::Permission { card } => {
             let card = card.clone();
             let row_count = card.read(cx).row_count();
@@ -274,7 +258,6 @@ fn render_entry_internal(
                 .pb_2()
                 .child(
                     div()
-                        .debug_selector(|| "conversation-permission-card".into())
                         .w_full()
                         .rounded(px(Layout::STATUS_RADIUS))
                         .border_1()
@@ -302,18 +285,16 @@ fn render_entry_internal(
             div().h_0().into_any_element()
         }
         StreamEntry::Summary { card } => match card.read(cx).summary().outcome {
-            vega_conversation::types::TaskSummaryOutcome::Completed => div()
-                .h_0()
-                .debug_selector(|| "completed-task-summary-hidden".to_string())
-                .into_any_element(),
+            vega_conversation::types::TaskSummaryOutcome::Completed => {
+                div().h_0().into_any_element()
+            }
             outcome => div()
-                .debug_selector(|| "task-outcome-status".to_string())
                 .py_1()
                 .child(plain_error_notice(
                     if outcome == vega_conversation::types::TaskSummaryOutcome::Failed {
                         RunFailureKind::Persisted.message()
                     } else {
-                        "Stopped".into()
+                        vega_i18n::t("ui.stopped").into()
                     },
                     if outcome == vega_conversation::types::TaskSummaryOutcome::Failed {
                         colors.danger
@@ -329,31 +310,42 @@ fn render_entry_internal(
                 SkillHistoryVerification,
             };
             let source = match activation.source_scope {
-                SkillHistorySource::Project => "Project",
-                SkillHistorySource::VegaGlobal => "Vega global",
-                SkillHistorySource::Imported => "Imported",
+                SkillHistorySource::Project => vega_i18n::t("ui.project"),
+                SkillHistorySource::VegaGlobal => vega_i18n::t("ui.vega_global"),
+                SkillHistorySource::Imported => vega_i18n::t("ui.imported"),
             };
             let origin = match activation.origin {
-                SkillHistoryOrigin::Model => "Loaded by model",
-                SkillHistoryOrigin::ExplicitUser => "Preloaded by user",
+                SkillHistoryOrigin::Model => vega_i18n::t("ui.loaded_by_model"),
+                SkillHistoryOrigin::ExplicitUser => vega_i18n::t("ui.preloaded_by_user"),
             };
             let status = match activation.status {
-                SkillHistoryStatus::Loaded => "Loaded",
-                SkillHistoryStatus::Revoked => "Revoked",
+                SkillHistoryStatus::Loaded => vega_i18n::t("ui.loaded"),
+                SkillHistoryStatus::Revoked => vega_i18n::t("ui.revoked"),
             };
             let verification = match activation.verification {
-                SkillHistoryVerification::Verified => "Snapshot verified",
-                SkillHistoryVerification::Unavailable => "Snapshot unavailable or unverified",
+                SkillHistoryVerification::Verified => vega_i18n::t("ui.snapshot_verified"),
+                SkillHistoryVerification::Unavailable => {
+                    vega_i18n::t("ui.snapshot_unavailable_or_unverified")
+                }
             };
-            let digest = activation.content_sha256.get(..12).unwrap_or("invalid");
+            let digest = activation
+                .content_sha256
+                .get(..12)
+                .unwrap_or_else(|| vega_i18n::t("ui.invalid"));
             div()
-                .debug_selector(|| "history-skill-provenance".to_string())
                 .py_1()
                 .text_size(px(Typography::METADATA))
                 .text_color(colors.text_secondary)
-                .child(format!(
-                    "Skill history {} · {} · {} · {} · {} · SHA-256 {}…",
-                    activation.name, source, origin, status, verification, digest
+                .child(vega_i18n::t_args(
+                    "ui.skill_history_name_source_origin_status_verification_sha",
+                    &[
+                        ("name", &activation.name),
+                        ("source", source),
+                        ("origin", origin),
+                        ("status", status),
+                        ("verification", verification),
+                        ("digest", digest),
+                    ],
                 ))
                 .into_any_element()
         }
@@ -387,33 +379,79 @@ pub(crate) fn markdown_item(
     model: &StreamModel,
     failure: Option<RunFailureKind>,
     colors: &ThemeColors,
+    id_prefix: &str,
 ) -> AnyElement {
+    markdown_message_item(model, failure, colors, id_prefix, None)
+}
+
+fn markdown_message_item(
+    model: &StreamModel,
+    failure: Option<RunFailureKind>,
+    colors: &ThemeColors,
+    id_prefix: &str,
+    code_owner: Option<u64>,
+) -> AnyElement {
+    let message_id = model
+        .committed_lines
+        .first()
+        .or_else(|| model.pending_lines.first())
+        .map_or(0, |line| line.block_id);
+    let id_prefix = id_prefix.to_owned();
     div()
-        .debug_selector(|| "assistant-message".into())
         .w_full()
         .flex_shrink_0()
         .pt(px(Layout::CONVERSATION_BODY_TOP))
         .flex()
         .flex_col()
-        .children(markdown_blocks(model, colors, |line| {
-            render_line(line, colors)
-        }))
-        .children(failure.map(|reason| {
-            div()
-                .debug_selector(|| "assistant-run-failure".to_string())
-                .child(plain_error_notice(reason.message(), colors.danger))
-        }))
+        .children(markdown_blocks(
+            model,
+            colors,
+            code_owner,
+            None,
+            true,
+            |line, index| {
+                let id = format!("{id_prefix}-markdown-{message_id}-line-{index}");
+                let marker =
+                    independent_list_marker(line).map(|marker| render_line(&marker, colors, &id));
+                let content = list_item_content(line);
+                (
+                    marker,
+                    render_line(content.as_ref().unwrap_or(line), colors, &id),
+                )
+            },
+        ))
+        .children(
+            failure.map(|reason| div().child(plain_error_notice(reason.message(), colors.danger))),
+        )
         .into_any_element()
-}
-
-#[cfg(test)]
-thread_local! {
-    // Observe production text layouts without changing measurement or paint.
-    pub(super) static USER_TEXT_LAYOUTS: std::cell::RefCell<Vec<gpui_kit::TextLayout>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 pub(super) fn status_notice(message: String, color: Rgba, colors: &ThemeColors) -> AnyElement {
     status_notice_with_icon(message, color, colors, Icon::Warning)
+}
+
+pub(super) fn inline_status_notice(message: String, color: Rgba, icon_kind: Icon) -> AnyElement {
+    div()
+        .w_full()
+        .min_w_0()
+        .min_h(px(Layout::CONVERSATION_TOOL_HEIGHT))
+        .flex()
+        .items_center()
+        .gap(px(Layout::CONVERSATION_INLINE_GAP))
+        .text_size(px(Typography::CONVERSATION))
+        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
+        .text_color(color)
+        .child(
+            div()
+                .size(px(Layout::ICON_SIZE))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon(icon_kind, color)),
+        )
+        .child(div().min_w_0().flex_1().child(message))
+        .into_any_element()
 }
 
 pub(super) fn status_notice_with_icon(
@@ -437,13 +475,6 @@ pub(super) fn status_notice_with_icon(
         .text_color(color)
         .child(
             div()
-                .debug_selector(move || {
-                    if icon_kind == Icon::Wifi {
-                        "assistant-retry-wifi-icon".into()
-                    } else {
-                        "conversation-status-icon".into()
-                    }
-                })
                 .mt(px((Typography::BODY * Typography::BODY_LINE_HEIGHT
                     - Layout::ICON_SIZE)
                     / 2.0))
@@ -454,21 +485,12 @@ pub(super) fn status_notice_with_icon(
                 .justify_center()
                 .child(icon(icon_kind, color)),
         )
-        .child(
-            div()
-                .debug_selector(|| "conversation-status-text".into())
-                .min_w_0()
-                .flex_1()
-                .child(message),
-        )
+        .child(div().min_w_0().flex_1().child(message))
         .into_any_element()
 }
 
 pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> AnyElement {
-    #[cfg(test)]
-    USER_TEXT_LAYOUTS.with_borrow_mut(Vec::clear);
     let mut body = div()
-        .debug_selector(|| "user-message-bubble".into())
         .max_w(gpui_kit::relative(Layout::CONVERSATION_USER_RATIO))
         .bg(colors.conversation_bubble)
         .rounded(px(Layout::USER_MESSAGE_RADIUS))
@@ -479,7 +501,7 @@ pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> A
         .text_color(colors.conversation_user)
         .flex()
         .flex_col();
-    for line in lines {
+    for (index, line) in lines.iter().enumerate() {
         if !matches!(line.kind, LineKind::UserLine { .. }) {
             continue;
         }
@@ -492,16 +514,18 @@ pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> A
             // 空行保留一行正文行高的自然占位（非定高行模型）。
             body = body.child(div().h(user_line_height()));
         } else {
-            let text = block_text(&line.spans, user_body_style(colors), colors);
-            #[cfg(test)]
-            USER_TEXT_LAYOUTS.with_borrow_mut(|layouts| layouts.push(text.layout().clone()));
-            body = body.child(text);
+            let runs = block_text_runs(&line.spans, user_body_style(colors), colors);
+            body = body.child(super::inline_code::interactive_text(
+                text,
+                runs,
+                link_ranges(&line.spans),
+                format!("user-message-{}-{index}", line.block_id),
+            ));
         }
     }
     div()
         .w_full()
         .flex_shrink_0()
-        .debug_selector(|| "user-message".into())
         .pt(px(Layout::USER_MESSAGE_PADDING_TOP))
         .pb(px(Layout::CONVERSATION_USER_BOTTOM))
         .flex()
@@ -519,15 +543,15 @@ fn user_line_height() -> Pixels {
 fn selectable_user_message(
     lines: &[StreamLine],
     copy: &MessageCopy,
-    focus: &FocusHandle,
+    interaction: MessageInteraction<'_>,
     colors: &ThemeColors,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     let selection_color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
-    let mut document = SelectionDocumentBuilder::new(copy.clone(), focus.clone(), selection_color);
+    let mut document =
+        SelectionDocumentBuilder::new(copy.clone(), interaction.focus.clone(), selection_color);
     let mut body = div()
-        .debug_selector(|| "user-message-bubble".into())
         .max_w(gpui_kit::relative(Layout::CONVERSATION_USER_RATIO))
         .bg(colors.conversation_bubble)
         .rounded(px(Layout::USER_MESSAGE_RADIUS))
@@ -555,15 +579,15 @@ fn selectable_user_message(
         if text.is_empty() {
             body = body.child(div().h(user_line_height()));
         } else {
-            let styled = block_text(&line.spans, user_body_style(colors), colors);
-            let selected = document.append_styled(&text, styled, "user-body");
+            let runs = block_text_runs(&line.spans, user_body_style(colors), colors);
+            let selected =
+                document.append_styled_runs(&text, runs, link_ranges(&line.spans), "user-body");
             body = body.child(selected);
         }
     }
     let body = div()
         .w_full()
         .flex_shrink_0()
-        .debug_selector(|| "user-message".into())
         .pt(px(Layout::USER_MESSAGE_PADDING_TOP))
         .pb(px(Layout::CONVERSATION_USER_BOTTOM))
         .flex()
@@ -571,148 +595,364 @@ fn selectable_user_message(
         .items_end()
         .child(body)
         .into_any_element();
-    selection_context_menu(document.wrap(body, window, cx), copy, false)
+    selection_context_menu(
+        document.wrap(body, window, cx),
+        copy,
+        false,
+        interaction.actions_enabled,
+    )
 }
 
 fn selectable_markdown_message(
     model: &StreamModel,
     failure: Option<RunFailureKind>,
     copy: &MessageCopy,
-    focus: &FocusHandle,
+    interaction: MessageInteraction<'_>,
     colors: &ThemeColors,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     div()
-        .debug_selector(|| "assistant-message".into())
         .w_full()
         .flex_shrink_0()
         .pt(px(Layout::CONVERSATION_BODY_TOP))
         .flex()
         .flex_col()
         .child(selectable_markdown_content(
-            model, copy, focus, colors, false, window, cx,
+            model,
+            copy,
+            interaction,
+            colors,
+            false,
+            window,
+            cx,
         ))
-        .children(failure.map(|reason| {
-            div()
-                .debug_selector(|| "assistant-run-failure".to_string())
-                .child(plain_error_notice(reason.message(), colors.danger))
-        }))
+        .children(
+            failure.map(|reason| div().child(plain_error_notice(reason.message(), colors.danger))),
+        )
         .into_any_element()
 }
 
 pub(crate) fn selectable_markdown_content(
     model: &StreamModel,
     copy: &MessageCopy,
-    focus: &FocusHandle,
+    interaction: MessageInteraction<'_>,
     colors: &ThemeColors,
     copy_original: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     let selection_color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
-    let mut document = SelectionDocumentBuilder::new(copy.clone(), focus.clone(), selection_color);
+    let mut document =
+        SelectionDocumentBuilder::new(copy.clone(), interaction.focus.clone(), selection_color);
     let body = div().w_full().min_w_0().flex_shrink_0().flex().flex_col();
-    let mut previous: Option<(u64, LineKind)> = None;
-    let blocks = markdown_blocks(model, colors, |line| {
-        if !matches!(line.kind, LineKind::Rule)
-            && let Some((previous_block, previous_kind)) = previous
-        {
-            let same_multiline_block = previous_block == line.block_id
-                && ((matches!(previous_kind, LineKind::Code)
-                    && matches!(line.kind, LineKind::Code))
-                    || (matches!(previous_kind, LineKind::ListItem)
-                        && matches!(line.kind, LineKind::ListItem)));
-            document.append_literal(if same_multiline_block { "\n" } else { "\n\n" });
-        }
-        let element = render_line_selectable(line, colors, &mut document);
-        if !matches!(line.kind, LineKind::Rule) {
-            previous = Some((line.block_id, line.kind));
-        }
-        element
-    });
+    let mut previous: Option<(u64, LineKind, Option<Arc<StreamCodeBlock>>)> = None;
+    let selection = document.code_drag_selection(window, cx);
+    let blocks = markdown_blocks(
+        model,
+        colors,
+        Some(copy.id),
+        Some(selection),
+        interaction.actions_enabled,
+        |line, index| {
+            if !matches!(line.kind, LineKind::Rule)
+                && let Some((previous_block, previous_kind, previous_code)) = &previous
+            {
+                let same_multiline_block = (*previous_kind == LineKind::Code
+                    && line.kind == LineKind::Code
+                    && previous_code
+                        .as_ref()
+                        .zip(line.code_block.as_ref())
+                        .is_some_and(|(previous, current)| Arc::ptr_eq(previous, current)))
+                    || (*previous_block == line.block_id
+                        && (matches!(previous_kind, LineKind::ListItem)
+                            && matches!(line.kind, LineKind::ListItem)));
+                document.append_literal(if same_multiline_block { "\n" } else { "\n\n" });
+            }
+            let marker = independent_list_marker(line).map(|marker| {
+                render_line_selectable(&marker, colors, &mut document, index, copy.id)
+            });
+            let content = list_item_content(line);
+            let element = render_line_selectable(
+                content.as_ref().unwrap_or(line),
+                colors,
+                &mut document,
+                index,
+                copy.id,
+            );
+            if !matches!(line.kind, LineKind::Rule) {
+                previous = Some((line.block_id, line.kind, line.code_block.clone()));
+            }
+            (marker, element)
+        },
+    );
     selection_context_menu(
         document.wrap(body.children(blocks).into_any_element(), window, cx),
         copy,
         copy_original,
+        interaction.actions_enabled,
     )
+}
+
+fn independent_list_marker(line: &StreamLine) -> Option<StreamLine> {
+    if !line.starts_list_item()
+        || (line.kind == LineKind::ListItem && line.list_marker_quote_depth().is_none())
+    {
+        return None;
+    }
+    let mut marker = line.clone();
+    if line.kind != LineKind::ListItem {
+        marker.quotes.clear();
+    }
+    marker.kind = LineKind::ListItem;
+    marker.spans.clear();
+    marker.table = None;
+    marker.code_block = None;
+    Some(marker)
+}
+
+fn list_item_content(line: &StreamLine) -> Option<StreamLine> {
+    line.list_marker_quote_depth()?;
+    let mut content = line.clone();
+    content.kind = LineKind::Paragraph;
+    content.marker.clear();
+    content.checked = None;
+    Some(content)
 }
 
 fn markdown_blocks(
     model: &StreamModel,
     colors: &ThemeColors,
-    mut render: impl FnMut(&StreamLine) -> AnyElement,
+    code_owner: Option<u64>,
+    selection: Option<CodeDragSelection>,
+    actions_enabled: bool,
+    mut render: impl FnMut(&StreamLine, usize) -> (Option<AnyElement>, AnyElement),
 ) -> Vec<AnyElement> {
     let lines: Vec<_> = model
         .committed_lines
         .iter()
         .chain(&model.pending_lines)
         .collect();
-    let list_blocks: std::collections::HashSet<_> = lines
-        .iter()
-        .filter(|line| line.kind == LineKind::ListItem)
-        .map(|line| line.block_id)
-        .collect();
     let mut blocks = Vec::new();
     let mut index = 0;
+    let mut code_ordinal = 0;
     while index < lines.len() {
         let line = lines[index];
         let previous = index.checked_sub(1).map(|index| lines[index]);
         let start = index;
         let block_id = line.block_id;
-        let in_list = list_blocks.contains(&block_id);
-        let previous_in_list = previous.is_some_and(|line| list_blocks.contains(&line.block_id));
+        let in_list = line.in_list;
+        let previous_in_list = previous.is_some_and(|line| line.in_list);
         let gap = markdown_block_gap(previous, line, in_list, previous_in_list);
-        let mut content = vec![render(line)];
+        let (marker, element) = render(line, index);
+        let mut content = vec![element];
         index += 1;
         if line.kind == LineKind::Code {
-            while index < lines.len()
-                && lines[index].block_id == block_id
-                && lines[index].kind == LineKind::Code
-            {
-                content.push(render(lines[index]));
+            while index < lines.len() && lines[index].continues_code_block(line) {
+                content.push(render(lines[index], index).1);
                 index += 1;
             }
         }
-        let body = div()
-            .debug_selector(move || format!("markdown-block-{start}"))
-            .w_full()
-            .min_w_0()
-            .flex_shrink_0()
-            .mt(px(gap))
-            .when(in_list && line.kind != LineKind::ListItem, |body| {
-                body.pl(px((line.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT))
-            });
+        let body = div().w_full().min_w_0().flex_shrink_0().when(
+            in_list && line.kind != LineKind::ListItem && marker.is_none(),
+            |body| {
+                body.pl(px(
+                    (line.list_content_inset() - line.quote_list_inset()).max(0.)
+                ))
+            },
+        );
         let body = if line.kind == LineKind::Code {
+            let ordinal = code_ordinal;
+            code_ordinal += 1;
+            let header = code_owner
+                .zip(line.code_block.as_ref())
+                .map(|(owner, code)| code_header(code, owner, ordinal, colors, actions_enabled));
             body.child(
                 div()
-                    .id(gpui_kit::SharedString::from(format!(
-                        "markdown-code-{block_id}-{start}"
-                    )))
-                    .debug_selector(move || format!("markdown-code-{start}"))
                     .w_full()
                     .min_w_0()
-                    .overflow_x_scroll()
                     .bg(colors.code_bg)
                     .rounded(px(Layout::TOOL_DETAIL_RADIUS))
-                    .p(px(Layout::MARKDOWN_CODE_PADDING))
+                    .px(px(Layout::MARKDOWN_CODE_PADDING))
+                    .pt(px(Layout::MARKDOWN_CODE_PADDING))
                     .flex()
+                    .flex_col()
+                    .when(header.is_some(), |body| {
+                        body.gap(px(Layout::COPY_ACTION_GAP))
+                    })
+                    .children(header)
                     .child(
-                        div()
-                            .min_w_full()
-                            .flex_shrink_0()
-                            .flex()
-                            .flex_col()
-                            .items_start()
-                            .children(content),
+                        CodeViewport::new(
+                            gpui_kit::SharedString::from(format!(
+                                "markdown-code-scroll-{}-{block_id}-{start}",
+                                code_owner.unwrap_or_default(),
+                            )),
+                            div()
+                                .min_w_full()
+                                .flex_shrink_0()
+                                .pb(px(Layout::MARKDOWN_CODE_PADDING))
+                                .flex()
+                                .flex_col()
+                                .items_start()
+                                .children(content),
+                            colors.code_bg,
+                        )
+                        .selection(selection.clone()),
                     ),
             )
         } else {
             body.children(content)
         };
-        blocks.push(body.into_any_element());
+        let quote_marker_depth = line.list_marker_quote_depth();
+        let (body, quote_marker) = if quote_marker_depth.is_some() {
+            (body, marker.zip(quote_marker_depth))
+        } else if let Some(marker) = marker {
+            (
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .child(div().flex_shrink_0().child(marker))
+                    .child(div().flex_1().min_w_0().child(body)),
+                None,
+            )
+        } else {
+            (body, None)
+        };
+        blocks.push((
+            line.quotes.clone(),
+            gap,
+            quote_marker,
+            body.into_any_element(),
+        ));
     }
-    blocks
+    quote_blocks(&mut blocks.into_iter().peekable(), 0, None, colors)
+}
+
+type MarkdownBlock = (
+    Vec<model::QuoteOwner>,
+    f32,
+    Option<(AnyElement, usize)>,
+    AnyElement,
+);
+
+fn quote_blocks(
+    blocks: &mut std::iter::Peekable<impl Iterator<Item = MarkdownBlock>>,
+    depth: usize,
+    owner: Option<model::QuoteOwner>,
+    colors: &ThemeColors,
+) -> Vec<AnyElement> {
+    let mut result = Vec::new();
+    while let Some((ancestry, gap, _, _)) = blocks.peek() {
+        if depth > 0 && ancestry.get(depth - 1).copied() != owner {
+            break;
+        }
+        let gap = *gap;
+        if let Some(identity) = ancestry.get(depth).copied() {
+            let marker = blocks.peek_mut().and_then(|(_, first_gap, marker, _)| {
+                *first_gap = 0.;
+                if marker
+                    .as_ref()
+                    .is_some_and(|(_, marker_depth)| *marker_depth == depth)
+                {
+                    marker.take().map(|(marker, _)| marker)
+                } else {
+                    None
+                }
+            });
+            let list_inset =
+                (identity.list_inset() - owner.map_or(0., |owner| owner.list_inset())).max(0.);
+            let marker_inset = if marker.is_some() { list_inset } else { 0. };
+            let children = quote_blocks(blocks, depth + 1, Some(identity), colors);
+            result.push(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .mt(px(gap))
+                    .pl(px((list_inset - marker_inset).max(0.)))
+                    .flex()
+                    .children(
+                        marker
+                            .map(|marker| div().w(px(marker_inset)).flex_shrink_0().child(marker)),
+                    )
+                    .child(
+                        div()
+                            .w(px(2.))
+                            .mr(px(Layout::MARKDOWN_CODE_PADDING))
+                            .flex_shrink_0()
+                            .bg(colors.border_subtle),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .children(children),
+                    )
+                    .into_any_element(),
+            );
+        } else if let Some((_, _, _, element)) = blocks.next() {
+            result.push(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .mt(px(gap))
+                    .child(element)
+                    .into_any_element(),
+            );
+        }
+    }
+    result
+}
+
+fn code_header(
+    code: &StreamCodeBlock,
+    owner: u64,
+    ordinal: usize,
+    colors: &ThemeColors,
+    actions_enabled: bool,
+) -> AnyElement {
+    let selector = format!("markdown-code-copy-{owner}-{ordinal}");
+    let receipt_id = format!(
+        "code-copy-receipt-{owner}-{}-{}",
+        code.identity.0, code.identity.1
+    );
+    div()
+        .w_full()
+        .min_w_0()
+        .h(px(Layout::COPY_ACTION_SIZE))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .gap(px(Layout::COPY_ACTION_GAP))
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .overflow_hidden()
+                .text_size(px(Typography::METADATA))
+                .text_color(colors.text_secondary)
+                .children(code.language.clone()),
+        )
+        .when(actions_enabled, |header| {
+            header.child(CopyReceiptButton::new(
+                receipt_id.into(),
+                CopySource::Code(code.code.clone()),
+                vega_i18n::t("ui.copy_code"),
+                *colors,
+                |button| {
+                    button
+                        .id(gpui_kit::SharedString::from(selector))
+                        .size(px(Layout::COPY_ACTION_SIZE))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .focus_visible(|style| style.bg(colors.bg_active))
+                },
+            ))
+        })
+        .into_any_element()
 }
 
 pub(crate) fn markdown_block_gap(
@@ -724,28 +964,34 @@ pub(crate) fn markdown_block_gap(
     let Some(previous) = previous else {
         return 0.;
     };
-    if in_list && previous.block_id == current.block_id {
+    if in_list
+        && previous_in_list
+        && previous.block_id == current.block_id
+        && previous.quotes == current.quotes
+    {
         if current.kind == LineKind::ListItem {
             return Layout::MARKDOWN_LIST_ITEM_GAP;
         }
+        if !current.quotes.is_empty() {
+            return Layout::MARKDOWN_BLOCK_GAP;
+        }
         return Layout::MARKDOWN_LIST_PARAGRAPH_GAP;
+    }
+    if !previous.quotes.is_empty() || !current.quotes.is_empty() {
+        return Layout::MARKDOWN_BLOCK_GAP;
     }
     let after = if previous_in_list {
         Layout::MARKDOWN_BLOCK_GAP
     } else {
         match previous.kind {
             LineKind::Heading(_) => Layout::MARKDOWN_HEADING_AFTER,
-            LineKind::Code | LineKind::ListItem | LineKind::Table | LineKind::Quote => {
-                Layout::MARKDOWN_BLOCK_GAP
-            }
+            LineKind::Code | LineKind::ListItem | LineKind::Table => Layout::MARKDOWN_BLOCK_GAP,
             _ => Layout::CONVERSATION_PARAGRAPH_GAP,
         }
     };
     let before = match current.kind {
         LineKind::Heading(_) => Layout::MARKDOWN_HEADING_BEFORE,
-        LineKind::Code | LineKind::ListItem | LineKind::Table | LineKind::Quote => {
-            Layout::MARKDOWN_BLOCK_GAP
-        }
+        LineKind::Code | LineKind::ListItem | LineKind::Table => Layout::MARKDOWN_BLOCK_GAP,
         _ => 0.,
     };
     after.max(before)
@@ -755,41 +1001,48 @@ pub(super) fn selection_context_menu(
     body: AnyElement,
     copy: &MessageCopy,
     copy_original: bool,
+    enabled: bool,
 ) -> AnyElement {
-    use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
+    use gpui_kit::component::menu::PopupMenuItem;
 
     let copy_for_menu = copy.clone();
-    div()
-        .id(("message-selection-context-menu", copy.id))
-        .child(body)
-        .context_menu(move |menu, _, _| {
-            let selected = copy_for_menu.clone();
-            let original = copy_for_menu.clone();
-            menu.when(copy_original, |menu| {
-                menu.item(
-                    PopupMenuItem::new("复制原文").on_click(move |_, _, cx| original.copy(cx)),
-                )
-            })
-            .item(
-                PopupMenuItem::new("复制")
-                    .disabled(!copy_for_menu.has_selected_text())
-                    .on_click(move |_, _, cx| selected.copy_selected_text(cx)),
+    super::selection_menu::SelectionMenu::new(copy.id, body, move |menu, _, _| {
+        let selected = copy_for_menu.clone();
+        let original = copy_for_menu.clone();
+        menu.when(copy_original, |menu| {
+            menu.item(
+                PopupMenuItem::new(vega_i18n::t("ui.copy_original"))
+                    .on_click(move |_, _, cx| original.copy(cx)),
             )
         })
-        .into_any_element()
+        .item(
+            PopupMenuItem::new(vega_i18n::t("ui.copy"))
+                .disabled(!copy_for_menu.has_selected_text())
+                .on_click(move |_, _, cx| selected.copy_selected_text(cx)),
+        )
+    })
+    .enabled(enabled)
+    .into_any_element()
 }
 
 fn render_line_selectable(
     line: &StreamLine,
     colors: &ThemeColors,
     document: &mut SelectionDocumentBuilder,
+    line_index: usize,
+    message_id: u64,
 ) -> AnyElement {
+    let id_prefix = format!("assistant-{message_id}-line-{line_index}");
     if let Some(table) = &line.table {
-        return render_table_selectable(line.block_id, table, colors, document);
+        return render_table_selectable(line.block_id, &id_prefix, table, colors, document);
     }
     let text: String = line.spans.iter().map(|span| span.text.as_str()).collect();
     let item = div()
-        .when(line.kind != LineKind::Code, |item| item.w_full())
+        .when(
+            line.kind != LineKind::Code
+                && !(line.kind == LineKind::ListItem && line.spans.is_empty()),
+            |item| item.w_full(),
+        )
         .flex_shrink_0()
         .text_size(px(Typography::CONVERSATION))
         .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
@@ -801,13 +1054,14 @@ fn render_line_selectable(
             .pb(px(2.0))
             .text_size(px(Typography::SIDEBAR))
             .text_color(colors.text_secondary)
-            .child(div().px_2().child("你"))
+            .child(div().px_2().child(vega_i18n::t("ui.you")))
             .into_any_element(),
         LineKind::UserLine { .. } => {
             let selected = document.append_styled_runs(
                 &text,
                 block_text_runs(&line.spans, user_body_style(colors), colors),
-                "assistant-user-line",
+                link_ranges(&line.spans),
+                &format!("{id_prefix}-user"),
             );
             item.child(div().px_2().py(px(1.0)).child(selected))
                 .into_any_element()
@@ -816,7 +1070,8 @@ fn render_line_selectable(
             let selected = document.append_styled_runs(
                 &text,
                 block_text_runs(&line.spans, code_run_style(colors.text_primary), colors),
-                "assistant-code",
+                link_ranges(&line.spans),
+                &format!("{id_prefix}-code"),
             );
             let code = div()
                 .text_size(px(Typography::CODE))
@@ -831,27 +1086,6 @@ fn render_line_selectable(
             };
             item.child(code).into_any_element()
         }
-        LineKind::Quote => {
-            let selected = document.append_styled_runs(
-                &text,
-                block_text_runs(&line.spans, message_run_style(colors.text_primary), colors),
-                "assistant-quote",
-            );
-            item.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .child(
-                        div()
-                            .w(px(2.0))
-                            .mr(px(Layout::MARKDOWN_CODE_PADDING))
-                            .flex_shrink_0()
-                            .bg(colors.border_subtle),
-                    )
-                    .child(selected),
-            )
-            .into_any_element()
-        }
         LineKind::Rule => item
             .py(px(4.0))
             .child(div().w_full().h(px(1.0)).bg(colors.border_subtle))
@@ -861,7 +1095,8 @@ fn render_line_selectable(
             let selected = document.append_styled_runs(
                 &text,
                 block_text_runs(&line.spans, heading_run_style(level, colors), colors),
-                "assistant-heading",
+                link_ranges(&line.spans),
+                &format!("{id_prefix}-heading"),
             );
             item.text_size(px(size))
                 .font_weight(weight)
@@ -872,14 +1107,11 @@ fn render_line_selectable(
         LineKind::ListItem => {
             let marker = format!("{} ", line.marker);
             document.append_literal(&"  ".repeat(line.depth));
-            let mut row = div()
-                .pl(px(line.depth as f32 * Layout::MARKDOWN_LIST_INDENT))
-                .flex()
-                .flex_row();
+            let mut row = div().pl(px(line.list_marker_inset())).flex().flex_row();
             let marker_text = document.append_styled(
                 &marker,
                 StyledText::new(marker.clone()),
-                "assistant-list-marker",
+                &format!("{id_prefix}-list-marker"),
             );
             row = row.child(
                 div()
@@ -893,7 +1125,7 @@ fn render_line_selectable(
                 let checkbox_text = document.append_styled(
                     checkbox,
                     StyledText::new(checkbox),
-                    "assistant-list-checkbox",
+                    &format!("{id_prefix}-list-checkbox"),
                 );
                 row = row.child(
                     div()
@@ -911,7 +1143,8 @@ fn render_line_selectable(
             let content = document.append_styled_runs(
                 &text,
                 block_text_runs(&line.spans, message_run_style(colors.text_primary), colors),
-                "assistant-list-content",
+                link_ranges(&line.spans),
+                &format!("{id_prefix}-list-content"),
             );
             row = row.child(div().flex_1().min_w_0().child(content));
             item.child(row).into_any_element()
@@ -920,7 +1153,8 @@ fn render_line_selectable(
             let selected = document.append_styled_runs(
                 &text,
                 block_text_runs(&line.spans, message_run_style(colors.text_primary), colors),
-                "assistant-paragraph",
+                link_ranges(&line.spans),
+                &format!("{id_prefix}-paragraph"),
             );
             item.child(selected).into_any_element()
         }
@@ -929,6 +1163,7 @@ fn render_line_selectable(
 
 fn render_table_selectable(
     block_id: u64,
+    id_prefix: &str,
     table: &StreamTable,
     colors: &ThemeColors,
     document: &mut SelectionDocumentBuilder,
@@ -973,13 +1208,11 @@ fn render_table_selectable(
             let selected = document.append_styled_runs(
                 &cell_text,
                 block_text_runs(spans, style, colors),
-                &format!("table-{block_id}-{ordinal}-{row_index}-{column}"),
+                link_ranges(spans),
+                &format!("{id_prefix}-table-{block_id}-{ordinal}-{row_index}-{column}"),
             );
             row = row.child(
                 div()
-                    .debug_selector(move || {
-                        format!("markdown-table-{block_id}-{ordinal}-{row_index}-{column}")
-                    })
                     .flex_basis(px(Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH))
                     .flex_grow(weights[column])
                     .flex_shrink_0()
@@ -994,21 +1227,17 @@ fn render_table_selectable(
     }
     div()
         .id(gpui_kit::SharedString::from(format!(
-            "markdown-table-{block_id}-{ordinal}"
+            "{id_prefix}-markdown-table-{block_id}-{ordinal}"
         )))
-        .debug_selector(move || format!("markdown-table-{block_id}-{ordinal}"))
         .w_full()
         .min_w_0()
         .flex_shrink_0()
         .overflow_x_scroll()
         .child(body)
+        .scroll_edge_fade(colors.bg_base, ScrollFade::compact())
         .into_any_element()
 }
 
-// ─── text runs (block-level styled text, S8-T44) ─────────────────────────────
-
-/// Base run style for a message-body text block: 14px at 1.6 line height
-/// (ui-spec §3), window default family, caller's color.
 pub(crate) fn message_run_style(color: Rgba) -> TextStyle {
     TextStyle {
         font_size: AbsoluteLength::Pixels(px(Typography::CONVERSATION)),
@@ -1040,24 +1269,16 @@ fn user_body_style(colors: &ThemeColors) -> TextStyle {
     }
 }
 
-/// Turns one logical line's spans into a wrapping [`StyledText`] block.
-/// Spans are byte-sliced into [`TextRun`]s per the materialization mapping;
-/// long text wraps inside the item (C4 禁截断), so an item's natural height
-/// covers every line it needs.
-pub(crate) fn block_text(
+fn markdown_text(
     spans: &[StreamSpan],
-    default_style: TextStyle,
+    style: TextStyle,
     colors: &ThemeColors,
-) -> StyledText {
+    id_prefix: String,
+) -> AnyElement {
     let text: String = spans.iter().map(|span| span.text.as_str()).collect();
-    StyledText::new(text).with_runs(block_text_runs(spans, default_style, colors))
-}
-
-fn markdown_text(spans: &[StreamSpan], style: TextStyle, colors: &ThemeColors) -> AnyElement {
-    super::inline_code::styled_text(
-        spans.iter().map(|span| span.text.as_str()).collect(),
-        block_text_runs(spans, style, colors),
-    )
+    let runs = block_text_runs(spans, style, colors);
+    let links = link_ranges(spans);
+    super::inline_code::interactive_text(text, runs, links, id_prefix)
 }
 
 pub(super) fn block_text_runs(
@@ -1068,7 +1289,13 @@ pub(super) fn block_text_runs(
     let mut runs: Vec<TextRun> = Vec::with_capacity(spans.len());
     for span in spans {
         let mut style = default_style.clone();
-        apply_span_style(&mut style, span.style, colors);
+        let linked = span.link.as_deref().is_some_and(super::links::allowed_link);
+        if span.style != SpanStyle::Link || linked {
+            apply_span_style(&mut style, span.style, colors);
+        }
+        if linked {
+            apply_span_style(&mut style, SpanStyle::Link, colors);
+        }
         runs.push(style.to_run(span.text.len()));
     }
     runs
@@ -1087,8 +1314,11 @@ pub(crate) fn apply_span_style(style: &mut TextStyle, span: SpanStyle, colors: &
             style.background_color = Some(colors.conversation_code.into());
         }
         SpanStyle::Link => {
-            style.underline = Some(UnderlineStyle::default());
-            style.color = colors.text_secondary.into();
+            style.underline = None;
+            if style.font_weight < FontWeight::MEDIUM {
+                style.font_weight = FontWeight::MEDIUM;
+            }
+            style.color = colors.accent.into();
         }
         // 高亮 token：等宽字体/字号与代码行基style一致，只覆写映射表给出的
         // 颜色/字重/斜体。
@@ -1128,13 +1358,18 @@ pub(super) fn heading_run_style(level: u8, colors: &ThemeColors) -> TextStyle {
 /// Renders one [`StreamLine`] into a natural-height block. 24px no longer
 /// applies here: text blocks wrap; vertical rhythm comes from per-kind
 /// padding. Fixed heights remain only inside cards' compact subrows.
-pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement {
+pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors, id_prefix: &str) -> AnyElement {
     if let Some(table) = &line.table {
-        return render_table(line.block_id, table, colors);
+        return render_table(line.block_id, table, colors, id_prefix);
     }
+    let text_id = format!("{id_prefix}-text");
     let text: String = line.spans.iter().map(|span| span.text.as_str()).collect();
     let item = div()
-        .when(line.kind != LineKind::Code, |item| item.w_full())
+        .when(
+            line.kind != LineKind::Code
+                && !(line.kind == LineKind::ListItem && line.spans.is_empty()),
+            |item| item.w_full(),
+        )
         .flex_shrink_0()
         .text_size(px(Typography::CONVERSATION))
         .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
@@ -1146,13 +1381,14 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
             .pb(px(2.0))
             .text_size(px(Typography::SIDEBAR))
             .text_color(colors.text_secondary)
-            .child(div().px_2().child("你"))
+            .child(div().px_2().child(vega_i18n::t("ui.you")))
             .into_any_element(),
         LineKind::UserLine { .. } => item
             .child(div().px_2().py(px(1.0)).child(markdown_text(
                 &line.spans,
                 user_body_style(colors),
                 colors,
+                text_id.clone(),
             )))
             .into_any_element(),
         LineKind::Code => {
@@ -1165,6 +1401,7 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
                     &line.spans,
                     code_run_style(colors.text_primary),
                     colors,
+                    format!("{id_prefix}-code"),
                 ));
             let code = if text.is_empty() {
                 // 空代码行保一行等高占位（非定高行模型）。
@@ -1174,25 +1411,6 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
             };
             item.child(code).into_any_element()
         }
-        LineKind::Quote => item
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .child(
-                        div()
-                            .w(px(2.0))
-                            .mr(px(Layout::MARKDOWN_CODE_PADDING))
-                            .flex_shrink_0()
-                            .bg(colors.border_subtle),
-                    )
-                    .child(markdown_text(
-                        &line.spans,
-                        message_run_style(colors.text_primary),
-                        colors,
-                    )),
-            )
-            .into_any_element(),
         LineKind::Rule => item
             .py(px(4.0))
             .child(div().w_full().h(px(1.0)).bg(colors.border_subtle))
@@ -1205,21 +1423,19 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
                     &line.spans,
                     heading_run_style(level, colors),
                     colors,
+                    format!("{id_prefix}-heading"),
                 ))
                 .into_any_element()
         }
         LineKind::Table => item.into_any_element(),
         LineKind::ListItem => {
-            let mut row = div()
-                .pl(px(line.depth as f32 * Layout::MARKDOWN_LIST_INDENT))
-                .flex()
-                .flex_row();
+            let mut row = div().pl(px(line.list_marker_inset())).flex().flex_row();
             row = row.child(
                 div()
                     .flex_shrink_0()
                     .w(px(Layout::MARKDOWN_LIST_INDENT))
                     .text_color(colors.text_secondary)
-                    .child(format!("{} ", line.marker)),
+                    .child(format!("{} ", line.marker).into_any_element()),
             );
             if let Some(checked) = line.checked {
                 row = row.child(
@@ -1231,13 +1447,14 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
                         } else {
                             colors.text_tertiary
                         })
-                        .child(if checked { "[x]" } else { "[ ]" }),
+                        .child((if checked { "[x]" } else { "[ ]" }).into_any_element()),
                 );
             }
             row = row.child(div().flex_1().min_w_0().child(markdown_text(
                 &line.spans,
                 message_run_style(colors.text_primary),
                 colors,
+                format!("{id_prefix}-list"),
             )));
             item.child(row).into_any_element()
         }
@@ -1246,12 +1463,19 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
                 &line.spans,
                 message_run_style(colors.text_primary),
                 colors,
+                text_id,
             ))
             .into_any_element(),
     }
 }
 
-fn render_table(block_id: u64, table: &StreamTable, colors: &ThemeColors) -> AnyElement {
+fn render_table(
+    block_id: u64,
+    table: &StreamTable,
+    colors: &ThemeColors,
+    id_prefix: &str,
+) -> AnyElement {
+    let id_prefix = id_prefix.to_owned();
     let ordinal = table.ordinal;
     let columns = table.alignments.len();
     let weights = table.column_weights();
@@ -1284,9 +1508,6 @@ fn render_table(block_id: u64, table: &StreamTable, colors: &ThemeColors) -> Any
             };
             row = row.child(
                 div()
-                    .debug_selector(move || {
-                        format!("markdown-table-{block_id}-{ordinal}-{row_index}-{column}")
-                    })
                     .flex_basis(px(Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH))
                     .flex_grow(weights[column])
                     .flex_shrink_0()
@@ -1294,21 +1515,26 @@ fn render_table(block_id: u64, table: &StreamTable, colors: &ThemeColors) -> Any
                     .px(px(Layout::MARKDOWN_TABLE_PADDING_X))
                     .py(px(Layout::MARKDOWN_TABLE_PADDING_Y))
                     .text_align(alignment)
-                    .child(markdown_text(spans, style, colors)),
+                    .child(markdown_text(
+                        spans,
+                        style,
+                        colors,
+                        format!("{id_prefix}-table-{block_id}-{ordinal}-{row_index}-{column}"),
+                    )),
             );
         }
         body = body.child(row);
     }
     div()
         .id(gpui_kit::SharedString::from(format!(
-            "markdown-table-{block_id}-{ordinal}"
+            "{id_prefix}-markdown-table-{block_id}-{ordinal}"
         )))
-        .debug_selector(move || format!("markdown-table-{block_id}-{ordinal}"))
         .w_full()
         .min_w_0()
         .flex_shrink_0()
         .overflow_x_scroll()
         .child(body)
+        .scroll_edge_fade(colors.bg_base, ScrollFade::compact())
         .into_any_element()
 }
 
@@ -1348,73 +1574,65 @@ pub(crate) fn sample_document(blocks: usize) -> String {
     doc
 }
 
-// (split_deltas moved to vega_markdown::replay — T18 公共回放器基建)
-
-/// The group includes the message, the gap and the action row, keeping the
-/// pointer path continuous. Opacity preserves the exact rest/hover geometry.
-///
-/// Temporarily disabled by [`MESSAGE_COPY_ACTIONS_ENABLED`] (Issue #78
-/// follow-up): the reserved action row read as an ugly, layout-coupled
-/// affordance, so while the flag is false the body is returned unchanged and
-/// no row is reserved. The plumbing below is retained so the interaction can
-/// be re-enabled by flipping that one flag; keeping the branch here (rather
-/// than at the call site) also keeps `MessageCopy` and the `Copy` icon
-/// reachable for the compiler.
-fn message_with_copy(
+pub(super) fn message_with_copy(
     body: AnyElement,
     copy: &MessageCopy,
+    id: u64,
     user: bool,
     colors: ThemeColors,
+    actions_enabled: bool,
 ) -> AnyElement {
-    if !MESSAGE_COPY_ACTIONS_ENABLED {
-        return body;
-    }
     if !copy.has_text() {
         return body;
     }
-    let id = copy.id;
     let group: gpui_kit::SharedString = format!("message-copy-group-{id}").into();
-    let source = copy.clone();
     div()
         .id(("message-with-copy", id))
         .group(group.clone())
         .w_full()
         .flex_shrink_0()
+        .relative()
         .flex()
         .flex_col()
+        .when(!user, |body| body.pb(px(Layout::MESSAGE_COPY_FOOTER)))
         .child(body)
-        .child(
-            div()
-                .w_full()
-                .flex()
-                .when(user, |row| row.justify_end())
-                .child(
-                    crate::icons::icon_button(
-                        crate::icons::Icon::Copy,
-                        "复制消息",
-                        colors,
-                        move |_, _, cx| source.copy(cx),
-                    )
-                    .id(("message-copy", id))
-                    .debug_selector(move || {
-                        if user {
-                            "message-copy-user"
-                        } else {
-                            "message-copy-assistant"
-                        }
-                        .into()
+        .when(actions_enabled, |body| {
+            body.child(
+                div()
+                    .absolute()
+                    .when(user, |row| {
+                        row.right_0().bottom(px(
+                            Layout::CONVERSATION_USER_BOTTOM - Layout::MESSAGE_COPY_FOOTER
+                        ))
                     })
-                    .opacity(0.)
-                    .group_hover(group, |style| style.opacity(1.))
-                    .focus_visible(|style| style.opacity(1.).bg(colors.bg_active)),
-                ),
-        )
+                    .when(!user, |row| row.left_0().bottom_0())
+                    .flex()
+                    .child(CopyReceiptButton::new(
+                        format!("message-copy-receipt-{}", copy.id).into(),
+                        CopySource::Message(copy.clone()),
+                        if user {
+                            vega_i18n::t("ui.copy_message")
+                        } else {
+                            vega_i18n::t("ui.copy_final_reply")
+                        },
+                        colors,
+                        |button| {
+                            button
+                                .id(("message-copy", id))
+                                .size(px(Layout::COPY_ACTION_SIZE))
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .opacity(0.)
+                                .group_hover(group, |style| style.opacity(1.))
+                                .focus_visible(|style| style.opacity(1.).bg(colors.bg_active))
+                        },
+                    )),
+            )
+        })
         .into_any_element()
 }
 
 pub(super) fn plain_error_notice(message: String, color: Rgba) -> AnyElement {
     div()
-        .debug_selector(|| "conversation-error-text".into())
         .w_full()
         .min_w_0()
         .text_size(px(Typography::BODY))

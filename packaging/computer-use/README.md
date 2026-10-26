@@ -1,6 +1,6 @@
 # Bundled computer-use executors
 
-This directory implements issue #75, requirements R29–R31 and acceptance case CU15. `executors.json` fixes the official Cua Driver 0.34.0 and Node 24.21.0 archive hashes and the Cua license hashes. The npm lock fixes Playwright MCP 0.0.83 and its two transitive packages. No browser binary, Python runtime, global npm package, or additional agent loop is installed.
+This directory provides the bundled computer-use executors. `executors.json` fixes the official Cua Driver 0.34.0 and Node 24.21.0 archive hashes and the Cua license hashes. The npm lock fixes Playwright MCP 0.0.83 and its two transitive packages. No browser binary, Python runtime, global npm package, or additional agent loop is installed.
 
 `cargo xtask package` prepares these resources before building Vega and copies them into the app:
 

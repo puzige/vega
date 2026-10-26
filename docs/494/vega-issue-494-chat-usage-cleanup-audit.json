@@ -1,0 +1,72 @@
+{
+  "green_head": "530aec4ac68ab7c437b4f7de8161e0deae85643a",
+  "green_run": "39381186494",
+  "public_green": "https://github.com/puzige/vega/pull/508#issuecomment-6285041628",
+  "deleted_files": [
+    "crates/vega_runtime/src/openai/chat_usage_tests.rs",
+    "crates/vega_runtime/src/openai/chat_usage_runtime.rs",
+    "crates/vega_runtime/src/openai/chat_usage_http.rs"
+  ],
+  "deleted_definitions": [
+    "terminal_cache_aliases_preserve_text_reasoning_ordered_calls_and_usage",
+    "cache_read_aliases_choose_first_nonnull_number_and_keep_explicit_zero",
+    "cache_write_aliases_preserve_total_input_output_and_separate_read_write_counts",
+    "every_supported_counter_is_validated_even_when_an_earlier_alias_is_selected",
+    "selected_cache_accounting_and_independent_miss_ranges_remain_checked",
+    "usage_locations_and_progressive_snapshots_emit_only_the_final_normalized_usage",
+    "separate_usage_objects_still_reject_different_normalized_totals_or_cache_counts",
+    "ordinary_text_and_single_cache_fields_keep_valid_terminals_while_bad_tool_streams_fail",
+    "cache_alias_handoff_reads_owned_files_and_reuses_real_results_on_followup",
+    "malformed_usage_or_tools_never_execute_buffered_reads_or_finish_successfully",
+    "cancellation_before_send_or_after_visible_delta_prevents_read_side_effects"
+  ],
+  "definition_count": 11,
+  "paths_before_after": [
+    {
+      "path": "Cargo.lock",
+      "before_sha256": "a5edccd1364fbecd2e5fb792ea2a3366996e93d4428ab48bc38e2c23346e755c",
+      "after_sha256": "d803cdb1cd420921fa47ce091155bb0db1ce0845ecfa4027b95b46ebe2db36f9"
+    },
+    {
+      "path": "crates/vega_runtime/Cargo.toml",
+      "before_sha256": "555b81eff6892c2382395d052223c7955e8ed4c758258525dc9540a9e44c71ed",
+      "after_sha256": "750db9ce45394eb918e8b9a672a50756a4c433348524c267773eeebf7aa4f36d"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/chat_usage_http.rs",
+      "before_sha256": "42f6810367baccf45c45f335754d8513f440d7123ded933dbed452e4d3d178b5",
+      "after_sha256": null
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/chat_usage_runtime.rs",
+      "before_sha256": "5e36f98d24b5b8f016a3b633dea2d5bf6a76324c9e530768ce5cadd09f9b39ef",
+      "after_sha256": null
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/chat_usage_tests.rs",
+      "before_sha256": "744ead61fd68969039385a376cbdaf3b6f4c7ab1aefbadc8bb4c4a9d7d4f90e9",
+      "after_sha256": null
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/mod.rs",
+      "before_sha256": "6215f5040544b37a0043cbfe7001c5ed5907f5fb56ad55bad99f346ebeccb694",
+      "after_sha256": "e547bb912ab32895ec9af8a34c78ae6dd1605d5fb45ee1c7fae7599e679ac7b9"
+    }
+  ],
+  "restored_files_exact_baseline": true,
+  "unchanged_protected_count": 479,
+  "sse_sha256": "2815518a30c65e08c5873501d5d9220484faf21dc1a9a23cd0203ad4c6854d4f",
+  "rust_test_cfg_support_matches": 0,
+  "checks": {
+    "fmt_all": 0,
+    "fmt_check": 0,
+    "diff_check": 0
+  },
+  "not_executed": [
+    "Vega",
+    "compilation",
+    "Rust/Python tests",
+    "Clippy"
+  ],
+  "pending": "Root independent cleanup integration and full final no-Rust-tests cloud gate"
+}

@@ -1,5 +1,3 @@
-//! Headless agentic loop (tech-spec §4.2, A3-03 / S4-T20).
-
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
@@ -33,6 +31,14 @@ use crate::{
     decide_capability, decide_execute_permission,
 };
 
+mod subagents;
+pub use subagents::*;
+
+mod user_questions;
+pub use user_questions::*;
+mod progress;
+mod progress_recovery;
+
 mod mcp_registry;
 use mcp_registry::{KnownCredentials, McpCandidate, RunCapabilitySnapshot};
 mod credential_redaction;
@@ -46,9 +52,8 @@ pub use credential_redaction::{
 };
 pub use mcp_registry::{McpReadyServer, McpRevocationLease};
 
-pub const REASONING_DELTA_MAX_BYTES: usize = 64 * 1024;
-pub const REASONING_TURN_MAX_BYTES: usize = 256 * 1024;
-pub const REASONING_RUN_MAX_BYTES: usize = 1024 * 1024;
+/// Upper bound on retained reasoning bytes rendered into the conversation.
+/// Reaching it drops further display events; it never fails the run.
 const REASONING_DISPLAY_MAX_BYTES: usize = 256 * 1024;
 /// Stable content-free result for a provider call id that conflicts with
 /// persisted owner, tool, or safe input identity.
@@ -60,6 +65,7 @@ pub const LEGACY_BASH_INVALID_INPUT_OUTPUT: &str = "Tool error: invalid bash inp
 /// Stable content-free result when cancellation is observed after durable
 /// approval/running but before any tool worker starts.
 pub const CANCELLED_BEFORE_EXECUTION_OUTPUT: &str = "Tool cancelled before execution.";
+pub const INVALID_READ_INPUT_OUTPUT: &str = r#"Tool error: read requires path identifying a regular text file. Expected {"path":"src/lib.rs","offset":null,"limit":null}"#;
 
 const OUTPUT_HALF_LINES: usize = 2_000;
 const OUTPUT_TRUNCATION_MARKER: &str = "…[tool output truncated: middle lines omitted]";
@@ -180,6 +186,9 @@ pub struct RuntimeSteeringInput {
 }
 
 pub trait RuntimeSteeringSource: Send + Sync {
+    fn ready(&self) -> BoxFuture<'_, Result<Option<String>, VegaError>> {
+        Box::pin(async { Ok(None) })
+    }
     fn take(&self) -> BoxFuture<'_, Result<Option<RuntimeSteeringInput>, VegaError>>;
 }
 
@@ -201,7 +210,12 @@ pub struct RuntimeToolConfig {
     /// Maximum number of agentic turns (provider round-trips) in this run.
     /// `0` means unlimited. Set from `[agent] turn_limit` in config.toml.
     pub turn_limit: usize,
+    automation: Option<Arc<dyn automation::RuntimeAutomationHook>>,
+    subagents: Option<Arc<dyn RuntimeSubagentHook>>,
+    stage: Option<Arc<dyn RuntimeSubagentHook>>,
+    usage_observer: Option<Arc<dyn automation::RuntimeAutomationHook>>,
     steering_source: Option<Arc<dyn RuntimeSteeringSource>>,
+    user_questions: Option<Arc<dyn RuntimeUserQuestionHook>>,
     mcp_candidates: Vec<McpCandidate>,
     skills: Option<RuntimeSkillConfig>,
     computer_use: Option<crate::computer_use::ComputerUseRun>,
@@ -230,7 +244,12 @@ impl RuntimeToolConfig {
             checkpoint_root,
             exact_rules,
             turn_limit: 0,
+            automation: None,
+            subagents: None,
+            stage: None,
+            usage_observer: None,
             steering_source: None,
+            user_questions: None,
             mcp_candidates: Vec::new(),
             skills: None,
             computer_use: None,
@@ -250,6 +269,41 @@ impl RuntimeToolConfig {
             self.run_mode == RuntimeRunMode::Execute
                 && self.permission_mode != RuntimePermissionMode::ReadOnly
         });
+        self
+    }
+
+    pub fn with_user_questions(mut self, hook: Option<Arc<dyn RuntimeUserQuestionHook>>) -> Self {
+        self.user_questions = hook;
+        self
+    }
+
+    pub fn with_usage_observer(
+        mut self,
+        hook: Option<Arc<dyn automation::RuntimeAutomationHook>>,
+    ) -> Self {
+        self.usage_observer = hook;
+        self
+    }
+
+    fn usage_hook(&self) -> Option<&Arc<dyn automation::RuntimeAutomationHook>> {
+        self.automation.as_ref().or(self.usage_observer.as_ref())
+    }
+
+    pub fn with_subagents(mut self, hook: Option<Arc<dyn RuntimeSubagentHook>>) -> Self {
+        self.subagents = hook.filter(|_| self.run_mode == RuntimeRunMode::Execute);
+        self
+    }
+
+    pub fn with_stage(mut self, hook: Option<Arc<dyn RuntimeSubagentHook>>) -> Self {
+        self.stage = hook;
+        self
+    }
+
+    pub fn with_automation(
+        mut self,
+        hook: Option<Arc<dyn automation::RuntimeAutomationHook>>,
+    ) -> Self {
+        self.automation = hook;
         self
     }
 
@@ -304,12 +358,6 @@ impl RuntimeToolConfig {
             &credentials,
             self.credential_exceptions.as_ref(),
         ))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_mcp_candidates(mut self, candidates: Vec<McpCandidate>) -> Self {
-        self.mcp_candidates = candidates;
-        self
     }
 
     /// Freeze the currently ready, explicitly enabled MCP servers at run
@@ -370,6 +418,120 @@ impl RuntimeToolConfig {
             })
     }
 
+    pub fn replay_capability_digest(&self) -> Result<[u8; 32], VegaError> {
+        let mut hasher = Sha256::new();
+        {
+            let mut add = |tag: u8, value: &[u8]| {
+                hasher.update([tag]);
+                hasher.update((value.len() as u64).to_le_bytes());
+                hasher.update(value);
+            };
+            add(1, format!("{:?}", self.run_mode).as_bytes());
+            add(2, format!("{:?}", self.permission_mode).as_bytes());
+            add(3, self.project_id.as_bytes());
+            add(4, self.thread_id.as_bytes());
+            add(
+                5,
+                self.checkpoint_root
+                    .as_os_str()
+                    .to_string_lossy()
+                    .as_bytes(),
+            );
+            add(6, &(self.turn_limit as u64).to_le_bytes());
+            add(7, &[u8::from(self.legacy_credential_cleanup_detected)]);
+            let mut rules = self.exact_rules.iter().collect::<Vec<_>>();
+            rules.sort_by(|left, right| {
+                format!("{:?}:{}", left.tool, left.pattern)
+                    .cmp(&format!("{:?}:{}", right.tool, right.pattern))
+            });
+            add(8, &(rules.len() as u64).to_le_bytes());
+            for rule in rules {
+                add(9, format!("{:?}", rule.tool).as_bytes());
+                add(10, rule.pattern.as_bytes());
+            }
+            let mut candidates = self.mcp_candidates.iter().collect::<Vec<_>>();
+            candidates.sort_by(|left, right| {
+                left.server_id
+                    .cmp(&right.server_id)
+                    .then_with(|| left.config_revision.cmp(&right.config_revision))
+                    .then_with(|| left.exact_tool_name.cmp(&right.exact_tool_name))
+            });
+            add(11, &(candidates.len() as u64).to_le_bytes());
+            for candidate in candidates {
+                add(12, candidate.server_id.as_bytes());
+                add(13, &candidate.config_revision.to_le_bytes());
+                add(14, candidate.exact_tool_name.as_bytes());
+            }
+            let (skills_configured, load_skill, catalog) = if let Some(skills) = &self.skills {
+                add(15, &[1]);
+                let run = skills.run.lock().map_err(|_| VegaError::Tool {
+                    tool: "skill".into(),
+                    message: "Skill run state unavailable or invalid".into(),
+                })?;
+                let catalog = run.model_catalog().to_owned();
+                add(16, catalog.as_bytes());
+                for selection in &skills.explicit {
+                    add(17, selection.name().as_bytes());
+                    add(18, selection.sha256().as_bytes());
+                    add(19, format!("{:?}", selection.source()).as_bytes());
+                }
+                add(20, &(skills.explicit.len() as u64).to_le_bytes());
+                drop(run);
+                (true, !catalog.is_empty(), catalog)
+            } else {
+                add(15, &[0]);
+                (false, false, String::new())
+            };
+            for (tag, capability) in [
+                (21, crate::computer_use::Capability::Desktop),
+                (22, crate::computer_use::Capability::Browser),
+            ] {
+                add(
+                    tag,
+                    &[u8::from(
+                        self.computer_use
+                            .as_ref()
+                            .is_some_and(|run| run.enabled(capability)),
+                    )],
+                );
+            }
+            if let Some(run) = &self.computer_use {
+                add(28, &run.replay_snapshot_fingerprint());
+            } else {
+                add(28, &[]);
+            }
+            let definitions = RunCapabilitySnapshot::freeze(
+                self.run_mode,
+                self.permission_mode,
+                self.mcp_candidates.clone(),
+            )?
+            .with_skills(load_skill, skills_configured)?
+            .with_computer_use(self.computer_use.as_ref())
+            .with_automation(self.automation.as_ref())
+            .with_subagents(self.subagents.is_some())
+            .definitions()
+            .to_vec();
+            if let Some(hook) = &self.automation {
+                add(30, hook.context().to_string().as_bytes());
+            }
+            add(29, catalog.as_bytes());
+            add(23, &(definitions.len() as u64).to_le_bytes());
+            for definition in definitions {
+                add(24, definition.name.as_bytes());
+                add(25, definition.description.as_bytes());
+                add(
+                    26,
+                    &serde_json::to_vec(&definition.input_schema).map_err(|_| VegaError::Tool {
+                        tool: "mcp".into(),
+                        message: "Tool capability unavailable or invalid".into(),
+                    })?,
+                );
+                add(27, &[u8::from(definition.strict)]);
+            }
+        }
+        Ok(hasher.finalize().into())
+    }
+
     fn readonly() -> Self {
         Self::new(
             RuntimeRunMode::Ask,
@@ -379,12 +541,6 @@ impl RuntimeToolConfig {
             PathBuf::new(),
             Vec::new(),
         )
-    }
-
-    #[cfg(test)]
-    fn with_permission_timeout(mut self, timeout: Duration) -> Self {
-        self.permission_timeout = timeout;
-        self
     }
 }
 
@@ -476,14 +632,12 @@ pub struct AgentRequest {
     pub completed_tool_results: HashMap<String, CompletedToolCall>,
     /// Tool capability, permission, checkpoint, and exact-rule facts.
     pub tool_config: RuntimeToolConfig,
-    /// Immutable pricing capability frozen at run preflight (S7-T38/C3).
-    ///
-    /// `None` keeps the S4 legacy/unpriced semantics: usage rows persist with
-    /// `cost_microcents = 0` and NULL pricing columns.
     pub pricing_catalog: Option<PricingCatalog>,
     /// Immutable provider/model thinking selection. `None` keeps the legacy
     /// provider-default request for callers that have no profile declaration.
     pub reasoning: Option<FrozenReasoning>,
+    pub model_snapshot: Option<Box<crate::model_compat::ResolvedModel>>,
+    pub replay_frame: Option<crate::ReplayFrame>,
     /// Optional total-context budget frozen for this run.  `None` preserves
     /// the legacy request path and does not trigger compaction or override
     /// `max_tokens`.
@@ -503,6 +657,78 @@ pub struct AgentRequest {
     pub context_compaction_hook: Option<crate::SharedContextCompactionHook>,
 }
 
+pub(crate) fn replay_environment_fingerprint(
+    model_selection: (&str, Option<&FrozenReasoning>, Option<u32>),
+    tool_config: &RuntimeToolConfig,
+    context_budget: Option<crate::ContextBudget>,
+    route_fingerprint: &[u8; 32],
+    system_prompt: &str,
+    definitions: &[ToolDefinition],
+) -> Result<[u8; 32], VegaError> {
+    let (model, reasoning, max_tokens) = model_selection;
+    let mut hasher = Sha256::new();
+    let mut add = |tag: u8, value: &[u8]| {
+        hasher.update([tag]);
+        hasher.update((value.len() as u64).to_le_bytes());
+        hasher.update(value);
+    };
+    add(1, route_fingerprint);
+    add(24, crate::chat_compat::RULES_VERSION.as_bytes());
+    add(2, model.as_bytes());
+    add(3, system_prompt.as_bytes());
+    add(4, &tool_config.replay_capability_digest()?);
+    add(5, &(definitions.len() as u64).to_le_bytes());
+    for definition in definitions {
+        add(6, definition.name.as_bytes());
+        add(7, definition.description.as_bytes());
+        add(
+            8,
+            &serde_json::to_vec(&definition.input_schema).map_err(|_| VegaError::Tool {
+                tool: "mcp".into(),
+                message: "Tool capability unavailable or invalid".into(),
+            })?,
+        );
+        add(9, &[u8::from(definition.strict)]);
+    }
+    if let Some(reasoning) = reasoning {
+        if let Some(facts) = &reasoning.compatibility {
+            add(25, facts.profile_id.as_bytes());
+        }
+        add(10, reasoning.provider.as_bytes());
+        add(11, reasoning.model.as_bytes());
+        add(12, format!("{:?}", reasoning.protocol).as_bytes());
+        add(13, format!("{:?}", reasoning.replay_policy).as_bytes());
+        add(14, format!("{:?}", reasoning.choice).as_bytes());
+        add(15, &[u8::from(reasoning.supports_disabled)]);
+        add(16, format!("{:?}", reasoning.disabled_wire).as_bytes());
+        for effort in &reasoning.declared_efforts {
+            add(17, effort.as_bytes());
+        }
+    } else {
+        add(10, &[]);
+    }
+    if let Some(budget) = context_budget {
+        add(18, &budget.input_budget().to_le_bytes());
+        add(19, &budget.output_reserve().to_le_bytes());
+        add(20, &[u8::from(budget.automatic_compaction())]);
+        let trigger_tokens = budget
+            .trigger_tokens()
+            .map_err(|error| VegaError::Context(error.into()))?;
+        let target_tokens = budget
+            .target_tokens()
+            .map_err(|error| VegaError::Context(error.into()))?;
+        add(22, &trigger_tokens.to_le_bytes());
+        add(23, &target_tokens.to_le_bytes());
+    } else {
+        add(18, &[]);
+    }
+    match max_tokens {
+        Some(max_tokens) => add(21, &max_tokens.to_le_bytes()),
+        None => add(21, &[]),
+    }
+    Ok(hasher.finalize().into())
+}
+
 impl fmt::Debug for AgentRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -517,6 +743,7 @@ impl fmt::Debug for AgentRequest {
             )
             .field("tool_config", &self.tool_config)
             .field("reasoning", &self.reasoning)
+            .field("has_replay_frame", &self.replay_frame.is_some())
             .field("context_budget", &self.context_budget)
             .field("context_source_version", &self.context_source_version)
             .field(
@@ -568,8 +795,6 @@ pub enum RuntimeFinishReason {
     TurnLimit,
 }
 
-/// Exact pricing provenance stamped by the runtime for one provider call
-/// (S7-T38/C3). Conversation persists these onto the `token_usage` row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeUsagePricing {
     /// Exact engine version that produced the quote (e.g. `pricing_v1`).
@@ -596,9 +821,9 @@ pub struct RuntimeTokenUsage {
     /// Completion tokens.
     pub output: u64,
     /// Cache-read tokens.
-    pub cache_read: u64,
+    pub cache_read: Option<u64>,
     /// Cache-write tokens.
-    pub cache_write: u64,
+    pub cache_write: Option<u64>,
 }
 
 /// Origin of a run-local primary input budget decision.
@@ -661,7 +886,6 @@ impl fmt::Debug for RuntimeToolCall {
 /// Terminal status of a runtime tool call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeToolStatus {
-    /// The S4 read-only placeholder gate denied an unknown/write tool.
     Rejected,
     /// The tool completed successfully.
     Success,
@@ -714,8 +938,14 @@ pub enum RuntimeDiagnosticState {
 pub enum RuntimeDiagnosticFailure {
     ContextOverLimit,
     ReasoningLimit,
+    ReasoningReplay,
     ProviderHttp,
-    ProviderTransportOrStream,
+    /// No HTTP response was received while establishing the request.
+    ProviderTransport,
+    /// An established response stream ended before its terminal event.
+    ProviderStreamInterrupted,
+    /// An established response stream or request exceeded its deadline.
+    ProviderTimeout,
     ProviderProtocol,
     ProviderRejected,
     UnknownSafeFailure,
@@ -723,6 +953,11 @@ pub enum RuntimeDiagnosticFailure {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RuntimeDiagnosticMetrics {
+    pub runtime_stage: Option<&'static str>,
+    pub runtime_reason: Option<&'static str>,
+    pub sqlite_code: Option<i32>,
+    pub sqlite_extended_code: Option<i32>,
+    pub io_kind: Option<&'static str>,
     pub failure_tool_index: Option<u64>,
     pub failure_source: Option<&'static str>,
     pub failure_kind: Option<&'static str>,
@@ -775,10 +1010,32 @@ pub enum RuntimeAssistantResponseKind {
     Final,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeGeneratedNoticeKind {
+    TurnLimit { limit: u32 },
+    ComputerStopped { delivered_images: bool },
+}
+
+impl RuntimeGeneratedNoticeKind {
+    pub fn canonical_text(self) -> String {
+        match self {
+            Self::TurnLimit { limit } => format!(
+                "Agent turn limit ({limit}) reached; stopping without issuing another request."
+            ),
+            Self::ComputerStopped { delivered_images: true } => "已有截图保留在对话中。后续电脑操作连续未取得进展，已停止重复操作。请根据最后一个工具结果处理尚未完成的工作。".to_string(),
+            Self::ComputerStopped { delivered_images: false } => "电脑操作连续未取得进展，已停止本轮自动操作。请根据对话中的错误修正目标或参数后重新发起；不会继续重复点击或换用脚本。".to_string(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum RuntimeEvent {
     AssistantResponseStarted {
+        response_id: String,
         text_start_bytes: usize,
+    },
+    ReasoningCompleted {
+        response_id: String,
     },
     ResponseRetrying {
         text_start_bytes: usize,
@@ -793,6 +1050,7 @@ pub enum RuntimeEvent {
         control: crate::computer_use::ComputerUseControl,
         epoch: u64,
         cancel: CancellationToken,
+        delivered: Arc<std::sync::atomic::AtomicBool>,
     },
     ToolRoundCompleted {
         response_id: String,
@@ -804,6 +1062,11 @@ pub enum RuntimeEvent {
         text_end_bytes: usize,
         kind: RuntimeAssistantResponseKind,
     },
+    GeneratedNotice {
+        kind: RuntimeGeneratedNoticeKind,
+        text_start_bytes: usize,
+        text_end_bytes: usize,
+    },
     DiagnosticAttempt(RuntimeDiagnosticAttempt),
     #[allow(missing_docs)]
     ReasoningRetentionReleased,
@@ -812,7 +1075,6 @@ pub enum RuntimeEvent {
     /// Reasoning delta.
     ThinkingDelta(String),
     SummaryDelta(String),
-    /// Complete tool call before the S4 placeholder permission decision.
     ToolCallProposed(RuntimeToolCall),
     /// Invalid write/edit projection atomically reaches a terminal rejection.
     ToolCallValidationRejected {
@@ -828,7 +1090,6 @@ pub enum RuntimeEvent {
         /// Stable failed result; persistence must remain unchanged.
         result: RuntimeToolResult,
     },
-    /// Read-only tool auto-approved by the S4 placeholder gate.
     ToolCallApproved {
         /// Provider call id.
         call_id: String,
@@ -851,6 +1112,13 @@ pub enum RuntimeEvent {
     },
     /// Terminal tool result.
     ToolCallFinished(RuntimeToolResult),
+    ToolReadFinished {
+        result: RuntimeToolResult,
+        identity: vega_tools::ReadIdentity,
+    },
+    StageHandoff {
+        checkpoint_id: String,
+    },
     /// Content-free activation audit and optional frozen private Store state.
     /// The conversation adapter persists this before another provider round.
     SkillActivation {
@@ -863,14 +1131,10 @@ pub enum RuntimeEvent {
         binding: RunBinding,
         snapshot: SkillRunSnapshot,
     },
-    /// Provider usage priced by the frozen run-start catalog (S7-T38).
     UsageUpdated {
         /// Token counts from the provider.
         usage: RuntimeTokenUsage,
-        /// Checked integer cost from the frozen catalog quote (0 for priced
-        /// zero; 0 with no pricing provenance keeps the S4 legacy placeholder).
         cost_microcents: i64,
-        /// Exact pricing provenance; `None` keeps S4 legacy/unpriced rows.
         pricing: Option<RuntimeUsagePricing>,
     },
     /// Usage received from a summary request.  Conversation persists this
@@ -900,9 +1164,17 @@ pub enum RuntimeEvent {
 impl fmt::Debug for RuntimeEvent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::AssistantResponseStarted { text_start_bytes } => formatter
+            Self::AssistantResponseStarted {
+                response_id,
+                text_start_bytes,
+            } => formatter
                 .debug_struct("AssistantResponseStarted")
+                .field("response_id_bytes", &response_id.len())
                 .field("text_start_bytes", text_start_bytes)
+                .finish(),
+            Self::ReasoningCompleted { response_id } => formatter
+                .debug_struct("ReasoningCompleted")
+                .field("response_id_bytes", &response_id.len())
                 .finish(),
             Self::ResponseRetrying {
                 text_start_bytes,
@@ -941,6 +1213,16 @@ impl fmt::Debug for RuntimeEvent {
                 .field("text_start_bytes", text_start_bytes)
                 .field("text_end_bytes", text_end_bytes)
                 .field("kind", kind)
+                .finish(),
+            Self::GeneratedNotice {
+                kind,
+                text_start_bytes,
+                text_end_bytes,
+            } => formatter
+                .debug_struct("GeneratedNotice")
+                .field("kind", kind)
+                .field("text_start_bytes", text_start_bytes)
+                .field("text_end_bytes", text_end_bytes)
                 .finish(),
             Self::DiagnosticAttempt(attempt) => formatter
                 .debug_tuple("DiagnosticAttempt")
@@ -991,7 +1273,7 @@ impl fmt::Debug for RuntimeEvent {
                 .field("call_id_bytes", &call_id.len())
                 .field("chunk_bytes", &chunk.len())
                 .finish(),
-            Self::ToolCallFinished(result) => formatter
+            Self::ToolCallFinished(result) | Self::ToolReadFinished { result, .. } => formatter
                 .debug_tuple("ToolCallFinished")
                 .field(result)
                 .finish(),
@@ -1027,6 +1309,7 @@ impl fmt::Debug for RuntimeEvent {
                 .field(decision)
                 .finish(),
             Self::SteeringAccepted(_) => formatter.write_str("SteeringAccepted"),
+            Self::StageHandoff { .. } => formatter.write_str("StageHandoff"),
             Self::Finished(reason) => formatter.debug_tuple("Finished").field(reason).finish(),
             Self::Interrupted => formatter.write_str("Interrupted"),
             Self::Error(_) => formatter.write_str("Error([redacted])"),
@@ -1072,12 +1355,15 @@ mod context_accounting;
 mod loop_;
 mod tools_exec;
 
-#[cfg(test)]
-mod tests;
-
 pub use loop_::{
     run_agent, run_agent_with_permission_sink, run_agent_with_permission_sink_and_context,
     run_agent_with_sink,
 };
 pub(crate) use tools_exec::*;
-pub use tools_exec::{tool_definitions, tool_names_equivalent};
+pub use tools_exec::{
+    GREP_INVALID_INPUT_OUTPUT, read_identity_with_permission, tool_definitions,
+    tool_names_equivalent,
+};
+
+mod automation;
+pub use automation::RuntimeAutomationHook;

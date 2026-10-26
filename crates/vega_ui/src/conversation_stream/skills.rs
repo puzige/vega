@@ -41,30 +41,6 @@ impl ConversationStream {
         self.skill_projection_generation
     }
 
-    #[doc(hidden)]
-    pub fn composer_skill_pin_count(&self) -> Option<usize> {
-        self.skill_projection
-            .as_ref()
-            .map(|projection| projection.pins.len())
-    }
-
-    #[doc(hidden)]
-    pub fn composer_skill_mutation_pending(&self) -> bool {
-        self.skill_mutation_pending
-    }
-
-    /// The exact reviewed candidates the (now Settings-owned) picker would
-    /// present, for the app integration harness. Issue #96 removed the
-    /// Composer entry, so this read-only projection is the harness seam that
-    /// still exercises the real `choose_skill_candidate` intent path.
-    #[doc(hidden)]
-    pub fn composer_skill_candidates(&self) -> Vec<SkillComposerCandidate> {
-        self.skill_projection
-            .as_ref()
-            .map(|projection| projection.candidates.clone())
-            .unwrap_or_default()
-    }
-
     pub fn apply_skill_projection(
         &mut self,
         generation: u64,
@@ -81,8 +57,9 @@ impl ConversationStream {
             _ => {
                 self.skill_projection = None;
                 self.controller_runtime_error = None;
-                self.controller_error =
-                    Some("Skill sources changed. Refresh and try again.".into());
+                self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(
+                    "ui.skill_sources_changed_refresh_and_try_again",
+                ));
             }
         }
         cx.notify();
@@ -195,10 +172,9 @@ impl ConversationStream {
             self.request_skill_projection(cx);
         } else {
             self.controller_runtime_error = None;
-            self.controller_error = Some(
-                "Skill permissions or files changed. Refresh and review before trying again."
-                    .into(),
-            );
+            self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.skill_permissions_or_files_changed_refresh_and_review",
+            ));
             cx.notify();
         }
     }
@@ -212,8 +188,9 @@ impl ConversationStream {
         } else {
             self.reject_composer_submission(cx);
             self.controller_runtime_error = None;
-            self.controller_error =
-                Some("Skill permissions or files changed. Refresh and review before trying again. Your message has not been sent.".into());
+            self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.skill_permissions_or_files_changed_refresh_and_review_en",
+            ));
             cx.notify();
         }
     }
@@ -221,7 +198,6 @@ impl ConversationStream {
     pub(crate) fn render_active_skills(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let mut row = div()
-            .debug_selector(|| "active-skills".into())
             .key_context("Composer")
             .on_action(cx.listener(Self::next_composer_control))
             .on_action(cx.listener(Self::previous_composer_control))
@@ -238,15 +214,17 @@ impl ConversationStream {
                     .gap_2()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_secondary)
-                    .child(format!("Using {} · {}", skill.name, skill.source_label))
+                    .child(vega_i18n::t_args(
+                        "ui.using_name_source",
+                        &[("name", &skill.name), ("source", &skill.source_label)],
+                    ))
                     .child(
                         div()
                             .id("active-skill-stop")
-                            .debug_selector(|| "active-skill-stop".into())
                             .focusable()
                             .track_focus(&focus[0])
                             .tab_stop(true)
-                            .aria_label("Stop current task")
+                            .aria_label(vega_i18n::t("ui.stop_current_task"))
                             .focus_visible(move |style| {
                                 style.border_1().border_color(colors.brand_primary)
                             })
@@ -265,16 +243,15 @@ impl ConversationStream {
                                     }
                                 },
                             ))
-                            .child("Stop"),
+                            .child(vega_i18n::t("ui.stop")),
                     )
                     .child(
                         div()
                             .id("active-skill-disable")
-                            .debug_selector(|| "active-skill-disable".into())
                             .focusable()
                             .track_focus(&focus[1])
                             .tab_stop(true)
-                            .aria_label("Disable future activations of this Skill")
+                            .aria_label(vega_i18n::t("ui.disable_future_activations_of_this_skill"))
                             .focus_visible(move |style| {
                                 style.border_1().border_color(colors.brand_primary)
                             })
@@ -294,7 +271,7 @@ impl ConversationStream {
                                     this.disable_active_skill(name.clone(), cx);
                                 }),
                             )
-                            .child("Disable future activations"),
+                            .child(vega_i18n::t("ui.disable_future_activations")),
                     ),
             );
         }
@@ -303,7 +280,9 @@ impl ConversationStream {
                 div()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_secondary)
-                    .child("Stopping or disabling does not undo completed actions"),
+                    .child(vega_i18n::t(
+                        "ui.stopping_or_disabling_does_not_undo_completed_actions",
+                    )),
             )
         })
         .into_any_element()

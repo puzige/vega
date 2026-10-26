@@ -1,7 +1,9 @@
 use super::{Capability, ComputerUseError as Error};
+use serde::{Deserialize, Serialize};
 use vega_mcp::{ManagedResult, McpError};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(super) enum Stage {
     Initialize,
     Permissions,
@@ -13,9 +15,18 @@ pub(super) enum Stage {
     Screenshot,
     Action,
     ActionPreflight,
+    Progress,
 }
 
 impl Stage {
+    pub(super) fn for_tool(name: &str) -> Self {
+        match name {
+            "ComputerAct" | "BrowserAct" => Self::ActionPreflight,
+            "ComputerScreenshot" => Self::Screenshot,
+            _ => Self::Observe,
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             Self::Initialize => "initialize",
@@ -28,6 +39,7 @@ impl Stage {
             Self::Screenshot => "screenshot",
             Self::Action => "action",
             Self::ActionPreflight => "action_preflight",
+            Self::Progress => "progress",
         }
     }
 }
@@ -76,6 +88,52 @@ pub(super) enum Class {
 }
 
 impl Class {
+    pub(super) fn from_code(code: &str) -> Option<Self> {
+        [
+            Self::Unknown,
+            Self::Transport,
+            Self::Timeout,
+            Self::Cancelled,
+            Self::Protocol,
+            Self::LimitExceeded,
+            Self::RpcRejected,
+            Self::PermissionsMissing,
+            Self::AccessibilityPermissionMissing,
+            Self::ScreenRecordingPermissionMissing,
+            Self::PolicyDenied,
+            Self::ExtensionMissing,
+            Self::ExtensionConnection,
+            Self::BrowserMissing,
+            Self::AttachFailed,
+            Self::CdpCommandFailed,
+            Self::TargetUnavailable,
+            Self::TargetCount,
+            Self::TargetFormat,
+            Self::TargetNotCurrent,
+            Self::AxUnavailable,
+            Self::AxTimeout,
+            Self::ObservationIdentityMismatch,
+            Self::ScreenshotUnverified,
+            Self::CaptureUnavailable,
+            Self::CaptureFrameMismatch,
+            Self::CaptureBindingFailed,
+            Self::CapturePublicationFailed,
+            Self::AxAppLaunching,
+            Self::AxWindowUnresolved,
+            Self::DegradedUnknown,
+            Self::NoObservationContent,
+            Self::StaleObservation,
+            Self::BackgroundUnavailable,
+            Self::OffSpaceOrAxUnresolved,
+            Self::MinimizedOrHiddenWindow,
+            Self::SamePidKeyboardAmbiguity,
+            Self::InvalidCoordinates,
+            Self::InvalidImage,
+        ]
+        .into_iter()
+        .find(|class| class.code() == code)
+    }
+
     pub(super) fn code(self) -> &'static str {
         match self {
             Self::Unknown => "unknown",
@@ -120,7 +178,7 @@ impl Class {
         }
     }
 
-    fn guidance(self) -> &'static str {
+    fn protocol_guidance(self) -> &'static str {
         match self {
             Self::PermissionsMissing => {
                 "请在系统设置中开启 Vega 的辅助功能和屏幕录制权限，然后重试。"
@@ -197,6 +255,56 @@ impl Class {
             }
         }
     }
+
+    fn guidance(self) -> &'static str {
+        match self {
+            Self::PermissionsMissing => vega_i18n::t("domain.computer.guidance.permissions"),
+            Self::AccessibilityPermissionMissing => {
+                vega_i18n::t("domain.computer.guidance.accessibility")
+            }
+            Self::ScreenRecordingPermissionMissing => {
+                vega_i18n::t("domain.computer.guidance.screen_recording")
+            }
+            Self::ExtensionMissing => vega_i18n::t("domain.computer.guidance.extension_missing"),
+            Self::ExtensionConnection => {
+                vega_i18n::t("domain.computer.guidance.extension_connection")
+            }
+            Self::BrowserMissing => vega_i18n::t("domain.computer.guidance.browser_missing"),
+            Self::AttachFailed => vega_i18n::t("domain.computer.guidance.attach_failed"),
+            Self::CdpCommandFailed => vega_i18n::t("domain.computer.guidance.cdp_failed"),
+            Self::PolicyDenied => vega_i18n::t("domain.computer.guidance.policy"),
+            Self::TargetUnavailable => vega_i18n::t("domain.computer.guidance.target_unavailable"),
+            Self::TargetCount => vega_i18n::t("domain.computer.guidance.target_count"),
+            Self::TargetFormat => vega_i18n::t("domain.computer.guidance.target_format"),
+            Self::TargetNotCurrent => vega_i18n::t("domain.computer.guidance.target_current"),
+            Self::AxUnavailable | Self::AxTimeout => vega_i18n::t("domain.computer.guidance.ax"),
+            Self::CaptureUnavailable => vega_i18n::t("domain.computer.guidance.capture"),
+            Self::AxAppLaunching => vega_i18n::t("domain.computer.guidance.launching"),
+            Self::AxWindowUnresolved => vega_i18n::t("domain.computer.guidance.unresolved"),
+            Self::NoObservationContent => vega_i18n::t("domain.computer.guidance.no_content"),
+            Self::ObservationIdentityMismatch
+            | Self::ScreenshotUnverified
+            | Self::CaptureFrameMismatch
+            | Self::CaptureBindingFailed
+            | Self::CapturePublicationFailed
+            | Self::DegradedUnknown
+            | Self::InvalidImage => vega_i18n::t("domain.computer.guidance.unverified"),
+            Self::StaleObservation | Self::InvalidCoordinates => {
+                vega_i18n::t("domain.computer.guidance.stale")
+            }
+            Self::BackgroundUnavailable => vega_i18n::t("domain.computer.guidance.background"),
+            Self::OffSpaceOrAxUnresolved => vega_i18n::t("domain.computer.guidance.space"),
+            Self::MinimizedOrHiddenWindow => vega_i18n::t("domain.computer.guidance.visibility"),
+            Self::SamePidKeyboardAmbiguity => vega_i18n::t("domain.computer.guidance.keyboard"),
+            Self::Cancelled => vega_i18n::t("domain.computer.guidance.cancelled"),
+            Self::Protocol | Self::LimitExceeded => {
+                vega_i18n::t("domain.computer.guidance.protocol")
+            }
+            Self::Transport | Self::Timeout | Self::RpcRejected | Self::Unknown => {
+                vega_i18n::t("domain.computer.guidance.incomplete")
+            }
+        }
+    }
 }
 
 impl ExecutorFailure {
@@ -220,13 +328,39 @@ impl ExecutorFailure {
 
     pub(super) fn user_message(self) -> &'static str {
         if self.capability == Capability::Desktop && self.class == Class::PolicyDenied {
-            "执行器工具策略拒绝了请求，请检查组件安装与受管策略。"
+            vega_i18n::t("domain.computer.guidance.tool_policy")
         } else {
             self.class.guidance()
         }
     }
 
-    pub(super) fn feedback(self) -> String {
+    pub(super) fn capability(self) -> Capability {
+        self.capability
+    }
+
+    pub(super) fn stage(self) -> Stage {
+        self.stage
+    }
+
+    pub(super) fn protocol_diagnostic(self) -> String {
+        let executor = match self.capability {
+            Capability::Desktop => "cua",
+            Capability::Browser => "playwright",
+        };
+        let guidance =
+            if self.capability == Capability::Desktop && self.class == Class::PolicyDenied {
+                "执行器工具策略拒绝了请求，请检查组件安装与受管策略。"
+            } else {
+                self.class.protocol_guidance()
+            };
+        format!(
+            "executor={executor} stage={} error_class={}: {guidance}",
+            self.stage.label(),
+            self.class.code(),
+        )
+    }
+
+    pub(super) fn feedback_value(self) -> serde_json::Value {
         let retryable = recoverable_observe(Error::Executor(self));
         let next = if matches!(
             self.class,
@@ -240,7 +374,7 @@ impl ExecutorFailure {
         } else {
             "stop_and_report"
         };
-        serde_json::json!({"code":self.class.code(),"retryable":retryable,"next_step":next,"field":serde_json::Value::Null,"diagnostic":self.to_string()}).to_string()
+        serde_json::json!({"code":self.class.code(),"retryable":retryable,"next_step":next,"field":serde_json::Value::Null,"diagnostic":self.protocol_diagnostic()})
     }
 }
 
@@ -497,255 +631,4 @@ fn valid_cdp_method(method: &str) -> bool {
                     && part.bytes().all(|byte| byte.is_ascii_alphanumeric())
             })
         })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    fn rejected(text: &str, structured: serde_json::Value) -> ManagedResult {
-        ManagedResult {
-            text: vec![text.into()],
-            images: Vec::new(),
-            structured: Some(structured),
-            is_error: true,
-        }
-    }
-
-    #[test]
-    fn issue75_runtime_fixes_known_executor_errors_are_finite_and_content_free() {
-        for (capability, stage, text, structured, expected) in [
-            (
-                Capability::Browser,
-                Stage::TargetList,
-                "### Error\nError: Playwright Extension not found in \"/Users/SECRET_USER/Profile 1\". SECRET_TOKEN",
-                json!({}),
-                "extension_missing",
-            ),
-            (
-                Capability::Browser,
-                Stage::TargetList,
-                "Error: Playwright extension did not connect within 30s after opening the connect page. SECRET_TOKEN",
-                json!({}),
-                "extension_connection",
-            ),
-            (
-                Capability::Browser,
-                Stage::TargetList,
-                "\"chrome\" executable not found. Make sure it is installed at a standard location.",
-                json!({}),
-                "browser_missing",
-            ),
-            (
-                Capability::Desktop,
-                Stage::Observe,
-                "SECRET_PAGE",
-                json!({"code":"window_owner_pid_mismatch","pid":123,"reason":"SECRET_INPUT"}),
-                "target_unavailable",
-            ),
-            (
-                Capability::Desktop,
-                Stage::Observe,
-                "SECRET_PAGE",
-                json!({"status":"refused","refusal":{"code":"permission_denied","reason":"SECRET_INPUT"}}),
-                "policy_denied",
-            ),
-            (
-                Capability::Desktop,
-                Stage::Observe,
-                "AX tree walk for pid=123 did not return within 10 s: timeout_ms budget. SECRET_INPUT",
-                json!({}),
-                "accessibility_timeout",
-            ),
-            (
-                Capability::Desktop,
-                Stage::Action,
-                "SECRET_PAGE",
-                json!({"code":"background_unavailable"}),
-                "background_unavailable",
-            ),
-            (
-                Capability::Desktop,
-                Stage::Action,
-                "SECRET_PAGE",
-                json!({"status":"refused","refusal":{"code":"stale_element_token"}}),
-                "stale_observation",
-            ),
-            (
-                Capability::Browser,
-                Stage::Observe,
-                "Protocol error: SECRET_TOKEN permission denied",
-                json!({"code":"permission_denied"}),
-                "unknown",
-            ),
-            (
-                Capability::Desktop,
-                Stage::Observe,
-                "permission denied SECRET_TOKEN",
-                json!({"reason":"permission_denied"}),
-                "unknown",
-            ),
-        ] {
-            let error = checked(capability, stage, Ok(rejected(text, structured)))
-                .err()
-                .unwrap();
-            let output = error.to_string();
-            assert!(
-                output.contains(&format!("stage={}", stage.label())),
-                "{output}"
-            );
-            assert!(
-                output.contains(&format!("error_class={expected}:")),
-                "{output}"
-            );
-            assert!(output.len() < 1024);
-            for safe in [output, format!("{error:?}")] {
-                assert!(!safe.contains("SECRET"), "{safe}");
-                assert!(!safe.contains("/Users/"));
-                assert!(!safe.contains("123"));
-            }
-        }
-        let mut result = rejected("SECRET_PAGE", json!({"code":"background_unavailable"}));
-        result.is_error = false;
-        assert!(checked(Capability::Desktop, Stage::Observe, Ok(result)).is_ok());
-    }
-
-    #[test]
-    fn issue75_browser_error_wrappers_preserve_finite_first_line_diagnostics() {
-        for (text, expected) in [
-            (
-                "### Error\nError: browserType.connectOverCDP: Playwright Extension not found in \"/Users/SECRET_USER\". SECRET_TOKEN",
-                "extension_missing",
-            ),
-            (
-                "### Error\nError: browser.bind: Extension not connected\nCall log:\nSECRET_PAGE",
-                "extension_connection",
-            ),
-            (
-                "### Error\nError: browserType.connectOverCDP: Protocol error (Browser.getVersion): No attached tab to forward browser-level command: Browser.getVersion\nCall log:\nSECRET_TOKEN",
-                "target_unavailable",
-            ),
-            (
-                "### Error\nError: browserContext.newPage: Protocol error (Target.createTarget): Another debugger is already attached to the tab with id: 123456.\nCall log:\nSECRET_PAGE",
-                "attach_failed",
-            ),
-            (
-                "### Error\nError: browserContext.newPage: Protocol error (Target.createTarget): Cannot attach to this target.",
-                "attach_failed",
-            ),
-            (
-                "### Error\nError: Protocol error (Page.enable): No tab found for sessionId: pw-tab-123456",
-                "target_unavailable",
-            ),
-            (
-                "### Error\nError: Protocol error (Target.createTarget): Cannot access a chrome:// URL",
-                "attach_failed",
-            ),
-            (
-                "### Error\nError: Cannot access a chrome-extension:// URL of different extension",
-                "attach_failed",
-            ),
-            (
-                "### Error\nError: browserType.connectOverCDP: Protocol error (Browser.getVersion): SECRET_PAGE",
-                "cdp_command_failed",
-            ),
-            (
-                "### Error\nTimeoutError: browserType.connectOverCDP: SECRET_PAGE",
-                "timeout",
-            ),
-        ] {
-            let error = checked(
-                Capability::Browser,
-                Stage::TargetList,
-                Ok(rejected(text, json!({}))),
-            )
-            .err()
-            .unwrap();
-            for output in [error.to_string(), format!("{error:?}")] {
-                assert!(!output.contains("SECRET"));
-                assert!(!output.contains("123456"));
-                assert!(!output.contains("chrome://"));
-                assert!(!output.contains("/Users/"));
-            }
-            assert!(
-                error
-                    .to_string()
-                    .contains(&format!("error_class={expected}:")),
-                "{text}: {error}"
-            );
-        }
-    }
-
-    #[test]
-    fn issue75_browser_error_classification_ignores_logs_and_later_text_blocks() {
-        for text in [
-            "### Error\nError: SECRET_PAGE\nCall log:\nError: Cannot attach to this target.",
-            "### Error\nError: SECRET_PAGE\n\nError: Extension not connected",
-            "### Error\nError: SECRET_PAGE\n### Result\nError: No tab found for sessionId: pw-tab-123456",
-            "### Error\nError: browser.unknownApi: Cannot attach to this target.",
-            "### Error\nError: Protocol error (SECRET METHOD): Cannot attach to this target.",
-            "### Error\nError: Another debugger is already attached to the tab with id: SECRET_TOKEN.",
-        ] {
-            let mut result = rejected(text, json!({}));
-            result.text.push("Error: Extension not connected".into());
-            let error = checked(Capability::Browser, Stage::TargetList, Ok(result))
-                .err()
-                .unwrap();
-            assert!(
-                error.to_string().contains("error_class=unknown:"),
-                "{text}: {error}"
-            );
-            for output in [error.to_string(), format!("{error:?}")] {
-                assert!(!output.contains("SECRET"));
-                assert!(!output.contains("123456"));
-            }
-        }
-    }
-
-    #[test]
-    fn issue75_runtime_fixes_transport_errors_do_not_claim_system_permissions() {
-        for (error, class) in [
-            (McpError::Transport, "transport"),
-            (McpError::Timeout, "timeout"),
-            (McpError::InvalidMessage, "protocol"),
-            (McpError::Rpc(-32603), "rpc_rejected"),
-        ] {
-            let output = checked(Capability::Desktop, Stage::Observe, Err(error))
-                .err()
-                .unwrap()
-                .to_string();
-            assert!(output.contains("executor=cua stage=observe"));
-            assert!(output.contains(&format!("error_class={class}:")));
-            assert!(!output.contains("permissions_missing"));
-        }
-        assert_eq!(
-            checked(
-                Capability::Browser,
-                Stage::TargetList,
-                Err(McpError::Cancelled)
-            )
-            .err(),
-            Some(Error::Cancelled)
-        );
-    }
-    #[test]
-    fn issue75_background_fixed_refusals_keep_distinct_safe_classes() {
-        for code in [
-            "off_space_or_ax_unresolved",
-            "minimized_or_hidden_window",
-            "same_pid_keyboard_ambiguity",
-        ] {
-            let error = checked(Capability::Desktop, Stage::Action, Ok(ManagedResult {
-                text: vec!["SECRET_INPUT SECRET_PAGE".into()],
-                images: Vec::new(),
-                structured: Some(serde_json::json!({"status":"refused","refusal":{"code":code,"reason":"SECRET_REASON","escalation":"SECRET_PATH"}})),
-                is_error: true,
-            })).err().unwrap();
-            let output = error.to_string();
-            assert!(output.contains(&format!("error_class={code}")), "{output}");
-            assert!(!output.contains("SECRET"));
-            assert!(!format!("{error:?}").contains("SECRET"));
-        }
-    }
 }

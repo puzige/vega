@@ -1,0 +1,348 @@
+{
+  "version": 1,
+  "stage": "FROZEN_BEFORE_ACTIONS_RED",
+  "production_baseline": "0d21c4ce2947c4f3e3602680d8763e94f5cccf7e",
+  "head": "ae7d22cdb932e335f68ccb442e062359ea5a5c9d",
+  "test_definition_count": 11,
+  "tests": [
+    {
+      "file": "crates/vega_runtime/src/openai/chat_usage_tests.rs",
+      "line": 140,
+      "attribute": "test",
+      "name": "terminal_cache_aliases_preserve_text_reasoning_ordered_calls_and_usage",
+      "acceptance": [
+        "U1"
+      ],
+      "rows": [
+        "terminal100/9/nested70/hit70/top0/miss30; two fragmented read calls index1,0 assembled index0,1"
+      ],
+      "expected": "original text Inspecting files. and thinking plan reads; exact IDs/name/args/order; Usage100,9,Some70,None and one ToolUse Done",
+      "baseline": "RED alias equality"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/chat_usage_tests.rs",
+      "line": 198,
+      "attribute": "test",
+      "name": "cache_read_aliases_choose_first_nonnull_number_and_keep_explicit_zero",
+      "acceptance": [
+        "U2"
+      ],
+      "rows": [
+        {
+          "name": "nested",
+          "expected_read": 70
+        },
+        {
+          "name": "nested-zero",
+          "expected_read": 0
+        },
+        {
+          "name": "nested-null",
+          "expected_read": 70
+        },
+        {
+          "name": "hit-null",
+          "expected_read": 70
+        },
+        {
+          "name": "hit-zero",
+          "expected_read": 0
+        },
+        {
+          "name": "absent",
+          "expected_read": null
+        },
+        {
+          "name": "all-null",
+          "expected_read": null
+        }
+      ],
+      "shared_input": "prompt100/output9/miss17 independent of selected source",
+      "baseline": "RED alias equality and read+miss partition constraint"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/chat_usage_tests.rs",
+      "line": 252,
+      "attribute": "test",
+      "name": "cache_write_aliases_preserve_total_input_output_and_separate_read_write_counts",
+      "acceptance": [
+        "U3"
+      ],
+      "rows": [
+        {
+          "name": "nested",
+          "expected_write": 30
+        },
+        {
+          "name": "nested-zero",
+          "expected_write": 0
+        },
+        {
+          "name": "nested-null",
+          "expected_write": 30
+        },
+        {
+          "name": "absent",
+          "expected_write": null
+        },
+        {
+          "name": "all-null",
+          "expected_write": null
+        }
+      ],
+      "shared_input": "prompt100/output5/read50/reasoning3; output stays5",
+      "baseline": "RED write alias equality"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/chat_usage_tests.rs",
+      "line": 292,
+      "attribute": "test",
+      "name": "every_supported_counter_is_validated_even_when_an_earlier_alias_is_selected",
+      "acceptance": [
+        "U4"
+      ],
+      "fields": [
+        "prompt_tokens",
+        "completion_tokens",
+        "prompt_tokens_details.cached_tokens",
+        "prompt_cache_hit_tokens",
+        "cached_tokens",
+        "prompt_tokens_details.cache_write_tokens",
+        "cache_write_tokens",
+        "prompt_cache_miss_tokens"
+      ],
+      "malformed_per_field": [
+        "-1",
+        "0.5",
+        "string7",
+        "true",
+        "object",
+        "array",
+        "18446744073709551616"
+      ],
+      "additional_rows": [
+        "prompt_tokens missing",
+        "prompt_tokens null",
+        "completion_tokens missing",
+        "completion_tokens null"
+      ],
+      "expected": "typed nonretryable ProviderDiagnostic Protocol; no Done after preceding valid tool fragments",
+      "baseline": "existing rejection protection"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/chat_usage_tests.rs",
+      "line": 336,
+      "attribute": "test",
+      "name": "selected_cache_accounting_and_independent_miss_ranges_remain_checked",
+      "acceptance": [
+        "U4"
+      ],
+      "rows": [
+        "selected read101>prompt100",
+        "selected write101>prompt100",
+        "read60+write50>prompt100",
+        "u64MAX read+write1 checked overflow with promptu64MAX",
+        "miss101>prompt100"
+      ],
+      "expected": "typed nonretryable Protocol and no Done",
+      "baseline": "existing rejection protection"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/chat_usage_tests.rs",
+      "line": 365,
+      "attribute": "test",
+      "name": "usage_locations_and_progressive_snapshots_emit_only_the_final_normalized_usage",
+      "acceptance": [
+        "U5"
+      ],
+      "rows": [
+        "chunk",
+        "choice",
+        "both with different lower mirrors and miss but same selected normalized count"
+      ],
+      "shared_input": "first snapshot50/1/read20 then final100/9/read70",
+      "expected": "one final Usage100,9,Some70,None and exactly one Done",
+      "baseline": "RED alias equality"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/chat_usage_tests.rs",
+      "line": 395,
+      "attribute": "test",
+      "name": "separate_usage_objects_still_reject_different_normalized_totals_or_cache_counts",
+      "acceptance": [
+        "U6"
+      ],
+      "rows": [
+        "prompt_tokens",
+        "completion_tokens",
+        "selected cache_read",
+        "selected cache_write"
+      ],
+      "expected": "typed Protocol/no Done for separate chunk and choice objects",
+      "baseline": "existing rejection protection"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/chat_usage_tests.rs",
+      "line": 454,
+      "attribute": "test",
+      "name": "ordinary_text_and_single_cache_fields_keep_valid_terminals_while_bad_tool_streams_fail",
+      "acceptance": [
+        "U4",
+        "U6",
+        "U7"
+      ],
+      "positive_rows": [
+        "ordinary text no usage",
+        "top cached70 only",
+        "cache_write30 only"
+      ],
+      "negative_rows": [
+        "shadowed-malformed-cache",
+        "selected-cache-over-input",
+        "miss-over-input",
+        "independent-usage-conflict",
+        "malformed-tool-json",
+        "cross-index-identity-conflict",
+        "function-name-conflict",
+        "missing-terminal",
+        "unknown-terminal",
+        "post-terminal-mutation"
+      ],
+      "expected": "positive real terminal; negative typed Protocol/no Done",
+      "baseline": "existing protection"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/chat_usage_runtime.rs",
+      "line": 82,
+      "attribute": "tokio::test",
+      "name": "cache_alias_handoff_reads_owned_files_and_reuses_real_results_on_followup",
+      "acceptance": [
+        "U1",
+        "U7"
+      ],
+      "rows": [
+        "actual OpenAiProvider over bounded HTTP and DONE; unknown proxy deepseek-v4.1-flash; two real Read calls, final response, followup same original calls with actual completed results, final response"
+      ],
+      "expected": "visible/thinking preserved; exact raw IDs/name/args in runtime and second wire; owned file results in next request; each first Read started once, followup executed0 and results reused2; four exact Chat requests; Usage100/9/read70 once",
+      "baseline": "RED final-frame alias rejection before tool release"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/chat_usage_runtime.rs",
+      "line": 262,
+      "attribute": "tokio::test",
+      "name": "malformed_usage_or_tools_never_execute_buffered_reads_or_finish_successfully",
+      "acceptance": [
+        "U4",
+        "U6",
+        "U7"
+      ],
+      "rows": [
+        "shadowed-malformed-cache",
+        "selected-cache-over-input",
+        "miss-over-input",
+        "independent-usage-conflict",
+        "malformed-tool-json",
+        "cross-index-identity-conflict",
+        "function-name-conflict",
+        "missing-terminal",
+        "unknown-terminal",
+        "post-terminal-mutation"
+      ],
+      "expected": "actual HTTP/codec/runtime failed typed Protocol, one HTTP attempt, zero executed/running/finished tool events and original files intact",
+      "baseline": "existing rejection protection"
+    },
+    {
+      "file": "crates/vega_runtime/src/openai/chat_usage_runtime.rs",
+      "line": 309,
+      "attribute": "tokio::test",
+      "name": "cancellation_before_send_or_after_visible_delta_prevents_read_side_effects",
+      "acceptance": [
+        "U7"
+      ],
+      "rows": [
+        "before-send zero recorded connections with live listener",
+        "after-visible-delta one HTTP attempt; queued valid tools never start"
+      ],
+      "expected": "precise Cancelled before send or interrupted&&!failed; executed0; fixture bounded teardown and exact request count",
+      "baseline": "existing cancellation protection"
+    }
+  ],
+  "files": [
+    {
+      "path": "crates/vega_runtime/src/openai/chat_usage_tests.rs",
+      "sha256": "744ead61fd68969039385a376cbdaf3b6f4c7ab1aefbadc8bb4c4a9d7d4f90e9",
+      "bytes": 16298,
+      "role": "development-test-support"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/chat_usage_runtime.rs",
+      "sha256": "5e36f98d24b5b8f016a3b633dea2d5bf6a76324c9e530768ce5cadd09f9b39ef",
+      "bytes": 12638,
+      "role": "development-test-support"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/chat_usage_http.rs",
+      "sha256": "42f6810367baccf45c45f335754d8513f440d7123ded933dbed452e4d3d178b5",
+      "bytes": 6373,
+      "role": "development-test-support"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/mod.rs",
+      "sha256": "6215f5040544b37a0043cbfe7001c5ed5907f5fb56ad55bad99f346ebeccb694",
+      "bytes": 16619,
+      "role": "test-only-wiring"
+    },
+    {
+      "path": "crates/vega_runtime/Cargo.toml",
+      "sha256": "555b81eff6892c2382395d052223c7955e8ed4c758258525dc9540a9e44c71ed",
+      "bytes": 1139,
+      "role": "test-only-wiring"
+    },
+    {
+      "path": "Cargo.lock",
+      "sha256": "a5edccd1364fbecd2e5fb792ea2a3366996e93d4428ab48bc38e2c23346e755c",
+      "bytes": 235449,
+      "role": "test-only-wiring"
+    }
+  ],
+  "production_unchanged": {
+    "sse_sha256": "75610574ed7a6dfbbaba2f7e26b66673e8479296b9bc4ed565df9be6ba2584a7",
+    "native_codec_runtime_business_changes": false,
+    "openai_mod_exact_original_after_removing_cfg_module": true,
+    "production_dependencies_unchanged": true,
+    "lock_package_count": 914,
+    "lock_added_packages": 0,
+    "lock_added_edge": "vega_runtime -> preexisting tempfile only"
+  },
+  "reuse_sources": [
+    {
+      "commit": "7d1066901e9f488cc81e825bb035df6dea7936ee",
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/http.rs",
+      "scope": "single bounded loopback HTTP fixture; Reply::events additionally emits explicit synthetic DONE; no historical test functions restored"
+    },
+    {
+      "commit": "7d1066901e9f488cc81e825bb035df6dea7936ee",
+      "paths": [
+        "crates/vega_runtime/src/openai/compatibility_tests/mod.rs",
+        "crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs",
+        "crates/vega_runtime/src/openai/compatibility_tests/stream.rs"
+      ],
+      "scope": "only actual assembler collection, owned AgentRequest and existing failure/usage event observation shapes; all alias precedence inputs are new synthetic regression data"
+    }
+  ],
+  "privacy": "No real logs/headers/text/args/identities/credentials copied; only synthetic fields and owned files",
+  "checks": {
+    "fmt_all": 0,
+    "fmt_check": 0,
+    "diff_check": 0,
+    "locked_offline_no_deps_metadata": 0
+  },
+  "not_run": [
+    "Vega",
+    "Rust/Python tests",
+    "compilation",
+    "Clippy"
+  ],
+  "pending": "Actions valid behavior RED; only after root review of RED may the dedicated agent implement production.",
+  "root_review": "Actual source/API/event assertions and six file hashes reviewed; business parser is unchanged. 11 definitions are not an execution count."
+}

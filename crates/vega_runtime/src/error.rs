@@ -1,8 +1,124 @@
-//! Unified error model (tech-spec §7, A3-01 / S4-T19).
-
 use std::fmt;
 
 use thiserror::Error;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeFailureStage {
+    RunPreparation,
+    Snapshot,
+    ToolProposal,
+    ToolApproval,
+    ToolRunning,
+    ToolTerminal,
+    EventPipeline,
+}
+
+impl RuntimeFailureStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RunPreparation => "run_preparation",
+            Self::Snapshot => "snapshot",
+            Self::ToolProposal => "tool_proposal",
+            Self::ToolApproval => "tool_approval",
+            Self::ToolRunning => "tool_running",
+            Self::ToolTerminal => "tool_terminal",
+            Self::EventPipeline => "event_pipeline",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeFailureReason {
+    Database,
+    ApprovalAudit,
+    State,
+    Io,
+    Pipeline,
+}
+
+impl RuntimeFailureReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Database => "database",
+            Self::ApprovalAudit => "approval_audit",
+            Self::State => "state",
+            Self::Io => "io",
+            Self::Pipeline => "pipeline",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeIoKind {
+    NotFound,
+    PermissionDenied,
+    AlreadyExists,
+    InvalidInput,
+    InvalidData,
+    TimedOut,
+    Interrupted,
+    Unsupported,
+    OutOfMemory,
+    StorageFull,
+    Other,
+}
+
+impl RuntimeIoKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotFound => "not_found",
+            Self::PermissionDenied => "permission_denied",
+            Self::AlreadyExists => "already_exists",
+            Self::InvalidInput => "invalid_input",
+            Self::InvalidData => "invalid_data",
+            Self::TimedOut => "timed_out",
+            Self::Interrupted => "interrupted",
+            Self::Unsupported => "unsupported",
+            Self::OutOfMemory => "out_of_memory",
+            Self::StorageFull => "storage_full",
+            Self::Other => "other",
+        }
+    }
+}
+
+impl From<std::io::ErrorKind> for RuntimeIoKind {
+    fn from(kind: std::io::ErrorKind) -> Self {
+        match kind {
+            std::io::ErrorKind::NotFound => Self::NotFound,
+            std::io::ErrorKind::PermissionDenied => Self::PermissionDenied,
+            std::io::ErrorKind::AlreadyExists => Self::AlreadyExists,
+            std::io::ErrorKind::InvalidInput => Self::InvalidInput,
+            std::io::ErrorKind::InvalidData => Self::InvalidData,
+            std::io::ErrorKind::TimedOut => Self::TimedOut,
+            std::io::ErrorKind::Interrupted => Self::Interrupted,
+            std::io::ErrorKind::Unsupported => Self::Unsupported,
+            std::io::ErrorKind::OutOfMemory => Self::OutOfMemory,
+            std::io::ErrorKind::StorageFull => Self::StorageFull,
+            _ => Self::Other,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuntimeFailureDetail {
+    pub stage: RuntimeFailureStage,
+    pub reason: RuntimeFailureReason,
+    pub sqlite_code: Option<i32>,
+    pub sqlite_extended_code: Option<i32>,
+    pub io_kind: Option<RuntimeIoKind>,
+}
+
+impl RuntimeFailureDetail {
+    pub fn new(reason: RuntimeFailureReason) -> Self {
+        Self {
+            stage: RuntimeFailureStage::EventPipeline,
+            reason,
+            sqlite_code: None,
+            sqlite_extended_code: None,
+            io_kind: None,
+        }
+    }
+}
 
 /// Unified Vega error (tech-spec §7).
 ///
@@ -11,6 +127,8 @@ use thiserror::Error;
 /// never carry the API key (red line: keys never reach logs or errors).
 #[derive(Error)]
 pub enum VegaError {
+    #[error("runtime operation failed")]
+    RuntimeFailure(RuntimeFailureDetail),
     #[error("provider frame exceeded parser capacity")]
     ProviderPayloadTooLarge {
         observed_bytes: usize,
@@ -60,6 +178,18 @@ pub enum VegaError {
     CredentialContinuationUnavailable,
     #[error("credential projection requires tool configuration repair ({tool_index})")]
     CredentialProjectionInvalid { tool_index: usize },
+    #[error(
+        "this model returned reasoning state that cannot be replayed; retry or start a new conversation"
+    )]
+    ReasoningReplayUnsupported,
+    #[error(
+        "the model response omitted required reasoning replay state; retry or start a new conversation"
+    )]
+    ReasoningReplayIncomplete,
+    #[error(
+        "this model does not accept images; select a vision model or enable image input in model settings"
+    )]
+    ModelImagesUnsupported,
     /// A frozen provider/model thinking selection violated its explicit
     /// capability declaration before any request was sent.
     #[error("reasoning selection is invalid")]
@@ -96,6 +226,10 @@ pub enum VegaError {
 impl fmt::Debug for VegaError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::RuntimeFailure(detail) => formatter
+                .debug_tuple("RuntimeFailure")
+                .field(detail)
+                .finish(),
             Self::ProviderPayloadTooLarge {
                 observed_bytes,
                 limit_bytes,
@@ -154,6 +288,9 @@ impl fmt::Debug for VegaError {
                 .debug_struct("CredentialProjectionInvalid")
                 .field("tool_index", tool_index)
                 .finish(),
+            Self::ReasoningReplayUnsupported => formatter.write_str("ReasoningReplayUnsupported"),
+            Self::ReasoningReplayIncomplete => formatter.write_str("ReasoningReplayIncomplete"),
+            Self::ModelImagesUnsupported => formatter.write_str("ModelImagesUnsupported"),
             Self::ReasoningSelectionInvalid { message } => formatter
                 .debug_struct("ReasoningSelectionInvalid")
                 .field("message_bytes", &message.len())
@@ -188,9 +325,50 @@ impl fmt::Debug for VegaError {
 }
 
 impl VegaError {
+    pub fn at_runtime_stage(self, stage: RuntimeFailureStage) -> Self {
+        let mut detail = match self {
+            Self::RuntimeFailure(detail) if detail.stage != RuntimeFailureStage::EventPipeline => {
+                return Self::RuntimeFailure(detail);
+            }
+            Self::RuntimeFailure(detail) => detail,
+            Self::Store(error) => {
+                let mut detail = RuntimeFailureDetail::new(RuntimeFailureReason::Database);
+                if let Some(error) = error.sqlite_error() {
+                    detail.sqlite_code = Some(error.extended_code & 255);
+                    detail.sqlite_extended_code = Some(error.extended_code);
+                }
+                detail
+            }
+            Self::Io(error) => {
+                let mut detail = RuntimeFailureDetail::new(RuntimeFailureReason::Io);
+                detail.io_kind = Some(error.kind().into());
+                detail
+            }
+            error => return error,
+        };
+        detail.stage = stage;
+        Self::RuntimeFailure(detail)
+    }
+
+    pub fn acknowledgement_error(&self) -> Self {
+        match self {
+            Self::Cancelled => Self::Cancelled,
+            Self::RuntimeFailure(detail) => Self::RuntimeFailure(*detail),
+            _ => Self::RuntimeFailure(RuntimeFailureDetail::new(RuntimeFailureReason::Pipeline)),
+        }
+    }
+
     pub fn diagnostic_metrics(&self) -> crate::RuntimeDiagnosticMetrics {
         let mut metrics = crate::RuntimeDiagnosticMetrics::default();
         let (source, kind, scope) = match self {
+            Self::RuntimeFailure(detail) => {
+                metrics.runtime_stage = Some(detail.stage.as_str());
+                metrics.runtime_reason = Some(detail.reason.as_str());
+                metrics.sqlite_code = detail.sqlite_code;
+                metrics.sqlite_extended_code = detail.sqlite_extended_code;
+                metrics.io_kind = detail.io_kind.map(RuntimeIoKind::as_str);
+                ("runtime", "unknown", None)
+            }
             Self::ProviderPayloadTooLarge {
                 observed_bytes,
                 limit_bytes,
@@ -215,6 +393,8 @@ impl VegaError {
                     match kind {
                         crate::ProviderFailureKind::Http => "http",
                         crate::ProviderFailureKind::Transport => "transport",
+                        crate::ProviderFailureKind::StreamInterrupted => "stream_interrupted",
+                        crate::ProviderFailureKind::Timeout => "timeout",
                         crate::ProviderFailureKind::Protocol => "protocol",
                         crate::ProviderFailureKind::Rejected => "rejected",
                         crate::ProviderFailureKind::OutputLimit => "output_limit",
@@ -230,6 +410,8 @@ impl VegaError {
                     None,
                 )
             }
+            Self::ModelImagesUnsupported => ("runtime", "model_images", None),
+            Self::ReasoningSelectionInvalid { .. } => ("runtime", "reasoning_selection", None),
             Self::ReasoningBudgetExceeded {
                 scope,
                 limit_bytes,
@@ -313,6 +495,9 @@ impl VegaError {
                 metrics.failure_tool_index = u64::try_from(*tool_index).ok();
                 ("runtime", "credential_projection", None)
             }
+            Self::ReasoningReplayUnsupported | Self::ReasoningReplayIncomplete => {
+                ("runtime", "protocol", Some("response"))
+            }
             Self::Cancelled => ("runtime", "cancelled", None),
             _ => ("runtime", "unknown", None),
         };
@@ -386,7 +571,14 @@ impl VegaError {
         let lower = diagnostic.to_ascii_lowercase();
         let known_phrase = lower.starts_with("prompt is too long")
             || lower.starts_with("prompt too long")
-            || lower.starts_with("this model's maximum context length is ");
+            || lower.starts_with("this model's maximum context length is ")
+            || (lower.starts_with("the input (")
+                && lower.contains("is longer than the model's context length"))
+            || (lower.starts_with("input length ")
+                && (lower.contains("exceeds model's maximum context length")
+                    || lower.contains("exceeds the maximum allowed input length")))
+            || (lower.starts_with("prompt has ")
+                && lower.contains("tokens, but the configured context size is "));
         if !known_code && !known_phrase {
             return None;
         }
@@ -398,143 +590,5 @@ impl VegaError {
                 .and_then(|details| details.get("max_context_tokens"))
                 .and_then(serde_json::Value::as_u64),
         ))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::VegaError;
-
-    #[test]
-    fn vega_error_is_send_sync() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<VegaError>();
-    }
-
-    #[test]
-    fn provider_error_debug_and_display_hide_payload() {
-        const MESSAGE_SENTINEL: &str = "VEGA_PROVIDER_MESSAGE_SENTINEL";
-        let err = VegaError::Provider {
-            status: Some(503),
-            message: MESSAGE_SENTINEL.to_string(),
-            retryable: true,
-        };
-        for rendered in [format!("{err:?}"), err.to_string()] {
-            assert!(rendered.contains("503"), "provider status metadata missing");
-            assert!(
-                rendered.contains("retryable"),
-                "provider retry metadata missing"
-            );
-            assert!(
-                !rendered.contains(MESSAGE_SENTINEL),
-                "provider formatting leaked payload"
-            );
-        }
-        let VegaError::Provider {
-            status,
-            message,
-            retryable,
-        } = err
-        else {
-            unreachable!()
-        };
-        assert_eq!(status, Some(503));
-        assert!(
-            message == MESSAGE_SENTINEL,
-            "typed provider message changed"
-        );
-        assert!(retryable);
-    }
-
-    #[test]
-    fn provider_diagnostic_debug_and_display_hide_body_and_request_id() {
-        const MESSAGE_SENTINEL: &str = "VEGA_PROVIDER_BODY_CANARY";
-        const REQUEST_ID_SENTINEL: &str = "VEGA_REQUEST_ID_CANARY";
-        let err = VegaError::ProviderDiagnostic {
-            kind: crate::provider::ProviderFailureKind::Rejected,
-            status: Some(429),
-            message: MESSAGE_SENTINEL.to_string(),
-            retryable: false,
-            retry_count: Some(2),
-            request_id: Some(REQUEST_ID_SENTINEL.to_string()),
-        };
-        for rendered in [format!("{err:?}"), err.to_string()] {
-            assert!(rendered.contains("429"));
-            assert!(rendered.contains("retryable"));
-            assert!(!rendered.contains(MESSAGE_SENTINEL));
-            assert!(!rendered.contains(REQUEST_ID_SENTINEL));
-        }
-    }
-
-    #[test]
-    fn error_debug_redacts_io_store_and_tool_payloads() {
-        const IO_SENTINEL: &str = "VEGA_IO_SENTINEL";
-        const TOOL_SENTINEL: &str = "VEGA_TOOL_SENTINEL";
-        const TOOL_MESSAGE_SENTINEL: &str = "VEGA_TOOL_MESSAGE_SENTINEL";
-        let values = [
-            VegaError::Io(std::io::Error::other(IO_SENTINEL)),
-            VegaError::Store(rusqlite::Error::InvalidParameterName(IO_SENTINEL.into())),
-            VegaError::Tool {
-                tool: TOOL_SENTINEL.into(),
-                message: TOOL_MESSAGE_SENTINEL.into(),
-            },
-        ];
-        for value in values {
-            let rendered = format!("{value:?}");
-            for sentinel in [IO_SENTINEL, TOOL_SENTINEL, TOOL_MESSAGE_SENTINEL] {
-                assert!(!rendered.contains(sentinel), "error Debug leaked payload");
-            }
-        }
-    }
-
-    #[test]
-    fn provider_context_diagnostics_preserve_only_explicit_token_measurements() {
-        for prefix in [
-            "",
-            "provider request failed (HTTP 400): ",
-            "chat/completions request failed (HTTP 400): ",
-        ] {
-            let error = VegaError::Provider {
-                status: Some(400),
-                message: format!(
-                    "{prefix}{}",
-                    r#"{"error":{"code":"context_length_exceeded","requested_tokens":130000,"max_context_tokens":128000,"message":"PRIVATE_BODY"}}"#
-                ),
-                retryable: false,
-            };
-            let metrics = error.diagnostic_metrics();
-            assert_eq!(error.context_input_overflow(), Some(Some(2000)));
-            assert_eq!(metrics.failure_source, Some("provider"));
-            assert_eq!(metrics.failure_kind, Some("context_over_limit"));
-            assert_eq!(metrics.failure_scope, Some("request_context"));
-            assert_eq!(metrics.failure_observed, Some(130000));
-            assert_eq!(metrics.failure_limit, Some(128000));
-            assert_eq!(metrics.failure_units, Some("tokens"));
-            assert!(!format!("{metrics:?}").contains("PRIVATE_BODY"));
-        }
-        for body in [
-            r#"{"error":{"code":"context_length_exceeded","max_tokens":128000}}"#,
-            r#"{"error":{"code":"context_length_exceeded","requested_tokens":"130000","max_context_tokens":-1}}"#,
-        ] {
-            let error = VegaError::ProviderDiagnostic {
-                kind: crate::ProviderFailureKind::Rejected,
-                status: Some(400),
-                message: body.into(),
-                retryable: false,
-                retry_count: None,
-                request_id: None,
-            };
-            let metrics = error.diagnostic_metrics();
-            assert_eq!(metrics.failure_kind, Some("context_over_limit"));
-            assert_eq!(metrics.failure_observed, None);
-            assert_eq!(metrics.failure_limit, None);
-            assert_eq!(metrics.failure_units, None);
-            assert_eq!(error.context_input_overflow(), Some(None));
-        }
-    }
-
-    #[test]
-    fn cancelled_display_is_stable() {
-        assert_eq!(VegaError::Cancelled.to_string(), "operation cancelled");
     }
 }

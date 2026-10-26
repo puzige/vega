@@ -1,4 +1,4 @@
-> **历史快照，非新开发规范入口。** 本文件保存 2026-10-11 整理前的设计守则；其中日期、交付状态、授权和互相冲突的数值仅供历史追溯。新方案见 [设计守则](vega-design-guidelines.md) 与 [18 点改造 spec](vega-issue-296-ui-redesign-v3.md)。新方案仍待评审，未实施。
+> **历史快照，非新开发规范入口。** 本文件保存 2026-10-11 整理前的设计守则；其中日期、交付状态、授权和互相冲突的数值仅供历史追溯。新方案见 [设计守则](vega-design-guidelines.md) 与 [18 点改造 spec](296/vega-issue-296-ui-redesign-v3.md)。新方案仍待评审，未实施。
 
 # Vega 设计守则
 
@@ -137,7 +137,7 @@ Issue #103：展开的工具详情与 thinking 正文使用 240px 最大高度
 （`Layout::DISCLOSURE_CONTENT_MAX_HEIGHT`），工具组子列表使用 320px 最大高度
 （`Layout::TOOL_GROUP_MAX_HEIGHT`）。短内容自然收缩，标题保留在滚动区域外；
 长内容在内部滚动且不得压缩子行。完整交互与验收见
-[Issue #103](vega-issue-103-scroll-window.md)。两个 token 已实现并通过 GPUI 几何回归验证；原生验收待完成。
+[Issue #103](103/vega-issue-103-scroll-window.md)。两个 token 已实现并通过 GPUI 几何回归验证；原生验收待完成。
 
 | 区域 | Token / 目标值 | 说明 |
 |---|---:|---|
@@ -194,13 +194,13 @@ Issue #103：展开的工具详情与 thinking 正文使用 240px 最大高度
 
 ### 8.1 用户消息气泡（Issue #78）
 
-用户文字右对齐于可读消息列；短消息随内容收缩，最大宽度为列宽的 80%（`Layout::USER_MESSAGE_MAX_WIDTH_RATIO`）。气泡采用 `brand_soft` 背景与 `text_primary` 正文，圆角 16px（`Layout::USER_MESSAGE_RADIUS`），水平/垂直内边距为 12/8px，不显示「你」标签。内部空行、CJK/Latin 混排与无空格长文本必须完整换行。用户图片同样沿列右对齐；助手、工具和错误呈现保持既有布局。最大列宽 768px 时，气泡宽不超过 614.4px，正文宽不超过 590.4px。详见 [Issue #78](vega-issue-78-message-bubbles.md)。
+用户文字右对齐于可读消息列；短消息随内容收缩，最大宽度为列宽的 80%（`Layout::USER_MESSAGE_MAX_WIDTH_RATIO`）。气泡采用 `brand_soft` 背景与 `text_primary` 正文，圆角 16px（`Layout::USER_MESSAGE_RADIUS`），水平/垂直内边距为 12/8px，不显示「你」标签。内部空行、CJK/Latin 混排与无空格长文本必须完整换行。用户图片同样沿列右对齐；助手、工具和错误呈现保持既有布局。最大列宽 768px 时，气泡宽不超过 614.4px，正文宽不超过 590.4px。详见 [Issue #78](78/vega-issue-78-message-bubbles.md)。
 
 ### 8.2 消息复制（Issue #78 follow-up，当前禁用）
 
 2026-09-23 用户复验：消息下方常驻的动作行读起来很丑、且与布局耦合，先禁用该交互。开关 `conversation_stream::MESSAGE_COPY_ACTIONS_ENABLED = false` 时 `message_with_copy` 原样返回消息体，不挂载也不预留任何动作行，几何回到 #144 之前的基线；`MessageCopy` 缓冲、共享 Copy 图标与渲染分支全部保留，待重新设计放置方式后只需翻转该开关即可恢复。
 
-启用状态下的冻结契约如下（保留供恢复时对照）：用户文字与助手正文在消息下方各保留一行共享 24px 图标按钮位置，用户侧靠右、助手侧靠左。动作默认透明，消息与动作组成连续 hover 区域；hover 或按钮获得键盘焦点时显现，显隐不改变高度。复制图标复用共享 SVG，tooltip 与可访问名称为「复制消息」，颜色采用 `text_secondary`、`bg_hover`、`bg_active`。只复制该项完整源文，保留 Markdown 与尾换行；流式读取最新正文，不包含工具/思考/错误提示，空正文与纯图片不提供复制动作。详见 [冻结契约](vega-issue-78-hover-copy.md)。
+启用状态下的冻结契约如下（保留供恢复时对照）：用户文字与助手正文在消息下方各保留一行共享 24px 图标按钮位置，用户侧靠右、助手侧靠左。动作默认透明，消息与动作组成连续 hover 区域；hover 或按钮获得键盘焦点时显现，显隐不改变高度。复制图标复用共享 SVG，tooltip 与可访问名称为「复制消息」，颜色采用 `text_secondary`、`bg_hover`、`bg_active`。只复制该项完整源文，保留 Markdown 与尾换行；流式读取最新正文，不包含工具/思考/错误提示，空正文与纯图片不提供复制动作。详见 [冻结契约](78/vega-issue-78-hover-copy.md)。
 
 ## 9. Composer
 
@@ -210,9 +210,9 @@ Issue #103：展开的工具详情与 thinking 正文使用 240px 最大高度
 - utility bar 几何：保留 R49 的 bar 高 37px、相对卡片左右各内缩 19px 并共用卡片中轴、顶部圆角 12px 而底部无圆角；bar 底边与卡片顶边**零重叠**（`bar bottom == card top`），靠父列顺序堆叠形成「标签页压在卡片上」的层叠观感，不使用负 margin。2026-09-16 用户要求收紧两个 chip：边界间距由 28px 改为 8px，首个 chip 距 bar 左缘仍为 14.5px。
 - utility bar chip 样式（取代 R49 对触发器的旧定义）：两个触发器均高 28px、水平 padding 8px、全胶囊；保留 `icon(16px, text_secondary)` + `label(Typography::SIDEBAR, text_primary)`、内部 `gap_2`。静止无边框且底色透明；hover 或对应菜单打开时显示专用主题覆盖色，文字和图标不参与透明度变化；关闭并移走指针后恢复透明。浅色覆盖色为 Vega 自主选定的 `#DBDBDB × 0.6`，叠在 `#FAF9F9` 上约为 `#E7E7E7`；深色为白色 × 0.10，叠在 `#191919` 上约为 `#303030`。分支保留 GitBranch 图标。文件夹 chip tooltip「切换项目」、分支 chip tooltip「切换分支」。这些为产品目标，不代表第三方内部实现。详见 [utility chip states](vega-utility-chip-states.md)；非 composer 的 R19 带框触发器不变。
 - 文件夹 chip 打开项目下拉（列出 sidebar 已有项目）；无项目草稿显示「选择项目」。选中、切换或解除项目时，草稿绑定及 Composer/分支上下文必须与共享 `SelectedProject` 同步，不得只换全局选择而留下旧任务绑定；复用既有项目数据源，不新建数据管道。分支 chip 复用既有 `BranchSelector`（open/close/切换/pending/错误码/focus/滚动语义不变），仅由挂载点切换 trigger chrome（`set_chip_chrome`），非 git 项目按既有 `NonGit` 语义隐藏。详见 [A8-01](vega-a8-composer-project-entry.md)。
-- Issue #294：Composer 卡片底部操作行不挂载分支图标、名称、选择入口、焦点目标或占位；Native/Codex、已有消息与历史水合会话均遵循此规则。新建任务上方独立 utility bar 的项目/分支入口、几何与 Git 安全语义保持不变；已有消息的会话仍不渲染 utility bar。此用户决定取代 [Issue #191](vega-issue-191-branch-entry.md) 的底行入口要求，详见 [Issue #294](vega-issue-294-composer-footer-no-branch.md)。
+- Issue #294：Composer 卡片底部操作行不挂载分支图标、名称、选择入口、焦点目标或占位；Native/Codex、已有消息与历史水合会话均遵循此规则。新建任务上方独立 utility bar 的项目/分支入口、几何与 Git 安全语义保持不变；已有消息的会话仍不渲染 utility bar。此用户决定取代 [Issue #191](191/vega-issue-191-branch-entry.md) 的底行入口要求，详见 [Issue #294](294/vega-issue-294-composer-footer-no-branch.md)。
 - Context、mode、permission、model、thinking 与 send/stop 必须连接已有 controller 和 guard。状态缺失时隐藏或禁用，不造假。
-- Issue #58：权限选择扩展为只读、确认、自动、完全访问四项；自动保持沙箱，完全访问显式关闭 bash 的 OS 沙箱且仍保留危险确认。完全访问使用共享 Warning 图标及 warning token，复用既有菜单布局与键盘路径；详见 [Full access 规格](vega-issue-58-full-access.md)。
+- Issue #58：权限选择扩展为只读、确认、自动、完全访问四项；自动保持沙箱，完全访问显式关闭 bash 的 OS 沙箱且仍保留危险确认。完全访问使用共享 Warning 图标及 warning token，复用既有菜单布局与键盘路径；详见 [Full access 规格](58/vega-issue-58-full-access.md)。
 - 不显示装饰性的 token/cost 仪表。成本信息只在有真实账单/计数来源的产品位置展示。
 - 默认使用实色语义表面。玻璃、blur、Web `data-composer-*` 变体和单行 44px 胶囊不属于当前 GPUI 契约；若产品确需新增，必须单独 spec。
 
@@ -230,7 +230,7 @@ Issue #103：展开的工具详情与 thinking 正文使用 240px 最大高度
 ```
 
 - Environment 只在有真实 project authority 时出现；standalone task 不显示 project-only rail。
-- Issue #141：新窗口与重启后 Environment 默认折叠，由用户点击头部按钮展开；未手动展开前，项目/任务切换与窗口 resize 不自动展开。不新增持久化设置，详见 [Environment 默认折叠](vega-issue-141-environment-default-collapsed.md)。
+- Issue #141：新窗口与重启后 Environment 默认折叠，由用户点击头部按钮展开；未手动展开前，项目/任务切换与窗口 resize 不自动展开。不新增持久化设置，详见 [Environment 默认折叠](141/vega-issue-141-environment-default-collapsed.md)。
 - Environment 卡片不再承载分支入口（R49 人类裁决）：`environment-branch` 行已删除，分支入口唯一化到 composer utility bar，符合「同一动作只有一个入口」。卡片其余行（标题、项目行、Changes / Review、Local terminal）保持不变。
 - 持久右侧 workspace 打开后替代 Environment rail；底部 workspace 横跨 center 与 right。
 - Workspace header 只承载标签与 pane 级操作；内容级工具栏单独成行，并把相关操作收进同一尾部按钮组，禁止用三个同级 `space-between` 元素把中间操作推到面板中央。
@@ -269,7 +269,7 @@ Issue #296 R7增加共享hover进入/离开120ms过渡，使用 `Motion::INTERAC
 - 遵循系统 Reduce Motion。开启后关闭启动扫光、shimmer、循环 pulse 和非必要位移动画，保留即时状态切换。
 - 启动页首帧必须不依赖异步运行时才能显示 Logo；若未来加入品牌扫光，必须提供静态 reduced-motion 路径，并以独立任务验收。
 - 所有主要操作具备键盘路径和可见焦点；图标按钮有可访问名称与稳定 hitbox。
-- Workspace 的全局 Review 显示操作保留当前焦点；用户显式激活 Diff tab 才把焦点交给 Review 内容。两条路径必须走独立焦点意图，详见 [Issue #192](vega-issue-192-review-focus.md)。
+- Workspace 的全局 Review 显示操作保留当前焦点；用户显式激活 Diff tab 才把焦点交给 Review 内容。两条路径必须走独立焦点意图，详见 [Issue #192](192/vega-issue-192-review-focus.md)。
 - 文本、图标与状态在 Light/Dark 下都必须可读；不能仅靠色相区分 success、warning、danger 或 selected。
 
 Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。没有自动化和真实 macOS 证据前，状态写“待验收”，不能写“已实现”。
@@ -317,9 +317,9 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 
 - Issue #294 (2026-10-11)：移除 Composer 底部操作行的分支图标和名称，不保留入口或占位；新建任务独立 utility bar 的分支选择器与安全行为保留。此规则取代 #191 的底行分支入口要求，原生外观等待用户在合并后的版本手测。
 
-- Issue #78 follow-up (2026-09-23)：消息悬停复制动作**当前禁用**。用户复验认为消息下方常驻的动作行很丑、且与布局耦合，要求先禁用。开关 `conversation_stream::MESSAGE_COPY_ACTIONS_ENABLED = false` 时 `message_with_copy` 原样返回消息体，不挂载也不预留动作行，几何回到 #144 之前基线；缓冲、图标与渲染分支保留，翻转开关即可恢复。详见 [禁用记录](vega-issue-78-disable-copy-delivery.md) 与 [冻结契约](vega-issue-78-hover-copy.md)。
+- Issue #78 follow-up (2026-09-23)：消息悬停复制动作**当前禁用**。用户复验认为消息下方常驻的动作行很丑、且与布局耦合，要求先禁用。开关 `conversation_stream::MESSAGE_COPY_ACTIONS_ENABLED = false` 时 `message_with_copy` 原样返回消息体，不挂载也不预留动作行，几何回到 #144 之前基线；缓冲、图标与渲染分支保留，翻转开关即可恢复。详见 [禁用记录](78/vega-issue-78-disable-copy-delivery.md) 与 [冻结契约](78/vega-issue-78-hover-copy.md)。
 
-- Issue #100 (2026-09-21)：Composer 与正文列**统一为 768px**。参考实现用**同一个** `--thread-content-max-width: 48rem`（=768px）同时驱动正文列与 Composer 容器，两者本应共用一条边；Vega 此前从截图分别量出 820 / 736，Composer 每侧窄 42px。`Layout::CONTENT_MAX_WIDTH` 与 `Layout::COMPOSER_MAX_WIDTH` 均改为 768，并由冻结测试与编译期断言保证恒等；Composer 的圆角/高度/内边距/发送按钮与 utility bar 几何全部不变。详见 [Issue #100 composer width](vega-issue-100-composer-width.md)。
+- Issue #100 (2026-09-21)：Composer 与正文列**统一为 768px**。参考实现用**同一个** `--thread-content-max-width: 48rem`（=768px）同时驱动正文列与 Composer 容器，两者本应共用一条边；Vega 此前从截图分别量出 820 / 736，Composer 每侧窄 42px。`Layout::CONTENT_MAX_WIDTH` 与 `Layout::COMPOSER_MAX_WIDTH` 均改为 768，并由冻结测试与编译期断言保证恒等；Composer 的圆角/高度/内边距/发送按钮与 utility bar 几何全部不变。详见 [Issue #100 composer width](100/vega-issue-100-composer-width.md)。
 
 - A8-02 (2026-09-18)：项目操作菜单只保留 `移除项目`，移除上下移动命令及标签中的解释性后缀；保留文件与任务历史的安全语义不变。
 - A8-01 (2026-09-17)：新建草稿在无项目时也显示 Composer 项目 chip；项目切换必须同步草稿和控制器，移除单独的「添加项目文件夹以开始…」首页引导。详见 [Composer project entry](vega-a8-composer-project-entry.md)。
@@ -363,4 +363,4 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 
 ## Issue #296 第二轮结构修订
 
-2026-10-11 用户认为0.1.66视觉变化不足，授权修复与原生验收循环。以 [第二轮规格](vega-issue-296-ui-hierarchy-v2.md) 为准：Settings固定224px导航/max720列/208px字段标签，20px页标题；共享bg_subtle映射现有code_bg色值（Light #F6F6F6、Dark #262626）；过程表面与角色层级、rail降噪、无常驻阴影Composer。保持全局palette与正文排版、原行为与安全语义。原#296的744px/随主Sidebar宽Settings导航被此修订替代。
+2026-10-11 用户认为0.1.66视觉变化不足，授权修复与原生验收循环。以 [第二轮规格](296/vega-issue-296-ui-hierarchy-v2.md) 为准：Settings固定224px导航/max720列/208px字段标签，20px页标题；共享bg_subtle映射现有code_bg色值（Light #F6F6F6、Dark #262626）；过程表面与角色层级、rail降噪、无常驻阴影Composer。保持全局palette与正文排版、原行为与安全语义。原#296的744px/随主Sidebar宽Settings导航被此修订替代。

@@ -1,17 +1,13 @@
 //! Small local composer commands; all durable changes still use thread settings.
 use super::*;
 use crate::interaction::InteractionExt;
-use gpui_kit::Focusable;
+use gpui_kit::{Focusable, Role};
 use vega_conversation::types::{ComputerUseControl, ControlPhase};
 
 /// Thread-mode `+`-menu rows, in the order the slash parser also accepts.
 /// Labels come from [`mode_command`], so the menu and the parser cannot drift.
 const MODE_ORDER: [ThreadMode; 3] = [ThreadMode::Ask, ThreadMode::Plan, ThreadMode::Execute];
 
-/// Permission-mode rows, in the order both permission surfaces render them
-/// (R57 P1's `+` menu and R62 R8's picker). P2b removed the bottom-row
-/// dropdown; these two surfaces are what keep the permission mode reachable,
-/// and sharing the order is what keeps them from drifting (R62 R9).
 pub(crate) const PERMISSION_ORDER: [PermissionMode; 4] = [
     PermissionMode::ReadOnly,
     PermissionMode::Confirm,
@@ -29,30 +25,26 @@ fn mode_command(mode: ThreadMode) -> &'static str {
     }
 }
 
-/// User-visible permission label. R57 P2b shares this one projection between
-/// the `+`-menu rows and the bottom row's read-only permission status, so the
-/// two surfaces cannot drift.
 pub(crate) fn permission_label(mode: PermissionMode) -> &'static str {
     match mode {
-        PermissionMode::ReadOnly => "只读",
-        PermissionMode::Confirm => "确认",
-        PermissionMode::Auto => "自动",
-        PermissionMode::FullAccess => "完全访问",
+        PermissionMode::ReadOnly => vega_i18n::t("ui.read_only"),
+        PermissionMode::Confirm => vega_i18n::t("ui.confirm"),
+        PermissionMode::Auto => vega_i18n::t("ui.auto"),
+        PermissionMode::FullAccess => vega_i18n::t("ui.full_access"),
     }
 }
 
-/// Shared descriptions; I58-R7 distinguishes automatic approval from bypassing
-/// the OS sandbox without changing the existing approval controller.
 pub(crate) fn permission_description(mode: PermissionMode) -> &'static str {
     match mode {
-        PermissionMode::ReadOnly => "每次都询问",
-        PermissionMode::Confirm => "仅对潜在不安全操作询问",
-        PermissionMode::Auto => "自动批准，使用沙箱",
-        PermissionMode::FullAccess => "不使用沙箱，危险操作仍需确认",
+        PermissionMode::ReadOnly => vega_i18n::t("ui.ask_every_time"),
+        PermissionMode::Confirm => vega_i18n::t("ui.ask_only_for_potentially_unsafe_actions"),
+        PermissionMode::Auto => vega_i18n::t("ui.approve_automatically_using_the_sandbox"),
+        PermissionMode::FullAccess => {
+            vega_i18n::t("ui.no_sandbox_dangerous_actions_still_require_confirmation")
+        }
     }
 }
 
-/// Per-row glyph; FullAccess shares the existing warning triangle (I58-R7).
 pub(crate) fn permission_icon(mode: PermissionMode) -> crate::icons::Icon {
     match mode {
         PermissionMode::ReadOnly => crate::icons::Icon::Hand,
@@ -61,52 +53,20 @@ pub(crate) fn permission_icon(mode: PermissionMode) -> crate::icons::Icon {
     }
 }
 
-/// Keep Auto's existing warning ink and explicitly mark FullAccess (I58-R7).
 pub(crate) fn permission_is_warning(mode: PermissionMode) -> bool {
     matches!(mode, PermissionMode::Auto | PermissionMode::FullAccess)
 }
 
-/// R63: the debug selector naming **which glyph** [`permission_icon`] chose,
-/// so the test harness can identify the glyph by what the chip
-/// actually painted.
-///
-/// An icon renders as an `AnyElement` into the sprite atlas and carries no
-/// selector of its own, so a rendered glyph is otherwise invisible to
-/// `VisualTestContext::debug_bounds` — the same reason the picker's checkmark
-/// and the slider's chevron tag a wrapper. The tag is keyed to the glyph
-/// **value** the caller is about to paint (not to the mode), so the tag and
-/// the glyph are one value with one source: there is no second `match` on the
-/// mode here that could drift from [`permission_icon`], and a glyph outside
-/// the three named glyphs is reported as such rather than mislabelled.
-pub(crate) fn permission_icon_selector(icon: crate::icons::Icon) -> &'static str {
-    match icon {
-        crate::icons::Icon::Hand => "composer-permission-status-icon-hand",
-        crate::icons::Icon::Shield => "composer-permission-status-icon-shield",
-        crate::icons::Icon::Warning => "composer-permission-status-icon-warning",
-        _ => "composer-permission-status-icon-unexpected",
-    }
-}
+pub(crate) const PERMISSION_PICKER_TITLE: &str = "ui.how_should_actions_be_approved";
 
-/// R62 R8: the picker's title row. The reference implementation's
-/// `composer.permissionsDropdown.title.chatgptDesktop` is
-/// "How should ChatGPT actions be approved?". Vega's UI is Chinese and its
-/// existing vocabulary for this concept is 权限模式 (`settings/render_impl.rs`
-/// field label), so the in-convention title keeps that noun. It drops the
-/// reference's product name: "ChatGPT" is the reference app's assistant, and
-/// no Vega surface names a foreign product, so the sentence addresses the
-/// agent's actions generically.
-pub(crate) const PERMISSION_PICKER_TITLE: &str = "操作应如何获得批准？";
-
-/// R62 R8: the title row's trailing link label. The reference implementation's
-/// `composer.permissionsDropdown.learnMore` is "Learn more". Vega has no docs
-/// surface to open, so the row is rendered as plain secondary text — see the
-/// picker's own comment for why no click handler is attached.
-pub(crate) const PERMISSION_PICKER_LEARN_MORE: &str = "了解更多";
+pub(crate) const PERMISSION_PICKER_LEARN_MORE: &str = "ui.learn_more";
 
 /// One selectable `+`-menu row. Rendering, keyboard highlight indices, and
 /// click dispatch all consume this one projection, so they cannot drift.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ComposerActionRow {
+    Goal,
+    Loop,
     AddImages,
     CredentialReview,
     ComputerTakeover,
@@ -121,10 +81,12 @@ enum ComposerActionRow {
 impl ComposerActionRow {
     fn label(self) -> &'static str {
         match self {
-            Self::AddImages => "添加图片",
-            Self::CredentialReview => "凭据检查",
-            Self::ComputerTakeover => "接管电脑操作",
-            Self::FileReference => "项目文件引用",
+            Self::Goal => vega_i18n::t("ui.ongoing_goal"),
+            Self::Loop => vega_i18n::t("ui.recurring_task"),
+            Self::AddImages => vega_i18n::t("ui.add_images"),
+            Self::CredentialReview => vega_i18n::t("ui.review_credentials"),
+            Self::ComputerTakeover => vega_i18n::t("ui.take_over_computer_control"),
+            Self::FileReference => vega_i18n::t("ui.reference_project_files"),
             Self::Mode(mode) => mode_command(mode),
             Self::Permission(mode) => permission_label(mode),
         }
@@ -133,51 +95,14 @@ impl ComposerActionRow {
     /// Whether this row shows the thread's current authoritative value.
     fn is_selected(self, thread: &Thread) -> bool {
         match self {
-            Self::AddImages | Self::ComputerTakeover | Self::CredentialReview => false,
+            Self::Goal
+            | Self::Loop
+            | Self::AddImages
+            | Self::ComputerTakeover
+            | Self::CredentialReview => false,
             Self::FileReference => false,
             Self::Mode(mode) => thread.mode == mode,
             Self::Permission(mode) => thread.permission_mode == mode,
-        }
-    }
-
-    /// Stable selector for the production click and keyboard tests.
-    fn selector(self) -> &'static str {
-        match self {
-            Self::AddImages => "composer-action-images",
-            Self::CredentialReview => "composer-action-credentials",
-            Self::ComputerTakeover => "composer-action-computer-takeover",
-            Self::FileReference => "composer-action-file",
-            Self::Mode(ThreadMode::Ask) => "composer-action-mode-ask",
-            Self::Mode(ThreadMode::Plan) => "composer-action-mode-plan",
-            Self::Mode(ThreadMode::Execute) => "composer-action-mode-execute",
-            Self::Permission(PermissionMode::ReadOnly) => "composer-action-permission-readonly",
-            Self::Permission(PermissionMode::Confirm) => "composer-action-permission-confirm",
-            Self::Permission(PermissionMode::Auto) => "composer-action-permission-auto",
-            Self::Permission(PermissionMode::FullAccess) => {
-                "composer-action-permission-full_access"
-            }
-        }
-    }
-
-    /// Selector of the selection marker, which exists in the frame only while
-    /// this row holds the thread's authoritative value.
-    fn check_selector(self) -> &'static str {
-        match self {
-            Self::AddImages => "composer-action-images-check",
-            Self::CredentialReview => "composer-action-credentials-check",
-            Self::ComputerTakeover => "composer-action-computer-takeover-check",
-            Self::FileReference => "composer-action-file-check",
-            Self::Mode(ThreadMode::Ask) => "composer-action-mode-ask-check",
-            Self::Mode(ThreadMode::Plan) => "composer-action-mode-plan-check",
-            Self::Mode(ThreadMode::Execute) => "composer-action-mode-execute-check",
-            Self::Permission(PermissionMode::ReadOnly) => {
-                "composer-action-permission-readonly-check"
-            }
-            Self::Permission(PermissionMode::Confirm) => "composer-action-permission-confirm-check",
-            Self::Permission(PermissionMode::Auto) => "composer-action-permission-auto-check",
-            Self::Permission(PermissionMode::FullAccess) => {
-                "composer-action-permission-full_access-check"
-            }
         }
     }
 }
@@ -270,11 +195,6 @@ impl ComposerActions {
 }
 
 impl ConversationStream {
-    /// Closes every transient Composer surface before another one opens.
-    /// Their controller state stays untouched; this only prevents overlapping
-    /// action, file, permission, and model menus. R57 P2b removed the
-    /// bottom-row mode dropdown, and R62 R7 brought the permission picker
-    /// back as a real popover, so it belongs in this list.
     pub(crate) fn close_composer_popovers(&mut self, cx: &mut Context<Self>) {
         self.pending_ui.menu = None;
         self.context_control.open = false;
@@ -293,7 +213,8 @@ impl ConversationStream {
 
     /// Projects worker ownership, including preparation before a durable message exists.
     pub fn begin_composer_run(&mut self, cx: &mut Context<Self>) {
-        self.clear_live_context_accounting();
+        self.invalidate_composer_prediction(cx);
+        self.reset_live_context_usage();
         self.actions.running = true;
         self.actions.stopping = false;
         self.actions.terminal_cancelled = None;
@@ -301,7 +222,7 @@ impl ConversationStream {
         self.actions.slash = None;
         self.controller_runtime_error = None;
         self.controller_error = None;
-        self.mcp_warning = None;
+        self.sync_retained_thinking_actions(cx);
         cx.notify();
     }
 
@@ -314,12 +235,23 @@ impl ConversationStream {
             self.finish_agent_message(&message_id, cx);
         }
         self.timeout_permission(cx);
+        self.cancel_user_questions(cx);
         self.actions.running = false;
         self.actions.restore_focus = self.actions.stopping;
         self.actions.stopping = false;
         let stopped = self.actions.terminal_cancelled.unwrap_or(cancelled);
+        self.sync_retained_thinking_actions(cx);
         cx.notify();
         stopped
+    }
+
+    pub(super) fn reset_composer_stopping_if_idle(&mut self) {
+        if !self.actions.running
+            && !self.composer_submit_pending
+            && !self.ordinary_pending_before_run()
+        {
+            self.actions.stopping = false;
+        }
     }
 
     pub(crate) fn record_composer_terminal(&mut self, message_id: &str, cancelled: bool) {
@@ -334,13 +266,20 @@ impl ConversationStream {
 
     /// Explicit user cancellation; the app validates the route and cancels its exact worker.
     pub fn request_composer_stop(&mut self, cx: &mut Context<Self>) {
-        if (!self.actions.running && !self.composer_submit_pending) || self.actions.stopping {
+        if (!self.actions.running
+            && !self.composer_submit_pending
+            && !self.ordinary_pending_before_run()
+            && !self.has_cancellable_queue_wait())
+            || self.actions.stopping
+        {
             return;
         }
         self.actions.stopping = true;
-        cx.emit(ComposerStopRequested {
-            thread_id: self.thread.id.clone(),
-        });
+        if !self.cancel_ordinary_pending(cx) {
+            cx.emit(ComposerStopRequested {
+                thread_id: self.thread.id.clone(),
+            });
+        }
         cx.notify();
     }
 
@@ -419,6 +358,9 @@ impl ConversationStream {
                 self.actions
                     .menu_rows
                     .push(ComposerActionRow::CredentialReview);
+                self.actions
+                    .menu_rows
+                    .extend([ComposerActionRow::Goal, ComposerActionRow::Loop]);
             }
         }
         self.actions.highlight = 0;
@@ -443,22 +385,28 @@ impl ConversationStream {
         cx.notify();
     }
 
+    pub(super) fn shows_running_send(&self, cx: &App) -> bool {
+        self.actions.running
+            && self.thread.backend == TaskBackend::Native
+            && !self.composer_submit_pending
+            && !self.actions.stopping
+            && (!self.input.read(cx).text().is_empty() || !self.attachments.is_empty())
+    }
+
     fn move_composer_focus(&self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.input.read(cx).is_composing() {
-            cx.propagate();
             return;
         }
         let mut controls = vec![
             self.input.read(cx).focus_handle(cx),
             self.action_focus[0].clone(),
         ];
-        controls.push(self.context_usage_focus.clone());
-        controls.push(self.model_focus.clone());
-        if self.actions.running && self.can_submit_message(cx) {
-            controls.push(self.pending_ui.send_focus.clone());
+        if self.thread.backend == TaskBackend::Native && !self.entries.is_empty() {
+            controls.push(self.context_usage_focus.clone());
         }
+        controls.push(self.model_focus.clone());
         if self.pending_queue.paused
-            && !self.pending_queue.messages.is_empty()
+            && !self.visible_pending_messages().is_empty()
             && !self.actions.running
             && self.pending_controls_enabled()
         {
@@ -468,7 +416,7 @@ impl ConversationStream {
             controls.push(self.pending_ui.recover_focus.clone());
         }
         if self.pending_controls_enabled() {
-            for message in &self.pending_queue.messages {
+            for message in self.visible_pending_messages() {
                 if let Some(item) = self.pending_ui.items.get(&message.id) {
                     controls.extend(
                         item.images
@@ -483,20 +431,37 @@ impl ConversationStream {
                 }
             }
         }
-        if self.actions.running || self.composer_submit_pending {
+        if self.actions.running
+            || self.composer_submit_pending
+            || self.ordinary_pending_before_run()
+            || self.has_cancellable_queue_wait()
+        {
             controls.push(self.action_focus[1].clone());
         }
+        controls.extend(self.automation_focuses());
         controls.extend(
             self.active_skill_focuses
                 .iter()
                 .flat_map(|focuses| focuses.iter().cloned()),
         );
-        let index = controls
+        let next = controls
             .iter()
             .position(|focus| focus.is_focused(window))
-            .unwrap_or(0);
-        let next = (index + if backwards { controls.len() - 1 } else { 1 }) % controls.len();
-        controls[next].focus(window, cx);
+            .and_then(|index| {
+                if backwards {
+                    index.checked_sub(1)
+                } else {
+                    index.checked_add(1)
+                }
+            })
+            .and_then(|index| controls.get(index));
+        if let Some(next) = next {
+            next.focus(window, cx);
+        } else if backwards {
+            window.focus_prev(cx);
+        } else {
+            window.focus_next(cx);
+        }
         cx.stop_propagation();
     }
 
@@ -603,6 +568,21 @@ impl ConversationStream {
             return;
         }
         match row {
+            ComposerActionRow::Goal | ComposerActionRow::Loop => {
+                let command = if row == ComposerActionRow::Goal {
+                    "/goal"
+                } else {
+                    "/loop"
+                };
+                let original = self.input.read(cx).text().to_owned();
+                self.actions.close_menu();
+                self.actions.slash = None;
+                self.input.update(cx, |input, cx| {
+                    input.set_text(&format!("{command} {original}"), cx)
+                });
+                self.focus_composer(window, cx);
+                cx.notify();
+            }
             ComposerActionRow::ComputerTakeover => {
                 if !self.composer_takeover_enabled() {
                     self.focus_composer(window, cx);
@@ -742,7 +722,6 @@ impl ConversationStream {
             children.push(
                 div()
                     .id(format!("composer-action-{generation}-{index}"))
-                    .debug_selector(move || row.selector().to_string())
                     .aria_label(label)
                     .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                     .px_2()
@@ -769,9 +748,15 @@ impl ConversationStream {
                             .hover(move |row| row.bg(colors.bg_hover))
                     })
                     .when(!enabled, |row| {
-                        row.aria_label("接管电脑操作，已失效").tooltip(|_, cx| {
-                            crate::icons::tooltip("这项接管已失效，请关闭并重新打开菜单", cx)
-                        })
+                        row.aria_label(vega_i18n::t("ui.take_over_computer_control_expired"))
+                            .tooltip(|_, cx| {
+                                crate::icons::tooltip(
+                                    vega_i18n::t(
+                                        "ui.this_takeover_has_expired_close_and_reopen_the",
+                                    ),
+                                    cx,
+                                )
+                            })
                     })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if this.actions.menu_generation == generation
@@ -785,11 +770,7 @@ impl ConversationStream {
                     // same x, with or without a check.
                     .child(
                         div()
-                            .when(selected, |marker| {
-                                marker
-                                    .debug_selector(move || row.check_selector().to_string())
-                                    .child("✓")
-                            })
+                            .when(selected, |marker| marker.child("✓"))
                             .w(px(Typography::SIDEBAR))
                             .flex_shrink_0(),
                     )
@@ -831,13 +812,12 @@ impl ConversationStream {
         let colors = theme(cx).colors;
         div()
             .id("composer-stop")
-            .debug_selector(|| "composer-stop".into())
-            .track_focus(&self.action_focus[1])
+            .role(Role::Button)
             .tab_stop(true)
             .aria_label(if self.actions.stopping {
-                "正在停止"
+                vega_i18n::t("ui.stopping")
             } else {
-                "停止"
+                vega_i18n::t("ui.stop")
             })
             .key_context("ComposerStop")
             .on_action(cx.listener(Self::stop_composer_action))
@@ -847,12 +827,11 @@ impl ConversationStream {
             .flex()
             .items_center()
             .justify_center()
-            // #150 R14: the running-state action is a primary brand surface.
-            // It keeps the blue while `stopping` because the run has not
-            // actually ended yet (state must stay real, design guidelines
-            // §2.3); only the cursor and aria label change.
             .bg(colors.accent)
             .text_color(colors.brand_on_accent)
+            .border_1()
+            .border_color(gpui_kit::transparent_black())
+            .focus_visible(move |style| style.border_color(colors.brand_on_accent))
             .when(!self.actions.stopping, |button| button.cursor_pointer())
             .interaction_surface(
                 colors.accent,
@@ -860,10 +839,8 @@ impl ConversationStream {
                 colors.accent,
                 !self.actions.stopping,
             )
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.request_composer_stop(cx)),
-            )
+            .track_focus(&self.action_focus[1])
+            .on_click(cx.listener(|this, _, _, cx| this.request_composer_stop(cx)))
             .child(crate::icons::icon(
                 crate::icons::Icon::Close,
                 colors.brand_on_accent,

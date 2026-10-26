@@ -1,27 +1,3 @@
-//! Self-measurement mode for `xtask bench render_frame` (S3-T17 → S8-T44):
-//! the hidden `--vega-bench-render <out.json>` flag boots a real GPUI window
-//! running the conversation-stream machinery against a ~10k-item variable-
-//! height semantic document (markdown / wrapped CJK / emoji / code / all
-//! card kinds), then writes the measured JSON report and quits.
-//!
-//! Mechanism note (task-card decision): `#[gpui_kit::test]` frame timing was
-//! evaluated first, but at this gpui rev tests run on `TestPlatform` with
-//! `NoopTextSystem` and no real frame cadence, so neither fps nor frame-build
-//! times would be representative (text shaping is the dominant cost of a
-//! markdown stream). This probe-binary mode reuses the T14 spike measurement
-//! method instead: render-callback frame counting + 1s sampling + per-phase
-//! frame-build percentiles on a real window (tech-spec §5.2 判定口径).
-//!
-//! Phases:
-//!   SCROLL (8s): programmatic scroll at 720 px/s → P1 fps (vsync-capped).
-//!   STREAM (12s): ~500 δ/s injection at the tail, viewport parked on frozen
-//!                 items → frozen re-materializations must stay 0 (P3).
-//!
-//! Everything runs through the production path ([`super`]) — the same
-//! variable-height `list`, [`StreamModel`] diffing, and semantic item
-//! rendering the app uses. Old 24px uniform-list numbers are noncomparable
-//! (SDD §5: the P1 baseline follows the variable-height semantics).
-
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
@@ -254,7 +230,6 @@ fn markdown_turn(index: usize) -> String {
     )
 }
 
-/// One code turn (a fenced rust block; committed blocks highlight via T16).
 fn code_turn(index: usize) -> String {
     format!(
         "```rust\nfn bench_{index}() -> u64 {{\n    let value = {index} * 42;\n    // 中文注释 {index}\n    value\n}}\n```\n\n"
@@ -305,10 +280,6 @@ fn finished_assistant(doc: &str, counters: &StreamCounters) -> StreamEntry {
     }
 }
 
-/// Builds the 10k mixed semantic fixture: markdown turns (CJK/emoji/inline
-/// styles), code turns, table turns, wrapped-CJK turns, user echoes, tool
-/// cards, plan cards, and summary cards. Every assistant model syncs eagerly
-/// so the first frame renders full natural heights (S8-T45 hydration 同语义).
 fn build_mixed_entries(
     count: usize,
     cx: &mut Context<BenchStreamView>,

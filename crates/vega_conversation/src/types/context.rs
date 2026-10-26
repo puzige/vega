@@ -78,6 +78,24 @@ pub enum ContextCompactionFailureCode {
     Unavailable,
 }
 
+impl ContextCompactionFailureCode {
+    #[allow(missing_docs)]
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Cancelled => vega_i18n::t("domain.compaction.cancelled"),
+            Self::SourceChanged => vega_i18n::t("domain.compaction.changed"),
+            Self::NoCompactablePrefix => vega_i18n::t("domain.compaction.no_history"),
+            Self::TooLarge => vega_i18n::t("domain.compaction.too_large"),
+            Self::InvalidSummary => vega_i18n::t("domain.compaction.invalid"),
+            Self::TimedOut => vega_i18n::t("domain.compaction.timeout"),
+            Self::ImagesUnsupported => vega_i18n::t("domain.compaction.images"),
+            Self::OverLimit => vega_i18n::t("domain.compaction.over_limit"),
+            Self::ReasoningLimit => vega_i18n::t("domain.compaction.reasoning_limit"),
+            Self::Unavailable => vega_i18n::t("domain.compaction.failed"),
+        }
+    }
+}
+
 /// Summary-call accounting state carried by a status record.  This is kept
 /// separate from the assistant usage event because a summary has no message
 /// id; `Unknown` also prevents a later priced primary call from making the

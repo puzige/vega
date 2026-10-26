@@ -73,17 +73,33 @@ async fn response_bytes(
             if !valid_model_id(model) {
                 return Err(CheckError::Invalid);
             }
+            let definition = crate::model_compat::lookup_model_definition(
+                &crate::model_compat::ModelRoute::new(
+                    if responses {
+                        crate::model_compat::ModelApi::Responses
+                    } else {
+                        crate::model_compat::ModelApi::ChatCompletions
+                    },
+                    base,
+                )
+                .map_err(|_| CheckError::Invalid)?,
+                &crate::model_compat::ModelIdentity {
+                    provider: "connection-check".into(),
+                    model: model.into(),
+                },
+            )
+            .map_err(|_| CheckError::Invalid)?;
+            let model_snapshot = crate::model_compat::resolve_model(&definition, None)
+                .map_err(|_| CheckError::Invalid)?;
             let request = ChatRequest {
                 model: model.into(),
                 messages: vec![ChatMessage::new(ChatRole::User, "Reply with OK.")],
                 max_tokens: Some(128),
+                model_snapshot: Some(Box::new(model_snapshot)),
                 ..Default::default()
             };
-            let body = if responses {
-                crate::openai::responses::build_body(&request).map_err(|_| CheckError::Invalid)?
-            } else {
-                crate::openai::build_request_body(&request)
-            };
+            let body = crate::openai::encode_request(base, &request, responses)
+                .map_err(|_| CheckError::Invalid)?;
             let path = if responses {
                 "responses"
             } else {
@@ -181,46 +197,38 @@ pub async fn probe(
     let source = futures::stream::once(async { Ok::<_, std::io::Error>(bytes) });
     let mut events = Box::pin(source.eventsource());
     let mut content = false;
-    let mut finished = false;
-    let mut done = false;
+    let mut sentinel = false;
+    let mut parser = crate::openai::SseAssembler::default();
     while let Some(event) = events.next().await {
         let event = event.map_err(|_| CheckError::Malformed)?;
         let data = event.data.trim();
         if data == "[DONE]" {
-            done = true;
+            sentinel = true;
             continue;
         }
-        if done {
+        if sentinel {
             return Err(CheckError::Malformed);
         }
-        let value: serde_json::Value =
-            serde_json::from_str(data).map_err(|_| CheckError::Malformed)?;
-        if value.get("error").is_some() {
-            return Err(CheckError::Malformed);
-        }
-        let choices = value
-            .get("choices")
-            .and_then(|v| v.as_array())
-            .ok_or(CheckError::Malformed)?;
-        for choice in choices {
-            if choice.get("index").and_then(|v| v.as_u64()) != Some(0) {
-                continue;
+        for event in parser.absorb(data).map_err(|_| CheckError::Malformed)? {
+            match event {
+                crate::ProviderEvent::TextDelta(text)
+                | crate::ProviderEvent::ThinkingDelta(text) => content |= !text.trim().is_empty(),
+                crate::ProviderEvent::ToolUse { .. } => return Err(CheckError::Malformed),
+                _ => {}
             }
-            content |= ["/delta/content", "/delta/reasoning_content"]
-                .iter()
-                .any(|path| {
-                    choice
-                        .pointer(path)
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|text| !text.trim().is_empty())
-                });
-            finished |= matches!(
-                choice.get("finish_reason").and_then(|v| v.as_str()),
-                Some("stop" | "length")
-            );
         }
     }
-    if content && finished && done {
+    let terminal = parser.finalize().map_err(|_| CheckError::Malformed)?;
+    if content
+        && terminal.iter().any(|event| {
+            matches!(
+                event,
+                crate::ProviderEvent::Done {
+                    stop_reason: crate::StopReason::End | crate::StopReason::Length
+                }
+            )
+        })
+    {
         Ok(())
     } else {
         Err(CheckError::Malformed)
@@ -266,57 +274,5 @@ async fn send_request(
     client: &reqwest::Client,
     request: reqwest::Request,
 ) -> Result<reqwest::Response, reqwest::Error> {
-    #[cfg(any(test, feature = "test-support"))]
-    {
-        let _ = client;
-        let transport = mock::CURRENT
-            .try_with(Clone::clone)
-            .expect("Provider check test request requires a registered transport");
-        (transport.0)(request).await
-    }
-    #[cfg(not(any(test, feature = "test-support")))]
-    {
-        client.execute(request).await
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub mod mock {
-    use futures::future::BoxFuture;
-    use std::sync::Arc;
-
-    type Handler = Arc<
-        dyn Fn(reqwest::Request) -> BoxFuture<'static, Result<reqwest::Response, reqwest::Error>>
-            + Send
-            + Sync,
-    >;
-    #[derive(Clone)]
-    pub struct Transport(pub Handler);
-    impl std::fmt::Debug for Transport {
-        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            formatter.write_str("TestTransport")
-        }
-    }
-    tokio::task_local! { pub(super) static CURRENT: Transport; }
-    impl Transport {
-        pub async fn scope<F: std::future::Future>(&self, future: F) -> F::Output {
-            CURRENT.scope(self.clone(), future).await
-        }
-    }
-    pub fn response(status: u16, headers: &str, body: Vec<u8>) -> reqwest::Response {
-        let mut response = http::Response::builder().status(status);
-        for line in headers.lines().filter(|line| !line.is_empty()) {
-            let (name, value) = line.split_once(':').expect("fixture header");
-            response = response.header(name, value.trim());
-        }
-        if headers.contains("Transfer-Encoding: chunked") {
-            let chunks = futures::stream::once(async move { Ok::<_, std::io::Error>(body) });
-            response
-                .body(reqwest::Body::wrap_stream(chunks))
-                .expect("fixture body")
-                .into()
-        } else {
-            response.body(body).expect("fixture body").into()
-        }
-    }
+    client.execute(request).await
 }

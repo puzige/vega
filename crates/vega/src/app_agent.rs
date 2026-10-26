@@ -1,10 +1,9 @@
 use std::collections::{HashMap, HashSet};
-#[cfg(test)]
-use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
 
 use gpui_kit::*;
+use sha2::{Digest, Sha256};
 use vega_conversation::types::*;
 use vega_conversation::*;
 use vega_store::Store;
@@ -16,6 +15,7 @@ type CredentialReader = Arc<dyn Fn() -> Result<Vec<String>, ()> + Send + Sync>;
 pub(crate) const AGENT_EVENT_POLL: Duration = Duration::from_millis(4);
 pub(crate) const AGENT_EVENT_CAPACITY: usize = 256;
 pub(crate) const AGENT_EVENT_BATCH: usize = 128;
+static PROVIDER_CREDENTIAL_ROUTE_DOMAIN: OnceLock<[u8; 32]> = OnceLock::new();
 
 /// One app-owned revocation domain shared by Settings and every run worker.
 /// A Settings view must clone this service, never construct an independent
@@ -24,46 +24,13 @@ pub(crate) struct AppMcpSettings(pub(crate) Option<vega_conversation::McpServerS
 
 impl Global for AppMcpSettings {}
 
-#[cfg(test)]
-#[derive(Default)]
-pub(crate) struct AgentWorkerStartProbe {
-    starts: AtomicUsize,
-    bash_executor: Option<vega_tools::BashTestExecutor>,
-    /// Test-only handshake at the existing MockProvider construction boundary.
-    /// The sender releases the worker explicitly; dropping it also unblocks cleanup.
-    pub(crate) provider_construction_gate:
-        Mutex<Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>>,
-    pub(crate) credential_stages: Mutex<std::collections::HashMap<String, &'static str>>,
-}
+#[derive(Clone, Default)]
+pub(crate) struct AppReplaySessions(pub(crate) vega_conversation::agent::ReplaySessionRegistry);
 
-#[cfg(test)]
-impl AgentWorkerStartProbe {
-    pub(crate) fn with_bash_executor(executor: vega_tools::BashTestExecutor) -> Self {
-        Self {
-            bash_executor: Some(executor),
-            ..Self::default()
-        }
-    }
-
-    pub(crate) fn load(&self) -> usize {
-        self.starts.load(Ordering::SeqCst)
-    }
-
-    fn record(&self) {
-        self.starts.fetch_add(1, Ordering::SeqCst);
-    }
-
-    fn credential_stage(&self, thread: &str, stage: &'static str) {
-        if let Ok(mut stages) = self.credential_stages.lock() {
-            stages.insert(thread.to_owned(), stage);
-        }
-    }
-}
-
-#[cfg(test)]
-pub(crate) use crate::agent_context::SYSTEM_PROMPT;
+impl Global for AppReplaySessions {}
 
 pub(crate) enum PendingAgentRun {
+    Automation(Box<AutomationRunClaim>),
     UserMessage(UserSubmission),
     ApprovedPlan(String),
     CredentialContinuation(String),
@@ -73,6 +40,7 @@ pub(crate) enum PendingAgentRun {
 pub(crate) struct UserSubmission {
     pub content: String,
     pub images: Vec<vega_conversation::types::ImageAttachment>,
+    pub ordinary: Option<Box<crate::ordinary_submission::OrdinaryLaunch>>,
 }
 
 impl From<String> for UserSubmission {
@@ -80,6 +48,7 @@ impl From<String> for UserSubmission {
         Self {
             content,
             images: Vec::new(),
+            ordinary: None,
         }
     }
 }
@@ -90,6 +59,8 @@ impl From<&str> for UserSubmission {
 }
 
 pub(crate) enum AgentUpdate {
+    ComposerPredictionReady(ComposerPredictionRequest),
+    Subagent(crate::native_subagents::NativeSubagentUpdate),
     Event(vega_conversation::types::ConversationEvent),
     CodexModeConfirmed,
     ComputerUseReady {
@@ -108,6 +79,8 @@ pub(crate) enum AgentUpdate {
 }
 
 pub(crate) struct AgentBatch {
+    pub(crate) composer_prediction: Option<ComposerPredictionRequest>,
+    pub(crate) subagents: Vec<crate::native_subagents::NativeSubagentUpdate>,
     pub(crate) events: Vec<vega_conversation::types::ConversationEvent>,
     pub(crate) codex_mode_confirmed: bool,
     pub(crate) computer_use_ready: Option<(ComputerUseControl, String)>,
@@ -118,7 +91,9 @@ pub(crate) struct AgentBatch {
 }
 
 pub(crate) fn drain_agent_updates(receiver: &mpsc::Receiver<AgentUpdate>) -> AgentBatch {
+    let mut composer_prediction = None;
     let mut events = Vec::new();
+    let mut subagents = Vec::new();
     let mut codex_mode_confirmed = false;
     let mut computer_use_ready = None;
     let mut mcp_unavailable = Vec::new();
@@ -127,6 +102,10 @@ pub(crate) fn drain_agent_updates(receiver: &mpsc::Receiver<AgentUpdate>) -> Age
     let mut finished = None;
     for _ in 0..AGENT_EVENT_BATCH {
         match receiver.try_recv() {
+            Ok(AgentUpdate::ComposerPredictionReady(request)) => {
+                composer_prediction = Some(request)
+            }
+            Ok(AgentUpdate::Subagent(update)) => subagents.push(update),
             Ok(AgentUpdate::Event(event)) => events.push(event),
             Ok(AgentUpdate::CodexModeConfirmed) => codex_mode_confirmed = true,
             Ok(AgentUpdate::ComputerUseReady { control, owner }) => {
@@ -153,6 +132,8 @@ pub(crate) fn drain_agent_updates(receiver: &mpsc::Receiver<AgentUpdate>) -> Age
         }
     }
     AgentBatch {
+        composer_prediction,
+        subagents,
         events,
         codex_mode_confirmed,
         computer_use_ready,
@@ -163,8 +144,32 @@ pub(crate) fn drain_agent_updates(receiver: &mpsc::Receiver<AgentUpdate>) -> Age
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RunCancellationReason {
+    User,
+    ReviewHandoff,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum RunCompletionOutcome {
+    Completed,
+    Failed,
+    Interrupted,
+}
+
 pub(crate) struct ActiveAgentRun {
+    pub(crate) composer_prediction_config_generation: u64,
+    pub(crate) composer_prediction: Option<ComposerPredictionRequest>,
+    pub(crate) root_message_id: Option<String>,
+    pub(crate) message_ids: Vec<String>,
+    predecessor_message_ids: HashSet<String>,
+    pub(crate) cancellation_reason: Option<RunCancellationReason>,
+    pub(crate) completion_outcome: Option<RunCompletionOutcome>,
+    pub(crate) delegated_message_id: Option<String>,
+    pub(crate) delegated_parent_thread: Option<String>,
+    pub(crate) ordinary_attempt: Option<(SubmissionId, AttemptId)>,
     pub(crate) queue_generation: String,
+    pub(crate) question_notifications: HashMap<UserQuestionId, Option<SharedString>>,
     pub(crate) queue_delivery: Option<PendingMessage>,
     pub(crate) queue_ready: bool,
     pub(crate) generation: u64,
@@ -175,13 +180,7 @@ pub(crate) struct ActiveAgentRun {
     pub(crate) computer_use_owner: String,
     pub(crate) pending_user_content: Option<String>,
     pub(crate) pending_approved_instruction: Option<String>,
-    /// Live wall-clock measurement of this run (S7-T40). It exists only in
-    /// run memory: the summary card shows it while the run is alive and `—`
-    /// after a restart, because `messages` has no finished timestamp (C4).
     pub(crate) started: Instant,
-    /// Assistant message id of the run's durable terminal event, if any
-    /// (S7-T40 summary projection key; `None` when the run failed before a
-    /// message ever started).
     pub(crate) terminal_message_id: Option<String>,
     /// Safe, run-owned terminal diagnosis. The raw provider body remains in
     /// the ephemeral event and is never copied to this controller state.
@@ -343,8 +342,6 @@ impl PricingController {
         }
     }
 
-    /// #60 R3: accounting is optional. Freeze only committed authority;
-    /// an unsaved/retry draft must never affect a running call's estimate.
     pub(crate) fn catalog_for_run(&self, model: &str) -> Option<PricingCatalog> {
         let authority = match &self.state {
             PricingControllerState::Ready { authority, .. } => authority,
@@ -371,13 +368,62 @@ pub(crate) enum PricingWorkerKind {
     Recovery,
 }
 
+type SubagentReleaseReply = tokio::sync::oneshot::Sender<Result<(), vega_runtime::VegaError>>;
+
+pub(crate) enum QueueStartAdmission {
+    Ready(ThreadAdmission),
+    TitleDrain(vega_store::thread_admission::AdmissionDrain),
+    Blocked,
+}
+
+pub(crate) fn queue_start_admission(
+    database: vega_store::thread_admission::DatabaseIdentity,
+    thread_id: &str,
+    expected: Option<&vega_store::thread_admission::AdmissionDrain>,
+) -> Result<QueueStartAdmission, vega_store::thread_admission::AdmissionError> {
+    match vega_store::thread_admission::try_acquire(database, thread_id)? {
+        Some(owner) => Ok(QueueStartAdmission::Ready(owner)),
+        None => match expected.filter(|drain| drain.is_title_draining(database, thread_id)) {
+            Some(drain) => Ok(QueueStartAdmission::TitleDrain(drain.clone())),
+            None if expected.is_some_and(|drain| drain.is_released()) => Ok(
+                match vega_store::thread_admission::try_acquire(database, thread_id)? {
+                    Some(owner) => QueueStartAdmission::Ready(owner),
+                    None => QueueStartAdmission::Blocked,
+                },
+            ),
+            None => Ok(QueueStartAdmission::Blocked),
+        },
+    }
+}
+
+pub(crate) struct QueueDrainWait {
+    pub(crate) generation: u64,
+    pub(crate) stream: Entity<ConversationStream>,
+    pub(crate) message_id: String,
+    pub(crate) message_generation: String,
+    pub(crate) cancel: tokio_util::sync::CancellationToken,
+}
+
+impl Drop for QueueDrainWait {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct AppAgentController {
+    pub(crate) ordinary_preparing: HashMap<String, tokio_util::sync::CancellationToken>,
+    pub(crate) ordinary_requests: HashSet<u64>,
+    pub(crate) delegated_unbound: HashSet<String>,
     pub(crate) queue_streams: HashMap<String, Entity<ConversationStream>>,
     pub(crate) queue_dispatches: HashMap<String, String>,
+    pub(crate) run_drains: HashMap<String, vega_store::thread_admission::AdmissionDrain>,
+    pub(crate) queue_drain_waits: HashMap<String, QueueDrainWait>,
     pub(crate) queue_continue: HashMap<String, bool>,
     pub(crate) queue_delivered: HashSet<String>,
     pub(crate) queue_operations: HashMap<String, u64>,
+    pub(crate) subagent_releases: HashMap<String, Vec<SubagentReleaseReply>>,
+    pub(crate) delegated_latest: HashMap<String, String>,
     next_queue_operation: u64,
     pub(crate) running_message_default_generation: u64,
     pub(crate) file_read_states: HashMap<String, vega_tools::ReadState>,
@@ -388,6 +434,31 @@ pub(crate) struct AppAgentController {
 }
 
 impl AppAgentController {
+    pub(crate) fn begin_queue_drain_wait(
+        &mut self,
+        thread_id: &str,
+        stream: Entity<ConversationStream>,
+        message: &PendingMessage,
+    ) -> Option<(u64, tokio_util::sync::CancellationToken)> {
+        if self.queue_drain_waits.contains_key(thread_id) {
+            return None;
+        }
+        self.next_queue_operation = self.next_queue_operation.checked_add(1)?;
+        let generation = self.next_queue_operation;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        self.queue_drain_waits.insert(
+            thread_id.into(),
+            QueueDrainWait {
+                generation,
+                stream,
+                message_id: message.id.clone(),
+                message_generation: message.generation.clone(),
+                cancel: cancel.clone(),
+            },
+        );
+        Some((generation, cancel))
+    }
+
     pub(crate) fn begin_queue_operation(&mut self, thread_id: &str) -> Option<u64> {
         if self.queue_operations.contains_key(thread_id) {
             return None;
@@ -417,7 +488,30 @@ impl AppAgentController {
     }
 
     pub(crate) fn request_active_cancel(&self, thread_id: &str) {
+        if let Some(wait) = self.queue_drain_waits.get(thread_id) {
+            wait.cancel.cancel();
+        }
+        if let Some(cancel) = self.ordinary_preparing.get(thread_id) {
+            cancel.cancel();
+        }
         if let Some(active) = self.active.get(thread_id) {
+            if let Some(control) = &active.computer_use {
+                control.stop();
+            }
+            active.cancel.cancel();
+        }
+    }
+
+    pub(crate) fn request_ordinary_cancel(
+        &self,
+        thread_id: &str,
+        submission: SubmissionId,
+        attempt: AttemptId,
+    ) {
+        crate::ordinary_submission::cancel(submission, attempt);
+        if let Some(active) = self.active.get(thread_id)
+            && active.ordinary_attempt == Some((submission, attempt))
+        {
             if let Some(control) = &active.computer_use {
                 control.stop();
             }
@@ -445,6 +539,9 @@ impl AppAgentController {
                 request: request.clone(),
             },
         );
+        if let Some(active) = self.active.get_mut(&request.thread_id) {
+            active.cancellation_reason = Some(RunCancellationReason::ReviewHandoff);
+        }
         self.request_active_cancel(&request.thread_id);
         true
     }
@@ -465,7 +562,18 @@ impl AppAgentController {
         self.active.insert(
             thread_id.clone(),
             ActiveAgentRun {
+                composer_prediction_config_generation: 0,
+                composer_prediction: None,
+                root_message_id: None,
+                message_ids: Vec::new(),
+                predecessor_message_ids: HashSet::new(),
+                cancellation_reason: None,
+                completion_outcome: None,
+                delegated_message_id: None,
+                delegated_parent_thread: None,
+                ordinary_attempt: None,
                 queue_generation: ulid::Ulid::generate().to_string(),
+                question_notifications: HashMap::new(),
                 queue_delivery: None,
                 queue_ready: false,
                 generation,
@@ -512,9 +620,6 @@ impl AppAgentController {
         active.pending_user_content.take()
     }
 
-    /// Records the run's terminal assistant message id from the durable
-    /// terminal event (S7-T40 summary projection key). Duplicate or later
-    /// events overwrite in place; the id is only consumed at run finish.
     pub(crate) fn observe_terminal_message(
         &mut self,
         generation: u64,
@@ -526,11 +631,58 @@ impl AppAgentController {
             && let Some(active) = self.active.get_mut(thread_id)
         {
             match event {
-                ConversationEvent::MessageStarted { .. }
-                | ConversationEvent::Interrupted { .. }
-                | ConversationEvent::Error { .. } => active.queue_ready = false,
+                ConversationEvent::RunContinued {
+                    previous_assistant_id,
+                    user_message_id,
+                    next_assistant_id,
+                } if active.message_ids.last() == Some(previous_assistant_id)
+                    && previous_assistant_id != next_assistant_id
+                    && !active.message_ids.contains(next_assistant_id)
+                    && next_assistant_id != user_message_id
+                    && !active.message_ids.contains(user_message_id)
+                    && !active
+                        .predecessor_message_ids
+                        .contains(previous_assistant_id) =>
+                {
+                    active
+                        .predecessor_message_ids
+                        .insert(previous_assistant_id.clone());
+                }
+                ConversationEvent::MessageFinished { message_id, .. }
+                | ConversationEvent::Interrupted { message_id, .. }
+                | ConversationEvent::Error {
+                    message_id: Some(message_id),
+                    ..
+                } if active.predecessor_message_ids.contains(message_id) => return,
+                _ => {}
+            }
+            if let ConversationEvent::MessageStarted { message_id, .. } = event {
+                active
+                    .root_message_id
+                    .get_or_insert_with(|| message_id.clone());
+                if !active.message_ids.contains(message_id) {
+                    active.message_ids.push(message_id.clone());
+                }
+                active.completion_outcome = None;
+            }
+            match event {
+                ConversationEvent::MessageStarted { .. } => active.queue_ready = false,
+                ConversationEvent::Interrupted { .. } => {
+                    active.queue_ready = false;
+                    active.completion_outcome = Some(RunCompletionOutcome::Interrupted);
+                }
+                ConversationEvent::Error { .. } => {
+                    active.queue_ready = false;
+                    active.completion_outcome = Some(RunCompletionOutcome::Failed);
+                }
                 ConversationEvent::MessageFinished { stop_reason, .. } => {
-                    active.queue_ready = *stop_reason == ConversationStopReason::End
+                    active.queue_ready = *stop_reason == ConversationStopReason::End;
+                    active.completion_outcome = Some(match stop_reason {
+                        ConversationStopReason::End => RunCompletionOutcome::Completed,
+                        ConversationStopReason::Length | ConversationStopReason::TurnLimit => {
+                            RunCompletionOutcome::Interrupted
+                        }
+                    });
                 }
                 _ => {}
             }
@@ -576,6 +728,31 @@ impl AppAgentController {
     }
 }
 
+fn composer_prediction_authority(
+    path: Option<std::path::PathBuf>,
+    provider: Option<vega_store::config::ProviderConfig>,
+    model: String,
+) -> Arc<dyn Fn() -> bool + Send + Sync> {
+    let frozen_key = path
+        .as_deref()
+        .and_then(std::path::Path::parent)
+        .zip(provider.as_ref())
+        .and_then(|(root, provider)| vega_store::keystore::get_key(root, &provider.key_ref).ok());
+    Arc::new(move || {
+        let (Some(path), Some(provider), Some(key)) = (&path, &provider, &frozen_key) else {
+            return path.is_none() && provider.is_none();
+        };
+        vega_store::config::read_from(path).is_ok_and(|config| {
+            config.agent.composer_predictions_enabled
+                && unique_provider_for_model(&config, &model).as_ref() == Some(provider)
+                && path.parent().is_some_and(|root| {
+                    vega_store::keystore::get_key(root, &provider.key_ref)
+                        .is_ok_and(|current| current == *key)
+                })
+        })
+    })
+}
+
 pub(crate) fn unique_provider_for_model(
     config: &vega_store::config::AppConfig,
     model: &str,
@@ -593,6 +770,62 @@ pub(crate) fn unique_provider_for_model(
         return None;
     }
     Some(provider)
+}
+
+fn provider_replay_route_fingerprint(
+    provider: &vega_store::config::ProviderConfig,
+    credential_root: &std::path::Path,
+    credential: &str,
+    database_path: &std::path::Path,
+    project_id: &str,
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    let api = format!("{:?}", provider.api);
+    for (tag, value) in [
+        (1, provider.name.as_bytes()),
+        (2, api.as_bytes()),
+        (3, provider.base_url.as_bytes()),
+        (4, provider.key_ref.as_bytes()),
+    ] {
+        hasher.update([tag]);
+        hasher.update((value.len() as u64).to_le_bytes());
+        hasher.update(value);
+    }
+    hasher.update([5]);
+    let process_domain = PROVIDER_CREDENTIAL_ROUTE_DOMAIN.get_or_init(|| {
+        let mut domain = Sha256::new();
+        domain.update(ulid::Ulid::generate().to_string().as_bytes());
+        domain.update(ulid::Ulid::generate().to_string().as_bytes());
+        domain.finalize().into()
+    });
+    hasher.update(process_domain);
+    hasher.update([6]);
+    hasher.update((credential.len() as u64).to_le_bytes());
+    hasher.update(credential.as_bytes());
+    hasher.update([7]);
+    let root = credential_root.to_string_lossy();
+    hasher.update((root.len() as u64).to_le_bytes());
+    hasher.update(root.as_bytes());
+    hasher.update([8]);
+    let database = database_path.to_string_lossy();
+    hasher.update((database.len() as u64).to_le_bytes());
+    hasher.update(database.as_bytes());
+    hasher.update([9]);
+    hasher.update((project_id.len() as u64).to_le_bytes());
+    hasher.update(project_id.as_bytes());
+    hasher.finalize().into()
+}
+
+fn replay_persistence_config(
+    registry: Option<&vega_conversation::agent::ReplaySessionRegistry>,
+    route_fingerprint: Option<[u8; 32]>,
+) -> vega_conversation::agent::PersistenceActorConfig {
+    let config = vega_conversation::agent::PersistenceActorConfig::default();
+    if let (Some(registry), Some(route_fingerprint)) = (registry, route_fingerprint) {
+        config.with_replay_session_registry(registry.clone(), route_fingerprint)
+    } else {
+        config
+    }
 }
 
 /// Performs the content-free provider and owner-only credential readiness
@@ -649,24 +882,106 @@ pub(crate) fn preflight_provider(
     Ok(())
 }
 
-/// Resolves one immutable reasoning snapshot for the exact provider/model
-/// pair selected for a run. Missing profiles intentionally become provider
-/// default with no wire controls; malformed declared profiles fail closed so
-/// an invalid Settings edit cannot silently become a different request.
 pub(crate) fn reasoning_for_provider_model(
     provider: &str,
+    api: vega_store::config::ProviderApi,
+    base_url: &str,
     model: &str,
     reasoning_path: Option<&std::path::Path>,
 ) -> Result<vega_runtime::FrozenReasoning, ()> {
-    let Some(reasoning_path) = reasoning_path else {
-        return Ok(vega_runtime::FrozenReasoning::unknown(provider, model));
+    let configured = match reasoning_path {
+        Some(reasoning_path) => {
+            let config = vega_store::reasoning::read_from(reasoning_path).map_err(|_| ())?;
+            config
+                .profile(provider, model)
+                .map(ReasoningProfileProjection::from_store)
+                .transpose()
+                .map_err(|_| ())?
+        }
+        None => None,
     };
-    let config = vega_store::reasoning::read_from(reasoning_path).map_err(|_| ())?;
-    let Some(profile) = config.profile(provider, model) else {
-        return Ok(vega_runtime::FrozenReasoning::unknown(provider, model));
+    let identity = vega_runtime::model_compat::ModelIdentity {
+        provider: provider.into(),
+        model: model.into(),
     };
-    let projection = ReasoningProfileProjection::from_store(profile).map_err(|_| ())?;
-    projection.freeze().map_err(|_| ())
+    let definition = vega_runtime::model_compat::lookup_model_definition(
+        &vega_runtime::model_compat::ModelRoute::new(
+            vega_conversation::model_capabilities::api(api),
+            base_url,
+        )
+        .map_err(|_| ())?,
+        &identity,
+    )
+    .map_err(|_| ())?;
+    let capabilities = match reasoning_path {
+        Some(path) => vega_store::model_capabilities::read_from(
+            &path.with_file_name(vega_store::model_capabilities::MODEL_CAPABILITY_FILE_NAME),
+        )
+        .map_err(|_| ())?,
+        None => Default::default(),
+    };
+    let user_override = capabilities.record(provider, model).map(|record| {
+        vega_runtime::model_compat::ModelCapabilityOverride {
+            identity,
+            allowed_efforts: record.allowed_efforts.clone(),
+            image_input: record.image_input,
+        }
+    });
+    let model = vega_runtime::model_compat::resolve_model(&definition, user_override.as_ref())
+        .map_err(|_| ())?;
+    let resolved = ReasoningProfileProjection::from_resolved_model(
+        &model,
+        configured.map_or(vega_runtime::ReasoningChoice::ProviderDefault, |profile| {
+            profile.preference
+        }),
+    );
+    crate::reasoning_capabilities::freeze_reasoning_profile(resolved).map_err(|_| ())
+}
+
+pub(crate) fn ordinary_effective_authority(
+    run: &vega_conversation::agent::OrdinaryRun,
+    config: &vega_store::config::AppConfig,
+    path: &std::path::Path,
+) -> Result<Arc<EffectiveAuthority>, ()> {
+    let provider = unique_provider_for_model(config, run.submission.raw().model()).ok_or(())?;
+    let model = vega_conversation::model_capabilities::load_configured_model(
+        config,
+        path,
+        &provider.name,
+        run.submission.raw().model(),
+    )
+    .map_err(|_| ())?;
+    let snapshot = run.submission.snapshot();
+    if snapshot.unavailable {
+        return Err(());
+    }
+    if let Some(authority) = snapshot.authority {
+        authority.validate_current(&model).map_err(|_| ())?;
+        return Ok(authority);
+    }
+    let reasoning = match run.submission.raw().reasoning() {
+        Some(raw) => {
+            if raw.provider != provider.name || raw.model != model.identity.model {
+                return Err(());
+            }
+            vega_runtime::model_compat::freeze_choice(&model, raw.choice.clone()).map_err(|_| ())?
+        }
+        None => reasoning_for_provider_model(
+            &provider.name,
+            provider.api,
+            &provider.base_url,
+            &model.identity.model,
+            Some(&path.with_file_name(vega_store::reasoning::REASONING_FILE_NAME)),
+        )?,
+    };
+    run.worker
+        .bind_effective_authority(model, reasoning)
+        .map_err(|_| ())?;
+    let snapshot = run.submission.snapshot();
+    if snapshot.unavailable {
+        return Err(());
+    }
+    snapshot.authority.ok_or(())
 }
 
 pub(crate) fn commit_provider(
@@ -678,12 +993,22 @@ pub(crate) fn commit_provider(
     let provider = unique_provider_for_model(&config, &thread.model).ok_or(())?;
     let key = vega_store::keystore::get_key(path.parent().ok_or(())?, &provider.key_ref)
         .map_err(|_| ())?;
+    let model_snapshot = vega_conversation::model_capabilities::load_configured_model(
+        &config,
+        path,
+        &provider.name,
+        &thread.model,
+    )
+    .map_err(|_| ())?;
     let provider = vega_runtime::OpenAiProvider::new(provider.base_url, key)
         .map(|transport| {
             transport.with_responses_api(
                 provider.api == vega_conversation::types::ProviderApi::Responses,
             )
         })
+        .map_err(|_| ())?;
+    let provider = provider
+        .with_model_snapshot(model_snapshot)
         .map_err(|_| ())?;
     Ok(Arc::new(provider.with_retry_policy(commit_retry_policy())))
 }
@@ -727,54 +1052,16 @@ pub(crate) fn map_reference_failure(error: &vega_tools::ToolError) -> FileRefere
 }
 
 #[allow(clippy::too_many_arguments)]
-#[cfg(test)]
-pub(crate) fn run_agent_worker(
-    database_path: std::path::PathBuf,
-    project_path: std::path::PathBuf,
-    thread: Thread,
-    run: PendingAgentRun,
-    permission_queue: vega_conversation::agent::PermissionQueue,
-    cancel: tokio_util::sync::CancellationToken,
-    sender: mpsc::SyncSender<AgentUpdate>,
-    pricing_catalog: Option<vega_conversation::PricingCatalog>,
-    config_path: Option<std::path::PathBuf>,
-    reasoning: Option<vega_runtime::FrozenReasoning>,
-    title_notifications: Option<mpsc::Sender<()>>,
-    provider_override: Option<Arc<dyn vega_runtime::Provider>>,
-    worker_start_probe: Arc<AgentWorkerStartProbe>,
-) {
-    run_agent_worker_with_mcp(
-        database_path,
-        project_path,
-        thread,
-        run,
-        permission_queue,
-        cancel,
-        sender,
-        pricing_catalog,
-        config_path,
-        reasoning,
-        title_notifications,
-        None,
-        vega_tools::ReadState::default(),
-        None,
-        provider_override,
-        worker_start_probe,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_agent_worker_with_mcp(
     database_path: std::path::PathBuf,
     project_path: std::path::PathBuf,
     thread: Thread,
-    run: PendingAgentRun,
+    mut run: PendingAgentRun,
     permission_queue: vega_conversation::agent::PermissionQueue,
+    user_questions: vega_conversation::agent::UserQuestionQueue,
     cancel: tokio_util::sync::CancellationToken,
     sender: mpsc::SyncSender<AgentUpdate>,
-    // S7-T39/C3: frozen run-start pricing selection handed off with run
-    // ownership; the worker never re-reads pricing files or the live
-    // authority mid-run.
+
     pricing_catalog: Option<vega_conversation::PricingCatalog>,
     // Owned config path selected by the app/controller. The worker must never
     // fall back to process-global config while checking the frozen owner.
@@ -786,11 +1073,33 @@ pub(crate) fn run_agent_worker_with_mcp(
     mcp_service: Option<vega_conversation::McpServerSettingsService>,
     file_read_state: vega_tools::ReadState,
     queue_context: Option<PendingRunContext>,
-    #[cfg(test)] provider_override: Option<Arc<dyn vega_runtime::Provider>>,
-    #[cfg(test)] worker_start_probe: Arc<AgentWorkerStartProbe>,
+    automation_pauses: Vec<AutomationTask>,
+    replay_registry: Option<vega_conversation::agent::ReplaySessionRegistry>,
+    admission: ThreadAdmission,
 ) {
-    #[cfg(test)]
-    worker_start_probe.record();
+    let ordinary = match &mut run {
+        PendingAgentRun::UserMessage(submission) => submission
+            .ordinary
+            .as_mut()
+            .and_then(|launch| launch.take_run()),
+        _ => None,
+    };
+    let automation_claim = match &run {
+        PendingAgentRun::Automation(claim) => Some(claim.as_ref().clone()),
+        _ => None,
+    };
+    let automation_path = database_path.clone();
+    let automation_thread = thread.id.clone();
+    let automation_snapshot = Store::open(&automation_path)
+        .ok()
+        .and_then(|store| vega_conversation::automation::load(&store, &automation_thread).ok())
+        .unwrap_or_default();
+    let run = match run {
+        PendingAgentRun::Automation(claim) => {
+            PendingAgentRun::UserMessage(automation_trigger(&claim).into())
+        }
+        other => other,
+    };
     let mut reference_failure = None;
     let mut credential_failure = false;
     let mut computer_use: Option<ComputerUseRun> = None;
@@ -808,13 +1117,9 @@ pub(crate) fn run_agent_worker_with_mcp(
         let tools = vega_tools::Tools::new(&project_path)
             .map_err(|_| ())?
             .with_read_state(file_read_state);
-        #[cfg(test)]
-        let tools = match &worker_start_probe.bash_executor {
-            Some(executor) => tools.with_bash_test_executor(executor.clone()),
-            None => tools,
-        };
         let store = Store::open(&database_path).map_err(|_| ())?;
         store.migrate().map_err(|_| ())?;
+        vega_conversation::automation::pause_matching(&store, &thread.id, &automation_pauses, "user_paused").map_err(|_| ())?;
         // Resolve provider identity once, before constructing the provider and
         // before entering the runtime. The resulting FrozenReasoning is moved
         // into the selected entry point and is never re-read during retries
@@ -827,8 +1132,8 @@ pub(crate) fn run_agent_worker_with_mcp(
         let configured_provider = config
             .as_ref()
             .and_then(|config| unique_provider_for_model(config, &thread.model));
-        // Issue #114: agentic turn guardrail from `[agent] turn_limit`
-        // (0 = unlimited). Absent config (legacy callers/tests) stays unlimited.
+        let mut replay_route_fingerprint = None;
+
         let turn_limit = config.as_ref().map_or(0, |config| config.agent.turn_limit);
         if let Some(config) = &config
             && (config.agent.desktop_use_enabled || config.agent.browser_use_enabled)
@@ -845,7 +1150,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                 .send(AgentUpdate::ComputerUseReady {
                     control: run.control.clone(),
                     owner: if thread.title.is_empty() {
-                        "未命名任务".into()
+                        vega_i18n::t("app.task.untitled").into()
                     } else {
                         thread.title.clone()
                     },
@@ -853,60 +1158,41 @@ pub(crate) fn run_agent_worker_with_mcp(
                 .map_err(|_| ())?;
             computer_use = Some(run);
         }
-        // Production must never turn an explicit config path with no unique
-        // enabled owner into a synthetic `unknown` policy. Legacy tests may
-        // inject a provider without a matching config, but an actual two-owner
-        // ambiguity remains forbidden even through that test seam.
-        #[cfg(test)]
-        let allow_test_override = provider_override.is_some()
-            && !config.as_ref().is_some_and(|config| {
-                config
-                    .providers
-                    .iter()
-                    .filter(|provider| {
-                        provider.enabled
-                            && provider.models.iter().any(|model| model == &thread.model)
-                    })
-                    .take(2)
-                    .count()
-                    > 1
-            });
-        #[cfg(not(test))]
-        let allow_test_override = false;
-        if config_path.is_some() && configured_provider.is_none() && !allow_test_override {
+        if config_path.is_some() && configured_provider.is_none() {
             return Err(());
         }
-        let provider_name = configured_provider
-            .as_ref()
-            .map_or("unknown", |provider| provider.name.as_str());
-        let reasoning = match reasoning {
-            Some(reasoning) => {
-                reasoning.validate().map_err(|_| ())?;
-                if reasoning.model != thread.model {
+        let reasoning_path = config_path
+            .as_deref()
+            .map(|path| path.with_file_name(vega_store::reasoning::REASONING_FILE_NAME));
+        let reasoning = if let Some(ordinary) = &ordinary {
+            ordinary_effective_authority(ordinary, config.as_ref().ok_or(())?, config_path.as_deref().ok_or(())?)?.reasoning().clone()
+        } else { match (reasoning, configured_provider.as_ref()) {
+            (Some(reasoning), Some(provider)) => {
+                if reasoning.model != thread.model || reasoning.provider != provider.name {
                     return Err(());
                 }
-                if configured_provider
-                    .as_ref()
-                    .is_none_or(|provider| reasoning.provider != provider.name)
-                {
-                    return Err(());
-                }
-                reasoning
-            }
-            None => {
-                let reasoning_path = config_path
-                    .as_deref()
-                    .map(|path| path.with_file_name(vega_store::reasoning::REASONING_FILE_NAME));
-                reasoning_for_provider_model(
-                    provider_name,
+                let path = config_path.as_deref().ok_or(())?;
+                let config = vega_store::config::read_from(path).map_err(|_| ())?;
+                let model = vega_conversation::model_capabilities::load_configured_model(
+                    &config,
+                    path,
+                    &provider.name,
                     &thread.model,
-                    reasoning_path.as_deref(),
-                )?
+                )
+                .map_err(|_| ())?;
+                vega_runtime::model_compat::freeze_choice(&model, reasoning.choice)
+                    .map_err(|_| ())?
             }
-        };
-        // Provider construction stays below the reference resolver so an
-        // unresolved @file can terminate with zero provider requests or
-        // construction, preserving R5's fail-closed boundary.
+            (None, Some(provider)) => reasoning_for_provider_model(
+                &provider.name,
+                provider.api,
+                &provider.base_url,
+                &thread.model,
+                reasoning_path.as_deref(),
+            )?,
+            (_, None) => return Err(()),
+        }};
+
         let mut provider_known_credential = None::<String>;
         let provider_credential_reader: Option<CredentialReader> = config_path
             .as_deref()
@@ -952,55 +1238,23 @@ pub(crate) fn run_agent_worker_with_mcp(
         let authority_root = credential_root.clone();
         let owner = mcp_service.clone();
         let selected_provider_reader = provider_credential_reader.clone();
-        #[cfg(test)]
-        let authority_probe = worker_start_probe.clone();
-        #[cfg(test)]
-        let authority_thread = thread.id.clone();
         let owner_credential_reader: CredentialReader = Arc::new(move || {
-            #[cfg(test)]
-            authority_probe.credential_stage(&authority_thread, "authority_refresh");
             if let Some(root) = &authority_root {
                 vega_conversation::privacy::refresh_authority(&authority_database, root).map_err(|_| ())?;
             }
-            #[cfg(test)]
-            authority_probe.credential_stage(&authority_thread, "owner_read");
             let mut known = match &owner {
                 Some(service) => service.current_owner_credential_values().map_err(|_| ())?,
                 None => Vec::new(),
             };
-            #[cfg(test)]
-            authority_probe.credential_stage(&authority_thread, "provider_read");
             if let Some(reader) = &selected_provider_reader {
                 known.extend(reader()?);
             }
-            #[cfg(test)]
-            authority_probe.credential_stage(&authority_thread, "binding_read");
             if let Some(reader) = &broker_credential_reader {
                 known.extend(reader()?);
             }
-            #[cfg(test)]
-            authority_probe.credential_stage(&authority_thread, "authority_ready");
             Ok(known)
         });
         let mut make_provider = || -> Result<Arc<dyn vega_runtime::Provider>, ()> {
-            #[cfg(test)]
-            {
-                let gate = worker_start_probe
-                    .provider_construction_gate
-                    .lock()
-                    .ok()
-                    .and_then(|mut gate| gate.take());
-                if let Some((entered, release)) = gate {
-                    entered.send(()).map_err(|_| ())?;
-                    // Elapsed time is not a release. Test panic drops the sender,
-                    // which terminates this worker without constructing a provider.
-                    release.recv().map_err(|_| ())?;
-                }
-                if let Some(provider) = provider_override.clone() {
-                    worker_start_probe.credential_stage(&thread.id, "provider_constructed");
-                    return Ok(provider);
-                }
-            }
             let provider = configured_provider.clone().ok_or(())?;
             let root = config_path
                 .as_deref()
@@ -1009,13 +1263,40 @@ pub(crate) fn run_agent_worker_with_mcp(
             let key = vega_store::keystore::get_key(root, &provider.key_ref).map_err(|_| {
                 credential_failure = true;
             })?;
+            replay_route_fingerprint = Some(provider_replay_route_fingerprint(
+                &provider,
+                root,
+                &key,
+                &database_path,
+                &thread.project_id,
+            ));
             provider_known_credential = Some(key.clone());
+            let current_config = vega_store::config::read_from(config_path.as_deref().ok_or(())?).map_err(|_| ())?;
+            if ordinary.is_some() && unique_provider_for_model(&current_config, &thread.model).as_ref() != Some(&provider) {
+                return Err(());
+            }
+            let model_snapshot = vega_conversation::model_capabilities::load_configured_model(
+                &current_config,
+                config_path.as_deref().ok_or(())?,
+                &provider.name,
+                &thread.model,
+            )
+            .map_err(|_| ())?;
+            let model_snapshot = if let Some(ordinary) = &ordinary {
+                let snapshot = ordinary.submission.snapshot();
+                if snapshot.unavailable { return Err(()); }
+                let authority = snapshot.authority.ok_or(())?;
+                authority.validate_current(&model_snapshot).map_err(|_| ())?;
+                authority.model().clone()
+            } else { model_snapshot };
             let provider = vega_runtime::OpenAiProvider::new(provider.base_url, key)
                 .map(|transport| {
                     transport.with_responses_api(
                         provider.api == vega_conversation::types::ProviderApi::Responses,
                     )
                 })
+                .map_err(|_| ())?
+                .with_model_snapshot(model_snapshot)
                 .map_err(|_| ())?
                 .with_pre_attempt_guard(
                     vega_conversation::agent::OwnerCredentialProvider::pre_attempt_guard_with_exceptions(
@@ -1054,20 +1335,24 @@ pub(crate) fn run_agent_worker_with_mcp(
                     context.generation.clone(),
                     owner_credential_reader.clone(),
                     cancel.clone(),
-                ).with_credential_exceptions(credential_exceptions.clone()),
+                ).with_thread_admission(admission.clone()).with_credential_exceptions(credential_exceptions.clone()),
             ) as Arc<dyn vega_runtime::RuntimeSteeringSource>
         });
         let pending_message_id = queue_context.and_then(|context| context.message_id);
+        let subagent_host = crate::native_subagents::NativeSubagentHost::new(sender.clone());
+        let prediction_parent_cancel = cancel.clone();
+        let mut composer_prediction = None;
         let result = match run {
+            PendingAgentRun::Automation(_) => return Err(()),
             PendingAgentRun::UserMessage(submission) => {
                 let content = submission.content;
-                // #65 R2: freeze only composer text, before expanding referenced files.
+
                 let title_source = content.clone();
-                // A2-12: resolve `@path` tokens against the project root and
-                // inject the referenced file contents ahead of the user text
-                // (bounded: 8 files, 16 KiB each, 48 KiB total). A failure is
-                // fail-closed: no provider is constructed and no request is
-                // started with the unresolved user text.
+
+                let accepted = ordinary.as_ref().and_then(|run| run.submission.snapshot().accepted);
+                let content = if let Some(accepted) = accepted {
+                    accepted.text().to_owned()
+                } else {
                 let refs = match vega_tools::reference::resolve_bounded_references(
                     &project_path,
                     &content,
@@ -1090,7 +1375,29 @@ pub(crate) fn run_agent_worker_with_mcp(
                         content
                     )
                 };
+                if let Some(ordinary) = &ordinary {
+                    ordinary.worker.bind_accepted_payload(content.clone()).map_err(|_| ())?;
+                }
+                content
+                };
                 let provider = guard_provider(make_provider()?);
+                if let Some(ordinary) = &ordinary {
+                    let model = provider.model_snapshot().ok_or(())?;
+                    ordinary.submission.raw().validate_model(&model).map_err(|_| ())?;
+                }
+                if automation_claim.is_none()
+                    && thread.parent_thread_id.is_none()
+                    && thread.backend == TaskBackend::Native
+                    && thread.mode != ThreadMode::Plan
+                    && config.as_ref().is_none_or(|config| config.agent.composer_predictions_enabled)
+                {
+                    composer_prediction = Some(
+                        ComposerPredictionRequest::new(provider.clone(), thread.model.clone(), thread.mode)
+                            .with_authority_guard(composer_prediction_authority(
+                                config_path.clone(), configured_provider.clone(), thread.model.clone(),
+                            )),
+                    );
+                }
                 let automatic_title = title_notifications.map(|notifications| {
                     vega_conversation::types::AutomaticTitleRequest::new(
                         &title_source,
@@ -1153,12 +1460,17 @@ pub(crate) fn run_agent_worker_with_mcp(
                         cancel,
                         &permission_queue,
                         event_sink,
-                        vega_conversation::agent::PersistenceActorConfig::default()
+                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint)
+                            .with_subagent_host(subagent_host.clone())
+                            .with_thread_admission(admission.clone())
+                            .with_ordinary_submission(ordinary.clone())
+                            .with_automation_claim(automation_claim.clone())
                             .with_automatic_title(automatic_title)
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
                             .with_owner_credential_reader(owner_credential_reader.clone())
                             .with_credential_exceptions(Some(credential_exceptions.clone()))
+                            .with_user_questions(Arc::new(user_questions.clone()))
                             .with_pending_input(
                                 pending_message_id.clone(),
                                 steering_source.clone(),
@@ -1230,11 +1542,14 @@ pub(crate) fn run_agent_worker_with_mcp(
                         pricing_catalog,
                         Some(reasoning),
                         mcp_servers,
-                        vega_conversation::agent::PersistenceActorConfig::default()
+                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint)
+                            .with_thread_admission(admission.clone())
+                            .with_subagent_host(subagent_host.clone())
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
                             .with_owner_credential_reader(owner_credential_reader.clone())
                             .with_credential_exceptions(Some(credential_exceptions.clone()))
+                            .with_user_questions(Arc::new(user_questions.clone()))
                             .with_pending_input(
                                 pending_message_id.clone(),
                                 steering_source.clone(),
@@ -1296,11 +1611,14 @@ pub(crate) fn run_agent_worker_with_mcp(
                         cancel,
                         &permission_queue,
                         event_sink,
-                        vega_conversation::agent::PersistenceActorConfig::default()
+                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint)
+                            .with_thread_admission(admission.clone())
+                            .with_subagent_host(subagent_host.clone())
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
                             .with_owner_credential_reader(owner_credential_reader.clone())
                             .with_credential_exceptions(Some(credential_exceptions.clone()))
+                            .with_user_questions(Arc::new(user_questions.clone()))
                             .with_pending_input(
                                 pending_message_id.clone(),
                                 steering_source.clone(),
@@ -1315,15 +1633,65 @@ pub(crate) fn run_agent_worker_with_mcp(
         if let Some(run) = &computer_use {
             runtime.block_on(run.shutdown());
         }
-        Ok(result.is_ok_and(|run| !run.failed))
+        let success = result.is_ok_and(|run| !run.failed);
+        if success && !prediction_parent_cancel.is_cancelled()
+            && let Some(request) = composer_prediction
+        {
+            let _ = sender.send(AgentUpdate::ComposerPredictionReady(request));
+        }
+        Ok(success)
     })()
     .unwrap_or(false);
+    if let Ok(store) = Store::open(automation_path) {
+        if let Some(claim) = &automation_claim {
+            let _ = vega_conversation::automation::finish_unsettled_claim(
+                &store,
+                claim,
+                vega_conversation::automation::now_ms(),
+            );
+        }
+        if !success {
+            let _ = vega_conversation::automation::pause_matching(
+                &store,
+                &automation_thread,
+                &automation_snapshot,
+                "run_incomplete",
+            );
+        }
+    }
     if let Some(run) = &computer_use {
         run.control.stop();
     }
+    if let Some(ordinary) = ordinary {
+        let snapshot = ordinary.submission.snapshot();
+        if snapshot.attempts.last().is_some_and(|attempt| {
+            attempt.primary == PrimaryFact::Started
+                && !attempt.abnormal
+                && matches!(attempt.commit, CommitFact::Committed(_))
+        }) {
+            crate::ordinary_submission::retire_context(ordinary.submission.id());
+        }
+        crate::ordinary_submission::finish_root(
+            ordinary,
+            if success {
+                Ok(())
+            } else {
+                Err(SubmissionFailure::PreparationFailed)
+            },
+        );
+    }
+    drop(admission);
     let _ = sender.send(AgentUpdate::Finished {
         success,
         reference_failure,
         credential_failure,
     });
+}
+
+pub(crate) fn automation_trigger(claim: &AutomationRunClaim) -> &'static str {
+    if claim.source == Some(AutomationKind::Loop) {
+        "执行已设置的循环任务。"
+    } else {
+        "继续推进已设置的持续目标。"
+    }
 }

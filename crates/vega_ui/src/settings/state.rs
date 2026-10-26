@@ -1,18 +1,16 @@
 use super::*;
 
-#[cfg(test)]
-type ProviderKeyWriter = std::sync::Arc<dyn Fn(&str, &str) -> Result<(), String> + Send + Sync>;
-#[cfg(test)]
-type ProviderConfigSaver = std::sync::Arc<dyn Fn(&AppConfig) -> Result<(), String> + Send + Sync>;
-
 /// the config — each time settings is opened).
 pub struct SettingsView {
     pub(crate) catalog: super::model_catalog::CatalogUi,
     pub(crate) updater: vega_conversation::types::UpdateProjection,
+    pub(super) updater_message: Option<SettingsText>,
+    pub(super) updater_version: Option<SettingsText>,
     pub(crate) updater_notes: Option<crate::conversation_stream::StreamModel>,
     pub(crate) updater_notes_open: bool,
     pub(crate) updater_notes_scroll: gpui_kit::ScrollHandle,
     pub(crate) provider_management: super::provider_management::ProviderManagement,
+    pub(super) settings_motion: super::motion::SettingsMotion,
     pub(crate) section: usize,
     pub(crate) model_settings: Option<(String, String)>,
     pub(crate) settings_help_open: Option<String>,
@@ -37,8 +35,8 @@ pub struct SettingsView {
     pub(crate) codex_executable_input: Entity<TextInput>,
     pub(crate) codex_args_input: Entity<TextInput>,
     pub(crate) codex_profile_saving: bool,
-    pub(crate) computer_use_check: Option<String>,
-    pub(crate) computer_use_check_pending: bool,
+    pub(crate) preparation: Entity<crate::cua_onboarding::model::PreparationModel>,
+    pub(crate) preparation_owner: Option<crate::cua_onboarding::CallbackIdentity>,
     pub(crate) provider_api_focuses: [FocusHandle; 2],
     pub(crate) provider_save_focus: FocusHandle,
     pub(crate) provider_edit_focuses: Vec<(String, FocusHandle)>,
@@ -47,11 +45,7 @@ pub struct SettingsView {
     pub(crate) model_open: bool,
     /// Inline error message (ui-spec §4.6: no modals); empty until an IO or
     /// local credential failure occurs.
-    pub(crate) error: Option<String>,
-    #[cfg(test)]
-    pub(crate) key_writer: Option<ProviderKeyWriter>,
-    #[cfg(test)]
-    pub(crate) config_saver: Option<ProviderConfigSaver>,
+    pub(super) error: Option<SettingsText>,
     pub(crate) pricing: PricingSettingsProjection,
     pub(crate) pricing_editor: Option<PricingEditor>,
     pub(crate) pricing_model_input: Entity<TextInput>,
@@ -66,6 +60,11 @@ pub struct SettingsView {
     /// Last failed edit retained for an explicit retry/reload decision.
     pub(crate) reasoning_draft: Option<ReasoningProfileProjection>,
     pub(crate) next_reasoning_operation: u64,
+    pub(crate) model_capabilities: ModelCapabilitySettingsProjection,
+    pub(crate) model_capability_models: Vec<ModelCapabilityProjection>,
+    pub(crate) model_capability_draft: Option<ModelCapabilityOverride>,
+    pub(crate) model_capability_focuses: Vec<(ModelCapabilityFocusTarget, FocusHandle)>,
+    pub(crate) next_model_capability_operation: u64,
 }
 
 impl Focusable for SettingsView {
@@ -79,10 +78,13 @@ impl EventEmitter<PricingReloadRequested> for SettingsView {}
 impl EventEmitter<PricingRetryRequested> for SettingsView {}
 impl EventEmitter<PricingDiscardRequested> for SettingsView {}
 impl EventEmitter<SettingsSaved> for SettingsView {}
+impl EventEmitter<DesktopPreparationRequested> for SettingsView {}
 impl EventEmitter<ModelContextLoadRequested> for SettingsView {}
 impl EventEmitter<ModelContextSaveRequested> for SettingsView {}
 impl EventEmitter<ReasoningProfileSaveRequested> for SettingsView {}
 impl EventEmitter<ReasoningReloadRequested> for SettingsView {}
+impl EventEmitter<ModelCapabilitySaveRequested> for SettingsView {}
+impl EventEmitter<ModelCapabilityReloadRequested> for SettingsView {}
 
 pub(crate) const PRICING_INPUT_BYTES_LIMIT: usize = 1024 * 1024;
 pub(crate) const PROVIDER_MODELS_MIN_ROWS: usize = 2;
@@ -114,7 +116,10 @@ impl SettingsView {
     pub fn from_path(path: Option<std::path::PathBuf>, cx: &mut Context<Self>) -> Self {
         let (config, error) = match path.as_deref().map(config::load_from) {
             Some(Ok(config)) => (config, None),
-            _ => (AppConfig::default(), Some("配置加载失败".into())),
+            _ => (
+                AppConfig::default(),
+                Some(t("settings.config.load_failed").into()),
+            ),
         };
         let mut view = Self::from_config(config, error, cx);
         view.config_path = path;
@@ -137,6 +142,16 @@ impl SettingsView {
     /// App-level acceptance tests and other embedders can supply an owned
     /// snapshot so constructing the view never reads the host user's files.
     pub fn from_config(config: AppConfig, error: Option<String>, cx: &mut Context<Self>) -> Self {
+        let preparation = crate::cua_onboarding::model::shared(cx);
+        let preparation_owner = None;
+        cx.observe(&preparation, |_, _, cx| cx.notify()).detach();
+        cx.on_release(|view, cx| {
+            if let Some(owner) = view.preparation_owner.take() {
+                view.preparation
+                    .update(cx, |model, cx| model.release(&owner, false, cx));
+            }
+        })
+        .detach();
         cx.observe_global::<crate::conversation_stream::RunningMessageDefault>(|this, cx| {
             this.config.agent.running_message_behavior = cx
                 .global::<crate::conversation_stream::RunningMessageDefault>()
@@ -148,36 +163,85 @@ impl SettingsView {
         .detach();
         cx.observe_global::<SettingsOpen>(|this, cx| {
             if !cx.global::<SettingsOpen>().0 {
+                this.settings_motion.interrupt();
                 this.cancel_provider_operation(cx);
                 this.cancel_mcp_oauth(cx);
                 this.close_skills_session();
+                if let Some(owner) = this.preparation_owner.take() {
+                    this.preparation
+                        .update(cx, |model, cx| model.release(&owner, false, cx));
+                }
             }
         })
         .detach();
-        let name_input = cx.new(|cx| TextInput::new(cx, "名称", false).with_tab_stop(true));
-        let base_url_input = cx.new(|cx| TextInput::new(cx, "Base URL", false).with_tab_stop(true));
+        let name_input = cx.new(|cx| {
+            TextInput::new(cx, "", false)
+                .with_placeholder_key("settings.field.name")
+                .with_tab_stop(true)
+        });
+        let base_url_input = cx.new(|cx| {
+            TextInput::new(cx, "", false)
+                .with_placeholder_key("settings.field.base_url")
+                .with_tab_stop(true)
+        });
         let models_input = cx.new(|cx| {
-            TextInput::new_multiline(cx, "模型 ID（每行一个）", PROVIDER_MODELS_MIN_ROWS)
+            TextInput::new_multiline(cx, "", PROVIDER_MODELS_MIN_ROWS)
+                .with_placeholder_key("settings.provider.models_placeholder")
                 .with_row_bounds(PROVIDER_MODELS_MIN_ROWS, PROVIDER_MODELS_MAX_ROWS)
                 .with_tab_stop(true)
         });
-        let key_input = cx.new(|cx| TextInput::new(cx, "API Key", true).with_tab_stop(true));
-        let codex_name_input =
-            cx.new(|cx| TextInput::new(cx, "显示名称", false).with_tab_stop(true));
-        let codex_executable_input =
-            cx.new(|cx| TextInput::new(cx, "绝对 executable 路径", false).with_tab_stop(true));
-        let codex_args_input = cx
-            .new(|cx| TextInput::new_multiline(cx, "参数（每行一个 argv）", 2).with_tab_stop(true));
-        let pricing_model_input = cx.new(|cx| TextInput::new(cx, "模型 ID", false));
+        let key_input = cx.new(|cx| {
+            TextInput::new(cx, "", true)
+                .with_placeholder_key("settings.field.api_key")
+                .with_tab_stop(true)
+        });
+        let codex_name_input = cx.new(|cx| {
+            TextInput::new(cx, "", false)
+                .with_placeholder_key("settings.agents.codex.name_placeholder")
+                .with_tab_stop(true)
+        });
+        let codex_executable_input = cx.new(|cx| {
+            TextInput::new(cx, "", false)
+                .with_placeholder_key("settings.agents.codex.executable_placeholder")
+                .with_tab_stop(true)
+        });
+        let codex_args_input = cx.new(|cx| {
+            TextInput::new_multiline(cx, "", 2)
+                .with_placeholder_key("settings.agents.codex.arguments_placeholder")
+                .with_tab_stop(true)
+        });
+        let pricing_model_input = cx.new(|cx| {
+            TextInput::new(cx, "", false).with_placeholder_key("settings.field.model_id")
+        });
         let pricing_rate_inputs = [
-            cx.new(|cx| TextInput::new(cx, "Base Input", false)),
-            cx.new(|cx| TextInput::new(cx, "Base Output", false)),
-            cx.new(|cx| TextInput::new(cx, "Base Cache Read", false)),
-            cx.new(|cx| TextInput::new(cx, "Base Cache Write", false)),
-            cx.new(|cx| TextInput::new(cx, "Peak Input", false)),
-            cx.new(|cx| TextInput::new(cx, "Peak Output", false)),
-            cx.new(|cx| TextInput::new(cx, "Peak Cache Read", false)),
-            cx.new(|cx| TextInput::new(cx, "Peak Cache Write", false)),
+            cx.new(|cx| {
+                TextInput::new(cx, "", false).with_placeholder_key("settings.pricing.base_input")
+            }),
+            cx.new(|cx| {
+                TextInput::new(cx, "", false).with_placeholder_key("settings.pricing.base_output")
+            }),
+            cx.new(|cx| {
+                TextInput::new(cx, "", false)
+                    .with_placeholder_key("settings.pricing.base_cache_read")
+            }),
+            cx.new(|cx| {
+                TextInput::new(cx, "", false)
+                    .with_placeholder_key("settings.pricing.base_cache_write")
+            }),
+            cx.new(|cx| {
+                TextInput::new(cx, "", false).with_placeholder_key("settings.pricing.peak_input")
+            }),
+            cx.new(|cx| {
+                TextInput::new(cx, "", false).with_placeholder_key("settings.pricing.peak_output")
+            }),
+            cx.new(|cx| {
+                TextInput::new(cx, "", false)
+                    .with_placeholder_key("settings.pricing.peak_cache_read")
+            }),
+            cx.new(|cx| {
+                TextInput::new(cx, "", false)
+                    .with_placeholder_key("settings.pricing.peak_cache_write")
+            }),
         ];
         let profile = config.agent.codex_acp_profile.clone();
         if let Some(profile) = &profile {
@@ -188,10 +252,13 @@ impl SettingsView {
         Self {
             catalog: super::model_catalog::CatalogUi::new(cx),
             updater: Default::default(),
+            updater_message: None,
+            updater_version: None,
             updater_notes: None,
             updater_notes_open: false,
             updater_notes_scroll: gpui_kit::ScrollHandle::new(),
             provider_management: Default::default(),
+            settings_motion: Default::default(),
             section_scrolls: std::array::from_fn(|_| gpui_kit::ScrollHandle::new()),
             model_settings: None,
             settings_help_open: None,
@@ -223,19 +290,16 @@ impl SettingsView {
             codex_executable_input,
             codex_args_input,
             codex_profile_saving: false,
-            computer_use_check: None,
-            computer_use_check_pending: false,
+            preparation,
+            preparation_owner,
             provider_api_focuses: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             provider_save_focus: cx.focus_handle().tab_stop(true),
             provider_edit_focuses: Vec::new(),
             provider_test_help_focuses: Vec::new(),
             mode_open: false,
             model_open: false,
-            error,
-            #[cfg(test)]
-            key_writer: None,
-            #[cfg(test)]
-            config_saver: None,
+            error: error
+                .map(|error| SettingsText::from_known(error, &["settings.config.load_failed"])),
             pricing: PricingSettingsProjection::Loading,
             pricing_editor: None,
             pricing_model_input,
@@ -245,12 +309,12 @@ impl SettingsView {
             reasoning_focuses: Vec::new(),
             reasoning_draft: None,
             next_reasoning_operation: 0,
+            model_capabilities: ModelCapabilitySettingsProjection::Loading,
+            model_capability_models: Vec::new(),
+            model_capability_draft: None,
+            model_capability_focuses: Vec::new(),
+            next_model_capability_operation: 0,
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn new_for_test(cx: &mut Context<Self>) -> Self {
-        Self::from_config(AppConfig::default(), None, cx)
     }
 
     /// Keeps edit-row focus handles stable while the provider list changes.
@@ -428,34 +492,6 @@ impl SettingsView {
         self.move_provider_focus(true, window, cx);
     }
 
-    #[cfg(test)]
-    fn write_provider_key(&self, name: &str, key: &str) -> Result<(), String> {
-        #[cfg(test)]
-        if let Some(writer) = &self.key_writer {
-            return writer(name, key);
-        }
-        keystore::set_key(
-            self.config_path
-                .as_deref()
-                .and_then(std::path::Path::parent)
-                .ok_or("配置路径不可用")?,
-            name,
-            key,
-        )
-        .map_err(|error| error.to_string())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn persist_config(&self, config: &AppConfig) -> Result<(), String> {
-        #[cfg(test)]
-        if let Some(saver) = &self.config_saver {
-            return saver(config);
-        }
-        config
-            .save_to(self.config_path.as_deref().ok_or("配置路径不可用")?)
-            .map_err(|error| error.to_string())
-    }
-
     /// Validates and persists the Provider form. The candidate config is
     /// cloned so a failed config write cannot replace the in-memory authority.
     pub(crate) fn submit_provider(&mut self, cx: &mut Context<Self>) {
@@ -478,74 +514,24 @@ impl SettingsView {
         let models = match parse_provider_models(&models_text) {
             Ok(models) => models,
             Err(error) => {
-                self.error = Some(provider_models_error_label(&error));
+                self.error = Some(SettingsText::Models(error));
                 cx.notify();
                 return;
             }
         };
-        #[cfg(test)]
-        let use_worker = self.config_saver.is_none() && self.key_writer.is_none();
-        #[cfg(not(test))]
-        let use_worker = true;
-        if use_worker {
-            self.save_provider_background(
-                existing.clone(),
-                ProviderConfig {
-                    api: self.provider_management.form_api,
-                    name: name.clone(),
-                    base_url,
-                    models,
-                    enabled: existing.as_ref().is_none_or(|provider| provider.enabled),
-                    key_ref: provider_key_ref(existing.as_ref(), &name, &key),
-                },
-                (!key.is_empty()).then_some(key),
-                cx,
-            );
-            #[cfg(test)]
-            return;
-        }
-        #[cfg(test)]
-        {
-            let key_ref = if key.is_empty() {
-                provider_key_ref(existing.as_ref(), &name, &key)
-            } else {
-                if let Err(error) = self.write_provider_key(&name, &key) {
-                    self.error = Some(format!("本地凭据写入失败：{error}"));
-                    cx.notify();
-                    return;
-                }
-                provider_key_ref(existing.as_ref(), &name, &key)
-            };
-            let mut candidate = self.config.clone();
-            upsert_provider(
-                &mut candidate.providers,
-                ProviderConfig {
-                    api: self.provider_management.form_api,
-                    name: name.clone(),
-                    enabled: existing.as_ref().is_none_or(|provider| provider.enabled),
-                    base_url,
-                    models,
-                    key_ref,
-                },
-            );
-            if let Err(error) = self.persist_config(&candidate) {
-                self.error = Some(format!("配置保存失败：{error}；当前输入仍未保存"));
-                cx.notify();
-                return;
-            }
-            self.config = candidate;
-            self.provider_management.form = false;
-            self.provider_management.selected = Some(name);
-            self.refresh_key_refs();
-            self.sync_provider_edit_focuses(cx);
-            self.name_input.update(cx, TextInput::clear);
-            self.base_url_input.update(cx, TextInput::clear);
-            self.models_input.update(cx, TextInput::clear);
-            self.key_input.update(cx, TextInput::clear);
-            self.error = None;
-            cx.emit(SettingsSaved);
-            cx.notify();
-        }
+        self.save_provider_background(
+            existing.clone(),
+            ProviderConfig {
+                api: self.provider_management.form_api,
+                name: name.clone(),
+                base_url,
+                models,
+                enabled: existing.as_ref().is_none_or(|provider| provider.enabled),
+                key_ref: provider_key_ref(existing.as_ref(), &name, &key),
+            },
+            (!key.is_empty()).then_some(key),
+            cx,
+        );
     }
 
     /// Applies the latest safe projection from the app-owned pricing controller.
@@ -591,12 +577,6 @@ impl SettingsView {
                 ..
             } if *current_generation == generation && *current_operation == operation_id
         )
-    }
-
-    /// Read-only projection used by app-level acceptance tests and route
-    /// adapters; edits still go through the typed actions below.
-    pub fn reasoning_projection(&self) -> &ReasoningSettingsProjection {
-        &self.reasoning
     }
 
     pub(crate) fn emit_reasoning_save(
@@ -820,7 +800,7 @@ impl SettingsView {
                 .reasoning_focuses
                 .iter()
                 .find(|(_, focus)| focus.is_focused(window))
-                .map(|(target, _)| *target)
+                .map(|(target, _)| target.clone())
         {
             match target {
                 ReasoningFocusTarget::Reload => {
@@ -828,26 +808,8 @@ impl SettingsView {
                         cx.emit(ReasoningReloadRequested);
                     }
                 }
-                ReasoningFocusTarget::Template { index, template } => {
-                    self.apply_reasoning_template(index, template, cx);
-                }
-                ReasoningFocusTarget::Protocol(index) => {
-                    self.cycle_reasoning_protocol(index, cx);
-                }
-                ReasoningFocusTarget::Support(index) => {
-                    self.cycle_reasoning_support(index, cx);
-                }
-                ReasoningFocusTarget::Effort { index, effort } => {
-                    self.toggle_reasoning_effort(index, effort, cx);
-                }
-                ReasoningFocusTarget::Preference(index) => {
-                    self.cycle_reasoning_preference(index, cx);
-                }
-                ReasoningFocusTarget::Disabled(index) => {
-                    self.toggle_reasoning_disabled(index, cx);
-                }
-                ReasoningFocusTarget::Replay(index) => {
-                    self.toggle_reasoning_replay(index, cx);
+                ReasoningFocusTarget::Preference { index, choice } => {
+                    self.select_reasoning_preference(index, choice, cx);
                 }
             }
             return;

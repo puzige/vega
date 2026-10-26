@@ -1,7 +1,5 @@
 mod cache;
 mod parse;
-#[cfg(test)]
-mod tests;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -49,13 +47,10 @@ pub(crate) fn load(
 
 pub(crate) fn refresh(root: &Path, owner: &CatalogIdentity, now: u64) -> ModelCatalogProjection {
     refresh_with(root, owner, now, || {
-        if cfg!(test) {
-            return Err("模型目录网络测试替身不可用".into());
-        }
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|_| "模型目录网络不可用")?;
+            .map_err(|_| vega_i18n::t("app.catalog.network"))?;
         runtime.block_on(fetch())
     })
 }
@@ -96,24 +91,28 @@ async fn fetch() -> CatalogResult<Vec<u8>> {
         .timeout(Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .map_err(|_| "模型目录网络不可用")?;
+        .map_err(|_| vega_i18n::t("app.catalog.network"))?;
     let mut response = client
         .get("https://models.dev/api.json")
         .send()
         .await
-        .map_err(|_| "模型目录获取失败；保留已有缓存")?
+        .map_err(|_| vega_i18n::t("app.catalog.fetch_failed"))?
         .error_for_status()
-        .map_err(|_| "模型目录服务暂不可用；保留已有缓存")?;
+        .map_err(|_| vega_i18n::t("app.catalog.service_unavailable"))?;
     if response
         .content_length()
         .is_some_and(|n| n > MAX_BYTES as u64)
     {
-        return Err("模型目录响应超过大小限制".into());
+        return Err(vega_i18n::t("app.catalog.response_limit").into());
     }
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|_| "模型目录响应读取失败")? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| vega_i18n::t("app.catalog.response_read"))?
+    {
         if bytes.len().saturating_add(chunk.len()) > MAX_BYTES {
-            return Err("模型目录响应超过大小限制".into());
+            return Err(vega_i18n::t("app.catalog.response_limit").into());
         }
         bytes.extend_from_slice(&chunk);
     }

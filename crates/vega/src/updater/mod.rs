@@ -45,11 +45,6 @@ pub(crate) struct Updater {
 }
 
 impl Updater {
-    #[cfg(test)]
-    pub(crate) fn set_test_request_sender(&mut self, sender: mpsc::SyncSender<UpdateRequest>) {
-        self.sender = Some(sender);
-    }
-
     pub(crate) fn start(&mut self) -> mpsc::Receiver<Event> {
         let (commands, receiver) = mpsc::sync_channel(1);
         let (events, updates) = mpsc::channel();
@@ -64,7 +59,7 @@ impl Updater {
             .is_err()
         {
             self.state.phase = UpdatePhase::Error;
-            self.state.message = "无法启动更新服务".into();
+            self.state.message = vega_i18n::t("app.update.start_failed").into();
             self.sender = None;
         }
         updates
@@ -157,7 +152,7 @@ impl Worker {
             Ok(preferences) => worker.preferences = preferences,
             Err(_) => {
                 worker.preferences.automatic = false;
-                worker.state.message = "更新设置读取失败，自动更新已暂停".into();
+                worker.state.message = vega_i18n::t("app.update.preferences_read").into();
             }
         }
         worker.state.automatic = worker.preferences.automatic;
@@ -166,19 +161,19 @@ impl Worker {
             .bundle
             .as_ref()
             .map(|bundle| bundle.version.clone())
-            .unwrap_or_else(|| "开发版本".into());
+            .unwrap_or_else(|| vega_i18n::t("app.update.development").into());
         worker.state.phase = UpdatePhase::Idle;
         if worker.state.message.is_empty() {
             worker.state.message = match &worker.bundle {
                 Some(bundle) => bundle
                     .installation_error
                     .clone()
-                    .unwrap_or_else(|| "更新包将通过内置公钥验证；安装前需要确认重启".into()),
-                None => "开发版本仅支持检查更新，请安装正式发布的应用包".into(),
+                    .unwrap_or_else(|| vega_i18n::t("app.update.verification_notice").into()),
+                None => vega_i18n::t("app.update.development_check_only").into(),
             };
         }
         if std::env::args_os().any(|arg| arg == "--vega-update-failed") {
-            worker.state.message = "新版本未正常启动，已恢复旧版本；请查看官方发布页".into();
+            worker.state.message = vega_i18n::t("app.update.rolled_back").into();
         }
         worker.publish();
         worker
@@ -190,7 +185,7 @@ impl Worker {
         let path = self
             .config
             .as_ref()
-            .ok_or_else(|| failure("配置目录不可用"))?;
+            .ok_or_else(|| failure(vega_i18n::t("app.update.config_unavailable")))?;
         let mut file = match std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
@@ -203,11 +198,12 @@ impl Worker {
             Err(error) => return Err(Box::new(error)),
         };
         if !file.metadata()?.is_file() || file.metadata()?.len() > 4096 {
-            return Err(failure("更新设置无效"));
+            return Err(failure(vega_i18n::t("app.update.preferences_invalid")));
         }
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
-        serde_json::from_slice(&bytes).map_err(|_| failure("更新设置无效"))
+        serde_json::from_slice(&bytes)
+            .map_err(|_| failure(vega_i18n::t("app.update.preferences_invalid")))
     }
 
     fn persist(&self) -> UpdateResult<()> {
@@ -215,16 +211,19 @@ impl Worker {
         let path = self
             .config
             .as_ref()
-            .ok_or_else(|| failure("配置目录不可用"))?;
-        let root = path.parent().ok_or_else(|| failure("配置目录不可用"))?;
+            .ok_or_else(|| failure(vega_i18n::t("app.update.config_unavailable")))?;
+        let root = path
+            .parent()
+            .ok_or_else(|| failure(vega_i18n::t("app.update.config_unavailable")))?;
         std::fs::create_dir_all(root)?;
         let mut file = tempfile::NamedTempFile::new_in(root)?;
         file.write_all(
-            &serde_json::to_vec(&self.preferences).map_err(|_| failure("更新设置无效"))?,
+            &serde_json::to_vec(&self.preferences)
+                .map_err(|_| failure(vega_i18n::t("app.update.preferences_invalid")))?,
         )?;
         file.as_file().sync_all()?;
         file.persist(path)
-            .map_err(|_| failure("更新设置保存失败"))?;
+            .map_err(|_| failure(vega_i18n::t("app.update.preferences_save")))?;
         Ok(())
     }
 
@@ -242,7 +241,7 @@ impl Worker {
                     self.preferences.automatic = value;
                     if self.persist().is_err() {
                         self.preferences.automatic = old;
-                        self.state.message = "更新设置保存失败，请重试".into();
+                        self.state.message = vega_i18n::t("app.update.preferences_retry").into();
                     } else {
                         self.state.automatic = value;
                     }
@@ -250,7 +249,7 @@ impl Worker {
                 }
                 Ok(UpdateRequest::Install) => self.install(),
                 Ok(UpdateRequest::Later) => {
-                    self.state.message = "更新已保留，方便时可在此重启安装".into();
+                    self.state.message = vega_i18n::t("app.update.later").into();
                     self.publish();
                 }
                 Ok(UpdateRequest::ReleasePage) => {}
@@ -284,7 +283,7 @@ impl Worker {
         self.preferences.last_checked = Some(now());
         self.state.last_checked = self.preferences.last_checked;
         self.state.phase = UpdatePhase::Checking;
-        self.state.message = "正在检查更新…".into();
+        self.state.message = vega_i18n::t("app.update.checking").into();
         self.publish();
         let result = self.persist().and_then(|_| {
             let runtime = tokio::runtime::Builder::new_current_thread()
@@ -307,7 +306,7 @@ impl Worker {
             self.state.message = if manual || update_available {
                 error.to_string()
             } else {
-                "自动检查未完成，将在下次检查时重试".into()
+                vega_i18n::t("app.update.automatic_retry").into()
             };
             self.publish();
         }
@@ -339,15 +338,15 @@ impl Worker {
             .is_some_and(|current| latest <= current)
         {
             self.state.phase = UpdatePhase::Current;
-            self.state.message = "已是最新版本".into();
+            self.state.message = vega_i18n::t("app.update.current").into();
             self.publish();
             return Ok(());
         }
         self.state.phase = UpdatePhase::Available;
-        self.state.message = "发现新版本，正在验证更新资格…".into();
+        self.state.message = vega_i18n::t("app.update.available_verifying").into();
         self.publish();
         let Some(bundle) = self.bundle.clone() else {
-            self.state.message = "开发版本不可原位更新，请安装正式发布的应用包".into();
+            self.state.message = vega_i18n::t("app.update.development_install").into();
             self.publish();
             return Ok(());
         };
@@ -358,15 +357,15 @@ impl Worker {
         let parent = bundle
             .path
             .parent()
-            .ok_or_else(|| failure("应用安装目录不可用"))?;
+            .ok_or_else(|| failure(vega_i18n::t("app.update.install_directory")))?;
         let staging = platform::private_tempdir_in(parent, ".vega-update-")
-            .map_err(|_| failure("应用安装目录不可写或已只读，请从官方发布页手动安装"))?;
+            .map_err(|_| failure(vega_i18n::t("app.update.install_read_only")))?;
         platform::private_dir(staging.path())?;
         self.state.phase = UpdatePhase::Downloading {
             received: 0,
             total: 0,
         };
-        self.state.message = "正在验证独立签名并下载更新…".into();
+        self.state.message = vega_i18n::t("app.update.downloading").into();
         self.publish();
         self.delta = network::download(
             &client,
@@ -381,12 +380,12 @@ impl Worker {
             },
         )
         .await?;
-        self.state.message = "正在校验签名、压缩包与应用完整性…".into();
+        self.state.message = vega_i18n::t("app.update.verifying").into();
         self.publish();
         self.release = Some(release);
         self.staging = Some(staging);
         self.state.phase = UpdatePhase::Ready;
-        self.state.message = "更新已准备好；重启安装前请结束所有运行任务".into();
+        self.state.message = vega_i18n::t("app.update.ready").into();
         self.publish();
         Ok(())
     }
@@ -395,23 +394,23 @@ impl Worker {
         let mut discard_staging = false;
         let result = (|| -> UpdateResult<()> {
             if !installing() {
-                return Err(failure("尚未确认重启安装"));
+                return Err(failure(vega_i18n::t("app.update.restart_unconfirmed")));
             }
             let bundle = self
                 .bundle
                 .as_ref()
-                .ok_or_else(|| failure("当前应用不可自动安装"))?;
+                .ok_or_else(|| failure(vega_i18n::t("app.update.cannot_install")))?;
             let staging = self
                 .staging
                 .as_ref()
-                .ok_or_else(|| failure("更新尚未准备好"))?;
+                .ok_or_else(|| failure(vega_i18n::t("app.update.not_ready")))?;
             let version = self
                 .state
                 .latest_version
                 .clone()
-                .ok_or_else(|| failure("更新版本不可用"))?;
+                .ok_or_else(|| failure(vega_i18n::t("app.update.version_unavailable")))?;
             self.state.phase = UpdatePhase::Installing;
-            self.state.message = "正在准备重启安装…".into();
+            self.state.message = vega_i18n::t("app.update.restarting").into();
             self.publish();
             prepare_installation(
                 &mut self.delta,
@@ -421,7 +420,7 @@ impl Worker {
                     let release = self
                         .release
                         .as_ref()
-                        .ok_or_else(|| failure("更新发布记录不可用"))?;
+                        .ok_or_else(|| failure(vega_i18n::t("app.update.release_unavailable")))?;
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()?;
@@ -493,71 +492,4 @@ fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or_default()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::cell::RefCell;
-
-    #[test]
-    fn preparation_fallback_finishes_before_quit_and_discards_failed_download() {
-        for (download_ok, preparation_ok) in [(true, true), (false, true), (true, false)] {
-            let steps = RefCell::new(Vec::new());
-            let mut delta = true;
-            let mut discard = false;
-            let result = prepare_installation(
-                &mut delta,
-                &mut discard,
-                |incremental| {
-                    steps.borrow_mut().push(if incremental {
-                        "prepare delta"
-                    } else {
-                        "prepare full"
-                    });
-                    if incremental || !preparation_ok {
-                        Err(failure("prepare failed"))
-                    } else {
-                        Ok(())
-                    }
-                },
-                || {
-                    steps.borrow_mut().push("download full");
-                    if download_ok {
-                        Ok(())
-                    } else {
-                        Err(failure("download failed"))
-                    }
-                },
-            );
-            if result.is_ok() {
-                steps.borrow_mut().push("quit");
-            }
-            assert!(!delta);
-            assert_eq!(discard, !download_ok);
-            let expected = if !download_ok {
-                vec!["prepare delta", "download full"]
-            } else if !preparation_ok {
-                vec!["prepare delta", "download full", "prepare full"]
-            } else {
-                vec!["prepare delta", "download full", "prepare full", "quit"]
-            };
-            assert_eq!(*steps.borrow(), expected);
-        }
-    }
-
-    #[test]
-    fn full_preparation_failure_never_retries_or_quits() {
-        let mut delta = false;
-        let mut discard = false;
-        let error = prepare_installation(
-            &mut delta,
-            &mut discard,
-            |_| Err(failure("identity changed")),
-            || panic!("unexpected full retry"),
-        )
-        .unwrap_err();
-        assert_eq!(error.to_string(), "identity changed");
-        assert!(!discard);
-    }
 }

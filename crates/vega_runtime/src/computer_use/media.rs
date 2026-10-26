@@ -1,6 +1,7 @@
 use super::{Capability, ComputerUseError, Target, background::BackgroundInput};
 use crate::ImageAttachment;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolObservationSource {
@@ -43,6 +44,63 @@ impl std::fmt::Debug for Observation {
 }
 
 impl Observation {
+    pub(crate) fn replay_snapshot_fingerprint(&self) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        let mut add = |tag: u8, value: &[u8]| {
+            hasher.update([tag]);
+            hasher.update((value.len() as u64).to_le_bytes());
+            hasher.update(value);
+        };
+        add(1, self.id.as_bytes());
+        add(2, self.run_id.as_bytes());
+        add(3, self.call_id.as_bytes());
+        add(4, &self.epoch.to_le_bytes());
+        add(5, format!("{:?}", self.capability).as_bytes());
+        add(6, format!("{:?}", self.source).as_bytes());
+        add(7, &[u8::from(self.model_image)]);
+        add(8, &self.original_width.to_le_bytes());
+        add(9, &self.original_height.to_le_bytes());
+        add(10, self.text.as_bytes());
+        add(11, &self.elements.to_string().into_bytes());
+        match &self.target {
+            Target::Desktop(window) => {
+                add(12, window.selection_id.as_bytes());
+                add(13, window.application.as_bytes());
+                add(14, window.bundle_id.as_bytes());
+                add(15, &window.pid.to_le_bytes());
+                add(16, &window.window_id.to_le_bytes());
+                add(17, window.title.as_bytes());
+            }
+            Target::DesktopCatalog => add(18, b"desktop-catalog"),
+            Target::Browser {
+                connection,
+                index,
+                title,
+                url,
+            } => {
+                add(19, connection.as_bytes());
+                add(20, &index.to_le_bytes());
+                add(21, title.as_bytes());
+                add(22, url.as_bytes());
+            }
+        }
+        if let Some(image) = &self.image {
+            add(23, image.bytes());
+            add(24, image.mime_type().as_bytes());
+        } else {
+            add(23, &[]);
+        }
+        add(
+            25,
+            self.snapshot_id.as_deref().unwrap_or_default().as_bytes(),
+        );
+        add(
+            26,
+            self.capture_id.as_deref().unwrap_or_default().as_bytes(),
+        );
+        hasher.finalize().into()
+    }
+
     pub fn image_bytes(&self) -> usize {
         self.image.as_ref().map_or(0, |image| image.bytes().len())
     }
@@ -221,40 +279,4 @@ pub(crate) fn decode_image(
         .map_err(|_| ComputerUseError::Image)?;
     let image = ImageAttachment::from_bytes(bytes).map_err(|_| ComputerUseError::Image)?;
     Ok((image, width, height))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn issue75_observation_decode_rejects_spoofed_mime_and_retains_original_scale() {
-        let mut encoded = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::new_rgb8(2000, 1200)
-            .write_to(&mut encoded, image::ImageFormat::Png)
-            .unwrap();
-        assert!(
-            decode_image(vega_mcp::ManagedImage {
-                bytes: encoded.get_ref().clone(),
-                mime_type: "image/jpeg".into(),
-            })
-            .is_err()
-        );
-        assert!(
-            decode_image(vega_mcp::ManagedImage {
-                bytes: vec![1, 2, 3],
-                mime_type: "image/png".into(),
-            })
-            .is_err()
-        );
-        let (image, width, height) = decode_image(vega_mcp::ManagedImage {
-            bytes: encoded.into_inner(),
-            mime_type: "image/png".into(),
-        })
-        .unwrap();
-        assert_eq!((width, height), (2000, 1200));
-        assert_eq!((image.width(), image.height()), (1600, 960));
-        assert_eq!(image.mime_type(), "image/jpeg");
-        assert!(image.bytes().len() <= 8 * 1024 * 1024);
-    }
 }

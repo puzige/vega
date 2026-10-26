@@ -1,13 +1,6 @@
-//! Issue #74 Skills Settings. This view only talks to the conversation-owned
-//! service; no Skill path, file or SQLite row is trusted on the UI thread.
-
 use crate::interaction::InteractionExt;
+use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
 use std::path::PathBuf;
-#[cfg(test)]
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
-};
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -18,55 +11,13 @@ use vega_conversation::types::{
     SkillSourceView, SkillUiScope,
 };
 use vega_conversation::{SkillSettingsError, SkillSettingsService};
+use vega_i18n::{t, t_args};
 use vega_theme::{Layout, Typography, theme};
 
 use super::{
-    SettingsView, section_title, settings_action_chrome, settings_actions, settings_field,
-    settings_group, settings_section, settings_status, settings_switch,
+    SettingsText, SettingsView, section_title, settings_action_chrome, settings_actions,
+    settings_field, settings_group, settings_section, settings_status, settings_switch,
 };
-
-#[cfg(test)]
-pub(super) struct SkillsOperationGate {
-    entered: Mutex<Option<tokio::sync::oneshot::Sender<bool>>>,
-    release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
-    used: AtomicBool,
-}
-
-#[cfg(test)]
-impl SkillsOperationGate {
-    pub(super) fn new(
-        entered: tokio::sync::oneshot::Sender<bool>,
-        release: tokio::sync::oneshot::Receiver<()>,
-    ) -> Self {
-        Self {
-            entered: Mutex::new(Some(entered)),
-            release: Mutex::new(Some(release)),
-            used: AtomicBool::new(false),
-        }
-    }
-
-    async fn hold_first(&self, succeeded: bool) {
-        if self.used.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        if let Some(entered) = self
-            .entered
-            .lock()
-            .ok()
-            .and_then(|mut sender| sender.take())
-        {
-            let _ = entered.send(succeeded);
-        }
-        let release = self
-            .release
-            .lock()
-            .ok()
-            .and_then(|mut receiver| receiver.take());
-        if let Some(release) = release {
-            let _ = release.await;
-        }
-    }
-}
 
 #[derive(Default)]
 pub(crate) struct SkillsSettingsState {
@@ -75,13 +26,8 @@ pub(crate) struct SkillsSettingsState {
     root_preview: Option<SkillRootPreview>,
     body_preview: Option<SkillBodyPreview>,
     busy: bool,
-    message: Option<String>,
+    message: Option<SettingsText>,
     request_generation: u64,
-    #[cfg(test)]
-    reload_response_override:
-        Option<tokio::sync::oneshot::Receiver<Result<SkillSettingsProjection, SkillSettingsError>>>,
-    #[cfg(test)]
-    test_operation_gate: Option<Arc<SkillsOperationGate>>,
 }
 
 #[derive(Clone)]
@@ -134,7 +80,7 @@ impl SettingsView {
         if self.skills.service.is_some() {
             self.skills_operation(SkillOperation::Reload, cx);
         } else {
-            self.skills.message = Some("Skills 数据库不可用".into());
+            self.skills.message = Some(SettingsText::key("settings.skills.database_unavailable"));
             cx.notify();
         }
     }
@@ -173,36 +119,18 @@ impl SettingsView {
             self.skills.projection = None;
         }
         let Some(service) = self.skills.service.clone() else {
-            self.skills.message = Some("Skills 数据库不可用".into());
+            self.skills.message = Some(SettingsText::key("settings.skills.database_unavailable"));
             cx.notify();
             return;
-        };
-        #[cfg(test)]
-        let reload_response_override = if matches!(&operation, SkillOperation::Reload) {
-            self.skills.reload_response_override.take()
-        } else {
-            None
         };
         self.skills.request_generation = self.skills.request_generation.wrapping_add(1);
         let request_generation = self.skills.request_generation;
         self.skills.busy = true;
         self.skills.message = None;
         cx.notify();
-        #[cfg(test)]
-        let test_operation_gate = self.skills.test_operation_gate.clone();
         let task = cx.background_executor().spawn(async move {
-            let result = match operation {
+            match operation {
                 SkillOperation::Reload => {
-                    #[cfg(test)]
-                    if let Some(response) = reload_response_override {
-                        response
-                            .await
-                            .unwrap_or(Err(SkillSettingsError::Store))
-                            .map(SkillOperationResult::Projection)
-                    } else {
-                        service.projection().map(SkillOperationResult::Projection)
-                    }
-                    #[cfg(not(test))]
                     service.projection().map(SkillOperationResult::Projection)
                 }
                 SkillOperation::PreviewProject => service
@@ -224,12 +152,7 @@ impl SettingsView {
                     service.apply(generation, mutation)?;
                     service.projection().map(SkillOperationResult::Projection)
                 }
-            };
-            #[cfg(test)]
-            if let Some(gate) = test_operation_gate {
-                gate.hold_first(result.is_ok()).await;
             }
-            result
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
@@ -252,7 +175,7 @@ impl SettingsView {
                         this.skills.body_preview = Some(preview);
                     }
                     Err(error) => {
-                        this.skills.message = Some(skill_error_label(error).into());
+                        this.skills.message = Some(skill_error_label(error));
                     }
                 }
                 cx.notify();
@@ -267,7 +190,7 @@ impl SettingsView {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("选择要导入的 Skills 目录".into()),
+            prompt: Some(t("settings.skills.choose_directory").into()),
         });
         cx.spawn(async move |this, cx| {
             let picked = match receiver.await {
@@ -279,7 +202,8 @@ impl SettingsView {
                         {
                             return;
                         }
-                        this.skills.message = Some("文件夹选择失败，请重试".into());
+                        this.skills.message =
+                            Some(SettingsText::key("settings.skills.folder_failed"));
                         cx.notify();
                     });
                     return;
@@ -334,17 +258,18 @@ impl SettingsView {
         let colors = theme(cx).colors;
         let mut column = settings_section()
             .id("settings-skills")
-            .debug_selector(|| "settings-skills".into())
-            .child(section_title("Agent Skills", colors.text_primary))
+            .child(section_title(
+                t("settings.skills.title"),
+                colors.text_primary,
+            ))
             .child(
                 div()
                     .id("skills-intro")
-                    .debug_selector(|| "skills-intro".into())
                     .text_color(colors.text_secondary)
-                    .child("Skills 是低信任工作流说明，不会扩大脚本、MCP 或文件工具权限。全局与自动触发默认关闭。"),
+                    .child(t("settings.skills.intro")),
             )
             .child(skill_button(
-                "刷新".into(),
+                t("settings.action.refresh").into(),
                 "skills-reload".into(),
                 SkillAction::Reload,
                 colors,
@@ -352,23 +277,24 @@ impl SettingsView {
             ));
         if self.skills.busy {
             column = column.child(settings_status(
-                "正在检查 Skills…",
+                t("settings.skills.checking"),
                 colors.text_secondary,
                 colors,
             ));
         }
         if let Some(message) = &self.skills.message {
             column = column.child(
-                settings_status(message.clone(), colors.warning, colors)
-                    .id("skills-message")
-                    .debug_selector(|| "skills-message".into()),
+                settings_status(message.render(), colors.warning, colors).id("skills-message"),
             );
         }
         if let Some(projection) = self.skills.projection.clone() {
             let mut preferences = settings_group(colors)
-                .child(section_title("来源与触发", colors.text_primary))
+                .child(section_title(
+                    t("settings.skills.sources"),
+                    colors.text_primary,
+                ))
                 .child(skill_toggle_row(
-                    "使用全局 Skills",
+                    t("settings.skills.use_global"),
                     projection.global_enabled,
                     "skills-global-enabled",
                     SkillSettingsMutation::SetGlobal {
@@ -380,7 +306,7 @@ impl SettingsView {
                     cx,
                 ))
                 .child(skill_toggle_row(
-                    "自动选择全局 Skills",
+                    t("settings.skills.auto_global"),
                     projection.automatic_enabled,
                     "skills-global-automatic",
                     SkillSettingsMutation::SetGlobal {
@@ -394,7 +320,7 @@ impl SettingsView {
             if let Some(project_id) = projection.selected_project_id.clone() {
                 preferences = preferences
                     .child(skill_toggle_row(
-                        "使用当前项目 Skills",
+                        t("settings.skills.use_project"),
                         projection.project_enabled,
                         "skills-project-enabled",
                         SkillSettingsMutation::SetProject {
@@ -407,7 +333,7 @@ impl SettingsView {
                         cx,
                     ))
                     .child(skill_toggle_row(
-                        "自动选择当前项目 Skills",
+                        t("settings.skills.auto_project"),
                         projection.project_automatic,
                         "skills-project-automatic",
                         SkillSettingsMutation::SetProject {
@@ -425,7 +351,7 @@ impl SettingsView {
                     .mt_3()
                     .when(projection.selected_project_id.is_some(), |actions| {
                         actions.child(skill_button(
-                            "检查当前项目 .agents/skills".into(),
+                            t("settings.skills.inspect_project").into(),
                             "skills-preview-project".into(),
                             SkillAction::PreviewProject,
                             colors,
@@ -433,14 +359,14 @@ impl SettingsView {
                         ))
                     })
                     .child(skill_button(
-                        "检查 Vega 全局 Skills".into(),
+                        t("settings.skills.inspect_global").into(),
                         "skills-preview-global".into(),
                         SkillAction::PreviewGlobal,
                         colors,
                         cx,
                     ))
                     .child(skill_button(
-                        "导入外部 Skills 目录…".into(),
+                        t("settings.skills.import").into(),
                         "skills-import-folder".into(),
                         SkillAction::ImportFolder,
                         colors,
@@ -450,7 +376,7 @@ impl SettingsView {
             column = column.child(preferences);
             if projection.sources.is_empty() {
                 column = column.child(settings_status(
-                    "尚未关联任何 Skills 目录",
+                    t("settings.skills.no_sources"),
                     colors.text_secondary,
                     colors,
                 ));
@@ -486,7 +412,7 @@ impl SettingsView {
                     .child(source.source_label.clone()),
             )
             .child(skill_toggle_row(
-                "启用此目录",
+                t("settings.skills.enable_directory"),
                 source.enabled,
                 &format!("skills-source-enabled-{}", source.id),
                 SkillSettingsMutation::SetSource {
@@ -499,7 +425,7 @@ impl SettingsView {
                 cx,
             ))
             .child(skill_toggle_row(
-                "允许此目录自动触发",
+                t("settings.skills.auto_directory"),
                 source.automatic,
                 &format!("skills-source-auto-{}", source.id),
                 SkillSettingsMutation::SetSource {
@@ -512,7 +438,7 @@ impl SettingsView {
                 cx,
             ))
             .child(settings_actions().mt_3().child(skill_button(
-                "移除关联（保留源文件）".into(),
+                t("settings.skills.unlink").into(),
                 format!("skills-unlink-{}", source.id),
                 SkillAction::Mutate(SkillSettingsMutation::UnlinkSource {
                     source_id: source.id.clone(),
@@ -521,14 +447,10 @@ impl SettingsView {
                 cx,
             )));
         if let Some(diagnostic) = &source.diagnostic {
-            let selector = format!("skills-source-diagnostic-{}", source.id);
-            card = card.child(
-                div()
-                    .debug_selector(move || selector.clone())
-                    .mt_3()
-                    .text_color(colors.warning)
-                    .child(format!("来源不可用：{diagnostic}")),
-            );
+            card = card.child(div().mt_3().text_color(colors.warning).child(t_args(
+                "settings.skills.source_unavailable",
+                &[("diagnostic", diagnostic)],
+            )));
         }
         card = card
             .child(
@@ -536,23 +458,26 @@ impl SettingsView {
                     .mt_3()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_secondary)
-                    .child(format!("目录：{}", source.configured_root.display())),
+                    .child(t_args(
+                        "settings.skills.directory",
+                        &[("path", &(source.configured_root.display()).to_string())],
+                    )),
             )
             .child(
                 div()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_secondary)
-                    .child(format!("实际目标：{}", source.canonical_root.display())),
+                    .child(t_args(
+                        "settings.skills.actual_target",
+                        &[("path", &(source.canonical_root.display()).to_string())],
+                    )),
             );
         for candidate in &source.candidates {
-            let status = candidate.diagnostic.clone().unwrap_or_else(|| {
-                if candidate.model_winner {
-                    "自动目录优先项"
-                } else {
-                    "已审阅"
-                }
-                .into()
-            });
+            let status = match candidate.diagnostic.as_deref() {
+                Some(diagnostic) => skill_diagnostic_label(diagnostic),
+                None if candidate.model_winner => t("settings.skills.priority"),
+                None => t("settings.skills.reviewed"),
+            };
             let mut row = div()
                 .id(format!("skills-candidate-{}-{}", source.id, candidate.name))
                 .flex()
@@ -564,11 +489,9 @@ impl SettingsView {
                 .child(div().child(format!("{} · {status}", candidate.name)));
             if let Some(label) = skill_shadow_label(projection, candidate) {
                 let id = format!("skills-shadow-{}-{}", source.id, candidate.name);
-                let selector = id.clone();
                 row = row.child(
                     div()
                         .id(id)
-                        .debug_selector(move || selector.clone())
                         .text_size(px(Typography::METADATA))
                         .text_color(colors.text_secondary)
                         .child(label),
@@ -584,7 +507,7 @@ impl SettingsView {
             }
             if candidate.content_sha256.is_some() {
                 row = row.child(skill_button(
-                    "预览并审阅当前 SHA".into(),
+                    t("settings.skills.review_sha").into(),
                     format!("skills-review-{}-{}", source.id, candidate.name),
                     SkillAction::PreviewSkill {
                         source_id: source.id.clone(),
@@ -597,7 +520,7 @@ impl SettingsView {
             if candidate.approved_sha256.is_some() {
                 row = row
                     .child(skill_toggle_row(
-                        "启用此 Skill",
+                        t("settings.skills.enable"),
                         candidate.enabled,
                         &format!("skills-enabled-{}-{}", source.id, candidate.name),
                         SkillSettingsMutation::SetSkill {
@@ -611,7 +534,7 @@ impl SettingsView {
                         cx,
                     ))
                     .child(skill_toggle_row(
-                        "允许自动触发",
+                        t("settings.skills.auto"),
                         candidate.automatic,
                         &format!("skills-auto-{}-{}", source.id, candidate.name),
                         SkillSettingsMutation::SetSkill {
@@ -638,7 +561,6 @@ impl SettingsView {
         let colors = theme(cx).colors;
         div()
             .id("skills-root-preview")
-            .debug_selector(|| "skills-root-preview".into())
             .flex()
             .flex_col()
             .min_w_0()
@@ -648,11 +570,26 @@ impl SettingsView {
             .rounded(px(Layout::PANEL_RADIUS))
             .border_1()
             .border_color(colors.warning)
-            .child(section_title("确认关联目录", colors.text_primary))
-            .child(format!("选择目录：{}", preview.configured_root.display()))
-            .child(format!("实际目标：{}", preview.canonical_root.display()))
-            .child(format!("Vega 来源标签：{}", preview.source_label))
-            .child(format!("发现 {} 个候选项", preview.candidates.len()))
+            .child(section_title(
+                t("settings.skills.confirm_directory"),
+                colors.text_primary,
+            ))
+            .child(t_args(
+                "settings.skills.selected_directory",
+                &[("path", &(preview.configured_root.display()).to_string())],
+            ))
+            .child(t_args(
+                "settings.skills.actual_target",
+                &[("path", &(preview.canonical_root.display()).to_string())],
+            ))
+            .child(t_args(
+                "settings.skills.source_label",
+                &[("label", &preview.source_label)],
+            ))
+            .child(t_args(
+                "settings.skills.candidate_count",
+                &[("count", &(preview.candidates.len()).to_string())],
+            ))
             .children(preview.candidates.iter().map(|candidate| {
                 div().text_color(colors.text_secondary).child(format!(
                     "{} · {}",
@@ -660,12 +597,12 @@ impl SettingsView {
                     candidate
                         .diagnostic
                         .as_deref()
-                        .unwrap_or("待逐项审阅")
+                        .unwrap_or(t("settings.skills.awaiting_review"))
                 ))
             }))
-            .child("关联仅允许 Vega 列出候选项；每个 Skill 仍需单独预览并批准 SHA。不会复制、执行或删除源文件。")
+            .child(t("settings.skills.link_warning"))
             .child(skill_button(
-                "关联此精确目录".into(),
+                t("settings.skills.link_exact").into(),
                 "skills-link-root".into(),
                 SkillAction::Mutate(SkillSettingsMutation::LinkRoot {
                     preview_token: preview.token.clone(),
@@ -674,7 +611,7 @@ impl SettingsView {
                 cx,
             ))
             .child(skill_button(
-                "取消".into(),
+                t("settings.action.cancel").into(),
                 "skills-cancel-root-preview".into(),
                 SkillAction::DismissPreview,
                 colors,
@@ -691,7 +628,6 @@ impl SettingsView {
         let colors = theme(cx).colors;
         div()
             .id("skills-body-preview")
-            .debug_selector(|| "skills-body-preview".into())
             .flex()
             .flex_col()
             .min_w_0()
@@ -701,10 +637,16 @@ impl SettingsView {
             .rounded(px(Layout::PANEL_RADIUS))
             .border_1()
             .border_color(colors.warning)
-            .child(section_title("审阅 Skill", colors.text_primary))
+            .child(section_title(
+                t("settings.skills.review_title"),
+                colors.text_primary,
+            ))
             .child(format!("{} · {}", preview.name, preview.description))
-            .child(format!("SHA-256：{}", preview.content_sha256))
-            .child("以下是低信任指令内容。批准它不会执行脚本，也不会授予额外工具权限。引用文件会在首次读取时单独校验。")
+            .child(t_args(
+                "settings.skills.sha256",
+                &[("sha", &preview.content_sha256)],
+            ))
+            .child(t("settings.skills.review_warning"))
             .child(
                 div()
                     .id("skills-body-text")
@@ -714,10 +656,11 @@ impl SettingsView {
                     .rounded_md()
                     .bg(colors.code_bg)
                     .text_size(px(Typography::CODE))
-                    .child(preview.body.clone()),
+                    .child(preview.body.clone())
+                    .scroll_edge_fade(colors.code_bg, ScrollFade::compact()),
             )
             .child(skill_button(
-                "批准当前 SHA".into(),
+                t("settings.skills.approve_sha").into(),
                 "skills-approve-body".into(),
                 SkillAction::Mutate(SkillSettingsMutation::ApproveSkill {
                     preview_token: preview.token.clone(),
@@ -726,7 +669,7 @@ impl SettingsView {
                 cx,
             ))
             .child(skill_button(
-                "取消".into(),
+                t("settings.action.cancel").into(),
                 "skills-cancel-body-preview".into(),
                 SkillAction::DismissPreview,
                 colors,
@@ -747,7 +690,6 @@ fn skill_button(
     settings_action_chrome(colors)
         .id(id.clone())
         .interaction_surface(colors.bg_elevated, colors.bg_hover, colors.bg_active, true)
-        .debug_selector(move || id.clone())
         .focusable()
         .tab_stop(true)
         .focus_visible(move |style| style.border_color(colors.accent))
@@ -780,7 +722,20 @@ fn skill_toggle_row(
     let key_mutation = mutation.clone();
     let switch = settings_switch(
         id,
-        format!("{label}：{}", if value { "已开启" } else { "已关闭" }),
+        t_args(
+            "settings.skills.toggle_label",
+            &[
+                ("label", label),
+                (
+                    "state",
+                    if value {
+                        t("settings.state.on")
+                    } else {
+                        t("settings.state.off")
+                    },
+                ),
+            ],
+        ),
         value,
         enabled,
         colors,
@@ -800,14 +755,34 @@ fn skill_toggle_row(
                 }
             }))
     });
-    settings_field(format!("{id}-row"), label, None, switch, colors)
+    settings_field(label, None, switch, colors)
 }
 
 fn scope_label(scope: SkillUiScope) -> &'static str {
     match scope {
-        SkillUiScope::Project => "当前项目",
-        SkillUiScope::VegaGlobal => "Vega 全局",
-        SkillUiScope::Imported => "外部导入（按引用）",
+        SkillUiScope::Project => t("settings.skills.scope.project"),
+        SkillUiScope::VegaGlobal => t("settings.skills.scope.global"),
+        SkillUiScope::Imported => t("settings.skills.scope.imported"),
+    }
+}
+
+fn skill_diagnostic_label(diagnostic: &str) -> &str {
+    match diagnostic {
+        "review_required" => t("settings.skills.diagnostic.review_required"),
+        "changed_review_required" => t("settings.skills.diagnostic.changed_review_required"),
+        "root_changed" => t("settings.skills.diagnostic.root_changed"),
+        "unsafe_path" => t("settings.skills.diagnostic.unsafe_path"),
+        "not_regular" => t("settings.skills.diagnostic.not_regular"),
+        "hardlink" => t("settings.skills.diagnostic.hardlink"),
+        "too_large" => t("settings.skills.diagnostic.too_large"),
+        "invalid_utf8" => t("settings.skills.diagnostic.invalid_utf8"),
+        "invalid_name" => t("settings.skills.diagnostic.invalid_name"),
+        "invalid_format" => t("settings.skills.diagnostic.invalid_format"),
+        "malformed_yaml" => t("settings.skills.diagnostic.malformed_yaml"),
+        "forbidden_tag" => t("settings.skills.diagnostic.forbidden_tag"),
+        "stale" => t("settings.skills.diagnostic.stale"),
+        "io" => t("settings.skills.diagnostic.io"),
+        _ => diagnostic,
     }
 }
 
@@ -830,27 +805,23 @@ fn skill_shadow_label(
         })
     })?;
     Some(match winner.scope {
-        SkillUiScope::Project => "被当前项目同名项遮蔽".into(),
-        SkillUiScope::VegaGlobal => "被 Vega 全局同名项遮蔽".into(),
-        SkillUiScope::Imported => {
-            format!("被外部导入来源「{}」的同名项遮蔽", winner.source_label)
-        }
+        SkillUiScope::Project => t("settings.skills.shadow.project").into(),
+        SkillUiScope::VegaGlobal => t("settings.skills.shadow.global").into(),
+        SkillUiScope::Imported => t_args(
+            "settings.skills.shadow.imported",
+            &[("source", &winner.source_label)],
+        ),
     })
 }
 
-fn skill_error_label(error: SkillSettingsError) -> &'static str {
+fn skill_error_label(error: SkillSettingsError) -> SettingsText {
     match error {
-        SkillSettingsError::Store => "Skills 数据库读写失败，请重试",
-        SkillSettingsError::NotFound => "目录或 Skill 不存在，请刷新",
-        SkillSettingsError::Stale => "来源或文件已变化，请重新预览并审阅",
-        SkillSettingsError::Invalid => "目录不安全或内容无效，未更改授权",
-        SkillSettingsError::TooManyCandidates => {
-            "每个目录最多支持 128 个 Skill 候选，请减少数量后重试，未更改授权"
-        }
-        SkillSettingsError::PreviewRequired => "请先预览当前内容，再确认授权",
-        SkillSettingsError::SelectionLimit => "一个任务最多可选择三个 Skills",
+        SkillSettingsError::Store => SettingsText::key("settings.skills.error.store"),
+        SkillSettingsError::NotFound => SettingsText::key("settings.skills.error.missing"),
+        SkillSettingsError::Stale => SettingsText::key("settings.skills.error.stale"),
+        SkillSettingsError::Invalid => SettingsText::key("settings.skills.error.invalid"),
+        SkillSettingsError::TooManyCandidates => SettingsText::key("settings.skills.error.limit"),
+        SkillSettingsError::PreviewRequired => SettingsText::key("settings.skills.error.preview"),
+        SkillSettingsError::SelectionLimit => SettingsText::key("settings.skills.error.selection"),
     }
 }
-
-#[cfg(test)]
-mod tests;

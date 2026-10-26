@@ -1,0 +1,310 @@
+{
+  "schema_version": 1,
+  "production_baseline": "8c57f7efb3d886c1c10429edb2bc1219a7b7a753",
+  "original_test_commit": "80f4fe45b8f8f960d2f582e2b9768c729de64f3f",
+  "red_head": "f00a64c30cbc64bf74fba3362e266987629c62f3",
+  "actions_run": "https://github.com/puzige/vega/actions/runs/39361620256",
+  "parent_review_before_implementation": "https://github.com/puzige/vega/pull/504#issuecomment-6282337866",
+  "qualification": "Valid minimal interface-absence RED only. Behavioral assertions have not executed.",
+  "rust_discovered": null,
+  "rust_executed": 0,
+  "rust_passed": 0,
+  "static_rust_definitions": 133,
+  "format": "success",
+  "python_discovered_executed_passed": 34,
+  "production_implementation_order": "Only after parent complete log review and explicit published authorisation; original acceptance remains frozen plus the three-line pre-implementation SQL representation correction.",
+  "jobs": {
+    "nextest": {
+      "sha256": "424120ab43199af6eb18c8b69681e74396a9e0b670abdd692e7fc8f2b107fb7d",
+      "errors": [
+        {
+          "code": "E0432",
+          "message": "unresolved import `vega_runtime::model_compat`",
+          "location": "crates/vega_conversation/src/agent/../model_compatibility_tests/compaction.rs:7:19"
+        },
+        {
+          "code": "E0432",
+          "message": "unresolved import `vega_runtime::model_compat`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/automatic_titles.rs:7:19"
+        },
+        {
+          "code": "E0432",
+          "message": "unresolved import `vega_runtime::model_compat`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/composer_predictions.rs:7:19"
+        },
+        {
+          "code": "E0432",
+          "message": "unresolved import `vega_runtime::model_compat`",
+          "location": "crates/vega_conversation/src/git_workspace/trusted_git/../../model_compatibility_tests/trusted_git.rs:4:19"
+        },
+        {
+          "code": "E0432",
+          "message": "unresolved import `vega_runtime::model_compat`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/mod.rs:6:19"
+        },
+        {
+          "code": "E0432",
+          "message": "unresolved import `crate::ModelCapabilitySettingsService`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs:2:5"
+        },
+        {
+          "code": "E0432",
+          "message": "unresolved import `vega_runtime::model_compat`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs:4:19"
+        },
+        {
+          "code": "E0432",
+          "message": "unresolved import `vega_store::model_capabilities`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs:5:17"
+        },
+        {
+          "code": "E0432",
+          "message": "unresolved imports `crate::types::ModelCapabilityPatch`, `crate::types::ModelCapabilitySettingsErrorCode`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs:3:20"
+        },
+        {
+          "code": "E0433",
+          "message": "cannot find `model_capabilities` in `vega_store`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs:174:21"
+        },
+        {
+          "code": "E0433",
+          "message": "cannot find `model_capabilities` in `vega_store`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs:199:21"
+        },
+        {
+          "code": "E0433",
+          "message": "cannot find `model_capabilities` in `vega_store`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs:351:21"
+        },
+        {
+          "code": "E0609",
+          "message": "no field `model_snapshot` on type `vega_runtime::ChatRequest`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/lifecycle.rs:38:25"
+        },
+        {
+          "code": "E0560",
+          "message": "struct `vega_runtime::ChatRequest` has no field named `model_snapshot`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/lifecycle.rs:151:13"
+        },
+        {
+          "code": "E0599",
+          "message": "no method named `with_model_snapshot` found for struct `OpenAiProvider` in the current scope",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/mod.rs:72:10"
+        },
+        {
+          "code": "E0609",
+          "message": "no field `model_snapshot` on type `vega_runtime::ChatRequest`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/mod.rs:101:28"
+        }
+      ],
+      "python_summary": [
+        "Ran 5 tests in 0.072s",
+        "Ran 15 tests in 0.125s",
+        "Ran 14 tests in 0.089s"
+      ],
+      "job_url": "https://github.com/puzige/vega/actions/runs/39361620256/job/118428877066",
+      "source": "Complete original gh job log; SHA256 is of the original returned log, not ANSI-cleaned projection.",
+      "error_classification": "All listed error spans are predeclared real target interface absence. No unrelated compiler/infra errors were observed."
+    },
+    "clippy": {
+      "sha256": "6d989eef9a2a80e228cc65cab53fc841c1ae76b0651c187aecfad751747518ee",
+      "errors": [
+        {
+          "code": "E0432",
+          "message": "unresolved import `crate::model_compat`",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/mod.rs:2:12"
+        },
+        {
+          "code": "E0432",
+          "message": "unresolved import `crate::ToolChoice`",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/mod.rs:8:24"
+        },
+        {
+          "code": "E0432",
+          "message": "unresolved import `vega_runtime::model_compat`",
+          "location": "crates/vega_conversation/src/agent/../model_compatibility_tests/compaction.rs:7:19"
+        },
+        {
+          "code": "E0432",
+          "message": "unresolved import `vega_runtime::model_compat`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/automatic_titles.rs:7:19"
+        },
+        {
+          "code": "E0432",
+          "message": "unresolved import `vega_runtime::model_compat`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/composer_predictions.rs:7:19"
+        },
+        {
+          "code": "E0432",
+          "message": "unresolved import `vega_runtime::model_compat`",
+          "location": "crates/vega_conversation/src/git_workspace/trusted_git/../../model_compatibility_tests/trusted_git.rs:4:19"
+        },
+        {
+          "code": "E0432",
+          "message": "unresolved import `vega_runtime::model_compat`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/mod.rs:6:19"
+        },
+        {
+          "code": "E0432",
+          "message": "unresolved import `crate::ModelCapabilitySettingsService`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs:2:5"
+        },
+        {
+          "code": "E0432",
+          "message": "unresolved import `vega_runtime::model_compat`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs:4:19"
+        },
+        {
+          "code": "E0432",
+          "message": "unresolved import `vega_store::model_capabilities`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs:5:17"
+        },
+        {
+          "code": "E0432",
+          "message": "unresolved imports `crate::types::ModelCapabilityPatch`, `crate::types::ModelCapabilitySettingsErrorCode`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs:3:20"
+        },
+        {
+          "code": "E0433",
+          "message": "cannot find `model_capabilities` in `vega_store`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs:174:21"
+        },
+        {
+          "code": "E0433",
+          "message": "cannot find `model_capabilities` in `vega_store`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs:199:21"
+        },
+        {
+          "code": "E0433",
+          "message": "cannot find `model_capabilities` in `vega_store`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs:351:21"
+        },
+        {
+          "code": "E0609",
+          "message": "no field `tool_choice` on type `provider::ChatRequest`",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/chat.rs:345:21"
+        },
+        {
+          "code": "E0609",
+          "message": "no field `tool_choice` on type `provider::ChatRequest`",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/chat.rs:362:17"
+        },
+        {
+          "code": "E0609",
+          "message": "no field `tool_choice` on type `provider::ChatRequest`",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/chat.rs:374:17"
+        },
+        {
+          "code": "E0609",
+          "message": "no field `tool_choice` on type `provider::ChatRequest`",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/chat.rs:387:21"
+        },
+        {
+          "code": "E0609",
+          "message": "no field `tool_choice` on type `provider::ChatRequest`",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/chat.rs:398:17"
+        },
+        {
+          "code": "E0609",
+          "message": "no field `model_snapshot` on type `provider::ChatRequest`",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/chat.rs:494:11"
+        },
+        {
+          "code": "E0609",
+          "message": "no field `model_snapshot` on type `provider::ChatRequest`",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/chat.rs:589:21"
+        },
+        {
+          "code": "E0599",
+          "message": "no method named `with_model_snapshot` found for struct `openai::OpenAiProvider` in the current scope",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/errors.rs:32:18"
+        },
+        {
+          "code": "E0599",
+          "message": "no method named `with_model_snapshot` found for struct `openai::OpenAiProvider` in the current scope",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/errors.rs:110:14"
+        },
+        {
+          "code": "E0599",
+          "message": "no method named `with_model_snapshot` found for struct `openai::OpenAiProvider` in the current scope",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/errors.rs:156:14"
+        },
+        {
+          "code": "E0599",
+          "message": "no method named `with_model_snapshot` found for struct `openai::OpenAiProvider` in the current scope",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/errors.rs:271:10"
+        },
+        {
+          "code": "E0560",
+          "message": "struct `agent::AgentRequest` has no field named `model_snapshot`",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs:100:9"
+        },
+        {
+          "code": "E0609",
+          "message": "no field `model_snapshot` on type `&provider::ChatRequest`",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs:170:40"
+        },
+        {
+          "code": "E0609",
+          "message": "no field `model_snapshot` on type `&provider::ChatRequest`",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs:648:28"
+        },
+        {
+          "code": "E0599",
+          "message": "no method named `with_model_snapshot` found for struct `openai::OpenAiProvider` in the current scope",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/transport.rs:44:14"
+        },
+        {
+          "code": "E0599",
+          "message": "no method named `with_model_snapshot` found for struct `openai::OpenAiProvider` in the current scope",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/transport.rs:121:14"
+        },
+        {
+          "code": "E0599",
+          "message": "no method named `with_model_snapshot` found for struct `openai::OpenAiProvider` in the current scope",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/transport.rs:252:10"
+        },
+        {
+          "code": "E0599",
+          "message": "no method named `with_model_snapshot` found for struct `openai::OpenAiProvider` in the current scope",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/transport.rs:272:10"
+        },
+        {
+          "code": "E0599",
+          "message": "no method named `with_model_snapshot` found for struct `openai::OpenAiProvider` in the current scope",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/transport.rs:298:14"
+        },
+        {
+          "code": "E0560",
+          "message": "struct `provider::ChatRequest` has no field named `model_snapshot`",
+          "location": "crates/vega_runtime/src/openai/compatibility_tests/mod.rs:93:9"
+        },
+        {
+          "code": "E0609",
+          "message": "no field `model_snapshot` on type `vega_runtime::ChatRequest`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/lifecycle.rs:38:25"
+        },
+        {
+          "code": "E0560",
+          "message": "struct `vega_runtime::ChatRequest` has no field named `model_snapshot`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/lifecycle.rs:151:13"
+        },
+        {
+          "code": "E0599",
+          "message": "no method named `with_model_snapshot` found for struct `vega_runtime::OpenAiProvider` in the current scope",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/mod.rs:72:10"
+        },
+        {
+          "code": "E0609",
+          "message": "no field `model_snapshot` on type `vega_runtime::ChatRequest`",
+          "location": "crates/vega_conversation/src/model_compatibility_tests/mod.rs:101:28"
+        }
+      ],
+      "python_summary": [],
+      "job_url": "https://github.com/puzige/vega/actions/runs/39361620256/job/118428876921",
+      "source": "Complete original gh job log; SHA256 is of the original returned log, not ANSI-cleaned projection.",
+      "error_classification": "All listed error spans are predeclared real target interface absence. No unrelated compiler/infra errors were observed."
+    }
+  }
+}

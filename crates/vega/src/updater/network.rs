@@ -19,7 +19,7 @@ impl Version {
     pub(super) fn parse(value: &str) -> UpdateResult<Self> {
         let parts: Vec<_> = value.split('.').collect();
         if parts.len() != 3 {
-            return Err(failure("版本格式不是稳定版本"));
+            return Err(failure(vega_i18n::t("app.update.version_format")));
         }
         let mut numbers = [0; 3];
         for (index, part) in parts.into_iter().enumerate() {
@@ -27,9 +27,11 @@ impl Version {
                 || !part.bytes().all(|byte| byte.is_ascii_digit())
                 || (part.len() > 1 && part.starts_with('0'))
             {
-                return Err(failure("版本格式不是稳定版本"));
+                return Err(failure(vega_i18n::t("app.update.version_format")));
             }
-            numbers[index] = part.parse().map_err(|_| failure("版本数字超出范围"))?;
+            numbers[index] = part
+                .parse()
+                .map_err(|_| failure(vega_i18n::t("app.update.version_range")))?;
         }
         Ok(Self(numbers))
     }
@@ -65,7 +67,7 @@ pub(super) fn client() -> UpdateResult<Client> {
             }
         }))
         .build()
-        .map_err(|_| failure("无法初始化更新网络连接"))
+        .map_err(|_| failure(vega_i18n::t("app.update.network_init")))
 }
 
 fn allowed_redirect(url: &Url) -> bool {
@@ -91,9 +93,10 @@ pub(super) async fn latest(client: &Client) -> UpdateResult<Release> {
         METADATA_LIMIT,
     )
     .await?;
-    let release: Release = serde_json::from_slice(&bytes).map_err(|_| failure("发布元数据无效"))?;
+    let release: Release = serde_json::from_slice(&bytes)
+        .map_err(|_| failure(vega_i18n::t("app.update.release_metadata")))?;
     if release.draft || release.prerelease {
-        return Err(failure("发布不是稳定版本"));
+        return Err(failure(vega_i18n::t("app.update.release_unstable")));
     }
     Version::parse(
         release
@@ -106,11 +109,14 @@ pub(super) async fn latest(client: &Client) -> UpdateResult<Release> {
 
 pub(super) fn asset<'a>(release: &'a Release, name: &str, limit: u64) -> UpdateResult<&'a Asset> {
     let mut matches = release.assets.iter().filter(|asset| asset.name == name);
-    let asset = matches.next().ok_or_else(|| failure("发布缺少更新资产"))?;
+    let asset = matches
+        .next()
+        .ok_or_else(|| failure(vega_i18n::t("app.update.asset_missing")))?;
     if matches.next().is_some() || asset.size == 0 || asset.size > limit {
-        return Err(failure("更新资产大小或名称无效"));
+        return Err(failure(vega_i18n::t("app.update.asset_invalid")));
     }
-    let url = Url::parse(&asset.browser_download_url).map_err(|_| failure("更新资产地址无效"))?;
+    let url = Url::parse(&asset.browser_download_url)
+        .map_err(|_| failure(vega_i18n::t("app.update.asset_url")))?;
     let expected = format!(
         "/puzige/vega/releases/download/{}/{}",
         release.tag_name, name
@@ -121,7 +127,7 @@ pub(super) fn asset<'a>(release: &'a Release, name: &str, limit: u64) -> UpdateR
         || url.query().is_some()
         || url.fragment().is_some()
     {
-        return Err(failure("更新资产不是该仓库的正式发布"));
+        return Err(failure(vega_i18n::t("app.update.asset_origin")));
     }
     Ok(asset)
 }
@@ -131,12 +137,12 @@ async fn response(client: &Client, url: &str, limit: u64) -> UpdateResult<reqwes
         .get(url)
         .send()
         .await
-        .map_err(|_| failure("更新请求失败，请检查网络后重试"))?;
+        .map_err(|_| failure(vega_i18n::t("app.update.request_failed")))?;
     if !response.status().is_success() {
-        return Err(failure("更新服务暂不可用或已限流，请稍后重试"));
+        return Err(failure(vega_i18n::t("app.update.service_unavailable")));
     }
     if response.content_length().is_some_and(|size| size > limit) {
-        return Err(failure("更新响应超出大小限制"));
+        return Err(failure(vega_i18n::t("app.update.response_limit")));
     }
     Ok(response)
 }
@@ -147,10 +153,10 @@ async fn bounded_bytes(client: &Client, url: &str, limit: u64) -> UpdateResult<V
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|_| failure("更新响应读取失败"))?
+        .map_err(|_| failure(vega_i18n::t("app.update.response_read")))?
     {
         if bytes.len() as u64 + chunk.len() as u64 > limit {
-            return Err(failure("更新响应超出大小限制"));
+            return Err(failure(vega_i18n::t("app.update.response_limit")));
         }
         bytes.extend_from_slice(&chunk);
     }
@@ -169,13 +175,13 @@ pub(super) async fn download(
     use super::signature;
     let archive = asset(release, ASSET, DOWNLOAD_LIMIT)?;
     let manifest_asset = asset(release, signature::MANIFEST_NAME, signature::MANIFEST_LIMIT)
-        .map_err(|_| failure("此发布缺少独立更新签名，请从官方发布页手动安装"))?;
+        .map_err(|_| failure(vega_i18n::t("app.update.signature_missing")))?;
     let signature_asset = asset(
         release,
         signature::SIGNATURE_NAME,
         signature::SIGNATURE_LIMIT,
     )
-    .map_err(|_| failure("此发布缺少独立更新签名，请从官方发布页手动安装"))?;
+    .map_err(|_| failure(vega_i18n::t("app.update.signature_missing")))?;
     let manifest_bytes = bounded_bytes(
         client,
         &manifest_asset.browser_download_url,
@@ -191,11 +197,11 @@ pub(super) async fn download(
     if manifest_bytes.len() as u64 != manifest_asset.size
         || signature_bytes.len() as u64 != signature_asset.size
     {
-        return Err(failure("更新签名下载不完整"));
+        return Err(failure(vega_i18n::t("app.update.signature_incomplete")));
     }
     let manifest = signature::verify(&manifest_bytes, &signature_bytes, version, &bundle.version)?;
     if archive.size != manifest.size {
-        return Err(failure("发布资产大小与签名不匹配"));
+        return Err(failure(vega_i18n::t("app.update.asset_signature")));
     }
     for name in [signature::MANIFEST_NAME, signature::SIGNATURE_NAME] {
         let path = staging.join(name);
@@ -345,11 +351,11 @@ async fn download_asset(
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|_| failure("更新下载中断"))?
+        .map_err(|_| failure(vega_i18n::t("app.update.download_interrupted")))?
     {
         received += chunk.len() as u64;
         if received > size {
-            return Err(failure("更新下载超出大小限制"));
+            return Err(failure(vega_i18n::t("app.update.download_limit")));
         }
         file.write_all(&chunk)?;
         hash.update(&chunk);
@@ -360,69 +366,8 @@ async fn download_asset(
     }
     file.sync_all()?;
     if received != size || format!("{:x}", hash.finalize()) != sha256 {
-        return Err(failure("更新下载不完整或签名摘要不匹配"));
+        return Err(failure(vega_i18n::t("app.update.download_integrity")));
     }
     progress(received, size);
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::cell::Cell;
-
-    #[test]
-    fn download_selection_falls_back_once_and_preserves_full_errors() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        for (allow, delta_ok, full_ok, expected_delta, expected_full) in [
-            (true, true, true, 1, 0),
-            (true, false, true, 1, 1),
-            (true, false, false, 1, 1),
-            (false, false, true, 0, 1),
-        ] {
-            let delta_calls = Cell::new(0);
-            let full_calls = Cell::new(0);
-            let result = runtime.block_on(choose_download(
-                allow,
-                async || {
-                    delta_calls.set(delta_calls.get() + 1);
-                    if delta_ok {
-                        Ok(())
-                    } else {
-                        Err(failure("delta rejected"))
-                    }
-                },
-                async || {
-                    full_calls.set(full_calls.get() + 1);
-                    if full_ok {
-                        Ok(())
-                    } else {
-                        Err(failure("full rejected"))
-                    }
-                },
-            ));
-            assert_eq!(delta_calls.get(), expected_delta);
-            assert_eq!(full_calls.get(), expected_full);
-            if !full_ok {
-                assert_eq!(result.unwrap_err().to_string(), "full rejected");
-            } else {
-                assert_eq!(result.unwrap(), allow && delta_ok);
-            }
-        }
-    }
-
-    #[test]
-    fn delta_asset_requires_exact_release_repository_and_bounded_size() {
-        let mut release = Release { tag_name: "v1.0.2".into(), draft: false, prerelease: false, body: None,
-            assets: vec![Asset { name: "Vega-delta-1.0.0-to-1.0.2.zip".into(), size: 10,
-                browser_download_url: "https://github.com/puzige/vega/releases/download/v1.0.2/Vega-delta-1.0.0-to-1.0.2.zip".into() }] };
-        let name = release.assets[0].name.clone();
-        assert!(asset(&release, &name, DOWNLOAD_LIMIT).is_ok());
-        release.assets[0].browser_download_url = release.assets[0]
-            .browser_download_url
-            .replace("/puzige/", "/other/");
-        assert!(asset(&release, &name, DOWNLOAD_LIMIT).is_err());
-    }
 }

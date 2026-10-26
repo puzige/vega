@@ -52,11 +52,6 @@ pub struct BranchSnapshot {
     pub branches: Vec<BranchItem>,
 }
 
-/// Bounded `@file` candidate projection (A2-12, S8-T47): project-relative
-/// file paths for the composer reference selector. Produced by the app
-/// layer from a gitignore-aware bounded walk (deterministic lexicographic
-/// order, hard entry cap), handed to the IO-free selector as a typed
-/// snapshot. No filesystem access happens behind this type.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FileIndexSnapshot {
     pub entries: Vec<String>,
@@ -76,15 +71,15 @@ pub enum FileIndexFailureCode {
 }
 
 impl FileIndexFailureCode {
-    pub const fn message(self) -> &'static str {
+    pub fn message(self) -> &'static str {
         match self {
-            Self::Cancelled => "索引已取消",
-            Self::DeadlineExceeded => "索引超时，请重试",
-            Self::VisitedLimitExceeded => "项目过大，请缩小范围后重试",
-            Self::RetainedBytesExceeded => "候选过多，请重试",
-            Self::ProjectUnavailable => "项目不可用，请重试",
-            Self::Traversal => "无法读取项目，请重试",
-            Self::InvalidPath => "项目路径无效，请重试",
+            Self::Cancelled => vega_i18n::t("domain.index.cancelled"),
+            Self::DeadlineExceeded => vega_i18n::t("domain.index.timeout"),
+            Self::VisitedLimitExceeded => vega_i18n::t("domain.index.too_large"),
+            Self::RetainedBytesExceeded => vega_i18n::t("domain.index.too_many"),
+            Self::ProjectUnavailable => vega_i18n::t("domain.index.unavailable"),
+            Self::Traversal => vega_i18n::t("domain.index.read_failed"),
+            Self::InvalidPath => vega_i18n::t("domain.index.invalid_path"),
         }
     }
 }
@@ -107,26 +102,23 @@ pub enum FileReferenceFailureCode {
 }
 
 impl FileReferenceFailureCode {
-    pub const fn message(self) -> &'static str {
+    pub fn message(self) -> &'static str {
         match self {
-            Self::ProjectUnavailable => "项目不可用，请编辑引用后重试",
-            Self::OutsideProject => "引用路径超出项目范围，请编辑后重试",
-            Self::Missing => "引用文件不存在，请编辑后重试",
-            Self::BinaryContent => "引用文件不是文本，请编辑后重试",
-            Self::InvalidReference => "引用无法解析，请编辑后重试",
-            Self::TooManyReferences => "引用文件过多，请编辑后重试",
-            Self::FileTooLarge => "引用文件过大，请编辑后重试",
-            Self::TotalBytesExceeded => "引用内容过多，请编辑后重试",
-            Self::SymlinkRejected => "不支持引用符号链接，请编辑后重试",
-            Self::NotRegularFile => "只能引用普通文件，请编辑后重试",
-            Self::ReadFailed => "引用文件读取失败，请编辑后重试",
+            Self::ProjectUnavailable => vega_i18n::t("domain.reference.unavailable"),
+            Self::OutsideProject => vega_i18n::t("domain.reference.outside"),
+            Self::Missing => vega_i18n::t("domain.reference.missing"),
+            Self::BinaryContent => vega_i18n::t("domain.reference.binary"),
+            Self::InvalidReference => vega_i18n::t("domain.reference.invalid"),
+            Self::TooManyReferences => vega_i18n::t("domain.reference.too_many"),
+            Self::FileTooLarge => vega_i18n::t("domain.reference.too_large"),
+            Self::TotalBytesExceeded => vega_i18n::t("domain.reference.total_limit"),
+            Self::SymlinkRejected => vega_i18n::t("domain.reference.symlink"),
+            Self::NotRegularFile => vega_i18n::t("domain.reference.not_file"),
+            Self::ReadFailed => vega_i18n::t("domain.reference.read_failed"),
         }
     }
 }
 
-/// Provider/model/thinking selection state for the composer selector
-/// (A2-14, R2). The exact capability projection is supplied by the app
-/// boundary; the composer never guesses a wire protocol from a URL/model.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ComposerDefaults {
     /// Selected model id (empty = no explicit selection yet).
@@ -278,7 +270,6 @@ impl std::fmt::Debug for CommitDraft {
     }
 }
 
-/// Stable content-free failure vocabulary for T34.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommitErrorCode {
     InvalidRoot,
@@ -448,7 +439,6 @@ pub struct WorkspaceSnapshot {
     pub stats: WorkspaceStats,
 }
 
-/// Frozen syntax-highlight language vocabulary for Sprint 6.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffLanguage {
     Rust,

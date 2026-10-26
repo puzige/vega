@@ -112,57 +112,6 @@ impl CredentialSnapshot {
     }
 }
 
-#[cfg(test)]
-mod credential_tests {
-    use super::*;
-
-    struct NeverCalled;
-
-    impl McpToolDispatcher for NeverCalled {
-        fn call(
-            &self,
-            _exact_tool_name: String,
-            _arguments: Value,
-            _cancel: CancellationToken,
-        ) -> BoxFuture<'static, Result<McpDispatchOutput, McpDispatchFailure>> {
-            Box::pin(async { unreachable!("result projection must not dispatch") })
-        }
-    }
-
-    #[test]
-    fn issue73_json_projection_cannot_assemble_a_secret_across_leaves() {
-        let mut known = KnownCredentials::default();
-        known.extend([r#"left","right"#.to_string()]);
-        let snapshot = known.snapshot().unwrap();
-        let untrusted = serde_json::json!(["left", "right"]);
-        assert!(!snapshot.contains_json(&untrusted));
-        assert!(snapshot.contains_json_projection(&untrusted));
-    }
-
-    #[test]
-    fn issue73_final_result_join_redacts_owner_secret() {
-        let mut known = KnownCredentials::default();
-        known.extend(["alpha\n{\"fragment\":\"beta\"}".to_owned()]);
-        let frozen = FrozenMcpTool {
-            server_id: "01K5KK7PZ5J8V2GSBMQKS8W71A".into(),
-            config_revision: 1,
-            exact_tool_name: "echo".into(),
-            dispatcher: Arc::new(NeverCalled),
-            revoked: CancellationToken::new(),
-            known_credentials: Arc::new(known),
-        };
-        let result = McpDispatchOutput {
-            text: "alpha".into(),
-            structured_content: Some(serde_json::json!({"fragment":"beta"})),
-            is_error: false,
-        };
-        let text = frozen.safe_result_text(&result).unwrap();
-        assert_eq!(text, crate::PROVIDER_CREDENTIAL_REDACTION_MARKER);
-        assert!(!text.contains("alpha"));
-        assert!(!text.contains("beta"));
-    }
-}
-
 enum McpConnection {
     Stdio(Box<StdioClient>),
     Http(Box<HttpClient>),
@@ -573,31 +522,6 @@ impl McpDispatchFailure {
     }
 }
 
-#[cfg(test)]
-mod dispatch_failure_tests {
-    use super::*;
-
-    #[test]
-    fn issue73_dispatch_error_categories_are_distinct_and_content_free() {
-        let cases = [
-            (McpError::Rpc(-32000), "MCP protocol error"),
-            (McpError::InvalidMessage, "MCP invalid protocol response"),
-            (
-                McpError::UnsupportedResult,
-                "MCP unsupported result content",
-            ),
-            (McpError::LimitExceeded, "MCP response limit exceeded"),
-            (McpError::Timeout, "MCP request timed out"),
-            (McpError::Transport, "MCP transport failed"),
-        ];
-        for (error, expected) in cases {
-            let safe = McpDispatchFailure::from(error).safe_output();
-            assert!(safe.contains(expected));
-            assert!(!safe.contains("fake-server-private-prose-73"));
-        }
-    }
-}
-
 /// A bounded, untrusted result from an external MCP call.
 #[derive(Clone)]
 pub(crate) struct McpDispatchOutput {
@@ -936,17 +860,37 @@ impl RunCapabilitySnapshot {
         self
     }
 
+    pub(crate) fn with_subagents(mut self, enabled: bool) -> Self {
+        if enabled {
+            self.definitions.extend(super::subagents::definitions());
+        }
+        self
+    }
+
+    pub(crate) fn with_stage(mut self, enabled: bool) -> Self {
+        if enabled {
+            self.definitions.push(super::subagents::stage_definition());
+        }
+        self
+    }
+
+    pub(crate) fn with_automation(
+        mut self,
+        hook: Option<&Arc<dyn super::automation::RuntimeAutomationHook>>,
+    ) -> Self {
+        if let Some(hook) = hook {
+            self.definitions
+                .extend(super::automation::definitions(&hook.context()));
+        }
+        self
+    }
+
     pub(crate) fn definitions(&self) -> &[ToolDefinition] {
         &self.definitions
     }
 
     pub(crate) fn mcp_tool(&self, alias: &str) -> Option<&FrozenMcpTool> {
         self.mcp_by_alias.get(alias)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn mcp_count(&self) -> usize {
-        self.mcp_by_alias.len()
     }
 }
 

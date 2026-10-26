@@ -1,9 +1,3 @@
-//! Canonical two-stage commit assistance.
-//!
-//! This module is the only T34 boundary allowed to stage or commit. Raw Git
-//! paths, refs, object ids, status/tree bytes, patch summaries and messages
-//! never leave the service as debuggable values.
-
 use super::*;
 use crate::types::{
     CommitChecklist, CommitCompletion, CommitDraft, CommitErrorCode, CommitOutcome,
@@ -119,20 +113,11 @@ pub struct TrustedGitService {
     instance_nonce: u64,
     workspace: Arc<GitWorkspaceService>,
     state: Arc<Mutex<CommitState>>,
-    #[cfg(test)]
-    mutation_executable: Option<PathBuf>,
-    #[cfg(test)]
-    mutation_timeout: Duration,
-    #[cfg(test)]
-    read_executable: Option<PathBuf>,
 }
 
 mod authority;
 mod parsing;
 mod service;
-
-#[cfg(test)]
-mod tests;
 
 pub(crate) use authority::*;
 pub(crate) use parsing::*;

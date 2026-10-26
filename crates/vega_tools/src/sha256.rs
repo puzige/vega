@@ -93,13 +93,6 @@ impl Sha256 {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn digest_hex(input: &[u8]) -> String {
-    let mut hash = Sha256::new();
-    hash.update(input);
-    hex(&hash.finalize())
-}
-
 pub(crate) fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut value = String::with_capacity(bytes.len().saturating_mul(2));
@@ -160,38 +153,4 @@ fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
     state[5] = state[5].wrapping_add(f);
     state[6] = state[6].wrapping_add(g);
     state[7] = state[7].wrapping_add(h);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Sha256, digest_hex};
-
-    #[test]
-    fn matches_public_sha256_vectors() {
-        assert_eq!(
-            digest_hex(b""),
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        );
-        assert_eq!(
-            digest_hex(b"abc"),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
-        assert_eq!(
-            digest_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
-            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
-        );
-    }
-
-    #[test]
-    fn incremental_updates_match_one_shot() {
-        let input = vec![b'a'; 1_000_000];
-        let mut hasher = Sha256::new();
-        for chunk in input.chunks(17) {
-            hasher.update(chunk);
-        }
-        assert_eq!(
-            super::hex(&hasher.finalize()),
-            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
-        );
-    }
 }

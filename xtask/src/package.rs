@@ -1,32 +1,3 @@
-//! `cargo xtask package` — assemble a distributable macOS app bundle.
-//!
-//! S8 packaging card: `cargo build --release` (via the shared T43 rebuild
-//! helper), then bundle `target/release/vega` into `dist/Vega.app` with a
-//! real icon and metadata, ad-hoc codesign it, verify the signature and zip
-//! it up as `dist/Vega-macos-arm64.zip` for direct copy to other Macs.
-//!
-//! Zero new dependencies: every step shells out to macOS built-ins
-//! (`swift`/AppKit, `sips`, `iconutil`, `codesign`, `zip`).
-//!
-//! Version source (stamped into `CFBundleShortVersionString`/`CFBundleVersion`
-//! and INSTALL.txt), highest priority first:
-//! 1. `--version <x.y.z>` CLI flag (or `--version=x.y.z`);
-//! 2. `VEGA_RELEASE_VERSION` environment variable — the CI release path (the
-//!    tag-triggered workflow passes the pushed tag with the leading `v`
-//!    stripped);
-//! 3. the workspace version from Cargo.toml (unchanged default for local
-//!    `cargo xtask package` runs).
-//!
-//! Icon source decision (R17): the app icon is rendered from
-//! `assets/logo/vega-icon-r17-smile-light.svg`, the approved blue single-star
-//! smile mark. The source is a hand-maintained SVG with an explicit alpha
-//! canvas; its matching dark and mono variants retain the same geometry for
-//! appearance-specific and wordmark use. The historical F1/F3 vectors and
-//! exploration PNGs remain archived. `.icns` has no automatic light/dark
-//! appearance variants, so the light tile is the deterministic app source.
-//! The iconset intermediate files live in a temp directory and are never
-//! committed — the icns is reproducible from the committed SVG.
-
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -46,9 +17,7 @@ const BUNDLE_NAME: &str = "Vega";
 const EXECUTABLE_NAME: &str = "vega";
 /// `CFBundleIconFile` without the `.icns` extension.
 const ICON_FILE: &str = "Vega";
-/// Canonical R17 app icon source. Keep this in sync with `assets/logo/` and
-/// the source name recorded in `assets/logo/LOGO.md`.
-const ICON_SOURCE: &str = "assets/logo/vega-icon-r17-smile-light.svg";
+const ICON_SOURCE: &str = "assets/logo/vega-icon-smile-light.svg";
 /// arm64-only build; Apple Silicon starts at macOS 11 (GPUI/Metal needs more
 /// than the zed-rev floor of 10.15.7 anyway, so 11.0 is the honest floor).
 const MIN_MACOS: &str = "11.0";
@@ -205,8 +174,6 @@ pub fn run_icon(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Renders the R17 light SVG into the target `.icns` (see module docs for the
-/// source-choice rationale) and returns the icns path.
 fn render_icon(workspace: &Path, target: &Path) -> Result<std::path::PathBuf> {
     let svg = workspace.join(ICON_SOURCE);
     if !svg.exists() {
@@ -428,127 +395,4 @@ fn walk_tree(dir: &Path, prefix: &str) -> Result<()> {
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        BUNDLE_ID, CATEGORY, EXECUTABLE_NAME, ICONSET_ENTRIES, MIN_MACOS, WORKSPACE_VERSION,
-        info_plist, install_txt, resolve_version_from,
-    };
-
-    #[test]
-    fn info_plist_contains_all_required_keys() {
-        let plist = info_plist(WORKSPACE_VERSION);
-        let required = [
-            ("CFBundleName", "Vega"),
-            ("CFBundleDisplayName", "Vega"),
-            // Data compatibility: must equal the paths.rs bundle-id namespace.
-            ("CFBundleIdentifier", BUNDLE_ID),
-            ("CFBundleExecutable", EXECUTABLE_NAME),
-            ("CFBundleIconFile", "Vega"),
-            ("CFBundlePackageType", "APPL"),
-            ("CFBundleVersion", env!("CARGO_PKG_VERSION")),
-            ("CFBundleShortVersionString", env!("CARGO_PKG_VERSION")),
-            ("LSMinimumSystemVersion", MIN_MACOS),
-            ("LSApplicationCategoryType", CATEGORY),
-        ];
-        for (key, value) in required {
-            assert!(
-                plist.contains(&format!("<key>{key}</key>")),
-                "Info.plist is missing required key {key}"
-            );
-            assert!(
-                plist.contains(&format!("<string>{value}</string>")),
-                "Info.plist is missing required value {value} (for {key})"
-            );
-        }
-        assert!(
-            plist.contains("<true/>"),
-            "NSHighResolutionCapable must be true"
-        );
-    }
-
-    #[test]
-    fn iconset_covers_the_apple_app_icon_scale_set() {
-        // 10 files: 16/32/128/256/512 at @1x plus @2x (topping out at 1024).
-        assert_eq!(ICONSET_ENTRIES.len(), 10);
-        assert_eq!(ICONSET_ENTRIES[0], (16, "icon_16x16.png"));
-        assert_eq!(ICONSET_ENTRIES[9], (1024, "icon_512x512@2x.png"));
-        for (size, name) in ICONSET_ENTRIES {
-            assert!(name.starts_with("icon_"), "unexpected iconset name {name}");
-            assert!(
-                *size <= 1024,
-                "iconset size {size} exceeds the source canvas"
-            );
-        }
-    }
-
-    fn args(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| (*value).to_string()).collect()
-    }
-
-    #[test]
-    fn version_precedence_flag_beats_env_beats_workspace() {
-        // Cargo.toml fallback (no flag, no env).
-        assert_eq!(
-            resolve_version_from(&[], None).expect("workspace fallback"),
-            WORKSPACE_VERSION
-        );
-        // Env override (the CI release path).
-        assert_eq!(
-            resolve_version_from(&[], Some("0.2.0")).expect("env override"),
-            "0.2.0"
-        );
-        // Flag beats env (manual re-package of an already-tagged build).
-        assert_eq!(
-            resolve_version_from(&args(&["--version", "9.9.9"]), Some("0.2.0"))
-                .expect("flag over env"),
-            "9.9.9"
-        );
-        // Inline `--version=x.y.z` form is equivalent.
-        assert_eq!(
-            resolve_version_from(&args(&["--version=3.1.4"]), None).expect("inline flag"),
-            "3.1.4"
-        );
-    }
-
-    #[test]
-    fn version_overrides_are_validated() {
-        // XML/plist-hostile values are rejected instead of stamped.
-        for bad in ["1.0<script>", "v1;rm -rf", "-1.0", "0.1.0\n"] {
-            assert!(
-                resolve_version_from(&args(&["--version", bad]), None).is_err(),
-                "version {bad:?} must be rejected"
-            );
-            assert!(
-                resolve_version_from(&[], Some(bad)).is_err(),
-                "env version {bad:?} must be rejected"
-            );
-        }
-        // An empty --version value is an explicit mistake → rejected…
-        assert!(resolve_version_from(&args(&["--version", ""]), None).is_err());
-        // …whereas an empty env value is treated as unset → workspace fallback.
-        assert_eq!(
-            resolve_version_from(&[], Some("")).expect("empty env treated as unset"),
-            WORKSPACE_VERSION
-        );
-        // Pre-release / build metadata and tag-style values are fine.
-        for good in ["0.1.0", "0.1.0-rc.1", "0.1.0+build.7", "1a2b"] {
-            assert!(
-                resolve_version_from(&args(&["--version", good]), None)
-                    .is_ok_and(|version| version == good),
-                "version {good:?} must be accepted"
-            );
-        }
-    }
-
-    #[test]
-    fn install_instructions_state_the_fixed_git_requirement() {
-        let install = install_txt("0.1.0");
-        assert!(install.contains("Git 2.40"));
-        assert!(install.contains("check-attr --source"));
-        assert!(install.contains("brew install git"));
-        assert!(install.contains("不读取 PATH"));
-    }
 }

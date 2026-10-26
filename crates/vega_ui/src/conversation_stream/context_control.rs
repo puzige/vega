@@ -1,11 +1,11 @@
-//! #76: IO-free, exact-owner compaction lifecycle projection.
+use super::context_usage::ContextUsageSource;
 use super::*;
 use vega_conversation::types::{
-    ContextAccountingRecord, ContextCompactionFailureCode as Failure,
-    ContextCompactionStatus as Status, ContextCompactionStatusRecord, ContextSettings,
+    ContextAccountingRecord, ContextAccountingStage, ContextCompactionFailureCode as Failure,
+    ContextCompactionStatus as Status, ContextCompactionStatusRecord, ContextSettings, TokenUsage,
 };
 
-const LOAD_ERROR: &str = "上下文信息读取失败，请稍后重试";
+const LOAD_ERROR: &str = "ui.could_not_load_context_information_try_again_later";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ContextUsageProjection {
@@ -22,6 +22,11 @@ impl ContextUsageProjection {
     }
 }
 
+struct PrimaryContextCall {
+    response_id: String,
+    total: Option<u64>,
+}
+
 pub(crate) struct ContextControl {
     pub open: bool,
     limit: Entity<TextInput>,
@@ -30,6 +35,9 @@ pub(crate) struct ContextControl {
     settings: Option<ContextSettings>,
     model_input_limit: Option<u64>,
     estimate: Option<u64>,
+    usage_source: ContextUsageSource,
+    latest_call_total: Option<u64>,
+    live_call: Option<PrimaryContextCall>,
     live_accounting: Option<(String, ContextAccountingRecord)>,
     compactable: bool,
     next_request: u64,
@@ -46,12 +54,23 @@ impl ContextControl {
     pub fn new(cx: &mut Context<ConversationStream>) -> Self {
         Self {
             open: false,
-            limit: cx.new(|cx| TextInput::new(cx, "未配置", false).with_tab_stop(true)),
-            reserve: cx.new(|cx| TextInput::new(cx, "输出预留", false).with_tab_stop(true)),
+            limit: cx.new(|cx| {
+                TextInput::new(cx, "", false)
+                    .with_placeholder_key("ui.not_configured")
+                    .with_tab_stop(true)
+            }),
+            reserve: cx.new(|cx| {
+                TextInput::new(cx, "", false)
+                    .with_placeholder_key("ui.output_reserve")
+                    .with_tab_stop(true)
+            }),
             automatic: false,
             settings: None,
             model_input_limit: None,
             estimate: None,
+            usage_source: ContextUsageSource::EstimatedInput,
+            latest_call_total: None,
+            live_call: None,
             live_accounting: None,
             compactable: false,
             next_request: 0,
@@ -82,9 +101,12 @@ impl ConversationStream {
         )
     }
 
+    pub(crate) fn context_usage_display(&self) -> context_usage::ContextUsageDisplay {
+        let (tokens, limit) = self.context_usage_source();
+        context_usage::ContextUsageDisplay::new(tokens, limit, self.context_control.usage_source)
+    }
+
     pub(crate) fn reset_context_control(&mut self, cx: &mut Context<Self>) {
-        // R7: model change invalidates all old settings, status and ACK owners.
-        // Keep the counter monotonic so an ABA switch cannot accept an old ACK.
         let next = self.context_control.next_request;
         self.context_control = ContextControl::new(cx);
         self.context_control.next_request = next;
@@ -133,7 +155,6 @@ impl ConversationStream {
         true
     }
 
-    /// R7: app maps each auto operation into this same stream-local ID space.
     pub fn reserve_context_operation_id(&mut self, _cx: &mut Context<Self>) -> Option<u64> {
         let id = self.context_control.next_request.checked_add(1)?;
         self.context_control.next_request = id;
@@ -164,7 +185,9 @@ impl ConversationStream {
             && self.context_control.reserve.read(cx).text().is_empty();
         self.context_control.settings = settings;
         self.context_control.model_input_limit = usage.model_input_limit;
-        if self.context_control.live_accounting.is_none() {
+        if self.context_control.live_accounting.is_none()
+            && self.context_control.usage_source == ContextUsageSource::EstimatedInput
+        {
             self.context_control.estimate = usage.estimated_tokens;
         }
         self.context_control.compactable = compactable;
@@ -209,13 +232,13 @@ impl ConversationStream {
                 });
         if let Some(settings) = saved {
             self.context_control.settings = Some(settings);
-            // R7: late save ACK must not erase edits made while storage was busy.
+
             if unchanged {
                 self.sync_context_inputs(cx);
             }
             self.context_control.error = None;
         } else {
-            self.context_control.error = Some("设置保存失败，请重试");
+            self.context_control.error = Some("ui.could_not_save_settings_try_again");
         }
         cx.notify();
         true
@@ -251,7 +274,15 @@ impl ConversationStream {
         }
         self.context_control.next_request =
             self.context_control.next_request.max(record.generation);
-        // R5: a failed/unpriced summary must remain visible in the cost meter.
+        let through = if record.status == Status::Compacting {
+            record.generation.saturating_sub(1)
+        } else {
+            record.generation
+        };
+        for group in self.run_activity_groups.values() {
+            group.update(cx, |group, cx| group.remove_compactions(model, through, cx));
+        }
+
         if self
             .meter
             .apply(&ConversationEvent::ContextCompactionStatus {
@@ -260,7 +291,9 @@ impl ConversationStream {
         {
             cx.notify();
         }
-        if self.context_control.live_accounting.is_none() {
+        if self.context_control.live_accounting.is_none()
+            && self.context_control.usage_source == ContextUsageSource::EstimatedInput
+        {
             self.context_control.estimate =
                 record.estimated_tokens.or(self.context_control.estimate);
         }
@@ -304,6 +337,37 @@ impl ConversationStream {
                 }
             }
         }
+        if record.status == Status::Compacting
+            && let Some(message_id) =
+                self.entries
+                    .iter()
+                    .zip(&self.entry_identities)
+                    .find_map(|(entry, identity)| match entry {
+                        StreamEntry::ContextCompaction {
+                            model: owner,
+                            record: owned,
+                            ..
+                        } if owner == model && owned.generation == record.generation => {
+                            identity.message_id.clone()
+                        }
+                        _ => None,
+                    })
+            && self
+                .active_run_activity
+                .as_ref()
+                .is_some_and(|(active, group)| {
+                    active == &message_id
+                        && group
+                            .read(cx)
+                            .compaction_segment(model, record.generation)
+                            .is_none()
+                })
+            && let Some((group, segment)) = self.ensure_live_run_activity_segment(&message_id, cx)
+        {
+            group.update(cx, |group, cx| {
+                group.append_compaction(segment, model, record.generation, cx)
+            });
+        }
         // Keep only the newest transition for fencing/busy state. The list
         // owns every operation's single visible row, without a six-row cap.
         self.context_control.records.clear();
@@ -345,19 +409,117 @@ impl ConversationStream {
                 .context_control
                 .live_accounting
                 .as_ref()
-                .is_some_and(|(old_id, old)| old_id != message_id || record.revision < old.revision)
+                .is_some_and(|(old_id, old)| {
+                    old_id != message_id
+                        || record.revision < old.revision
+                        || (record.revision == old.revision
+                            && old.stage == ContextAccountingStage::PostSummaryTarget
+                            && record.stage != ContextAccountingStage::PostSummaryTarget)
+                })
         {
             return false;
         }
-        self.context_control.estimate = Some(record.predicted_input);
+        let new_boundary = self
+            .context_control
+            .live_accounting
+            .as_ref()
+            .is_none_or(|(_, old)| {
+                record.revision > old.revision
+                    || (record.stage == ContextAccountingStage::PostSummaryTarget
+                        && old.stage != ContextAccountingStage::PostSummaryTarget)
+            });
+        if new_boundary {
+            self.context_control.live_call = None;
+            if record.stage == ContextAccountingStage::PostSummaryTarget {
+                self.context_control.latest_call_total = None;
+            }
+        }
+        if new_boundary || self.context_control.usage_source == ContextUsageSource::EstimatedInput {
+            self.context_control.estimate = Some(record.predicted_input);
+            self.context_control.usage_source = ContextUsageSource::EstimatedInput;
+        }
+        // The record carries the runtime's own per-run input budget, so the
+        // ring has a real denominator during the run instead of only after the
+        // post-run projection refresh.
+        self.context_control.model_input_limit = Some(record.input_budget);
         self.context_control.live_accounting = Some((message_id.to_string(), record));
         cx.notify();
         true
     }
 
-    pub(crate) fn clear_live_context_accounting(&mut self) {
-        if self.context_control.live_accounting.take().is_some() {
+    pub(crate) fn begin_context_response(&mut self, response_id: &str) {
+        if self.thread.backend != TaskBackend::Native || !self.actions.running {
+            return;
+        }
+        if self
+            .context_control
+            .live_call
+            .as_ref()
+            .is_none_or(|call| call.response_id != response_id)
+        {
+            self.context_control.live_call = Some(PrimaryContextCall {
+                response_id: response_id.to_owned(),
+                total: None,
+            });
+        }
+    }
+
+    pub fn apply_context_usage(
+        &mut self,
+        thread_id: &str,
+        model: &str,
+        message_id: &str,
+        usage: TokenUsage,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if thread_id != self.thread.id
+            || model != self.thread.model
+            || self.thread.backend != TaskBackend::Native
+            || !self.actions.running
+            || !self
+                .active_agent_message
+                .as_ref()
+                .is_some_and(|(active, _)| active == message_id)
+            || usage.input == 0
+        {
+            return false;
+        }
+        let Some(total) = usage.input.checked_add(usage.output) else {
+            return false;
+        };
+        let Some(call) = self.context_control.live_call.as_mut() else {
+            return false;
+        };
+        if self.active_response_id.as_deref() != Some(call.response_id.as_str()) {
+            return false;
+        }
+        let total = call.total.map_or(total, |old| old.max(total));
+        call.total = Some(total);
+        self.context_control.latest_call_total = Some(total);
+        self.context_control.estimate = Some(total);
+        self.context_control.usage_source = ContextUsageSource::LastCallTotal;
+        cx.notify();
+        true
+    }
+
+    pub(crate) fn reset_live_context_usage(&mut self) {
+        let had_usage = self.context_control.latest_call_total.take().is_some();
+        self.clear_live_context_accounting();
+        if had_usage {
             self.context_control.estimate = None;
+            self.context_control.usage_source = ContextUsageSource::EstimatedInput;
+        }
+    }
+
+    pub(crate) fn clear_live_context_accounting(&mut self) {
+        self.context_control.live_call = None;
+        let had_accounting = self.context_control.live_accounting.take().is_some();
+        if let Some(total) = self.context_control.latest_call_total {
+            self.context_control.estimate = Some(total);
+            self.context_control.usage_source = ContextUsageSource::LastCallTotal;
+        } else if had_accounting {
+            self.context_control.estimate = None;
+            self.context_control.usage_source = ContextUsageSource::EstimatedInput;
             self.context_usage_trigger_hovered = false;
             self.context_usage_tooltip_hovered = false;
         }
@@ -386,9 +548,60 @@ impl ConversationStream {
         else {
             return false;
         };
-        record.status == Status::Failed && self.entries.iter().any(|entry| matches!(entry,
-            StreamEntry::ContextCompaction { model: owner, record: newer, .. }
-                if owner == model && newer.generation > record.generation && newer.status == Status::Succeeded))
+        let message_id = self
+            .entry_identities
+            .get(index)
+            .and_then(|identity| identity.message_id.as_deref());
+        record.status == Status::Failed
+            && self.entries.iter().zip(&self.entry_identities).any(
+                |(entry, identity)| match entry {
+                    StreamEntry::ContextCompaction {
+                        model: owner,
+                        record: newer,
+                        ..
+                    } => {
+                        owner == model
+                            && identity.message_id.as_deref() == message_id
+                            && newer.generation > record.generation
+                            && newer.status == Status::Succeeded
+                    }
+                    _ => false,
+                },
+            )
+    }
+
+    pub(crate) fn compaction_failure_resolved_for_owner(
+        &self,
+        message_id: &str,
+        failure: vega_conversation::types::ContextCompactionFailureCode,
+    ) -> bool {
+        let owned_statuses = self
+            .entries
+            .iter()
+            .zip(&self.entry_identities)
+            .filter_map(|(entry, identity)| match entry {
+                StreamEntry::ContextCompaction { model, record, .. }
+                    if identity.message_id.as_deref() == Some(message_id) =>
+                {
+                    Some((model, record))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let has_owned_failure = owned_statuses
+            .iter()
+            .any(|(_, record)| record.status == Status::Failed);
+        owned_statuses.iter().any(|(model, record)| {
+            record.status == Status::Succeeded
+                && *model == &self.thread.model
+                && (!has_owned_failure
+                    || owned_statuses.iter().any(|(failed_model, failed)| {
+                        failed.status == Status::Failed
+                            && failed.failure == Some(failure)
+                            && failed_model == model
+                            && failed.generation < record.generation
+                    }))
+        })
     }
 
     /// Restore the latest durable result at the loaded history tail. Legacy
@@ -408,7 +621,7 @@ impl ConversationStream {
                 .iter()
                 .any(|identity| identity.message_id.as_ref() == Some(message_id))
             {
-                self.run_failures.insert(message_id.clone(), *failure);
+                self.remember_run_failure(message_id, *failure);
             }
         }
         self.refresh_run_notices(cx);
@@ -476,33 +689,11 @@ impl ConversationStream {
 
 pub(super) fn status_label_for(status: Status, failure: Option<Failure>) -> &'static str {
     match status {
-        Status::Unknown => "Context capacity is not configured",
-        Status::Ready => "Context ready",
-        Status::Compacting => "Compacting context",
-        Status::Succeeded => "Context compacted",
-        Status::Cancelled => "Context compaction cancelled",
-        Status::Failed => match failure {
-            Some(Failure::SourceChanged) => "History changed. Retry compaction.",
-            Some(Failure::NoCompactablePrefix) => "No complete history is available to compact.",
-            Some(Failure::TooLarge) => {
-                "History is too large to compact safely. Continue in a new conversation."
-            }
-            Some(Failure::OverLimit) => {
-                "Context exceeds the available budget. Shorten the input or start a new conversation."
-            }
-            Some(Failure::ReasoningLimit) => {
-                "The run exceeded the local reasoning limit. Send your message again to continue."
-            }
-            Some(Failure::ImagesUnsupported) => {
-                "Historical images cannot be compacted safely. Start a new conversation."
-            }
-            Some(Failure::InvalidSummary) => "The compaction result was invalid. Retry compaction.",
-            Some(Failure::TimedOut) => "Context compaction timed out. Retry compaction.",
-            _ => "Context compaction failed. Retry compaction.",
-        },
+        Status::Unknown => vega_i18n::t("ui.context_capacity_is_not_configured"),
+        Status::Ready => vega_i18n::t("ui.context_ready"),
+        Status::Compacting => vega_i18n::t("ui.compacting_context"),
+        Status::Succeeded => vega_i18n::t("ui.context_compacted"),
+        Status::Cancelled => vega_i18n::t("ui.context_compaction_cancelled"),
+        Status::Failed => failure.unwrap_or(Failure::Unavailable).message(),
     }
 }
-
-#[cfg(test)]
-#[path = "tests/context_control.rs"]
-mod tests;

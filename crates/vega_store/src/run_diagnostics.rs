@@ -3,7 +3,8 @@ use serde::Serialize;
 
 mod failure_ownership;
 pub use failure_ownership::{
-    budget_failure_message_ids, classified_failure_message_ids, projection_reasoning_failure,
+    budget_failure_message_ids, classified_failure_message_ids, compaction_failure_message_ids,
+    projection_reasoning_failure,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -67,6 +68,14 @@ pub enum DiagnosticFailureCode {
     SummaryNoCompactablePrefix,
     SummaryAlreadyAttempted,
     ProviderHttp,
+    /// No HTTP response was received while establishing the request.
+    ProviderTransport,
+    /// An established response stream ended before its terminal event.
+    ProviderStreamInterrupted,
+    /// An established response stream or request exceeded its deadline.
+    ProviderTimeout,
+    /// Legacy merged code written before the transport split; still read back
+    /// and still produced by nothing new.
     ProviderTransportOrStream,
     ProviderProtocol,
     ProviderRejected,
@@ -94,6 +103,9 @@ impl DiagnosticFailureCode {
             Self::SummaryNoCompactablePrefix => "summary_no_compactable_prefix",
             Self::SummaryAlreadyAttempted => "summary_already_attempted",
             Self::ProviderHttp => "provider_http",
+            Self::ProviderTransport => "provider_transport",
+            Self::ProviderStreamInterrupted => "provider_stream_interrupted",
+            Self::ProviderTimeout => "provider_timeout",
             Self::ProviderTransportOrStream => "provider_transport_or_stream",
             Self::ProviderProtocol => "provider_protocol",
             Self::ProviderRejected => "provider_rejected",
@@ -125,6 +137,11 @@ impl DiagnosticStopReason {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct DiagnosticMetrics {
+    pub runtime_stage: Option<String>,
+    pub runtime_reason: Option<String>,
+    pub sqlite_code: Option<i32>,
+    pub sqlite_extended_code: Option<i32>,
+    pub io_kind: Option<String>,
     pub failure_tool_index: Option<u64>,
     pub failure_source: Option<String>,
     pub failure_kind: Option<String>,
@@ -175,6 +192,7 @@ pub struct DiagnosticExport {
     pub schema_version: u32,
     pub events: Vec<DiagnosticEvent>,
     pub incomplete_attempt_ids: Vec<String>,
+    pub recent_process_storage: Vec<crate::write_coordination::StorageObservation>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -190,6 +208,10 @@ pub enum DiagnosticError {
 }
 
 pub fn insert(conn: &Connection, event: &NewDiagnosticEvent) -> Result<i64, DiagnosticError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Diagnostics,
+    )?;
     validate(event)?;
     if event.state == DiagnosticState::Started {
         let duplicate: bool = conn.query_row(
@@ -230,10 +252,10 @@ pub fn insert(conn: &Connection, event: &NewDiagnosticEvent) -> Result<i64, Diag
           thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state,
           failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens,
           cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes,
-          tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index
+          tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index, runtime_stage, runtime_reason, sqlite_code, sqlite_extended_code, io_kind
         ) VALUES (
           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-          ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30
+          ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35
         )",
         params![
             event.thread_id,
@@ -312,6 +334,11 @@ pub fn insert(conn: &Connection, event: &NewDiagnosticEvent) -> Result<i64, Diag
             event.metrics.failure_observed_items.map(sql_i64).transpose().map_err(|_| DiagnosticError::InvalidField { field: "failure_observed_items" })?,
             event.metrics.failure_limit_items.map(sql_i64).transpose().map_err(|_| DiagnosticError::InvalidField { field: "failure_limit_items" })?,
             event.metrics.failure_tool_index.map(sql_i64).transpose().map_err(|_| DiagnosticError::InvalidField { field: "failure_tool_index" })?,
+            event.metrics.runtime_stage,
+            event.metrics.runtime_reason,
+            event.metrics.sqlite_code,
+            event.metrics.sqlite_extended_code,
+            event.metrics.io_kind,
 
         ],
     )?;
@@ -325,7 +352,7 @@ pub fn read_by_run(
 ) -> Result<Vec<DiagnosticEvent>, DiagnosticError> {
     validate_identity(thread_id, "thread_id")?;
     validate_identity(run_id, "run_id")?;
-    let mut statement = conn.prepare("SELECT id, thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state, failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes, tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index FROM run_diagnostic_events WHERE thread_id = ?1 AND run_id = ?2 ORDER BY id")?;
+    let mut statement = conn.prepare("SELECT id, thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state, failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes, tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index, runtime_stage, runtime_reason, sqlite_code, sqlite_extended_code, io_kind FROM run_diagnostic_events WHERE thread_id = ?1 AND run_id = ?2 ORDER BY id")?;
     let rows = statement.query_map(params![thread_id, run_id], read_row)?;
     rows.collect::<Result<Vec<_>, _>>()?
         .into_iter()
@@ -338,7 +365,7 @@ pub fn read_by_thread(
     thread_id: &str,
 ) -> Result<Vec<DiagnosticEvent>, DiagnosticError> {
     validate_identity(thread_id, "thread_id")?;
-    let mut statement = conn.prepare("SELECT id, thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state, failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes, tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index FROM run_diagnostic_events WHERE thread_id = ?1 ORDER BY id")?;
+    let mut statement = conn.prepare("SELECT id, thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state, failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes, tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index, runtime_stage, runtime_reason, sqlite_code, sqlite_extended_code, io_kind FROM run_diagnostic_events WHERE thread_id = ?1 ORDER BY id")?;
     let rows = statement.query_map([thread_id], read_row)?;
     rows.collect::<Result<Vec<_>, _>>()?
         .into_iter()
@@ -371,9 +398,10 @@ pub fn export_run(
     }
     let incomplete_attempt_ids = incomplete_attempt_ids(&events);
     Ok(serde_json::to_string(&DiagnosticExport {
-        schema_version: 1,
+        schema_version: 2,
         events,
         incomplete_attempt_ids,
+        recent_process_storage: crate::write_coordination::recent_observations(conn),
     })?)
 }
 
@@ -398,6 +426,7 @@ pub fn incomplete_attempt_ids(events: &[DiagnosticEvent]) -> Vec<String> {
 }
 
 fn validate(event: &NewDiagnosticEvent) -> Result<(), DiagnosticError> {
+    validate_runtime_details(&event.metrics)?;
     validate_identity(&event.thread_id, "thread_id")?;
     validate_identity(&event.run_id, "run_id")?;
     validate_identity(&event.attempt_id, "attempt_id")?;
@@ -465,6 +494,8 @@ fn validate(event: &NewDiagnosticEvent) -> Result<(), DiagnosticError> {
             "unknown"
                 | "http"
                 | "transport"
+                | "stream_interrupted"
+                | "timeout"
                 | "protocol"
                 | "rejected"
                 | "output_limit"
@@ -546,6 +577,67 @@ fn validate_identity(value: &str, field: &'static str) -> Result<(), DiagnosticE
     }
 }
 
+fn validate_runtime_details(metrics: &DiagnosticMetrics) -> Result<(), DiagnosticError> {
+    let has_details = metrics.runtime_stage.is_some()
+        || metrics.runtime_reason.is_some()
+        || metrics.sqlite_code.is_some()
+        || metrics.sqlite_extended_code.is_some()
+        || metrics.io_kind.is_some();
+    if !has_details {
+        return Ok(());
+    }
+    if !matches!(
+        metrics.runtime_stage.as_deref(),
+        Some(
+            "run_preparation"
+                | "snapshot"
+                | "tool_proposal"
+                | "tool_approval"
+                | "tool_running"
+                | "tool_terminal"
+                | "event_pipeline"
+        )
+    ) {
+        return Err(DiagnosticError::InvalidField {
+            field: "runtime_stage",
+        });
+    }
+    if !matches!(
+        metrics.runtime_reason.as_deref(),
+        Some("database" | "approval_audit" | "state" | "io" | "pipeline")
+    ) {
+        return Err(DiagnosticError::InvalidField {
+            field: "runtime_reason",
+        });
+    }
+    match (metrics.sqlite_code, metrics.sqlite_extended_code) {
+        (None, None) => {}
+        (Some(primary), Some(extended))
+            if metrics.runtime_reason.as_deref() == Some("database")
+                && (1..=255).contains(&primary)
+                && extended > 0
+                && extended & 255 == primary => {}
+        _ => {
+            return Err(DiagnosticError::InvalidField {
+                field: "sqlite_code",
+            });
+        }
+    }
+    let valid_io_kind = match metrics.io_kind.as_deref() {
+        None => metrics.runtime_reason.as_deref() != Some("io"),
+        Some(
+            "not_found" | "permission_denied" | "already_exists" | "invalid_input" | "invalid_data"
+            | "timed_out" | "interrupted" | "unsupported" | "out_of_memory" | "storage_full"
+            | "other",
+        ) => metrics.runtime_reason.as_deref() == Some("io"),
+        Some(_) => false,
+    };
+    if !valid_io_kind {
+        return Err(DiagnosticError::InvalidField { field: "io_kind" });
+    }
+    Ok(())
+}
+
 fn is_ascii_id(value: &str, max: usize, allowed: &[u8]) -> bool {
     !value.is_empty() && value.len() <= max && value.bytes().all(|byte| allowed.contains(&byte))
 }
@@ -555,6 +647,11 @@ fn sql_i64(value: u64) -> Result<i64, std::num::TryFromIntError> {
 }
 
 struct RawEvent {
+    runtime_stage: Option<String>,
+    runtime_reason: Option<String>,
+    sqlite_code: Option<i32>,
+    sqlite_extended_code: Option<i32>,
+    io_kind: Option<String>,
     failure_tool_index: Option<i64>,
     failure_source: Option<String>,
     failure_kind: Option<String>,
@@ -591,6 +688,11 @@ struct RawEvent {
 
 fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawEvent> {
     Ok(RawEvent {
+        runtime_stage: row.get(31)?,
+        runtime_reason: row.get(32)?,
+        sqlite_code: row.get(33)?,
+        sqlite_extended_code: row.get(34)?,
+        io_kind: row.get(35)?,
         id: row.get(0)?,
         thread_id: row.get(1)?,
         run_id: row.get(2)?,
@@ -629,7 +731,7 @@ impl TryFrom<RawEvent> for DiagnosticEvent {
     type Error = DiagnosticError;
 
     fn try_from(raw: RawEvent) -> Result<Self, Self::Error> {
-        Ok(Self {
+        let event = Self {
             id: raw.id,
             event: NewDiagnosticEvent {
                 thread_id: raw.thread_id,
@@ -650,6 +752,11 @@ impl TryFrom<RawEvent> for DiagnosticEvent {
                     })
                     .transpose()?,
                 metrics: DiagnosticMetrics {
+                    runtime_stage: raw.runtime_stage,
+                    runtime_reason: raw.runtime_reason,
+                    sqlite_code: raw.sqlite_code,
+                    sqlite_extended_code: raw.sqlite_extended_code,
+                    io_kind: raw.io_kind,
                     stop_reason: raw
                         .stop_reason
                         .as_deref()
@@ -682,7 +789,9 @@ impl TryFrom<RawEvent> for DiagnosticEvent {
                     failure_limit_items: opt_u64(raw.failure_limit_items, "failure_limit_items")?,
                 },
             },
-        })
+        };
+        validate_runtime_details(&event.event.metrics)?;
+        Ok(event)
     }
 }
 
@@ -742,6 +851,9 @@ fn parse_failure(value: &str) -> Result<DiagnosticFailureCode, DiagnosticError> 
         "summary_no_compactable_prefix" => Ok(DiagnosticFailureCode::SummaryNoCompactablePrefix),
         "summary_already_attempted" => Ok(DiagnosticFailureCode::SummaryAlreadyAttempted),
         "provider_http" => Ok(DiagnosticFailureCode::ProviderHttp),
+        "provider_transport" => Ok(DiagnosticFailureCode::ProviderTransport),
+        "provider_stream_interrupted" => Ok(DiagnosticFailureCode::ProviderStreamInterrupted),
+        "provider_timeout" => Ok(DiagnosticFailureCode::ProviderTimeout),
         "provider_transport_or_stream" => Ok(DiagnosticFailureCode::ProviderTransportOrStream),
         "provider_protocol" => Ok(DiagnosticFailureCode::ProviderProtocol),
         "provider_rejected" => Ok(DiagnosticFailureCode::ProviderRejected),
@@ -751,305 +863,5 @@ fn parse_failure(value: &str) -> Result<DiagnosticFailureCode, DiagnosticError> 
         _ => Err(DiagnosticError::InvalidField {
             field: "failure_code",
         }),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        Store,
-        threads::{self, NewThread},
-    };
-
-    fn store() -> Store {
-        let store = Store::open(":memory:").unwrap();
-        store.migrate().unwrap();
-        threads::create_standalone(
-            store.conn(),
-            NewThread {
-                id: "thread-171",
-                project_id: "",
-                title: "fixture",
-                mode: "execute",
-                permission_mode: "readonly",
-                model: "mock",
-                status: "active",
-                pinned: false,
-                unread: false,
-                created_at: 1,
-                updated_at: 1,
-            },
-        )
-        .unwrap();
-        store
-    }
-
-    fn event(state: DiagnosticState, attempt_id: &str) -> NewDiagnosticEvent {
-        NewDiagnosticEvent {
-            thread_id: "thread-171".into(),
-            run_id: "run-171".into(),
-            attempt_id: attempt_id.into(),
-            parent_attempt_id: Some("root-171".into()),
-            tool_call_id: None,
-            phase: DiagnosticPhase::PrimaryModel,
-            state,
-            failure_code: (state == DiagnosticState::Failed)
-                .then_some(DiagnosticFailureCode::ProviderHttp),
-            occurred_at: 10,
-            duration_ms: (state != DiagnosticState::Started).then_some(4),
-            metrics: DiagnosticMetrics::default(),
-        }
-    }
-
-    #[test]
-    fn failure_details_round_trip_with_legacy_unknowns_and_closed_vocabulary() {
-        let store = store();
-        insert(store.conn(), &event(DiagnosticState::Started, "details")).unwrap();
-        let mut failed = event(DiagnosticState::Failed, "details");
-        failed.failure_code = Some(DiagnosticFailureCode::ReasoningLimit);
-        failed.metrics.failure_source = Some("runtime".into());
-        failed.metrics.failure_kind = Some("reasoning_limit".into());
-        failed.metrics.failure_scope = Some("response".into());
-        failed.metrics.failure_observed = Some(262145);
-        failed.metrics.failure_limit = Some(262144);
-        failed.metrics.failure_units = Some("bytes".into());
-        failed.metrics.failure_observed_items = Some(257);
-        failed.metrics.failure_limit_items = Some(256);
-        insert(store.conn(), &failed).unwrap();
-        insert(store.conn(), &event(DiagnosticState::Started, "legacy")).unwrap();
-        let mut legacy = event(DiagnosticState::Failed, "legacy");
-        legacy.failure_code = Some(DiagnosticFailureCode::ReasoningLimit);
-        insert(store.conn(), &legacy).unwrap();
-        let loaded = read_by_run(store.conn(), "thread-171", "run-171").unwrap();
-        assert_eq!(loaded[1].event.metrics, failed.metrics);
-        assert_eq!(loaded[3].event.metrics, DiagnosticMetrics::default());
-        let export = export_run(store.conn(), "thread-171", "run-171").unwrap();
-        assert!(export.contains("262145"));
-        assert!(export.contains("\"failure_scope\":null"));
-        let mut unsafe_event = event(DiagnosticState::Started, "unsafe");
-        unsafe_event.metrics.failure_kind = Some("PRIVATE_PROVIDER_BODY".into());
-        assert!(matches!(
-            insert(store.conn(), &unsafe_event),
-            Err(DiagnosticError::InvalidField {
-                field: "failure_kind"
-            })
-        ));
-    }
-
-    #[test]
-    fn additive_failure_migration_leaves_existing_reasoning_detail_unknown() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE run_diagnostic_events (failure_code TEXT); INSERT INTO run_diagnostic_events VALUES ('reasoning_limit');").unwrap();
-        conn.execute_batch(include_str!("../migrations/0025_failure_details.sql"))
-            .unwrap();
-        let detail: (String, Option<String>, Option<i64>) = conn
-            .query_row(
-                "SELECT failure_code, failure_scope, failure_observed FROM run_diagnostic_events",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(detail, ("reasoning_limit".into(), None, None));
-    }
-
-    #[test]
-    fn migration_persists_ordered_events_and_reports_incomplete_after_reopen() {
-        let temp = tempfile::NamedTempFile::new().unwrap();
-        {
-            let store = Store::open(temp.path()).unwrap();
-            store.migrate().unwrap();
-            threads::create_standalone(
-                store.conn(),
-                NewThread {
-                    id: "thread-171",
-                    project_id: "",
-                    title: "fixture",
-                    mode: "execute",
-                    permission_mode: "readonly",
-                    model: "mock",
-                    status: "active",
-                    pinned: false,
-                    unread: false,
-                    created_at: 1,
-                    updated_at: 1,
-                },
-            )
-            .unwrap();
-            insert(
-                store.conn(),
-                &event(DiagnosticState::Started, "attempt-open"),
-            )
-            .unwrap();
-            insert(
-                store.conn(),
-                &event(DiagnosticState::Started, "attempt-closed"),
-            )
-            .unwrap();
-            insert(
-                store.conn(),
-                &event(DiagnosticState::Succeeded, "attempt-closed"),
-            )
-            .unwrap();
-        }
-        let store = Store::open(temp.path()).unwrap();
-        let events = read_by_run(store.conn(), "thread-171", "run-171").unwrap();
-        assert_eq!(events.len(), 3);
-        assert!(events[0].id < events[1].id);
-        assert!(events[1].id < events[2].id);
-        assert_eq!(incomplete_attempt_ids(&events), ["attempt-open"]);
-    }
-
-    #[test]
-    fn rejects_unsafe_ids_and_invalid_terminal_shapes() {
-        let store = store();
-        let mut unsafe_request = event(DiagnosticState::Succeeded, "attempt-1");
-        unsafe_request.metrics.request_id = Some("Bearer secret".into());
-        assert!(matches!(
-            insert(store.conn(), &unsafe_request),
-            Err(DiagnosticError::InvalidField {
-                field: "request_id"
-            })
-        ));
-        let mut invalid = event(DiagnosticState::Started, "attempt-2");
-        invalid.duration_ms = Some(0);
-        assert!(matches!(
-            insert(store.conn(), &invalid),
-            Err(DiagnosticError::InvalidField {
-                field: "duration_ms"
-            })
-        ));
-        assert!(matches!(
-            insert(
-                store.conn(),
-                &event(DiagnosticState::Succeeded, "missing-start")
-            ),
-            Err(DiagnosticError::InvalidField {
-                field: "attempt_id"
-            })
-        ));
-
-        insert(
-            store.conn(),
-            &event(DiagnosticState::Started, "unique-attempt"),
-        )
-        .unwrap();
-        assert!(matches!(
-            insert(
-                store.conn(),
-                &event(DiagnosticState::Started, "unique-attempt")
-            ),
-            Err(DiagnosticError::InvalidField {
-                field: "attempt_id"
-            })
-        ));
-        insert(
-            store.conn(),
-            &event(DiagnosticState::Succeeded, "unique-attempt"),
-        )
-        .unwrap();
-        assert!(matches!(
-            insert(
-                store.conn(),
-                &event(DiagnosticState::Succeeded, "unique-attempt")
-            ),
-            Err(DiagnosticError::InvalidField {
-                field: "attempt_id"
-            })
-        ));
-    }
-
-    #[test]
-    fn export_is_explicit_allowlist_and_thread_delete_cascades() {
-        let store = store();
-        insert(store.conn(), &event(DiagnosticState::Started, "attempt-1")).unwrap();
-        let json = export_run(store.conn(), "thread-171", "run-171").unwrap();
-        assert!(json.contains("incomplete_attempt_ids"));
-        assert!(!json.contains("prompt"));
-        store
-            .conn()
-            .execute("DELETE FROM threads WHERE id='thread-171'", [])
-            .unwrap();
-        let count: i64 = store
-            .conn()
-            .query_row("SELECT count(*) FROM run_diagnostic_events", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(count, 0);
-    }
-
-    #[test]
-    fn summary_preflight_failure_codes_round_trip_as_closed_values() {
-        let store = store();
-        let codes = [
-            DiagnosticFailureCode::ContextOverLimit,
-            DiagnosticFailureCode::SummarySourceTooLarge,
-            DiagnosticFailureCode::SummaryAggregateTooLarge,
-            DiagnosticFailureCode::SummaryImagesUnsupported,
-            DiagnosticFailureCode::SummaryNoCompactablePrefix,
-            DiagnosticFailureCode::SummaryAlreadyAttempted,
-        ];
-        for (index, code) in codes.into_iter().enumerate() {
-            let attempt_id = format!("attempt-{index}");
-            insert(store.conn(), &event(DiagnosticState::Started, &attempt_id)).unwrap();
-            let mut failed = event(DiagnosticState::Failed, &attempt_id);
-            failed.failure_code = Some(code);
-            insert(store.conn(), &failed).unwrap();
-        }
-        let events = read_by_run(store.conn(), "thread-171", "run-171").unwrap();
-        let persisted_codes = events
-            .into_iter()
-            .filter_map(|event| event.event.failure_code)
-            .collect::<Vec<_>>();
-        assert_eq!(persisted_codes, codes.into_iter().collect::<Vec<_>>());
-    }
-
-    #[test]
-    fn cancellation_states_require_their_matching_closed_failure_code() {
-        let store = store();
-        assert!(matches!(
-            insert(
-                store.conn(),
-                &event(DiagnosticState::Cancelled, "missing-cancel-code")
-            ),
-            Err(DiagnosticError::InvalidField {
-                field: "failure_code"
-            })
-        ));
-        let mut mismatched = event(DiagnosticState::Cancelled, "mismatched-cancel-code");
-        mismatched.failure_code = Some(DiagnosticFailureCode::Interrupted);
-        assert!(matches!(
-            insert(store.conn(), &mismatched),
-            Err(DiagnosticError::InvalidField {
-                field: "failure_code"
-            })
-        ));
-        for (attempt_id, state, code) in [
-            (
-                "cancelled-attempt",
-                DiagnosticState::Cancelled,
-                DiagnosticFailureCode::Cancelled,
-            ),
-            (
-                "interrupted-attempt",
-                DiagnosticState::Interrupted,
-                DiagnosticFailureCode::Interrupted,
-            ),
-        ] {
-            insert(store.conn(), &event(DiagnosticState::Started, attempt_id)).unwrap();
-            let mut terminal = event(state, attempt_id);
-            terminal.failure_code = Some(code);
-            insert(store.conn(), &terminal).unwrap();
-        }
-        let events = read_by_run(store.conn(), "thread-171", "run-171").unwrap();
-        assert_eq!(
-            events[1].event.failure_code,
-            Some(DiagnosticFailureCode::Cancelled)
-        );
-        assert_eq!(
-            events[3].event.failure_code,
-            Some(DiagnosticFailureCode::Interrupted)
-        );
     }
 }

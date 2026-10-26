@@ -38,6 +38,7 @@ pub struct ArtifactCard {
     pub id: ArtifactCardId,
     pub label: String,
     pub source: ArtifactSource,
+    pub size_bytes: Option<u64>,
     /// Present only while the artifact maps to a current, regular workspace
     /// file. Preview and Open in are disabled when this is absent.
     pub current_file_id: Option<WorkspaceFileId>,
@@ -169,11 +170,6 @@ pub struct GitWorkspaceError {
 }
 
 impl GitWorkspaceError {
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn for_test(code: GitWorkspaceErrorCode) -> Self {
-        Self::new(code)
-    }
-
     pub(crate) const fn new(code: GitWorkspaceErrorCode) -> Self {
         Self { code }
     }

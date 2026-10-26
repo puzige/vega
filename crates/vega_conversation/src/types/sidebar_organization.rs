@@ -19,9 +19,10 @@ pub enum SidebarProjectView {
 /// Descending task timestamp used by project and timeline projections.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SidebarTaskSort {
-    #[default]
     Updated,
     Created,
+    #[default]
+    Manual,
 }
 /// Semantic group color; UI maps these to theme tokens.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +42,8 @@ pub struct SidebarPreferences {
     pub view: SidebarView,
     pub project_view: SidebarProjectView,
     pub sort: SidebarTaskSort,
+    #[serde(default)]
+    pub manual_thread_order: Vec<String>,
 }
 /// Local-calendar timeline section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +124,10 @@ pub enum SidebarOrganizationAction {
         project_id: String,
         before_id: Option<String>,
     },
+    ReorderThread {
+        thread_id: String,
+        before_id: Option<String>,
+    },
     MoveThread {
         thread_id: String,
         group_id: Option<String>,
@@ -146,13 +153,17 @@ pub enum SidebarOrganizationAction {
 /// Stable distinguishable service failures; a conflict requires a fresh snapshot.
 #[derive(Debug, thiserror::Error)]
 pub enum SidebarOrganizationError {
-    #[error("organization changed (expected {expected}, actual {actual}); refresh and retry")]
+    #[error("{}", vega_i18n::t_args("domain.organization.conflict", &[("expected", &.expected.to_string()), ("actual", &.actual.to_string())]))]
     Conflict { expected: u64, actual: u64 },
-    #[error("invalid organization action: {0}")]
+    #[error("{}", vega_i18n::t_args("domain.organization.invalid", &[("detail", .0)]))]
     Invalid(String),
-    #[error("organization limit exceeded: {0}")]
+    #[error("{}", vega_i18n::t_args("domain.organization.invalid", &[("detail", vega_i18n::t(.0))]))]
+    InvalidKey(&'static str),
+    #[error("{}", vega_i18n::t_args("domain.organization.limit", &[("detail", .0)]))]
     Limit(String),
-    #[error("organization storage failure: {0}")]
+    #[error("{}", vega_i18n::t_args("domain.organization.limit", &[("detail", vega_i18n::t(.0))]))]
+    LimitKey(&'static str),
+    #[error("{}", vega_i18n::t_args("domain.organization.store", &[("detail", .0)]))]
     Store(String),
 }
 

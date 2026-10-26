@@ -38,11 +38,11 @@ pub(super) fn verify(
         || bytes.len() as u64 > MANIFEST_LIMIT
         || signature.len() as u64 > SIGNATURE_LIMIT
     {
-        return Err(failure("更新签名数据超出限制"));
+        return Err(failure(vega_i18n::t("app.update.signature_limit")));
     }
     verify_signature(bytes, signature, DOMAIN)?;
-    let manifest: SignedManifest =
-        serde_json::from_slice(bytes).map_err(|_| failure("已签名更新清单格式无效"))?;
+    let manifest: SignedManifest = serde_json::from_slice(bytes)
+        .map_err(|_| failure(vega_i18n::t("app.update.manifest_format")))?;
     if manifest.schema != 1
         || manifest.bundle_id != "ai.vega"
         || manifest.target != "aarch64-apple-darwin"
@@ -57,34 +57,35 @@ pub(super) fn verify(
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         || network::Version::parse(&manifest.version)? <= network::Version::parse(current_version)?
     {
-        return Err(failure("已签名更新清单的版本、身份或大小不匹配"));
+        return Err(failure(vega_i18n::t("app.update.manifest_identity")));
     }
     Ok(manifest)
 }
 
 pub(super) fn verify_signature(bytes: &[u8], signature: &[u8], domain: &[u8]) -> UpdateResult<()> {
-    let encoded = std::str::from_utf8(signature).map_err(|_| failure("更新签名格式无效"))?;
+    let encoded = std::str::from_utf8(signature)
+        .map_err(|_| failure(vega_i18n::t("app.update.signature_format")))?;
     let signature = base64::engine::general_purpose::STANDARD
         .decode(encoded.trim())
-        .map_err(|_| failure("更新签名格式无效"))?;
+        .map_err(|_| failure(vega_i18n::t("app.update.signature_format")))?;
     if signature.len() != 64 {
-        return Err(failure("更新签名长度无效"));
+        return Err(failure(vega_i18n::t("app.update.signature_length")));
     }
     let hex = include_str!("../../../../assets/update-public-key.hex").trim();
     if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(failure("内置更新公钥无效"));
+        return Err(failure(vega_i18n::t("app.update.public_key")));
     }
     let mut key = [0_u8; 32];
     for (index, byte) in key.iter_mut().enumerate() {
         *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16)
-            .map_err(|_| failure("内置更新公钥无效"))?;
+            .map_err(|_| failure(vega_i18n::t("app.update.public_key")))?;
     }
     let mut message = Vec::with_capacity(domain.len() + bytes.len());
     message.extend_from_slice(domain);
     message.extend_from_slice(bytes);
     UnparsedPublicKey::new(&ED25519, key)
         .verify(&message, &signature)
-        .map_err(|_| failure("更新签名验证失败，已拒绝安装"))?;
+        .map_err(|_| failure(vega_i18n::t("app.update.signature_rejected")))?;
     Ok(())
 }
 
@@ -105,15 +106,15 @@ pub(super) fn bounded_file(path: &Path, limit: u64) -> UpdateResult<Vec<u8>> {
         .open(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.len() > limit {
-        return Err(failure("更新文件类型或大小无效"));
+        return Err(failure(vega_i18n::t("app.update.file_invalid")));
     }
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(metadata.len() as usize)
-        .map_err(|_| failure("没有足够内存验证更新"))?;
+        .map_err(|_| failure(vega_i18n::t("app.update.memory")))?;
     file.by_ref().take(limit + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > limit || bytes.len() as u64 != metadata.len() {
-        return Err(failure("更新文件读取期间发生变化"));
+        return Err(failure(vega_i18n::t("app.update.file_changed")));
     }
     Ok(bytes)
 }
@@ -123,7 +124,7 @@ pub(super) fn archive_bytes(staging: &Path, manifest: &SignedManifest) -> Update
     if bytes.len() as u64 != manifest.size
         || format!("{:x}", Sha256::digest(&bytes)) != manifest.sha256
     {
-        return Err(failure("更新压缩包长度或签名摘要不匹配"));
+        return Err(failure(vega_i18n::t("app.update.archive_signature")));
     }
     Ok(bytes)
 }

@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "status": "reviewed test wiring only; full frozen suite GREEN pending",
+  "head_before_correction": "268ca25da7b4f8963b6572a059de72248672142b",
+  "review_before_edit": "https://github.com/puzige/vega/pull/504#issuecomment-6283003013",
+  "run": "https://github.com/puzige/vega/actions/runs/39366258750",
+  "rust_discovered": null,
+  "rust_executed": 0,
+  "behavior_green": false,
+  "raw_logs": [
+    {
+      "job": "https://github.com/puzige/vega/actions/runs/39366258750/job/118443696269",
+      "sha256": "a57db7958d46787ac0f01fe8db490a25355134794e9832ff4fc6129720f9b521",
+      "bytes": 68364,
+      "error": "E0599 render_frame method trait TestWindowExt not imported"
+    },
+    {
+      "job": "https://github.com/puzige/vega/actions/runs/39366258750/job/118443696031",
+      "sha256": "781b7e3bdf6a975b077658bcea258a9877d785dbacbf354367738695eb325638",
+      "bytes": 104234,
+      "error": "unnecessary_lazy_evaluations on pure ModelCapabilityOverride constructor"
+    }
+  ],
+  "files": [
+    {
+      "file": "crates/vega/src/window/model_capability_tests.rs",
+      "before_sha256": "731825a0d83b18013698d6b45ea2d3994a1ca219fc935d7278d1f3dda3c0062f",
+      "change": "import existing TestWindowExt; calls and waits unchanged",
+      "after_sha256": "dc7ee68420020e722d79458be036c8e4ce446f74c5219ca784a37655a0c1c29b"
+    },
+    {
+      "file": "crates/vega_ui/src/settings/model_capability_tests.rs",
+      "before_sha256": "91465cd10eb02ce9d1266b4ef492defd1776ff86ae1003783c8737cc738ce83e",
+      "change": "then closure to then_some for same pure value; condition and fields unchanged",
+      "after_sha256": "16cd359d0d3d178980eed63d3cf421f519460cd1ab684574e6fdf901cf30de31"
+    }
+  ],
+  "invariants": [
+    "no production code change",
+    "no input assertion threshold name or attribute change",
+    "same133 test definitions",
+    "no new removed ignored or suppressed cases",
+    "original frozen manifest and SQL/previous correction records unchanged",
+    "local static checks only"
+  ],
+  "after_review": {
+    "audit": "vega-issue-494-compile-wiring-third-audit.json",
+    "sha256": "f71050554fab3ee4faf2116accabcc5410d09b82b299981d8e863cd3229edf0f",
+    "root_verification": "Both exact approved one-line transformations matched independently;133 same names/attributes. No production diff.",
+    "behavior_green": "pending Actions"
+  }
+}

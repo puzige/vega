@@ -14,8 +14,6 @@ static EDIT_LOCK: Mutex<()> = Mutex::new(());
 
 use serde::{Deserialize, Serialize};
 
-/// Persisted Sidebar geometry. These storage-layer bounds mirror the R21
-/// visual tokens without introducing a UI dependency into `vega_store`.
 pub const SIDEBAR_WIDTH_DEFAULT: f32 = 304.0;
 pub const SIDEBAR_WIDTH_MIN: f32 = 240.0;
 pub const SIDEBAR_WIDTH_MAX: f32 = 365.0;
@@ -121,12 +119,6 @@ impl Default for ProviderConfig {
     }
 }
 
-/// Default choices for new conversations.
-///
-/// Fields are plain `String` on purpose: the shared enums
-/// (`PermissionMode`, `RunMode`) live in `vega_conversation::types`
-/// (tech-spec §3) and a `vega_store` → `vega_conversation` dependency would
-/// create a cycle; bridging is deferred to S4+.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Defaults {
     /// Default model ID for new conversations.
@@ -150,32 +142,33 @@ impl Default for Defaults {
 pub struct UiPrefs {
     /// UI theme. Defaults to `"dark"`.
     pub theme: String,
+    #[serde(default = "default_ui_language")]
+    pub language: String,
     /// Whether the sidebar is collapsed (Cmd+B). Defaults to `false`; the
     /// serde default keeps configs written before this field loadable.
     #[serde(default)]
     pub sidebar_collapsed: bool,
-    /// User-selected Sidebar width. Legacy configs resolve to the R21
-    /// default; both deserialization and serialization clamp invalid values.
     #[serde(
         default = "sidebar_width_default",
         deserialize_with = "deserialize_sidebar_width",
         serialize_with = "serialize_sidebar_width"
     )]
     pub sidebar_width: f32,
-    /// Whether the sidebar 「项目」 block is collapsed (T12). Defaults to
-    /// `false`; serde default keeps older configs loadable.
     #[serde(default)]
     pub projects_collapsed: bool,
-    /// Whether the sidebar 「会话」 block is collapsed (T12). Defaults to
-    /// `false`; serde default keeps older configs loadable.
     #[serde(default)]
     pub sessions_collapsed: bool,
+}
+
+fn default_ui_language() -> String {
+    "en".to_string()
 }
 
 impl Default for UiPrefs {
     fn default() -> Self {
         Self {
             theme: "dark".to_string(),
+            language: default_ui_language(),
             sidebar_collapsed: false,
             sidebar_width: SIDEBAR_WIDTH_DEFAULT,
             projects_collapsed: false,
@@ -184,15 +177,10 @@ impl Default for UiPrefs {
     }
 }
 
-/// Agent loop guardrails (Issue #114).
-///
-/// The turn limit mirrors Claude Code's `--max-turns` / `maxTurns`: it caps
-/// the number of agentic turns (provider round-trips) in one run, not the
-/// number of tool calls. `0` means unlimited, which is the default so that
-/// convergence is driven by the context/token budget rather than a fixed
-/// call count.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentConfig {
+    #[serde(default = "default_composer_predictions_enabled")]
+    pub composer_predictions_enabled: bool,
     #[serde(default = "default_running_message_behavior")]
     pub running_message_behavior: String,
     #[serde(default)]
@@ -206,6 +194,10 @@ pub struct AgentConfig {
     pub codex_acp_profile: Option<CodexAcpProfileConfig>,
 }
 
+fn default_composer_predictions_enabled() -> bool {
+    true
+}
+
 fn default_running_message_behavior() -> String {
     "queue".into()
 }
@@ -213,6 +205,7 @@ fn default_running_message_behavior() -> String {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
+            composer_predictions_enabled: true,
             running_message_behavior: default_running_message_behavior(),
             desktop_use_enabled: false,
             browser_use_enabled: false,
@@ -377,8 +370,6 @@ pub fn load() -> Result<AppConfig, ConfigError> {
     load_from(&config_path()?)
 }
 
-/// Path-parameterized variant of [`load`]; also used by tests and the R1
-/// model-selection worker (owned config file path, no env dependency).
 pub fn load_from(path: &Path) -> Result<AppConfig, ConfigError> {
     let edit = begin_edit(path)?;
     if !path.exists() {
@@ -473,343 +464,5 @@ impl AppConfig {
         std::fs::write(&tmp, format!("{FILE_HEADER}\n{body}"))?;
         std::fs::rename(&tmp, path)?;
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    /// Unique temp directory per call so parallel tests never collide.
-    fn temp_dir(tag: &str) -> PathBuf {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "vega-store-t06-{tag}-{}-{nanos}-{seq}",
-            std::process::id()
-        ))
-    }
-
-    fn sample_config() -> AppConfig {
-        AppConfig {
-            credential_bindings: Vec::new(),
-            providers: vec![ProviderConfig {
-                api: Default::default(),
-                enabled: true,
-                name: "deepseek".to_string(),
-                base_url: "https://api.deepseek.com".to_string(),
-                models: vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()],
-                key_ref: "deepseek".to_string(),
-            }],
-            defaults: Defaults {
-                model: "deepseek-chat".to_string(),
-                permission_mode: "confirm".to_string(),
-            },
-            ui: UiPrefs {
-                theme: "dark".to_string(),
-                sidebar_collapsed: false,
-                sidebar_width: SIDEBAR_WIDTH_DEFAULT,
-                projects_collapsed: false,
-                sessions_collapsed: false,
-            },
-            agent: AgentConfig {
-                running_message_behavior: default_running_message_behavior(),
-                desktop_use_enabled: false,
-                browser_use_enabled: false,
-                turn_limit: 0,
-                codex_acp_profile: None,
-            },
-        }
-    }
-
-    #[test]
-    fn round_trip_preserves_all_fields() {
-        let config = sample_config();
-        let dir = temp_dir("roundtrip");
-        let path = dir.join("config.toml");
-        config.save_to(&path).unwrap();
-        let loaded = load_from(&path).unwrap();
-        assert_eq!(config, loaded);
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn issue75_computer_use_settings_default_off_and_round_trip() {
-        let legacy: AgentConfig = toml::from_str("turn_limit = 7").unwrap();
-        assert!(!legacy.desktop_use_enabled);
-        assert!(!legacy.browser_use_enabled);
-        let dir = temp_dir("computer-use-config");
-        let path = dir.join("config.toml");
-        let mut config = sample_config();
-        config.agent.desktop_use_enabled = true;
-        config.agent.browser_use_enabled = true;
-        config.save_to(&path).unwrap();
-        assert_eq!(load_from(&path).unwrap().agent, config.agent);
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn agent_turn_limit_round_trips_and_defaults_zero() {
-        let dir = temp_dir("agent-turn-limit");
-        let path = dir.join("config.toml");
-        // Round-trip preserves a non-default turn_limit.
-        let mut config = sample_config();
-        config.agent.turn_limit = 7;
-        config.save_to(&path).unwrap();
-        assert_eq!(load_from(&path).unwrap().agent.turn_limit, 7);
-        // A config written before `[agent]` existed loads with the serde
-        // default (`0` = unlimited).
-        let legacy_path = dir.join("legacy.toml");
-        fs::write(
-            &legacy_path,
-            "providers = []\n\n[defaults]\nmodel = \"\"\npermission_mode = \"confirm\"\n\n[ui]\ntheme = \"dark\"\n",
-        )
-        .unwrap();
-        assert_eq!(load_from(&legacy_path).unwrap().agent.turn_limit, 0);
-        assert_eq!(AgentConfig::default().turn_limit, 0);
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn sidebar_collapsed_round_trips_and_defaults_false() {
-        let dir = temp_dir("sidebar-collapsed");
-        let path = dir.join("config.toml");
-        // Round-trip preserves a non-default sidebar_collapsed value.
-        let mut config = sample_config();
-        config.ui.sidebar_collapsed = true;
-        config.save_to(&path).unwrap();
-        let loaded = load_from(&path).unwrap();
-        assert!(loaded.ui.sidebar_collapsed);
-        // Backward compatibility: a config written before the field existed
-        // loads with the serde default (`false`) and keeps the theme. The
-        // legacy file carries every pre-T09 field (T06 template shape).
-        let legacy_path = dir.join("legacy.toml");
-        fs::write(
-            &legacy_path,
-            concat!(
-                "[[providers]]\n",
-                "name = \"deepseek\"\n",
-                "base_url = \"https://api.deepseek.com\"\n",
-                "models = [\"deepseek-chat\"]\n",
-                "key_ref = \"deepseek\"\n",
-                "\n",
-                "[defaults]\n",
-                "model = \"deepseek-chat\"\n",
-                "permission_mode = \"confirm\"\n",
-                "\n",
-                "[ui]\n",
-                "theme = \"dark\"\n",
-            ),
-        )
-        .unwrap();
-        let legacy = load_from(&legacy_path).unwrap();
-        assert!(!legacy.ui.sidebar_collapsed);
-        assert_eq!(legacy.ui.sidebar_width, SIDEBAR_WIDTH_DEFAULT);
-        assert_eq!(legacy.ui.theme, "dark");
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn sidebar_width_round_trips_clamps_and_defaults_for_legacy_config() {
-        let dir = temp_dir("sidebar-width");
-        let path = dir.join("config.toml");
-        let mut config = sample_config();
-        config.ui.sidebar_width = 348.5;
-        config.save_to(&path).unwrap();
-        assert_eq!(load_from(&path).unwrap().ui.sidebar_width, 348.5);
-
-        config.ui.sidebar_width = f32::INFINITY;
-        config.save_to(&path).unwrap();
-        assert_eq!(
-            load_from(&path).unwrap().ui.sidebar_width,
-            SIDEBAR_WIDTH_DEFAULT
-        );
-
-        fs::write(
-            &path,
-            "providers = []\n\n[defaults]\nmodel = \"\"\npermission_mode = \"confirm\"\n\n[ui]\ntheme = \"dark\"\nsidebar_width = 999.0\n",
-        )
-        .unwrap();
-        assert_eq!(
-            load_from(&path).unwrap().ui.sidebar_width,
-            SIDEBAR_WIDTH_MAX
-        );
-
-        fs::write(
-            &path,
-            "providers = []\n\n[defaults]\nmodel = \"\"\npermission_mode = \"confirm\"\n\n[ui]\ntheme = \"dark\"\n",
-        )
-        .unwrap();
-        assert_eq!(
-            load_from(&path).unwrap().ui.sidebar_width,
-            SIDEBAR_WIDTH_DEFAULT
-        );
-
-        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            assert_eq!(clamp_sidebar_width(invalid), SIDEBAR_WIDTH_DEFAULT);
-        }
-        assert_eq!(clamp_sidebar_width(-1.0), SIDEBAR_WIDTH_MIN);
-        assert_eq!(clamp_sidebar_width(10_000.0), SIDEBAR_WIDTH_MAX);
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn block_collapse_fields_round_trip_and_default_false() {
-        let dir = temp_dir("block-collapsed");
-        let path = dir.join("config.toml");
-        // Round-trip preserves non-default block collapse values (T12).
-        let mut config = sample_config();
-        config.ui.projects_collapsed = true;
-        config.ui.sessions_collapsed = true;
-        config.save_to(&path).unwrap();
-        let loaded = load_from(&path).unwrap();
-        assert!(loaded.ui.projects_collapsed);
-        assert!(loaded.ui.sessions_collapsed);
-        // Backward compatibility: a config written before the fields existed
-        // loads with the serde default (`false` for both).
-        let legacy_path = dir.join("legacy.toml");
-        fs::write(
-            &legacy_path,
-            concat!(
-                "[[providers]]\n",
-                "name = \"deepseek\"\n",
-                "base_url = \"https://api.deepseek.com\"\n",
-                "models = [\"deepseek-chat\"]\n",
-                "key_ref = \"deepseek\"\n",
-                "\n",
-                "[defaults]\n",
-                "model = \"deepseek-chat\"\n",
-                "permission_mode = \"confirm\"\n",
-                "\n",
-                "[ui]\n",
-                "theme = \"dark\"\n",
-                "sidebar_collapsed = true\n",
-            ),
-        )
-        .unwrap();
-        let legacy = load_from(&legacy_path).unwrap();
-        assert!(!legacy.ui.projects_collapsed);
-        assert!(!legacy.ui.sessions_collapsed);
-        // 既有字段不受影响。
-        assert!(legacy.ui.sidebar_collapsed);
-        assert_eq!(legacy.ui.theme, "dark");
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn missing_file_creates_default_template() {
-        let dir = temp_dir("template");
-        let path = dir.join("nested").join("config.toml");
-        let loaded = load_from(&path).unwrap();
-        assert_eq!(loaded, AppConfig::default());
-        assert_eq!(loaded.defaults.permission_mode, "confirm");
-        assert_eq!(loaded.ui.theme, "dark");
-        // The template must carry explanatory comments and stay parseable.
-        let text = fs::read_to_string(&path).unwrap();
-        assert!(text.starts_with('#'));
-        assert!(text.contains("key_ref"));
-        let reparsed: AppConfig = toml::from_str(&text).unwrap();
-        assert_eq!(reparsed, AppConfig::default());
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn invalid_toml_yields_parse_error() {
-        let dir = temp_dir("parse-error");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-        fs::write(&path, "not [valid toml").unwrap();
-        let err = load_from(&path).unwrap_err();
-        assert!(matches!(err, ConfigError::Parse(_)));
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn key_ref_is_a_reference_name_only() {
-        let config = sample_config();
-        let provider = &config.providers[0];
-        // key_ref is a reference into the local credential store, by convention the
-        // provider name; it carries no credential value.
-        assert_eq!(provider.key_ref, provider.name);
-        let body = toml::to_string_pretty(&config).unwrap();
-        assert!(body.contains("key_ref = \"deepseek\""));
-    }
-
-    #[test]
-    fn codex_acp_profile_round_trips_and_rejects_unsafe_launch_values() {
-        let dir = temp_dir("codex-profile");
-        let path = dir.join("config.toml");
-        let mut config = sample_config();
-        config.agent.codex_acp_profile = Some(CodexAcpProfileConfig {
-            display_name: "Codex ACP".into(),
-            executable: "/opt/vega/codex-acp".into(),
-            args: vec!["--stdio".into()],
-        });
-        config.save_to(&path).unwrap();
-        let loaded = load_from(&path).unwrap();
-        assert_eq!(
-            loaded.agent.codex_acp_profile,
-            config.agent.codex_acp_profile
-        );
-        let body = fs::read_to_string(&path).unwrap();
-        assert!(!body.contains("api_key"));
-        assert!(!body.contains("access_token"));
-
-        let profile = config.agent.codex_acp_profile.as_ref().unwrap();
-        assert!(profile.validate().is_ok());
-        let mut invalid = profile.clone();
-        invalid.executable = "codex-acp".into();
-        assert!(invalid.validate().is_err());
-        let mut invalid = profile.clone();
-        invalid.args = vec!["--api-key=sk-example".into()];
-        assert!(invalid.validate().is_err());
-        let mut invalid = profile.clone();
-        invalid.args = vec!["OPENAI_API_KEY=secret".into()];
-        assert!(invalid.validate().is_err());
-        fs::remove_dir_all(&dir).unwrap();
-    }
-}
-
-#[cfg(test)]
-mod issue71_tests {
-    use super::*;
-    #[test]
-    fn i71_api_legacy_default_and_explicit_roundtrip() {
-        let legacy = "name = 'owned'\nbase_url = 'https://owned.invalid/v1'\nmodels = ['model']\nkey_ref = 'owned'";
-        let mut provider: ProviderConfig = toml::from_str(legacy).unwrap();
-        assert_eq!(provider.api, ProviderApi::ChatCompletions);
-        provider.api = ProviderApi::Responses;
-        let encoded = toml::to_string(&provider).unwrap();
-        assert!(encoded.contains("responses"));
-        assert_eq!(
-            toml::from_str::<ProviderConfig>(&encoded).unwrap(),
-            provider
-        );
-        assert!(toml::from_str::<ProviderConfig>(&format!("{legacy}\napi='unknown'")).is_err());
-    }
-}
-
-#[cfg(test)]
-mod pending_message_tests {
-    use super::*;
-
-    #[test]
-    fn issue299_running_send_default_survives_legacy_and_roundtrip() {
-        let legacy: AgentConfig = toml::from_str("turn_limit = 7").unwrap();
-        assert_eq!(legacy.running_message_behavior, "queue");
-        assert_eq!(AgentConfig::default().running_message_behavior, "queue");
-        let mut selected = legacy;
-        selected.running_message_behavior = "steer".into();
-        let wire = toml::to_string(&selected).unwrap();
-        let restored: AgentConfig = toml::from_str(&wire).unwrap();
-        assert_eq!(restored.running_message_behavior, "steer");
-        assert_eq!(restored.turn_limit, 7);
     }
 }

@@ -18,18 +18,25 @@ use vega_ui::sidebar::*;
 
 mod agent;
 mod artifact;
+mod automation;
+mod automation_editor;
 mod branch;
 mod commit;
 mod commit_reconcile;
+mod composer_predictions;
 mod context;
-#[cfg(test)]
-pub(crate) use context::run_manual_context_worker;
+mod cua_onboarding;
 mod diff;
 mod file_index;
 mod image_preview;
+mod localization;
+mod model_capabilities;
 mod model_catalog;
 mod model_context;
+mod native_subagents;
 pub(crate) mod navigation;
+mod notifications;
+mod ordinary_send;
 mod pending_messages;
 mod pricing;
 mod privacy;
@@ -38,12 +45,11 @@ mod render;
 mod scroll_state;
 mod session;
 mod skills;
+mod subagent_panel;
 mod updater;
 mod workspace;
 
 use self::file_index::*;
-#[cfg(test)]
-pub(crate) use self::file_index::{ActiveFileIndex, FileIndexOwner};
 use crate::app_agent::*;
 use crate::artifact_controller::*;
 use crate::branch_controller::*;
@@ -91,27 +97,32 @@ impl ModelSelectionRefresh {
     }
 }
 
-/// Root view of the main window: the A1 layout shell — a persisted resizable
-/// sidebar next to a content column (max 768px, centered) that hosts
-/// either the settings view (Cmd+, / Esc), the opened session
-/// ([`ConversationStream`], S3-T17), or the ui-spec §4.6 empty state.
 pub(crate) struct VegaWindow {
+    pub(crate) composer_prediction_config_generation: u64,
+    pub(crate) composer_predictions:
+        std::collections::HashMap<String, composer_predictions::ComposerPredictionOwner>,
     pub(crate) updater: crate::updater::Updater,
     update_notice_dismissed: bool,
+    language: &'static str,
     navigation: navigation::Navigation,
+    completion_attention: notifications::CompletionAttention,
     pub(crate) palette: crate::app_palette::AppPalette,
     /// Sidebar with the [新建任务] button, projects block, and sessions block.
     pub(crate) sidebar: Entity<Sidebar>,
     workspace: workspace::Workspace,
+    subagent_panel: subagent_panel::SubagentPanel,
+    pub(crate) automation_editors: std::collections::HashMap<
+        vega_ui::automation_editor::AutomationEditorKey,
+        Entity<vega_ui::automation_editor::AutomationEditor>,
+    >,
     image_preview: image_preview::ImagePreviewController,
+    onboarding: cua_onboarding::OnboardingHost,
     /// Explicit wide-rail choice. Width-driven hiding is derived separately
     /// from the live viewport so a resize never overwrites the user's choice.
     environment_collapsed: bool,
     /// Narrow windows show Environment as a temporary card over the shell.
     /// Route changes and opening a persistent right workspace close it.
     environment_overlay_open: bool,
-    /// Pointer drag state for the R21 Sidebar separator. The accepted width
-    /// is persisted only when the drag completes.
     sidebar_resize_dragging: bool,
     appearance_subscription: Option<Subscription>,
     /// Cached settings view entity. Kept while settings is open so re-renders
@@ -122,24 +133,15 @@ pub(crate) struct VegaWindow {
     /// workers must never instantiate independent registries for this DB.
     pub(crate) mcp_settings: Option<vega_conversation::McpServerSettingsService>,
     pub(crate) pricing_controller: PricingController,
-    /// Cached conversation stream for the open thread (id, view). S3-T17:
-    /// built lazily on first render of an opened thread; rebuilt when another
-    /// thread is opened. The stream itself is memory-only (no persistence).
     pub(crate) stream_view: Option<(String, Entity<ConversationStream>)>,
     thread_scroll_states: scroll_state::ThreadScrollStateLru,
     pub(crate) message_location_route_thread_id: Option<String>,
     pub(crate) message_location_route_generation: u64,
     pub(crate) message_location_request_generation: u64,
     pub(crate) deferred_message_location: Option<DeferredMessageLocation>,
-    /// R69 R1/R4: the window's at-most-one unpersisted home-route draft.
-    ///
-    /// The draft is a real [`Thread`] carrying its final client-side ulid, so
-    /// materialization reuses the id verbatim and no alias layer exists. It
-    /// stays here — never on `Thread` — because R18 keeps `Thread` aligned
-    /// field-by-field with the `threads` DDL. `None` means the current route
-    /// is durable (or the draft was just materialized).
     pub(crate) draft: Option<Thread>,
     pub(crate) agent_controller: AppAgentController,
+    pub(crate) automation_controller: crate::automation_controller::AutomationController,
     pub(crate) context_controller: context::ContextController,
     pub(crate) file_index_controller: FileIndexController,
     pub(crate) diff_controller: DiffController,
@@ -148,9 +150,11 @@ pub(crate) struct VegaWindow {
     pub(crate) commit_controller: CommitController,
     pub(crate) trusted_actions: TrustedActionCoordinator,
     pub(crate) window_alive: Arc<AtomicBool>,
-    /// Configured model ids projected from the worker-side config read. The
-    /// selector intersects these with the in-memory Ready pricing authority.
-    pub(crate) configured_models: Option<Vec<String>>,
+    pub(crate) configured_models: Option<Vec<ModelOption>>,
+    model_capability_authority: Option<ModelCapabilityAuthority>,
+    model_capability_projection: ModelCapabilitySettingsProjection,
+    model_capability_generation: u64,
+    model_capability_pending: Option<(u64, u64)>,
     /// Exact provider/model reasoning projections loaded beside the model
     /// catalog. The stream receives a typed projection and performs no file
     /// IO of its own.
@@ -160,18 +164,12 @@ pub(crate) struct VegaWindow {
         vega_store::reasoning::ReasoningConfig,
         vega_store::reasoning::ReasoningFileSnapshot,
     )>,
+    loaded_replay_config: Option<vega_store::config::AppConfig>,
     /// App-level owner for the independent reasoning profile save. Settings
     /// can close while the worker is running, so this gate lives above the
     /// Settings entity and still blocks a new run until the exact ack lands.
     pub(crate) reasoning_save_pending: Option<(u64, u64)>,
-    /// R57 P3: monotonic operation id for reasoning saves that originate from
-    /// the composer's tier slider rather than the Settings editor. The two
-    /// surfaces share one single-flight owner; only the id source differs.
     pub(crate) composer_reasoning_operation: u64,
-    /// R57 P3: newest composer tier intent that arrived while the reasoning
-    /// worker was busy. One drag across the track emits several intents and
-    /// only the final position matters, so a single slot is enough — the next
-    /// save started from it carries the user's last choice.
     pub(crate) pending_composer_thinking: Option<(String, String)>,
     /// Provider Settings saves request a model catalog reload. If a reasoning
     /// save owns the catalog authority, defer that reload until its ack so the
@@ -189,65 +187,33 @@ pub(crate) struct VegaWindow {
     /// The model-only result of a save that completed while Settings was
     /// visible. It is merged into the newest route projection after close.
     pub(crate) deferred_model_refresh: Option<ModelSelectionRefresh>,
-    /// E2E fixture seam (R1): owned temp config file for the model-selection
-    /// worker's provider-uniqueness validation. Mirrors the other cfg(test)
-    /// overrides; production always resolves the real config root.
-    #[cfg(test)]
-    pub(crate) model_selection_config_override: Option<std::path::PathBuf>,
-    #[cfg(test)]
-    pub(crate) commit_provider_override: Option<Arc<dyn vega_runtime::Provider>>,
-    #[cfg(test)]
-    pub(crate) agent_provider_override: Option<Arc<dyn vega_runtime::Provider>>,
-    /// Per-window worker entry probe used by production-path tests. Keeping
-    /// the counter with its owning controller prevents unrelated concurrent
-    /// gpui tests from changing the zero/one spawn evidence.
-    #[cfg(test)]
-    pub(crate) agent_worker_start_probe: Arc<AgentWorkerStartProbe>,
-    #[cfg(test)]
-    pub(crate) commit_test_probe: Option<Arc<CommitTestProbe>>,
-    #[cfg(test)]
-    pub(crate) pricing_drop_next_worker_result: bool,
-    #[cfg(test)]
-    pub(crate) pricing_next_worker_gate: Option<Arc<std::sync::Barrier>>,
-    #[cfg(test)]
-    pub(crate) model_selection_worker_gate: Option<Arc<std::sync::Barrier>>,
-    #[cfg(test)]
-    pub(crate) reasoning_save_worker_gate: Option<Arc<std::sync::Barrier>>,
-    #[cfg(test)]
-    pub(crate) model_catalog_worker_gate: Option<Arc<std::sync::Barrier>>,
 }
 
 impl VegaWindow {
-    pub(crate) fn record_commit_probe(&self, event: &'static str) {
-        #[cfg(not(test))]
-        let _ = event;
-        #[cfg(test)]
-        if let Some(probe) = &self.commit_test_probe {
-            probe.record(event);
-        }
-    }
-
-    pub(crate) fn record_commit_terminal_application(&self, trace: bool) {
-        #[cfg(not(test))]
-        let _ = trace;
-        #[cfg(test)]
-        if let Some(probe) = &self.commit_test_probe {
-            probe.terminal_applications.fetch_add(1, Ordering::SeqCst);
-            if trace {
-                probe.record("panel_terminal");
-            }
-        }
-    }
-
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
-        // R8 backstop: releasing this window's root (window closed) means no
-        // run it owned can still be live, so clear any liveness the normal
-        // finish path could not report. `on_release` runs before `Drop`, while
-        // the controller map is still populated, and only the shared liveness
-        // projection is cleared here — the map itself is left for
-        // `window_terminal_cleanup`, which still has to cancel each run's
-        // token.
+        Self::new_with_services(cx, true)
+    }
+
+    fn new_with_services(cx: &mut Context<Self>, startup_services: bool) -> Self {
         cx.on_release(|this, cx| {
+            let waiting_threads: Vec<_> = this
+                .agent_controller
+                .queue_drain_waits
+                .keys()
+                .cloned()
+                .collect();
+            for thread_id in waiting_threads {
+                this.clear_pending_title_wait(&thread_id, cx);
+            }
+            this.onboarding.close(cx);
+            if cx
+                .try_global::<crate::automation_controller::AutomationGlobal>()
+                .is_some()
+            {
+                cx.update_global::<crate::automation_controller::AutomationGlobal, _>(
+                    |global, _| global.close_window(&this.window_alive),
+                );
+            }
             let thread_ids: Vec<String> = this.agent_controller.active.keys().cloned().collect();
             for thread_id in thread_ids {
                 vega_ui::sidebar::set_thread_running(&thread_id, false, cx);
@@ -260,6 +226,17 @@ impl VegaWindow {
                 .0
                 .as_ref()
                 .map(|thread| thread.id.clone());
+            let stale_waits: Vec<_> = this
+                .agent_controller
+                .queue_drain_waits
+                .keys()
+                .filter(|thread_id| Some(thread_id.as_str()) != route_thread_id.as_deref())
+                .cloned()
+                .collect();
+            for thread_id in stale_waits {
+                this.clear_pending_title_wait(&thread_id, cx);
+            }
+            this.reconcile_composer_prediction_route(cx);
             this.update_message_location_route(route_thread_id.as_deref());
             this.cancel_context_if_route_stale(cx);
             this.cancel_file_index_if_route_stale(cx);
@@ -276,13 +253,17 @@ impl VegaWindow {
                 .filter(|(thread_id, _)| thread_id == &thread.id)
                 .map(|(_, stream)| stream.clone());
             if let Some(stream) = cached_stream {
-                // Sidebar rename owns only the title field. The stream method
-                // fences id/project and leaves R1 model/pending state intact.
                 stream.update(cx, |stream, cx| stream.apply_thread_title(&thread, cx));
+            }
+            if let Some(stream) = this.automation_controller.streams.get(&thread.id) {
+                stream.update(cx, |stream, cx| {
+                    stream.apply_automation_thread_status(&thread, cx)
+                });
             }
         })
         .detach();
         cx.observe_global::<SettingsOpen>(|this, cx| {
+            this.cancel_composer_prediction(cx);
             this.cancel_context_if_route_stale(cx);
             this.cancel_file_index_if_route_stale(cx);
             this.close_diff_if_route_stale(cx);
@@ -311,12 +292,24 @@ impl VegaWindow {
             .and_then(|store| store.database_path())
             .and_then(|path| path.parent())
             .map(|root| Arc::new(PricingSettingsService::new(root.join("pricing.json"))));
+        let sidebar = cx.new(Sidebar::new);
+        cx.subscribe(&sidebar, |this, _, event: &SidebarEvent, cx| match event {
+            SidebarEvent::ThreadDeleted(thread_id) => {
+                this.cancel_composer_prediction_for_thread(thread_id, cx);
+                this.cancel_agent_for_thread(thread_id, cx);
+            }
+        })
+        .detach();
         let mut window = Self {
+            composer_prediction_config_generation: 0,
+            composer_predictions: std::collections::HashMap::new(),
             updater: crate::updater::Updater::default(),
             update_notice_dismissed: false,
+            language: vega_i18n::language(),
             navigation: navigation::Navigation::new(cx, None),
+            completion_attention: notifications::CompletionAttention::default(),
             palette: crate::app_palette::AppPalette::default(),
-            sidebar: cx.new(Sidebar::new),
+            sidebar,
             settings_view: None,
             mcp_settings: cx
                 .try_global::<crate::app_agent::AppMcpSettings>()
@@ -330,11 +323,15 @@ impl VegaWindow {
             deferred_message_location: None,
             draft: None,
             agent_controller: AppAgentController::default(),
+            automation_controller: crate::automation_controller::AutomationController::default(),
             context_controller: context::ContextController::default(),
             file_index_controller: FileIndexController::default(),
             diff_controller: DiffController::default(),
             workspace: workspace::Workspace::default(),
+            subagent_panel: subagent_panel::SubagentPanel::new(cx),
+            automation_editors: Default::default(),
             image_preview: image_preview::ImagePreviewController::new(cx),
+            onboarding: cua_onboarding::OnboardingHost::default(),
             environment_collapsed: true,
             environment_overlay_open: false,
             sidebar_resize_dragging: false,
@@ -345,9 +342,14 @@ impl VegaWindow {
             trusted_actions: TrustedActionCoordinator::default(),
             window_alive: Arc::new(AtomicBool::new(true)),
             configured_models: None,
+            model_capability_authority: None,
+            model_capability_projection: ModelCapabilitySettingsProjection::Loading,
+            model_capability_generation: 0,
+            model_capability_pending: None,
             configured_reasoning: None,
             configured_reasoning_error: None,
             configured_reasoning_authority: None,
+            loaded_replay_config: None,
             reasoning_save_pending: None,
             composer_reasoning_operation: 0,
             pending_composer_thinking: None,
@@ -356,38 +358,23 @@ impl VegaWindow {
             model_catalog_loading: false,
             model_catalog_generation: 0,
             deferred_model_refresh: None,
-            #[cfg(test)]
-            model_selection_config_override: None,
-            #[cfg(test)]
-            commit_provider_override: None,
-            #[cfg(test)]
-            agent_provider_override: None,
-            #[cfg(test)]
-            agent_worker_start_probe: Arc::new(AgentWorkerStartProbe::default()),
-            #[cfg(test)]
-            commit_test_probe: None,
-            #[cfg(test)]
-            pricing_drop_next_worker_result: false,
-            #[cfg(test)]
-            pricing_next_worker_gate: None,
-            #[cfg(test)]
-            model_selection_worker_gate: None,
-            #[cfg(test)]
-            reasoning_save_worker_gate: None,
-            #[cfg(test)]
-            model_catalog_worker_gate: None,
         };
-        window.start_pricing_load(cx);
-        if !cfg!(test) {
+        if startup_services {
+            window.start_pricing_load(cx);
             window.start_updater(cx);
         }
         window
     }
 
     pub(crate) fn window_terminal_cleanup(&mut self) {
+        self.composer_predictions.clear();
         self.image_preview.retire();
         self.context_controller.cancel();
         self.window_alive.store(false, Ordering::SeqCst);
+        self.agent_controller.queue_drain_waits.clear();
+        for (_, cancel) in self.agent_controller.ordinary_preparing.drain() {
+            cancel.cancel();
+        }
         for (_, active) in self.agent_controller.active.drain() {
             if let Some(control) = &active.computer_use {
                 control.stop();

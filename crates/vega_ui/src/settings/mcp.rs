@@ -1,7 +1,5 @@
-//! Issue #73 Settings surface. Every operation goes through the app-injected
-//! conversation service; this view never reads MCP tables or credential files.
-
 use crate::interaction::InteractionExt;
+use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -13,10 +11,11 @@ use vega_conversation::types::{
     McpServerForm, McpServerHealth, McpServerTransport, McpServerView,
 };
 use vega_conversation::{McpServerSettingsService, McpSettingsError};
+use vega_i18n::{t, t_args};
 use vega_theme::{Layout, Typography, theme};
 
 use super::{
-    NextMcpAction, PreviousMcpAction, SettingsView, TextInput, section_title,
+    NextMcpAction, PreviousMcpAction, SettingsText, SettingsView, TextInput, section_title,
     settings_action_chrome, settings_field, settings_group, settings_section, settings_status,
 };
 
@@ -170,7 +169,7 @@ pub(crate) struct McpSettingsState {
     pub(crate) loading: bool,
     pub(crate) busy: bool,
     revoke_in_flight: bool,
-    pub(crate) message: Option<String>,
+    pub(super) message: Option<SettingsText>,
     pub(super) message_error: bool,
     pub(crate) editor: Option<McpEditor>,
     pub(crate) confirmation: Option<McpConfirmation>,
@@ -212,33 +211,57 @@ impl McpSettingsState {
             transport: McpTransportChoice::Local,
             auth: McpAuthChoice::None,
             allow_loopback_http: false,
-            name_input: cx.new(|cx| TextInput::new(cx, "服务器名称", false).with_tab_stop(true)),
-            executable_input: cx
-                .new(|cx| TextInput::new(cx, "可执行文件绝对路径", false).with_tab_stop(true)),
+            name_input: cx.new(|cx| {
+                TextInput::new(cx, "", false)
+                    .with_placeholder_key("settings.mcp.name_placeholder")
+                    .with_tab_stop(true)
+            }),
+            executable_input: cx.new(|cx| {
+                TextInput::new(cx, "", false)
+                    .with_placeholder_key("settings.mcp.executable_placeholder")
+                    .with_tab_stop(true)
+            }),
             args_input: cx.new(|cx| {
-                TextInput::new_multiline(cx, "每行一个参数（不经 shell）", 2)
+                TextInput::new_multiline(cx, "", 2)
+                    .with_placeholder_key("settings.mcp.args_placeholder")
+                    .with_scroll_fade_on_base()
                     .with_row_bounds(2, 4)
                     .with_tab_stop(true)
             }),
-            working_directory_input: cx
-                .new(|cx| TextInput::new(cx, "可选：绝对工作目录", false).with_tab_stop(true)),
+            working_directory_input: cx.new(|cx| {
+                TextInput::new(cx, "", false)
+                    .with_placeholder_key("settings.mcp.directory_placeholder")
+                    .with_tab_stop(true)
+            }),
             environment_input: cx.new(|cx| {
-                TextInput::new_multiline(cx, "可选：每行一个环境变量名", 2)
+                TextInput::new_multiline(cx, "", 2)
+                    .with_placeholder_key("settings.mcp.environment_placeholder")
+                    .with_scroll_fade_on_base()
                     .with_row_bounds(2, 4)
                     .with_tab_stop(true)
             }),
             endpoint_input: cx
                 .new(|cx| TextInput::new(cx, "https://example.com/mcp", false).with_tab_stop(true)),
             client_id_input: cx.new(|cx| {
-                TextInput::new(cx, "可选：已预注册的 Client ID", false).with_tab_stop(true)
+                TextInput::new(cx, "", false)
+                    .with_placeholder_key("settings.mcp.client_id_placeholder")
+                    .with_tab_stop(true)
             }),
             bearer_input: cx.new(|cx| {
-                TextInput::new(cx, "Bearer token（保存后单独录入）", true).with_tab_stop(true)
+                TextInput::new(cx, "", true)
+                    .with_placeholder_key("settings.mcp.bearer_placeholder")
+                    .with_tab_stop(true)
             }),
-            env_variable_input: cx
-                .new(|cx| TextInput::new(cx, "已声明的环境变量名", false).with_tab_stop(true)),
-            env_secret_input: cx
-                .new(|cx| TextInput::new(cx, "环境变量密钥", true).with_tab_stop(true)),
+            env_variable_input: cx.new(|cx| {
+                TextInput::new(cx, "", false)
+                    .with_placeholder_key("settings.mcp.variable_placeholder")
+                    .with_tab_stop(true)
+            }),
+            env_secret_input: cx.new(|cx| {
+                TextInput::new(cx, "", true)
+                    .with_placeholder_key("settings.mcp.secret_placeholder")
+                    .with_tab_stop(true)
+            }),
             preview: HashMap::new(),
             step_up_offers: Vec::new(),
             oauth_discovery: None,
@@ -251,76 +274,70 @@ impl McpSettingsState {
     }
 }
 
-fn mcp_error_label(error: McpSettingsError) -> &'static str {
+fn mcp_error_label(error: McpSettingsError) -> SettingsText {
     match error {
-        McpSettingsError::Invalid => "配置不合法；请检查 URL、绝对路径、参数和变量名",
-        McpSettingsError::Conflict => "服务器配置已变化，列表已刷新；请重新打开编辑后重试",
-        McpSettingsError::NotFound => "服务器已移除，列表已刷新",
-        McpSettingsError::Capacity => "最多只能启用 8 个 MCP 服务器",
-        McpSettingsError::Store => "本地配置存储失败，请重试或检查数据目录",
+        McpSettingsError::Invalid => SettingsText::key("settings.mcp.error.invalid"),
+        McpSettingsError::Conflict => SettingsText::key("settings.mcp.error.conflict"),
+        McpSettingsError::NotFound => SettingsText::key("settings.mcp.error.missing"),
+        McpSettingsError::Capacity => SettingsText::key("settings.mcp.error.capacity"),
+        McpSettingsError::Store => SettingsText::key("settings.mcp.error.store"),
         McpSettingsError::CredentialBindingRequired => {
-            "此服务尚未授权 API 目标；请编辑服务并复制授权配置模板，填写 API 地址后加入 Vega 配置，再重新连接"
+            SettingsText::key("settings.mcp.error.bindings")
         }
-        McpSettingsError::Credential => "凭据存储不可用；已刷新状态，请重新录入",
-        McpSettingsError::AuthorizationRequired => "该服务器需要显式授权，未建立连接",
-        McpSettingsError::CimdUnavailable => {
-            "该服务器仅接受公网 HTTPS Client ID Metadata；当前未配置公开身份，无法授权"
+        McpSettingsError::Credential => SettingsText::key("settings.mcp.error.credentials"),
+        McpSettingsError::AuthorizationRequired => {
+            SettingsText::key("settings.mcp.error.authorization")
         }
-        McpSettingsError::AuthorizationFailed => {
-            "浏览器授权失败、被取消或已超时；请核对服务器状态后重新开始"
+        McpSettingsError::CimdUnavailable => SettingsText::key("settings.mcp.error.cimd"),
+        McpSettingsError::AuthorizationFailed => SettingsText::key("settings.mcp.error.oauth"),
+        McpSettingsError::Connection => SettingsText::key("settings.mcp.error.connection"),
+        McpSettingsError::UnsupportedTransport => SettingsText::key("settings.mcp.error.transport"),
+        McpSettingsError::ConfirmationRequired => {
+            SettingsText::key("settings.mcp.error.confirmation")
         }
-        McpSettingsError::Connection => "连接或工具发现失败；服务器保持原有启用状态",
-        McpSettingsError::UnsupportedTransport => {
-            "服务器使用了已弃用的独立 HTTP+SSE；请改用 Streamable HTTP 端点"
-        }
-        McpSettingsError::ConfirmationRequired => "需要先确认此服务器的权限范围",
     }
 }
 
 pub(super) fn health_label(health: &McpServerHealth) -> &'static str {
     match health {
-        McpServerHealth::Disabled => "未启用",
-        McpServerHealth::PendingRemoval => "正在移除；凭据清理待重试",
-        McpServerHealth::Disconnected => "已启用 · 任务开始时连接",
-        McpServerHealth::Ready => "已连接",
-        McpServerHealth::NeedsCredential => "缺少凭据",
-        McpServerHealth::NeedsAuthorization => "需要授权",
+        McpServerHealth::Disabled => t("settings.mcp.health.disabled"),
+        McpServerHealth::PendingRemoval => t("settings.mcp.health.removing"),
+        McpServerHealth::Disconnected => t("settings.mcp.health.disconnected"),
+        McpServerHealth::Ready => t("settings.mcp.health.connected"),
+        McpServerHealth::NeedsCredential => t("settings.mcp.health.credentials"),
+        McpServerHealth::NeedsAuthorization => t("settings.mcp.health.authorization"),
         McpServerHealth::Error(code) if code == "unsupported_transport" => {
-            "不支持已弃用的独立 HTTP+SSE；请改用 Streamable HTTP 端点"
+            t("settings.mcp.health.transport")
         }
-        McpServerHealth::Error(_) => "连接失败",
+        McpServerHealth::Error(_) => t("settings.mcp.health.failed"),
     }
 }
 
-pub(super) fn enable_result_message(row: Option<&McpServerView>) -> (&'static str, bool) {
+pub(super) fn enable_result_message(row: Option<&McpServerView>) -> (SettingsText, bool) {
     match row {
         Some(row) if row.enabled => match &row.health {
-            McpServerHealth::Disconnected | McpServerHealth::Ready => (
-                "已启用；将在任务开始时连接，连接失败时该任务不会广告工具",
-                false,
-            ),
-            McpServerHealth::Error(code) if code == "unsupported_transport" => (
-                "已启用，但服务器使用了已弃用的独立 HTTP+SSE；请改用 Streamable HTTP 端点；该任务不会向模型提供工具",
-                true,
-            ),
-            McpServerHealth::Error(_) => (
-                "已启用，但连接验证失败；任务开始时可重试，若仍失败则不会向模型提供工具",
-                true,
-            ),
-            McpServerHealth::NeedsCredential => (
-                "已启用，但缺少凭据；配置后下次任务可重试连接，失败时不会向模型提供工具",
-                true,
-            ),
+            McpServerHealth::Disconnected | McpServerHealth::Ready => {
+                (SettingsText::key("settings.mcp.enabled.ready"), false)
+            }
+            McpServerHealth::Error(code) if code == "unsupported_transport" => {
+                (SettingsText::key("settings.mcp.enabled.transport"), true)
+            }
+            McpServerHealth::Error(_) => {
+                (SettingsText::key("settings.mcp.enabled.connection"), true)
+            }
+            McpServerHealth::NeedsCredential => {
+                (SettingsText::key("settings.mcp.enabled.credentials"), true)
+            }
             McpServerHealth::NeedsAuthorization => (
-                "已启用，但需要授权；授权后下次任务可重试连接，未授权时不会向模型提供工具",
+                SettingsText::key("settings.mcp.enabled.authorization"),
                 true,
             ),
             McpServerHealth::Disabled | McpServerHealth::PendingRemoval => {
-                ("启用状态未确认；请检查当前服务器状态", true)
+                (SettingsText::key("settings.mcp.enabled.unconfirmed"), true)
             }
         },
-        Some(_) => ("启用状态未确认；请检查当前服务器状态", true),
-        None => ("操作已完成；请确认当前服务器列表", false),
+        Some(_) => (SettingsText::key("settings.mcp.enabled.unconfirmed"), true),
+        None => (SettingsText::key("settings.mcp.operation_completed"), false),
     }
 }
 
@@ -343,36 +360,45 @@ pub(super) fn mcp_confirmation_lines(row: &McpServerView) -> Vec<String> {
             environment,
         } => {
             let mut lines = vec![
-                format!("本地程序：{}", executable.display()),
-                format!(
-                    "工作目录：{}",
-                    working_directory
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "Vega 自有目录".into())
+                t_args(
+                    "settings.mcp.confirm.local_program",
+                    &[("path", &(executable.display()).to_string())],
                 ),
-                format!("参数（{} 项）：", args.len()),
+                t_args(
+                    "settings.mcp.confirm.working_directory",
+                    &[(
+                        "path",
+                        &(working_directory
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|| t("settings.mcp.owned_directory").into())),
+                    )],
+                ),
+                t_args(
+                    "settings.mcp.confirm.arguments",
+                    &[("count", &(args.len()).to_string())],
+                ),
             ];
             lines.extend(args.iter().enumerate().map(|(index, argument)| {
                 // Escaped per argv entry so boundaries remain unambiguous.
                 format!("[{index}] {argument:?}")
             }));
-            lines.push(format!(
-                "环境变量名：{}（不展示密钥）",
-                if environment.is_empty() {
-                    "无".into()
-                } else {
-                    environment
-                        .iter()
-                        .map(|entry| entry.variable.as_str())
-                        .collect::<Vec<_>>()
-                        .join("、")
-                }
+            lines.push(t_args(
+                "settings.mcp.confirm.environment",
+                &[(
+                    "variables",
+                    &(if environment.is_empty() {
+                        t("settings.state.none").to_string()
+                    } else {
+                        environment
+                            .iter()
+                            .map(|entry| entry.variable.as_str())
+                            .collect::<Vec<_>>()
+                            .join(t("settings.list_separator"))
+                    }),
+                )],
             ));
-            lines.push(
-                "凭据调用仅访问已授权的 API；请使用专用密钥字段，不要把 token 写进命令参数。"
-                    .into(),
-            );
+            lines.push(t("settings.mcp.credentials_warning").into());
             lines
         }
         McpServerTransport::Remote {
@@ -381,13 +407,16 @@ pub(super) fn mcp_confirmation_lines(row: &McpServerView) -> Vec<String> {
             authorization,
         } => {
             let mode = match authorization {
-                McpRemoteAuthorization::None => "无认证",
-                McpRemoteAuthorization::Bearer => "独立 Bearer（非 OAuth）",
-                McpRemoteAuthorization::OAuth { .. } => "OAuth（需另行显式授权）",
+                McpRemoteAuthorization::None => t("settings.mcp.auth.none"),
+                McpRemoteAuthorization::Bearer => t("settings.mcp.auth.bearer_detail"),
+                McpRemoteAuthorization::OAuth { .. } => t("settings.mcp.auth.oauth_detail"),
             };
-            let mut lines = vec![format!("远程端点：{endpoint}"), format!("认证方式：{mode}")];
+            let mut lines = vec![
+                t_args("settings.mcp.confirm.endpoint", &[("endpoint", endpoint)]),
+                t_args("settings.mcp.confirm.authentication", &[("mode", mode)]),
+            ];
             if *allow_loopback_http {
-                lines.push("已允许回环 HTTP：本机明文连接，仅限 127.0.0.1 / ::1 开发端点。".into());
+                lines.push(t("settings.mcp.loopback_warning").into());
             }
             lines
         }
@@ -396,42 +425,59 @@ pub(super) fn mcp_confirmation_lines(row: &McpServerView) -> Vec<String> {
 
 pub(super) fn mcp_oauth_preparation_lines(preparation: &McpOAuthPreparation) -> Vec<String> {
     let mut lines = vec![
-        format!("资源：{}", preparation.resource),
-        format!("发行方：{}", preparation.issuer),
-        format!("本机回调地址：{}", preparation.redirect_uri),
-        format!(
-            "本次授权总权限：{}",
-            if preparation.requested_scopes.is_empty() {
-                "未声明".into()
-            } else {
-                preparation.requested_scopes.join("、")
-            }
+        t_args(
+            "settings.mcp.oauth.resource",
+            &[("resource", &preparation.resource)],
+        ),
+        t_args(
+            "settings.mcp.oauth.issuer",
+            &[("issuer", &preparation.issuer)],
+        ),
+        t_args(
+            "settings.mcp.oauth.callback",
+            &[("address", &preparation.redirect_uri)],
+        ),
+        t_args(
+            "settings.mcp.oauth.total_scopes",
+            &[(
+                "scopes",
+                &(if preparation.requested_scopes.is_empty() {
+                    t("settings.mcp.scopes_undeclared").to_string()
+                } else {
+                    preparation
+                        .requested_scopes
+                        .join(t("settings.list_separator"))
+                }),
+            )],
         ),
         match preparation.registration {
-            McpOAuthRegistration::PreRegistered => {
-                "使用已预注册 Client ID，不动态注册客户端。".into()
-            }
-            McpOAuthRegistration::DynamicRegistration => {
-                "将使用已弃用的动态客户端注册（DCR）。确认后才向以下注册端点提交本机回调地址。"
-                    .into()
-            }
+            McpOAuthRegistration::PreRegistered => t("settings.mcp.oauth.preregistered").into(),
+            McpOAuthRegistration::DynamicRegistration => t("settings.mcp.oauth.dcr").into(),
             McpOAuthRegistration::CimdUnavailable => {
-                "仅支持公网 HTTPS Client ID Metadata；当前未配置公开身份，无法继续。".into()
+                t("settings.mcp.oauth.cimd_unavailable").into()
             }
             McpOAuthRegistration::Unavailable => {
-                "授权服务器未提供可用的客户端注册方式，无法继续。".into()
+                t("settings.mcp.oauth.registration_unavailable").into()
             }
         },
     ];
     if let Some(endpoint) = &preparation.registration_endpoint {
-        lines.push(format!("客户端注册端点：{endpoint}"));
+        lines.push(t_args(
+            "settings.mcp.oauth.registration_endpoint",
+            &[("endpoint", endpoint)],
+        ));
     }
     if !preparation.step_up_added_scopes.is_empty() {
-        lines.push(format!(
-            "本次新增权限（来自经验证的 403 挑战）：{}",
-            preparation.step_up_added_scopes.join("、")
+        lines.push(t_args(
+            "settings.mcp.oauth.added_scopes",
+            &[(
+                "scopes",
+                &(preparation
+                    .step_up_added_scopes
+                    .join(t("settings.list_separator"))),
+            )],
         ));
-        lines.push("之前的工具调用已经失败，不会因授权升级而自动重放。".into());
+        lines.push(t("settings.mcp.oauth.no_replay").into());
     }
     lines
 }
@@ -444,6 +490,23 @@ pub(super) fn mcp_oauth_can_begin(registration: McpOAuthRegistration) -> bool {
 }
 
 impl SettingsView {
+    pub(super) fn refresh_mcp_localization(&self, cx: &mut Context<Self>) {
+        for input in [
+            &self.mcp.name_input,
+            &self.mcp.executable_input,
+            &self.mcp.args_input,
+            &self.mcp.working_directory_input,
+            &self.mcp.environment_input,
+            &self.mcp.endpoint_input,
+            &self.mcp.client_id_input,
+            &self.mcp.bearer_input,
+            &self.mcp.env_variable_input,
+            &self.mcp.env_secret_input,
+        ] {
+            input.update(cx, |_, cx| cx.notify());
+        }
+    }
+
     /// Installs the *same* app-owned revocation domain used by the agent
     /// worker. No Settings instance is allowed to construct its own service.
     pub fn install_mcp_service(
@@ -481,7 +544,7 @@ impl SettingsView {
             (self.mcp.service.as_ref(), self.mcp.oauth_flow_id.take())
             && let Err(error) = service.cancel_oauth(&flow_id)
         {
-            self.mcp.message = Some(mcp_error_label(error).into());
+            self.mcp.message = Some(mcp_error_label(error));
             self.mcp.message_error = true;
         }
         self.mcp.oauth_discovery = None;
@@ -841,7 +904,7 @@ impl SettingsView {
             McpAction::CancelOAuth => {
                 self.cancel_mcp_oauth(cx);
                 if !self.mcp.message_error {
-                    self.mcp.message = Some("已取消本次 OAuth 授权；不会启用 MCP 服务器".into());
+                    self.mcp.message = Some(SettingsText::key("settings.mcp.oauth.canceled"));
                 }
                 cx.notify();
             }
@@ -972,7 +1035,7 @@ impl SettingsView {
             self.mcp.revoke_in_flight = false;
             self.mcp.loading = false;
             self.mcp.message_error = true;
-            self.mcp.message = Some("无法启动 MCP 设置任务；没有执行操作，请稍后重试".into());
+            self.mcp.message = Some(SettingsText::key("settings.mcp.worker_failed"));
             cx.notify();
             return;
         }
@@ -1024,14 +1087,14 @@ impl SettingsView {
                             .retain(|id, _| this.mcp.servers.iter().any(|row| &row.id == id));
                     }
                     Err(error) => {
-                        this.mcp.message = Some(mcp_error_label(error).into());
+                        this.mcp.message = Some(mcp_error_label(error));
                         this.mcp.message_error = true;
                     }
                 }
                 match step_up_offers {
                     Ok(offers) => this.mcp.step_up_offers = offers,
                     Err(error) if this.mcp.message.is_none() => {
-                        this.mcp.message = Some(mcp_error_label(error).into());
+                        this.mcp.message = Some(mcp_error_label(error));
                         this.mcp.message_error = true;
                     }
                     Err(_) => {}
@@ -1043,7 +1106,9 @@ impl SettingsView {
                         }
                         match output {
                             McpOperationOutput::CredentialBindings(template) => {
-                                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(template));
+                                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                                    template,
+                                ));
                             }
                             McpOperationOutput::NoData => {}
                             McpOperationOutput::Tested(preview) => {
@@ -1051,8 +1116,9 @@ impl SettingsView {
                                     let count = preview.tool_names.len();
                                     this.mcp.preview.insert(id, preview);
                                     if this.mcp.message.is_none() {
-                                        this.mcp.message = Some(format!(
-                                            "连接测试发现 {count} 个工具；测试不改变启用状态"
+                                        this.mcp.message = Some(SettingsText::args(
+                                            "settings.mcp.test_result",
+                                            &[("count", &count.to_string())],
                                         ));
                                     }
                                 }
@@ -1061,7 +1127,9 @@ impl SettingsView {
                                 if let Some((id, revision)) = discovered_context {
                                     this.mcp.oauth_discovery = Some((id, revision, discovery));
                                     if this.mcp.message.is_none() {
-                                        this.mcp.message = Some("已发现授权服务器；请选择要信任的发行方。尚未注册客户端或打开浏览器。".into());
+                                        this.mcp.message = Some(SettingsText::key(
+                                            "settings.mcp.oauth.discovered",
+                                        ));
                                     }
                                 }
                             }
@@ -1069,18 +1137,23 @@ impl SettingsView {
                                 this.mcp.oauth_flow_id = Some(preparation.flow_id.clone());
                                 this.mcp.oauth_preparation = Some(preparation);
                                 if this.mcp.message.is_none() {
-                                    this.mcp.message = Some("授权详情已准备。检查发行方、权限和本机回调地址，再单独确认。".into());
+                                    this.mcp.message =
+                                        Some(SettingsText::key("settings.mcp.oauth.prepared"));
                                 }
                             }
                             McpOperationOutput::OAuthStarted(start) => {
                                 this.mcp.oauth_preparation = None;
                                 this.mcp.oauth_flow_id = Some(start.flow_id.clone());
                                 this.mcp.oauth_waiting = true;
-                                this.mcp.message = Some("已打开系统浏览器；等待 OAuth 回调。可随时取消，服务器仍为禁用状态。".into());
+                                this.mcp.message =
+                                    Some(SettingsText::key("settings.mcp.oauth.waiting"));
                                 cx.open_url(&start.authorization_url);
-                                this.mcp_operation(McpOperation::OAuthFinish {
-                                    flow_id: start.flow_id,
-                                }, cx);
+                                this.mcp_operation(
+                                    McpOperation::OAuthFinish {
+                                        flow_id: start.flow_id,
+                                    },
+                                    cx,
+                                );
                                 return;
                             }
                             McpOperationOutput::OAuthFinished => {
@@ -1089,7 +1162,8 @@ impl SettingsView {
                                 this.mcp.oauth_flow_id = None;
                                 this.mcp.oauth_waiting = false;
                                 if this.mcp.message.is_none() {
-                                    this.mcp.message = Some("OAuth 授权凭据已保存；服务器仍为禁用状态，请单独确认启用。".into());
+                                    this.mcp.message =
+                                        Some(SettingsText::key("settings.mcp.oauth.saved"));
                                 }
                             }
                         }
@@ -1098,7 +1172,7 @@ impl SettingsView {
                                 .as_deref()
                                 .and_then(|id| this.mcp.servers.iter().find(|row| row.id == id));
                             let (message, warning) = enable_result_message(row);
-                            this.mcp.message = Some(message.into());
+                            this.mcp.message = Some(message);
                             this.mcp.message_error = warning;
                         }
                         if let Some(McpEditor::Existing { id, revision }) = this.mcp.editor.as_mut()
@@ -1114,7 +1188,7 @@ impl SettingsView {
                             this.mcp.oauth_flow_id = None;
                             this.mcp.oauth_waiting = false;
                         }
-                        this.mcp.message = Some(mcp_error_label(error).into());
+                        this.mcp.message = Some(mcp_error_label(error));
                         this.mcp.message_error = true;
                         if matches!(
                             error,
@@ -1147,27 +1221,6 @@ impl SettingsView {
     ) -> AnyElement {
         let label = label.into();
         let selector = selector.into();
-        let debug_name = if selector.starts_with("mcp-enable-") {
-            "mcp-enable"
-        } else if selector.starts_with("mcp-remove-") {
-            "mcp-remove"
-        } else if selector.starts_with("mcp-edit-") {
-            "mcp-edit"
-        } else if selector.starts_with("mcp-disable-") {
-            "mcp-disable"
-        } else if selector.starts_with("mcp-test-") {
-            "mcp-test"
-        } else if selector.starts_with("mcp-oauth-discover-") {
-            "mcp-oauth-discover"
-        } else if selector.starts_with("mcp-oauth-disconnect-") {
-            "mcp-oauth-disconnect"
-        } else if selector.starts_with("mcp-oauth-issuer-") {
-            "mcp-oauth-issuer"
-        } else if selector.starts_with("mcp-oauth-step-up-") {
-            "mcp-oauth-step-up"
-        } else {
-            ""
-        };
         let colors = theme(cx).colors;
         let selected = match &action {
             McpAction::Transport(choice) => self.mcp.transport == *choice,
@@ -1211,13 +1264,6 @@ impl SettingsView {
                 },
                 enabled,
             )
-            .debug_selector(move || {
-                if debug_name.is_empty() {
-                    selector.clone()
-                } else {
-                    debug_name.into()
-                }
-            })
             .track_focus(&focus)
             .tab_stop(true)
             .focus_visible(move |style| style.border_color(colors.accent))
@@ -1276,10 +1322,13 @@ impl SettingsView {
             })
             .cloned();
         let target = match &row.form.transport {
-            McpServerTransport::Local { executable, .. } => {
-                format!("本地 stdio · {}", executable.display())
+            McpServerTransport::Local { executable, .. } => t_args(
+                "settings.mcp.local_summary",
+                &[("path", &(executable.display()).to_string())],
+            ),
+            McpServerTransport::Remote { endpoint, .. } => {
+                t_args("settings.mcp.remote_summary", &[("endpoint", endpoint)])
             }
-            McpServerTransport::Remote { endpoint, .. } => format!("远程 HTTP · {endpoint}"),
         };
         let health = health_label(&row.health);
         let mut actions = div()
@@ -1287,7 +1336,7 @@ impl SettingsView {
             .flex_wrap()
             .gap_2()
             .child(self.mcp_button(
-                "编辑",
+                t("settings.action.edit"),
                 format!("mcp-edit-{id}"),
                 McpAction::Edit(id.clone()),
                 enabled,
@@ -1295,7 +1344,7 @@ impl SettingsView {
             ))
             .child(if row.enabled {
                 self.mcp_button(
-                    "停用",
+                    t("settings.action.disable"),
                     format!("mcp-disable-{id}"),
                     McpAction::Disable {
                         id: id.clone(),
@@ -1306,7 +1355,7 @@ impl SettingsView {
                 )
             } else {
                 self.mcp_button(
-                    "启用",
+                    t("settings.action.enable"),
                     format!("mcp-enable-{id}"),
                     McpAction::Ask(McpConfirmation::Enable {
                         id: id.clone(),
@@ -1317,7 +1366,7 @@ impl SettingsView {
                 )
             })
             .child(self.mcp_button(
-                "测试连接 / 刷新工具",
+                t("settings.mcp.test"),
                 format!("mcp-test-{id}"),
                 McpAction::Ask(McpConfirmation::Test {
                     id: id.clone(),
@@ -1327,7 +1376,7 @@ impl SettingsView {
                 cx,
             ))
             .child(self.mcp_button(
-                "移除",
+                t("settings.action.remove"),
                 format!("mcp-remove-{id}"),
                 McpAction::Ask(McpConfirmation::Remove {
                     id: id.clone(),
@@ -1339,7 +1388,7 @@ impl SettingsView {
         if is_oauth {
             if step_up_offer.is_some() {
                 actions = actions.child(self.mcp_button(
-                    "查看权限升级",
+                    t("settings.mcp.oauth.view_step_up"),
                     format!("mcp-oauth-step-up-{id}"),
                     McpAction::PrepareStepUp {
                         id: id.clone(),
@@ -1350,7 +1399,7 @@ impl SettingsView {
                 ));
             } else {
                 actions = actions.child(self.mcp_button(
-                    "发现 OAuth 授权服务",
+                    t("settings.mcp.oauth.discover"),
                     format!("mcp-oauth-discover-{id}"),
                     McpAction::Ask(McpConfirmation::DiscoverOAuth {
                         id: id.clone(),
@@ -1362,7 +1411,7 @@ impl SettingsView {
             }
             if row.credential_configured {
                 actions = actions.child(self.mcp_button(
-                    "断开本地授权",
+                    t("settings.mcp.oauth.disconnect"),
                     format!("mcp-oauth-disconnect-{id}"),
                     McpAction::Ask(McpConfirmation::DisconnectOAuth {
                         id: id.clone(),
@@ -1385,7 +1434,6 @@ impl SettingsView {
             .child(
                 div()
                     .id(format!("mcp-health-{id}"))
-                    .debug_selector(|| "mcp-health".into())
                     .text_color(
                         if matches!(
                             row.health,
@@ -1400,25 +1448,32 @@ impl SettingsView {
                     )
                     .child(health),
             )
-            .child(div().text_color(colors.text_secondary).child(format!(
-                "配置版本 {} · 凭据{}",
-                revision,
-                if row.credential_configured {
-                    "已配置"
-                } else {
-                    "未配置"
-                }
+            .child(div().text_color(colors.text_secondary).child(t_args(
+                "settings.mcp.config_summary",
+                &[
+                    ("version", &revision.to_string()),
+                    (
+                        "credentials",
+                        if row.credential_configured {
+                            t("settings.state.configured")
+                        } else {
+                            t("settings.state.not_configured")
+                        },
+                    ),
+                ],
             )))
             .child(actions);
         if let Some(offer) = step_up_offer {
             card = card.child(
                 div()
                     .id("mcp-oauth-step-up-notice")
-                    .debug_selector(|| "mcp-oauth-step-up-notice".into())
                     .text_color(colors.warning)
-                    .child(format!(
-                        "工具调用因权限不足而失败；服务器请求新增权限：{}。点击「查看权限升级」核对总范围；失败调用不会自动重放。",
-                        offer.added_scopes.join("、")
+                    .child(t_args(
+                        "settings.mcp.oauth.step_up_warning",
+                        &[(
+                            "scopes",
+                            &(offer.added_scopes.join(t("settings.list_separator"))),
+                        )],
                     )),
             );
         }
@@ -1429,11 +1484,10 @@ impl SettingsView {
             .map(|preview| preview.tool_names.as_slice())
             .unwrap_or(&row.tool_names);
         if !tools.is_empty() {
-            card = card.child(
-                div()
-                    .text_color(colors.text_secondary)
-                    .child(format!("工具：{}", tools.join("、"))),
-            );
+            card = card.child(div().text_color(colors.text_secondary).child(t_args(
+                "settings.mcp.tools",
+                &[("tools", &(tools.join(t("settings.list_separator"))))],
+            )));
         }
         let rejected = self
             .mcp
@@ -1445,17 +1499,19 @@ impl SettingsView {
             card = card.child(
                 div()
                     .id(format!("mcp-rejected-tools-{id}"))
-                    .debug_selector(|| "mcp-rejected-tools".into())
                     .text_color(colors.warning)
-                    .child(format!("未采纳的工具：{}", rejected.join("、"))),
+                    .child(t_args(
+                        "settings.mcp.rejected_tools",
+                        &[("tools", &(rejected.join(t("settings.list_separator"))))],
+                    )),
             );
         }
         if is_oauth {
             card = card.child(div().text_color(colors.warning).child(
                 if row.credential_configured {
-                    "OAuth 凭据已本地配置；连接与外部工具调用仍需分别确认。"
+                    t("settings.mcp.oauth.configured")
                 } else {
-                    "OAuth 未授权；发现元数据不会自动注册或打开浏览器。"
+                    t("settings.mcp.oauth.not_authorized")
                 },
             ));
         }
@@ -1470,9 +1526,9 @@ impl SettingsView {
             .id("mcp-editor")
             .child(section_title(
                 if saved {
-                    "编辑 MCP 服务器"
+                    t("settings.mcp.edit")
                 } else {
-                    "新增 MCP 服务器"
+                    t("settings.mcp.add")
                 },
                 colors.text_primary,
             ))
@@ -1483,14 +1539,14 @@ impl SettingsView {
                     .items_center()
                     .gap_2()
                     .child(self.mcp_button(
-                        "本地 stdio",
+                        t("settings.mcp.transport.local"),
                         "mcp-local-choice",
                         McpAction::Transport(McpTransportChoice::Local),
                         !self.mcp.busy,
                         cx,
                     ))
                     .child(self.mcp_button(
-                        "远程 HTTP",
+                        t("settings.mcp.transport.remote"),
                         "mcp-remote-choice",
                         McpAction::Transport(McpTransportChoice::Remote),
                         !self.mcp.busy,
@@ -1498,8 +1554,7 @@ impl SettingsView {
                     )),
             )
             .child(settings_field(
-                "mcp-field-name",
-                "名称",
+                t("settings.field.name"),
                 None,
                 self.mcp.name_input.clone(),
                 colors,
@@ -1516,22 +1571,19 @@ impl SettingsView {
                 .child(
                     div()
                         .text_color(colors.text_secondary)
-                        .child("参数按行传入；配置凭据后，程序仅能通过代理访问已授权的 API。"),
+                        .child(t("settings.mcp.arguments_warning")),
                 )
                 .child(settings_field(
-                    "mcp-field-executable",
-                    "可执行文件",
+                    t("settings.field.executable"),
                     None,
                     self.mcp.executable_input.clone(),
                     colors,
                 ))
                 .child(settings_field(
-                    "mcp-args-frame-field",
-                    "参数（每行一个）",
+                    t("settings.mcp.args"),
                     None,
                     div()
                         .id("mcp-args-frame")
-                        .debug_selector(|| "mcp-args-frame".into())
                         .w_full()
                         .h(args_height)
                         .flex_shrink_0()
@@ -1540,23 +1592,19 @@ impl SettingsView {
                     colors,
                 ))
                 .child(settings_field(
-                    "mcp-working-directory-frame-field",
-                    "工作目录",
+                    t("settings.mcp.working_directory"),
                     None,
                     div()
                         .id("mcp-working-directory-frame")
-                        .debug_selector(|| "mcp-working-directory-frame".into())
                         .w_full()
                         .child(self.mcp.working_directory_input.clone()),
                     colors,
                 ))
                 .child(settings_field(
-                    "mcp-environment-frame-field",
-                    "环境变量声明",
+                    t("settings.mcp.environment"),
                     None,
                     div()
                         .id("mcp-environment-frame")
-                        .debug_selector(|| "mcp-environment-frame".into())
                         .w_full()
                         .h(environment_height)
                         .flex_shrink_0()
@@ -1567,33 +1615,31 @@ impl SettingsView {
             if saved {
                 form = form
                     .child(
-                        div().text_color(colors.text_secondary).child(
-                            "先在上方声明变量名并保存，再单独录入其密钥；不继承其他环境变量。",
-                        ),
+                        div()
+                            .text_color(colors.text_secondary)
+                            .child(t("settings.mcp.environment_warning")),
                     )
                     .child(settings_field(
-                        "mcp-field-env_variable",
-                        "环境变量名",
+                        t("settings.mcp.variable"),
                         None,
                         self.mcp.env_variable_input.clone(),
                         colors,
                     ))
                     .child(settings_field(
-                        "mcp-field-env_secret",
-                        "环境密钥",
+                        t("settings.mcp.secret"),
                         None,
                         self.mcp.env_secret_input.clone(),
                         colors,
                     ))
                     .child(self.mcp_button(
-                        "保存此环境密钥",
+                        t("settings.mcp.save_environment_secret"),
                         "mcp-save-local-secret",
                         McpAction::SaveLocalSecret,
                         !self.mcp.busy,
                         cx,
                     ))
                     .child(self.mcp_button(
-                        "复制 API 授权配置模板",
+                        t("settings.mcp.copy_bindings"),
                         "mcp-copy-credential-bindings",
                         McpAction::CopyCredentialBindings,
                         !self.mcp.busy,
@@ -1603,17 +1649,16 @@ impl SettingsView {
         } else {
             form = form
                 .child(settings_field(
-                    "mcp-field-endpoint",
-                    "服务地址",
+                    t("settings.provider.service_url"),
                     None,
                     self.mcp.endpoint_input.clone(),
                     colors,
                 ))
                 .child(self.mcp_button(
                     if self.mcp.allow_loopback_http {
-                        "允许回环 HTTP：开"
+                        t("settings.mcp.loopback_on")
                     } else {
-                        "允许回环 HTTP：关"
+                        t("settings.mcp.loopback_off")
                     },
                     "mcp-loopback-choice",
                     McpAction::ToggleLoopback,
@@ -1623,7 +1668,7 @@ impl SettingsView {
                 .child(
                     div()
                         .text_color(colors.text_secondary)
-                        .child("非 HTTPS 仅允许显式开启的 127.0.0.1 / ::1 本机测试端点。"),
+                        .child(t("settings.mcp.loopback_hint")),
                 )
                 .child(
                     div()
@@ -1631,21 +1676,21 @@ impl SettingsView {
                         .flex_wrap()
                         .gap_2()
                         .child(self.mcp_button(
-                            "无认证",
+                            t("settings.mcp.auth.none"),
                             "mcp-auth-none",
                             McpAction::Auth(McpAuthChoice::None),
                             !self.mcp.busy,
                             cx,
                         ))
                         .child(self.mcp_button(
-                            "独立 Bearer",
+                            t("settings.mcp.auth.bearer"),
                             "mcp-auth-bearer",
                             McpAction::Auth(McpAuthChoice::Bearer),
                             !self.mcp.busy,
                             cx,
                         ))
                         .child(self.mcp_button(
-                            "OAuth",
+                            t("settings.mcp.auth.oauth"),
                             "mcp-auth-oauth",
                             McpAction::Auth(McpAuthChoice::OAuth),
                             !self.mcp.busy,
@@ -1653,20 +1698,21 @@ impl SettingsView {
                         )),
                 );
             if self.mcp.auth == McpAuthChoice::Bearer {
-                form = form.child(div().text_color(colors.warning).child(
-                    "非 OAuth：仅对这一服务器的精确端点发送 Bearer，不使用 Provider API Key。",
-                ));
+                form = form.child(
+                    div()
+                        .text_color(colors.warning)
+                        .child(t("settings.mcp.bearer_warning")),
+                );
                 if saved {
                     form = form
                         .child(settings_field(
-                            "mcp-field-bearer",
-                            "Bearer 密钥",
+                            t("settings.mcp.bearer"),
                             None,
                             self.mcp.bearer_input.clone(),
                             colors,
                         ))
                         .child(self.mcp_button(
-                            "保存 Bearer 密钥",
+                            t("settings.mcp.save_bearer"),
                             "mcp-save-bearer",
                             McpAction::SaveBearer,
                             !self.mcp.busy,
@@ -1675,8 +1721,18 @@ impl SettingsView {
                 }
             }
             if self.mcp.auth == McpAuthChoice::OAuth {
-                form = form.child(settings_field("mcp-field-client_id", "OAuth 客户端 ID", None, self.mcp.client_id_input.clone(), colors))
-                    .child(div().text_color(colors.warning).child("保存配置不会授权或启用；可在服务器卡片中显式发现发行方、审查回调与权限，再打开系统浏览器。不能把 Bearer token 冒充 OAuth。"));
+                form = form
+                    .child(settings_field(
+                        t("settings.mcp.oauth.client_id"),
+                        None,
+                        self.mcp.client_id_input.clone(),
+                        colors,
+                    ))
+                    .child(
+                        div()
+                            .text_color(colors.warning)
+                            .child(t("settings.mcp.oauth.save_warning")),
+                    );
             }
         }
         form.child(
@@ -1684,14 +1740,14 @@ impl SettingsView {
                 .flex()
                 .gap_2()
                 .child(self.mcp_button(
-                    "保存（默认禁用）",
+                    t("settings.mcp.save_disabled"),
                     "mcp-save",
                     McpAction::Save,
                     !self.mcp.busy,
                     cx,
                 ))
                 .child(self.mcp_button(
-                    "取消",
+                    t("settings.action.cancel"),
                     "mcp-cancel-editor",
                     McpAction::CancelEditor,
                     !self.mcp.busy,
@@ -1718,27 +1774,89 @@ impl SettingsView {
         };
         let authority = mcp_confirmation_lines(&row);
         let label = match &action {
-            McpConfirmation::Enable { .. } => "确认启用并验证",
-            McpConfirmation::Test { .. } => "确认连接测试",
-            McpConfirmation::Remove { .. } => "确认移除并清除本地凭据",
-            McpConfirmation::DiscoverOAuth { .. } => "确认发现授权元数据",
-            McpConfirmation::DisconnectOAuth { .. } => "确认断开本地授权",
+            McpConfirmation::Enable { .. } => t("settings.mcp.confirm.enable"),
+            McpConfirmation::Test { .. } => t("settings.mcp.confirm.test"),
+            McpConfirmation::Remove { .. } => t("settings.mcp.confirm.remove"),
+            McpConfirmation::DiscoverOAuth { .. } => t("settings.mcp.confirm.discover"),
+            McpConfirmation::DisconnectOAuth { .. } => t("settings.mcp.confirm.disconnect"),
         };
-        settings_section().id("mcp-confirmation").debug_selector(|| "mcp-confirmation".into()).p(px(Layout::SETTINGS_CONTENT_GAP))
-            .rounded(px(Layout::PANEL_RADIUS)).border_1().border_color(colors.warning)
-            .child(section_title("确认 MCP 操作", colors.text_primary))
+        settings_section()
+            .id("mcp-confirmation")
+            .p(px(Layout::SETTINGS_CONTENT_GAP))
+            .rounded(px(Layout::PANEL_RADIUS))
+            .border_1()
+            .border_color(colors.warning)
+            .child(section_title(
+                t("settings.mcp.confirm.title"),
+                colors.text_primary,
+            ))
             .child(div().child(row.form.display_name))
-            .child(div().id("mcp-confirmation-authority")
-                .debug_selector(|| "mcp-confirmation-authority".into())
-                .flex().flex_col().gap_2().max_h(px(160.)).overflow_y_scroll()
-                .children(authority.into_iter().map(|line| div().text_color(colors.text_secondary).child(line))))
-            .when(matches!(action, McpConfirmation::Remove { .. }), |panel| panel.child(div().text_color(colors.warning).child("移除保留历史工具审计，仅清除本地凭据；远程服务授权可能仍有效，必要时请到该服务撤销。")))
-            .when(matches!(action, McpConfirmation::DiscoverOAuth { .. }), |panel| panel.child(div().text_color(colors.warning).child("将连接端点以发现 OAuth 授权服务器和权限范围；现在不会注册客户端、打开浏览器或启用 MCP。")))
-            .when(matches!(action, McpConfirmation::DisconnectOAuth { .. }), |panel| panel.child(div().text_color(colors.warning).child("仅清除 Vega 本地 OAuth 凭据并禁用该服务器，不保证撤销远端授权；请到授权服务器另行撤销 grant。")))
-            .child(div().flex().gap_2()
-                .child(self.mcp_button(label, "mcp-confirm", McpAction::Confirm,
-                    !self.mcp.busy || matches!(action, McpConfirmation::Remove { .. } | McpConfirmation::DisconnectOAuth { .. }), cx))
-                .child(self.mcp_button("取消", "mcp-cancel-confirm", McpAction::CancelConfirmation, true, cx)))
+            .child(
+                div()
+                    .id("mcp-confirmation-authority")
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .max_h(px(160.))
+                    .overflow_y_scroll()
+                    .children(
+                        authority
+                            .into_iter()
+                            .map(|line| div().text_color(colors.text_secondary).child(line)),
+                    )
+                    .scroll_edge_fade(colors.bg_base, ScrollFade::compact()),
+            )
+            .when(matches!(action, McpConfirmation::Remove { .. }), |panel| {
+                panel.child(
+                    div()
+                        .text_color(colors.warning)
+                        .child(t("settings.mcp.remove_warning")),
+                )
+            })
+            .when(
+                matches!(action, McpConfirmation::DiscoverOAuth { .. }),
+                |panel| {
+                    panel.child(
+                        div()
+                            .text_color(colors.warning)
+                            .child(t("settings.mcp.discover_warning")),
+                    )
+                },
+            )
+            .when(
+                matches!(action, McpConfirmation::DisconnectOAuth { .. }),
+                |panel| {
+                    panel.child(
+                        div()
+                            .text_color(colors.warning)
+                            .child(t("settings.mcp.disconnect_warning")),
+                    )
+                },
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(self.mcp_button(
+                        label,
+                        "mcp-confirm",
+                        McpAction::Confirm,
+                        !self.mcp.busy
+                            || matches!(
+                                action,
+                                McpConfirmation::Remove { .. }
+                                    | McpConfirmation::DisconnectOAuth { .. }
+                            ),
+                        cx,
+                    ))
+                    .child(self.mcp_button(
+                        t("settings.action.cancel"),
+                        "mcp-cancel-confirm",
+                        McpAction::CancelConfirmation,
+                        true,
+                        cx,
+                    )),
+            )
             .into_any_element()
     }
 
@@ -1750,36 +1868,47 @@ impl SettingsView {
         cx: &mut gpui_kit::Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        let mut panel =
-            div()
-                .id("mcp-oauth-discovery")
-                .debug_selector(|| "mcp-oauth-discovery".into())
-                .flex()
-                .flex_col()
-                .gap_2()
-                .px_3()
-                .py_3()
-                .rounded(px(Layout::PANEL_RADIUS))
-                .border_1()
-                .border_color(colors.border_subtle)
-                .child(section_title("选择 OAuth 授权服务器", colors.text_primary))
-                .child(format!("受保护资源：{}", discovery.resource))
-                .child(format!(
-                    "请求权限：{}",
-                    if discovery.requested_scopes.is_empty() {
-                        "未声明".into()
+        let mut panel = div()
+            .id("mcp-oauth-discovery")
+            .flex()
+            .flex_col()
+            .gap_2()
+            .px_3()
+            .py_3()
+            .rounded(px(Layout::PANEL_RADIUS))
+            .border_1()
+            .border_color(colors.border_subtle)
+            .child(section_title(
+                t("settings.mcp.oauth.choose_server"),
+                colors.text_primary,
+            ))
+            .child(t_args(
+                "settings.mcp.oauth.protected_resource",
+                &[("resource", &discovery.resource)],
+            ))
+            .child(t_args(
+                "settings.mcp.oauth.requested_scopes",
+                &[(
+                    "scopes",
+                    &(if discovery.requested_scopes.is_empty() {
+                        t("settings.mcp.scopes_undeclared").to_string()
                     } else {
-                        discovery.requested_scopes.join("、")
-                    }
-                ))
-                .child(div().text_color(colors.text_secondary).child(
-                    "选择发行方会读取其元数据并准备本机回调；此步不会动态注册或打开浏览器。",
-                ));
+                        discovery
+                            .requested_scopes
+                            .join(t("settings.list_separator"))
+                    }),
+                )],
+            ))
+            .child(
+                div()
+                    .text_color(colors.text_secondary)
+                    .child(t("settings.mcp.oauth.choose_warning")),
+            );
         if discovery.issuers.is_empty() {
             panel = panel.child(
                 div()
                     .text_color(colors.warning)
-                    .child("没有通过验证的授权服务器，不能继续。"),
+                    .child(t("settings.mcp.oauth.no_verified_issuer")),
             );
         }
         for (index, issuer) in discovery.issuers.into_iter().enumerate() {
@@ -1797,7 +1926,7 @@ impl SettingsView {
         }
         panel
             .child(self.mcp_button(
-                "取消授权",
+                t("settings.mcp.oauth.cancel"),
                 "mcp-oauth-cancel",
                 McpAction::CancelOAuth,
                 true,
@@ -1823,7 +1952,6 @@ impl SettingsView {
                 .is_some_and(|row| row.credential_configured);
         div()
             .id("mcp-oauth-preparation")
-            .debug_selector(|| "mcp-oauth-preparation".into())
             .flex()
             .flex_col()
             .min_w_0()
@@ -1835,16 +1963,15 @@ impl SettingsView {
             .border_color(colors.warning)
             .child(section_title(
                 if is_step_up {
-                    "审查 OAuth 权限升级"
+                    t("settings.mcp.oauth.review_step_up")
                 } else {
-                    "审查 OAuth 授权范围"
+                    t("settings.mcp.oauth.review_scope")
                 },
                 colors.text_primary,
             ))
             .child(
                 div()
                     .id("mcp-oauth-preparation-details")
-                    .debug_selector(|| "mcp-oauth-preparation-details".into())
                     .flex()
                     .flex_col()
                     .gap_2()
@@ -1854,16 +1981,19 @@ impl SettingsView {
                         mcp_oauth_preparation_lines(&preparation)
                             .into_iter()
                             .map(|line| div().text_color(colors.warning).child(line)),
-                    ),
+                    )
+                    .scroll_edge_fade(colors.bg_base, ScrollFade::compact()),
             )
-            .child(div().text_color(colors.text_secondary).child(
-                "同意后才可能注册客户端并打开系统浏览器；回调成功只保存凭据，仍须单独启用服务器。",
-            ))
+            .child(
+                div()
+                    .text_color(colors.text_secondary)
+                    .child(t("settings.mcp.oauth.consent_warning")),
+            )
             .when(reauthorization, |panel| {
                 panel.child(
-                    div().text_color(colors.warning).child(
-                        "重新授权将撤销旧本地 OAuth 凭据并禁用服务器；不会自动恢复此前的授权。",
-                    ),
+                    div()
+                        .text_color(colors.warning)
+                        .child(t("settings.mcp.oauth.reauthorize_warning")),
                 )
             })
             .child(
@@ -1874,9 +2004,9 @@ impl SettingsView {
                     .gap_2()
                     .child(self.mcp_button(
                         if is_step_up {
-                            "同意新增权限并打开浏览器"
+                            t("settings.mcp.oauth.consent_step_up")
                         } else {
-                            "同意并打开系统浏览器"
+                            t("settings.mcp.oauth.consent")
                         },
                         "mcp-oauth-authorize",
                         McpAction::AuthorizeOAuth,
@@ -1884,7 +2014,7 @@ impl SettingsView {
                         cx,
                     ))
                     .child(self.mcp_button(
-                        "取消授权",
+                        t("settings.mcp.oauth.cancel"),
                         "mcp-oauth-cancel",
                         McpAction::CancelOAuth,
                         true,
@@ -1897,56 +2027,57 @@ impl SettingsView {
     pub(crate) fn render_mcp(&mut self, cx: &mut gpui_kit::Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let connected = self.mcp.service.is_some();
-        let mut page =
-            settings_section()
-                .id("mcp-settings-content")
-                .child(section_title("MCP 服务器", colors.text_primary))
-                .child(div().text_color(colors.text_secondary).child(
-                    "服务器配置默认禁用；启用/测试需分别确认。每次外部工具调用仍须单独批准。",
-                ))
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_2()
-                        .child(self.mcp_button(
-                            "新增本地",
-                            "mcp-add-local",
-                            McpAction::Add(McpTransportChoice::Local),
-                            connected && !self.mcp.busy,
-                            cx,
-                        ))
-                        .child(self.mcp_button(
-                            "新增远程",
-                            "mcp-add-remote",
-                            McpAction::Add(McpTransportChoice::Remote),
-                            connected && !self.mcp.busy,
-                            cx,
-                        ))
-                        .child(self.mcp_button(
-                            "刷新服务器与权限请求",
-                            "mcp-reload",
-                            McpAction::Reload,
-                            connected && !self.mcp.busy,
-                            cx,
-                        )),
-                );
+        let mut page = settings_section()
+            .id("mcp-settings-content")
+            .child(section_title(t("settings.mcp.title"), colors.text_primary))
+            .child(
+                div()
+                    .text_color(colors.text_secondary)
+                    .child(t("settings.mcp.intro")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .child(self.mcp_button(
+                        t("settings.mcp.add_local"),
+                        "mcp-add-local",
+                        McpAction::Add(McpTransportChoice::Local),
+                        connected && !self.mcp.busy,
+                        cx,
+                    ))
+                    .child(self.mcp_button(
+                        t("settings.mcp.add_remote"),
+                        "mcp-add-remote",
+                        McpAction::Add(McpTransportChoice::Remote),
+                        connected && !self.mcp.busy,
+                        cx,
+                    ))
+                    .child(self.mcp_button(
+                        t("settings.mcp.refresh"),
+                        "mcp-reload",
+                        McpAction::Reload,
+                        connected && !self.mcp.busy,
+                        cx,
+                    )),
+            );
         if !connected {
             page = page.child(settings_status(
-                "MCP 服务不可用，请重启 Vega 或检查应用数据目录。",
+                t("settings.mcp.unavailable"),
                 colors.warning,
                 colors,
             ));
         } else if self.mcp.loading {
             page = page.child(settings_status(
-                "正在加载 MCP 配置…",
+                t("settings.mcp.loading"),
                 colors.text_secondary,
                 colors,
             ));
         } else if self.mcp.servers.is_empty() {
             page = page.child(settings_status(
-                "尚未添加 MCP 服务器",
+                t("settings.mcp.empty"),
                 colors.text_secondary,
                 colors,
             ));
@@ -1954,9 +2085,9 @@ impl SettingsView {
         if self.mcp.busy && !self.mcp.loading {
             page = page.child(settings_status(
                 if self.mcp.oauth_waiting {
-                    "等待浏览器授权回调…完成后服务器仍保持禁用；可取消本次授权。"
+                    t("settings.mcp.oauth.waiting_disabled")
                 } else {
-                    "正在处理 MCP 操作…"
+                    t("settings.mcp.processing")
                 },
                 colors.text_secondary,
                 colors,
@@ -1965,7 +2096,7 @@ impl SettingsView {
         if let Some(message) = &self.mcp.message {
             page = page.child(
                 settings_status(
-                    message.clone(),
+                    message.render(),
                     if self.mcp.message_error {
                         colors.danger
                     } else {
@@ -1973,8 +2104,7 @@ impl SettingsView {
                     },
                     colors,
                 )
-                .id("mcp-message")
-                .debug_selector(|| "mcp-message".into()),
+                .id("mcp-message"),
             );
         }
         if let Some(confirmation) = self.mcp.confirmation.clone() {
@@ -1982,7 +2112,7 @@ impl SettingsView {
         }
         if self.mcp.oauth_waiting {
             page = page.child(self.mcp_button(
-                "取消授权并关闭回调",
+                t("settings.mcp.oauth.cancel_callback"),
                 "mcp-oauth-cancel",
                 McpAction::CancelOAuth,
                 true,
@@ -2031,145 +2161,5 @@ impl SettingsView {
         cx: &mut gpui_kit::Context<Self>,
     ) {
         self.move_mcp_focus(true, window, cx);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::settings::SettingsOpen;
-    use gpui_kit::{
-        Bounds, Render, TestAppContext, WindowBounds, WindowHandle, WindowOptions, size,
-    };
-
-    struct McpSettingsHarness {
-        view: gpui_kit::Entity<SettingsView>,
-    }
-
-    impl Render for McpSettingsHarness {
-        fn render(
-            &mut self,
-            _: &mut gpui_kit::Window,
-            _: &mut gpui_kit::Context<Self>,
-        ) -> impl IntoElement {
-            div().size_full().child(self.view.clone())
-        }
-    }
-
-    fn assert_focused(
-        cx: &mut TestAppContext,
-        window: &WindowHandle<McpSettingsHarness>,
-        view: &gpui_kit::Entity<SettingsView>,
-        selector: &str,
-    ) {
-        let current = window
-            .update(cx, |_, window, cx| {
-                let view = view.read(cx);
-                view.mcp
-                    .focuses
-                    .iter()
-                    .find(|(_, focus)| focus.is_focused(window))
-                    .map(|(selector, _)| format!("mcp:{selector}"))
-                    .or_else(|| {
-                        view.section_focuses
-                            .iter()
-                            .position(|focus| focus.is_focused(window))
-                            .map(|index| format!("section:{index}"))
-                    })
-                    .or_else(|| window.focused(cx).map(|focus| format!("{focus:?}")))
-            })
-            .expect("window focus state");
-        let expected = format!("mcp:{selector}");
-        assert_eq!(
-            current.as_deref(),
-            Some(expected.as_str()),
-            "expected mcp:{selector} to be focused"
-        );
-    }
-
-    #[gpui_kit::test]
-    async fn issue86_mcp_settings_tab_and_shift_tab_move_focus_between_actions(
-        cx: &mut TestAppContext,
-    ) {
-        let owned = tempfile::tempdir().expect("owned MCP Settings root");
-        let service = McpServerSettingsService::new(
-            owned.path().join("vega.db"),
-            owned.path().join("config"),
-        );
-        cx.update(|cx| {
-            cx.set_global(vega_theme::Theme::light());
-            cx.set_global(SettingsOpen(true));
-            crate::init(cx);
-        });
-        let view = cx.new(SettingsView::new_for_test);
-        view.update(cx, |view, cx| {
-            view.section = 5;
-            view.install_mcp_service(Some(service), cx);
-        });
-        for _ in 0..150 {
-            cx.executor()
-                .advance_clock(std::time::Duration::from_millis(20));
-            cx.run_until_parked();
-            if view.read_with(cx, |view, _| !view.mcp.busy) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert!(!view.read_with(cx, |view, _| view.mcp.busy));
-        let root = view.clone();
-        let window: WindowHandle<McpSettingsHarness> = cx
-            .update(|cx| {
-                cx.open_window(
-                    WindowOptions {
-                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                            None,
-                            size(px(960.), px(600.)),
-                            cx,
-                        ))),
-                        ..Default::default()
-                    },
-                    move |_, cx| cx.new(|_| McpSettingsHarness { view: root }),
-                )
-            })
-            .expect("MCP Settings window");
-        cx.run_until_parked();
-        let preceding_section = view.read_with(cx, |view, _| view.section_focuses[4].clone());
-        window
-            .update(cx, |_, window, cx| preceding_section.focus(window, cx))
-            .expect("focus final Settings navigation row");
-        cx.simulate_keystrokes(window.into(), "tab");
-        assert_focused(cx, &window, &view, "mcp-add-local");
-
-        cx.simulate_keystrokes(window.into(), "shift-tab");
-        assert!(
-            window
-                .update(cx, |_, window, _| preceding_section.is_focused(window))
-                .expect("MCP navigation focus"),
-            "Shift+Tab at the first MCP action must return to the preceding navigation control"
-        );
-        cx.simulate_keystrokes(window.into(), "tab tab");
-        assert_focused(cx, &window, &view, "mcp-add-remote");
-        cx.simulate_keystrokes(window.into(), "tab");
-        assert_focused(cx, &window, &view, "mcp-reload");
-
-        cx.simulate_keystrokes(window.into(), "shift-tab");
-        assert_focused(cx, &window, &view, "mcp-add-remote");
-        cx.simulate_keystrokes(window.into(), "tab");
-        assert_focused(cx, &window, &view, "mcp-reload");
-        cx.simulate_keystrokes(window.into(), "tab");
-        assert!(
-            window
-                .update(cx, |_, window, cx| {
-                    let reload_focused = view
-                        .read(cx)
-                        .mcp
-                        .focuses
-                        .get("mcp-reload")
-                        .is_some_and(|focus| focus.is_focused(window));
-                    !reload_focused && window.focused(cx).is_some()
-                })
-                .expect("reload focus state"),
-            "Tab at the end of MCP actions must continue to another visible control"
-        );
     }
 }

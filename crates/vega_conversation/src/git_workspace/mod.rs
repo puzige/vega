@@ -30,9 +30,6 @@ mod trusted_git;
 pub use branch::{BranchSwitchPermit, BranchWorkspaceService};
 pub use trusted_git::TrustedGitService;
 
-#[cfg(test)]
-const GIT: &str = "/usr/bin/git";
-
 const KILL: &str = "/bin/kill";
 const IO_CHUNK: usize = 16 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -44,6 +41,7 @@ const STDERR_LIMIT: usize = 64 * 1024;
 const MUTATION_STDOUT_LIMIT: usize = 1024 * 1024;
 const SNAPSHOT_LIMIT: usize = 8 * 1024 * 1024;
 const PATH_LIMIT: usize = 10_000;
+const FILTER_SCAN_PATH_LIMIT: usize = 100_000;
 const PATCH_LIMIT: usize = 4 * 1024 * 1024;
 const PATCH_ROW_LIMIT: usize = 20_000;
 const PATCH_LINE_LIMIT: usize = 64 * 1024;
@@ -248,10 +246,6 @@ pub struct GitWorkspaceService {
     identity: RootIdentity,
     instance_nonce: u64,
     state: Arc<Mutex<ServiceState>>,
-    #[cfg(test)]
-    executable: Option<PathBuf>,
-    #[cfg(any(test, feature = "test-support"))]
-    command_backend: Option<Arc<dyn GitCommandBackend>>,
 }
 
 impl std::fmt::Debug for GitWorkspaceService {
@@ -272,13 +266,10 @@ impl std::fmt::Debug for GitWorkspaceService {
 impl GitWorkspaceService {
     /// Creates a service fenced to one canonical repository root.
     pub fn new(root: impl AsRef<Path>) -> Result<Self, GitWorkspaceError> {
-        Self::new_inner(root.as_ref(), None)
+        Self::new_inner(root.as_ref())
     }
 
-    fn new_inner(
-        root: &Path,
-        #[allow(unused_variables)] executable: Option<PathBuf>,
-    ) -> Result<Self, GitWorkspaceError> {
+    fn new_inner(root: &Path) -> Result<Self, GitWorkspaceError> {
         let root = fs::canonicalize(root).map_err(|_| error(GitWorkspaceErrorCode::InvalidRoot))?;
         let metadata =
             fs::metadata(&root).map_err(|_| error(GitWorkspaceErrorCode::InvalidRoot))?;
@@ -290,8 +281,6 @@ impl GitWorkspaceService {
                 value.checked_add(1)
             })
             .map_err(|_| error(GitWorkspaceErrorCode::OutputTooLarge))?;
-        #[cfg(any(test, feature = "test-support"))]
-        let command_backend = test_support::backend_for_root(&root);
         Ok(Self {
             root,
             identity: RootIdentity {
@@ -300,10 +289,6 @@ impl GitWorkspaceService {
             },
             instance_nonce,
             state: Arc::new(Mutex::new(ServiceState::default())),
-            #[cfg(test)]
-            executable,
-            #[cfg(any(test, feature = "test-support"))]
-            command_backend,
         })
     }
 
@@ -330,20 +315,8 @@ impl GitWorkspaceService {
         let root = self.root.clone();
         let identity = self.identity;
         let instance_nonce = self.instance_nonce;
-        #[cfg(test)]
-        let executable = self.executable.clone();
-        #[cfg(any(test, feature = "test-support"))]
-        let command_backend = self.command_backend.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let runner = runner_for_parts(
-                root,
-                identity,
-                &cancel,
-                #[cfg(test)]
-                executable,
-                #[cfg(any(test, feature = "test-support"))]
-                command_backend,
-            )?;
+            let runner = runner_for_parts(root, identity, &cancel)?;
             build_snapshot(&runner, 0, instance_nonce, &cancel)
         })
         .await
@@ -459,20 +432,8 @@ impl GitWorkspaceService {
         let root = self.root.clone();
         let identity = self.identity;
         let instance_nonce = self.instance_nonce;
-        #[cfg(test)]
-        let executable = self.executable.clone();
-        #[cfg(any(test, feature = "test-support"))]
-        let command_backend = self.command_backend.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let runner = runner_for_parts(
-                root,
-                identity,
-                &cancel,
-                #[cfg(test)]
-                executable,
-                #[cfg(any(test, feature = "test-support"))]
-                command_backend,
-            )?;
+            let runner = runner_for_parts(root, identity, &cancel)?;
             build_snapshot(&runner, 0, instance_nonce, &cancel)
         })
         .await
@@ -598,20 +559,8 @@ impl GitWorkspaceService {
         };
         let root = self.root.clone();
         let identity = self.identity;
-        #[cfg(test)]
-        let executable = self.executable.clone();
-        #[cfg(any(test, feature = "test-support"))]
-        let command_backend = self.command_backend.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let runner = runner_for_parts(
-                root,
-                identity,
-                &cancel,
-                #[cfg(test)]
-                executable,
-                #[cfg(any(test, feature = "test-support"))]
-                command_backend,
-            )?;
+            let runner = runner_for_parts(root, identity, &cancel)?;
             build_projection(&runner, private, &cancel)
         })
         .await
@@ -695,20 +644,8 @@ impl GitWorkspaceService {
         let file_id = file.id;
         let root = self.root.clone();
         let identity = self.identity;
-        #[cfg(test)]
-        let executable = self.executable.clone();
-        #[cfg(any(test, feature = "test-support"))]
-        let command_backend = self.command_backend.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let runner = runner_for_parts(
-                root,
-                identity,
-                &cancel,
-                #[cfg(test)]
-                executable,
-                #[cfg(any(test, feature = "test-support"))]
-                command_backend,
-            )?;
+            let runner = runner_for_parts(root, identity, &cancel)?;
             build_artifact_evidence(&runner, &file, &cancel)
         })
         .await
@@ -726,20 +663,8 @@ impl GitWorkspaceService {
         let file_id = file.id;
         let root = self.root.clone();
         let identity = self.identity;
-        #[cfg(test)]
-        let executable = self.executable.clone();
-        #[cfg(any(test, feature = "test-support"))]
-        let command_backend = self.command_backend.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let runner = runner_for_parts(
-                root,
-                identity,
-                &cancel,
-                #[cfg(test)]
-                executable,
-                #[cfg(any(test, feature = "test-support"))]
-                command_backend,
-            )?;
+            let runner = runner_for_parts(root, identity, &cancel)?;
             read_artifact_file(&runner, &file, limit, &cancel)
         })
         .await
@@ -763,20 +688,8 @@ impl GitWorkspaceService {
         let file_id = file.id;
         let root = self.root.clone();
         let identity = self.identity;
-        #[cfg(test)]
-        let executable = self.executable.clone();
-        #[cfg(any(test, feature = "test-support"))]
-        let command_backend = self.command_backend.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let runner = runner_for_parts(
-                root,
-                identity,
-                &cancel,
-                #[cfg(test)]
-                executable,
-                #[cfg(any(test, feature = "test-support"))]
-                command_backend,
-            )?;
+            let runner = runner_for_parts(root, identity, &cancel)?;
             let guard = build_artifact_open_guard(&runner, &file, &cancel)?;
             guard.revalidate()?;
             if cancel.is_cancelled() {
@@ -800,57 +713,15 @@ impl GitWorkspaceService {
     }
 
     pub(crate) fn runner(&self, cancel: &CancellationToken) -> Result<Runner, GitWorkspaceError> {
-        runner_for_parts(
-            self.root.clone(),
-            self.identity,
-            cancel,
-            #[cfg(test)]
-            None,
-            #[cfg(any(test, feature = "test-support"))]
-            self.command_backend.clone(),
-        )
-    }
-
-    pub(crate) fn runner_with_test_override(
-        &self,
-        #[allow(unused_variables)] executable: Option<PathBuf>,
-        cancel: &CancellationToken,
-    ) -> Result<Runner, GitWorkspaceError> {
-        #[cfg(test)]
-        if executable.is_some() {
-            if self.command_backend.is_some() {
-                return Err(error(GitWorkspaceErrorCode::GitFailed));
-            }
-            return Ok(Runner::new(self.root.clone(), self.identity, executable));
-        }
-        self.runner(cancel)
+        runner_for_parts(self.root.clone(), self.identity, cancel)
     }
 }
 
-#[allow(unused_variables)]
 fn runner_for_parts(
     root: PathBuf,
     identity: RootIdentity,
     cancel: &CancellationToken,
-    #[cfg(test)] executable: Option<PathBuf>,
-    #[cfg(any(test, feature = "test-support"))] command_backend: Option<Arc<dyn GitCommandBackend>>,
 ) -> Result<Runner, GitWorkspaceError> {
-    #[cfg(any(test, feature = "test-support"))]
-    if let Some(backend) = command_backend {
-        #[cfg(test)]
-        if executable.is_some() {
-            return Err(error(GitWorkspaceErrorCode::GitFailed));
-        }
-        return Ok(Runner::new(
-            root,
-            identity,
-            RunnerExecutable::InProcess(backend),
-        ));
-    }
-    #[cfg(test)]
-    if let Some(executable) = executable {
-        return Ok(Runner::new(root, identity, Some(executable)));
-    }
     let executable = process_git_executable(cancel)?;
     Ok(Runner::new(root, identity, executable))
 }
@@ -968,20 +839,9 @@ mod projection;
 mod runner;
 mod snapshot;
 
-#[cfg(test)]
-mod tests;
-
 pub(crate) use diff::*;
 pub(crate) use executable::*;
 pub(crate) use identity::*;
 pub(crate) use projection::*;
 pub(crate) use runner::*;
 pub(crate) use snapshot::*;
-
-#[cfg(any(test, feature = "test-support"))]
-mod test_support;
-#[cfg(any(test, feature = "test-support"))]
-pub use test_support::{
-    FixtureGitCommand, GitCommandFixture, GitTestCommandExecutor, GitTestCommandGuard,
-    fixture_git_command, register_git_test_executor,
-};

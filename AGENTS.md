@@ -4,19 +4,31 @@
 
 **仅适用于 Vega 项目，包括它的所有 worktree、主 agent 和子 agent；不限制 Loom 自身或其他项目。**
 
-- **Codex、Vega 及子 agent 本地不运行 Vega 代码，不编译、构建、打包或执行测试。** 包括定向 `cargo check`、Clippy、test / nextest，不因缓存、范围小或预计耗时短而豁免。
+- **主 Agent 与子 Agent 本地不运行 Vega 代码，不编译、构建、打包或执行测试。** 包括定向 `cargo check`、Clippy、test / nextest，不因缓存、范围小或预计耗时短而豁免。
 - 本地只做低 CPU、能快速完成的差异、格式和静态检查；skill frontmatter 静态校验可执行。自动测试只由 GitHub Actions 运行，打包使用云端发布流程。
-- 本规则优先于旧文档、技能、任务规格中要求本地运行、编译或定向测试的条款。测试用例与回归断言仍须编写；报告区分本地静态检查和待 CI 验证，不把未运行项标为通过。
+- 本规则优先于旧文档、技能、任务规格中要求本地运行、编译或定向测试的条款。有行为变化时按下文快速交付规则选择必要验证；报告区分本地静态检查和待 CI 验证，不把未运行项标为通过。此前仅针对上一轮编号清理的本地执行授权不延续到本轮或全局。
 
 Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
-**2026-09-25 用户更新（Issue #149）**：按 [移除真实 E2E 规格](docs/vega-issue-149-remove-real-e2e.md) 优先将真实外部进程/网络/应用依赖 mock 化并保留业务和安全断言；仅删除 mock 后失去意义的纯真实适配契约测试，保留进程内业务、安全、存储及 UI 测试。该决定取代下文及历史规格的 E2E-first、真实适配覆盖和禁止删除此类测试的要求；真实系统集成由用户手测。
+## 快速交付与按风险验证（当前规则）
+
+本轮用户裁决：**移除强制 TDD，以最小改动快速交付；Rust 测试仅供开发辅助，不得进入 master。** 适用于主 Agent、子 Agent、Feature 与 Bug，优先于历史规格、技能和交接中的测试先行规则。详见 [验证与交付政策](docs/vega-rust-test-delivery-lifecycle.md) 和 [执行指南 §7.2](docs/vega-exec-guide.md#72-快速交付与按风险验证当前规则)。
+
+- **最小改动，直接推进**：明确验收与风险后，可先实现再补必要测试，也可直接修复；按影响范围、回归风险、安全边界和已有覆盖选择验证。不为流程临时造测试或先红后绿，不强制独立测试前置审查、有效 RED、测试冻结或 TDD 时序证据链；若开发中使用 Rust 测试，合并前仍须清理并保留实际验证记录。既有 spec 和非实现者独立审查要求不变；实现默认由主 Agent 直接完成，委派按下文按需策略判断。
+- **验证服务交付**：纯文档/格式变更只做必要静态检查；行为变化按风险选择必要回归。测试应验证稳定边界的可观察行为及业务/安全不变量，mock 只隔离外部依赖，不替代被测决策；不以源码字符串、机械转发或覆盖率数字充数。测试用行为命名，issue/task 编号只留文档。
+- **结果必须真实**：不为过关放宽断言、删除失败测试、ignore 或盲目重试换绿。测试/接线错误修责任层，验收变化先明确并更新 spec；允许实现后补测，但不得按实现输出反推预期或伪造验证结果。交接记录实际改动、精确版本、已执行静态检查、云端结果和未决项；未运行写待 CI，未知写未取得。
+- **Rust 测试不得进入 master**：是否编写开发测试按风险决定，可先实现后补测；但开发分支/draft PR 中的 Rust 测试、可执行 doctest 及独占模块、fixture/mock/helper、feature/dev dependency/接线必须在合并前移除，不以 `#[cfg(test)]`、ignore、改名或挪目录规避。固定可访问的原始测试源码/patch、完整 SHA 与实际验证结果，供开发留痕；最终 head 静态清点无残留，并经完整 required CI 确认 Rust 0 发现/0 执行。不从旧 ref 恢复已清除的集合，不为无测试任务强造测试。不改生产行为、安全断言、benchmark、现存 Python 测试及 fixture 或通用 CI；取消 TDD 不取消删测交付边界。
+- **独立限制继续有效**：本地不运行 Vega 代码、编译、构建、打包或测试，只做静态检查；自动测试仅交 Actions，最新 head 的 required CI 必须通过才能合并。空集写 `no Rust tests`（0 发现/0 执行），不是测试通过；发现数不等于执行数。真实系统集成仍由用户手测，CI/合并不代表用户验收。
+
+**历史决策（2026-09-25）**：[移除真实 E2E 规格](docs/149/vega-issue-149-remove-real-e2e.md) 当时要求保留进程内测试。本次 Rust 清零取代其保留旧测试要求；外部依赖隔离、真实系统集成由用户手测的边界仍适用于后续测试，不恢复真实 E2E 自动门禁。
 
 ## 最高原则：SDD（Spec-Driven Development）
 
-**2026-09-22 用户更新（Issue #140）**：按 [测试依赖隔离规格](docs/vega-issue-140-ci-test-throughput.md#user-directed-revision-isolate-external-execution-2026-09-22) 将 Git/Shell 业务分支测试迁移到进程内测试替身，保留真实业务与安全断言，并以适配层集成测试验证真实进程行为。该明确授权优先于下文要求每个业务场景均走真实 E2E 的旧约束；不得把 mock 证据标作真实进程验收。
+**历史决策（2026-09-22）**：[测试依赖隔离规格](docs/140/vega-issue-140-ci-test-throughput.md#user-directed-revision-isolate-external-execution-2026-09-22) 记录 Git/Shell 测试迁移及当时的真实适配层覆盖要求；不构成本次清零的保留要求或后续真实 E2E 门禁。不得把 mock 证据标作真实进程验收。
 
 **Spec 先行，代码不允许先于 spec。** 所有实现工作必须对应 [`docs/`](docs/) 中的具体规格章节。设计文档以本仓库 `docs/` 为准（主索引见 [README](README.md#状态)）。
+
+Ticket 规格、交接与交付记录统一放在 `docs/<ticket>/`，同一编号文件归入同目录并保留文件名；通用规范留在 `docs/` 根层。目录导航见 [docs/README.md](docs/README.md)。不推断 R/A 编号与 Ticket 的映射；移动文档时同步更新本地引用，并按原目标重算内部相对链接，固定历史远程证据保持不变。
 
 - [`docs/vega-exec-guide.md`](docs/vega-exec-guide.md) 是**执行宪法**：红线清单、依赖白名单、遇阻上报协议、验收协议。任何 agent 开工前必读。
 - 视觉/UI 工作必须先读 [`docs/vega-design-guidelines.md`](docs/vega-design-guidelines.md)。它统一设计语言与 token 使用；产品行为、安全契约和任务级冻结规格仍按各自更具体的 spec 执行。
@@ -46,42 +58,52 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 **交付前检查**：逐项审视新增的可见文字，能否删除、由控件/状态表达或延后到需要时再显示？同时核对适用的默认、运行、完成、失败、禁用与键盘操作状态，确保主要动作可发现、结果可信、错误可恢复、必要提示仍可见。删除冗余文案必须与交互检查一起完成；验证方式遵守目标仓库的本地检查与 CI 限制。
 
+## 按需委派
+
+#617 · 2026-10-25 用户授权。
+
+本条取代现行入口中“实现必须委派”及固定角色链要求；历史规格与变更记录保留，不恢复旧约束。默认由主 Agent 直接分析并实现，写入者可以是主 Agent；独立审查仍须由非该实现写入者承担，required CI、权限与用户手测门禁不变。
+
+每次新建或续派都比较具体收益与上下文准备、信息损失、重复探索、依赖等待和整合成本；收益不明确不委派。复杂、多文件、多步骤或“深入/全面”本身不是理由。仅在明确要求、确有收益的独立并行、大量探索的有效上下文隔离或有理由的独立判断时委派；不整体外包主任务理解与综合判断。少量调用、已知目标和紧密耦合工作直接做；下一步立即依赖且无其他有效工作可并行时通常自己做，明确要求及独立审查除外。遵守适用的委派要求或禁止，不扩大授权，不新增普通调度确认。
+
+同一轮已知同范围相关修复尽量完整交接，不为攒批拖延阻塞工作。已有协作者不等于必须续派；状态用现有 list/wait，不短轮询、不建空任务、不重复无变化审查。委派后不重复子任务；无其他有效工作就等待，不提前结束冒充完成。审查绑定停写精确版本，增量复核及最终完整 head 门禁继续有效；中断/取消/未知副作用和写入权交接遵守既有恢复边界。
+
 ## 工作流
 
 1. **不在 `master` 上直接实现**——每卡用 `~/Workspace/worktrees/` 下独立 worktree 和 `feat/<task-id>-<slug>` 分支。**任何仓库修改前先 fetch 并更新基线**；通常为 `git fetch` 后 `git rebase origin/master`，有脏改动或分叉先保护核实，不 reset 或覆盖。
-2. **共用入口与身份**：取卡、实现、交接和收尾使用 [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)，细节以 [Issue 与角色工作流](docs/vega-issue-workflow.md) 为准。角色优先采用用户明确指定的工作流角色，否则采用宿主系统身份；Vega 为 `You are Vega`，不从模型名、项目名或路径猜身份，有证据不重复询问。
-3. **自动单卡**：用户指定或明确继续的卡优先；否则完整读取本角色候选队列，先排除关闭、占用、当前角色/阶段前提未满足、缺所需方案和未交接 PR，再按 Issue `createdAt` 降序、同时间编号降序取最新一张。Codex 取可审查的 Backlog、等待 Codex 的 Ready，或 Vega 最新交接明确交回、当前待领取且无活跃执行者的 In progress；这类阻塞卡可接回分析，不能因导致 Vega 阻塞的依赖缺口排除。Vega 仅取方案完整可访问、执行依赖已满足且明确交给 Vega 的 Ready。领取即 `In progress`，Issue 写阶段及当前/下一执行者；交回的 In progress 保留原列。解释、审阅或维护 skill 不启动其他卡。默认一张，仅连续授权才取下一张。
-4. **Codex 先接卡**：Codex 查重建卡并先审查所有需求；Bug 定位根因，先写测试用例、再写具体到文件/符号/修改动作的方案，提交并发布可访问交接链接后置 Ready 等 Vega。新功能默认由 Codex 组织实现，**代码实现委托专职 subagent**；Codex 主会话负责协调、审查、集成、PR/CI/合并及用户反馈分析。卡外发现单独记录，不扩大实现范围。
-5. **Vega 执行**：领取已交接 Ready 后立即 `In progress`，按方案实现和补测试，不建卡、不改 spec、不开放式排障。完成或遇阻都在同卡交回 Codex，保持 `In progress`，写当前执行者待领取、下一执行者 Codex 并停止写入。Codex 交到 Ready、Vega 交回或合并后等待用户，均为默认单卡停止点；同卡始终只有一个实现写入者。
-6. **合并与验收**：本地仅静态检查，测试只交 GitHub Actions；Codex 审查并确认最新 head 的 required check 通过后主动 squash merge master，才改 `In review` 并停下等用户纯手动验收。用户明确通过后 Codex 回写，安全检查并完成本卡远端分支及本地分支/worktree 清理，再关闭 Issue 并读回，最后置 Done 并读回；清理或关闭受阻时保持 `In review`、标待收尾，不先 Done 再补清理。未通过由 Codex 先分析，Bug 修订方案后重新交 Vega。**手测前不得关闭、Done 或清理；Done 仅表示验收和全部收尾均已完成。**
-7. **遇阻与证据**：按 exec-guide §6 用 `[BLOCKED]` 上报，Vega 的方案缺口交回 Codex，禁止自创方案绕过。自动回归仍覆盖进程内业务/安全/存储/UI；真实模型、服务和 UI 系统集成由用户在合并后的 master 上手测，不以 Agent 自产 E2E/截图替代；证据分级见 [exec-guide §7](docs/vega-exec-guide.md#7-验收协议每个任务卡通用)。
+2. **统一 Agent 入口**：取卡、实现、交接和收尾使用 [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)，细节以 [Issue 工作流](docs/vega-issue-workflow.md) 为准。当前用户裁决取代旧的厂商/宿主角色分工：主 Agent 可分析、修订 spec、组织实现、开 PR、跟进 CI、合并及收尾，不按模型或宿主路由，不因缺旧交接停工；历史记录保留但不作为等待另一角色的前提。
+3. **自动单卡**：用户指定或明确继续的卡优先；否则完整分页读取候选队列，取可分析的未占用 Backlog/Ready，或最新记录已释放写入权、当前待领取且无活跃执行者的 In progress。先排除关闭、占用、未交接 PR 及下一阶段真实前提未满足的卡，再按 Issue `createdAt` 降序、同时间编号降序取最新一张；实现依赖不足不得直接实现，但可接回分析解决方案/依赖缺口。领取前重读，立即 `In progress` 并读回（不是原子锁），冲突让出；接回卡保留原列。Issue 用阶段及当前/下一执行者 Agent / 待领取 / 用户记录状态，附会话/worktree 上下文；沿用五列，不新增列或重复卡。解释、审阅或维护 skill 不启动其他卡；默认一张，仅连续授权才取下一张。
+4. **分析与委派**：主 Agent 在授权内查重建卡、审查需求与 spec；Bug 定位根因，明确验收与风险，再写具体到文件/符号/修改动作的最小实现计划。**主 Agent 默认直接分析并实现，按具体收益决定是否委派**；由非该实现写入者的 Agent 独立审查，不能自审替代。委派范围、基线、方案版本和回报约定明确，跨会话交接提供可访问链接；无法满足明确委派要求或独立审查时报告真实限制。卡外发现单独记录，不扩大范围。
+5. **同卡连续推进**：明确验收与风险 → 最小实现/直接修复 → 必要验证与实现独立审查 → 最新 head required CI → 合并。可先实现后补必要测试，不要求前置 RED 或测试冻结；有开发 Rust 测试时，留痕后清理测试及独占支持，验证最终无 Rust 测试的 head 再合并。主 Agent 组织各阶段，无验收缺口时不停在 Ready 或实现回报处等旧角色。同一实现范围只有一个写入者，主会话不并行改受委派范围，前任交接后停止写入；独立审查默认只读。验收变化先更新 spec/基线，再按风险选择验证，不重开强制 TDD 周期。
+6. **合并与验收**：本地仅静态检查，测试只交 GitHub Actions；独立审查无缺口且最新 head 的 required check 通过后，主 Agent 主动 squash merge master，才改 `In review` 并停下等用户纯手动验收。用户明确通过后回写，按 [分支与 worktree 清理规则](docs/vega-issue-workflow.md#分支与-worktree-清理规则)完成本卡剩余安全清理，再关闭 Issue 并读回，最后置 Done 并读回；清理或关闭受阻时保持 `In review`、标待收尾，不先 Done 再补清理。未通过由主 Agent 分析、修订 spec/验收并组织最小修复与必要验证。**手测前不得关闭或 Done；最新 head 的 required check 通过并合并后，允许自动删除已合并远端任务分支，证据、完整 SHA 和补丁须可恢复。本地分支/worktree 仅在确认属于本卡、无运行 Agent/构建、无未提交（含未跟踪）或未合入改动后安全清理；squash 核对等价内容。未知文件/用户数据保留报告，不 reset、强删或覆盖；允许删分支不等于授权删除用户数据。Done 仅表示验收和全部收尾均已完成。**
+7. **遇阻与证据**：方案缺口由主 Agent 在授权内分析并先更新 spec，不绕过门禁；只有需用户裁决、缺权限或无法解决的技术阻碍才按 exec-guide §6 用 `[BLOCKED]` 上报，记录真实执行者、阻碍和恢复条件，不为旧角色交接人为停工。必要测试按风险覆盖进程内业务/安全/存储/UI；真实模型、服务和 UI 系统集成由用户在合并后的 master 上手测，不以 Agent 自产 E2E/截图替代；证据分级见 [exec-guide §7](docs/vega-exec-guide.md#7-验收协议每个任务卡通用)。
 
 ## 问题与需求收集
 
-- 由 Codex 按 [Issue 与看板工作流](docs/vega-issue-workflow.md) 查重并收集明确要跟踪的问题和需求，Vega 默认不建卡。**登记不等于承诺立即修复**：暂未开始时给用户链接和真实 Backlog 状态，不把它假装成进行中。
+- 由主 Agent 按 [Issue 与看板工作流](docs/vega-issue-workflow.md) 在授权内查重并收集明确要跟踪的问题和需求。**登记不等于承诺立即修复**：暂未开始时给用户链接和真实 Backlog 状态，不把它假装成进行中。
 - GitHub Issue 是执行事项与证据的单一入口，GitHub Project 只管理流转状态；Notion PRD 管产品目标，本仓 `docs/` 管实现规格。Issue 本身不替代上述 spec，也不授权卡外代码实现。
 - 无法访问 Project 时，不得声称已入看板；如已获授权且可创建 Issue，先保留 Issue 并明确说明待关联。仓库公开，截图、日志和复现信息必须脱敏。
 
 ## 提交与 PR
 
-- 提交格式：`feat(A2-09): <一句话>` / `fix(A3-07): <一句话>`（功能点 ID 见 [vega-features.md](docs/vega-features.md)）
+- 提交格式：`feat(scope): <一句话>` / `fix(scope): <一句话>`（功能点 ID 见 [features](docs/vega-features.md)）
 - 小步提交，一个任务卡 ≤3 个 commit
-- PR 必须附：本卡功能点测试命令与云端原始输出（运行前标记待 CI 验证） + 与 spec 的偏离说明（必须为无）；**不附本地全量测试**（全量门禁由云端 `pr-check` 承担）
-- 合并方式：由 Codex squash merge。**用户手测通过后才删除本卡远端功能分支及本地分支/worktree**；合并时保留，取代旧的合并后立即删分支规则。
-- **合并由 Codex 主动完成**：确认待合并最新 head 的 required check 绿后合入 master，完成后才把卡片改为 `In review` 等待用户手测；PR 不使用自动关闭 Issue 的关键字。
+- PR 必须附：实际改动、精确版本、已执行静态检查、实际云端命令/run/job/结果、未决项与风险，以及 spec 偏离说明（必须为无）。未运行标待 CI 验证，未知计数写未取得；不要求 RED/GREEN 或测试冻结时序；有开发 Rust 测试时附可恢复源码/patch、完整 SHA、实际验证结果及最终清理清点，不附本地全量测试。文档/格式等无行为变化项说明不适用，不伪造验证结果。
+- 合并方式：由主 Agent squash merge。**最新 head 的 required check 通过且已合并后，允许自动删除已合并远端任务分支**，须先固定并读回可恢复的完整 SHA/源码/原始 patch 与证据；本地分支/worktree 仅按安全清理规则另行核实后处理，不自动随远端删除。此规则取代旧的手测前必须保留分支要求，不授权删除用户数据。
+- **合并由主 Agent 主动完成**：独立审查无缺口且待合并最新 head 的 required check 绿后合入 master，完成后才把卡片改为 `In review` 等待用户手测；PR 不使用自动关闭 Issue 的关键字，用户明确通过前不关闭或 Done。
 
-## 验证门禁与云端 CI（2026-09-25 用户裁决，Issue #175、#179、#183、#188）
+## 验证门禁与云端 CI（2026-09-25 用户裁决，相关规格）
 
-**门禁全部在云端。本地 commit/push 不做任何强制检查、不排队、不锁 target。** 当前 PR gate 见 [Issue #188 规格](docs/vega-issue-188-parallel-ci-checks.md)（在 [Issue #183](docs/vega-issue-183-nextest-ci.md) 测试运行器基础上并行 Clippy 与 nextest）；云端门禁拆分的历史背景见 [Issue #123](docs/vega-issue-123-pr-check-pipeline.md)。
+**门禁全部在云端。本地 commit/push 不做任何强制检查、不排队、不锁 target。** 当前 PR gate 见 [相关规格](docs/188/vega-issue-188-parallel-ci-checks.md)（在 [相关规格](docs/183/vega-issue-183-nextest-ci.md) 测试运行器基础上并行 Clippy 与 nextest）；云端门禁拆分的历史背景见 [相关规格](docs/123/vega-issue-123-pr-check-pipeline.md)。
 
 - **Master 只允许 PR merge，不允许直接 push。** PR 必须通过云端 `check`（fmt / clippy / test）才能合并；分支保护由 admin 在 GitHub Settings → Branches 开启并勾选 required check。
-- `.github/workflows/pr-check.yml`：仅在 `pull_request`（base `master`）运行两个无相互依赖的 `macos-latest` job：Clippy job 顺序运行 `cargo fmt --all -- --check` 和 `cargo clippy --workspace --all-targets -- -D warnings`，Nextest job 运行 `cargo nextest run --workspace`。两者使用 Rust 1.98.0；Clippy job 安装 `rustfmt` / `clippy`。轻量汇总 job 的 required check 名固定为 `check (fmt, clippy, test)`，依赖两个执行 job，以 `always()` 运行；仅两者结果均为 `success` 才通过，失败、取消或跳过均使汇总失败。通过 `taiki-e/install-action@v2` 安装固定 `nextest@0.9.146`，使用默认测试并发。CI 覆盖单元和集成测试；nextest 不支持 doctests，按用户只使用 nextest 的要求不另跑 `cargo test --doc`。任何失败都使 required check 失败。保留 `contents: read`、执行 job 的 60 分钟超时和同 ref 并发取消；使用 `Swatinem/rust-cache@v2` 在两个执行 job 中恢复 master CICD 的 `vega-master-build` 缓存，但 PR 不写缓存；不使用归档、分片、额外 build 或手动 dispatch。
+- `.github/workflows/pr-check.yml`：仅在 `pull_request`（base `master`）运行两个无相互依赖的 `macos-latest` job：Clippy job 顺序运行 `cargo fmt --all -- --check` 和 `cargo clippy --workspace --all-targets -- -D warnings`，Nextest job 保留三组 Python 检查（`python3 scripts/release_tests.py`、`python3 scripts/prepare_computer_use_tests.py`、`python3 -m unittest discover -s scripts/tests -v`），先用 `cargo nextest list --workspace --message-format json` 清点 Rust 测试；仅 `test-count` 为 0 时运行 `cargo nextest run --workspace --no-tests=pass`，非空仍运行 `cargo nextest run --workspace`。日志与 job summary 明确区分 `no Rust tests`（0 发现/0 执行）与非空执行通过；非空发现数不冒充执行数，执行/跳过数看 Nextest 原始输出。两者使用 Rust 1.98.0；Clippy job 安装 `rustfmt` / `clippy`。轻量汇总 job 的 required check 名固定为 `check (fmt, clippy, test)`，依赖两个执行 job，以 `always()` 运行；仅两者结果均为 `success` 才通过，失败、取消或跳过均使汇总失败。通过 `taiki-e/install-action@v2` 安装固定 `nextest@0.9.146`，使用默认测试并发。CI 覆盖单元和集成测试；nextest 不支持 doctests，按用户只使用 nextest 的要求不另跑 `cargo test --doc`。任何失败都使 required check 失败。保留 `contents: read`、执行 job 的 60 分钟超时和同 ref 并发取消；使用 `Swatinem/rust-cache@v2` 在两个执行 job 中恢复 master CICD 的 `vega-master-build` 缓存，但 PR 不写缓存；不使用归档、分片、额外独立 build 步骤或手动 dispatch（list/run 本身会在云端构建测试目标）。
 - `.github/workflows/cicd.yml`（GitHub Actions 名称 `master`）：push 到 master（PR merge 后）直接调用 `release.yml` 共用发布流程，固定事件 SHA 自动分配 patch 版本、打包并发布 Release；与 PR check 使用相同 `shared-key: vega-master-build`，仅自动 master 发布写缓存。rust-cache 的实际缓存还依赖 runner 平台、工具链和 Cargo 输入，因此只有兼容的缓存条目会命中。
-- 2026-09-25 用户裁决（Issue #181）：每次合入 master 自动 patch 发布；保留人工 stable tag 与手动重跑，共用发布串行队列 `queue: max`，不取消正在运行的发布。先 draft，资产完整才 publish；同 SHA 幂等、正式资产不可覆盖，拒绝逆序发布。见 [发版指南](docs/vega-release.md)。
-- 历史 [Issue #123](docs/vega-issue-123-pr-check-pipeline.md) 与 [Issue #140](docs/vega-issue-140-ci-test-throughput.md) 的 PR gate 拓扑已由 [Issue #175 规格](docs/vega-issue-175-single-pr-check.md) 取代；旧的运行数据与测试证据保留为历史记录。
-- 本地不再安装 git hooks：`.githooks/`、`scripts/verify.py`、`cargo-lock.sh` / `cargo-coordinate.py` / `cargo-share-target.sh` 及 `scripts/tests/` 已删除。调度器的移除不代表允许本地编译；本地验证遵守顶部的快速 check 限制。
+- 2026-09-25 用户裁决：每次合入 master 自动 patch 发布；保留人工 stable tag 与手动重跑，共用发布串行队列 `queue: max`，不取消正在运行的发布。先 draft，资产完整才 publish；同 SHA 幂等、正式资产不可覆盖，拒绝逆序发布。见 [发版指南](docs/vega-release.md)。
+- 历史 [相关规格](docs/123/vega-issue-123-pr-check-pipeline.md) 与 [相关规格](docs/140/vega-issue-140-ci-test-throughput.md) 的 PR gate 拓扑已由 [相关规格](docs/175/vega-issue-175-single-pr-check.md) 取代；旧的运行数据与测试证据保留为历史记录。
+- 本地不再安装 git hooks：`.githooks/`、`scripts/verify.py`、`cargo-lock.sh` / `cargo-coordinate.py` / `cargo-share-target.sh` 已删除；现存 `scripts/tests/` 是保留的 Python 脚本回归，不属于 Rust 清零。调度器的移除不代表允许本地编译；本地验证遵守顶部的快速 check 限制。
 - `.config/nextest.toml` 用于云端 PR gate：`retries=0`、`fail-fast=false`、600 秒挂起保护；不覆盖默认并发。
-- **本地仅做快速静态 check，功能点测试与全量门禁只交云端 `pr-check`**（2026-10-16 用户更新，取代本地定向测试要求）。任务级 production-root 回归与测试矩阵仍须编写；保留既有安全断言、失败输出及任务验收矩阵，不得为提速删除保留范围内的测试、加 ignore、放宽断言或自动重试到绿。
+- **本地仅做快速静态 check，功能点测试与全量门禁只交云端 `pr-check`**（2026-10-16 用户更新，取代本地定向测试要求）。按风险选择必要验证，可直接修复或先实现后补测，不强制 RED/GREEN，但开发 Rust 测试必须在合并前留痕并清理。最新 head 必须无 Rust 测试及独占接线并通过 required CI；不得删除失败测试、加 ignore、放宽断言或盲目重试伪造通过。空集放行不吞编译、发现或执行失败，`no Rust tests` 不代表测试通过。
 
 ## PR 检查轮询节奏（2026-10-15 用户裁决）
 
@@ -92,7 +114,7 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 ## 应用安装入口（2026-09-25 用户更新约定）
 
-- 用户明确批准 `/Applications/Vega.app`、`~/Applications/Vega.app`，兼容 `~/Documents/Vega/Vega.app`；bundle ID 保持 `ai.vega`。只更新实际运行的 canonical app；不得迁移或修改其他副本。独立更新签名与路径规则见 [规格](docs/vega-issue-181-independent-update-signing.md)。
+- 用户明确批准 `/Applications/Vega.app`、`~/Applications/Vega.app`，兼容 `~/Documents/Vega/Vega.app`；bundle ID 保持 `ai.vega`。只更新实际运行的 canonical app；不得迁移或修改其他副本。独立更新签名与路径规则见 [规格](docs/181/vega-issue-181-independent-update-signing.md)。
 - 新版本原位替换当前运行的受支持 app；不要创建带版本号的安装名、指向 worktree 的符号链接或从 `dist` 启动日常应用。启动使用明确路径，不按名称或 bundle ID 选择副本。权限不足时提示人工安装，不提权、不移除安全属性。
 - `dist/Vega.app` 仅是打包产物。备份优先保存为 zip，附原二进制哈希和构建 commit；不要长期散落可被系统索引的 `.app` 备份。既有验收证据不得擅自删除。
 - 安装须独占，先检查正在运行的任务；未经确认空闲不得强退。候选构建签名/哈希验证完成后再替换固定位置，并核对安装后二进制身份。
@@ -101,6 +123,8 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 - “代码已合并”和“应用已安装”分别报告，不能把旧安装当作最新 master。纯文档约定不触发重编译或应用安装；用户明确要求迁移既有 app 时核对迁移前后哈希。
 
 ## 原生 UI 验收：合成输入事件无效（工具限制）
+
+以下原生验收/GPUI 实测段落保留为历史参考；其中测试名、路径、数量和命令不证明清零后的测试仍存在，也不授权本地执行。后续验证按当前快速交付规则按风险选择，不强制重建测试，自动执行仅交 Actions，原生手测交用户。
 
 **不要用合成键盘/鼠标事件验证本应用的焦点行为——它们驱动不了 GPUI 的焦点链。** 这是工具限制，不是产品缺陷；写成规则以免每轮重复踩坑。
 
@@ -118,7 +142,7 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 **推论与正确做法：**
 
 - **焦点归属不能靠截图判断**。composer 等控件用 `focus_visible`（仅键盘导航时可见），鼠标点击后的截图看不出焦点在哪。要验证焦点，读**代码链路**或用 GPUI `TestAppContext`（见下）。
-- **焦点行为的权威验证方式是生产测试**。GPUI 测试可直接注入并断言真实焦点状态：`window.update(cx, |_, w, cx| handle.focus(w, cx))` 后用 `handle.contains_focused(w, cx)` 断言，`window.focus_next(cx)` 可验证键盘导航路径。范例：`crates/vega/src/window/workspace.rs` 的 `r51_inactive_close_follows_parent_focus_and_group_hover`。
+- **焦点行为的权威验证方式是生产测试**。GPUI 测试可直接注入并断言真实焦点状态：`window.update(cx, |_, w, cx| handle.focus(w, cx))` 后用 `handle.contains_focused(w, cx)` 断言，`window.focus_next(cx)` 可验证键盘导航路径。范例：`crates/vega/src/window/workspace.rs` 的 `_inactive_close_follows_parent_focus_and_group_hover`。
 - **合成鼠标事件仍可用于**：悬停（tooltip 会出现）、点击按钮触发无焦点依赖的动作。但依赖焦点状态的交互（tab 键盘激活、`focus_visible` 样式）不可用此法验证。
 - **原生像素验收仍有效**，用于颜色/几何/布局：截图 + 像素测量是可靠证据（如暗色下 tab pill 填充 `(39,39,39)` 与 `0.03×255+0.97×32=38.61` 吻合）。不可靠的只有**依赖焦点的**那部分。
 - 验收报告须区分「行为已验证（生产测试）」与「像素外观已验证（截图）」；不要把前者当作后者。
@@ -127,7 +151,7 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 ## 原生验收的操作方法：六个必踩的坑（2026-09-14/15 实测）
 
-R62 验收耗时远超预期，全部时间花在**定位窗口和坐标**上，与产品无关。以下每条都真实发生过一次，照做可省一整轮。
+ 验收耗时远超预期，全部时间花在**定位窗口和坐标**上，与产品无关。以下每条都真实发生过一次，照做可省一整轮。
 
 ### 坑 1 · `pgrep -f '<path>'` 会匹配到自己
 
@@ -161,15 +185,15 @@ ZCode 自己的窗口标题是 `Vega Desktop`，界面上也有 `Full access` �
 
 **改用**：每次都从 `CGWindowListCopyWindowInfo` 现读 origin，再加窗口内相对偏移。
 
-### 坑 6 · 点不开某个 UI 时，先查数据前提，再调坐标（R66 实测）
+### 坑 6 · 点不开某个 UI 时，先查数据前提，再调坐标（实测）
 
-R66 验收时我反复打不开滑块卡片，**花了十几轮在调整点击坐标**，全是白费。真实原因是数据前提不满足：`~/.config/vega/reasoning.toml` 只给 `glm-5.3-flash` 声明了档位，而当时选中的模型是 `deepseek-v4-flash` —— 按 R57 R12，**无档位的模型不渲染滑块卡片**。
+ 验收时我反复打不开滑块卡片，**花了十几轮在调整点击坐标**，全是白费。真实原因是数据前提不满足：`~/.config/vega/reasoning.toml` 只给 `glm-5.3-flash` 声明了档位，而当时选中的模型是 `deepseek-v4-flash` —— 按规则，**无档位的模型不渲染滑块卡片**。
 
 **规则**：某个 UI 元素反复点不开时，**先确认它的渲染前提**（该模型的配置、该路由的状态、该 feature 开关），再去调坐标。前提不满足时，坐标怎么调都不会有反应。
 
 配置位置速查：reasoning 档位在 `~/.config/vega/reasoning.toml`（**不在** `~/Library/Application Support/ai.vega/` 的数据库里，也不在任何 `.toml` 仓库文件里）。
 
-## GPUI 圆角：`overflow_hidden` 不裁圆角，且半径会被钳制（R65 实测）
+## GPUI 圆角：`overflow_hidden` 不裁圆角，且半径会被钳制（实测）
 
 两条都必须记住，各自踩过一次坑。
 
@@ -179,7 +203,7 @@ R66 验收时我反复打不开滑块卡片，**花了十几轮在调整点击�
 
 **给父元素加 `.rounded(N).overflow_hidden()` 不会把子元素裁成圆角。** `rounded` 只作用于元素**自己的背景**。
 
-需要圆角的子元素必须**自己带 `rounded`**。R65 的滑块填充左端方角就是这个原因——它一直指望父级轨道裁剪，而那条路在 GPUI 里不存在。
+需要圆角的子元素必须**自己带 `rounded`**。 的滑块填充左端方角就是这个原因——它一直指望父级轨道裁剪，而那条路在 GPUI 里不存在。
 
 ### 2 · 圆角半径按 quad 尺寸钳制
 
@@ -190,23 +214,23 @@ let max = cmp::min(size.width, size.height) / 2.;
 // 每个角实际半径 = min(设定值, max)
 ```
 
-**窄元素上设大半径会被静默压小。** R65 首轮我写"12px 宽的填充设半径 12，钳到 6 就是半圆"——错。真半圆需要半径 = 高度的一半（12），钳到 6 只能得到 6px 圆角，于是填充戳出轨道 6px。
+**窄元素上设大半径会被静默压小。**  首轮我写"12px 宽的填充设半径 12，钳到 6 就是半圆"——错。真半圆需要半径 = 高度的一半（12），钳到 6 只能得到 6px 圆角，于是填充戳出轨道 6px。
 
 **正确做法**：先把元素宽度撑到 `>= 2 × 目标半径`（本例撑到高度 24），再设半径。多出的宽度要确保被后绘的元素盖住。
 
-## 规格里出现数值断言时，必须当场验算（R65 教训）
+## 规格里出现数值断言时，必须当场验算（经验）
 
-R65 首轮规格里我写了"半径钳到 6.0 视觉上就是左半圆"，**没有验算**。实际是填充左界 x=6 而圆点左界 x=12，露出 6px。这个未验算的断言直接导致首轮修复无效，浪费一整轮实现 + 打包 + 验收。
+ 首轮规格里我写了"半径钳到 6.0 视觉上就是左半圆"，**没有验算**。实际是填充左界 x=6 而圆点左界 x=12，露出 6px。这个未验算的断言直接导致首轮修复无效，浪费一整轮实现 + 打包 + 验收。
 
 **规则**：规格中凡是出现半径、坐标、宽度、差值等**数值断言**，必须在写规格时就逐行算一遍，并把算术表附在规格里。不要用"视觉上""大概"这类词替代计算。
 
-## 改「形状/对称性」类缺陷时，先列全所有产生该形状的代码路径（R65 教训）
+## 改「形状/对称性」类缺陷时，先列全所有产生该形状的代码路径（经验）
 
-R65 修滑块填充左端时，我没问"另一端呢"。实际上产生这个形状的有 **flat + gradient 两个分支 × 左右两端 = 4 个角**，我只改了其中一个，于是最强档渐变右端仍是方角（用户第二次复验才发现）。
+ 修滑块填充左端时，我没问"另一端呢"。实际上产生这个形状的有 **flat + gradient 两个分支 × 左右两端 = 4 个角**，我只改了其中一个，于是最强档渐变右端仍是方角（用户第二次复验才发现）。
 
 **规则**：这类缺陷开工前先枚举所有代码路径与所有端/角，逐一核对，并在验收判据里**为每一个都写一条**。
 
-## GPUI 绘制顺序：弹出层必须 `deferred`（R64 实测）
+## GPUI 绘制顺序：弹出层必须 `deferred`（实测）
 
 **在带边框的卡片里挂浮层，卡片边框会画在浮层之上。** 这是 GPUI 的绘制顺序决定的，不是 z-index 问题，`occlude()` 解决不了。
 
@@ -220,24 +244,24 @@ if self.is_border_visible() {
 }
 ```
 
-**`occlude()` 只影响鼠标命中测试**，不影响绘制顺序——`div.rs:1208` 的 `Div::occlude` 只做 `interactivity().occlude_mouse()`，即设 `HitboxBehavior::BlockMouse`。R61/R62 给每个浮层都加了 `occlude()` 并据此认为层级已处理，**这个推断是错的**（R64 §2 记录了错误链条）。
+**`occlude()` 只影响鼠标命中测试**，不影响绘制顺序——`div.rs:1208` 的 `Div::occlude` 只做 `interactivity().occlude_mouse()`，即设 `HitboxBehavior::BlockMouse`。/ 给每个浮层都加了 `occlude()` 并据此认为层级已处理，**这个推断是错的**（ §2 记录了错误链条）。
 
 **正确做法**：浮层包一层 `gpui_kit::deferred(...).with_priority(2)`。语义是*"delay the painting of its child until after all of its ancestors, **while keeping its layout as part of the current element tree**"*（`elements/deferred.rs:11`）——布局不变、只把绘制挪到祖先之后，由 `window.rs:3343` 的 `paint_deferred_draws()` 在 `root_element.paint()` 之后执行。
 
 注意两点：
 
-- **`deferred` 不改变坐标**。`defer_draw` 会记录 `absolute_offset`（`window.rs:4105`）。R59 曾记录"deferred 导致卡片落在 x 1232.5"——那是它把 deferred 包在 `max_w + mx_auto` 的**外层盒子**里所致（R61 已删该结构），不是 deferred 本身。
+- **`deferred` 不改变坐标**。`defer_draw` 会记录 `absolute_offset`（`window.rs:4105`）。 曾记录"deferred 导致卡片落在 x 1232.5"——那是它把 deferred 包在 `max_w + mx_auto` 的**外层盒子**里所致（ 已删该结构），不是 deferred 本身。
 - **仓库里已有正确先例**：`branch_selector.rs:997`、`render_file_dropdown`（`render.rs:702`）、侧栏菜单。新增浮层时照抄这个模式。
 
-**验收方法**：浮层类改动不能只看"内容对不对"。必须做一次**像素行扫描**：取浮层中部一行，确认其中没有其他层画上来的元素（R64 用 `vfind`/`vscan` 定位到 `rgb(232,232,232)` = `border_subtle` 的连续 run）。
+**验收方法**：浮层类改动不能只看"内容对不对"。必须做一次**像素行扫描**：取浮层中部一行，确认其中没有其他层画上来的元素（ 用 `vfind`/`vscan` 定位到 `rgb(232,232,232)` = `border_subtle` 的连续 run）。
 
-## GPUI hover：`.hover()` 不带 `.id()` 就永不重绘（R67 实测）
+## GPUI hover：`.hover()` 不带 `.id()` 就永不重绘（实测）
 
 **给一个匿名 div 加 `.hover(...)`，它永远不会变色。** 必须同时给它 `.id(...)`。
 
 原因：GPUI 只在元素拥有 **element state** 时才注册 hover 翻转的重绘监听（`gpui-pre-0.3.4/src/elements/div.rs:2783`），而 element state 只在 `Element::id()` 返回 `Some` 时存在（`div.rs:1848`，id 来自 `interactivity.element_id`，即 `.id(...)`）。绘制分支（`div.rs:3391-3405`）在有 hitbox 时读 `hitbox.is_hovered(window)`，无 hitbox 时退化到 element state——匿名 div 没有 element state。
 
-R67 的临时探针实测（同一份代码，只差一个 `.id()`）：
+ 的临时探针实测（同一份代码，只差一个 `.id()`）：
 
 ```
 ANONYMOUS: base        renders=1 bg=BLUE
@@ -248,13 +272,13 @@ STATEFUL:  hover-child renders=2 bg=RED    ← 生效
 STATEFUL:  left        renders=3 bg=BLUE   ← 退出还原
 ```
 
-**这条最阴的地方是它静默**：不报错、不 panic，只是永远不亮。若把某个原本常驻的底色改成 hover 态（R67 就是），漏掉 `.id()` 会得到一个**比改动前更糟**的结果。
+**这条最阴的地方是它静默**：不报错、不 panic，只是永远不亮。若把某个原本常驻的底色改成 hover 态（ 就是），漏掉 `.id()` 会得到一个**比改动前更糟**的结果。
 
-**加 `.id()` 不等于加交互。** id 只注册一个 `HitboxBehavior::Normal` 的 hitbox，不注册任何监听器；R66 R5 约束的是**点击行为**，`r66_r5_the_highlight_container_is_inert` 在加了 id 之后仍通过。
+**加 `.id()` 不等于加交互。** id 只注册一个 `HitboxBehavior::Normal` 的 hitbox，不注册任何监听器；  约束的是**点击行为**，`_the_highlight_container_is_inert` 在加了 id 之后仍通过。
 
 **顺带**：hover 命中父块时，指针落在带自己 hitbox 的**子元素**上也一样有效——`hit_test` 收集指针下所有 hitbox，`HitboxBehavior::Normal` 不遮挡后面的（`window.rs:1095`）。所以"整块 hover"不必给每行单独加 hover。
 
-## 测试平台能观测绘制：用 `painted_quads()`，不是 `capture_screenshot`（R67 实测）
+## 测试平台能观测绘制：用 `painted_quads()`，不是 `capture_screenshot`（实测）
 
 旧注释说"测试平台没有 headless renderer，所以绘制结果不可观测"——**只对了一半**，别再用它当借口跳过绘制断言。
 
@@ -272,20 +296,20 @@ let quads = visual
 - **`painted_quads` 的 bounds 是缩放像素**（本机 2×），`debug_bounds` 是逻辑像素。要按 `window.scale_factor()` 换算后才能互相比较。
 - **`Background` 的 `tag`/`solid` 字段是 `pub(crate)`**，外部无法 `match Background::Solid(..)`。用公开的 `Background::as_solid()` 取 `Hsla`，再比色。
 
-R67 因此把"hover 才亮"从"看截图差不多"变成了可证伪的生产测试（`r67_a3..a6`）。
+ 因此把"hover 才亮"从"看截图差不多"变成了可证伪的生产测试（`_a3..a6`）。
 
-## 验证 hover 类改动不能用点击（R67 实测）
+## 验证 hover 类改动不能用点击（实测）
 
 `scripts/native-drive.swift` 只做点击。**hover 态不能靠它验证**——点标题行会进二级列表，点别处又测不到 hover。需要一个 **move-only** 驱动：激活 → `CGEvent(mouseMoved)` 移动（不要 down/up）→ 截图。
 
-另外：hover 是**翻转**触发的，所以移动要分两步（先到块外的起点，再到目标点），一步直接落在目标上可能不触发。R67 的驱动先移到窗口左下角再移到目标。
+另外：hover 是**翻转**触发的，所以移动要分两步（先到块外的起点，再到目标点），一步直接落在目标上可能不触发。 的驱动先移到窗口左下角再移到目标。
 
-## GPUI 点击外部关闭：`on_mouse_down_out` 会与 mouse-up 触发器互相打架（R68 实测）
+## GPUI 点击外部关闭：`on_mouse_down_out` 会与 mouse-up 触发器互相打架（实测）
 
 `on_mouse_down_out` 是"点击外部关闭"的正确原语。三条实测结论：
 
 - **不需要 `.id()`**（与 `.hover()` 相反，见上一节）；
-- **在 `gpui_kit::deferred` 包裹下照常工作**，不影响 R64 的绘制顺序修复；
+- **在 `gpui_kit::deferred` 包裹下照常工作**，不影响的绘制顺序修复；
 - 跑在 **capture 阶段**，且只在指针位于该元素 bounds **之外**时触发。
 
 ### 坑：触发器的开关在 mouse-up，会被 out 处理器吃掉
@@ -309,30 +333,30 @@ R67 因此把"hover 才亮"从"看截图差不多"变成了可证伪的生产测
 
 弹窗自己仍要保留一个 bubble 阶段的 `.on_mouse_down(stop_propagation())`，否则点弹窗内部会穿透到**祖先**的外部点击处理器（如 composer 卡片自己的）。它与 capture 阶段的 out 处理器**阶段不同、互不冲突**，两个都要有。
 
-## 对齐参考实现时，先确认 CSS 变体作用域（R68 教训）
+## 对齐参考实现时，先确认 CSS 变体作用域（经验）
 
 参考实现的 CSS 里有大量 `[data-vega-window-type=browser]` / `=electron` 变体块。**同一组 token 在不同变体下值不同**，取错会得出完全反向的结论。
 
-R68 就踩了：从 `[data-vega-window-type=browser]` 块取了 `--menu-item-height: 36` 等值，写下"行高该 32→36、内边距差一倍"；而 Codex **桌面截图**实测行高 28.5、行内边距只差 2px——**真正的缺陷是卡片宽度差 30%**。若照第一版做，会把行高改大（反向优化）而没修宽度。
+曾发生过：从 `[data-vega-window-type=browser]` 块取了 `--menu-item-height: 36` 等值，写下"行高该 32→36、内边距差一倍"；而 Codex **桌面截图**实测行高 28.5、行内边距只差 2px——**真正的缺陷是卡片宽度差 30%**。若照第一版做，会把行高改大（反向优化）而没修宽度。
 
 **方法**：
 
 1. 取 token 时**连 selector 一起记录**，确认它属于哪个变体；
-2. **用截图交叉验证**：先找一个已知量校准截图的缩放比例（R68 用 Vega 自身的 32px 行高：实测 64px 行距 ÷ 32 = 2×），再按比例读其它量；
+2. **用截图交叉验证**：先找一个已知量校准截图的缩放比例（用 Vega 自身的 32px 行高：实测 64px 行距 ÷ 32 = 2×），再按比例读其它量；
 3. 两者矛盾时，**以产品截图为准**，并把这个矛盾写进报告。
 
 ## 架构红线（速记，详见 exec-guide）
 
 - `vega_runtime` 禁止依赖 GPUI/任何 UI crate（headless 可测）
 - 跨 crate 共享类型只放 `vega_conversation::types`
-- API key 只存配置根下独立的 owner-only 明文凭据文件（R10），不写 config.toml/项目文件/日志；不访问旧 Keychain
+- API key 只存配置根下独立的 owner-only 明文凭据文件，不写 config.toml/项目文件/日志；不访问旧 Keychain
 - 非测试代码禁止 `unwrap()`/`expect()`
 - schema 只增不删，走 `migrations/` 递增文件
 - **代码中禁止任何注释**（`///`/`//!`/行内 `//`/`/* */`）：注释说明必要 = 命名或结构没写好，去改命名/拆函数/提类型。仅 `unsafe` 块的 `// SAFETY:` 例外（2026-09-23 用户裁决，详见 exec-guide §3/§4）
 
 ## 行为技能
 
-- [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)：Codex/Vega 共用的角色识别与最新单卡交付；Codex 先审查并交接 Bug、Vega 按方案执行、Actions 验证、Codex 合并、用户手测后收尾。维护 skill 本身不触发其他真实队列。
+- [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)：Agent 共用的最新合格单卡交付；主 Agent 默认分析/spec/实现，按需委派，独立审查、Actions 验证、合并后等用户手测再收尾。同卡连续推进，不按厂商或宿主身份交接；维护 skill 本身不触发其他真实队列。
 
 - [karpathy-guidelines](.agents/skills/karpathy-guidelines/SKILL.md)：写/审/重构代码时的
   行为准则（最小改动、表面化假设、可验证成功判据）。**冲突时以本文件与 exec-guide 为准**，

@@ -31,10 +31,6 @@ pub(crate) struct ContextController {
     // reuse a UI operation id; it is never an app-level ownership fence.
     automatic: HashMap<u64, (u64, u64)>,
     primary_owner: HashMap<u64, ContextOwner>,
-    // Observes the real async service completion in app integration tests;
-    // it does not alter scheduling, projection or error handling.
-    #[cfg(test)]
-    pub(crate) last_load_succeeded: Option<bool>,
 }
 
 impl ContextController {
@@ -73,32 +69,59 @@ fn context_record(id: u64, status: ContextCompactionStatus) -> ContextCompaction
 }
 
 impl VegaWindow {
-    pub(crate) fn begin_context_primary_owner(&mut self, generation: u64, cx: &App) {
-        if let Some(run) = self
+    pub(crate) fn begin_context_primary_owner(&mut self, generation: u64, cx: &mut Context<Self>) {
+        let Some((thread_id, stream, model)) = self
             .agent_controller
             .active
             .values()
             .find(|run| run.generation == generation)
-        {
-            if self
-                .context_controller
-                .owner
-                .as_ref()
-                .is_some_and(|owner| owner.thread_id == run.thread_id && owner.stream == run.stream)
-            {
-                self.context_controller.load_sequence =
-                    self.context_controller.load_sequence.saturating_add(1);
-            }
-            self.context_controller.primary_owner.insert(
-                generation,
-                ContextOwner {
-                    epoch: generation,
-                    thread_id: run.thread_id.clone(),
-                    model: run.stream.read(cx).displayed_model().to_owned(),
-                    stream: run.stream.clone(),
-                },
-            );
+            .map(|run| {
+                (
+                    run.thread_id.clone(),
+                    run.stream.clone(),
+                    run.stream.read(cx).displayed_model().to_owned(),
+                )
+            })
+        else {
+            return;
+        };
+        let owner_matches = self
+            .context_controller
+            .owner
+            .as_ref()
+            .is_some_and(|owner| owner.thread_id == thread_id && owner.stream == stream);
+        if owner_matches {
+            self.context_controller.load_sequence =
+                self.context_controller.load_sequence.saturating_add(1);
         }
+        self.context_controller.primary_owner.insert(
+            generation,
+            ContextOwner {
+                epoch: generation,
+                thread_id: thread_id.clone(),
+                model: model.clone(),
+                stream: stream.clone(),
+            },
+        );
+        // A run on the current route owns the context denominator from its
+        // first frame. Without this read a newly materialized task waits for
+        // the post-run refresh, because sync_context_route skips drafts and
+        // does not refresh while a run is active.
+        if !self.owns_stream_request(&stream, &thread_id, cx) {
+            return;
+        }
+        if !owner_matches {
+            self.context_controller.invalidate();
+            self.context_controller.owner = Some(ContextOwner {
+                epoch: self.context_controller.epoch,
+                thread_id,
+                model,
+                stream,
+            });
+        }
+        // One projection read per run start. `restore_status` stays false so a
+        // stale failure banner is not replayed mid-run.
+        self.refresh_context_projection(false, cx);
     }
 
     pub(crate) fn finish_context_primary_owner(&mut self, generation: u64) {
@@ -188,8 +211,6 @@ impl VegaWindow {
             .unwrap_or_default();
         let activity = vega_ui::sidebar::register_project_worker(&project_id, cx);
         let completion_cancel = cancel.clone();
-        #[cfg(test)]
-        let provider_override = self.agent_provider_override.clone();
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         // A dedicated thread mirrors the primary worker. In particular, a
         // blocking Tokio runtime must not occupy GPUI's cooperative executor.
@@ -198,16 +219,7 @@ impl VegaWindow {
             .spawn(move || {
                 let _activity = activity;
                 let events = run_manual_context_worker(
-                    database,
-                    config,
-                    thread_id,
-                    model,
-                    request_id,
-                    cancel,
-                    reasoning,
-                    pricing,
-                    #[cfg(test)]
-                    provider_override,
+                    database, config, thread_id, model, request_id, cancel, reasoning, pricing,
                 );
                 let _ = sender.send(events);
             });
@@ -383,10 +395,6 @@ impl VegaWindow {
         self.context_controller.load_sequence =
             self.context_controller.load_sequence.saturating_add(1);
         let sequence = self.context_controller.load_sequence;
-        #[cfg(test)]
-        {
-            self.context_controller.last_load_succeeded = None;
-        }
         let worker_owner = owner.clone();
         cx.spawn(async move |this, cx| {
             let projection = cx
@@ -418,10 +426,6 @@ impl VegaWindow {
                     || this.context_controller.load_sequence != sequence
                 {
                     return;
-                }
-                #[cfg(test)]
-                {
-                    this.context_controller.last_load_succeeded = Some(projection.is_ok());
                 }
                 match projection {
                     Ok(projection) => {
@@ -678,7 +682,6 @@ pub(crate) fn run_manual_context_worker(
     cancel: CancellationToken,
     reasoning: Option<vega_runtime::FrozenReasoning>,
     pricing: Option<vega_conversation::PricingCatalog>,
-    #[cfg(test)] provider_override: Option<Arc<dyn vega_runtime::Provider>>,
 ) -> Result<Vec<ConversationEvent>, ()> {
     let config_path = config_path.ok_or(())?;
     let config = vega_store::config::read_from(&config_path).map_err(|_| ())?;
@@ -722,6 +725,8 @@ pub(crate) fn run_manual_context_worker(
         }
         None => reasoning_for_provider_model(
             &configured.name,
+            configured.api,
+            &configured.base_url,
             &model,
             Some(&config_path.with_file_name(vega_store::reasoning::REASONING_FILE_NAME)),
         )?,
@@ -730,10 +735,6 @@ pub(crate) fn run_manual_context_worker(
         return Err(());
     }
     let make_provider = || -> Result<Arc<dyn vega_runtime::Provider>, ()> {
-        #[cfg(test)]
-        if let Some(provider) = provider_override {
-            return Ok(provider);
-        }
         let key =
             vega_store::keystore::get_key(config_path.parent().ok_or(())?, &configured.key_ref)
                 .map_err(|_| ())?;
@@ -742,9 +743,18 @@ pub(crate) fn run_manual_context_worker(
                 provider_credential_reader.clone(),
                 exceptions.clone(),
             );
+        let model_snapshot = vega_conversation::model_capabilities::load_configured_model(
+            &config,
+            &config_path,
+            &configured.name,
+            &model,
+        )
+        .map_err(|_| ())?;
         let provider = vega_runtime::OpenAiProvider::new(configured.base_url, key)
             .map_err(|_| ())?
             .with_responses_api(configured.api == vega_conversation::types::ProviderApi::Responses)
+            .with_model_snapshot(model_snapshot)
+            .map_err(|_| ())?
             .with_pre_attempt_guard(pre_attempt_guard);
         Ok(Arc::new(provider))
     };

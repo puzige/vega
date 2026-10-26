@@ -1,102 +1,201 @@
 use super::*;
 use gpui_kit::Focusable;
 
+static NEXT_SUBMISSION_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 impl ConversationStream {
-    /// Inserts one artifact immediately after the exact tool entry. Identical
-    /// duplicates reconcile in place; conflicting ids fail the existing card
-    /// closed and never insert an unrelated entry.
+    pub fn register_artifact_call(&mut self, call_id: &str) -> bool {
+        let Some((message_id, _)) = &self.active_agent_message else {
+            return false;
+        };
+        match self.artifact_call_owners.entry(call_id.to_owned()) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                if entry.get().as_deref() != Some(message_id.as_str()) {
+                    entry.insert(None);
+                    return false;
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(Some(message_id.clone()));
+            }
+        }
+        true
+    }
+
+    pub fn artifact_capture_owner(&self, call_id: &str) -> Option<(String, u64)> {
+        self.artifact_owner(call_id)
+            .map(|message_id| (message_id, self.artifact_history_generation))
+    }
+
+    pub fn matches_artifact_capture_owner(&self, call_id: &str, owner: &(String, u64)) -> bool {
+        owner.1 == self.artifact_history_generation
+            && self.artifact_owner(call_id).as_ref() == Some(&owner.0)
+    }
+
+    fn artifact_owner(&self, call_id: &str) -> Option<String> {
+        let message_id = self.artifact_call_owners.get(call_id)?.as_ref()?;
+        let active = self
+            .active_agent_message
+            .as_ref()
+            .is_some_and(|(id, _)| id == message_id);
+        ((active || self.finished_artifact_turns.contains(message_id))
+            && self
+                .entry_identities
+                .iter()
+                .any(|identity| identity.message_id.as_ref() == Some(message_id)))
+        .then(|| message_id.clone())
+    }
+
+    fn artifact_group(
+        &mut self,
+        message_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Entity<ArtifactGroup> {
+        if let Some(group) = self.artifact_groups.get(message_id) {
+            return group.clone();
+        }
+        let group = cx.new(|_| {
+            ArtifactGroup::new(
+                message_id.to_owned(),
+                OpenWorkspaceDiffRequested {
+                    thread_id: self.thread.id.clone(),
+                    project_id: self.thread.project_id.clone(),
+                },
+                self.reading_preview,
+                self.thread.is_standalone(),
+            )
+        });
+        cx.subscribe(&group, |this, _, _: &OpenWorkspaceDiffRequested, cx| {
+            this.emit_open_diff(cx);
+        })
+        .detach();
+        cx.observe(&group, |this, group, cx| {
+            let index = this.entry_index_where(|entry| {
+                matches!(entry, StreamEntry::ArtifactGroup { group: owned } if owned == &group)
+            });
+            this.invalidate_item(index);
+            cx.notify();
+        })
+        .detach();
+        self.artifact_groups
+            .insert(message_id.to_owned(), group.clone());
+        group
+    }
+
     pub fn apply_artifact_card(
         &mut self,
         call_id: &str,
         card: Entity<ArtifactCard>,
         cx: &mut Context<Self>,
     ) -> bool {
-        if let Some(existing) = self.artifact_cards.get(call_id) {
-            let incoming = card.read(cx).projection().clone();
-            if existing.read(cx).id() == incoming.id {
-                existing.update(cx, |card, cx| {
-                    let _ = card.apply_metadata(incoming, cx);
-                });
-                return true;
-            }
-            existing.update(cx, ArtifactCard::fail_corrupt);
-            return false;
-        }
-        let Some(tool) = self.tool_cards.get(call_id) else {
+        let Some(message_id) = self.artifact_owner(call_id) else {
             return false;
         };
-        if let Some(group) = self
-            .run_activity_groups
-            .values()
-            .find(|group| group.read(cx).contains_tool(tool, cx))
-            .cloned()
-        {
-            if group.update(cx, |group, cx| {
-                group.insert_after_tool(tool, card.clone(), cx)
-            }) {
-                self.artifact_cards.insert(call_id.to_owned(), card);
-                cx.notify();
-                return true;
+        if let Some(existing) = self.artifact_cards.get(call_id).cloned() {
+            let incoming = card.read(cx).projection().clone();
+            if existing.read(cx).id() != incoming.id {
+                existing.update(cx, ArtifactCard::fail_corrupt);
+                return false;
             }
+            existing.update(cx, |card, cx| {
+                card.apply_metadata(incoming, cx);
+            });
+            if let Some(group) = self.artifact_groups.get(&message_id) {
+                group.update(cx, |group, cx| group.resolve_capture_error(call_id, cx));
+            }
+            return true;
+        }
+        card.update(cx, |card, cx| {
+            card.set_reading_preview(self.reading_preview, cx)
+        });
+        let group = self.artifact_group(&message_id, cx);
+        group.update(cx, |group, cx| group.capture(call_id, card.clone(), cx));
+        self.artifact_cards.insert(call_id.to_owned(), card);
+        self.flush_artifact_group(&message_id, cx);
+        true
+    }
+
+    pub fn apply_artifact_capture_error(
+        &mut self,
+        call_id: &str,
+        code: vega_conversation::types::GitWorkspaceErrorCode,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(message_id) = self.artifact_owner(call_id) else {
             return false;
+        };
+        if code == vega_conversation::types::GitWorkspaceErrorCode::Cancelled {
+            return true;
+        }
+        let group = self.artifact_group(&message_id, cx);
+        group.update(cx, |group, cx| group.capture_error(call_id, code, cx));
+        self.flush_artifact_group(&message_id, cx);
+        true
+    }
+
+    pub(crate) fn finish_artifact_turn(&mut self, message_id: &str, cx: &mut Context<Self>) {
+        self.finished_artifact_turns.insert(message_id.to_owned());
+        let mut finished_messages = self
+            .finished_artifact_turns
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        finished_messages.sort_unstable();
+        for message_id in finished_messages {
+            self.flush_artifact_group(&message_id, cx);
+        }
+    }
+
+    fn artifact_turn_display_eligible(&self, message_id: &str) -> bool {
+        let mut current = message_id;
+        for _ in 0..=self.run_continuations.len() {
+            if !self.finished_artifact_turns.contains(current) {
+                return false;
+            }
+            let Some(relation) = self.run_continuations.get(current) else {
+                return true;
+            };
+            current = &relation.next_assistant_id;
+        }
+        false
+    }
+
+    fn flush_artifact_group(&mut self, message_id: &str, cx: &mut Context<Self>) {
+        if !self.artifact_turn_display_eligible(message_id) {
+            return;
+        }
+        let Some(group) = self.artifact_groups.get(message_id).cloned() else {
+            return;
+        };
+        if group.read(cx).row_count() == 0
+            || self.entries.iter().any(|entry| {
+                matches!(entry, StreamEntry::ArtifactGroup { group: owned } if owned == &group)
+            })
+        {
+            return;
         }
         let Some(index) = self
             .entries
             .iter()
-            .position(|entry| Self::tool_entry_contains(entry, tool, cx))
+            .zip(&self.entry_identities)
+            .rposition(|(entry, identity)| {
+                identity.message_id.as_deref() == Some(message_id)
+                    && !matches!(entry, StreamEntry::Summary { .. })
+            })
+            .map(|index| index + 1)
         else {
-            return false;
+            return;
         };
-        if matches!(
-            self.entries.get(index + 1),
-            Some(StreamEntry::Artifact { .. })
-        ) {
-            return false;
-        }
-        cx.observe(&card, |this, card, cx| {
-            let index = this.entry_index_where(|entry| match entry {
-                StreamEntry::Artifact { card: owned } => owned == &card,
-                StreamEntry::RunActivity { .. } => false,
-                StreamEntry::RunActivitySegment { group, .. } => {
-                    group.read(cx).contains_artifact(&card)
-                }
-                _ => false,
-            });
-            this.invalidate_item(index);
-            cx.notify();
-        })
-        .detach();
+        let index = self.entries.iter().position(|entry| {
+            matches!(entry, StreamEntry::Summary { card } if card.read(cx).summary().message_id == message_id)
+        }).map_or(index, |summary_index| index.min(summary_index));
         self.entries
-            .insert(index + 1, StreamEntry::Artifact { card: card.clone() });
-        self.list_insert(index + 1);
-        self.artifact_cards.insert(call_id.to_owned(), card);
+            .insert(index, StreamEntry::ArtifactGroup { group });
+        self.list_insert(index);
+        self.grow_entry_indices(index, 1);
+        let identity = self.durable_entry_identity(message_id, "artifacts", None);
+        self.set_entry_identity(index, identity);
         cx.notify();
-        true
-    }
-
-    /// Content-free structural check used by the application integration
-    /// harness to prove exact tool-owning activity -> Artifact adjacency.
-    #[doc(hidden)]
-    pub fn artifact_card_is_adjacent(&self, call_id: &str, cx: &App) -> bool {
-        let Some(tool) = self.tool_cards.get(call_id) else {
-            return false;
-        };
-        let Some(artifact) = self.artifact_cards.get(call_id) else {
-            return false;
-        };
-        self.entries.windows(2).any(|entries| {
-            Self::tool_entry_contains(&entries[0], tool, cx)
-                && matches!(&entries[1], StreamEntry::Artifact { card } if card == artifact)
-        }) || self
-            .run_activity_groups
-            .values()
-            .any(|group| group.read(cx).artifact_follows_tool(tool, artifact, cx))
-    }
-
-    /// Content-free virtual-row count for integration tests of dynamic cards.
-    #[doc(hidden)]
-    pub fn virtual_row_count(&self, cx: &App) -> usize {
-        self.total_rows(cx)
     }
 
     /// Starts the demo injection (标题头旁按钮)：drives the built-in
@@ -169,30 +268,28 @@ impl ConversationStream {
     }
 
     pub(crate) fn can_submit_message(&self, cx: &App) -> bool {
-        (!self.actions.running || self.thread.backend == TaskBackend::Native)
+        !self.reading_preview
+            && (!self.actions.running || self.thread.backend == TaskBackend::Native)
             && !self.pending_queue.busy
             && !self.context_operation_busy()
             && self.actions.pending_mode.is_none()
             && (!self.input.read(cx).text().is_empty() || !self.attachments.is_empty())
             && !self.attachment_import_pending
             && !self.composer_submit_pending
+            && !self.ordinary_pending_before_run()
             && !self.approved_not_started
             && !self.trusted_action_busy
             && !self.skill_mutation_pending
             && self.model_selection_pending.is_none()
     }
 
-    /// Requests a durable turn. Draft/history/user echo remain untouched until
-    /// the controller observes durable `MessageStarted` for this exact run.
-    /// An in-flight model selection (R1) also blocks submit: the next send
-    /// must run on either the old or the new authoritative model, never a
-    /// value that raced the durable write.
     pub(crate) fn submit_message(&mut self, cx: &mut Context<Self>) {
         if !self.can_submit_message(cx) {
             return;
         }
         // 提交即收起 `@file` 建议下拉并取消当前索引 owner；解析阶段
         // 仍由 app 在 provider 构造前执行。
+        self.invalidate_composer_prediction(cx);
         self.close_file_selector_and_cancel(cx);
         let text = self.input.read(cx).text().to_string();
         self.composer_submit_pending = true;
@@ -202,6 +299,9 @@ impl ConversationStream {
             .then(|| self.input.read(cx).content_revision());
         self.submitted_attachments = self.attachments.clone();
         cx.emit(ComposerSubmitted {
+            request_id: NEXT_SUBMISSION_REQUEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            draft_revision: self.input.read(cx).content_revision(),
+            attachment_ids: self.attachments.iter().map(|(id, _)| *id).collect(),
             pending_behavior: self
                 .actions
                 .running
@@ -229,9 +329,10 @@ impl ConversationStream {
         self.composer_submit_pending = false;
         self.pending_submission_revision = None;
         self.pending_behavior_override = None;
+        let copy = MessageCopy::from_live_text(content);
+        let projected = copy.original_text();
         if self.composer_history.last().map(String::as_str) != Some(content) {
-            self.composer_history
-                .push(vega_conversation::privacy::safe_live_text(content));
+            self.composer_history.push(projected.clone());
         }
         self.history_cursor = None;
         self.history_draft = None;
@@ -242,11 +343,8 @@ impl ConversationStream {
         self.user_block_seq += 1;
         let index = self.entries.len();
         self.entries.push(StreamEntry::User {
-            copy: MessageCopy::new(&vega_conversation::privacy::safe_live_text(content)),
-            lines: user_message_lines(
-                block_id,
-                &vega_conversation::privacy::safe_live_text(content),
-            ),
+            copy,
+            lines: user_message_lines(block_id, &projected),
         });
         self.list_append(index);
         let submitted = std::mem::take(&mut self.submitted_attachments);
@@ -277,29 +375,18 @@ impl ConversationStream {
         }
     }
 
-    /// Enter / Cmd+Enter in the Composer context ([`SendMessage`] binding;
-    /// ui-spec §4.4 v0.18, Issue #66).
     pub(crate) fn on_send_action(
         &mut self,
         _: &SendMessage,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // R5: while a platform IME composition is active, Enter belongs to the
-        // input method (candidate confirmation) and must never submit. This is
-        // defence in depth behind the platform-layer interception and matches
-        // the existing scoped guards in `composer_actions.rs`.
-        if self.input.read(cx).is_composing() {
+        if !self.input.read(cx).focus_handle(cx).is_focused(window) {
             cx.propagate();
             return;
         }
-        // R4: `SendMessage` is a ConversationStream action, so it is reachable
-        // from every control inside the `Composer` key context. Enter must only
-        // submit while the composer text input owns focus; on any other control
-        // (notably the `+` button, which activates on Enter via `on_key_down`)
-        // the key must propagate instead of being swallowed as a submit.
-        if !self.input.read(cx).focus_handle(cx).is_focused(window) {
-            cx.propagate();
+
+        if self.input.read(cx).is_composing() {
             return;
         }
         self.submit_message(cx);
@@ -320,15 +407,24 @@ impl ConversationStream {
     pub(crate) fn on_previous_message(
         &mut self,
         _: &PreviousMessage,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.composer_history.is_empty()
-            || (self.history_cursor.is_none() && !self.input.read(cx).cursor_allows_history())
-        {
+        if self.input.read(cx).is_composing() {
             return;
         }
         let current = self.input.read(cx).text().to_string();
+        let recalling_history = self
+            .history_cursor
+            .and_then(|index| self.composer_history.get(index))
+            == Some(&current);
+        if self.composer_history.is_empty()
+            || (!recalling_history && !self.input.read(cx).cursor_allows_history())
+        {
+            self.input
+                .update(cx, |input, cx| input.up(&crate::text_input::Up, window, cx));
+            return;
+        }
         if let Some(index) = self.history_cursor
             && self.composer_history.get(index) != Some(&current)
         {
@@ -350,9 +446,6 @@ impl ConversationStream {
             .update(cx, |input, cx| input.set_text(&recalled, cx));
     }
 
-    /// R57 P2b: the only remaining caller is the `+`-menu thread-mode row
-    /// (`composer_actions.rs`); the bottom-row dropdown that used to call it
-    /// is gone.
     pub(crate) fn request_mode(&mut self, mode: ThreadMode, cx: &mut Context<Self>) {
         if self.model_selection_pending.is_some() {
             return;
@@ -366,9 +459,6 @@ impl ConversationStream {
         }
     }
 
-    /// R57 P2b: the only remaining caller is the `+`-menu permission row
-    /// (`composer_actions.rs`); the bottom-row dropdown that used to call it
-    /// is now static status text.
     pub(crate) fn request_permission_mode(&mut self, mode: PermissionMode, cx: &mut Context<Self>) {
         if self.model_selection_pending.is_some() {
             return;

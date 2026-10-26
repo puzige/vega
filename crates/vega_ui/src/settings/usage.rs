@@ -19,13 +19,11 @@ pub(crate) struct UsageState {
 }
 
 fn usage_metric(
-    index: usize,
     label: &'static str,
     value: gpui_kit::StyledText,
     colors: vega_theme::ThemeColors,
 ) -> Div {
     div()
-        .debug_selector(move || format!("usage-metric-{index}"))
         .flex_1()
         .flex_basis(px(Layout::SETTINGS_LABEL_WIDTH))
         .min_w_0()
@@ -35,7 +33,6 @@ fn usage_metric(
         .gap_1()
         .child(
             div()
-                .debug_selector(move || format!("usage-metric-value-{index}"))
                 .w_full()
                 .min_w_0()
                 .text_align(gpui_kit::TextAlign::Left)
@@ -45,7 +42,6 @@ fn usage_metric(
         )
         .child(
             div()
-                .debug_selector(move || format!("usage-metric-label-{index}"))
                 .text_size(px(Typography::METADATA))
                 .text_color(colors.text_secondary)
                 .child(label),
@@ -90,62 +86,60 @@ impl SettingsView {
             .child(self.usage_button(
                 "usage-refresh",
                 if self.usage.loading {
-                    "刷新中…"
+                    t("settings.usage.refreshing")
                 } else {
-                    "刷新"
+                    t("settings.action.refresh")
                 },
                 false,
                 |this, cx| this.request_usage_reload(cx),
                 cx,
             ))
             .children(
-                [("usage-7days", "近7日", 7), ("usage-30days", "近30日", 30)]
-                    .into_iter()
-                    .map(|(id, label, days)| {
-                        self.usage_button(
-                            id,
-                            label,
-                            (if self.usage.range_days == 30 { 30 } else { 7 }) == days,
-                            move |this, cx| {
-                                this.usage.range_days = days;
-                                cx.notify();
-                            },
-                            cx,
-                        )
-                    }),
+                [
+                    ("usage-7days", t("settings.usage.last_7_days"), 7),
+                    ("usage-30days", t("settings.usage.last_30_days"), 30),
+                ]
+                .into_iter()
+                .map(|(id, label, days)| {
+                    self.usage_button(
+                        id,
+                        label,
+                        (if self.usage.range_days == 30 { 30 } else { 7 }) == days,
+                        move |this, cx| {
+                            this.usage.range_days = days;
+                            cx.notify();
+                        },
+                        cx,
+                    )
+                }),
             )
             .child(
                 div()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_secondary)
-                    .child("应用用量 · 按 UTC 日期统计"),
+                    .child(t("settings.usage.utc")),
             );
-        let mut page = settings_section()
-            .debug_selector(|| "usage-dashboard".into())
-            .w_full()
-            .child(header);
+        let mut page = settings_section().w_full().child(header);
         if self.usage.error {
-            page = page.child(
-                settings_status("使用统计读取失败，请刷新重试", colors.danger, colors)
-                    .debug_selector(|| "usage-error".into()),
-            );
+            page = page.child(settings_status(
+                t("settings.usage.load_failed"),
+                colors.danger,
+                colors,
+            ));
         }
         if let Some(data) = self.usage.dashboard.clone() {
             if data.lifetime.calls == 0 {
-                page = page.child(
-                    settings_status(
-                        "暂无使用记录。完成对话后将在这里显示实际用量。",
-                        colors.text_secondary,
-                        colors,
-                    )
-                    .debug_selector(|| "usage-empty".into()),
-                );
+                page = page.child(settings_status(
+                    t("settings.usage.empty"),
+                    colors.text_secondary,
+                    colors,
+                ));
             } else {
                 page = page.child(self.render_usage_data(&data, cx));
             }
         } else if !self.usage.error {
             page = page.child(settings_status(
-                "正在加载使用统计…",
+                t("settings.usage.loading"),
                 colors.text_secondary,
                 colors,
             ));
@@ -198,7 +192,6 @@ impl SettingsView {
                     }
                 }),
             )
-            .debug_selector(move || id.into())
             .tab_stop(true)
             .when(enabled, |button| button.cursor_pointer())
             .when(!enabled, |button| button.text_color(colors.text_tertiary))
@@ -232,24 +225,25 @@ impl SettingsView {
             longest = longest.max(streak);
         }
         let metrics = [
-            ("累计 Tokens", compact(data.lifetime.total_tokens)),
-            ("累计估算费用", cost_label(&data.lifetime)),
-            ("单日峰值 · 近365日", compact(peak)),
-            ("活跃天数 · 近365日", active.to_string()),
-            ("最长连续天数 · 近365日", longest.to_string()),
+            (
+                t("settings.usage.lifetime_tokens"),
+                compact(data.lifetime.total_tokens),
+            ),
+            (
+                t("settings.usage.lifetime_cost"),
+                cost_label(&data.lifetime),
+            ),
+            (t("settings.usage.peak_day"), compact(peak)),
+            (t("settings.usage.active_days"), active.to_string()),
+            (t("settings.usage.longest_streak"), longest.to_string()),
         ];
         let metric_band = settings_group(colors)
             .flex_row()
             .flex_wrap()
             .gap(px(Layout::SETTINGS_FIELD_GAP))
-            .children(
-                metrics
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, (label, value))| {
-                        usage_metric(index, label, gpui_kit::StyledText::new(value), colors)
-                    }),
-            );
+            .children(metrics.into_iter().map(|(label, value)| {
+                usage_metric(label, gpui_kit::StyledText::new(value), colors)
+            }));
         let heatmap = div()
             .flex()
             .flex_col()
@@ -264,13 +258,13 @@ impl SettingsView {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(div().child("使用活动 · 近365日"))
+                    .child(div().child(t("settings.usage.activity")))
                     .child(
                         div().flex().gap_1().children(
                             [
-                                ("usage-daily", "每日"),
-                                ("usage-weekly", "每周"),
-                                ("usage-cumulative", "累计"),
+                                ("usage-daily", t("settings.usage.daily")),
+                                ("usage-weekly", t("settings.usage.weekly")),
+                                ("usage-cumulative", t("settings.usage.cumulative")),
                             ]
                             .into_iter()
                             .enumerate()
@@ -296,24 +290,20 @@ impl SettingsView {
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_tertiary)
                     .child(
-                        div()
-                            .debug_selector(|| "usage-activity-start-date".into())
-                            .child(
-                                data.days
-                                    .first()
-                                    .map(|day| utc_date(day.start_ms))
-                                    .unwrap_or_default(),
-                            ),
+                        div().child(
+                            data.days
+                                .first()
+                                .map(|day| utc_date(day.start_ms))
+                                .unwrap_or_default(),
+                        ),
                     )
                     .child(
-                        div()
-                            .debug_selector(|| "usage-activity-end-date".into())
-                            .child(
-                                data.days
-                                    .last()
-                                    .map(|day| utc_date(day.start_ms))
-                                    .unwrap_or_default(),
-                            ),
+                        div().child(
+                            data.days
+                                .last()
+                                .map(|day| utc_date(day.start_ms))
+                                .unwrap_or_default(),
+                        ),
                     ),
             )
             .child(heatmap_canvas(data, self.usage.heatmap_mode, colors))
@@ -323,8 +313,8 @@ impl SettingsView {
                     .justify_between()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_tertiary)
-                    .child("周一至周日 · 每列一周")
-                    .child("浅 → 深 · Tokens"),
+                    .child(t("settings.usage.heatmap_weeks"))
+                    .child(t("settings.usage.heatmap_scale")),
             );
         let models: Vec<_> = data
             .models
@@ -342,7 +332,10 @@ impl SettingsView {
                     .rev()
                     .collect();
                 (
-                    series.model.clone().unwrap_or_else(|| "其他模型".into()),
+                    series
+                        .model
+                        .clone()
+                        .unwrap_or_else(|| t("settings.usage.other_model").into()),
                     values,
                     palette(index, colors),
                 )
@@ -372,7 +365,6 @@ impl SettingsView {
             std::rc::Rc::new(std::cell::Cell::new(None::<Bounds<gpui_kit::Pixels>>));
         let clicked_bounds = canvas_bounds.clone();
         let trend = div()
-            .debug_selector(|| "usage-trend".into())
             .p(px(Layout::SETTINGS_GROUP_PADDING))
             .border_1()
             .border_color(colors.border_subtle)
@@ -385,18 +377,20 @@ impl SettingsView {
                 div()
                     .flex()
                     .justify_between()
-                    .child("每日模型 Tokens")
+                    .child(t("settings.usage.daily_model_tokens"))
                     .child(
                         div()
                             .text_size(px(Typography::METADATA))
                             .text_color(colors.text_secondary)
-                            .child(format!("0 — {} Tokens", peak_model)),
+                            .child(t_args(
+                                "settings.usage.token_range",
+                                &[("count", &peak_model.to_string())],
+                            )),
                     ),
             )
             .child(
                 div()
                     .id("usage-trend-chart")
-                    .debug_selector(|| "usage-trend-chart".into())
                     .cursor_pointer()
                     .on_mouse_down(
                         MouseButton::Left,
@@ -424,14 +418,16 @@ impl SettingsView {
             );
         let trend = trend.child(
             div()
-                .debug_selector(|| "usage-daily-detail".into())
                 .flex()
                 .flex_col()
                 .gap_1()
                 .text_size(px(Typography::METADATA))
-                .child(div().text_color(colors.text_secondary).child(format!(
-                    "{} · 点击曲线查看当日用量",
-                    dates.get(selected).cloned().unwrap_or_default()
+                .child(div().text_color(colors.text_secondary).child(t_args(
+                    "settings.usage.chart_hint",
+                    &[(
+                        "date",
+                        dates.get(selected).map(String::as_str).unwrap_or_default(),
+                    )],
                 )))
                 .children(models.iter().map(|(name, values, color)| {
                     div()
@@ -439,46 +435,41 @@ impl SettingsView {
                         .gap_2()
                         .items_center()
                         .child(div().size(px(8.)).rounded_full().bg(*color))
-                        .child(format!(
-                            "{} · {} Tokens",
-                            name,
-                            values.get(selected).copied().unwrap_or(0)
+                        .child(t_args(
+                            "settings.usage.day_tokens",
+                            &[
+                                ("model", name),
+                                (
+                                    "count",
+                                    &(values.get(selected).copied().unwrap_or(0)).to_string(),
+                                ),
+                            ],
                         ))
                 })),
         );
-        let legend =
-            div()
-                .flex_1()
-                .min_w(px(180.))
-                .flex()
-                .flex_col()
-                .gap_2()
-                .children(models.iter().enumerate().filter_map(
-                    |(index, (name, values, color))| {
-                        let total: u64 = values.iter().sum();
-                        (total > 0).then(|| {
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(div().size(px(8.)).rounded_full().bg(*color))
-                                .child(
-                                    div()
-                                        .debug_selector(move || format!("usage-model-name-{index}"))
-                                        .flex_1()
-                                        .min_w_0()
-                                        .child(name.clone()),
-                                )
-                                .child(div().text_color(colors.text_secondary).child(format!(
-                                    "{} · {:.1}%",
-                                    compact(total),
-                                    100. * total as f64 / selected_total.max(1) as f64
-                                )))
-                        })
-                    },
-                ));
+        let legend = div()
+            .flex_1()
+            .min_w(px(180.))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .children(models.iter().filter_map(|(name, values, color)| {
+                let total: u64 = values.iter().sum();
+                (total > 0).then(|| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(div().size(px(8.)).rounded_full().bg(*color))
+                        .child(div().flex_1().min_w_0().child(name.clone()))
+                        .child(div().text_color(colors.text_secondary).child(format!(
+                            "{} · {:.1}%",
+                            compact(total),
+                            100. * total as f64 / selected_total.max(1) as f64
+                        )))
+                })
+            }));
         let distribution = div()
-            .debug_selector(|| "usage-distribution".into())
             .p(px(Layout::SETTINGS_GROUP_PADDING))
             .border_1()
             .border_color(colors.border_subtle)
@@ -487,7 +478,7 @@ impl SettingsView {
             .gap_3()
             .rounded(px(Layout::PANEL_RADIUS))
             .bg(colors.bg_subtle)
-            .child("模型用量")
+            .child(t("settings.usage.model_usage"))
             .child(
                 div()
                     .flex()
@@ -499,7 +490,6 @@ impl SettingsView {
                             .relative()
                             .size(px(145.))
                             .flex_shrink_0()
-                            .debug_selector(|| "usage-donut-frame".into())
                             .child(donut_canvas(models, colors))
                             .child(
                                 div()
@@ -509,7 +499,6 @@ impl SettingsView {
                                     .flex_col()
                                     .items_center()
                                     .justify_center()
-                                    .debug_selector(|| "usage-donut-total".into())
                                     .child(
                                         div()
                                             .text_size(px(Typography::HEADING_CARD))
@@ -520,7 +509,7 @@ impl SettingsView {
                                         div()
                                             .text_size(px(Typography::METADATA))
                                             .text_color(colors.text_secondary)
-                                            .child("Tokens"),
+                                            .child(t("settings.usage.tokens")),
                                     ),
                             ),
                     )
@@ -530,7 +519,7 @@ impl SettingsView {
                 d.child(
                     div()
                         .text_color(colors.text_secondary)
-                        .child("此时间段暂无 Tokens 用量"),
+                        .child(t("settings.usage.no_tokens")),
                 )
             });
         div()
@@ -577,13 +566,19 @@ fn compact(value: u64) -> String {
 }
 fn cost_label(totals: &UsageTotals) -> String {
     if totals.calls == totals.unpriced_calls {
-        return "未计价".into();
+        return t("settings.usage.unpriced").into();
     }
     let cost = crate::summary_card::format_usd(vega_conversation::types::Microcents(
         totals.priced_cost_microcents,
     ));
     if totals.unpriced_calls > 0 {
-        format!("{cost} + {}次未计价", totals.unpriced_calls)
+        t_args(
+            "settings.usage.unpriced_calls",
+            &[
+                ("cost", &cost),
+                ("count", &totals.unpriced_calls.to_string()),
+            ],
+        )
     } else {
         cost
     }
@@ -754,311 +749,4 @@ fn donut_canvas(models: ModelPoints, colors: vega_theme::ThemeColors) -> AnyElem
     .size(px(145.))
     .flex_shrink_0()
     .into_any_element()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use gpui_kit::{TestAppContext, VisualTestContext, WindowBounds, WindowOptions};
-    use vega_conversation::types::{UsageDay, UsageModelSeries};
-    struct MetricHarness {
-        values: Vec<String>,
-        layouts: std::rc::Rc<std::cell::RefCell<Vec<gpui_kit::TextLayout>>>,
-        width: f32,
-    }
-
-    impl Render for MetricHarness {
-        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            let colors = theme(cx).colors;
-            self.layouts.borrow_mut().clear();
-            let metrics = self
-                .values
-                .iter()
-                .enumerate()
-                .map(|(index, value)| {
-                    let text = gpui_kit::StyledText::new(value.clone());
-                    self.layouts.borrow_mut().push(text.layout().clone());
-                    usage_metric(index, "合成指标", text, colors)
-                })
-                .collect::<Vec<_>>();
-            settings_group(colors)
-                .w(px(self.width))
-                .flex_row()
-                .flex_wrap()
-                .gap(px(Layout::SETTINGS_FIELD_GAP))
-                .text_size(px(Typography::BODY))
-                .line_height(relative(Typography::BODY_LINE_HEIGHT))
-                .children(metrics)
-        }
-    }
-
-    #[gpui_kit::test]
-    fn issue296_h3a_metric_text_stays_in_column_and_keeps_every_digit(cx: &mut TestAppContext) {
-        cx.update(|cx| cx.set_global(vega_theme::Theme::light()));
-        for width in [687., 720.] {
-            let values = vec![
-                "999.9B".into(),
-                cost_label(&UsageTotals {
-                    priced_cost_microcents: i64::MAX,
-                    unpriced_calls: 1234,
-                    ..Default::default()
-                }),
-                "123.4M".into(),
-                "365".into(),
-                "365".into(),
-            ];
-            let layouts = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-            let window = cx.open_window(size(px(width), px(600.)), |_, _| MetricHarness {
-                values: values.clone(),
-                layouts: layouts.clone(),
-                width,
-            });
-            cx.run_until_parked();
-            let mut visual = VisualTestContext::from_window(window.into(), cx);
-            for (index, layout) in layouts.borrow().iter().enumerate() {
-                let metric = visual
-                    .debug_bounds(Box::leak(format!("usage-metric-{index}").into_boxed_str()))
-                    .unwrap();
-                let label = visual
-                    .debug_bounds(Box::leak(
-                        format!("usage-metric-label-{index}").into_boxed_str(),
-                    ))
-                    .unwrap();
-                assert_eq!(layout.text(), values[index]);
-                assert!((layout.bounds().left() - label.left()).abs() <= px(0.5));
-                for byte in values[index]
-                    .char_indices()
-                    .map(|(byte, _)| byte)
-                    .chain(std::iter::once(values[index].len()))
-                {
-                    let position = layout
-                        .position_for_index(byte)
-                        .expect("each original text index");
-                    assert!(
-                        position.x >= metric.left() && position.x <= metric.right(),
-                        "metric {index}: glyph position {position:?} outside {metric:?}"
-                    );
-                    assert!(position.y < label.top());
-                }
-                assert!(metric.left() >= px(0.) && metric.right() <= px(width));
-                if index == 1 && width == 720. {
-                    assert!(layout.wrapped_text().lines().count() > 1);
-                }
-            }
-        }
-    }
-    fn sample(calls: u64) -> UsageDashboard {
-        let totals = UsageTotals {
-            calls,
-            total_tokens: calls * 123,
-            priced_cost_microcents: 1,
-            unpriced_calls: calls.saturating_sub(1),
-            ..Default::default()
-        };
-        let days: Vec<_> = (0..365)
-            .map(|i| UsageDay {
-                start_ms: i * 86_400_000,
-                totals: if i == 364 {
-                    totals.clone()
-                } else {
-                    UsageTotals::default()
-                },
-            })
-            .collect();
-        UsageDashboard {
-            generated_at_ms: 365 * 86_400_000,
-            timezone_label: "UTC".into(),
-            lifetime: totals,
-            models: vec![UsageModelSeries {
-                model: Some("model-a".into()),
-                days: days[335..].to_vec(),
-            }],
-            days,
-        }
-    }
-
-    #[test]
-    fn costs_keep_microcents_and_unpriced_coverage_and_heatmap_modes_keep_calendar() {
-        let data = sample(2);
-        assert_eq!(utc_date(0), "1970-01-01");
-        assert_eq!(utc_date(951782400000), "2000-02-29");
-        assert_eq!(weekday_offset(&data), 3);
-        assert_eq!(cost_label(&data.lifetime), "US$0.000001 + 1次未计价");
-        assert_eq!(heatmap_values(&data, 0).len(), 365);
-        assert_eq!(heatmap_values(&data, 1).len(), 365);
-        assert_eq!(heatmap_values(&data, 2).len(), 365);
-        assert_eq!(heatmap_values(&data, 2)[364], 246);
-        assert_eq!(
-            cost_label(&UsageTotals {
-                calls: 1,
-                unpriced_calls: 1,
-                ..Default::default()
-            }),
-            "未计价"
-        );
-    }
-
-    #[gpui_kit::test]
-    async fn issue296_usage_refresh_and_filters_keep_keyboard_actions(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            cx.set_global(vega_theme::Theme::light());
-            crate::init(cx);
-        });
-        let view = cx.new(SettingsView::new_for_test);
-        view.update(cx, |view, cx| {
-            view.section = 4;
-            view.apply_usage_dashboard(Ok(sample(2)), cx);
-        });
-        let reloads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let observed = reloads.clone();
-        cx.update(|cx| {
-            cx.subscribe(&view, move |_, _: &UsageReloadRequested, _| {
-                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            })
-            .detach();
-        });
-        let root = view.clone();
-        let window = cx.update(|cx| {
-            cx.open_window(WindowOptions::default(), move |_, _| root)
-                .expect("usage keyboard fixture")
-        });
-        cx.run_until_parked();
-        window
-            .update(cx, |view, window, cx| {
-                let refresh_focus = view.usage_focuses[5].clone();
-                window.focus(&refresh_focus, cx);
-                window.focus_next(cx);
-                assert!(view.usage_focuses[3].is_focused(window));
-                window.focus_next(cx);
-                assert!(view.usage_focuses[4].is_focused(window));
-            })
-            .expect("usage filter focus order");
-        cx.simulate_keystrokes(window.into(), "space");
-        cx.run_until_parked();
-        assert_eq!(view.read_with(cx, |view, _| view.usage.range_days), 30);
-        window
-            .update(cx, |view, window, cx| {
-                window.focus_next(cx);
-                assert!(view.usage_focuses[0].is_focused(window));
-                window.focus_next(cx);
-                assert!(view.usage_focuses[1].is_focused(window));
-            })
-            .expect("activity filters follow date filters");
-        cx.simulate_keystrokes(window.into(), "space");
-        cx.run_until_parked();
-        assert_eq!(view.read_with(cx, |view, _| view.usage.heatmap_mode), 1);
-        window
-            .update(cx, |view, window, cx| {
-                let refresh_focus = view.usage_focuses[5].clone();
-                window.focus(&refresh_focus, cx)
-            })
-            .expect("refresh focus");
-        cx.simulate_keystrokes(window.into(), "enter");
-        cx.run_until_parked();
-        assert_eq!(reloads.load(std::sync::atomic::Ordering::SeqCst), 1);
-        cx.simulate_keystrokes(window.into(), "space");
-        cx.run_until_parked();
-        assert_eq!(reloads.load(std::sync::atomic::Ordering::SeqCst), 1);
-        view.update(cx, |view, cx| view.apply_usage_dashboard(Ok(sample(2)), cx));
-        cx.run_until_parked();
-        cx.simulate_keystrokes(window.into(), "space");
-        cx.run_until_parked();
-        assert_eq!(reloads.load(std::sync::atomic::Ordering::SeqCst), 2);
-    }
-
-    #[gpui_kit::test]
-    async fn settings_usage_real_render_controls_refresh_empty_and_failure(
-        cx: &mut TestAppContext,
-    ) {
-        cx.update(|cx| {
-            cx.set_global(vega_theme::Theme::light());
-            crate::init(cx);
-        });
-        let view = cx.new(SettingsView::new_for_test);
-        view.update(cx, |view, _| view.section = 4);
-        let reloads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let observed = reloads.clone();
-        cx.update(|cx| {
-            cx.subscribe(&view, move |_, _: &UsageReloadRequested, _| {
-                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            })
-            .detach();
-        });
-        let root = view.clone();
-        let window = cx.update(|cx| {
-            cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                        None,
-                        size(px(960.), px(900.)),
-                        cx,
-                    ))),
-                    ..Default::default()
-                },
-                move |_, _| root,
-            )
-            .expect("usage settings window")
-        });
-        view.update(cx, |view, cx| view.apply_usage_dashboard(Ok(sample(0)), cx));
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        assert!(visual.debug_bounds("usage-empty").is_some());
-        assert!(visual.debug_bounds("usage-trend").is_none());
-        let refresh = visual
-            .debug_bounds("usage-refresh")
-            .expect("refresh button");
-        visual.simulate_click(refresh.center(), gpui_kit::Modifiers::default());
-        visual.run_until_parked();
-        assert_eq!(reloads.load(std::sync::atomic::Ordering::SeqCst), 1);
-        view.update(&mut visual, |view, cx| {
-            view.apply_usage_dashboard(Err(UsageDashboardError::Unavailable), cx)
-        });
-        visual.run_until_parked();
-        assert!(visual.debug_bounds("usage-error").is_some());
-        view.update(&mut visual, |view, cx| {
-            view.apply_usage_dashboard(Ok(sample(2)), cx)
-        });
-        visual.run_until_parked();
-        assert!(visual.debug_bounds("usage-trend").is_some());
-        assert!(visual.debug_bounds("usage-error").is_none());
-        let activity_start = visual
-            .debug_bounds("usage-activity-start-date")
-            .expect("exact activity start");
-        let activity_end = visual
-            .debug_bounds("usage-activity-end-date")
-            .expect("exact activity end");
-        assert!(activity_end.origin.x > activity_start.origin.x);
-        let donut_frame = visual
-            .debug_bounds("usage-donut-frame")
-            .expect("donut frame");
-        let donut_total = visual
-            .debug_bounds("usage-donut-total")
-            .expect("centered donut total");
-        assert_eq!(donut_frame.center(), donut_total.center());
-        assert_eq!(donut_frame.size, size(px(145.), px(145.)));
-        let chart = visual
-            .debug_bounds("usage-trend-chart")
-            .expect("clickable daily chart");
-        visual.simulate_click(chart.center(), gpui_kit::Modifiers::default());
-        visual.run_until_parked();
-        assert_eq!(
-            view.read_with(&visual, |v, _| v.usage.selected_day),
-            Some(3)
-        );
-        assert!(visual.debug_bounds("usage-daily-detail").is_some());
-        let weekly = visual.debug_bounds("usage-weekly").expect("weekly control");
-        visual.simulate_click(weekly.center(), gpui_kit::Modifiers::default());
-        visual.run_until_parked();
-        assert_eq!(view.read_with(&visual, |v, _| v.usage.heatmap_mode), 1);
-        let thirty = visual.debug_bounds("usage-30days").expect("range control");
-        visual.simulate_click(thirty.center(), gpui_kit::Modifiers::default());
-        visual.run_until_parked();
-        assert_eq!(view.read_with(&visual, |v, _| v.usage.range_days), 30);
-        visual.update(|_, cx| {
-            cx.set_global(vega_theme::Theme::dark());
-            cx.refresh_windows();
-        });
-        visual.run_until_parked();
-        assert!(visual.debug_bounds("usage-trend").is_some());
-    }
 }

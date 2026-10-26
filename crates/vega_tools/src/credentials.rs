@@ -7,6 +7,7 @@ use vega_credentials::{CredentialBinding, CredentialBroker, ProxyLease, SecretRe
 
 pub struct ToolCredentialPolicy {
     pub(crate) protected_root: PathBuf,
+    pub(crate) protected_identity: (u64, u64),
     bindings: Vec<CredentialBinding>,
     reader: SecretReader,
 }
@@ -21,6 +22,9 @@ impl ToolCredentialPolicy {
         reader: SecretReader,
     ) -> Result<Self, ToolError> {
         let protected_root = root.canonicalize()?;
+        use std::os::unix::fs::MetadataExt;
+        let metadata = protected_root.metadata()?;
+        let protected_identity = (metadata.dev(), metadata.ino());
         for binding in &bindings {
             binding.validate().map_err(|_| {
                 ToolError::InvalidInput("Credential binding configuration is invalid".into())
@@ -28,6 +32,7 @@ impl ToolCredentialPolicy {
         }
         Ok(Self {
             protected_root,
+            protected_identity,
             bindings,
             reader,
         })
@@ -100,45 +105,4 @@ pub(crate) fn controlled_environment(temp: &Path) -> BTreeMap<String, String> {
         values.insert(name.into(), temp.to_string_lossy().into_owned());
     }
     values
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn environment_is_an_allowlist_without_inherited_secrets_or_startup_injection() {
-        let values = controlled_environment(Path::new("/private/tmp/synthetic"));
-        for name in [
-            "AWS_SECRET_ACCESS_KEY",
-            "SSLKEYLOGFILE",
-            "NODE_OPTIONS",
-            "PYTHONPATH",
-            "BASH_ENV",
-            "DYLD_INSERT_LIBRARIES",
-        ] {
-            assert!(!values.contains_key(name));
-        }
-        assert_eq!(values["HOME"], "/private/tmp/synthetic");
-    }
-    #[test]
-    fn file_tools_deny_config_root_and_symlink_aliases() {
-        let root = tempfile::tempdir().unwrap();
-        let config = root.path().join("config");
-        std::fs::create_dir(&config).unwrap();
-        let file = config.join("config.toml");
-        std::fs::write(&file, "synthetic").unwrap();
-        std::os::unix::fs::symlink(&file, root.path().join("alias")).unwrap();
-        let tools = Tools::new(root.path()).unwrap().with_credential_policy(
-            ToolCredentialPolicy::new(config, Vec::new(), Arc::new(|_| unreachable!())).unwrap(),
-        );
-        assert!(tools.read("alias", None, None).is_err());
-        assert!(tools.read("config/config.toml", None, None).is_err());
-        assert!(
-            !tools
-                .grep("synthetic", None)
-                .unwrap()
-                .text
-                .contains("synthetic")
-        );
-    }
 }

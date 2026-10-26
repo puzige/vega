@@ -38,6 +38,9 @@ pub enum Icon {
     Queue,
     Steer,
     Trash,
+    Goal,
+    Pause,
+    Play,
     Connection,
     Wifi,
     Plug,
@@ -45,6 +48,7 @@ pub enum Icon {
     Blocks,
     Chart,
     ArrowUpDown,
+    Archive,
     GitBranch,
     Pin,
     ChevronDown,
@@ -66,15 +70,9 @@ pub enum Icon {
     Keyboard,
     Globe,
     Summary,
-    /// Selection marker for menu rows (R62 R8/R10).
     Check,
-    /// R62 R8: the "ask for approval" permission row.
     Hand,
-    /// R62 R8: the "approve for me" permission row.
     Shield,
-    /// #117: context compaction. Lucide's `text-select` silhouette is the
-    /// reference product's own compaction marker; one glyph covers every
-    /// compaction state, so the row never swaps shape as the status changes.
     TextSelect,
 }
 
@@ -106,28 +104,17 @@ const MOUSE_POINTER_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" vie
 const KEYBOARD_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M8 15h8"/></svg>"#;
 const QUEUE_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v12a3 3 0 0 0 3 3h13m-4-4 4 4-4 4M9 5h11M9 10h7"/></svg>"#;
 const STEER_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5v5a3 3 0 0 0 3 3h13m-5-5 5 5-5 5"/></svg>"#;
+const GOAL_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>"#;
+const PAUSE_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5v14M16 5v14"/></svg>"#;
+const PLAY_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 4 12 8-12 8Z"/></svg>"#;
 const TRASH_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6"/></svg>"#;
 
 const HELP_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.82 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>"#;
 
-/// Vega's pane-move glyph (R47 §2.2) is kept inline because the bundled icon
-/// set only offers the shell-slot dock shapes (panel + bottom/right bar), and
-/// reusing one of them for the pane-local "move dock" action read as the same
-/// control twice in one header. The glyph is a panel rectangle offset toward
-/// the trailing edge plus one arrow entering it from outside, on the same
-/// 24px viewBox, stroke-2, currentColor grammar as the other inline icons. At
-/// 16px it stays clearly distinct from `DockBottom` (rect + bottom bar) and
-/// `DockRight` (rect + right bar): neither carries an arrow.
 const DOCK_MOVE_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="5" width="14" height="14" rx="2"/><path d="M2 12h9"/><path d="m8 9 3 3-3 3"/></svg>"#;
 
-/// R62 R8: Lucide's open hand, the reference implementation's "Ask for
-/// approval" glyph. gpui-kit 0.6.0 ships no hand asset, so the same 24px,
-/// stroke-2, round-join grammar is carried inline here (the file's existing
-/// convention for missing symbols).
 const HAND_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg>"#;
 
-/// R62 R8: Lucide's shield, the reference implementation's "Approve for me"
-/// glyph. Inline for the same reason as [`HAND_SVG`].
 const SHIELD_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>"#;
 
 /// The Git branch outline is authored inline because gpui-kit 0.6.0 does not
@@ -135,15 +122,12 @@ const SHIELD_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0
 /// round-cap/round-join convention used by the other inline functional icons.
 const GIT_BRANCH_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="7" x2="6" y2="17"/><circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><path d="M18 7v3a9 9 0 0 1-9 9H8"/></svg>"#;
 
-/// #117: Lucide's public `text-select` icon (ISC), carried inline because
-/// `gpui-kit-assets 0.6.0` does not ship it. Two bracket halves with three
-/// shortening rules read as "condensed text" at 16px, which is the reference
-/// product's own marker for a compacted context.
 const TEXT_SELECT_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3a2 2 0 0 0-2 2"/><path d="M19 3a2 2 0 0 1 2 2"/><path d="M21 19a2 2 0 0 1-2 2"/><path d="M5 21a2 2 0 0 1-2-2"/><path d="M9 3h1"/><path d="M9 21h1"/><path d="M14 3h1"/><path d="M14 21h1"/><path d="M3 9v1"/><path d="M21 9v1"/><path d="M3 14v1"/><path d="M21 14v1"/><line x1="7" x2="15" y1="8" y2="8"/><line x1="7" x2="17" y1="12" y2="12"/><line x1="7" x2="13" y1="16" y2="16"/></svg>"#;
+
+const COPY_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26.6667 26.6667" fill="none" stroke="currentColor" stroke-width="2.2222" stroke-linecap="round" stroke-linejoin="round"><g transform="translate(1.3333 1.3333)"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></g></svg>"#;
 
 fn icon_name(kind: Icon) -> IconName {
     match kind {
-        Icon::Copy => IconName::Copy,
         Icon::Search => IconName::Search,
         Icon::Sidebar => IconName::PanelLeft,
         Icon::Plus => IconName::Plus,
@@ -164,6 +148,7 @@ fn icon_name(kind: Icon) -> IconName {
         Icon::Wifi => unreachable!("inline SVG icons are handled before mapping"),
         Icon::Bot => IconName::Bot,
         Icon::ArrowUpDown => IconName::ChevronsUpDown,
+        Icon::Archive => IconName::Inbox,
         Icon::GitBranch => unreachable!("inline SVG icons are handled before mapping"),
         Icon::ChevronDown => IconName::ChevronDown,
         Icon::ChevronRight => IconName::ChevronRight,
@@ -178,7 +163,8 @@ fn icon_name(kind: Icon) -> IconName {
         Icon::BookOpen => IconName::BookOpen,
         Icon::Globe => IconName::Globe,
         Icon::Check => IconName::Check,
-        Icon::Chart
+        Icon::Copy
+        | Icon::Chart
         | Icon::Plug
         | Icon::Blocks
         | Icon::Pin
@@ -196,7 +182,7 @@ fn icon_name(kind: Icon) -> IconName {
         | Icon::TextSelect => {
             unreachable!("inline SVG icons are handled before mapping")
         }
-        Icon::Queue | Icon::Steer | Icon::Trash => {
+        Icon::Queue | Icon::Steer | Icon::Trash | Icon::Goal | Icon::Pause | Icon::Play => {
             unreachable!("inline SVG icons are handled before mapping")
         }
     }
@@ -226,6 +212,7 @@ pub fn icon(kind: Icon, color: Rgba) -> AnyElement {
 
 pub(crate) fn sized_icon(kind: Icon, color: Rgba, size: f32) -> AnyElement {
     let glyph = match kind {
+        Icon::Copy => inline_icon(COPY_SVG, color, size),
         Icon::Chart => inline_icon(CHART_SVG, color, size),
         Icon::Plug => inline_icon(PLUG_SVG, color, size),
         Icon::Wifi => inline_icon(WIFI_SVG, color, size),
@@ -248,6 +235,9 @@ pub(crate) fn sized_icon(kind: Icon, color: Rgba, size: f32) -> AnyElement {
         Icon::Queue => inline_icon(QUEUE_SVG, color, size),
         Icon::Steer => inline_icon(STEER_SVG, color, size),
         Icon::Trash => inline_icon(TRASH_SVG, color, size),
+        Icon::Goal => inline_icon(GOAL_SVG, color, size),
+        Icon::Pause => inline_icon(PAUSE_SVG, color, size),
+        Icon::Play => inline_icon(PLAY_SVG, color, size),
         _ => kit_icon(kind, color, size),
     };
     gpui_kit::div()
@@ -306,14 +296,50 @@ pub fn icon_button(
     colors: vega_theme::ThemeColors,
     activate: impl Fn(&(), &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
 ) -> Interaction {
+    icon_button_with_content(icon(kind, colors.text_secondary), label, colors, activate)
+}
+
+pub(crate) fn localized_icon_button(
+    kind: Icon,
+    key: &'static str,
+    colors: vega_theme::ThemeColors,
+    activate: impl Fn(&(), &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
+) -> Interaction {
+    icon_button_with_id(
+        icon(kind, colors.text_secondary),
+        key,
+        vega_i18n::t(key),
+        colors,
+        activate,
+    )
+}
+
+fn icon_button_with_content(
+    content: impl IntoElement,
+    label: impl Into<gpui_kit::SharedString>,
+    colors: vega_theme::ThemeColors,
+    activate: impl Fn(&(), &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
+) -> Interaction {
+    let label = label.into();
+    icon_button_with_id(content, label.clone(), label, colors, activate)
+}
+
+pub(crate) fn icon_button_with_id(
+    content: impl IntoElement,
+    id: impl Into<gpui_kit::SharedString>,
+    label: impl Into<gpui_kit::SharedString>,
+    colors: vega_theme::ThemeColors,
+    activate: impl Fn(&(), &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
+) -> Interaction {
     use gpui_kit::{MouseButton, div};
+    let id: gpui_kit::SharedString = id.into();
     let label = label.into();
     let tooltip_label = label.clone();
     let accessible_label = label.clone();
     let activate = std::rc::Rc::new(activate);
     let keyboard = activate.clone();
     div()
-        .id(label)
+        .id(id)
         .aria_label(accessible_label)
         .focusable()
         .tab_stop(true)
@@ -337,7 +363,7 @@ pub fn icon_button(
                 keyboard(&(), window, cx);
             }
         })
-        .child(icon(kind, colors.text_secondary))
+        .child(content)
 }
 
 /// Builds a native tooltip using the current theme.
@@ -349,12 +375,6 @@ pub fn tooltip(
     cx.new(|_| IconTooltip(label, None)).into()
 }
 
-/// Permanent 28x28 shell control (R45 main-header slots): a 16px centered
-/// icon on the frozen titlebar hitbox with a persistent selected surface,
-/// hover only while unselected, a disabled presentation that keeps its
-/// geometry, and a tooltip that can carry a shortcut keycap. Selection wins
-/// over hover: the hover surface is only attached while unselected, so the
-/// two states can never be confused.
 pub fn shell_icon_button(
     kind: Icon,
     label: impl Into<gpui_kit::SharedString>,
@@ -412,4 +432,16 @@ pub fn shell_icon_button(
                 colors.text_tertiary
             },
         ))
+}
+
+pub(crate) fn link_icon(site: vega_conversation::types::LinkSiteKind, color: Rgba) -> AnyElement {
+    let name = match site {
+        vega_conversation::types::LinkSiteKind::Github => gpui_kit::assets::IconName::Github,
+        vega_conversation::types::LinkSiteKind::Mail => gpui_kit::assets::IconName::Mail,
+        vega_conversation::types::LinkSiteKind::Web => return icon(Icon::Globe, color),
+    };
+    KitIcon::new(name)
+        .with_size(px(Layout::ICON_SIZE))
+        .text_color(color)
+        .into_any_element()
 }

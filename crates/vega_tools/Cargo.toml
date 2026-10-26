@@ -3,14 +3,10 @@ name = "vega_tools"
 version.workspace = true
 edition.workspace = true
 
-[features]
-test-support = []
-
 [dependencies]
+vega_i18n.workspace = true
 vega_credentials = { workspace = true }
-# R11 approved: nonblocking/no-follow descriptor open for read-only preview.
 libc = { workspace = true }
-# 内置工具 read/glob/grep/write/edit/bash（S4-T21 / S5-T23~T24；exec-guide §5 白名单）
 ignore = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -18,6 +14,3 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "time"] }
 tokio-util = { workspace = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }

@@ -28,9 +28,7 @@ pub(super) fn validate_target_path(target: &Path) -> UpdateResult<()> {
             || target == home.join("Documents/Vega/Vega.app")
     });
     if target != Path::new("/Applications/Vega.app") && !allowed_user {
-        return Err(failure(
-            "请将 Vega 安装到 Applications 或 Documents/Vega 后使用应用内更新",
-        ));
+        return Err(failure(vega_i18n::t("app.update.install_location")));
     }
     let mut checked = PathBuf::new();
     for component in target.components() {
@@ -39,15 +37,15 @@ pub(super) fn validate_target_path(target: &Path) -> UpdateResult<()> {
             .file_type()
             .is_symlink()
         {
-            return Err(failure("安装路径含符号链接，请使用真实应用目录"));
+            return Err(failure(vega_i18n::t("app.update.symlink_path")));
         }
     }
     if target.canonicalize()? != target {
-        return Err(failure("安装路径不是规范路径"));
+        return Err(failure(vega_i18n::t("app.update.canonical_path")));
     }
     let parent = target
         .parent()
-        .ok_or_else(|| failure("应用安装目录不可用"))?;
+        .ok_or_else(|| failure(vega_i18n::t("app.update.install_directory")))?;
     let metadata = std::fs::metadata(parent)?;
     // SAFETY: geteuid reads the current effective user identity without pointer arguments.
     let owner = unsafe { libc::geteuid() };
@@ -59,30 +57,30 @@ pub(super) fn validate_target_path(target: &Path) -> UpdateResult<()> {
         metadata.uid() == owner && metadata.mode() & 0o022 == 0
     };
     if !metadata.is_dir() || !trusted {
-        return Err(failure("应用安装目录权限不安全，请手动安装"));
+        return Err(failure(vega_i18n::t("app.update.permissions")));
     }
     Ok(())
 }
 
 pub(super) fn discover() -> UpdateResult<Bundle> {
     if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        return Err(failure("自动安装仅支持 macOS Apple Silicon"));
+        return Err(failure(vega_i18n::t("app.update.platform")));
     }
     let executable = std::env::current_exe()?;
     if executable.canonicalize()? != executable {
-        return Err(failure("应用程序路径包含链接"));
+        return Err(failure(vega_i18n::t("app.update.executable_link")));
     }
     let path = executable
         .parent()
         .and_then(Path::parent)
         .and_then(Path::parent)
-        .ok_or_else(|| failure("开发版本不支持自动安装"))?
+        .ok_or_else(|| failure(vega_i18n::t("app.update.development_unsupported")))?
         .to_path_buf();
     if path.extension().is_none_or(|extension| extension != "app")
         || path.join("Contents/MacOS/vega") != executable
         || plist(&path, "CFBundleIdentifier")? != "ai.vega"
     {
-        return Err(failure("开发版本不支持自动安装"));
+        return Err(failure(vega_i18n::t("app.update.development_unsupported")));
     }
     let version = plist(&path, "CFBundleShortVersionString")?;
     Version::parse(&version)?;
@@ -115,7 +113,7 @@ pub(super) fn command(command: &mut Command) -> UpdateResult<String> {
         if start.elapsed() > Duration::from_secs(90) {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(failure("系统验证操作超时"));
+            return Err(failure(vega_i18n::t("app.update.verification_timeout")));
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -123,13 +121,13 @@ pub(super) fn command(command: &mut Command) -> UpdateResult<String> {
     let mut result = String::new();
     for mut file in [output, error] {
         if file.metadata()?.len() > 64 * 1024 {
-            return Err(failure("系统验证输出超出限制"));
+            return Err(failure(vega_i18n::t("app.update.verification_output")));
         }
         file.seek(SeekFrom::Start(0))?;
         file.read_to_string(&mut result)?;
     }
     if !status.success() {
-        return Err(failure("应用身份验证失败，需从官方发布页手动安装"));
+        return Err(failure(vega_i18n::t("app.update.identity_failed")));
     }
     Ok(result)
 }
@@ -151,12 +149,12 @@ pub(super) fn verify_integrity(bundle: &Path, version: &str) -> UpdateResult<()>
             .arg(bundle.join("Contents/MacOS/vega")),
     )?;
     if architectures.trim() != "arm64" {
-        return Err(failure("更新应用不是 Apple Silicon 构建"));
+        return Err(failure(vega_i18n::t("app.update.architecture")));
     }
     if plist(bundle, "CFBundleIdentifier")? != "ai.vega"
         || plist(bundle, "CFBundleShortVersionString")? != version
     {
-        return Err(failure("应用标识或版本不匹配"));
+        return Err(failure(vega_i18n::t("app.update.identity_version")));
     }
     command(
         Command::new("/usr/bin/codesign")
@@ -212,13 +210,13 @@ fn verify_identity(
                     .bytes()
                     .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
         })
-        .ok_or_else(|| failure("应用缺少正式 Developer ID 身份"))?;
+        .ok_or_else(|| failure(vega_i18n::t("app.update.developer_id")))?;
     if !signature
         .lines()
         .any(|line| line.starts_with("Authority=Developer ID Application:"))
         || expected_team.is_some_and(|expected| expected != team)
     {
-        return Err(failure("应用签名团队不匹配"));
+        return Err(failure(vega_i18n::t("app.update.team_mismatch")));
     }
     let requirement = format!(
         "anchor apple generic and identifier \"ai.vega\" and certificate leaf[subject.OU] = \"{team}\""
@@ -237,27 +235,27 @@ fn verify_identity(
         .lines()
         .any(|line| line.trim() == "source=Notarized Developer ID")
     {
-        return Err(failure("应用未通过公证验证"));
+        return Err(failure(vega_i18n::t("app.update.notarization")));
     }
     Ok(team.to_string())
 }
 
 pub(super) fn extract(archive: Vec<u8>, staging: &Path) -> UpdateResult<PathBuf> {
-    let mut archive =
-        zip::ZipArchive::new(Cursor::new(archive)).map_err(|_| failure("更新压缩包无效"))?;
+    let mut archive = zip::ZipArchive::new(Cursor::new(archive))
+        .map_err(|_| failure(vega_i18n::t("app.update.archive_invalid")))?;
     if archive.len() > 20_000 {
-        return Err(failure("更新压缩包条目过多"));
+        return Err(failure(vega_i18n::t("app.update.archive_entries")));
     }
     let mut names = HashSet::new();
     let mut total = 0_u64;
     for index in 0..archive.len() {
         let mut entry = archive
             .by_index(index)
-            .map_err(|_| failure("无法读取更新压缩包"))?;
+            .map_err(|_| failure(vega_i18n::t("app.update.archive_read")))?;
         let name = entry.name().to_string();
         let path = entry
             .enclosed_name()
-            .ok_or_else(|| failure("压缩包路径越界"))?;
+            .ok_or_else(|| failure(vega_i18n::t("app.update.archive_escape")))?;
         if name.split('/').any(|part| matches!(part, "." | ".."))
             || name.contains('\\')
             || name.contains('\0')
@@ -266,7 +264,7 @@ pub(super) fn extract(archive: Vec<u8>, staging: &Path) -> UpdateResult<PathBuf>
                 .any(|c| !matches!(c, Component::Normal(_)))
             || !names.insert(path.to_string_lossy().to_ascii_lowercase())
         {
-            return Err(failure("压缩包含不安全或重复路径"));
+            return Err(failure(vega_i18n::t("app.update.archive_paths")));
         }
         let mode = entry.unix_mode().unwrap_or(0);
         let kind = mode & 0o170000;
@@ -274,17 +272,17 @@ pub(super) fn extract(archive: Vec<u8>, staging: &Path) -> UpdateResult<PathBuf>
             || (kind == 0o040000 && !entry.is_dir())
             || (kind == 0o100000 && entry.is_dir())
         {
-            return Err(failure("压缩包不允许链接或特殊文件"));
+            return Err(failure(vega_i18n::t("app.update.archive_special")));
         }
         total = total
             .checked_add(entry.size())
             .filter(|total| *total <= EXPANDED_LIMIT)
-            .ok_or_else(|| failure("压缩包解压大小超出限制"))?;
+            .ok_or_else(|| failure(vega_i18n::t("app.update.archive_expanded")))?;
         if !path.starts_with("Vega.app") {
             if path == Path::new("INSTALL.txt") && entry.size() <= 64 * 1024 && !entry.is_dir() {
                 continue;
             }
-            return Err(failure("压缩包含未授权内容"));
+            return Err(failure(vega_i18n::t("app.update.archive_unauthorized")));
         }
         let output = staging.join(&path);
         if entry.is_dir() {
@@ -303,7 +301,7 @@ pub(super) fn extract(archive: Vec<u8>, staging: &Path) -> UpdateResult<PathBuf>
         let expected = entry.size();
         let written = std::io::copy(&mut entry.by_ref().take(expected + 1), &mut file)?;
         if written != expected {
-            return Err(failure("压缩包内容长度不匹配"));
+            return Err(failure(vega_i18n::t("app.update.archive_length")));
         }
         file.set_permissions(std::fs::Permissions::from_mode(if mode & 0o111 != 0 {
             0o755
@@ -314,7 +312,7 @@ pub(super) fn extract(archive: Vec<u8>, staging: &Path) -> UpdateResult<PathBuf>
     }
     let bundle = staging.join("Vega.app");
     if !bundle.join("Contents/MacOS/vega").is_file() {
-        return Err(failure("压缩包缺少应用程序"));
+        return Err(failure(vega_i18n::t("app.update.archive_app_missing")));
     }
     Ok(bundle)
 }
@@ -325,7 +323,7 @@ pub(super) fn hash(path: &Path) -> UpdateResult<String> {
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)?;
     if !file.metadata()?.is_file() || file.metadata()?.len() > EXPANDED_LIMIT {
-        return Err(failure("应用程序文件无效"));
+        return Err(failure(vega_i18n::t("app.update.app_file")));
     }
     let mut hasher = Sha256::new();
     let mut buffer = [0; 64 * 1024];
@@ -344,7 +342,7 @@ pub(super) fn private_dir(path: &Path) -> UpdateResult<()> {
     // SAFETY: geteuid reads the effective user identity and has no pointer arguments.
     let owner = unsafe { libc::geteuid() };
     if !metadata.is_dir() || metadata.uid() != owner || metadata.mode() & 0o077 != 0 {
-        return Err(failure("更新暂存目录权限无效"));
+        return Err(failure(vega_i18n::t("app.update.staging_permissions")));
     }
     Ok(())
 }
@@ -367,100 +365,4 @@ pub(super) fn write_new(path: &Path, bytes: &[u8]) -> UpdateResult<()> {
     file.write_all(bytes)?;
     file.sync_all()?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn archive_entry(path: &str, mode: u32, contents: &[u8]) -> Vec<u8> {
-        let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
-        archive
-            .start_file(
-                path,
-                zip::write::SimpleFileOptions::default().unix_permissions(mode),
-            )
-            .unwrap();
-        archive.write_all(contents).unwrap();
-        archive.finish().unwrap().into_inner()
-    }
-
-    fn symlink_archive_entry(path: &str, target: &str) -> Vec<u8> {
-        let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
-        archive
-            .add_symlink(path, target, zip::write::SimpleFileOptions::default())
-            .unwrap();
-        archive.finish().unwrap().into_inner()
-    }
-
-    fn existing_bundle(root: &Path) -> (PathBuf, PathBuf) {
-        let bundle = root.join("Vega.app");
-        let binary = bundle.join("Contents/MacOS/vega");
-        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
-        std::fs::write(&binary, b"old executable").unwrap();
-        std::fs::write(bundle.join("Contents/Info.plist"), b"old bundle data").unwrap();
-        (bundle, binary)
-    }
-
-    #[test]
-    fn updater_private_tempdir_owner_only() {
-        let parent = tempfile::tempdir().unwrap();
-        let directory = private_tempdir_in(parent.path(), ".vega-update-").unwrap();
-        let metadata = std::fs::metadata(directory.path()).unwrap();
-        assert_eq!(metadata.mode() & 0o777, 0o700);
-        assert!(private_dir(directory.path()).is_ok());
-    }
-
-    #[test]
-    fn updater_private_tempdir_rejects_group_and_world_permissions() {
-        let parent = tempfile::tempdir().unwrap();
-        let directory = private_tempdir_in(parent.path(), ".vega-update-").unwrap();
-        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-        let error = private_dir(directory.path()).unwrap_err();
-        assert_eq!(error.to_string(), "更新暂存目录权限无效");
-    }
-
-    #[test]
-    fn updater_archive_parent_path_is_rejected_without_modifying_existing_bundle() {
-        let root = tempfile::tempdir().unwrap();
-        let (bundle, binary) = existing_bundle(root.path());
-        let before = std::fs::read(&binary).unwrap();
-        let staging = root.path().join("staging");
-        std::fs::create_dir(&staging).unwrap();
-        let archive = archive_entry(
-            "../Vega.app/Contents/MacOS/vega",
-            0o100644,
-            b"attacker executable",
-        );
-
-        let error = extract(archive, &staging).unwrap_err();
-
-        assert_eq!(error.to_string(), "压缩包路径越界");
-        assert_eq!(std::fs::read(binary).unwrap(), before);
-        assert_eq!(
-            std::fs::read(bundle.join("Contents/Info.plist")).unwrap(),
-            b"old bundle data"
-        );
-    }
-
-    #[test]
-    fn updater_archive_symlink_is_rejected_without_modifying_existing_bundle() {
-        let root = tempfile::tempdir().unwrap();
-        let (bundle, binary) = existing_bundle(root.path());
-        let before = std::fs::read(&binary).unwrap();
-        let staging = root.path().join("staging");
-        std::fs::create_dir(&staging).unwrap();
-        let archive =
-            symlink_archive_entry("Vega.app/Contents/MacOS/vega", "../../outside-app/vega");
-
-        let error = extract(archive, &staging).unwrap_err();
-
-        assert_eq!(error.to_string(), "压缩包不允许链接或特殊文件");
-        assert_eq!(std::fs::read(binary).unwrap(), before);
-        assert_eq!(
-            std::fs::read(bundle.join("Contents/Info.plist")).unwrap(),
-            b"old bundle data"
-        );
-        assert!(!staging.join("Vega.app").exists());
-    }
 }

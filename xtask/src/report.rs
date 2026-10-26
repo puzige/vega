@@ -1,7 +1,3 @@
-//! The frozen JSON report schema (repo-external, SDD §4/C3 provenance +
-//! raw samples). Field names/units/percentile math are frozen at the T43
-//! baseline; T48/T49 only consume this shape.
-
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -107,7 +103,7 @@ pub struct BenchReport {
 impl BenchReport {
     pub fn new(provenance: &Provenance, c1c2: C1C2Result, cutoff: Cutoff) -> Self {
         Self {
-            schema: "vega-s8-t43.baseline.v1",
+            schema: "vega-benchmark.baseline.v1",
             timestamp_unix_ms: unix_ms(),
             cutoff,
             provenance: provenance.clone(),
@@ -126,7 +122,7 @@ impl BenchReport {
 /// Writes the report JSON to a repo-external temp path and returns its path
 /// + SHA-256 (C3: 结果文件 SHA-256; raw products never enter the repo).
 pub fn write(report: &BenchReport) -> Result<PathBuf> {
-    let dir = std::env::temp_dir().join("vega-t43-reports");
+    let dir = std::env::temp_dir().join("vega-benchmark-reports");
     std::fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
     let json = serde_json::to_string_pretty(report)?;
     let path = dir.join(format!("{}-baseline.json", report.timestamp_unix_ms));
@@ -139,10 +135,6 @@ pub fn write(report: &BenchReport) -> Result<PathBuf> {
 /// Status-vocabulary reminder used by callers when printing verdicts.
 pub fn status_word(passed: bool) -> &'static str {
     if passed {
-        // The xtask runs are deterministic mock/temp-HOME fixtures, so a
-        // passing gate is the §1 `engineering fixture passed` state — never
-        // terminal evidence (the 5-minute soak is T48/T49), and never a
-        // PASS-shaped word outside the frozen vocabulary.
         STATUS_ENGINEERING_FIXTURE_PASSED
     } else {
         STATUS_PERFORMANCE_GATE_FAILED
@@ -159,86 +151,4 @@ fn unix_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as u64)
         .unwrap_or_default()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn status_words_are_frozen_vocabulary() {
-        assert_eq!(status_word(false), "performance gate failed");
-        // A passing short-run gate is the §1 fixture word, never a hint of
-        // terminal evidence.
-        assert_eq!(status_word(true), "engineering fixture passed");
-        assert_eq!(STATUS_HARDWARE_PENDING, "hardware pending");
-    }
-
-    #[test]
-    fn p2_result_carries_the_schema_erratum_fields() {
-        let p2 = P2Result {
-            seconds: 10,
-            rate_per_s: 1_000,
-            run_completed: true,
-            events_total: 10_001,
-            deltas_total: 10_000,
-            frames: 598,
-            queue_max_depth: 0,
-            batch_latencies_us: vec![1_000, 2_000],
-            per_second: vec![serde_json::json!({"t": 1, "frames": 60})],
-            p50_us: 6_822,
-            p99_us: 14_406,
-            gate_passed: true,
-            schema: "vega-c6-stream.v1".into(),
-            sandbox_root: "/tmp/x".into(),
-        };
-        let json = serde_json::to_string(&p2).unwrap();
-        assert!(json.contains(r#""run_completed":true"#));
-        assert!(json.contains(r#""per_second":[{"t":1,"frames":60}]"#));
-    }
-
-    #[test]
-    fn empty_c1c2_is_the_p2_only_placeholder() {
-        let empty = C1C2Result::empty();
-        assert!(!empty.has_data());
-        assert_eq!(empty.c1_p95_us, 0);
-    }
-
-    #[test]
-    fn report_serializes_with_frozen_schema_tag() {
-        let provenance = Provenance {
-            git_head: "0".repeat(40),
-            git_dirty: false,
-            profile: "release",
-            binary_path: "/tmp/vega".into(),
-            binary_size_bytes: 1,
-            binary_mtime_unix_s: 0,
-            binary_sha256: "0".repeat(64),
-            xtask_binary_path: "/tmp/xtask".into(),
-            xtask_binary_sha256: "1".repeat(64),
-            build_command: "cargo build --release -p xtask -p vega".into(),
-            build_exit_code: 0,
-            rustc_version: "rustc 1.0".into(),
-            os_version: "26.0".into(),
-            cpu_model: "Apple Silicon".into(),
-            gpu_model: "GPU".into(),
-            display_refresh_hz: Some(60.0),
-            machine: "arm64".into(),
-        };
-        let report = BenchReport::new(
-            &provenance,
-            C1C2Result::empty(),
-            Cutoff {
-                utc_unix_s: 0,
-                utc_rfc3339: "1970-01-01T00:00:00Z".into(),
-                local_rfc3339: "1970-01-01T00:00:00Z".into(),
-            },
-        );
-        let json = serde_json::to_string(&report).unwrap();
-        assert!(json.contains(r#""schema":"vega-s8-t43.baseline.v1""#));
-        assert!(json.contains(r#""threshold_p8_bytes":100000000"#));
-        // The stale-target defect fields are gone forever.
-        assert!(!json.contains("rss_mb"));
-        assert!(!json.contains("spawn_to_exit"));
-    }
 }

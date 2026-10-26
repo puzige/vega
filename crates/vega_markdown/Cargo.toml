@@ -4,12 +4,12 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+vega_i18n.workspace = true
 # mdstream 0.3.0（tech-spec §5.0 路线 A）：committed/pending 增量分块；
 # `pulldown` feature 启用官方 PulldownAdapter（引用定义 prelude 注入 + invalidated 重解析）
 mdstream = { workspace = true, features = ["pulldown"] }
 pulldown-cmark = { workspace = true }
 thiserror = { workspace = true }
-# 代码块高亮（S3-T16，四语言 rust/ts/js/python 预授权；tsx 由 tree-sitter-typescript
 # 同 crate 提供；tree-sitter-language 为 grammar 侧传递依赖）
 tree-sitter = { workspace = true }
 tree-sitter-rust = { workspace = true }

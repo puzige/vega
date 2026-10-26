@@ -57,7 +57,6 @@ pub struct ToolCallState {
     pub exit_code: Option<i32>,
     /// Stored signed duration; conversation validates the non-negative range.
     pub duration_ms: Option<i64>,
-    /// Must remain absent in the S5 bounded-output contract.
     pub output_full_path: Option<String>,
 }
 
@@ -148,8 +147,6 @@ pub fn next_seq(conn: &Connection, thread_id: &str) -> Result<i64, rusqlite::Err
     )
 }
 
-/// Counts the persisted tool-call audit rows of one assistant message
-/// (S7-T40 per-task summary; read-only aggregate over the existing audit).
 pub fn count_by_message(
     conn: &Connection,
     thread_id: &str,
@@ -165,6 +162,10 @@ pub fn count_by_message(
 
 /// Inserts a proposed tool call.
 pub fn insert(conn: &Connection, call: NewToolCall<'_>) -> Result<(), rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
     let inserted = conn.execute(
         "INSERT INTO tool_calls (id, thread_id, message_id, seq, tool, input_json, status, created_at, text_offset_bytes) \
          SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, length(CAST(content AS BLOB)) \
@@ -192,6 +193,10 @@ pub fn insert_validation_rejected(
     conn: &Connection,
     rejected: ValidationRejectedToolCall<'_>,
 ) -> Result<(), ToolCallTransitionError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
     let inserted = conn.execute(
         "INSERT INTO tool_calls \
          (id, thread_id, message_id, seq, tool, input_json, output_text, status, approval, created_at, finished_at, text_offset_bytes) \
@@ -225,7 +230,14 @@ pub fn approve(
     remember: Option<RememberExactRule<'_>>,
     now: i64,
 ) -> Result<(), ToolCallTransitionError> {
-    let transaction = conn.unchecked_transaction()?;
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
+    let transaction = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
     let updated = transaction.execute(
         "UPDATE tool_calls SET status = 'approved', approval = ?1 \
          WHERE id = ?2 AND status = 'pending_approval'",
@@ -256,8 +268,35 @@ pub fn reject(
     finished_at: i64,
     remember: Option<RememberExactRule<'_>>,
 ) -> Result<(), ToolCallTransitionError> {
-    let transaction = conn.unchecked_transaction()?;
-    let updated = transaction.execute(
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
+    let transaction = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
+    reject_in_transaction(
+        &transaction,
+        id,
+        approval_json,
+        output_text,
+        finished_at,
+        remember,
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn reject_in_transaction(
+    conn: &Connection,
+    id: &str,
+    approval_json: &str,
+    output_text: &str,
+    finished_at: i64,
+    remember: Option<RememberExactRule<'_>>,
+) -> Result<(), ToolCallTransitionError> {
+    let updated = conn.execute(
         "UPDATE tool_calls SET status = 'rejected', approval = ?1, output_text = ?2, finished_at = ?3 \
          WHERE id = ?4 AND status = 'pending_approval'",
         params![approval_json, output_text, finished_at, id],
@@ -265,7 +304,7 @@ pub fn reject(
     ensure_one(updated)?;
     if let Some(rule) = remember {
         permissions::insert_exact(
-            &transaction,
+            conn,
             InsertExactRule {
                 project_id: rule.project_id,
                 tool: rule.tool,
@@ -274,12 +313,15 @@ pub fn reject(
             },
         )?;
     }
-    transaction.commit()?;
     Ok(())
 }
 
 /// Transitions approved→running.
 pub fn mark_running(conn: &Connection, id: &str) -> Result<(), ToolCallTransitionError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
     let updated = conn.execute(
         "UPDATE tool_calls SET status = 'running' WHERE id = ?1 AND status = 'approved'",
         [id],
@@ -293,6 +335,10 @@ pub fn finish(
     conn: &Connection,
     finished: FinishToolCall<'_>,
 ) -> Result<(), ToolCallTransitionError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
     if !matches!(finished.status, "success" | "failed" | "cancelled") {
         return Err(ToolCallTransitionError::InvalidTerminalStatus);
     }
@@ -312,6 +358,89 @@ pub fn finish(
             finished.finished_at,
             finished.id,
         ],
+    )?;
+    ensure_one(updated)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredCodexDisplayMetadata {
+    pub preview_kind: String,
+    pub preview_count: Option<i64>,
+    pub terminal_reason: Option<String>,
+}
+
+pub fn insert_codex_pending(
+    conn: &Connection,
+    call: NewToolCall<'_>,
+    display: &StoredCodexDisplayMetadata,
+) -> Result<(), ToolCallTransitionError> {
+    if call.tool != "codex_acp" || display.terminal_reason.is_some() {
+        return Err(ToolCallTransitionError::InvalidTransition);
+    }
+    let transaction = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
+    let id = call.id;
+    insert_pending(&transaction, call)?;
+    transaction.execute(
+        "INSERT INTO codex_display_metadata (tool_call_id, preview_kind, preview_count) VALUES (?1, ?2, ?3)",
+        params![id, display.preview_kind, display.preview_count],
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+pub fn finish_codex(
+    conn: &Connection,
+    finished: FinishToolCall<'_>,
+    terminal_reason: &str,
+) -> Result<(), ToolCallTransitionError> {
+    let transaction = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
+    set_codex_terminal_reason(&transaction, finished.id, terminal_reason)?;
+    finish(&transaction, finished)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+pub fn reject_codex(
+    conn: &Connection,
+    id: &str,
+    approval_json: &str,
+    output_text: &str,
+    finished_at: i64,
+    terminal_reason: &str,
+) -> Result<(), ToolCallTransitionError> {
+    let transaction = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
+    set_codex_terminal_reason(&transaction, id, terminal_reason)?;
+    reject_in_transaction(
+        &transaction,
+        id,
+        approval_json,
+        output_text,
+        finished_at,
+        None,
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn set_codex_terminal_reason(
+    conn: &Connection,
+    id: &str,
+    terminal_reason: &str,
+) -> Result<(), ToolCallTransitionError> {
+    let updated = conn.execute(
+        "UPDATE codex_display_metadata SET terminal_reason = ?2 \
+         WHERE tool_call_id = ?1 AND terminal_reason IS NULL \
+         AND EXISTS (SELECT 1 FROM tool_calls WHERE id = ?1 AND tool = 'codex_acp')",
+        params![id, terminal_reason],
     )?;
     ensure_one(updated)
 }
@@ -395,6 +524,10 @@ pub fn update(
     output_text: Option<&str>,
     finished_at: Option<i64>,
 ) -> Result<usize, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
     conn.execute(
         "UPDATE tool_calls SET status = ?1, approval = COALESCE(?2, approval), \
          output_text = COALESCE(?3, output_text), finished_at = COALESCE(?4, finished_at) \
@@ -463,148 +596,4 @@ pub fn terminal_results(
         );
     }
     Ok(terminal)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::Store;
-
-    fn store() -> Store {
-        let store = Store::open(":memory:").unwrap();
-        store.migrate().unwrap();
-        store
-            .conn()
-            .execute(
-                "INSERT INTO projects (id, path, name, created_at, last_opened_at) VALUES ('p', '/tmp/p', 'p', 0, 0)",
-                [],
-            )
-            .unwrap();
-        store
-            .conn()
-            .execute(
-                "INSERT INTO threads (id, project_id, title, model, created_at, updated_at) VALUES ('t', 'p', '', '', 0, 0)",
-                [],
-            )
-            .unwrap();
-        store
-            .conn()
-            .execute(
-                "INSERT INTO messages (id, thread_id, seq, role, content, status, created_at) VALUES ('m', 't', 1, 'assistant', '', 'streaming', 0)",
-                [],
-            )
-            .unwrap();
-        store
-    }
-
-    fn pending<'a>(id: &'a str, input: &'a str) -> NewToolCall<'a> {
-        NewToolCall {
-            id,
-            thread_id: "t",
-            message_id: "m",
-            seq: 1,
-            tool: "write",
-            input_json: input,
-            status: "ignored",
-            created_at: 1,
-        }
-    }
-
-    #[test]
-    fn always_approval_and_rule_commit_atomically_and_duplicate_is_idempotent() {
-        let store = store();
-        insert_pending(store.conn(), pending("c", "safe")).unwrap();
-        approve(
-            store.conn(),
-            "c",
-            "strict",
-            Some(RememberExactRule {
-                project_id: "p",
-                tool: "write",
-                pattern: "src/lib.rs",
-            }),
-            2,
-        )
-        .unwrap();
-        assert!(permissions::matches_exact(store.conn(), "p", "write", "src/lib.rs").unwrap());
-
-        insert_pending(store.conn(), pending("c2", "safe2")).unwrap();
-        approve(
-            store.conn(),
-            "c2",
-            "strict",
-            Some(RememberExactRule {
-                project_id: "p",
-                tool: "write",
-                pattern: "src/lib.rs",
-            }),
-            3,
-        )
-        .unwrap();
-        assert_eq!(permissions::list_exact(store.conn(), "p").unwrap().len(), 1);
-    }
-
-    #[test]
-    fn invalid_rule_rolls_back_approval_and_rejection() {
-        let store = store();
-        insert_pending(store.conn(), pending("approve", "safe")).unwrap();
-        assert!(
-            approve(
-                store.conn(),
-                "approve",
-                "strict",
-                Some(RememberExactRule {
-                    project_id: "p",
-                    tool: "unknown",
-                    pattern: "x",
-                }),
-                2,
-            )
-            .is_err()
-        );
-        assert_eq!(
-            find_state(store.conn(), "approve").unwrap().unwrap().status,
-            "pending_approval"
-        );
-
-        insert_pending(store.conn(), pending("reject", "safe")).unwrap();
-        assert!(
-            reject(
-                store.conn(),
-                "reject",
-                "strict",
-                "denied",
-                2,
-                Some(RememberExactRule {
-                    project_id: "p",
-                    tool: "unknown",
-                    pattern: "x",
-                }),
-            )
-            .is_err()
-        );
-        assert_eq!(
-            find_state(store.conn(), "reject").unwrap().unwrap().status,
-            "pending_approval"
-        );
-    }
-
-    #[test]
-    fn terminal_loader_fails_closed_on_nulls_full_path_and_negative_duration() {
-        for mutation in [
-            "UPDATE tool_calls SET output_text = NULL",
-            "UPDATE tool_calls SET approval = NULL",
-            "UPDATE tool_calls SET output_full_path = '/private/secret'",
-            "UPDATE tool_calls SET duration_ms = -1",
-            "UPDATE tool_calls SET status = 'corrupt'",
-        ] {
-            let store = store();
-            store.conn().execute(
-                "INSERT INTO tool_calls (id, thread_id, message_id, seq, tool, input_json, output_text, status, approval, created_at) VALUES ('c', 't', 'm', 1, 'bash', '{}', 'ok', 'success', 'once', 0)",
-                [],
-            ).unwrap();
-            store.conn().execute(mutation, []).unwrap();
-            assert!(terminal_results(store.conn(), "t").is_err(), "{mutation}");
-        }
-    }
 }

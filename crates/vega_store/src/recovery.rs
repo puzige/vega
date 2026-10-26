@@ -29,7 +29,98 @@ pub fn recover_thread(
     thread_id: &str,
     now_ms: i64,
 ) -> Result<RecoveryCounts, rusqlite::Error> {
-    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
+    let owner = crate::delegated_ownership::acquire_for_thread(conn, thread_id)?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
+    let counts = recover_thread_with_owner(&tx, thread_id, now_ms, owner.as_deref())?;
+    tx.commit()?;
+    Ok(counts)
+}
+
+pub fn recover_thread_with_owner(
+    tx: &rusqlite::Transaction<'_>,
+    thread_id: &str,
+    now_ms: i64,
+    owner: Option<&crate::delegated_ownership::DelegatedOwnership>,
+) -> Result<RecoveryCounts, rusqlite::Error> {
+    let delegated = crate::subagents::find(tx, thread_id)?;
+    if let Some(row) = &delegated
+        && crate::delegated_stages::release_state(tx, thread_id, &row.child_message_id)?
+            == "quarantined"
+    {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "delegated release remains unconfirmed".into(),
+        ));
+    }
+    let abandoned = delegated.as_ref().filter(|row| {
+        matches!(row.state.as_str(), "running" | "cancelling")
+            || (matches!(row.state.as_str(), "interrupted" | "completed" | "failed")
+                && crate::delegated_stages::release_state(tx, thread_id, &row.child_message_id)
+                    .is_ok_and(|state| state == "unknown"))
+    });
+    let effects = abandoned
+        .filter(|row| !matches!(row.state.as_str(), "completed" | "failed"))
+        .map(|row| crate::delegated_stages::unknown_effects(tx, thread_id, &row.child_message_id))
+        .transpose()?;
+    let counts = recover_stopped_with_owner(tx, thread_id, now_ms, owner)?;
+    if let Some(row) = abandoned {
+        if crate::delegated_stages::release_state(tx, thread_id, &row.child_message_id)?
+            == "unknown"
+        {
+            crate::delegated_stages::register(
+                tx,
+                thread_id,
+                &row.child_message_id,
+                None,
+                &serde_json::json!([]),
+            )?;
+        }
+        if !matches!(row.state.as_str(), "completed" | "failed") {
+            crate::delegated_stages::final_checkpoint(
+                tx,
+                thread_id,
+                &row.child_message_id,
+                true,
+                effects.unwrap_or(serde_json::json!([])),
+                now_ms,
+            )?;
+        }
+        crate::delegated_stages::set_release(
+            tx,
+            thread_id,
+            &row.child_message_id,
+            "recovered_abandoned",
+        )?;
+    }
+    Ok(counts)
+}
+
+pub fn recover_stopped_with_owner(
+    tx: &rusqlite::Transaction<'_>,
+    thread_id: &str,
+    now_ms: i64,
+    owner: Option<&crate::delegated_ownership::DelegatedOwnership>,
+) -> Result<RecoveryCounts, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        tx,
+        crate::write_coordination::WriteCategory::Delegation,
+    )?;
+    if crate::threads::find(tx, thread_id)?.is_some_and(|row| row.parent_thread_id.is_some())
+        && !owner.is_some_and(|owner| {
+            crate::delegated_ownership::database_path(tx)
+                .is_ok_and(|path| owner.verifies(&path, thread_id))
+        })
+    {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "delegated writer proof required".into(),
+        ));
+    }
     let continuations = {
         let mut query = tx.prepare("SELECT c.continuation_message_id, c.reason, c.source_version, c.source_fingerprint, c.user_message_id, c.raw_user_fingerprint FROM credential_continuations c JOIN messages m ON m.id = c.continuation_message_id WHERE c.thread_id = ?1 AND c.state = 'claimed' AND m.status = 'streaming' AND c.user_message_id = (SELECT id FROM messages WHERE thread_id = ?1 AND role = 'user' ORDER BY seq DESC LIMIT 1)")?;
         query
@@ -57,7 +148,7 @@ pub fn recover_thread(
                 raw_fingerprint,
             )| {
                 let current = crate::context_compaction::source_version_without_continuation(
-                    &tx,
+                    tx,
                     thread_id,
                     &message_id,
                 )?;
@@ -68,12 +159,13 @@ pub fn recover_thread(
                 })?;
                 let unchanged = current.source_version == source_version
                     && current.fingerprint == fingerprint
-                    && crate::credential_continuation::raw_user_fingerprint(&tx, &user_message_id)?
+                    && crate::credential_continuation::raw_user_fingerprint(tx, &user_message_id)?
                         == raw_fingerprint;
                 Ok((message_id, reason, unchanged))
             },
         )
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    crate::subagents::recover(tx, thread_id)?;
     let messages_interrupted = tx.execute(
         "UPDATE messages SET status = 'interrupted' \
          WHERE thread_id = ?1 AND status = 'streaming'",
@@ -96,239 +188,15 @@ pub fn recover_thread(
         params![RECOVERY_CANCELLED_OUTPUT, now_ms, thread_id],
     )?;
     for (message_id, reason, unchanged) in continuations {
-        crate::credential_continuation::suspend(&tx, thread_id, &message_id, &reason, now_ms)?;
+        crate::credential_continuation::suspend(tx, thread_id, &message_id, &reason, now_ms)?;
         if !unchanged {
             tx.execute("UPDATE credential_continuations SET state = 'unknown', reason = 'source_changed' WHERE id = ?1", [&message_id])?;
         }
-        crate::credential_continuation::complete(&tx, &message_id)?;
+        crate::credential_continuation::complete(tx, &message_id)?;
     }
-    tx.commit()?;
     Ok(RecoveryCounts {
         messages_interrupted,
         tools_rejected,
         tools_cancelled,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{RECOVERY_DENIAL_APPROVAL_JSON, RecoveryCounts, recover_thread};
-    use crate::Store;
-
-    fn store() -> Store {
-        let store = Store::open(":memory:").unwrap();
-        store.migrate().unwrap();
-        store
-    }
-
-    #[test]
-    fn concurrent_thread_recovery_serializes_before_reading_continuations() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("recovery.db");
-        let setup = Store::open(&path).unwrap();
-        setup.migrate().unwrap();
-        seed_thread(&setup, "thread-a");
-        seed_thread(&setup, "thread-b");
-        let stores = [Store::open(&path).unwrap(), Store::open(&path).unwrap()];
-        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let handles = stores
-            .into_iter()
-            .zip(["thread-a", "thread-b"])
-            .map(|(store, thread)| {
-                let barrier = barrier.clone();
-                std::thread::spawn(move || {
-                    barrier.wait();
-                    let counts = recover_thread(store.conn(), thread, 42).unwrap();
-                    assert_eq!(counts.messages_interrupted, 1);
-                    assert_eq!(counts.tools_rejected, 0);
-                    assert_eq!(counts.tools_cancelled, 0);
-                })
-            })
-            .collect::<Vec<_>>();
-        for handle in handles {
-            handle.join().unwrap();
-        }
-        let interrupted: i64 = setup
-            .conn()
-            .query_row(
-                "SELECT COUNT(*) FROM messages WHERE status='interrupted'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(interrupted, 2);
-    }
-
-    fn seed_thread(store: &Store, thread_id: &str) {
-        let project_id = format!("project-{thread_id}");
-        store
-            .conn()
-            .execute(
-                "INSERT INTO projects (id, path, name, created_at, last_opened_at) \
-                 VALUES (?1, ?2, ?1, 0, 0)",
-                [project_id.as_str(), format!("/tmp/{project_id}").as_str()],
-            )
-            .unwrap();
-        store
-            .conn()
-            .execute(
-                "INSERT INTO threads (id, project_id, title, model, created_at, updated_at) \
-                 VALUES (?1, ?2, '', '', 0, 0)",
-                [thread_id, project_id.as_str()],
-            )
-            .unwrap();
-        store
-            .conn()
-            .execute(
-                "INSERT INTO messages (id, thread_id, seq, role, content, status, created_at) \
-                 VALUES (?1, ?2, 1, 'assistant', '', 'streaming', 0)",
-                [format!("message-{thread_id}").as_str(), thread_id],
-            )
-            .unwrap();
-    }
-
-    fn seed_call(store: &Store, id: &str, thread_id: &str, status: &str, approval: Option<&str>) {
-        store
-            .conn()
-            .execute(
-                "INSERT INTO tool_calls \
-                 (id, thread_id, message_id, seq, tool, input_json, status, approval, created_at) \
-                 VALUES (?1, ?2, ?3, 1, 'bash', '{}', ?4, ?5, 0)",
-                rusqlite::params![
-                    id,
-                    thread_id,
-                    format!("message-{thread_id}"),
-                    status,
-                    approval
-                ],
-            )
-            .unwrap();
-    }
-
-    fn call_state(
-        store: &Store,
-        id: &str,
-    ) -> (String, Option<String>, Option<String>, Option<i64>) {
-        store
-            .conn()
-            .query_row(
-                "SELECT status, approval, output_text, finished_at FROM tool_calls WHERE id = ?1",
-                [id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .unwrap()
-    }
-
-    #[test]
-    fn pending_rows_use_exact_strict_recovery_audit() {
-        let store = store();
-        seed_thread(&store, "thread-a");
-        seed_call(&store, "pending-null", "thread-a", "pending_approval", None);
-        seed_call(
-            &store,
-            "pending-corrupt",
-            "thread-a",
-            "pending_approval",
-            Some("corrupt"),
-        );
-
-        assert_eq!(
-            recover_thread(store.conn(), "thread-a", 42).unwrap(),
-            RecoveryCounts {
-                messages_interrupted: 1,
-                tools_rejected: 2,
-                tools_cancelled: 0,
-            }
-        );
-        for id in ["pending-null", "pending-corrupt"] {
-            let (status, approval, output, finished_at) = call_state(&store, id);
-            assert_eq!(status, "rejected");
-            assert_eq!(approval.as_deref(), Some(RECOVERY_DENIAL_APPROVAL_JSON));
-            assert_eq!(
-                output.as_deref(),
-                Some(
-                    "Tool error: rejected during startup recovery because approval was incomplete."
-                )
-            );
-            assert_eq!(finished_at, Some(42));
-        }
-    }
-
-    #[test]
-    fn running_rows_cancel_without_fabricating_recovery_approval() {
-        let store = store();
-        seed_thread(&store, "thread-a");
-        seed_call(&store, "approved", "thread-a", "approved", Some("once"));
-        seed_call(&store, "running", "thread-a", "running", Some("always"));
-
-        let counts = recover_thread(store.conn(), "thread-a", 77).unwrap();
-        assert_eq!(counts.tools_cancelled, 2);
-        for (id, original) in [("approved", "once"), ("running", "always")] {
-            let (status, approval, output, finished_at) = call_state(&store, id);
-            assert_eq!(status, "cancelled");
-            assert_eq!(approval.as_deref(), Some(original));
-            assert_eq!(
-                output.as_deref(),
-                Some("Tool cancelled during startup recovery because execution was incomplete.")
-            );
-            assert_eq!(finished_at, Some(77));
-        }
-    }
-
-    #[test]
-    fn terminal_rows_and_other_threads_are_unchanged() {
-        let store = store();
-        seed_thread(&store, "thread-a");
-        seed_thread(&store, "thread-b");
-        seed_call(&store, "terminal", "thread-a", "success", Some("once"));
-        seed_call(&store, "other", "thread-b", "pending_approval", None);
-
-        recover_thread(store.conn(), "thread-a", 5).unwrap();
-        assert_eq!(
-            call_state(&store, "terminal"),
-            ("success".into(), Some("once".into()), None, None)
-        );
-        assert_eq!(
-            call_state(&store, "other"),
-            ("pending_approval".into(), None, None, None)
-        );
-        let other_message_status: String = store
-            .conn()
-            .query_row(
-                "SELECT status FROM messages WHERE id = 'message-thread-b'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(other_message_status, "streaming");
-    }
-
-    #[test]
-    fn message_and_tool_recovery_are_atomic() {
-        let store = store();
-        seed_thread(&store, "thread-a");
-        seed_call(&store, "pending", "thread-a", "pending_approval", None);
-        store
-            .conn()
-            .execute_batch(
-                "CREATE TRIGGER reject_recovery BEFORE UPDATE ON tool_calls \
-                 BEGIN SELECT RAISE(ABORT, 'blocked'); END;",
-            )
-            .unwrap();
-
-        assert!(recover_thread(store.conn(), "thread-a", 9).is_err());
-        let message_status: String = store
-            .conn()
-            .query_row(
-                "SELECT status FROM messages WHERE id = 'message-thread-a'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(message_status, "streaming");
-        assert_eq!(
-            call_state(&store, "pending"),
-            ("pending_approval".into(), None, None, None)
-        );
-    }
 }

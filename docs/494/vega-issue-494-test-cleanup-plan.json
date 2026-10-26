@@ -1,0 +1,843 @@
+{
+  "schema_version": 1,
+  "status": "READ_ONLY_PLAN_NOT_CLEANUP_AUTHORIZATION",
+  "repository": "/Users/puzige/Workspace/worktrees/vega-494-chat-auto-adapt",
+  "plan_head": "7d1066901e9f488cc81e825bb035df6dea7936ee",
+  "production_baseline": "8c57f7efb3d886c1c10429edb2bc1219a7b7a753",
+  "prerequisites": [
+    "Same frozen133 Actions discover/execute/pass zero skip with fixed public source/result and independent verification",
+    "Root separately authorizes cleanup",
+    "Refetch/review before cleanup; preserve any intervening product changes"
+  ],
+  "counts": {
+    "development_artifacts_to_delete": 26,
+    "original_wiring_paths": 21,
+    "paths_to_modify_or_restore": 25,
+    "unique_allowlist_paths": 51
+  },
+  "original_21_wiring_paths": [
+    "Cargo.lock",
+    "crates/vega/Cargo.toml",
+    "crates/vega/src/app_agent.rs",
+    "crates/vega/src/window/context.rs",
+    "crates/vega/src/window/mod.rs",
+    "crates/vega/src/window/session.rs",
+    "crates/vega_conversation/Cargo.toml",
+    "crates/vega_conversation/src/agent/compaction.rs",
+    "crates/vega_conversation/src/automatic_titles.rs",
+    "crates/vega_conversation/src/composer_predictions.rs",
+    "crates/vega_conversation/src/git_workspace/trusted_git/service.rs",
+    "crates/vega_conversation/src/lib.rs",
+    "crates/vega_runtime/Cargo.toml",
+    "crates/vega_runtime/src/lib.rs",
+    "crates/vega_runtime/src/openai/mod.rs",
+    "crates/vega_store/Cargo.toml",
+    "crates/vega_store/src/lib.rs",
+    "crates/vega_ui/Cargo.toml",
+    "crates/vega_ui/src/conversation_stream/core.rs",
+    "crates/vega_ui/src/settings/helpers.rs",
+    "crates/vega_ui/src/settings/mod.rs"
+  ],
+  "delete_only": [
+    {
+      "path": "crates/vega/src/app_model_compatibility_tests.rs",
+      "sha256_at_plan": "d042b8d5c107fdca86d0c04a4ced71189b608f74b8c06fd4a0f14444a92638b9",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega/src/window/model_capability_tests.rs",
+      "sha256_at_plan": "dc7ee68420020e722d79458be036c8e4ce446f74c5219ca784a37655a0c1c29b",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega/src/window/model_context_compatibility_tests.rs",
+      "sha256_at_plan": "8d74c473d38ad9994a5c8fa7c76e01b0e51cfb408d537b362181532f281fc80c",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_conversation/src/model_compatibility_tests/automatic_titles.rs",
+      "sha256_at_plan": "dc9bdc06f50b2de21de2b07774e5083e7ae902adbc760a33b958b2ad6b823e19",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_conversation/src/model_compatibility_tests/compaction.rs",
+      "sha256_at_plan": "dfd1afb00611980b92880f4e74330714cfed17ea641ee2d9fcbbf7311e77f359",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_conversation/src/model_compatibility_tests/composer_predictions.rs",
+      "sha256_at_plan": "c2a060f21d121a8ce63bba7b3a2b4707d39b5305eba3f9f6ca1179b4fa4dba37",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_conversation/src/model_compatibility_tests/lifecycle.rs",
+      "sha256_at_plan": "760bdef74c9ef5b743c4bfb19cb07f2161e4f1b96d3b0bb94405765da72ebf85",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_conversation/src/model_compatibility_tests/mod.rs",
+      "sha256_at_plan": "e884ea2fe999ffc9b81ef7f4d2551b4606935bf3054e44d307b8bca7ce5a0e67",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_conversation/src/model_compatibility_tests/settings_service.rs",
+      "sha256_at_plan": "56a79a4357d4a05af99dcddf36c6f3ce0aba7052aa9541397538901f94b5b77b",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_conversation/src/model_compatibility_tests/trusted_git.rs",
+      "sha256_at_plan": "6bfd433288121a7a0be35ba7cf101c47ecf9d0dbaa54e04a1a975daff0aa0d47",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/catalog.rs",
+      "sha256_at_plan": "774d899b2ddab3f9838f6c90c56ffa69fc0953b5c7d9d465bb096437ced86125",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/chat.rs",
+      "sha256_at_plan": "eefa7e808fe19ca71c7c2487259eecd1002c9efe731d7e4513767d12bd651c09",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/errors.rs",
+      "sha256_at_plan": "6f4e446cea780eff89b7e7d7fb478ee7b9250f8388fba9888ec75f1a783d8fd9",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/fixtures/blue.png",
+      "sha256_at_plan": "45d23cee87293ea99af26093ec3ad3acde66cb7969d3d3fd73798642d6453845",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/fixtures/native-models.json",
+      "sha256_at_plan": "8987a9a0dbacf211062e8563ae98c9e65419ce5a3e81de565b3a1e254aae5942",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/fixtures/red.png",
+      "sha256_at_plan": "d28c139bba718d60154960eaca75535a5cc5b59fe2153e998a29251e8e5f4667",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/http.rs",
+      "sha256_at_plan": "9cb03a1de68f940890dc7335933e7e538b73213c0d713a80c08bf9f3752a74f8",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs",
+      "sha256_at_plan": "3eab92d775c5798f615c3ae6b04032f906ea4b60a663eacf1108b36b0a6e384f",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/mod.rs",
+      "sha256_at_plan": "552f08c5e8388d374667a6d7a24f138c12bd58f0861da7e8f89fcbbcc2cceab6",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/responses.rs",
+      "sha256_at_plan": "dff3cf83f3f9bd8c3b499c3d3e1b0b848a3caa9d59c22b3d4ab5e2b4e2a8352e",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/stream.rs",
+      "sha256_at_plan": "701c6f36e787262f25fa75633a4a86d13c4cc5acdcc56359e865525ed0658880",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/compatibility_tests/transport.rs",
+      "sha256_at_plan": "7898e813bafad0259623281619384f9d39a3b76bf809d05f67d4670618580905",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_store/src/model_capability_tests.rs",
+      "sha256_at_plan": "65bc8ede847d8bd2ca586b2b14d1b13ca8f407386300aa0289cec90db1a3aec1",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/model_capability_tests.rs",
+      "sha256_at_plan": "c0d47c954cbf9661c3fd726736d2b1f7e9c3533da92652ef3fdea1c6e5220cd5",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_ui/src/settings/model_capability_tests.rs",
+      "sha256_at_plan": "6e5794c7d2176050e9dd978a01d7fe4503dac14ec8c420ae23357850717a4612",
+      "action": "delete_entire_development_artifact"
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/desktop_test_support.rs",
+      "sha256_at_plan": "32e83ef7599b4e5d7411d255dfa533c4cff839fef92d76ca99e16d6b8d68a1b2",
+      "action": "delete_entire_development_artifact"
+    }
+  ],
+  "modify_only": [
+    {
+      "path": "crates/vega/src/main.rs",
+      "sha256_at_plan": "50a85da03eba7df80d0f9466c89f2d28b44a21c9ae459badd66ad0270ada2cbb",
+      "action": "remove_test_module_only",
+      "remove_only": [
+        "#[cfg(test)]  #[path = \"../../vega_runtime/src/openai/compatibility_tests/http.rs\"] mod compatibility_http;"
+      ],
+      "must_preserve": [],
+      "non_test_equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting."
+    },
+    {
+      "path": "crates/vega/src/app_agent.rs",
+      "sha256_at_plan": "b58b518d75e335950945c2c7d04128c1b61babe460f0e13a96d0252064b0c461",
+      "action": "remove_test_module_only",
+      "remove_only": [
+        "#[cfg(test)]  #[path = \"app_model_compatibility_tests.rs\"] mod model_compatibility_tests;"
+      ],
+      "must_preserve": [
+        "real reasoning resolver, commit/agent factory snapshot binding and credential guards"
+      ],
+      "non_test_equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting."
+    },
+    {
+      "path": "crates/vega/src/window/context.rs",
+      "sha256_at_plan": "4fae536dfbe813745f2246ce519f3096e39adc20246df901c49bf1b801c0cd03",
+      "action": "remove_test_module_only",
+      "remove_only": [
+        "#[cfg(test)]  #[path = \"model_context_compatibility_tests.rs\"] mod compatibility_tests;"
+      ],
+      "must_preserve": [
+        "actual manual-context factory snapshot/guard binding"
+      ],
+      "non_test_equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting."
+    },
+    {
+      "path": "crates/vega/src/window/mod.rs",
+      "sha256_at_plan": "8b75c430508760d3f766cafd9c43342896093d2ffeb5e7e6b20863e457b7e068",
+      "action": "remove_owned_test_constructor_and_module",
+      "remove_only": [
+        "cfg(test) composer_config_path_override field and initializer",
+        "new_for_test; cfg(test) config_path argument to new_inner; new/new_inner transparent wrapper",
+        "cfg(test)/cfg(not(test)) updater split; keep the one unconditional production start_updater call",
+        "#[cfg(test)] mod model_capability_tests;"
+      ],
+      "must_preserve": [
+        "mod model_capabilities and all actual model_capability_* fields/initializers",
+        "actual constructor/lifecycle/pricing/capability controller and normal updater startup"
+      ],
+      "non_test_equivalence": "Non-test new_inner has only cx and new delegates immediately to it. Collapse wrapper while preserving current production constructor body and execution order. Delete no capability fields by baseline restoration."
+    },
+    {
+      "path": "crates/vega/src/window/session.rs",
+      "sha256_at_plan": "a1873fb700400b6382b4d63bac988063ec2e2a043e4e6f8f093c208c66cd80f1",
+      "action": "remove_owned_test_config_override_only",
+      "remove_only": [
+        "cfg(test) early composer_config_path_override branch in composer_config_path"
+      ],
+      "must_preserve": [
+        "normal config_dir/config.toml lookup",
+        "capability reload/read/resolve, invalid-preference visible recovery and actual composer preference persistence"
+      ],
+      "non_test_equivalence": "Deleted branch does not exist in non-test builds; keep every current actual model/session behavior."
+    },
+    {
+      "path": "crates/vega_conversation/src/lib.rs",
+      "sha256_at_plan": "7f2e7208763eedb7c787c471b00efa844a496e70adf2e1179ab8d4b66197b7bd",
+      "action": "remove_test_module_only",
+      "remove_only": [
+        "#[cfg(test)] mod model_compatibility_tests;"
+      ],
+      "must_preserve": [
+        "pub mod model_capabilities and real service/authority reexports"
+      ],
+      "non_test_equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting."
+    },
+    {
+      "path": "crates/vega_conversation/src/automatic_titles.rs",
+      "sha256_at_plan": "fdc0af6b8a38dcf1484e07cb607a10edcd1c5f0d8a12d686c1093cbdf2767208",
+      "action": "remove_test_module_only",
+      "remove_only": [
+        "#[cfg(test)]  #[path = \"model_compatibility_tests/automatic_titles.rs\"] mod compatibility_tests;"
+      ],
+      "must_preserve": [
+        "actual request snapshot binding"
+      ],
+      "non_test_equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting."
+    },
+    {
+      "path": "crates/vega_conversation/src/composer_predictions.rs",
+      "sha256_at_plan": "256d4d28c9ec2f46fb97134785801c7403b70dabd5274f8cb123034a21b3486f",
+      "action": "remove_test_module_only",
+      "remove_only": [
+        "#[cfg(test)]  #[path = \"model_compatibility_tests/composer_predictions.rs\"] mod compatibility_tests;"
+      ],
+      "must_preserve": [
+        "actual request snapshot binding and usage persistence"
+      ],
+      "non_test_equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting."
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/compaction.rs",
+      "sha256_at_plan": "6b31abae7aeded0d8e63d38aa817325dc8b2c77710b69317f44f3223d33bd07d",
+      "action": "remove_test_module_only",
+      "remove_only": [
+        "#[cfg(test)]  #[path = \"../model_compatibility_tests/compaction.rs\"] mod compatibility_tests;"
+      ],
+      "must_preserve": [
+        "current snapshot identity and credentials",
+        "shared current model policy/budget helper and provider-aware manual projection",
+        "latest &vega_store::Connection compile correction"
+      ],
+      "non_test_equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting."
+    },
+    {
+      "path": "crates/vega_conversation/src/git_workspace/trusted_git/service.rs",
+      "sha256_at_plan": "eae4e26b912ec5cb60645897fc15b95ce1c02c0ec85eba22d1ec5ce11f64c675",
+      "action": "remove_test_module_only",
+      "remove_only": [
+        "#[cfg(test)]  #[path = \"../../model_compatibility_tests/trusted_git.rs\"] mod compatibility_tests;"
+      ],
+      "must_preserve": [
+        "private draft_request extraction and actual draft delegation",
+        "all current request fields, authority/deadline/credential/draft validation behavior"
+      ],
+      "non_test_equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting."
+    },
+    {
+      "path": "crates/vega_runtime/src/lib.rs",
+      "sha256_at_plan": "89e2b0b625b124c5b036808db7b48d75ab8efaaf39e3944311c75036bf596567",
+      "action": "remove_development_codec_facade_only",
+      "remove_only": [
+        "entire #[cfg(any(test, feature = \"test-support\"))] pub mod test_support (encode_request/decode_chat/decode_responses)"
+      ],
+      "must_preserve": [
+        "pub mod model_compat; ToolChoice and all actual production reexports",
+        "actual encoder/native assemblers and all their real callers"
+      ],
+      "non_test_equivalence": "Facade exists only for tests or the removed development feature; do not remove the actual production functions it delegates to."
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/mod.rs",
+      "sha256_at_plan": "87398b921d555aa070704b277ed2774188eb1b660c7028474a3a46f04156a45b",
+      "action": "remove_test_module_only",
+      "remove_only": [
+        "#[cfg(test)] mod compatibility_tests;"
+      ],
+      "must_preserve": [
+        "OpenAiProvider request_body/prepare_request/with_model_snapshot and actual encode_request",
+        "recovery/retry/probe native codec/Responses Assembler visibility and every-attempt guard"
+      ],
+      "non_test_equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting."
+    },
+    {
+      "path": "crates/vega_store/src/lib.rs",
+      "sha256_at_plan": "955af8e561738636f4e44ea1d41768a21a9f9e95b2e2077213b86c294747b9fa",
+      "action": "remove_test_module_only",
+      "remove_only": [
+        "#[cfg(test)] mod model_capability_tests;"
+      ],
+      "must_preserve": [
+        "pub mod model_capabilities and actual store API",
+        "pub use rusqlite::Connection"
+      ],
+      "non_test_equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/core.rs",
+      "sha256_at_plan": "d7e43cb0d7236d52681eba4030e6e8b39a8c68c9c406da84f795360d3a76f938",
+      "action": "remove_test_module_only",
+      "remove_only": [
+        "#[cfg(test)]  #[path = \"model_capability_tests.rs\"] mod model_capability_tests;"
+      ],
+      "must_preserve": [
+        "actual composer subset/default/enabled/off controls and typed model projections"
+      ],
+      "non_test_equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting."
+    },
+    {
+      "path": "crates/vega_ui/src/settings/mod.rs",
+      "sha256_at_plan": "1b34dda843dbbe50055473f4d77759bb9627f6cde54d49c8e94b7928e5f5091c",
+      "action": "remove_test_module_only",
+      "remove_only": [
+        "#[cfg(test)] mod model_capability_tests;"
+      ],
+      "must_preserve": [
+        "real capability module/focus export/save/reload events/current production imports"
+      ],
+      "non_test_equivalence": "Only cfg(test) module wiring is deleted; remaining production bytes are preserved except necessary formatting."
+    },
+    {
+      "path": "crates/vega_ui/src/settings/helpers.rs",
+      "sha256_at_plan": "928cb98cc8f42965d93567883cf5918a123846ffcd23fac3e8c07f05d4272cb1",
+      "action": "restore_entire_observation_only_diff",
+      "remove_only": [
+        "cfg(test) TestSupportExt import",
+        "settings_status observed_label/label_view test-only id/aria_label/.test_support and transparent let extraction",
+        "action_button_owned test_support and transparent let button extraction"
+      ],
+      "must_preserve": [
+        "original real control ID/role/aria/focus/event/interaction and actual error/status label rendering"
+      ],
+      "non_test_equivalence": "Entire current diff against baseline is dedicated observation or transparent let extraction. Exact original file restoration preserves its real non-test production rendering.",
+      "restore_ref": "8c57f7efb3d886c1c10429edb2bc1219a7b7a753",
+      "restore_sha256": "86438c9126936f035d3064aa962d2fc37d4bab1a37fec65c062b45a39d263c7a"
+    },
+    {
+      "path": "crates/vega_ui/src/settings/model_capabilities.rs",
+      "sha256_at_plan": "f517a38cf96deb808da8c8272bf45a6fc6b59760f055c50f472a34197d400701",
+      "action": "remove_test_observation_only",
+      "remove_only": [
+        "#[cfg(test)] use gpui_kit::TestSupportExt;",
+        "#[cfg(test)] let button = button.test_support();"
+      ],
+      "must_preserve": [
+        "entire actual efforts/image/save/cancel/reset/reload UI and typed controller state/events/errors",
+        "actual ID/role/aria_label/aria_toggled/interactive(enabled)/disabled/focus/tab_stop/key/pointer/event behavior",
+        "production let button can remain; do not restore this new production file to baseline"
+      ],
+      "non_test_equivalence": "Only cfg(test) observer import/augmentation disappears; actual non-test controls and behavior remain unchanged."
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/backend.rs",
+      "sha256_at_plan": "55e2365113ab04b4ab87536ab318035df688748bdc68bfcd75777ee9df5cf9f5",
+      "action": "restore_entire_development_external_io_seam",
+      "remove_only": [
+        "desktop_test_support module/trait/connection imports and test-only wrapper/fields",
+        "with_desktop_transport factories and owned external protocol injection",
+        "transparent method extraction/reordering made solely for test isolation"
+      ],
+      "must_preserve": [
+        "original real Desktop/Browser processes, checked/list ordering and observation decode",
+        "original permission/prepare/authorize/control/epoch/target/publish/apply behavior and real image output"
+      ],
+      "non_test_equivalence": "2971b357 file is byte-identical to baseline8c. No v4 product change exists here; restoring exact original pair removes the whole test abstraction without retaining useless production refactors.",
+      "restore_ref": "8c57f7efb3d886c1c10429edb2bc1219a7b7a753",
+      "restore_sha256": "881f8ca31f62a5bc53b792705517376bc84a5dbec687b2eaa39bfffd8d5bd562"
+    },
+    {
+      "path": "crates/vega_runtime/src/computer_use/mod.rs",
+      "sha256_at_plan": "222c5b2da92dad3161b14b06b33d8f08edf6f25b8c7acef5009ef7443e6353e0",
+      "action": "restore_entire_development_external_io_seam",
+      "remove_only": [
+        "desktop_test_support module/trait/connection imports and test-only wrapper/fields",
+        "with_desktop_transport factories and owned external protocol injection",
+        "transparent method extraction/reordering made solely for test isolation"
+      ],
+      "must_preserve": [
+        "original real Desktop/Browser processes, checked/list ordering and observation decode",
+        "original permission/prepare/authorize/control/epoch/target/publish/apply behavior and real image output"
+      ],
+      "non_test_equivalence": "2971b357 file is byte-identical to baseline8c. No v4 product change exists here; restoring exact original pair removes the whole test abstraction without retaining useless production refactors.",
+      "restore_ref": "8c57f7efb3d886c1c10429edb2bc1219a7b7a753",
+      "restore_sha256": "0f6d48a3f5a93b4589b9f85db966d4f248dd2c6b538d592139d52a6e6b397980"
+    },
+    {
+      "path": "crates/vega/Cargo.toml",
+      "sha256_at_plan": "2bfff5666e847d4d7bf4450553bdf7c3d1a1523b798831cadcb60f7f5092ef0c",
+      "action": "restore_development_only_manifest_diff",
+      "remove_only": [
+        "all v4-added [dev-dependencies]",
+        "runtime test-support=[] feature only"
+      ],
+      "must_preserve": [
+        "every actual production dependency/version/source/features/package field"
+      ],
+      "non_test_equivalence": "Parsed production TOML equals baseline exactly. Recheck intervening product dependencies before actual cleanup; exact restoration is valid only while this remains true.",
+      "restore_ref": "8c57f7efb3d886c1c10429edb2bc1219a7b7a753",
+      "restore_sha256": "605ad932cdbcc66b7156766c973500a930acfd0253348356b1bcf7b9b59310c7"
+    },
+    {
+      "path": "crates/vega_conversation/Cargo.toml",
+      "sha256_at_plan": "eaca3a60138e7111b20000aadbd0b4a54bbc8c152dffe6854b92c3f0af9c827a",
+      "action": "restore_development_only_manifest_diff",
+      "remove_only": [
+        "all v4-added [dev-dependencies]",
+        "runtime test-support=[] feature only"
+      ],
+      "must_preserve": [
+        "every actual production dependency/version/source/features/package field"
+      ],
+      "non_test_equivalence": "Parsed production TOML equals baseline exactly. Recheck intervening product dependencies before actual cleanup; exact restoration is valid only while this remains true.",
+      "restore_ref": "8c57f7efb3d886c1c10429edb2bc1219a7b7a753",
+      "restore_sha256": "7dc1000baa003b394f3a1761f9d6e0020e2ab30d033b9f5e7ffbc2e92f6205e2"
+    },
+    {
+      "path": "crates/vega_runtime/Cargo.toml",
+      "sha256_at_plan": "c40fa58863ce91400aef91caecfad3f9eee0e79b5171788719eb274ebe66056e",
+      "action": "restore_development_only_manifest_diff",
+      "remove_only": [
+        "all v4-added [dev-dependencies]",
+        "runtime test-support=[] feature only"
+      ],
+      "must_preserve": [
+        "every actual production dependency/version/source/features/package field"
+      ],
+      "non_test_equivalence": "Parsed production TOML equals baseline exactly. Recheck intervening product dependencies before actual cleanup; exact restoration is valid only while this remains true.",
+      "restore_ref": "8c57f7efb3d886c1c10429edb2bc1219a7b7a753",
+      "restore_sha256": "750db9ce45394eb918e8b9a672a50756a4c433348524c267773eeebf7aa4f36d"
+    },
+    {
+      "path": "crates/vega_store/Cargo.toml",
+      "sha256_at_plan": "c1216274147d70861006102eb4458f016558e465e4f21532393372d888ca9455",
+      "action": "restore_development_only_manifest_diff",
+      "remove_only": [
+        "all v4-added [dev-dependencies]",
+        "runtime test-support=[] feature only"
+      ],
+      "must_preserve": [
+        "every actual production dependency/version/source/features/package field"
+      ],
+      "non_test_equivalence": "Parsed production TOML equals baseline exactly. Recheck intervening product dependencies before actual cleanup; exact restoration is valid only while this remains true.",
+      "restore_ref": "8c57f7efb3d886c1c10429edb2bc1219a7b7a753",
+      "restore_sha256": "a619a147f95a29b63932829928f35272f3546745f35325275214fe4a6ad9879c"
+    },
+    {
+      "path": "crates/vega_ui/Cargo.toml",
+      "sha256_at_plan": "3eaa306be5362de026a2fa0a63bc016d6f4bc6258596709911e0e28e4f7e35fd",
+      "action": "restore_development_only_manifest_diff",
+      "remove_only": [
+        "all v4-added [dev-dependencies]",
+        "runtime test-support=[] feature only"
+      ],
+      "must_preserve": [
+        "every actual production dependency/version/source/features/package field"
+      ],
+      "non_test_equivalence": "Parsed production TOML equals baseline exactly. Recheck intervening product dependencies before actual cleanup; exact restoration is valid only while this remains true.",
+      "restore_ref": "8c57f7efb3d886c1c10429edb2bc1219a7b7a753",
+      "restore_sha256": "45f54ccb5909337fc1e31329bf85aaa254a829225e3e952d44ffa3fc5950787d"
+    },
+    {
+      "path": "Cargo.lock",
+      "sha256_at_plan": "6ed079c8a09e8fe8a20da1d530842ca6894e717d6beb7f0816230c6c3f7f0c77",
+      "action": "restore_development_only_lock_graph_diff",
+      "remove_only": [
+        "exactly ten exclusive support packages and seven dependency edges from retained nodes listed in lock_graph_verification",
+        "Cargo duplicate-version dependency label normalization"
+      ],
+      "must_preserve": [
+        "every retained package version/source/checksum and actual production dependency edge",
+        "existing shared backtrace/tempfile/futures package nodes"
+      ],
+      "non_test_equivalence": "Restore baseline only after exact normalized graph check; no new product dependencies have been introduced in this round.",
+      "restore_ref": "8c57f7efb3d886c1c10429edb2bc1219a7b7a753",
+      "restore_sha256": "d803cdb1cd420921fa47ce091155bb0db1ce0845ecfa4027b95b46ebe2db36f9"
+    }
+  ],
+  "lock_graph_verification": {
+    "baseline_package_count": 914,
+    "current_package_count": 924,
+    "exclusive_packages_to_remove": [
+      {
+        "name": "bit-set",
+        "version": "0.8.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "bit-vec",
+        "version": "0.8.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "convert_case",
+        "version": "0.11.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "proptest",
+        "version": "1.11.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "proptest-macro",
+        "version": "0.5.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "quick-error",
+        "version": "1.2.3",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "rand_xorshift",
+        "version": "0.4.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "rusty-fork",
+        "version": "0.3.1",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "unarray",
+        "version": "0.1.4",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "wait-timeout",
+        "version": "0.2.1",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      }
+    ],
+    "retained_metadata_equal": true,
+    "added_edges_from_retained_nodes_to_remove": [
+      {
+        "from": "gpui-pre@0.3.4",
+        "to": "backtrace@0.3.76"
+      },
+      {
+        "from": "gpui-pre@0.3.4",
+        "to": "proptest@1.11.0"
+      },
+      {
+        "from": "vega@0.1.0",
+        "to": "futures@0.3.34"
+      },
+      {
+        "from": "vega_conversation@0.1.0",
+        "to": "tempfile@3.27.0"
+      },
+      {
+        "from": "vega_runtime@0.1.0",
+        "to": "tempfile@3.27.0"
+      },
+      {
+        "from": "vega_store@0.1.0",
+        "to": "tempfile@3.27.0"
+      },
+      {
+        "from": "vega_ui@0.1.0",
+        "to": "vega_runtime@0.1.0"
+      }
+    ],
+    "removed_edges_from_retained_nodes": [],
+    "procedure": [
+      "Parse lock TOML using canonical name/version/source identities, not display dependency strings",
+      "Require only listed ten removed nodes, zero new nodes; retained versions/source/checksum unchanged",
+      "Require only listed seven edges from retained nodes removed; no actual production edge changes",
+      "Do not remove shared baseline backtrace/tempfile/futures nodes",
+      "Run cargo metadata --no-deps --offline --locked only; no build/check/Clippy/test"
+    ]
+  },
+  "manifest_production_equivalence": [
+    {
+      "path": "crates/vega/Cargo.toml",
+      "production_toml_equal_to_baseline": true,
+      "development_dependencies": {
+        "gpui_kit": {
+          "workspace": true,
+          "features": [
+            "test-support"
+          ]
+        },
+        "vega_runtime": {
+          "workspace": true,
+          "features": [
+            "test-support"
+          ]
+        },
+        "futures": {
+          "workspace": true
+        }
+      },
+      "development_features": {}
+    },
+    {
+      "path": "crates/vega_conversation/Cargo.toml",
+      "production_toml_equal_to_baseline": true,
+      "development_dependencies": {
+        "tempfile": {
+          "workspace": true
+        },
+        "vega_runtime": {
+          "workspace": true,
+          "features": [
+            "test-support"
+          ]
+        }
+      },
+      "development_features": {}
+    },
+    {
+      "path": "crates/vega_runtime/Cargo.toml",
+      "production_toml_equal_to_baseline": true,
+      "development_dependencies": {
+        "tempfile": {
+          "workspace": true
+        }
+      },
+      "development_features": {
+        "test-support": []
+      }
+    },
+    {
+      "path": "crates/vega_store/Cargo.toml",
+      "production_toml_equal_to_baseline": true,
+      "development_dependencies": {
+        "tempfile": {
+          "workspace": true
+        }
+      },
+      "development_features": {}
+    },
+    {
+      "path": "crates/vega_ui/Cargo.toml",
+      "production_toml_equal_to_baseline": true,
+      "development_dependencies": {
+        "gpui_kit": {
+          "workspace": true,
+          "features": [
+            "test-support"
+          ]
+        },
+        "vega_runtime": {
+          "workspace": true,
+          "features": [
+            "test-support"
+          ]
+        }
+      },
+      "development_features": {}
+    }
+  ],
+  "protected_production_paths_outside_allowlist": [
+    {
+      "path": "crates/vega/src/reasoning_capabilities.rs",
+      "sha256_at_plan": "6c10da4fd8dbc3cb283bed080684fbb1477e904bc1e8b46c6ae30fc3f08aa8df"
+    },
+    {
+      "path": "crates/vega/src/window/model_capabilities.rs",
+      "sha256_at_plan": "f4bbc2195949702279e6fe096b67790424ce369cbaa597b452d518189da79932"
+    },
+    {
+      "path": "crates/vega/src/window/reasoning.rs",
+      "sha256_at_plan": "c73fd424f9d62c7e3834d3b851dbf8b5512bf676d898c443754a203cb386c40f"
+    },
+    {
+      "path": "crates/vega/src/window/render.rs",
+      "sha256_at_plan": "b08fb7e0250ae68a118adec1555209f987b32a21a796f6443ad05f599a7c0f19"
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/credential_guard.rs",
+      "sha256_at_plan": "3f157eb62c304e4b2af3bd6e234dd8864b82c519747a83495982a5ded5ed75ea"
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/pipeline.rs",
+      "sha256_at_plan": "47e8a7942b8bfdef3cf2ddcea95011a0010af07a99002f2c09b489a528aa5e82"
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/subagents.rs",
+      "sha256_at_plan": "fd84cf4b911422428e983a80829ae4b538a146c0997c48d9f4577ebe925400d3"
+    },
+    {
+      "path": "crates/vega_conversation/src/git_workspace/trusted_git/parsing.rs",
+      "sha256_at_plan": "768de21b6c7f4e706b8323ec9fd2834d77256b599d3fa577e422ff934594225a"
+    },
+    {
+      "path": "crates/vega_conversation/src/model_capabilities.rs",
+      "sha256_at_plan": "ddb0c1da042f2a0aabedffb9c246dfb47acaaa7e89b4e6bb11e916849278c635"
+    },
+    {
+      "path": "crates/vega_conversation/src/types/events.rs",
+      "sha256_at_plan": "15361d395fa7f5417a77b87beac8a6d3993689fbd9c1208d591c8179905591e3"
+    },
+    {
+      "path": "crates/vega_conversation/src/types/reasoning.rs",
+      "sha256_at_plan": "5768f1a304dd49080a90d68c6148898debf30cce1d53bb35108264d5ce68a01c"
+    },
+    {
+      "path": "crates/vega_runtime/src/agent/loop_.rs",
+      "sha256_at_plan": "95773f32816c69890edfffd344a34bed8c755220d73d2296adf1f0002b7d0edb"
+    },
+    {
+      "path": "crates/vega_runtime/src/agent/mod.rs",
+      "sha256_at_plan": "807e48db55665c377fb4f62b265d65ceeab90a6fc55ed01f0b379d41ec1e2d04"
+    },
+    {
+      "path": "crates/vega_runtime/src/agent/tools_exec.rs",
+      "sha256_at_plan": "b0c23bb1099c0c535b003da09e6dbb3812f05548ca1854b60de4a7b2ecd827eb"
+    },
+    {
+      "path": "crates/vega_runtime/src/chat_compat.rs",
+      "sha256_at_plan": "4b6d2d5f66e3feb63dd11f1973840de831547ce8fe52df59f34586864a0e994f"
+    },
+    {
+      "path": "crates/vega_runtime/src/error.rs",
+      "sha256_at_plan": "e08654e75516e5a7b21ce798477f10d3439c52cc0a0ea47d699b1c80feabf0d3"
+    },
+    {
+      "path": "crates/vega_runtime/src/model_compat.rs",
+      "sha256_at_plan": "b0058e8b49619c8cd3687545defd32964df09815fab8ca0805600ab2b984791a"
+    },
+    {
+      "path": "crates/vega_runtime/src/model_compat/pi-ai-0.84.4.json",
+      "sha256_at_plan": "3c7bfe4d340715cdba2ddc689d7e302ba62f51377025d622fe33cb223bdae1f1"
+    },
+    {
+      "path": "crates/vega_runtime/src/model_compat/pi-ai-0.84.4.sources.json",
+      "sha256_at_plan": "82970e4c6963371aeffaab90a3d6d17e975718981120d553ffc2a48a615bf72c"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/chat.rs",
+      "sha256_at_plan": "5ca1cbc1c6cfe01d7edd7f87c6d07d5f6c69d998e26cba91346056ca008288f8"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/recovery.rs",
+      "sha256_at_plan": "7958b76d444373c984cf9ee32022edb10fc9b1595211e61bb1b61d5e366fc734"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/responses.rs",
+      "sha256_at_plan": "360b10ec00793d4adda1aec64d2dc43ae253f46975110f9b042093e97dd99b30"
+    },
+    {
+      "path": "crates/vega_runtime/src/openai/sse.rs",
+      "sha256_at_plan": "75610574ed7a6dfbbaba2f7e26b66673e8479296b9bc4ed565df9be6ba2584a7"
+    },
+    {
+      "path": "crates/vega_runtime/src/provider.rs",
+      "sha256_at_plan": "0eea394fab48c7503a6689c35345532e472cc88b48824d4e61b2a98c4a6b92e6"
+    },
+    {
+      "path": "crates/vega_runtime/src/provider_check.rs",
+      "sha256_at_plan": "5cbe2fe936d0652c59c4d3ac8a7c6a98a462f7a9559a24d77a54d1dbc1ea67d2"
+    },
+    {
+      "path": "crates/vega_store/src/model_capabilities.rs",
+      "sha256_at_plan": "9545540588e8ad04e50a2e6fbb31aa6d56d0c120c9bb4c88274f7de173d69b64"
+    },
+    {
+      "path": "crates/vega_ui/src/interaction.rs",
+      "sha256_at_plan": "9052c821c8c7b83170f7679f8d7527d412b89b23489513c9ed2e499823942433"
+    },
+    {
+      "path": "crates/vega_ui/src/settings/model_configuration.rs",
+      "sha256_at_plan": "338064f031c6e0ff402004cfc74e31e2faeae9e52b6c2fe7739b754f97b21384"
+    },
+    {
+      "path": "crates/vega_ui/src/settings/provider_management.rs",
+      "sha256_at_plan": "65da7cb0fa7b5bc70091cdf875cce13e0dde90109f160b5961be6b02fa4dc08f"
+    },
+    {
+      "path": "crates/vega_ui/src/settings/reasoning_render.rs",
+      "sha256_at_plan": "5c5cef99a60294e1999d3dff157abb4931501a7947d45dee4ecb6fa66587d0f1"
+    },
+    {
+      "path": "crates/vega_ui/src/settings/reasoning_state.rs",
+      "sha256_at_plan": "b0aaa17a4299a45b6cf5e0dbbc918fea7dbb3ca288faf7b29b969d2ee2db09bb"
+    },
+    {
+      "path": "crates/vega_ui/src/settings/state.rs",
+      "sha256_at_plan": "adc6a75df571070b0df266561770a1d87a9bbc7424e7fae3fd3e1dbca7d02178"
+    }
+  ],
+  "must_preserve_categories": [
+    "all actual UI control ID/role/aria/focus/disabled/keyboard/pointer/events, including Interaction AccessKit set_disabled",
+    "production model_compat 758-record JSON/source manifest and MIT license",
+    "actual OpenAiProvider request_body/prepare_request/snapshot/probe/recovery/guards and native encoders/assemblers",
+    "private real draft_request extraction and TrustedGitService actual delegation/authority flow",
+    "model capability core/store/service/settings/controller/composer real behavior",
+    "latest raw credential, exact current capacity/manual projection and InvalidReadTerminal fixes",
+    "bench/Python/workflows/resources/migrations/user data; root-owned docs/README/evidence/frozen mappings"
+  ],
+  "postcleanup_static_expectations": [
+    "Protected files outside allowlist identical to GREEN snapshot",
+    "Mixed files differ only by listed test removals/transparent inverses and necessary fmt",
+    "Nine whole-file restorations equal listed baseline SHA unless intervening product changes invalidate restoration",
+    "No development cfg(test)/test-support/observer/ownedconstructor remnants in listed paths",
+    "fmt/diff and offline locked no-deps metadata; existing cloud final gates separate from prior same133 GREEN"
+  ],
+  "evidence_limit": "Read-only static plan; no cleanup or Vega/test/build execution performed, no GREEN claim. No repeated definition table."
+}

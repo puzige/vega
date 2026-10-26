@@ -1,0 +1,60 @@
+{
+  "head": "f7128d6d25c7d4ea864b8974d975de9125053eed",
+  "run": "https://github.com/puzige/vega/actions/runs/39369557697",
+  "nextest_job": "https://github.com/puzige/vega/actions/runs/39369557697/job/118454103529",
+  "nextest_run_id": "85f42371-6a62-49d5-ab9f-0d66f89c4e42",
+  "discovered": 133,
+  "executed": 133,
+  "passed": 129,
+  "failed": 4,
+  "skipped": 0,
+  "ignored": 0,
+  "retries": 0,
+  "behavior_green": false,
+  "failures": [
+    {
+      "test": "window::context::compatibility_tests::manual_context_worker_factory_consumes_native_snapshot_and_keeps_capacity_authority",
+      "raw_failure_excerpt": [
+        "thread 'window::context::compatibility_tests::manual_context_worker_factory_consumes_native_snapshot_and_keeps_capacity_authority' (15706) panicked at crates/vega/src/window/model_context_compatibility_tests.rs:121:9:",
+        "assertion failed: result.is_ok()"
+      ]
+    },
+    {
+      "test": "model_compatibility_tests::lifecycle::credential_guard_checks_all_private_channels_and_opaque_keys_without_rewriting_signed_data",
+      "raw_failure_excerpt": [
+        "thread 'model_compatibility_tests::lifecycle::credential_guard_checks_all_private_channels_and_opaque_keys_without_rewriting_signed_data' (15814) panicked at crates/vega_conversation/src/model_compatibility_tests/lifecycle.rs:202:9:",
+        "responses"
+      ]
+    },
+    {
+      "test": "openai::compatibility_tests::lifecycle::frozen_capacity_output_reserve_remains_authoritative_over_source_model_limits",
+      "raw_failure_excerpt": [
+        "thread 'openai::compatibility_tests::lifecycle::frozen_capacity_output_reserve_remains_authoritative_over_source_model_limits' (16304) panicked at crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs:664:10:",
+        "called `Result::unwrap()` on an `Err` value: Context(OverLimit { estimated_tokens: 42923, input_budget: 400 })"
+      ]
+    },
+    {
+      "test": "openai::compatibility_tests::lifecycle::unmodified_json_validation_and_permission_rejection_keep_tools_fenced",
+      "raw_failure_excerpt": [
+        "thread 'openai::compatibility_tests::lifecycle::unmodified_json_validation_and_permission_rejection_keep_tools_fenced' (16320) panicked at crates/vega_runtime/src/openai/compatibility_tests/lifecycle.rs:437:9:",
+        "assertion `left == right` failed: read {\"path\":5}",
+        "left: 1",
+        "right: 0"
+      ]
+    }
+  ],
+  "clippy_job": "https://github.com/puzige/vega/actions/runs/39369557697/job/118454103740",
+  "clippy_result": "success",
+  "format_result": "success",
+  "python_executed_and_passed": 34,
+  "logs": {
+    "nextest": {
+      "bytes": 115941,
+      "sha256": "f060b76d4ba3b8892c00006241d92f8c6360098a7967669fb544d69fb6f69efc"
+    },
+    "clippy": {
+      "bytes": 101535,
+      "sha256": "593c5d2ae9183beb438ab793d66cc274efac575a7ae8ed6010792164a0a72b31"
+    }
+  }
+}

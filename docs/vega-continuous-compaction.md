@@ -28,6 +28,10 @@
 
 ## Implementation plan and verification
 
+### Durable source comparison (#409, 2026-10-17)
+
+The active owned assistant/tool group is fenced by its ordered durable fields, not by provider-only replay state. Compare role, content, images, tool_call_id and complete ordered tool_calls; exclude run-memory reasoning_content, response_reasoning, live argument sidecars and model-projection markers from this local source comparison. Do not change global ChatMessage equality, mutate provider replay data or persist reasoning. All unrelated-history, source fingerprint, owner/model, predecessor and checkpoint CAS guards remain mandatory. The executable acceptance matrix and limited implementation scope are frozen in [the #409 specification](409/vega-issue-409-compaction-durable-source.md).
+
 Dedicated implementation subagent owns schema/storage coverage and round provenance, runtime events and loop integration, conversation projection and bounded summarization, and focused regression tests. Main agent reviews integration and drives PR/CI. Add regression cases before implementation where practical. No local compilation/build/test; only quick formatting and diff/static checks. Cloud PR checks run regression and workspace tests. User validates real app after merge; keep issue open/In review until then.
 
 ## Validation

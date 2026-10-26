@@ -21,6 +21,8 @@ pub(crate) enum HistoryPageDirection {
 pub(crate) struct StreamEntryIdentity {
     pub(crate) key: String,
     pub(crate) message_id: Option<String>,
+    pub(crate) pending_id: Option<String>,
+    pub(crate) echo_kind: Option<String>,
     pub(crate) sequence: Option<i64>,
 }
 
@@ -47,34 +49,12 @@ impl BoundedSamples {
             .map(|values| values.iter().copied().collect())
             .unwrap_or_default()
     }
-
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
-        self.values
-            .lock()
-            .map(|values| values.len())
-            .unwrap_or_default()
-    }
 }
 
 /// Monospace family for code rows (ui-spec §3 代码等宽档位；本机 macOS 以
 /// Menlo 承担，spike 探针同款).
 pub(crate) const MONOFONT: &str = "Menlo";
 
-// ─── top-level anchoring (P4, S8-T44) ────────────────────────────────────────
-//
-// The anchor semantics (贴底跟随 / 上翻 detach / 回底 resume) are carried by
-// the pinned GPUI variable-height list itself: `ListState::set_follow_mode
-// (FollowMode::Tail)` auto-scrolls to the end while following, any upward
-// scroll event detaches, and layout re-engages once the viewport returns to
-// within 1px of the bottom — the same epsilon the old pure state machine
-// used (`ANCHOR_EPSILON_PX`). `ConversationStream` only reads
-// `ListState::is_following_tail()` for the header indicator and re-engages
-// explicitly (Tail mode) when a permission prompt must be visible.
-
-/// Pure scroll-up hydration request gate (S8-T45/C7): a page may be requested
-/// only when the viewport is at the top edge, older history exists, no page
-/// is in flight, and no failure pause is armed.
 pub(crate) fn hydration_request(hydration: HistoryHydration, at_top: bool) -> Option<i64> {
     if !at_top || hydration.loading || hydration.paused {
         return None;
@@ -82,11 +62,25 @@ pub(crate) fn hydration_request(hydration: HistoryHydration, at_top: bool) -> Op
     hydration.older_cursor
 }
 
-// ─── render instructions: RenderNode → StreamLine mapping (§5.3) ─────────────
+pub(crate) fn model_picker_starts_group(options: &[ModelOption], index: usize) -> bool {
+    index == 0
+        || options
+            .get(index - 1)
+            .map(|previous| previous.provider.as_str())
+            != options.get(index).map(|option| option.provider.as_str())
+}
 
-/// Whether a block's code fences may be highlighted (S3-T18 高亮整合策略):
-/// committed blocks go through the T16 tree-sitter query; the pending tail
-/// (unclosed fence) degrades to plain monospace (tech-spec §5.1).
+pub(crate) fn model_picker_row_index(options: &[ModelOption], option_index: usize) -> usize {
+    if options.is_empty() {
+        return 0;
+    }
+    let last = option_index.min(options.len() - 1);
+    (0..=last)
+        .filter(|index| model_picker_starts_group(options, *index))
+        .count()
+        + last
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BlockOrigin {
     Committed,
@@ -102,10 +96,7 @@ pub(crate) enum SpanStyle {
     Strikethrough,
     /// Inline code: monospace on `code_bg`.
     Code,
-    /// Link label: underlined, secondary color.
     Link,
-    /// Code token from the T16 highlighter (monospace row; the token →
-    /// theme mapping is [`code_token_style`]).
     Token(HighlightKind),
 }
 
@@ -116,9 +107,6 @@ pub(crate) struct TokenStyle {
     pub(crate) italic: bool,
 }
 
-/// S3-T18 高亮整合的**唯一映射表**：HighlightKind → 既有 ui-spec §2 色值
-/// token（无新色值）：Keyword/Type → text_primary 加粗，String → success，
-/// Comment → text_tertiary 斜体，Number → warning，其余 → text_primary。
 pub(crate) fn code_token_style(kind: HighlightKind, colors: &ThemeColors) -> TokenStyle {
     match kind {
         HighlightKind::Keyword | HighlightKind::Type => TokenStyle {
@@ -161,6 +149,8 @@ pub(crate) fn code_token_style(kind: HighlightKind, colors: &ThemeColors) -> Tok
 pub(crate) struct StreamSpan {
     pub text: String,
     pub style: SpanStyle,
+    pub link: Option<String>,
+    pub link_occurrence: Option<usize>,
 }
 
 /// What a row represents (drives per-frame styling: font/bg/prefix).
@@ -174,8 +164,6 @@ pub(crate) enum LineKind {
     Table,
     /// Code line (monospace on `code_bg`).
     Code,
-    /// Block-quote line (left bar + secondary color).
-    Quote,
     /// Thematic break (`---`).
     Rule,
     /// User message label row (「你」标记，卡片上方).
@@ -203,8 +191,32 @@ pub(crate) struct StreamLine {
     pub marker: String,
     /// Nesting depth for list rows (2-space indent per level).
     pub depth: usize,
+    pub(crate) in_list: bool,
+    pub(crate) quotes: Vec<QuoteOwner>,
     pub spans: Vec<StreamSpan>,
     pub table: Option<Arc<StreamTable>>,
+    pub(crate) code_block: Option<Arc<StreamCodeBlock>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct QuoteOwner {
+    pub(crate) identity: (u64, usize),
+    pub(crate) list_depth: Option<usize>,
+}
+
+impl QuoteOwner {
+    pub(crate) fn list_inset(self) -> f32 {
+        self.list_depth.map_or(0., |depth| {
+            (depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StreamCodeBlock {
+    pub(crate) identity: (u64, usize),
+    pub(crate) language: Option<String>,
+    pub(crate) code: Arc<str>,
 }
 
 /// Cached styled cells; the first row is the header. Column geometry belongs
@@ -253,9 +265,56 @@ impl StreamLine {
             checked: None,
             marker: String::new(),
             depth: 0,
+            in_list: false,
+            quotes: Vec::new(),
             spans: Vec::new(),
             table: None,
+            code_block: None,
         }
+    }
+
+    pub(crate) fn starts_list_item(&self) -> bool {
+        !self.marker.is_empty()
+    }
+
+    pub(crate) fn list_marker_quote_depth(&self) -> Option<usize> {
+        if self.kind != LineKind::ListItem || !self.starts_list_item() {
+            return None;
+        }
+        self.quotes
+            .iter()
+            .position(|owner| owner.list_depth == Some(self.depth))
+    }
+
+    pub(crate) fn list_marker_inset(&self) -> f32 {
+        let parent_inset = self
+            .list_marker_quote_depth()
+            .and_then(|depth| depth.checked_sub(1))
+            .and_then(|depth| self.quotes.get(depth))
+            .map_or(0., |owner| owner.list_inset());
+        (self.depth as f32 * Layout::MARKDOWN_LIST_INDENT - parent_inset).max(0.)
+    }
+
+    pub(crate) fn quote_list_inset(&self) -> f32 {
+        self.quotes.last().map_or(0., |owner| owner.list_inset())
+    }
+
+    pub(crate) fn list_content_inset(&self) -> f32 {
+        if self.in_list {
+            (self.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT
+        } else {
+            0.
+        }
+    }
+
+    pub(crate) fn continues_code_block(&self, previous: &Self) -> bool {
+        self.kind == LineKind::Code
+            && previous.kind == LineKind::Code
+            && self
+                .code_block
+                .as_ref()
+                .zip(previous.code_block.as_ref())
+                .is_some_and(|(current, previous)| Arc::ptr_eq(current, previous))
     }
 }
 
@@ -281,31 +340,49 @@ pub(crate) fn display_width(text: &str) -> usize {
 pub(crate) fn flatten_inlines(spans: &[Inline], out: &mut Vec<StreamSpan>) {
     for span in spans {
         match span {
-            Inline::Text(text) => out.push(StreamSpan {
-                text: text.clone(),
-                style: SpanStyle::Plain,
-            }),
+            Inline::Text(text) => {
+                let offset: usize = out.iter().map(|span| span.text.len()).sum();
+                let mut spans = autolinks::text_spans(text);
+                for span in &mut spans {
+                    if let Some(occurrence) = &mut span.link_occurrence {
+                        *occurrence += offset;
+                    }
+                }
+                out.extend(spans);
+            }
             Inline::Code(code) => out.push(StreamSpan {
                 text: code.clone(),
                 style: SpanStyle::Code,
+                link: None,
+                link_occurrence: None,
             }),
             Inline::Emphasis(inner) => restyle(out, inner, SpanStyle::Emphasis),
             Inline::Strong(inner) => restyle(out, inner, SpanStyle::Strong),
             Inline::Strikethrough(inner) => restyle(out, inner, SpanStyle::Strikethrough),
-            Inline::Link { spans: inner, .. } => restyle(out, inner, SpanStyle::Link),
+            Inline::Link {
+                url, spans: inner, ..
+            } => restyle_link(out, inner, url),
         }
     }
 }
 
-/// Appends `inner` spans, restyling the plain ones that came from `inner`
-/// (nested styles compose: only plain runs adopt the outer style).
 pub(crate) fn restyle(out: &mut Vec<StreamSpan>, inner: &[Inline], style: SpanStyle) {
     let start = out.len();
     flatten_inlines(inner, out);
     for span in &mut out[start..] {
-        if span.style == SpanStyle::Plain {
+        if span.style == SpanStyle::Plain || span.style == SpanStyle::Link {
             span.style = style;
         }
+    }
+}
+
+fn restyle_link(out: &mut Vec<StreamSpan>, inner: &[Inline], url: &str) {
+    let start = out.len();
+    let occurrence = out.iter().map(|span| span.text.len()).sum();
+    restyle(out, inner, SpanStyle::Link);
+    for span in &mut out[start..] {
+        span.link = Some(url.to_owned());
+        span.link_occurrence = Some(occurrence);
     }
 }
 
@@ -318,7 +395,13 @@ pub(crate) fn coalesce(spans: Vec<StreamSpan>) -> Vec<StreamSpan> {
             continue;
         }
         match merged.last_mut() {
-            Some(last) if last.style == span.style => last.text.push_str(&span.text),
+            Some(last)
+                if last.style == span.style
+                    && last.link == span.link
+                    && last.link_occurrence == span.link_occurrence =>
+            {
+                last.text.push_str(&span.text)
+            }
             _ => merged.push(span),
         }
     }
@@ -334,8 +417,9 @@ pub(crate) fn flatten_nodes(
     origin: BlockOrigin,
 ) -> Vec<StreamLine> {
     let mut lines = Vec::new();
+    let mut identity = 0;
     for node in nodes {
-        flatten_node(block_id, node, 0, origin, &mut lines);
+        flatten_node(block_id, node, None, origin, &mut lines, &mut identity);
     }
     lines
 }
@@ -343,10 +427,14 @@ pub(crate) fn flatten_nodes(
 pub(crate) fn flatten_node(
     block_id: u64,
     node: &RenderNode,
-    depth: usize,
+    list_depth: Option<usize>,
     origin: BlockOrigin,
     out: &mut Vec<StreamLine>,
+    identity: &mut usize,
 ) {
+    let node_identity = *identity;
+    *identity += 1;
+    let depth = list_depth.unwrap_or_default();
     match node {
         RenderNode::Paragraph { spans } => {
             let mut inline = Vec::new();
@@ -371,8 +459,11 @@ pub(crate) fn flatten_node(
             out.push(line);
         }
         RenderNode::CodeBlock { language, code } => {
-            // T18 高亮整合：committed 块按语言走 T16 tree-sitter 高亮；
-            // pending（未闭合 fence）/未支持语言降级纯文本等宽（§5.1）。
+            let code_block = Arc::new(StreamCodeBlock {
+                identity: (block_id, node_identity),
+                language: language.clone(),
+                code: code.as_str().into(),
+            });
             let highlighted = match origin {
                 BlockOrigin::Committed => language
                     .as_deref()
@@ -390,6 +481,7 @@ pub(crate) fn flatten_node(
                 let line_start = offset;
                 let line_end = offset + code_line.len();
                 let mut line = StreamLine::new(block_id, LineKind::Code);
+                line.code_block = Some(code_block.clone());
                 line.depth = depth;
                 line.spans = coalesce(code_line_spans(
                     code,
@@ -401,14 +493,25 @@ pub(crate) fn flatten_node(
                 offset = line_end + 1; // skip the '\n'
             }
         }
-        RenderNode::List(list) => flatten_list(block_id, list, depth, origin, out),
+        RenderNode::List(list) => flatten_list(
+            block_id,
+            list,
+            list_depth.map_or(0, |depth| depth + 1),
+            origin,
+            out,
+            identity,
+        ),
         RenderNode::BlockQuote { children } => {
+            let owner = QuoteOwner {
+                identity: (block_id, node_identity),
+                list_depth,
+            };
             let start = out.len();
             for child in children {
-                flatten_node(block_id, child, depth, origin, out);
+                flatten_node(block_id, child, list_depth, origin, out, identity);
             }
             for line in &mut out[start..] {
-                line.kind = LineKind::Quote;
+                line.quotes.insert(0, owner);
             }
         }
         RenderNode::Table(table) => flatten_table(block_id, table, out),
@@ -429,6 +532,8 @@ pub(crate) fn code_line_spans(
         return vec![StreamSpan {
             text: code[start..end].to_string(),
             style: SpanStyle::Plain,
+            link: None,
+            link_occurrence: None,
         }];
     };
     let mut spans = Vec::new();
@@ -443,11 +548,15 @@ pub(crate) fn code_line_spans(
             spans.push(StreamSpan {
                 text: code[cursor..span_start].to_string(),
                 style: SpanStyle::Plain,
+                link: None,
+                link_occurrence: None,
             });
         }
         spans.push(StreamSpan {
             text: code[span_start..span_end].to_string(),
             style: SpanStyle::Token(span.kind),
+            link: None,
+            link_occurrence: None,
         });
         cursor = span_end;
     }
@@ -455,6 +564,8 @@ pub(crate) fn code_line_spans(
         spans.push(StreamSpan {
             text: code[cursor..end].to_string(),
             style: SpanStyle::Plain,
+            link: None,
+            link_occurrence: None,
         });
     }
     spans
@@ -466,6 +577,7 @@ pub(crate) fn flatten_list(
     depth: usize,
     origin: BlockOrigin,
     out: &mut Vec<StreamLine>,
+    identity: &mut usize,
 ) {
     for (index, item) in list.items.iter().enumerate() {
         let marker = if list.ordered {
@@ -477,15 +589,22 @@ pub(crate) fn flatten_list(
         for child in &item.children {
             match child {
                 // 嵌套列表携带 depth+1（§5.3 嵌套列表分支）。
-                RenderNode::List(nested) => flatten_list(block_id, nested, depth + 1, origin, out),
-                other => flatten_node(block_id, other, depth, origin, out),
+                RenderNode::List(nested) => {
+                    flatten_list(block_id, nested, depth + 1, origin, out, identity)
+                }
+                other => flatten_node(block_id, other, Some(depth), origin, out, identity),
             }
+        }
+        for line in &mut out[start..] {
+            line.in_list = true;
         }
         if let Some(first) = out.get_mut(start) {
             first.marker = marker;
             first.depth = depth;
             first.checked = item.checked;
-            first.kind = LineKind::ListItem;
+            if first.kind == LineKind::Paragraph {
+                first.kind = LineKind::ListItem;
+            }
         }
     }
 }
@@ -586,6 +705,7 @@ impl StreamCounters {
 /// while materializing each committed block exactly once per version.
 #[derive(Default)]
 pub(crate) struct StreamModel {
+    content_revision: u64,
     pub(crate) committed_ids: Vec<u64>,
     /// Parallel to `committed_ids`: the materialized version of each block
     /// (invalidation detection without per-frame HashMap lookups).
@@ -598,6 +718,10 @@ pub(crate) struct StreamModel {
 }
 
 impl StreamModel {
+    pub(crate) fn content_revision(&self) -> u64 {
+        self.content_revision
+    }
+
     /// Total row count (committed + pending).
     pub(crate) fn row_count(&self) -> usize {
         self.committed_lines.len() + self.pending_lines.len()
@@ -685,6 +809,9 @@ impl StreamModel {
             self.pending_key = pending_key;
             changed = true;
         }
+        if changed {
+            self.content_revision = self.content_revision.wrapping_add(1);
+        }
         changed
     }
 
@@ -731,14 +858,15 @@ impl StreamModel {
     }
 }
 
-// ─── message entries (T18 消息块结构) ────────────────────────────────────────
-
-/// UI-only original text and stable action identity. Handlers share the buffer
-/// so a click reads the newest delta without cloning the full body per frame.
 #[derive(Clone)]
 pub(crate) struct MessageCopy {
     pub(super) id: u64,
     text: std::rc::Rc<std::cell::RefCell<String>>,
+    live_projection_unavailable: bool,
+    generated_notices:
+        std::rc::Rc<std::cell::RefCell<Vec<super::generated_notice::GeneratedNoticeFragment>>>,
+    display_model_text: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    stream_finished: std::rc::Rc<std::cell::Cell<bool>>,
     selection_scope: gpui_kit::base::TextSelectionScopeId,
     selection_handle: std::rc::Rc<std::cell::RefCell<Option<gpui_kit::base::TextSelectionHandle>>>,
     selection_generation: std::rc::Rc<std::cell::Cell<u64>>,
@@ -757,6 +885,10 @@ impl MessageCopy {
         Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             text: std::rc::Rc::new(std::cell::RefCell::new(text.to_owned())),
+            live_projection_unavailable: false,
+            generated_notices: Default::default(),
+            display_model_text: Default::default(),
+            stream_finished: Default::default(),
             selection_scope: gpui_kit::base::TextSelectionScopeId::new(),
             selection_handle: std::rc::Rc::new(std::cell::RefCell::new(None)),
             selection_generation: std::rc::Rc::new(std::cell::Cell::new(0)),
@@ -768,6 +900,33 @@ impl MessageCopy {
             projected_selection: Default::default(),
             selection_subscriptions: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
         }
+    }
+
+    pub(super) fn from_live_text(text: &str) -> Self {
+        let projected = vega_conversation::privacy::safe_live_text(text);
+        let unavailable = vega_i18n::t("domain.privacy.check_unavailable");
+        let live_projection_unavailable = projected != text
+            && projected == unavailable
+            && vega_conversation::privacy::safe_live_text("") == unavailable;
+        let mut copy = Self::new(&projected);
+        copy.live_projection_unavailable = live_projection_unavailable;
+        copy
+    }
+
+    pub(super) fn live_projection_unavailable(&self) -> bool {
+        self.live_projection_unavailable
+    }
+
+    pub(super) fn refresh_live_projection(&self) -> bool {
+        if !self.live_projection_unavailable {
+            return false;
+        }
+        let text = vega_i18n::t("domain.privacy.check_unavailable");
+        if self.original_text() == text {
+            return false;
+        }
+        self.replace_text(text);
+        true
     }
 
     pub(super) fn content_generation(&self) -> u64 {
@@ -783,6 +942,70 @@ impl MessageCopy {
 
     pub(crate) fn original_text(&self) -> String {
         self.text.borrow().clone()
+    }
+
+    pub(crate) fn display_text(&self) -> String {
+        super::generated_notice::project_text(&self.text.borrow(), &self.generated_notices.borrow())
+    }
+
+    pub(crate) fn generated_notices(
+        &self,
+    ) -> Vec<super::generated_notice::GeneratedNoticeFragment> {
+        self.generated_notices.borrow().clone()
+    }
+
+    pub(crate) fn set_generated_notices(
+        &self,
+        notices: Vec<super::generated_notice::GeneratedNoticeFragment>,
+    ) {
+        if *self.generated_notices.borrow() == notices {
+            return;
+        }
+        *self.generated_notices.borrow_mut() = notices;
+        *self.display_model_text.borrow_mut() = None;
+        self.invalidate_selection();
+    }
+
+    pub(crate) fn sync_model(
+        &self,
+        stream: &MarkdownStream,
+        model: &mut StreamModel,
+        counters: &StreamCounters,
+    ) -> bool {
+        if self.generated_notices.borrow().is_empty() {
+            return model.sync(&stream.snapshot(), counters);
+        }
+        let text = self.display_text();
+        if self.display_model_text.borrow().as_ref() == Some(&text) {
+            return false;
+        }
+        let mut projected = MarkdownStream::new();
+        projected.append(&text);
+        if self.stream_finished.get() {
+            projected.finish();
+        }
+        let revision = model.content_revision;
+        *model = StreamModel {
+            content_revision: revision,
+            ..StreamModel::default()
+        };
+        model.sync(&projected.snapshot(), counters);
+        model.content_revision = revision.wrapping_add(1);
+        *self.display_model_text.borrow_mut() = Some(text);
+        self.invalidate_selection();
+        true
+    }
+
+    pub(crate) fn finish_model(
+        &self,
+        stream: &mut MarkdownStream,
+        model: &mut StreamModel,
+        counters: &StreamCounters,
+    ) {
+        stream.finish();
+        self.stream_finished.set(true);
+        *self.display_model_text.borrow_mut() = None;
+        self.sync_model(stream, model, counters);
     }
 
     pub(crate) fn append(&self, delta: &str) {
@@ -978,9 +1201,9 @@ impl MessageCopy {
     }
 
     pub(super) fn copy(&self, cx: &mut App) {
-        let text = self.text.borrow();
+        let text = self.display_text();
         if !text.is_empty() {
-            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text.clone()));
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
         }
     }
 }
@@ -991,12 +1214,10 @@ impl Default for MessageCopy {
     }
 }
 
-/// One conversation entry: a local user echo or one assistant markdown turn.
-///
-/// 架构师裁决（T18 裁决①）：user 消息块用「独立渲染路径挂 StreamSnapshot
-/// 外侧」实现 —— 不进入 MarkdownStream，T15 管线零侵入；每段 assistant 流
-/// 拥有独立的 final 终结语义（回放结束 `finish()`，tech-spec §5.4）。
 pub(crate) enum StreamEntry {
+    Subagents {
+        group: Entity<super::subagents::SubagentGroup>,
+    },
     Screenshot {
         card: Entity<screenshots::ScreenshotCard>,
     },
@@ -1037,9 +1258,8 @@ pub(crate) enum StreamEntry {
     ToolGroup {
         group: Entity<ToolActivityGroup>,
     },
-    /// One route-owned artifact, placed immediately after its exact tool.
-    Artifact {
-        card: Entity<ArtifactCard>,
+    ArtifactGroup {
+        group: Entity<ArtifactGroup>,
     },
     /// Sole active permission request/response handoff card.
     Permission {
@@ -1049,8 +1269,6 @@ pub(crate) enum StreamEntry {
     Plan {
         card: Entity<PlanCard>,
     },
-    /// One read-only per-task cost summary card (S7-T40), projected by
-    /// `vega_conversation::summary` and applied by the app layer.
     Summary {
         card: Entity<SummaryCard>,
     },
@@ -1063,6 +1281,7 @@ pub(crate) enum StreamEntry {
 impl StreamEntry {
     pub(crate) fn row_count(&self, cx: &App) -> usize {
         match self {
+            StreamEntry::Subagents { group } => group.read(cx).row_count(cx),
             StreamEntry::RunActivity { .. } => 1,
             StreamEntry::RunActivitySegment { group, segment } => {
                 group.read(cx).segment_row_count(*segment, cx)
@@ -1074,7 +1293,7 @@ impl StreamEntry {
             }
             StreamEntry::Tool { card } => card.read(cx).row_count(),
             StreamEntry::ToolGroup { group } => group.read(cx).row_count(cx),
-            StreamEntry::Artifact { card } => card.read(cx).row_count(),
+            StreamEntry::ArtifactGroup { group } => group.read(cx).row_count(),
             StreamEntry::Permission { card } => card.read(cx).row_count(),
             StreamEntry::Plan { card } => card.read(cx).row_count(),
             StreamEntry::Summary { card } => usize::from(

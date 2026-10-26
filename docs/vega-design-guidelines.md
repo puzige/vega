@@ -2,7 +2,7 @@
 
 **版本：v2.0 已批准实施基线 · 2026-10-11。适用：macOS / Rust + GPUI。**
 
-本文件统一今后的设计方向，不宣称这些方向已经实现。已交付基线为 #298 / 0.1.67；本次 18 点改造已获批准、正在实施，尚未验收。先看[方案总览](vega-issue-296-ui-redesign-review.md)，精确行为、数值提案、依赖和验收见[改造 spec](vega-issue-296-ui-redesign-v3.md)。旧版完整保存在[历史快照](vega-design-guidelines-legacy-2026-10-11.md)。
+本文件统一今后的设计方向，不宣称这些方向已经实现。已交付基线为 #298 / 0.1.67；本次 18 点改造已获批准、正在实施，尚未验收。先看[方案总览](296/vega-issue-296-ui-redesign-review.md)，精确行为、数值提案、依赖和验收见[改造 spec](296/vega-issue-296-ui-redesign-v3.md)。旧版完整保存在[历史快照](vega-design-guidelines-legacy-2026-10-11.md)。
 
 ## 1. 权威边界
 
@@ -22,7 +22,7 @@
 4. [`vega_theme`](../crates/vega_theme/src/lib.rs) 与实际 controller 是当前实现事实。新数值未进入共享 token、行为未验证前，不得称为已落地。
 5. 旧任务的“允许重启”“自动合并”“验收通过”等记录不延续为本轮授权。当前按用户最新“按照spec执行”授权推进。
 
-> 最新信息流视觉契约见[Codex截图对齐](vega-issue-296-codex-stream-parity.md)，行为契约见[工具时间线与最终收起](vega-issue-296-process-timeline.md)：运行时说明与阶段/工具按序，Final后统一收起。顶部纯计时与细分隔线，阶段箭头紧跟标题且仅hover/focus出现；不显示Vega角色行。取代上一版顶部集中工具与箭头整行靠右规则，正文、安全项与身份保留。2026-10-16 用户裁决由 [#416](vega-issue-416-final-collapse.md) 移除 Final 首次收起的阅读保护。
+> 最新信息流视觉契约见[Codex截图对齐](296/vega-issue-296-codex-stream-parity.md)，行为契约见[工具时间线与最终收起](296/vega-issue-296-process-timeline.md)：运行时说明与阶段/工具按序，Final后统一收起。顶部纯计时与细分隔线，阶段箭头紧跟标题且仅hover/focus出现；不显示Vega角色行。取代上一版顶部集中工具与箭头整行靠右规则，正文、安全项与身份保留。2026-10-16 用户裁决由 [#416](416/vega-issue-416-final-collapse.md) 移除 Final 首次收起的阅读保护。
 
 2026-10-15 用户追加的[工具块对齐](vega-tool-block-codex-parity.md)覆盖旧版命令行泛称与常驻耗时规则：紧凑行展示动作和实际对象。最新截图修订要求收起时显示命令且隐藏耗时，展开后标题切为 Ran command in 3s 等简短真实状态，完整命令在详情显示；工具与 Thinking 产品文案统一英文，模型正文不翻译，原有箭头与交互不变；详情保留完整命令和输出，成功/失败底部仅显示 Success/Failure。保留最终运行时间设计、真实状态和安全入口。
 
@@ -79,7 +79,7 @@ Vega 要成为清楚、安静、容易操作的桌面工作台。以下是结合
 
 Markdown 使用独立阅读节奏：段间 12px、标题前 24/后 12px、列表项间 6px、块间 16px。禁止为降密度简单放大全应用字号。表格、列表、代码规则见 v3 §5。
 
-2026-10-13 行内代码与表格的细化契约见[阅读排版](vega-issue-296-inline-code-layout.md)：代码底在实际行盒内垂直内缩并绘制小圆角；表格按共享内容权重分配列宽。沿用当前 conversation 字号/行高、源文及选择复制规则，不以改写文本改善视觉换行。 最新[左右留白契约](vega-issue-296-inline-code-padding.md)要求代码两端各4px真实布局空间，背景不覆盖相邻正文，装饰不进入复制文本。
+2026-10-13 行内代码与表格的细化契约见[阅读排版](296/vega-issue-296-inline-code-layout.md)：代码底在实际行盒内垂直内缩并绘制小圆角；表格按共享内容权重分配列宽。沿用当前 conversation 字号/行高、源文及选择复制规则，不以改写文本改善视觉换行。 最新[左右留白契约](296/vega-issue-296-inline-code-padding.md)要求代码两端各4px真实布局空间，背景不覆盖相邻正文，装饰不进入复制文本。
 
 ## 6. 几何与布局
 
@@ -116,25 +116,26 @@ Markdown 使用独立阅读节奏：段间 12px、标题前 24/后 12px、列表
 
 hover 不是唯一操作路径；focus、菜单打开和上下文菜单提供等价入口。图标按钮有可访问名称及 tooltip，弹层支持 Esc、外部点击及合理回焦。
 
-用户气泡保留右对齐、最大列宽 80%、圆角 16、内距 12/8 与源文换行。[消息复制](vega-issue-78-hover-copy.md)当前禁用的常驻动作行不因本轮重新启用；选择、复制原文和历史定位完整保留。
+用户气泡保留右对齐、最大列宽 80%、圆角 16、内距 12/8 与源文换行。消息复制按 [#477](477/vega-issue-477-copy-actions.md) 恢复为 hover/focus 的轻量入口：用户消息右下、可信最终回复左下，代码块右上常驻复制；旧 [#78](78/vega-issue-78-hover-copy.md) 禁用状态由该卡替代。选择、复制原文和历史定位完整保留。
 
 ## 9. Composer
 
 - 保留一个输入主表面、一行操作区域，以及发送/停止、输入法、快捷键、浮层键位和提交 guard。
-- **#294/#295：底栏不出现分支图标、名称、入口、焦点目标或占位。** 新任务上方 utility bar 保留项目入口和有效 Git 项目的分支入口；已有消息的会话不渲染 utility bar。见 [#294](vega-issue-294-composer-footer-no-branch.md) 与 [A8-01](vega-a8-composer-project-entry.md)。
+- **#294/#295：底栏不出现分支图标、名称、入口、焦点目标或占位。** 新任务上方 utility bar 保留项目入口和有效 Git 项目的分支入口；已有消息的会话不渲染 utility bar。见 [#294](294/vega-issue-294-composer-footer-no-branch.md) 与 [A8-01](vega-a8-composer-project-entry.md)。
 - utility bar 的 37 高、19 内缩、零重叠关系，以及项目/分支切换的权限、焦点、pending 语义不变；见 [utility chip states](vega-utility-chip-states.md)。
-- 保留只读、确认、自动、完全访问四种权限及危险确认；外观不改变 sandbox 与授权语义，见 [#58](vega-issue-58-full-access.md)。
+- 保留只读、确认、自动、完全访问四种权限及危险确认；外观不改变 sandbox 与授权语义，见 [#58](58/vega-issue-58-full-access.md)。
+- [#546 胶囊状态规格 v2.1](546/vega-issue-546-capsule-state-correction.md)限定底栏模型选择与权限切换：28 高、14 半径、左右内距 12；默认透明，hover 浅底，按下或菜单展开时加深，关闭后按指针位置恢复 hover 或透明。保留警示色、禁用、焦点与菜单行为，不全局改动其他按钮。
 - 上下文环进入模型选择器前的紧凑槽位；点击展示模型配置输入上限的使用比例，不等于本轮runtime预算、账单或已验证模型总容量。真实数据、估算标记与降级见 v3 §6。
 
 ## 10. App Shell
 
 主窗口、Settings、Workspace、Terminal、Environment 共享图标、状态、排版和动作密度；本轮不新增无关功能。
 
-- Sidebar 保留项目/置顶/最近任务的唯一投影、渐进展开和已有任务操作。静止任务行不增加常驻相对时间；尾部状态与操作按 v3 固定槽位替换。
+- Sidebar 保留项目/置顶/最近任务的唯一投影、渐进展开和已有任务操作。静止任务行不增加常驻相对时间；尾部状态与操作按 v3 固定槽位替换。分组标题 `Pinned / Projects / Recents` 使用 14px/500，比 13px 行标题高一级，保持弱色弱化层级。
 - Settings footer 收紧外层，按钮本体圆角与内距不变。顶部搜索、前进后退、原生 traffic lights 与拖拽区保留。
 - 全局尾部三个窗口控制仍由窗口管理；保留 [R46](vega-r46-window-anchored-shell-slots.md) 的 104px 预留与动作语义。
-- Environment 默认折叠，宽窄切换、Workspace Dock/最大化、终端焦点与 PTY 身份保持 [#141](vega-issue-141-environment-default-collapsed.md)、[R44](vega-r44-terminal-panel-logic.md) 的契约。
-- 2026-10-13 用户追加的[图片右侧预览](vega-issue-296-image-preview.md)统一现有图片入口：点击进入Workspace，文件名、打开方式、保存操作就近呈现；替代截图居中模态，保留原图与来源生命周期。
+- Environment 默认折叠，宽窄切换、Workspace Dock/最大化、终端焦点与 PTY 身份保持 [#141](141/vega-issue-141-environment-default-collapsed.md)、[R44](vega-r44-terminal-panel-logic.md) 的契约。
+- 2026-10-13 用户追加的[图片右侧预览](296/vega-issue-296-image-preview.md)统一现有图片入口：点击进入Workspace，文件名、打开方式、保存操作就近呈现；替代截图居中模态，保留原图与来源生命周期。
 - 空间不足时先收起次级文案、用溢出菜单或垂直表单；不能截掉主操作或让整窗口承担局部内容滚动。
 
 ## 11. Settings
@@ -159,6 +160,6 @@ hover 沿用 120ms，按下即时反馈。新增 Thinking/摘要 shimmer 仅表�
 
 ## 14. 变更方式
 
-方案通过评审后先冻结阶段与数据契约，再由专职 agent 分批实现；主 agent 协调、审查和集成。每批更新共享 token、组件和规格，保留范围外功能、安全断言及已接受限制，不重开 #291。
+方案通过评审后先冻结阶段与数据契约，再按 [按需委派政策](../AGENTS.md#按需委派) 由主 Agent 默认直接实现或按需委派，保持单一写入者；非实现者独立审查及集成门禁不变。每批更新共享 token、组件和规格，保留范围外功能、安全断言及已接受限制，不重开 #291。
 
 此次清理：旧守则全文归档；本入口移除互相冲突的 744/720 设置宽度、24/20 标题和“五页/八页已交付”状态；18 点集中进入 v3，旧任务文档保留当时事实及明确替代关系。

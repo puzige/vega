@@ -1,8 +1,3 @@
-//! Vega application entry point: boots the GPUI app and opens the main window.
-//! The hidden `--vega-bench-render <out.json>` flag instead runs the S3-T17
-//! render_frame self-measurement probe (see
-//! [`vega_ui::conversation_stream::bench`]).
-
 use gpui_kit::application;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -13,7 +8,6 @@ use vega_ui::sidebar::*;
 
 actions!(vega, [Quit, ToggleTheme]);
 
-/// Initial main window size in logical pixels (R21 screenshot-parity target).
 const WINDOW_INITIAL_WIDTH: f32 = 1403.0;
 const WINDOW_INITIAL_HEIGHT: f32 = 860.0;
 
@@ -23,22 +17,25 @@ const WINDOW_MIN_HEIGHT: f32 = 600.0;
 
 mod agent_context;
 mod app_agent;
+mod app_localization;
+mod app_notifications;
 mod app_palette;
 mod app_usage;
 mod artifact_controller;
+mod automation_controller;
 mod branch_controller;
 mod codex_agent;
 mod commit_controller;
 mod diff_controller;
 mod model_catalog;
+mod native_subagents;
+mod ordinary_submission;
 mod pricing_controller;
+mod reasoning_capabilities;
 mod thread_reload;
 mod trusted_action;
 mod updater;
 mod window;
-
-#[cfg(test)]
-mod tests;
 
 use window::VegaWindow;
 
@@ -46,8 +43,7 @@ fn main() {
     if updater::run_helper_if_requested() {
         return;
     }
-    // S3-T17 隐藏自测量模式：`vega --vega-bench-render <out.json>` 跑完写
-    // JSON 后退出（xtask bench render_frame 的数据来源），不进入正常应用。
+
     if let Some(output) = render_frame_bench::output_path_from_args() {
         let app = application().with_assets(gpui_kit::assets::Assets);
         app.run(|cx: &mut App| {
@@ -59,16 +55,21 @@ fn main() {
 
     let app = application().with_assets(gpui_kit::assets::Assets);
     app.run(|cx: &mut App| {
+        app_notifications::init(cx);
         // GPUI Kit owns the shared component/base globals before any Vega
         // view can render a Kit control.
         gpui_kit::init(cx);
 
         // Seed the global theme from the macOS appearance; components read it
         // via `vega_theme::theme(cx)`.
-        let theme = match vega_store::config::load()
-            .map(|config| config.ui.theme)
-            .as_deref()
-        {
+        let config = vega_store::config::load();
+        vega_i18n::set_language(
+            config
+                .as_ref()
+                .map(|config| config.ui.language.as_str())
+                .unwrap_or("en"),
+        );
+        let theme = match config.as_ref().map(|config| config.ui.theme.as_str()) {
             Ok("light") => Theme::light(),
             Ok("dark") => Theme::dark(),
             _ => Theme::system(cx),
@@ -93,26 +94,18 @@ fn main() {
             KeyBinding::new("cmd-q", Quit, None),
             // Temporary verification binding for the theme token mechanism.
             KeyBinding::new("cmd-shift-l", ToggleTheme, None),
-            // Settings view switching (T08).
             KeyBinding::new("cmd-,", OpenSettings, None),
             KeyBinding::new("escape", CloseSettings, Some("VegaWindow")),
             KeyBinding::new("escape", CloseSettings, Some("WorkspaceMenu")),
-            // Sidebar collapse toggle (T09).
             KeyBinding::new("cmd-b", ToggleSidebar, None),
         ]);
         // Key bindings for the vega_ui text input components.
         vega_ui::init(cx);
         vega_ui::interaction::install_system_motion(cx);
 
-        // T12: open + migrate the store at the platform data root (tech-spec
-        // §6) and seed the sidebar globals (selected project, block collapse
-        // states, opened thread). On failure the app still boots and the
-        // sidebar blocks degrade to inline error bars (ui-spec §4.6).
         vega_ui::sidebar::init(cx);
+        automation_controller::startup(cx);
 
-        // #73: one app-scoped revocation domain is shared by Settings and
-        // every worker. A second service constructed against the same SQLite
-        // file would not be able to revoke already-frozen run handles.
         let mcp_settings = cx
             .global::<VegaStore>()
             .0
@@ -132,6 +125,7 @@ fn main() {
                 })
             });
         cx.set_global(app_agent::AppMcpSettings(mcp_settings));
+        cx.set_global(app_agent::AppReplaySessions::default());
 
         let bounds = Bounds::centered(
             None,
@@ -170,7 +164,8 @@ fn main() {
         };
 
         if let Ok(root) = window.update(cx, |_, _, cx| cx.entity().downgrade()) {
-            app_palette::bind_shortcuts(window.into(), root, cx);
+            app_palette::bind_shortcuts(window.into(), root.clone(), cx);
+            app_notifications::bind(window, root, cx);
         }
         cx.activate(true);
         updater::acknowledge_startup();

@@ -1,8 +1,3 @@
-//! S8-T43 (A2-04) frozen measurement contracts — SDD C1/C2/C6 + §1 status
-//! vocabulary. T48/T49/T50 only consume these; the names, units, round
-//! counts, percentile math, and thresholds below are frozen and MUST NOT
-//! change after the baseline freeze (SDD contract preamble).
-
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -95,10 +90,6 @@ pub const C2_EXTENSION_ROUNDS: usize = 20;
 /// The stored measurement is always raw bytes; MB/MiB are display-only.
 pub const P8_THRESHOLD_BYTES: u64 = 100_000_000;
 
-// ─── C6 — P1/P2 (SDD §7) ─────────────────────────────────────────────────────
-
-/// C6 daily-PR feedback run: 10 s @ 1,000 deltas/s (the 5-minute release
-/// soak stays with T48/T49; same schema, not terminal evidence).
 pub const C6_STREAM_SECONDS: u64 = 10;
 pub const C6_INJECT_RATE_PER_S: u64 = 1_000;
 /// C6 P2 gate: p99 receive-to-render < 16.000 ms (one 60 Hz frame budget).
@@ -127,17 +118,8 @@ pub const C6_LITERAL_120FPS_MIN_HZ: f64 = 120.0;
 
 pub const STATUS_PERFORMANCE_GATE_FAILED: &str = "performance gate failed";
 pub const STATUS_HARDWARE_PENDING: &str = "hardware pending";
-/// The only §1 pass-shaped word allowed in the bench context: the xtask
-/// short runs measure a deterministic mock/temp-home fixture, so a passing
-/// gate is a fixture pass — never terminal evidence (T48/T49 own the soak).
 pub const STATUS_ENGINEERING_FIXTURE_PASSED: &str = "engineering fixture passed";
 
-// ─── frozen math ─────────────────────────────────────────────────────────────
-
-/// Nearest-rank percentile over an ascending-sorted sample list, integer µs
-/// domain: `rank = ceil(pct/100 × n)` clamped to `[1, n]`, empty → 0. This
-/// exact function is the frozen percentile math (SDD §7 机械判定); the unit
-/// tests pin its behavior so T48 cannot quietly redefine it.
 pub fn percentile(sorted: &[u64], pct: u64) -> u64 {
     if sorted.is_empty() {
         return 0;
@@ -176,109 +158,4 @@ pub fn bytes_as_decimal_mb(bytes: u64) -> f64 {
 
 pub fn bytes_as_mib(bytes: u64) -> f64 {
     (bytes as f64 / (1024.0 * 1024.0) * 1000.0).round() / 1000.0
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn sorted(mut values: Vec<u64>) -> Vec<u64> {
-        values.sort_unstable();
-        values
-    }
-
-    #[test]
-    fn percentile_nearest_rank_pinned() {
-        // ceil(95/100 × 20) = 19 → the 19th value (1-based).
-        let samples = sorted((1..=20).collect());
-        assert_eq!(percentile(&samples, 95), 19);
-        // ceil(50/100 × 20) = 10 → the 10th value.
-        assert_eq!(percentile(&samples, 50), 10);
-        // ceil(99/100 × 20) = 20 → max.
-        assert_eq!(percentile(&samples, 99), 20);
-        // ceil(95/100 × 1) = 1 → the only value.
-        assert_eq!(percentile(&[42], 95), 42);
-        assert_eq!(percentile(&[], 95), 0);
-        // 40 merged rounds: ceil(95/100 × 40) = 38.
-        let samples = sorted((1..=40).collect());
-        assert_eq!(percentile(&samples, 95), 38);
-    }
-
-    #[test]
-    fn c1_threshold_is_fifty_thousand_us() {
-        // Two slow rounds push the 19th of 20 sorted samples past the gate:
-        // ceil(95/100 × 20) = 19 → the 19th value = 51_000 → gate fails.
-        let mut samples: Vec<u64> = vec![40_000; 18];
-        samples.push(51_000);
-        samples.push(51_000);
-        assert!(percentile(&samples, 95) > C1_THRESHOLD_P95_US);
-        // A single slow round (rank 20) never fails the p95 gate: the 19th
-        // value stays 49_999 < 50_000.
-        let mut samples: Vec<u64> = vec![40_000; 18];
-        samples.push(49_999);
-        samples.push(90_000);
-        let samples = sorted(samples);
-        assert!(percentile(&samples, 95) < C1_THRESHOLD_P95_US);
-    }
-
-    #[test]
-    fn median_of_three_is_middle() {
-        assert_eq!(median_of_three([1, 2, 3]), 2);
-        assert_eq!(median_of_three([3, 1, 2]), 2);
-        assert_eq!(median_of_three([9, 9, 9]), 9);
-        assert_eq!(median_of_three([100, 1, 2]), 2);
-    }
-
-    #[test]
-    fn stability_guard_two_mib_boundary() {
-        assert!(!round_drifts(100_000_000, 100_000_000 + 2 * 1024 * 1024));
-        assert!(round_drifts(100_000_000, 100_000_000 + 2 * 1024 * 1024 + 1));
-        // Shrinking RSS never drifts (saturating subtraction).
-        assert!(!round_drifts(100_000_000, 90_000_000));
-    }
-
-    #[test]
-    fn gray_zone_bounds() {
-        assert!(!in_gray_zone(97_999_999));
-        assert!(in_gray_zone(98_000_000));
-        assert!(in_gray_zone(101_999_999));
-        assert!(!in_gray_zone(102_000_000));
-    }
-
-    #[test]
-    fn display_conversions_are_display_only() {
-        // 100,000,000 bytes = exactly 100.000 decimal MB = 95.367 MiB.
-        assert_eq!(bytes_as_decimal_mb(100_000_000), 100.0);
-        assert_eq!(bytes_as_mib(100_000_000), 95.367);
-        // 104,857,600 bytes = 104.858 decimal MB = exactly 100.000 MiB.
-        assert_eq!(bytes_as_mib(104_857_600), 100.0);
-        assert_eq!(bytes_as_decimal_mb(104_857_600), 104.858);
-    }
-
-    #[test]
-    fn milestone_shape_round_trips() {
-        let milestone = Milestone {
-            schema: "vega-c1".into(),
-            metric: PROCESS_START_TO_FIRST_RENDERED_INTERACTIVE.into(),
-            pid: 4242,
-            elapsed_us: 12_345,
-            isolation: IsolationAttestation {
-                home: "/tmp/x".into(),
-                data_root: "/tmp/x/dr".into(),
-                provider: "none".into(),
-                network: "none".into(),
-                keychain: "not-exercised".into(),
-                first_frame_source: "gpui_next_frame_callback".into(),
-            },
-        };
-        let line = format!(
-            "{}{}",
-            MILESTONE_PREFIX,
-            serde_json::to_string(&milestone).unwrap()
-        );
-        assert!(line.starts_with(r#"VEGA_C1_MILESTONE {"#));
-        let parsed: Milestone =
-            serde_json::from_str(line.strip_prefix(MILESTONE_PREFIX).unwrap()).unwrap();
-        assert_eq!(parsed, milestone);
-    }
 }

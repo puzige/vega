@@ -15,7 +15,9 @@ impl ConversationStream {
     pub fn apply_approved_not_started(&mut self, cx: &mut Context<Self>) {
         self.approved_not_started = true;
         self.controller_runtime_error = None;
-        self.controller_error = Some("已批准计划尚未执行；恢复入口待补充".into());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(
+            "ui.the_approved_plan_has_not_run_yet_a",
+        ));
         cx.notify();
     }
 
@@ -29,7 +31,12 @@ impl ConversationStream {
             return;
         }
         let id = plan.id.clone();
-        let card = cx.new(|cx| PlanCard::new(plan, cx));
+        let notices = self.generated_notices.get(&id).cloned().unwrap_or_default();
+        let card = cx.new(|cx| {
+            let mut card = PlanCard::new(plan, cx);
+            card.set_generated_notices(notices, cx);
+            card
+        });
         cx.subscribe(&card, |_, _, event: &PlanReviewRequested, cx| {
             cx.emit(event.clone());
         })
@@ -77,13 +84,6 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// Appends the read-only per-task cost summary card of one finished
-    /// assistant message (S7-T40/C4). The typed projection arrives from the
-    /// app layer via `vega_conversation::summary`; the stream never queries
-    /// SQLite and never computes a cost formula. Applications are keyed by
-    /// the assistant message id and first-wins: duplicates and later stale
-    /// projections of the same task are ignored, and projections of foreign
-    /// threads are dropped.
     pub fn apply_task_summary(&mut self, summary: TaskCostSummary, cx: &mut Context<Self>) {
         if self.summary_cards.contains_key(&summary.message_id) {
             return;
@@ -100,15 +100,8 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// Applies one typed history page (S8-T45/C7). The first page fills the
-    /// empty route-open stream; later pages PREPEND above the loaded history
-    /// when the user scrolls up. Pages are converted through the typed
-    /// projections only — no SQLite ever runs in this crate — and duplicate
-    /// durable cards (summary/plan/tool) reconcile first-wins. Prepends keep
-    /// the viewport anchored at the page boundary (uniform row heights make
-    /// the pixel adjustment exact), and in-flight entry indices shift so a
-    /// streaming run keeps writing into its own turn.
     pub fn apply_history_page(&mut self, page: HistoryPage, cx: &mut Context<Self>) {
+        let subagents = page.subagents.clone();
         let was_empty = self.entries.is_empty();
         self.ensure_entry_identities();
         let anchor = self.scroll_anchor_snapshot();
@@ -121,14 +114,7 @@ impl ConversationStream {
         self.entry_identities = hydrated_identities;
         self.list_prepend(prepended_entries);
         if prepended_entries > 0 {
-            if let Some((_, index)) = &mut self.active_agent_message
-                && *index != usize::MAX
-            {
-                *index += prepended_entries;
-            }
-            if let Some((_, index)) = &mut self.last_finished_agent_message {
-                *index += prepended_entries;
-            }
+            self.grow_entry_indices(0, prepended_entries);
             self.restore_scroll_anchor(&anchor);
         }
         self.hydration.older_cursor = page.older_cursor;
@@ -138,10 +124,19 @@ impl ConversationStream {
         self.hydration.loading = false;
         self.hydration.paused = false;
         self.hydration.paused_direction = None;
+        for snapshot in subagents {
+            self.apply_subagent(snapshot, cx);
+        }
+        self.restore_subagent_request_entries();
+        self.order_ordinary_history_entries();
+        if !anchor.following_tail {
+            self.restore_scroll_anchor(&anchor);
+        }
         cx.notify();
     }
 
     pub fn apply_newer_history_page(&mut self, page: HistoryPage, cx: &mut Context<Self>) {
+        let subagents = page.subagents.clone();
         self.ensure_entry_identities();
         let anchor = self.scroll_anchor_snapshot();
         let previous_len = self.entries.len();
@@ -158,6 +153,14 @@ impl ConversationStream {
         if appended_entries > 0 && !anchor.following_tail {
             self.restore_scroll_anchor(&anchor);
         }
+        for snapshot in subagents {
+            self.apply_subagent(snapshot, cx);
+        }
+        self.restore_subagent_request_entries();
+        self.order_ordinary_history_entries();
+        if !anchor.following_tail {
+            self.restore_scroll_anchor(&anchor);
+        }
         cx.notify();
     }
 
@@ -169,7 +172,30 @@ impl ConversationStream {
         let mut hydrated: Vec<StreamEntry> = Vec::new();
         let mut hydrated_identities: Vec<StreamEntryIdentity> = Vec::new();
         let mut assistant_segments: HashMap<String, usize> = HashMap::new();
+        for entry in &history_entries {
+            if let HistoryEntry::RunContinuation {
+                previous_assistant_id,
+                user_message_id,
+                next_assistant_id,
+            } = entry
+            {
+                self.remember_run_continuation(
+                    vega_conversation::types::RunContinuation {
+                        previous_assistant_id: previous_assistant_id.clone(),
+                        user_message_id: user_message_id.clone(),
+                        next_assistant_id: next_assistant_id.clone(),
+                    },
+                    cx,
+                );
+            }
+        }
+        let continuation_runs = self
+            .run_continuations
+            .values()
+            .flat_map(|relation| [&relation.previous_assistant_id, &relation.next_assistant_id])
+            .collect::<HashSet<_>>();
         let response_boundaries = phase::history_response_boundaries(&history_entries);
+        let generated_notices = generated_notice::history_notices(&history_entries);
         let mut assistant_offsets = HashMap::<String, usize>::new();
         let activity_runs: HashSet<_> = history_entries
             .iter()
@@ -187,7 +213,10 @@ impl ConversationStream {
                     status,
                     execution_duration_ms: duration,
                     ..
-                } if duration.is_some() || activity_runs.contains(message_id) => {
+                } if duration.is_some()
+                    || activity_runs.contains(message_id)
+                    || continuation_runs.contains(message_id) =>
+                {
                     Some((message_id.clone(), (*status, *duration)))
                 }
                 _ => None,
@@ -196,12 +225,13 @@ impl ConversationStream {
         let mut restored_responses: HashMap<String, phase::RunResponses> = HashMap::new();
         for entry in history_entries {
             match entry {
+                HistoryEntry::RunContinuation { .. } | HistoryEntry::GeneratedNotice { .. } => {}
                 HistoryEntry::CredentialContinuation {
                     message_id,
                     failure,
                     ..
                 } => {
-                    self.run_failures.insert(message_id, failure);
+                    self.remember_run_failure(&message_id, failure);
                 }
                 HistoryEntry::AssistantResponseMetadata {
                     message_id,
@@ -233,6 +263,24 @@ impl ConversationStream {
                     message_id,
                     images,
                 } => {
+                    let identity =
+                        self.durable_entry_identity(&message_id, "user-images", Some(seq));
+                    if let Some(index) = self
+                        .entry_identities
+                        .iter()
+                        .position(|existing| existing.key == identity.key)
+                    {
+                        self.entry_identities[index].sequence = Some(seq);
+                        let unchanged = matches!(&self.entries[index], StreamEntry::UserImages { images: current }
+                            if current.iter().map(|image| &image.image).eq(images.iter()));
+                        if !unchanged {
+                            self.entries[index] = StreamEntry::UserImages {
+                                images: self.history_image_previews(images, cx),
+                            };
+                            self.invalidate_item(Some(index));
+                        }
+                        continue;
+                    }
                     hydrated.push(StreamEntry::UserImages {
                         images: self.history_image_previews(images, cx),
                     });
@@ -247,6 +295,23 @@ impl ConversationStream {
                     message_id,
                     content,
                 } => {
+                    let identity = self.durable_entry_identity(&message_id, "user-text", Some(seq));
+                    if let Some(index) = self
+                        .entry_identities
+                        .iter()
+                        .position(|existing| existing.key == identity.key)
+                    {
+                        self.entry_identities[index].sequence = Some(seq);
+                        if ordinary_submissions::update_user_history_text(
+                            &mut self.entries[index],
+                            &content,
+                            &mut self.user_block_seq,
+                        ) {
+                            self.text_cache.get_mut().retire(&identity.key);
+                            self.invalidate_item(Some(index));
+                        }
+                        continue;
+                    }
                     let block_id = self.user_block_seq;
                     self.user_block_seq += 1;
                     hydrated.push(StreamEntry::User {
@@ -302,11 +367,21 @@ impl ConversationStream {
                         let part = &content[part_start..part_end];
                         let mut stream = MarkdownStream::new();
                         stream.append(part);
-                        stream.finish();
+                        let copy = MessageCopy::new(part);
+                        if let Some(notices) = generated_notices.get(&(message_id.clone(), seq)) {
+                            copy.set_generated_notices(
+                                notices
+                                    .iter()
+                                    .filter_map(|span| {
+                                        span.fragments(start + part_start..start + part_end)
+                                    })
+                                    .collect(),
+                            );
+                        }
                         let mut model = StreamModel::default();
-                        model.sync(&stream.snapshot(), &self.counters);
+                        copy.finish_model(&mut stream, &mut model, &self.counters);
                         hydrated.push(StreamEntry::Assistant {
-                            copy: MessageCopy::new(part),
+                            copy,
                             stream: Box::new(stream),
                             model,
                             failure: (status
@@ -348,7 +423,15 @@ impl ConversationStream {
                             cx,
                         );
                     }
-                    let card = cx.new(|cx| PlanCard::new(plan, cx));
+                    let notices = generated_notices
+                        .get(&(id.clone(), seq))
+                        .cloned()
+                        .unwrap_or_default();
+                    let card = cx.new(|cx| {
+                        let mut card = PlanCard::new(plan, cx);
+                        card.set_generated_notices(notices, cx);
+                        card
+                    });
                     cx.subscribe(&card, |_, _, event: &PlanReviewRequested, cx| {
                         cx.emit(event.clone());
                     })
@@ -394,6 +477,16 @@ impl ConversationStream {
                     let card = cx.new(|_| ToolCard::hydrated(input, status, approval, result));
                     self.observe_tool_card(&card, cx);
                     self.tool_cards.insert(call_id.clone(), card.clone());
+                    self.refresh_subagent_card(&card, cx);
+                    if card.read(cx).is_subagent_invocation() {
+                        hydrated.push(StreamEntry::Tool { card });
+                        hydrated_identities.push(self.tool_call_identity(
+                            &call_id,
+                            Some(&message_id),
+                            Some(seq),
+                        ));
+                        continue;
+                    }
                     let run_details =
                         self.run_activity_groups
                             .get(&message_id)
@@ -464,7 +557,12 @@ impl ConversationStream {
                 }
             }
         }
-        for (message_id, responses) in restored_responses {
+        for (message_id, mut responses) in restored_responses {
+            if terminal_runs.get(&message_id).is_some_and(|(status, _)| {
+                *status == vega_conversation::history::AssistantStatus::Done
+            }) {
+                responses.refresh_final_copy(&message_id, &hydrated, &hydrated_identities);
+            }
             if let Some(group) = self.run_activity_groups.get(&message_id)
                 && terminal_runs.get(&message_id).is_some_and(|(status, _)| {
                     *status == vega_conversation::history::AssistantStatus::Done
@@ -491,7 +589,21 @@ impl ConversationStream {
         if let Some(group) = self.run_activity_groups.get(message_id) {
             return group.clone();
         }
-        let group = cx.new(|cx| RunActivityGroup::new(status, execution_duration_ms, false, cx));
+        let continued = self.run_continuations.contains_key(message_id);
+        let continuation_successor = self
+            .run_continuations
+            .values()
+            .any(|relation| relation.next_assistant_id == message_id);
+        let group = cx.new(|cx| {
+            let mut group = RunActivityGroup::new(status, execution_duration_ms, false, cx);
+            if continuation_successor {
+                group.mark_continuation_successor(cx);
+            }
+            if continued {
+                group.continue_run(cx);
+            }
+            group
+        });
         self.observe_run_activity_group(&group, cx);
         entries.push(StreamEntry::RunActivity {
             group: group.clone(),
@@ -535,17 +647,7 @@ impl ConversationStream {
         self.list_insert(index);
         let identity = self.durable_entry_identity(message_id, "run-activity", sequence);
         self.set_entry_identity(index, identity);
-        if let Some((_, active_index)) = &mut self.active_agent_message
-            && *active_index != usize::MAX
-            && index <= *active_index
-        {
-            *active_index += 1;
-        }
-        if let Some((_, finished_index)) = &mut self.last_finished_agent_message
-            && index <= *finished_index
-        {
-            *finished_index += 1;
-        }
+        self.grow_entry_indices(index, 1);
     }
 
     pub(crate) fn ensure_live_run_activity_segment(
@@ -644,17 +746,18 @@ impl ConversationStream {
             | HistoryEntry::AssistantText { message_id: id, .. }
             | HistoryEntry::AssistantScreenshot { message_id: id, .. }
             | HistoryEntry::Tool { message_id: id, .. }
-            | HistoryEntry::AssistantResponseMetadata { message_id: id, .. } => id == message_id,
+            | HistoryEntry::AssistantResponseMetadata { message_id: id, .. }
+            | HistoryEntry::GeneratedNotice { message_id: id, .. } => id == message_id,
             HistoryEntry::Plan { plan, .. } => plan.id == message_id,
             HistoryEntry::Summary { summary, .. } => summary.message_id == message_id,
-            HistoryEntry::SkillActivation { .. } => false,
+            HistoryEntry::SkillActivation { .. } | HistoryEntry::RunContinuation { .. } => false,
         });
         if !contains_target {
             self.message_location_status = Some(MessageLocationStatus::NotFound);
             cx.notify();
             return false;
         }
-        self.entries.clear();
+        let ordinary_entries = self.take_ordinary_history_entries();
         self.assistant_role_rows.clear();
         self.run_notices.clear();
         self.response_checkpoint = None;
@@ -662,14 +765,23 @@ impl ConversationStream {
         self.controller_runtime_error = None;
         self.entry_identities.clear();
         self.measured_entry_heights.clear();
+        self.text_cache.get_mut().clear();
         self.message_anchor_hovered = None;
         self.message_anchor_preview_hovered = None;
         self.message_anchor_keyboard_id = None;
         self.list.reset(0);
         self.tool_cards.clear();
+        self.preserve_subagent_requests(cx);
+        self.subagent_executions.clear();
         self.run_activity_groups.clear();
+        self.run_continuations.clear();
         self.run_responses.clear();
+        self.generated_notices.clear();
         self.artifact_cards.clear();
+        self.artifact_call_owners.clear();
+        self.artifact_history_generation = self.artifact_history_generation.wrapping_add(1);
+        self.artifact_groups.clear();
+        self.finished_artifact_turns.clear();
         self.plan_cards.clear();
         self.summary_cards.clear();
         self.active_agent_message = None;
@@ -678,6 +790,8 @@ impl ConversationStream {
         self.active_run_activity_segment = None;
         self.active_segment_ordinal = 0;
         self.active_response_start = None;
+        self.active_response_id = None;
+        self.response_reasoning_completed = false;
         self.active_segment_has_text = false;
         self.active_segment_has_visible_text = false;
         self.active_thinking = None;
@@ -690,6 +804,7 @@ impl ConversationStream {
         self.deferred_permission = None;
         self.hydration = HistoryHydration::default();
         self.apply_history_page(page, cx);
+        self.restore_ordinary_history_entries(ordinary_entries, cx);
         if let Some(anchor) = restore_anchor
             && (self.restore_process_anchor(anchor, cx) || self.restore_scroll_anchor(anchor))
         {
@@ -707,10 +822,6 @@ impl ConversationStream {
     ) {
         self.message_location_status = Some(status);
         cx.notify();
-    }
-
-    pub fn message_location_status(&self) -> Option<MessageLocationStatus> {
-        self.message_location_status
     }
 
     /// Releases the in-flight page slot after a failed load. Auto-retry waits
@@ -774,63 +885,6 @@ impl ConversationStream {
         self.permission_queue.clone()
     }
 
-    /// The authoritative run mode this composer projects. Read by the
-    /// application acceptance harness to prove a `+`-menu selection landed on
-    /// the durable thread rather than only in local UI state.
-    #[doc(hidden)]
-    pub fn thread_mode(&self) -> ThreadMode {
-        self.thread.mode
-    }
-
-    /// The authoritative permission mode this composer projects. Same seam as
-    /// [`Self::thread_mode`].
-    #[doc(hidden)]
-    pub fn thread_permission_mode(&self) -> PermissionMode {
-        self.thread.permission_mode
-    }
-
-    /// The thinking choice this composer projects (`provider_default`,
-    /// `disabled`, or a declared effort). R57 P3 acceptance reads it to prove
-    /// a slider selection became the composer's authoritative state rather
-    /// than only moving the knob.
-    #[doc(hidden)]
-    pub fn thinking_choice(&self) -> &str {
-        &self.composer_defaults.thinking
-    }
-
-    /// The exact reasoning capability projection this composer currently
-    /// carries, or `None` when the model has no profile. R57 P3 acceptance
-    /// reads it to prove the slider's tier list is the model's own
-    /// `ReasoningProfile.efforts` rather than a fixed ladder.
-    #[doc(hidden)]
-    pub fn reasoning_profile(&self) -> Option<&ReasoningProfileProjection> {
-        self.composer_defaults.reasoning.as_ref()
-    }
-
-    /// The mounted tier slider (R57 P3). The application acceptance harness
-    /// reads its live tier and dot count to prove the composer's projection
-    /// reached the real component.
-    #[doc(hidden)]
-    pub fn thinking_slider(&self) -> Entity<ThinkingSlider> {
-        self.thinking_slider.clone()
-    }
-
-    /// Which model-picker level is mounted, if any (R59). The application
-    /// acceptance harness reads it to prove the two levels are mutually
-    /// exclusive and that a tier-only round trip leaves the slider mounted.
-    #[doc(hidden)]
-    pub fn model_picker_level(&self) -> ModelPickerLevel {
-        self.model_picker_level
-    }
-
-    /// Number of configured model options the selector offers (#60 R1). R57 P3
-    /// acceptance waits on it because the popup (and therefore the slider it
-    /// hosts) only opens once the app published the catalog projection.
-    #[doc(hidden)]
-    pub fn model_options_len(&self) -> usize {
-        self.model_options.len()
-    }
-
     pub fn branch_selector(&self) -> Entity<BranchSelector> {
         self.branch_selector.clone()
     }
@@ -844,43 +898,8 @@ impl ConversationStream {
         self.active_agent_message.is_some()
     }
 
-    /// Number of hydrated durable entries the stream currently carries
-    /// (S8-T45/C7 observability for the app-layer fence tests; the row
-    /// layout itself stays crate-private).
-    pub fn hydrated_entry_count(&self) -> usize {
-        self.entries
-            .iter()
-            .filter(|entry| {
-                matches!(
-                    entry,
-                    StreamEntry::User { .. }
-                        | StreamEntry::Assistant { .. }
-                        | StreamEntry::Tool { .. }
-                        | StreamEntry::ToolGroup { .. }
-                        | StreamEntry::Plan { .. }
-                        | StreamEntry::Summary { .. }
-                )
-            })
-            .count()
-    }
-
-    /// Whether a hydration page may still be requested for scroll-up
-    /// (exposes the pure gate to the app layer's fence tests).
-    pub fn hydration_cursor(&self) -> Option<i64> {
-        self.hydration.older_cursor
-    }
-
     pub fn has_pending_permission(&self) -> bool {
         self.permission_queue.has_pending()
-    }
-
-    /// Content-free presence check for the production app-entry acceptance
-    /// harness. A queue latch may be pending before its matching proposal is
-    /// ingressed, so callers that need to prove a visible card must check this
-    /// separately.
-    #[doc(hidden)]
-    pub fn has_active_permission_card(&self) -> bool {
-        self.active_permission.is_some()
     }
 
     pub fn has_pending_plan_review(&self, cx: &App) -> bool {
@@ -900,6 +919,7 @@ impl ConversationStream {
             || self.trusted_action_busy
             || self.active_permission.is_some()
             || self.permission_queue.has_pending()
+            || self.has_pending_user_question()
             || self.has_pending_plan_review(cx)
     }
 
@@ -973,25 +993,35 @@ impl ConversationStream {
             return;
         };
         let call_id = request.call_id.clone();
-        let Some(card) = self.tool_cards.get(&call_id).cloned() else {
-            self.deferred_permission = Some(pending);
-            return;
-        };
-        let identity_matches = card
-            .read(cx)
-            .permission_identity()
-            .is_some_and(|(tool, target)| tool == request.tool && target == request.display_target);
-        if !identity_matches {
-            drop(pending);
-            card.update(cx, ToolCard::fail_corrupt);
-            self.invalidate_tool_card(&card, cx);
-            return;
+        let card = self.tool_cards.get(&call_id).cloned();
+        let identity = card
+            .as_ref()
+            .and_then(|card| card.read(cx).permission_identity());
+        match pending.presentation(identity) {
+            vega_conversation::types::PermissionPresentation::WaitingForTool => {
+                self.deferred_permission = Some(pending);
+                return;
+            }
+            vega_conversation::types::PermissionPresentation::Mismatch => {
+                drop(pending);
+                if let Some(card) = card {
+                    card.update(cx, ToolCard::fail_corrupt);
+                    self.invalidate_tool_card(&card, cx);
+                }
+                return;
+            }
+            vega_conversation::types::PermissionPresentation::Ready => {}
         }
+        let allow_persistent = pending.allows_persistent_permission();
+        let codex_identity = card
+            .as_ref()
+            .and_then(|card| card.read(cx).codex_permission_display());
         self.remove_active_permission(cx);
         let Some((request, lease)) = pending.into_parts() else {
             return;
         };
-        let card = cx.new(|cx| PermissionCard::new(&request, lease, cx));
+        let card =
+            cx.new(|cx| PermissionCard::new(&request, lease, allow_persistent, codex_identity, cx));
         cx.subscribe(&card, |this, card, _: &PermissionCardResolved, cx| {
             if this
                 .active_permission
@@ -1031,14 +1061,10 @@ impl ConversationStream {
         {
             self.entries.remove(index);
             self.list_remove(index);
+            self.shift_entry_indices(index, 1);
             self.merge_tool_entries_around(index, cx);
         }
         cx.notify();
-    }
-
-    /// Total row count across all entries.
-    pub(crate) fn total_rows(&self, cx: &App) -> usize {
-        self.entries.iter().map(|entry| entry.row_count(cx)).sum()
     }
 
     fn observe_run_activity_group(
@@ -1095,6 +1121,16 @@ impl ConversationStream {
                     {
                         Some(index)
                     }
+                    StreamEntry::ContextCompaction { .. }
+                        if this
+                            .entry_identities
+                            .get(index)
+                            .and_then(|identity| identity.message_id.as_ref())
+                            .and_then(|owner| this.run_activity_groups.get(owner))
+                            == Some(&group) =>
+                    {
+                        Some(index)
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>();
@@ -1137,6 +1173,82 @@ impl ConversationStream {
         .detach();
     }
 
+    fn remember_run_continuation(
+        &mut self,
+        relation: vega_conversation::types::RunContinuation,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let previous = &relation.previous_assistant_id;
+        let next = &relation.next_assistant_id;
+        if let Some(known) = self.run_continuations.get(previous) {
+            return known == &relation;
+        }
+        if previous == next
+            || previous == &relation.user_message_id
+            || next == &relation.user_message_id
+            || self.run_continuations.values().any(|known| {
+                known.next_assistant_id == *next
+                    || known.user_message_id == relation.user_message_id
+            })
+        {
+            return false;
+        }
+        let mut successor = next.as_str();
+        while let Some(known) = self.run_continuations.get(successor) {
+            successor = &known.next_assistant_id;
+            if successor == previous {
+                return false;
+            }
+        }
+        let anchor = self.scroll_anchor_snapshot();
+        if let Some(group) = self.run_activity_groups.get(previous) {
+            group.update(cx, |group, cx| group.continue_run(cx));
+        }
+        if let Some(group) = self.run_activity_groups.get(next) {
+            group.update(cx, |group, cx| group.mark_continuation_successor(cx));
+        }
+        let indexes = self
+            .entry_identities
+            .iter()
+            .enumerate()
+            .filter_map(|(index, identity)| {
+                identity
+                    .message_id
+                    .as_ref()
+                    .is_some_and(|id| id == previous || id == next)
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        self.run_continuations.insert(previous.clone(), relation);
+        for index in indexes {
+            self.invalidate_item(Some(index));
+            self.invalidate_item((index + 1 < self.entries.len()).then_some(index + 1));
+        }
+        self.restore_scroll_anchor(&anchor);
+        cx.notify();
+        true
+    }
+
+    fn invalidate_codex_copy_entries(&mut self, message_id: &str) {
+        if self.thread.backend != TaskBackend::Codex {
+            return;
+        }
+        let indexes = self
+            .entries
+            .iter()
+            .zip(&self.entry_identities)
+            .enumerate()
+            .filter_map(|(index, (entry, identity))| {
+                (matches!(entry, StreamEntry::Assistant { .. })
+                    && identity.message_id.as_deref() == Some(message_id))
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        for index in indexes {
+            self.invalidate_item(Some(index));
+        }
+    }
+
     fn finish_run_activity(
         &mut self,
         message_id: &str,
@@ -1144,6 +1256,9 @@ impl ConversationStream {
         execution_duration_ms: Option<u64>,
         cx: &mut Context<Self>,
     ) {
+        if status != RunActivityStatus::Completed {
+            self.clear_final_copy(message_id);
+        }
         if let Some(group) = self.run_activity_groups.get(message_id).cloned() {
             if self
                 .active_agent_message
@@ -1161,59 +1276,65 @@ impl ConversationStream {
                 group.complete(status, execution_duration_ms, cx)
             });
         }
+        self.invalidate_codex_copy_entries(message_id);
     }
 
     /// Applies an already-durable shared lifecycle event. The UI never reads
     /// SQLite and never consumes runtime-local events.
     pub fn apply_event(&mut self, event: ConversationEvent, cx: &mut Context<Self>) {
-        // S7-T39: the bounded meter projection consumes the same accepted
-        // events (fence below) before ownership moves into the render path.
-        self.feed_meter(&event, cx);
-        self.clear_recovered_retry(&event);
-        let phase = match &event {
-            ConversationEvent::TextDelta { message_id, delta }
-                if delta.chars().any(|character| !character.is_whitespace())
-                    && self
-                        .active_agent_message
-                        .as_ref()
-                        .is_some_and(|(id, _)| id == message_id) =>
-            {
-                Some(run_activity::RunPhase::Responding)
-            }
-            ConversationEvent::ToolCallProposed { call }
-                if !self.tool_cards.contains_key(&call.id) =>
-            {
-                Some(run_activity::RunPhase::Tool)
-            }
-            ConversationEvent::ToolCallRunning { call_id }
-            | ConversationEvent::ToolCallFinished { call_id, .. }
-                if self.tool_cards.get(call_id).is_some_and(|card| {
-                    self.active_run_activity
-                        .as_ref()
-                        .is_some_and(|(_, group)| group.read(cx).contains_tool(card, cx))
-                }) =>
-            {
-                Some(
-                    if matches!(&event, ConversationEvent::ToolCallFinished { .. }) {
-                        run_activity::RunPhase::Thinking
-                    } else {
-                        run_activity::RunPhase::Tool
-                    },
-                )
-            }
+        let terminal_id = match &event {
+            ConversationEvent::MessageFinished { message_id, .. }
+            | ConversationEvent::Interrupted { message_id, .. }
+            | ConversationEvent::Error {
+                message_id: Some(message_id),
+                ..
+            } => Some(message_id),
             _ => None,
         };
-        if let Some(phase) = phase
-            && let Some((_, group)) = &self.active_run_activity
-        {
-            group.update(cx, |group, cx| group.set_phase(phase, cx));
+        if terminal_id.is_some_and(|id| self.run_continuations.contains_key(id)) {
+            return;
         }
+        self.feed_meter(&event, cx);
+        self.clear_recovered_retry(&event);
         match event {
+            ConversationEvent::RunContinued {
+                previous_assistant_id,
+                user_message_id,
+                next_assistant_id,
+            } => {
+                if self
+                    .active_agent_message
+                    .as_ref()
+                    .is_some_and(|(active, _)| active == &previous_assistant_id)
+                    && self.remember_run_continuation(
+                        vega_conversation::types::RunContinuation {
+                            previous_assistant_id: previous_assistant_id.clone(),
+                            user_message_id,
+                            next_assistant_id,
+                        },
+                        cx,
+                    )
+                {
+                    self.finish_agent_message(&previous_assistant_id, cx);
+                }
+            }
             ConversationEvent::AssistantResponseStarted {
                 message_id,
+                response_id,
                 text_start_bytes,
             } => {
-                self.checkpoint_response(&message_id, text_start_bytes, cx);
+                self.checkpoint_response(&message_id, &response_id, text_start_bytes, cx);
+            }
+            ConversationEvent::ReasoningCompleted {
+                message_id,
+                response_id,
+            } => {
+                if self.matches_response(&message_id, &response_id)
+                    && !self.response_reasoning_completed
+                {
+                    self.response_reasoning_completed = true;
+                    self.finish_live_thinking(cx);
+                }
             }
             ConversationEvent::ResponseRetrying {
                 message_id,
@@ -1233,26 +1354,41 @@ impl ConversationStream {
                 self.append_pending_user(&pending_id, &message_id, seq, &content, images, cx);
             }
             ConversationEvent::MessageStarted { message_id, seq } => {
+                if self.finished_artifact_turns.contains(&message_id) {
+                    return;
+                }
                 if self.active_agent_message.is_some() {
                     self.apply_controller_error(cx);
                     return;
                 }
+                self.reset_live_context_usage();
                 self.last_finished_agent_message = None;
-                self.computer_use_control = None;
-                self.computer_use_diagnostic = None;
-                self.computer_use_notice_generation =
-                    self.computer_use_notice_generation.wrapping_add(1);
+                let continuation_successor = self
+                    .run_continuations
+                    .values()
+                    .any(|relation| relation.next_assistant_id == message_id);
+                if !continuation_successor {
+                    self.begin_computer_use_task(cx);
+                }
                 self.active_thinking = None;
                 self.active_skills.clear();
                 self.active_skill_focuses.clear();
-                let group =
-                    cx.new(|cx| RunActivityGroup::new(RunActivityStatus::Running, None, false, cx));
+                let group = cx.new(|cx| {
+                    let mut group =
+                        RunActivityGroup::new(RunActivityStatus::Running, None, false, cx);
+                    if continuation_successor {
+                        group.mark_continuation_successor(cx);
+                    }
+                    group
+                });
                 self.observe_run_activity_group(&group, cx);
                 self.run_activity_groups
                     .insert(message_id.clone(), group.clone());
                 self.active_run_activity = Some((message_id.clone(), group.clone()));
                 self.active_segment_ordinal = 0;
                 self.active_response_start = None;
+                self.active_response_id = None;
+                self.response_reasoning_completed = false;
                 self.active_agent_sequence = i64::try_from(seq).ok();
                 self.active_run_activity_segment = None;
                 self.ensure_live_run_activity_header(
@@ -1261,31 +1397,53 @@ impl ConversationStream {
                     self.active_agent_sequence,
                     false,
                 );
+                self.generated_notices.remove(&message_id);
                 self.active_agent_message = Some((message_id, usize::MAX));
                 self.active_segment_has_text = false;
                 self.active_segment_has_visible_text = false;
+                self.sync_retained_thinking_actions(cx);
                 cx.notify();
             }
             ConversationEvent::RunStarted {
                 message_id,
                 started_at,
+                work_clock,
             } => {
                 if let Some((active_id, group)) = &self.active_run_activity
                     && active_id == &message_id
                 {
-                    group.update(cx, |group, cx| group.start_clock(started_at, cx));
+                    group.update(cx, |group, cx| {
+                        group.start_clock(started_at, work_clock, cx)
+                    });
                 }
             }
             ConversationEvent::AssistantResponseCompleted {
                 message_id,
                 response,
             } => {
-                if let Some((active_id, group)) = &self.active_run_activity
-                    && active_id == &message_id
-                {
-                    group.update(cx, |group, cx| group.finish_thinking(cx));
+                if self.matches_response(&message_id, &response.response_id) {
+                    let text = self
+                        .entries
+                        .iter()
+                        .zip(&self.entry_identities)
+                        .filter_map(|(entry, identity)| {
+                            if identity.message_id.as_deref() != Some(message_id.as_str()) {
+                                return None;
+                            }
+                            match entry {
+                                StreamEntry::Assistant { copy, .. } => Some(copy.original_text()),
+                                _ => None,
+                            }
+                        })
+                        .collect::<String>();
+                    if response.is_valid_for(&text) {
+                        self.finish_live_thinking(cx);
+                    }
                 }
                 self.apply_response_metadata(&message_id, response, cx);
+            }
+            ConversationEvent::GeneratedNotice { message_id, notice } => {
+                self.apply_generated_notice(&message_id, notice, cx);
             }
             ConversationEvent::TextDelta { message_id, delta } => {
                 let Some((active_id, entry_index)) = self.active_agent_message.as_ref() else {
@@ -1295,12 +1453,25 @@ impl ConversationStream {
                     return;
                 }
                 let entry_index = *entry_index;
+                if self.clear_final_copy(&message_id)
+                    && let Some(group) = self.run_activity_groups.get(&message_id)
+                {
+                    group.update(cx, |group, cx| group.invalidate_final(cx));
+                }
                 let starts_visible_text = !self.active_segment_has_visible_text
                     && delta.chars().any(|character| !character.is_whitespace());
+                if delta.chars().any(|character| !character.is_whitespace()) {
+                    self.finish_live_thinking(cx);
+                    if let Some((_, group)) = &self.active_run_activity {
+                        group.update(cx, |group, cx| {
+                            group.set_phase(run_activity::RunPhase::Responding, cx);
+                        });
+                    }
+                    self.active_thinking = None;
+                }
                 if starts_visible_text {
                     self.active_run_activity_segment = None;
                 }
-                self.active_thinking = None;
                 let entry_index = if entry_index == usize::MAX {
                     let index = self.entries.len();
                     self.entries.push(StreamEntry::Assistant {
@@ -1407,6 +1578,7 @@ impl ConversationStream {
             | ConversationEvent::ContextCompactionStatus { .. }
             | ConversationEvent::ContextAccounting { .. } => {}
             ConversationEvent::ToolCallProposed { call } => {
+                self.register_artifact_call(&call.id);
                 if let Some(existing) = self.tool_cards.get(&call.id) {
                     existing.update(cx, |card, cx| {
                         if !card.matches_call(&call) {
@@ -1414,15 +1586,30 @@ impl ConversationStream {
                         }
                     });
                     self.install_pending_permission(cx);
+                    self.install_pending_user_question(cx);
                     return;
                 }
+                self.finish_live_thinking(cx);
                 self.close_active_segment_before_tool();
                 let call_id = call.id.clone();
                 let card = cx.new(|_| ToolCard::proposed(&call));
                 self.observe_tool_card(&card, cx);
                 self.append_live_tool(card.clone(), true, cx);
+                if card.read(cx).is_subagent_invocation()
+                    && let Some(index) = self.tool_entry_index(&card, cx)
+                {
+                    let identity = self.tool_call_identity(
+                        &call_id,
+                        self.active_agent_message
+                            .as_ref()
+                            .map(|(id, _)| id.as_str()),
+                        self.active_agent_sequence,
+                    );
+                    self.set_entry_identity(index, identity);
+                }
                 self.tool_cards.insert(call_id, card);
                 self.install_pending_permission(cx);
+                self.install_pending_user_question(cx);
                 cx.notify();
             }
             ConversationEvent::ToolCallApproved { call_id, approval } => {
@@ -1440,26 +1627,30 @@ impl ConversationStream {
             ConversationEvent::ToolCallRunning { call_id } => {
                 if let Some(card) = self.tool_cards.get(&call_id) {
                     let card = card.clone();
-                    card.update(cx, ToolCard::apply_running);
+                    let started = card.update(cx, |card, cx| {
+                        let was_running = card.is_running();
+                        card.apply_running(cx);
+                        !was_running && card.is_running()
+                    });
+                    if started && let Some((_, group)) = &self.active_run_activity {
+                        group.update(cx, |group, cx| group.tool_started(&card, cx));
+                    }
                     self.invalidate_tool_card(&card, cx);
                 } else {
                     self.push_corrupt_tool(call_id, cx);
                 }
             }
-            ConversationEvent::ToolCallOutput { .. } => {
-                // T26 emits a post-commit bounded output immediately before
-                // Finished. Ignore it here: write/edit chunks can contain the
-                // strict success JSON (including the opaque checkpoint ref),
-                // and terminal projection is the sole card decode boundary.
-            }
+            ConversationEvent::ToolCallOutput { .. } => {}
             ConversationEvent::ToolCallFinished { call_id, result } => {
                 self.timeout_permission_for_call(&call_id, cx);
+                self.finish_user_question(&call_id, cx);
                 if let Some(card) = self.tool_cards.get(&call_id) {
                     let card = card.clone();
                     card.update(cx, |card, cx| {
                         card.apply_finished(&result);
                         cx.notify();
                     });
+                    self.refresh_subagent_card(&card, cx);
                     self.invalidate_tool_card(&card, cx);
                 } else {
                     // Validation rejection/conflict can be terminal without
@@ -1541,30 +1732,48 @@ impl ConversationStream {
                     {
                         self.append_empty_terminal_segment();
                     }
-                    if let Some((active_id, entry_index)) = self.active_agent_message.as_ref()
-                        && active_id == &message_id
-                        && let Some(StreamEntry::Assistant {
+                    let active_failure_index =
+                        self.active_agent_message
+                            .as_ref()
+                            .and_then(|(active_id, index)| {
+                                (active_id == &message_id && *index != usize::MAX).then_some(*index)
+                            });
+                    if let Some(entry_index) = active_failure_index {
+                        let failure = self.remember_run_failure(&message_id, failure);
+                        if let Some(StreamEntry::Assistant {
                             failure: active_failure,
                             ..
-                        }) = self.entries.get_mut(*entry_index)
-                    {
-                        *active_failure = Some(failure);
-                        self.run_failures.insert(message_id.clone(), failure);
-                        self.controller_runtime_error = Some((message_id.clone(), failure));
-                        self.controller_error = Some(failure.message());
+                        }) = self.entries.get_mut(entry_index)
+                        {
+                            *active_failure = Some(failure);
+                            self.controller_runtime_error = Some((message_id.clone(), failure));
+                            self.controller_error =
+                                Some(crate::localized_copy::LocalizedCopy::Run(failure));
+                        }
                     }
                     self.record_composer_terminal(&message_id, false);
                     self.finish_agent_message(&message_id, cx);
                 } else {
                     self.controller_runtime_error = None;
-                    self.controller_error = Some(failure.message());
+                    self.controller_error =
+                        Some(crate::localized_copy::LocalizedCopy::Run(failure));
                     if let Some((message_id, _)) = self.active_agent_message.clone() {
                         self.finish_agent_message(&message_id, cx);
                     }
                     self.timeout_permission(cx);
+                    self.cancel_user_questions(cx);
                     cx.notify();
                 }
             }
+        }
+    }
+
+    fn finish_live_thinking(&mut self, cx: &mut Context<Self>) {
+        if let Some(card) = &self.active_thinking {
+            card.update(cx, |card, _| card.progress_finished = true);
+        }
+        if let Some((_, group)) = &self.active_run_activity {
+            group.update(cx, |group, cx| group.finish_thinking(cx));
         }
     }
 
@@ -1575,6 +1784,13 @@ impl ConversationStream {
         if active_id != message_id {
             return;
         }
+        let entry_index = *entry_index;
+        if let Some((active_id, group)) = &self.active_run_activity
+            && active_id == message_id
+        {
+            group.update(cx, |group, cx| group.release_presentation(cx));
+        }
+        self.clear_live_context_accounting();
         self.response_checkpoint = None;
         self.network_retry = None;
         self.active_thinking = None;
@@ -1584,24 +1800,29 @@ impl ConversationStream {
         // 这是从 mutable tail 摘除前的最后一次显式失效（C4 白名单），必须
         // 在本帧内完成最终物化——否则批量 ingress 末批 [delta…, Finished]
         // 的尾部 delta 永不上屏、终块永无 committed 高亮。
-        if *entry_index != usize::MAX {
-            if let Some(StreamEntry::Assistant { stream, model, .. }) =
-                self.entries.get_mut(*entry_index)
+        if entry_index != usize::MAX {
+            if let Some(StreamEntry::Assistant {
+                copy,
+                stream,
+                model,
+                ..
+            }) = self.entries.get_mut(entry_index)
             {
-                stream.finish();
-                let snapshot = stream.snapshot();
-                model.sync(&snapshot, &self.counters);
+                copy.finish_model(stream, model, &self.counters);
             }
-            self.invalidate_item(Some(*entry_index));
+            self.invalidate_item(Some(entry_index));
         }
         self.last_finished_agent_message = self
             .active_agent_message
             .take()
             .filter(|(_, index)| *index != usize::MAX);
+        self.invalidate_codex_copy_entries(message_id);
         self.active_segment_has_text = false;
         self.active_segment_has_visible_text = false;
         self.active_segment_ordinal = 0;
         self.active_response_start = None;
+        self.active_response_id = None;
+        self.response_reasoning_completed = false;
         self.active_agent_sequence = None;
         self.active_run_activity_segment = None;
         if self
@@ -1611,7 +1832,10 @@ impl ConversationStream {
         {
             self.active_run_activity = None;
         }
+        self.finish_artifact_turn(message_id, cx);
         self.timeout_permission(cx);
+        self.cancel_user_questions(cx);
+        self.sync_retained_thinking_actions(cx);
         cx.notify();
     }
 
@@ -1631,16 +1855,21 @@ impl ConversationStream {
             return;
         }
         if self.active_segment_has_text {
-            if let Some(StreamEntry::Assistant { stream, model, .. }) = self.entries.get_mut(index)
+            if let Some(StreamEntry::Assistant {
+                copy,
+                stream,
+                model,
+                ..
+            }) = self.entries.get_mut(index)
             {
-                stream.finish();
-                model.sync(&stream.snapshot(), &self.counters);
+                copy.finish_model(stream, model, &self.counters);
             }
             self.invalidate_item(Some(index));
             self.active_segment_ordinal = self.active_segment_ordinal.saturating_add(1);
         } else {
             self.entries.remove(index);
             self.list_remove(index);
+            self.shift_entry_indices(index, 1);
         }
         if let Some((_, active_index)) = &mut self.active_agent_message {
             *active_index = usize::MAX;
@@ -1748,6 +1977,15 @@ impl ConversationStream {
     }
 
     fn observe_tool_card(&mut self, card: &Entity<ToolCard>, cx: &mut Context<Self>) {
+        cx.subscribe(
+            card,
+            |this, _, event: &vega_conversation::types::SubagentOpenRequested, cx| {
+                if event.source_thread_id == this.thread.id {
+                    cx.emit(event.clone());
+                }
+            },
+        )
+        .detach();
         cx.observe(card, |this, card, cx| {
             let index = this.tool_entry_index(&card, cx);
             this.invalidate_item(index);
@@ -1794,7 +2032,9 @@ impl ConversationStream {
             Boundary,
         }
         let tail = match entries.last() {
-            Some(StreamEntry::Tool { card }) => Tail::Single(card.clone()),
+            Some(StreamEntry::Tool { card }) if !card.read(cx).is_subagent_invocation() => {
+                Tail::Single(card.clone())
+            }
             Some(StreamEntry::ToolGroup { group }) => Tail::Group(group.clone()),
             _ => Tail::Boundary,
         };
@@ -1811,6 +2051,13 @@ impl ConversationStream {
     }
 
     fn append_live_tool(&mut self, card: Entity<ToolCard>, proposed: bool, cx: &mut Context<Self>) {
+        if card.read(cx).is_subagent_invocation() {
+            self.active_run_activity_segment = None;
+            let index = self.entries.len();
+            self.entries.push(StreamEntry::Tool { card });
+            self.list_append(index);
+            return;
+        }
         let active_message_id = self
             .active_agent_message
             .as_ref()
@@ -1830,7 +2077,9 @@ impl ConversationStream {
         }
         let index = self.entries.len().saturating_sub(1);
         let tail = match self.entries.last() {
-            Some(StreamEntry::Tool { card }) => Tail::Single(card.clone()),
+            Some(StreamEntry::Tool { card }) if !card.read(cx).is_subagent_invocation() => {
+                Tail::Single(card.clone())
+            }
             Some(StreamEntry::ToolGroup { group }) => Tail::Group(group.clone()),
             _ => Tail::Boundary,
         };
@@ -1859,7 +2108,9 @@ impl ConversationStream {
 
     fn tool_entry_cards(entry: &StreamEntry, cx: &App) -> Option<(Vec<Entity<ToolCard>>, bool)> {
         match entry {
-            StreamEntry::Tool { card } => Some((vec![card.clone()], false)),
+            StreamEntry::Tool { card } if !card.read(cx).is_subagent_invocation() => {
+                Some((vec![card.clone()], false))
+            }
             StreamEntry::ToolGroup { group } => {
                 let group = group.read(cx);
                 Some((group.children(), group.expanded()))
@@ -1909,6 +2160,7 @@ impl ConversationStream {
         }
         self.entries.remove(right_index);
         self.list_remove(right_index);
+        self.shift_entry_indices(right_index, 1);
         self.invalidate_item(Some(left_index));
     }
 

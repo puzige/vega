@@ -11,6 +11,7 @@ pub fn budget_failure_message_ids(
         "SELECT run_id, attempt_id, failure_code, id FROM run_diagnostic_events
          WHERE thread_id = ?1 AND phase = 'run' AND state = 'failed'
          AND failure_code IN ('context_over_limit', 'reasoning_limit', 'unknown_safe_failure')
+         AND (failure_code <> 'unknown_safe_failure' OR runtime_reason IS NULL)
          ORDER BY id",
     )?;
     let roots = statement
@@ -52,6 +53,338 @@ pub fn budget_failure_message_ids(
         }
     }
     Ok(failures)
+}
+
+#[allow(missing_docs)]
+pub fn compaction_failure_message_ids(
+    conn: &Connection,
+    thread_id: &str,
+) -> Result<Vec<(String, DiagnosticFailureCode)>, DiagnosticError> {
+    validate_identity(thread_id, "thread_id")?;
+    let mut statement = conn.prepare(
+        "SELECT run_id, attempt_id, failure_code, id, failure_source, failure_kind, failure_scope,
+                failure_observed, failure_limit, failure_units, failure_observed_items,
+                failure_limit_items, failure_tool_index, http_status, request_id, retry_count
+         FROM run_diagnostic_events
+         WHERE thread_id = ?1 AND parent_attempt_id IS NULL
+         AND phase = 'run' AND state = 'failed'
+         AND failure_code IN (
+            'summary_timeout', 'summary_truncated', 'summary_empty', 'summary_format_invalid',
+            'summary_projection_invalid', 'summary_source_changed', 'summary_source_too_large',
+            'summary_aggregate_too_large', 'summary_images_unsupported',
+            'summary_no_compactable_prefix', 'summary_already_attempted', 'unknown_safe_failure'
+         )
+         AND (failure_code <> 'unknown_safe_failure' OR runtime_reason IS NULL)
+         ORDER BY id",
+    )?;
+    let roots = statement
+        .query_map([thread_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<i64>>(7)?,
+                row.get::<_, Option<i64>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<i64>>(10)?,
+                row.get::<_, Option<i64>>(11)?,
+                row.get::<_, Option<i64>>(12)?,
+                row.get::<_, Option<u16>>(13)?,
+                row.get::<_, Option<String>>(14)?,
+                row.get::<_, Option<u32>>(15)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut failures = Vec::new();
+    for (
+        run_id,
+        root_attempt_id,
+        raw_code,
+        root_event_id,
+        failure_source,
+        failure_kind,
+        failure_scope,
+        failure_observed,
+        failure_limit,
+        failure_units,
+        failure_observed_items,
+        failure_limit_items,
+        failure_tool_index,
+        http_status,
+        request_id,
+        retry_count,
+    ) in roots
+    {
+        let direct_code = summary_diagnostic_code(&raw_code);
+        let metrics = DiagnosticMetrics {
+            failure_source,
+            failure_kind,
+            failure_scope,
+            failure_observed: opt_u64(failure_observed, "failure_observed")?,
+            failure_limit: opt_u64(failure_limit, "failure_limit")?,
+            failure_units,
+            failure_observed_items: opt_u64(failure_observed_items, "failure_observed_items")?,
+            failure_limit_items: opt_u64(failure_limit_items, "failure_limit_items")?,
+            failure_tool_index: opt_u64(failure_tool_index, "failure_tool_index")?,
+            http_status,
+            request_id,
+            retry_count,
+            ..DiagnosticMetrics::default()
+        };
+        let code = match direct_code {
+            Some(code) => Some(code),
+            None if raw_code == "unknown_safe_failure" && generic_failure_metrics(&metrics) => {
+                let Some(message_id) =
+                    failed_assistant_owner(conn, thread_id, &run_id, &root_attempt_id)?
+                else {
+                    continue;
+                };
+                legacy_compaction_failure_code(
+                    conn,
+                    thread_id,
+                    &run_id,
+                    &root_attempt_id,
+                    root_event_id,
+                    &message_id,
+                )?
+            }
+            _ => None,
+        };
+        let Some(code) = code else {
+            continue;
+        };
+        if let Some(message_id) =
+            failed_assistant_owner(conn, thread_id, &run_id, &root_attempt_id)?
+        {
+            failures.push((message_id, code));
+        }
+    }
+    Ok(failures)
+}
+
+fn generic_failure_metrics(metrics: &DiagnosticMetrics) -> bool {
+    let no_details = metrics.failure_scope.is_none()
+        && metrics.failure_observed.is_none()
+        && metrics.failure_limit.is_none()
+        && metrics.failure_units.is_none()
+        && metrics.failure_observed_items.is_none()
+        && metrics.failure_limit_items.is_none()
+        && metrics.failure_tool_index.is_none()
+        && metrics.http_status.is_none()
+        && metrics.request_id.is_none()
+        && metrics.retry_count.is_none();
+    no_details
+        && ((metrics.failure_source.is_none() && metrics.failure_kind.is_none())
+            || (metrics.failure_source.as_deref() == Some("runtime")
+                && metrics.failure_kind.as_deref() == Some("unknown")))
+}
+
+fn legacy_compaction_failure_code(
+    conn: &Connection,
+    thread_id: &str,
+    run_id: &str,
+    root_attempt_id: &str,
+    root_event_id: i64,
+    message_id: &str,
+) -> Result<Option<DiagnosticFailureCode>, DiagnosticError> {
+    let terminal = conn
+        .query_row(
+            "SELECT id, attempt_id, phase, state, failure_code
+             FROM run_diagnostic_events
+             WHERE thread_id = ?1 AND run_id = ?2 AND parent_attempt_id = ?3
+             AND phase IN ('primary_model', 'tool', 'context_summary')
+             AND state <> 'started' AND id < ?4
+             ORDER BY id DESC LIMIT 1",
+            params![thread_id, run_id, root_attempt_id, root_event_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((terminal_id, operation_key, phase, state, raw_code)) = terminal else {
+        return Ok(None);
+    };
+    if phase != "context_summary" || state != "failed" {
+        return Ok(None);
+    }
+    let Some(code) = raw_code.as_deref().and_then(summary_diagnostic_code) else {
+        return Ok(None);
+    };
+    let Some(generation) = operation_generation(message_id, &operation_key) else {
+        return Ok(None);
+    };
+    let root_started = {
+        let mut statement = conn.prepare(
+            "SELECT id FROM run_diagnostic_events
+             WHERE thread_id = ?1 AND run_id = ?2 AND attempt_id = ?3
+             AND parent_attempt_id IS NULL AND phase = 'run' AND state = 'started'",
+        )?;
+        statement
+            .query_map(params![thread_id, run_id, root_attempt_id], |row| {
+                row.get::<_, i64>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let summary_started = {
+        let mut statement = conn.prepare(
+            "SELECT id FROM run_diagnostic_events
+             WHERE thread_id = ?1 AND run_id = ?2 AND attempt_id = ?3
+             AND parent_attempt_id = ?4 AND phase = 'context_summary' AND state = 'started'",
+        )?;
+        statement
+            .query_map(
+                params![thread_id, run_id, operation_key, root_attempt_id],
+                |row| row.get::<_, i64>(0),
+            )?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let summary_terminal_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM run_diagnostic_events
+         WHERE thread_id = ?1 AND run_id = ?2 AND attempt_id = ?3
+         AND parent_attempt_id = ?4 AND phase = 'context_summary' AND state <> 'started'",
+        params![thread_id, run_id, operation_key, root_attempt_id],
+        |row| row.get(0),
+    )?;
+    if root_started.len() != 1
+        || summary_started.len() != 1
+        || summary_terminal_count != 1
+        || root_started[0] >= summary_started[0]
+        || summary_started[0] >= terminal_id
+        || terminal_id >= root_event_id
+    {
+        return Ok(None);
+    }
+    let incomplete_child: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM run_diagnostic_events started
+            WHERE started.thread_id = ?1 AND started.run_id = ?2
+              AND started.parent_attempt_id = ?3
+              AND started.phase IN ('primary_model', 'tool', 'context_summary')
+              AND started.state = 'started' AND started.id < ?4
+              AND NOT EXISTS(
+                  SELECT 1 FROM run_diagnostic_events terminal
+                  WHERE terminal.thread_id = started.thread_id
+                    AND terminal.run_id = started.run_id
+                    AND terminal.attempt_id = started.attempt_id
+                    AND terminal.parent_attempt_id = started.parent_attempt_id
+                    AND terminal.phase = started.phase
+                    AND terminal.state <> 'started' AND terminal.id < ?4
+              )
+        )",
+        params![thread_id, run_id, root_attempt_id, root_event_id],
+        |row| row.get(0),
+    )?;
+    if incomplete_child {
+        return Ok(None);
+    }
+    let status_rows = {
+        let mut statement = conn.prepare(
+            "SELECT model, generation, phase,
+                    CASE WHEN failure_detail = 'summary_timeout' THEN failure_detail ELSE failure END
+             FROM context_compaction_status
+             WHERE thread_id = ?1 AND operation_key = ?2
+               AND phase IN ('failed', 'succeeded', 'cancelled')
+             ORDER BY id",
+        )?;
+        statement
+            .query_map(params![thread_id, operation_key], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    if status_rows.len() != 1
+        || status_rows[0].1 != generation
+        || status_rows[0].2 != "failed"
+        || status_rows[0].3.as_deref() != Some(compaction_status_failure(code))
+    {
+        return Ok(None);
+    }
+    let prefix = format!("{message_id}:context-generation-");
+    let newer_successes = {
+        let mut statement = conn.prepare(
+            "SELECT operation_key, generation FROM context_compaction_status
+             WHERE thread_id = ?1 AND model = ?2 AND phase = 'succeeded' AND generation > ?3
+               AND substr(operation_key, 1, length(?4)) = ?4",
+        )?;
+        statement
+            .query_map(
+                params![thread_id, status_rows[0].0, generation, prefix],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let newer_success = newer_successes
+        .into_iter()
+        .any(|(operation_key, stored_generation)| {
+            operation_generation(message_id, &operation_key) == Some(stored_generation)
+                && stored_generation > generation
+        });
+    if newer_success {
+        return Ok(None);
+    }
+    Ok(Some(code))
+}
+
+fn operation_generation(message_id: &str, operation_key: &str) -> Option<i64> {
+    let prefix = format!("{message_id}:context-generation-");
+    let suffix = operation_key.strip_prefix(&prefix)?;
+    let (generation, attempt) = suffix.split_once(":attempt-")?;
+    if attempt.is_empty() {
+        return None;
+    }
+    generation
+        .parse::<i64>()
+        .ok()
+        .filter(|generation| *generation > 0)
+}
+
+fn summary_diagnostic_code(value: &str) -> Option<DiagnosticFailureCode> {
+    Some(match value {
+        "summary_timeout" => DiagnosticFailureCode::SummaryTimeout,
+        "summary_truncated" => DiagnosticFailureCode::SummaryTruncated,
+        "summary_empty" => DiagnosticFailureCode::SummaryEmpty,
+        "summary_format_invalid" => DiagnosticFailureCode::SummaryFormatInvalid,
+        "summary_projection_invalid" => DiagnosticFailureCode::SummaryProjectionInvalid,
+        "summary_source_changed" => DiagnosticFailureCode::SummarySourceChanged,
+        "summary_source_too_large" => DiagnosticFailureCode::SummarySourceTooLarge,
+        "summary_aggregate_too_large" => DiagnosticFailureCode::SummaryAggregateTooLarge,
+        "summary_images_unsupported" => DiagnosticFailureCode::SummaryImagesUnsupported,
+        "summary_no_compactable_prefix" => DiagnosticFailureCode::SummaryNoCompactablePrefix,
+        "summary_already_attempted" => DiagnosticFailureCode::SummaryAlreadyAttempted,
+        _ => return None,
+    })
+}
+
+fn compaction_status_failure(code: DiagnosticFailureCode) -> &'static str {
+    match code {
+        DiagnosticFailureCode::SummarySourceChanged => "source_changed",
+        DiagnosticFailureCode::SummaryNoCompactablePrefix => "no_compactable_prefix",
+        DiagnosticFailureCode::SummarySourceTooLarge
+        | DiagnosticFailureCode::SummaryAggregateTooLarge => "too_large",
+        DiagnosticFailureCode::SummaryImagesUnsupported => "images_unsupported",
+        DiagnosticFailureCode::SummaryAlreadyAttempted => "unavailable",
+        DiagnosticFailureCode::SummaryTimeout => "summary_timeout",
+        DiagnosticFailureCode::SummaryTruncated
+        | DiagnosticFailureCode::SummaryEmpty
+        | DiagnosticFailureCode::SummaryFormatInvalid
+        | DiagnosticFailureCode::SummaryProjectionInvalid => "invalid_summary",
+        _ => "",
+    }
 }
 
 #[allow(missing_docs)]
@@ -177,7 +510,7 @@ pub fn classified_failure_message_ids(
     thread_id: &str,
 ) -> Result<Vec<(String, DiagnosticMetrics)>, DiagnosticError> {
     validate_identity(thread_id, "thread_id")?;
-    let mut statement = conn.prepare("SELECT id, thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state, failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes, tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index FROM run_diagnostic_events WHERE thread_id = ?1 AND phase = 'run' AND state = 'failed' AND failure_kind IS NOT NULL ORDER BY id")?;
+    let mut statement = conn.prepare("SELECT id, thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state, failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes, tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index, runtime_stage, runtime_reason, sqlite_code, sqlite_extended_code, io_kind FROM run_diagnostic_events WHERE thread_id = ?1 AND phase = 'run' AND state = 'failed' AND failure_kind IS NOT NULL ORDER BY id")?;
     let rows = statement.query_map([thread_id], read_row)?;
     let mut failures = Vec::new();
     for row in rows {
@@ -189,413 +522,4 @@ pub fn classified_failure_message_ids(
         }
     }
     Ok(failures)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{Store, messages, pending_messages, threads};
-
-    fn store() -> Store {
-        let store = Store::open(":memory:").unwrap();
-        store.migrate().unwrap();
-        threads::create_standalone(
-            store.conn(),
-            threads::NewThread {
-                id: "thread",
-                project_id: "",
-                title: "fixture",
-                mode: "execute",
-                permission_mode: "readonly",
-                model: "mock",
-                status: "active",
-                pinned: false,
-                unread: false,
-                created_at: 1,
-                updated_at: 1,
-            },
-        )
-        .unwrap();
-        store
-    }
-
-    fn start(
-        conn: &Connection,
-        run: &str,
-        root: &str,
-        attempt: &str,
-        phase: DiagnosticPhase,
-    ) -> NewDiagnosticEvent {
-        let event = NewDiagnosticEvent {
-            thread_id: "thread".into(),
-            run_id: run.into(),
-            attempt_id: attempt.into(),
-            parent_attempt_id: (phase != DiagnosticPhase::Run).then(|| root.into()),
-            tool_call_id: None,
-            phase,
-            state: DiagnosticState::Started,
-            failure_code: None,
-            occurred_at: 1,
-            duration_ms: None,
-            metrics: DiagnosticMetrics::default(),
-        };
-        insert(conn, &event).unwrap();
-        event
-    }
-
-    fn finish(
-        conn: &Connection,
-        mut event: NewDiagnosticEvent,
-        code: Option<DiagnosticFailureCode>,
-    ) {
-        event.state = if code.is_some() {
-            DiagnosticState::Failed
-        } else {
-            DiagnosticState::Succeeded
-        };
-        event.failure_code = code;
-        event.duration_ms = Some(1);
-        event.occurred_at = 2;
-        insert(conn, &event).unwrap();
-    }
-
-    fn message(conn: &Connection, id: &str, seq: i64, role: &str, status: &str, content: &str) {
-        messages::insert(
-            conn,
-            &messages::MessageRow {
-                id: id.into(),
-                thread_id: "thread".into(),
-                seq,
-                role: role.into(),
-                kind: "text".into(),
-                content: content.into(),
-                status: status.into(),
-                created_at: 1,
-                plan_status: None,
-                plan_review_note: None,
-                plan_reviewed_at: None,
-            },
-        )
-        .unwrap();
-    }
-
-    fn delivered(conn: &Connection, id: &str, generation: &str) {
-        pending_messages::insert(
-            conn,
-            &pending_messages::PendingMessageRow {
-                id: id.into(),
-                thread_id: "thread".into(),
-                ordinal: 0,
-                behavior: "steer".into(),
-                generation: generation.into(),
-                payload: String::new(),
-                created_at: 1,
-            },
-        )
-        .unwrap();
-        pending_messages::mark_delivered(conn, "thread", id).unwrap();
-    }
-
-    fn legacy_steer(conn: &Connection) {
-        message(conn, "goal", 1, "user", "done", "goal");
-        message(conn, "original", 2, "assistant", "done", "prior");
-        message(conn, "steer", 3, "user", "done", "correction");
-        message(conn, "final", 4, "assistant", "failed", "");
-        delivered(conn, "steer", "generation");
-        let root = start(conn, "original", "root", "root", DiagnosticPhase::Run);
-        let primary = start(
-            conn,
-            "original",
-            "root",
-            "primary-success",
-            DiagnosticPhase::PrimaryModel,
-        );
-        finish(conn, primary, None);
-        messages::record_assistant_response(
-            conn,
-            "original",
-            "prior",
-            &messages::AssistantResponseRow {
-                message_id: "original".into(),
-                response_id: "primary-success".into(),
-                text_start_bytes: 0,
-                text_end_bytes: 5,
-                kind: "final".into(),
-            },
-        )
-        .unwrap();
-        let primary = start(
-            conn,
-            "original",
-            "root",
-            "primary-limit",
-            DiagnosticPhase::PrimaryModel,
-        );
-        finish(conn, primary, Some(DiagnosticFailureCode::ReasoningLimit));
-        finish(conn, root, Some(DiagnosticFailureCode::UnknownSafeFailure));
-    }
-
-    #[test]
-    fn classified_failure_details_only_restore_the_failed_owner() {
-        let store = store();
-        message(store.conn(), "run", 1, "assistant", "failed", "");
-        let mut root = start(store.conn(), "run", "root", "root", DiagnosticPhase::Run);
-        root.metrics.failure_source = Some("provider".into());
-        root.metrics.failure_kind = Some("output_limit".into());
-        root.metrics.failure_scope = Some("response".into());
-        finish(
-            store.conn(),
-            root,
-            Some(DiagnosticFailureCode::ProviderRejected),
-        );
-        start(
-            store.conn(),
-            "run",
-            "root",
-            "unrelated-tool",
-            DiagnosticPhase::Tool,
-        );
-        store.conn().execute_batch("PRAGMA ignore_check_constraints = ON; UPDATE run_diagnostic_events SET input_tokens = -1 WHERE attempt_id = 'unrelated-tool'; PRAGMA ignore_check_constraints = OFF;").unwrap();
-        assert!(read_by_thread(store.conn(), "thread").is_err());
-        let failures = classified_failure_message_ids(store.conn(), "thread").unwrap();
-        assert_eq!(failures.len(), 1);
-        assert_eq!(failures[0].0, "run");
-        assert_eq!(failures[0].1.failure_kind.as_deref(), Some("output_limit"));
-        store
-            .conn()
-            .execute("UPDATE messages SET status = 'done' WHERE id = 'run'", [])
-            .unwrap();
-        assert!(
-            classified_failure_message_ids(store.conn(), "thread")
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn issue372_legacy_delivery_chain_uses_exact_durable_primary_and_pending_ownership() {
-        let store = store();
-        legacy_steer(store.conn());
-        assert_eq!(
-            budget_failure_message_ids(store.conn(), "thread").unwrap(),
-            [("final".into(), DiagnosticFailureCode::ReasoningLimit)]
-        );
-        message(store.conn(), "other-user", 5, "user", "done", "independent");
-        message(
-            store.conn(),
-            "other-assistant",
-            6,
-            "assistant",
-            "failed",
-            "",
-        );
-        let root = start(
-            store.conn(),
-            "other-assistant",
-            "other-root",
-            "other-root",
-            DiagnosticPhase::Run,
-        );
-        let primary = start(
-            store.conn(),
-            "other-assistant",
-            "other-root",
-            "other-primary",
-            DiagnosticPhase::PrimaryModel,
-        );
-        finish(
-            store.conn(),
-            primary,
-            Some(DiagnosticFailureCode::ProviderHttp),
-        );
-        finish(
-            store.conn(),
-            root,
-            Some(DiagnosticFailureCode::UnknownSafeFailure),
-        );
-        assert_eq!(
-            budget_failure_message_ids(store.conn(), "thread").unwrap(),
-            [("final".into(), DiagnosticFailureCode::ReasoningLimit)]
-        );
-    }
-
-    #[test]
-    fn issue372_delivery_ownership_rejects_missing_queued_gapped_and_independent_runs() {
-        for mutation in [
-            "DELETE FROM pending_messages WHERE id = 'steer'",
-            "UPDATE pending_messages SET behavior = 'queue' WHERE id = 'steer'",
-            "UPDATE pending_messages SET state = 'pending' WHERE id = 'steer'",
-            "UPDATE pending_messages SET generation = '' WHERE id = 'steer'",
-            "DELETE FROM messages WHERE id = 'steer'",
-            "UPDATE messages SET seq = 5 WHERE id = 'final'",
-            "UPDATE messages SET role = 'user' WHERE id = 'final'",
-            "UPDATE messages SET status = 'done' WHERE id = 'final'",
-        ] {
-            let store = store();
-            legacy_steer(store.conn());
-            store.conn().execute(mutation, []).unwrap();
-            assert!(
-                budget_failure_message_ids(store.conn(), "thread")
-                    .unwrap()
-                    .is_empty(),
-                "{mutation}"
-            );
-        }
-        let store = store();
-        legacy_steer(store.conn());
-        start(
-            store.conn(),
-            "final",
-            "independent-root",
-            "independent-root",
-            DiagnosticPhase::Run,
-        );
-        assert!(
-            budget_failure_message_ids(store.conn(), "thread")
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn issue372_multiple_deliveries_require_one_generation_and_preserve_correct_failed_tail() {
-        for same_generation in [false, true] {
-            let store = store();
-            legacy_steer(store.conn());
-            store
-                .conn()
-                .execute("UPDATE messages SET status = 'done' WHERE id = 'final'", [])
-                .unwrap();
-            message(
-                store.conn(),
-                "second-steer",
-                5,
-                "user",
-                "done",
-                "second correction",
-            );
-            message(store.conn(), "second-final", 6, "assistant", "failed", "");
-            delivered(
-                store.conn(),
-                "second-steer",
-                if same_generation {
-                    "generation"
-                } else {
-                    "different-generation"
-                },
-            );
-            let failures = budget_failure_message_ids(store.conn(), "thread").unwrap();
-            if same_generation {
-                assert_eq!(
-                    failures,
-                    [("second-final".into(), DiagnosticFailureCode::ReasoningLimit)]
-                );
-            } else {
-                assert!(failures.is_empty());
-            }
-        }
-    }
-
-    #[test]
-    fn issue372_unknown_roots_cannot_borrow_old_successful_or_other_parent_attempts() {
-        for mutation in [
-            "UPDATE run_diagnostic_events SET state = 'succeeded', failure_code = NULL WHERE attempt_id = 'primary-limit' AND state = 'failed'",
-            "UPDATE run_diagnostic_events SET parent_attempt_id = 'another-root' WHERE attempt_id = 'primary-limit'",
-            "UPDATE run_diagnostic_events SET failure_code = 'unknown_safe_failure' WHERE attempt_id = 'primary-limit' AND state = 'failed'",
-        ] {
-            let store = store();
-            legacy_steer(store.conn());
-            store.conn().execute(mutation, []).unwrap();
-            assert!(
-                budget_failure_message_ids(store.conn(), "thread")
-                    .unwrap()
-                    .is_empty()
-            );
-        }
-        let store = store();
-        legacy_steer(store.conn());
-        let subsequent = start(
-            store.conn(),
-            "original",
-            "root",
-            "subsequent-primary",
-            DiagnosticPhase::PrimaryModel,
-        );
-        finish(store.conn(), subsequent, None);
-        store
-            .conn()
-            .execute(
-                "DELETE FROM run_diagnostic_events WHERE attempt_id = 'root' AND state = 'failed'",
-                [],
-            )
-            .unwrap();
-        let root = NewDiagnosticEvent {
-            thread_id: "thread".into(),
-            run_id: "original".into(),
-            attempt_id: "root".into(),
-            parent_attempt_id: None,
-            tool_call_id: None,
-            phase: DiagnosticPhase::Run,
-            state: DiagnosticState::Failed,
-            failure_code: Some(DiagnosticFailureCode::UnknownSafeFailure),
-            occurred_at: 3,
-            duration_ms: Some(2),
-            metrics: DiagnosticMetrics::default(),
-        };
-        insert(store.conn(), &root).unwrap();
-        assert!(
-            budget_failure_message_ids(store.conn(), "thread")
-                .unwrap()
-                .is_empty()
-        );
-        assert!(
-            !projection_reasoning_failure(store.conn(), "thread", "unknown-operation", "final")
-                .unwrap()
-        );
-    }
-
-    #[test]
-    fn issue372_projection_cause_requires_exact_operation_key_and_failed_owner() {
-        let store = store();
-        message(store.conn(), "owner", 1, "assistant", "failed", "");
-        let root = start(store.conn(), "owner", "root", "root", DiagnosticPhase::Run);
-        let operation = "owner:context-generation-1:attempt-one";
-        let validation = start(
-            store.conn(),
-            "owner",
-            "root",
-            operation,
-            DiagnosticPhase::ContextSummary,
-        );
-        finish(
-            store.conn(),
-            validation,
-            Some(DiagnosticFailureCode::ReasoningLimit),
-        );
-        finish(
-            store.conn(),
-            root,
-            Some(DiagnosticFailureCode::ReasoningLimit),
-        );
-        assert!(projection_reasoning_failure(store.conn(), "thread", operation, "owner").unwrap());
-        assert!(
-            !projection_reasoning_failure(
-                store.conn(),
-                "thread",
-                "owner:context-generation-2:attempt-two",
-                "owner"
-            )
-            .unwrap()
-        );
-        assert!(
-            !projection_reasoning_failure(store.conn(), "thread", operation, "other-owner")
-                .unwrap()
-        );
-        assert!(
-            !projection_reasoning_failure(store.conn(), "other-thread", operation, "owner")
-                .unwrap()
-        );
-        store.conn().execute("UPDATE run_diagnostic_events SET parent_attempt_id = 'wrong-root' WHERE attempt_id = ?1", [operation]).unwrap();
-        assert!(!projection_reasoning_failure(store.conn(), "thread", operation, "owner").unwrap());
-    }
 }

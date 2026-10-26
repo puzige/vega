@@ -1,6 +1,111 @@
 //! Primitive sidebar metadata SQL. Callers own validation and transaction boundaries.
 use crate::{projects, threads};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
+use serde_json::{Map, Value};
+use std::collections::{HashMap, HashSet};
+
+pub fn next_revision(revision: u64) -> Option<u64> {
+    revision
+        .checked_add(1)
+        .filter(|value| *value <= i64::MAX as u64)
+}
+
+fn metadata_error(error: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Error {
+    rusqlite::Error::ToSqlConversionFailure(Box::new(error))
+}
+
+fn invalid_metadata(message: &str) -> rusqlite::Error {
+    metadata_error(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        message,
+    ))
+}
+
+pub fn promote_thread(conn: &Connection, thread_id: &str) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Sidebar,
+    )?;
+    let source: Option<(Option<String>, bool)> = conn
+        .query_row(
+            "SELECT project_id,pinned FROM threads WHERE id=?1 AND (parent_thread_id IS NULL OR pinned=1)",
+            [thread_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((project_id, pinned)) = source else {
+        return Ok(());
+    };
+    let (current_revision, preferences): (i64, String) = conn.query_row(
+        "SELECT revision,preferences FROM sidebar_organization WHERE singleton=1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let revision = u64::try_from(current_revision)
+        .ok()
+        .and_then(next_revision)
+        .ok_or_else(|| invalid_metadata("revision exhausted"))?;
+    let mut preferences: Map<String, Value> =
+        serde_json::from_str(&preferences).map_err(metadata_error)?;
+    let saved: Vec<String> = preferences
+        .get("manual_thread_order")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(metadata_error)?
+        .unwrap_or_default();
+    let threads = conn
+        .prepare(
+            "SELECT id,project_id,pinned FROM threads WHERE parent_thread_id IS NULL OR pinned=1 ORDER BY created_at DESC,id LIMIT 10001",
+        )?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, bool>(2)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if threads.len() > 10_000 {
+        return Err(invalid_metadata("maximum 10000 tasks"));
+    }
+    let regions: HashMap<_, _> = threads
+        .iter()
+        .map(|(id, project, pinned)| (id.as_str(), (project.as_deref(), *pinned)))
+        .collect();
+    let mut seen = HashSet::new();
+    let mut saved: Vec<_> = saved
+        .into_iter()
+        .rev()
+        .filter(|id| regions.contains_key(id.as_str()) && seen.insert(id.clone()))
+        .collect();
+    saved.reverse();
+    let mut order: Vec<_> = threads
+        .iter()
+        .filter(|(id, _, _)| !seen.contains(id))
+        .map(|(id, _, _)| id.clone())
+        .chain(saved)
+        .filter(|id| id != thread_id)
+        .collect();
+    let first = order.iter().position(|id| {
+        regions
+            .get(id.as_str())
+            .is_some_and(|(project, candidate_pinned)| {
+                *candidate_pinned == pinned && (pinned || *project == project_id.as_deref())
+            })
+    });
+    order.insert(first.unwrap_or(order.len()), thread_id.to_owned());
+    preferences.insert("sort".into(), Value::String("Manual".into()));
+    preferences.insert(
+        "manual_thread_order".into(),
+        serde_json::to_value(order).map_err(metadata_error)?,
+    );
+    let preferences = serde_json::to_string(&preferences).map_err(metadata_error)?;
+    let updated = conn.execute(
+        "UPDATE sidebar_organization SET preferences=?1,revision=?2 WHERE singleton=1 AND revision=?3",
+        params![preferences, revision as i64, current_revision],
+    )?;
+    if updated != 1 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    Ok(())
+}
 
 /// Primitive group row ordered by position and stable ID.
 pub type GroupRow = (String, String, String);
@@ -48,15 +153,26 @@ pub fn read(conn: &Connection) -> rusqlite::Result<OrganizationRows> {
         project_order,
     })
 }
-/// Reads registered projects with a stable recent-open fallback order.
 pub fn projects(conn: &Connection) -> Result<Vec<projects::Project>, projects::ProjectsError> {
-    let mut rows = projects::list(conn, projects::ProjectSort::RecentlyOpened)?;
-    rows.sort_by(|a, b| {
-        b.last_opened_at
-            .cmp(&a.last_opened_at)
-            .then(a.id.cmp(&b.id))
-    });
-    Ok(rows)
+    let mut stmt = conn.prepare(
+        "SELECT projects.id, projects.path, projects.name, projects.git_default_branch, \
+         projects.created_at, projects.last_opened_at \
+         FROM projects \
+         JOIN sidebar_project_order ON sidebar_project_order.project_id = projects.id \
+         ORDER BY sidebar_project_order.position, sidebar_project_order.project_id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(projects::Project {
+            id: row.get(0)?,
+            path: row.get(1)?,
+            name: row.get(2)?,
+            git_default_branch: row.get(3)?,
+            created_at: row.get(4)?,
+            last_opened_at: row.get(5)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(projects::ProjectsError::from)
 }
 /// Reads bounded task metadata using the existing row decoder.
 pub fn threads(
@@ -73,7 +189,17 @@ pub fn threads(
 /// Persists validated metadata. Must be called within the caller's write transaction.
 /// Existing groups are updated in place; only dissolved groups are deleted.
 pub fn write(conn: &Connection, rows: &OrganizationRows) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Sidebar,
+    )?;
     let existing = read(conn)?;
+    let mut preferences: Map<String, Value> =
+        serde_json::from_str(&existing.preferences).map_err(metadata_error)?;
+    let updated: Map<String, Value> =
+        serde_json::from_str(&rows.preferences).map_err(metadata_error)?;
+    preferences.extend(updated);
+    let preferences = serde_json::to_string(&preferences).map_err(metadata_error)?;
     for (id, _, _) in existing.groups {
         if !rows.groups.iter().any(|g| g.0 == id) {
             conn.execute("DELETE FROM sidebar_groups WHERE id=?1", [id])?;
@@ -98,7 +224,7 @@ pub fn write(conn: &Connection, rows: &OrganizationRows) -> rusqlite::Result<()>
     }
     conn.execute(
         "UPDATE sidebar_organization SET revision=?1,preferences=?2,collapsed=?3 WHERE singleton=1",
-        params![rows.revision, rows.preferences, rows.collapsed],
+        params![rows.revision, preferences, rows.collapsed],
     )?;
     Ok(())
 }

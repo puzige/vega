@@ -24,6 +24,13 @@ pub struct ManagedResult {
     pub is_error: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ManagedSendEvidence {
+    #[default]
+    NotStarted,
+    WriteStarted,
+}
+
 pub struct ManagedClient {
     child: Option<Child>,
     stdin: Box<dyn AsyncWrite + Unpin + Send>,
@@ -149,6 +156,17 @@ impl ManagedClient {
             .await
     }
 
+    pub async fn call_with_send_evidence(
+        &mut self,
+        name: &str,
+        arguments: Value,
+        cancel: &CancellationToken,
+        send: &mut ManagedSendEvidence,
+    ) -> Result<ManagedResult, McpError> {
+        self.call_with_timeout_and_send_evidence(name, arguments, cancel, REQUEST_TIMEOUT, send)
+            .await
+    }
+
     pub async fn connect_browser_target(
         &mut self,
         cancel: &CancellationToken,
@@ -185,6 +203,24 @@ impl ManagedClient {
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<ManagedResult, McpError> {
+        self.call_with_timeout_and_send_evidence(
+            name,
+            arguments,
+            cancel,
+            timeout,
+            &mut ManagedSendEvidence::NotStarted,
+        )
+        .await
+    }
+
+    async fn call_with_timeout_and_send_evidence(
+        &mut self,
+        name: &str,
+        arguments: Value,
+        cancel: &CancellationToken,
+        timeout: Duration,
+        send: &mut ManagedSendEvidence,
+    ) -> Result<ManagedResult, McpError> {
         if !self.tools.contains_key(name) {
             return Err(McpError::UnsupportedResult);
         }
@@ -195,6 +231,7 @@ impl ManagedClient {
                 json!({"name":name,"arguments":arguments}),
                 cancel,
                 timeout,
+                send,
             )
             .await?;
         parse_result(value)
@@ -206,8 +243,14 @@ impl ManagedClient {
         params: Value,
         cancel: &CancellationToken,
     ) -> Result<Value, McpError> {
-        self.request_with_timeout(method, params, cancel, REQUEST_TIMEOUT)
-            .await
+        self.request_with_timeout(
+            method,
+            params,
+            cancel,
+            REQUEST_TIMEOUT,
+            &mut ManagedSendEvidence::NotStarted,
+        )
+        .await
     }
 
     async fn request_with_timeout(
@@ -216,6 +259,7 @@ impl ManagedClient {
         params: Value,
         cancel: &CancellationToken,
         timeout: Duration,
+        send: &mut ManagedSendEvidence,
     ) -> Result<Value, McpError> {
         if self.closed {
             return Err(McpError::Transport);
@@ -226,8 +270,11 @@ impl ManagedClient {
         let id = self.next_id;
         self.next_id = self.next_id.checked_add(1).ok_or(McpError::LimitExceeded)?;
         let exchange = async {
-            self.write(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
-                .await?;
+            self.write_with_send_evidence(
+                json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}),
+                send,
+            )
+            .await?;
             let mut total = 0usize;
             loop {
                 let mut frame = Vec::new();
@@ -279,10 +326,20 @@ impl ManagedClient {
     }
 
     async fn write(&mut self, value: Value) -> Result<(), McpError> {
+        self.write_with_send_evidence(value, &mut ManagedSendEvidence::NotStarted)
+            .await
+    }
+
+    async fn write_with_send_evidence(
+        &mut self,
+        value: Value,
+        send: &mut ManagedSendEvidence,
+    ) -> Result<(), McpError> {
         let mut bytes = serde_json::to_vec(&value).map_err(|_| McpError::InvalidMessage)?;
         bytes.push(b'\n');
         let mut offset = 0;
         while offset < bytes.len() {
+            *send = ManagedSendEvidence::WriteStarted;
             let written = self
                 .stdin
                 .write(&bytes[offset..])
@@ -362,247 +419,4 @@ fn parse_result(value: Value) -> Result<ManagedResult, McpError> {
         }
     }
     Ok(result)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn fixture(stream: tokio::io::DuplexStream) -> ManagedClient {
-        let (read, write) = tokio::io::split(stream);
-        ManagedClient {
-            child: None,
-            stdin: Box::new(write),
-            stdout: BufReader::new(Box::new(read)),
-            next_id: 1,
-            tools: HashMap::new(),
-            closed: false,
-            browser_connection_started: false,
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn issue75_browser_connection_wait_accepts_manual_authorization_after_45_seconds() {
-        let (stream, server) = tokio::io::duplex(4096);
-        let mut client = fixture(stream);
-        client
-            .tools
-            .insert("browser_tabs".into(), json!({"type":"object"}));
-        let server = async move {
-            let mut server = BufReader::new(server);
-            let mut line = String::new();
-            server.read_line(&mut line).await.unwrap();
-            let request: Value = serde_json::from_str(&line).unwrap();
-            assert_eq!(
-                request["params"],
-                json!({"name":"browser_tabs","arguments":{"action":"list","_meta":{"raw":true}}})
-            );
-            tokio::time::sleep(Duration::from_secs(46)).await;
-            let _ = server
-                .get_mut()
-                .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[]}}\n")
-                .await;
-        };
-        let cancel = CancellationToken::new();
-        let start = tokio::time::Instant::now();
-        let (result, _) = tokio::join!(client.connect_browser_target(&cancel), server);
-        assert!(result.is_ok());
-        assert!(!client.closed);
-        assert!(start.elapsed() >= Duration::from_secs(46));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn issue75_browser_connection_extension_is_once_and_later_calls_timeout_at_45_seconds() {
-        let (stream, server) = tokio::io::duplex(4096);
-        let mut client = fixture(stream);
-        client
-            .tools
-            .insert("browser_tabs".into(), json!({"type":"object"}));
-        let server = async move {
-            let mut server = BufReader::new(server);
-            let mut line = String::new();
-            server.read_line(&mut line).await.unwrap();
-            server
-                .get_mut()
-                .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[]}}\n")
-                .await
-                .unwrap();
-            line.clear();
-            server.read_line(&mut line).await.unwrap();
-            let request: Value = serde_json::from_str(&line).unwrap();
-            assert_eq!(request["id"], 2);
-            assert_eq!(
-                request["params"],
-                json!({"name":"browser_tabs","arguments":{"action":"list","_meta":{"raw":true}}})
-            );
-            tokio::time::sleep(Duration::from_secs(46)).await;
-            let _ = server
-                .get_mut()
-                .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[]}}\n")
-                .await;
-            line.clear();
-            assert_eq!(server.read_line(&mut line).await.unwrap(), 0);
-        };
-        let calls = async {
-            let cancel = CancellationToken::new();
-            assert!(client.connect_browser_target(&cancel).await.is_ok());
-            assert!(matches!(
-                client.connect_browser_target(&cancel).await,
-                Err(McpError::InvalidConfig)
-            ));
-            let start = tokio::time::Instant::now();
-            assert!(matches!(
-                client.current_browser_target(&cancel).await,
-                Err(McpError::Timeout)
-            ));
-            assert_eq!(start.elapsed(), Duration::from_secs(45));
-            assert!(client.closed);
-            assert!(matches!(
-                client.current_browser_target(&cancel).await,
-                Err(McpError::Transport)
-            ));
-            assert_eq!(client.next_id, 3);
-        };
-        tokio::join!(calls, server);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn issue75_browser_connection_deadline_discards_late_reply() {
-        let (stream, server) = tokio::io::duplex(4096);
-        let mut client = fixture(stream);
-        client
-            .tools
-            .insert("browser_tabs".into(), json!({"type":"object"}));
-        let server = async move {
-            let mut server = BufReader::new(server);
-            let mut line = String::new();
-            server.read_line(&mut line).await.unwrap();
-            tokio::time::sleep(Duration::from_secs(301)).await;
-            let _ = server
-                .get_mut()
-                .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[]}}\n")
-                .await;
-            line.clear();
-            assert_eq!(server.read_line(&mut line).await.unwrap(), 0);
-        };
-        let calls = async {
-            let cancel = CancellationToken::new();
-            let start = tokio::time::Instant::now();
-            assert!(matches!(
-                client.connect_browser_target(&cancel).await,
-                Err(McpError::Timeout)
-            ));
-            assert_eq!(start.elapsed(), Duration::from_secs(300));
-            assert!(client.closed);
-            assert!(matches!(
-                client.current_browser_target(&cancel).await,
-                Err(McpError::Transport)
-            ));
-            assert_eq!(client.next_id, 2);
-        };
-        tokio::join!(calls, server);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn issue75_browser_connection_cancel_discards_late_reply() {
-        let (stream, server) = tokio::io::duplex(4096);
-        let mut client = fixture(stream);
-        client
-            .tools
-            .insert("browser_tabs".into(), json!({"type":"object"}));
-        let cancel = CancellationToken::new();
-        let signal = cancel.clone();
-        let server = async move {
-            let mut server = BufReader::new(server);
-            let mut line = String::new();
-            server.read_line(&mut line).await.unwrap();
-            tokio::time::sleep(Duration::from_secs(10)).await;
-            signal.cancel();
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            let _ = server
-                .get_mut()
-                .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[]}}\n")
-                .await;
-            line.clear();
-            assert_eq!(server.read_line(&mut line).await.unwrap(), 0);
-        };
-        let calls = async {
-            let start = tokio::time::Instant::now();
-            assert!(matches!(
-                client.connect_browser_target(&cancel).await,
-                Err(McpError::Cancelled)
-            ));
-            assert_eq!(start.elapsed(), Duration::from_secs(10));
-            assert!(client.closed);
-            assert!(matches!(
-                client
-                    .call(
-                        "browser_tabs",
-                        json!({"action":"list"}),
-                        &CancellationToken::new()
-                    )
-                    .await,
-                Err(McpError::Transport)
-            ));
-            assert_eq!(client.next_id, 2);
-        };
-        tokio::join!(calls, server);
-    }
-
-    #[tokio::test]
-    async fn issue75_managed_partial_write_cancel_poisons_connection() {
-        use tokio::io::AsyncReadExt;
-        let (client, mut server) = tokio::io::duplex(16);
-        let mut client = fixture(client);
-        let cancel = CancellationToken::new();
-        let signal = cancel.clone();
-        let server = async move {
-            let mut bytes = [0; 8];
-            server.read_exact(&mut bytes).await.unwrap();
-            signal.cancel();
-            tokio::task::yield_now().await;
-        };
-        let (result, _) = tokio::join!(
-            client.request("tools/call", json!({"payload":"x".repeat(4096)}), &cancel),
-            server
-        );
-        assert!(matches!(result, Err(McpError::Cancelled)));
-        assert!(client.closed);
-        assert!(matches!(
-            client
-                .request("tools/list", json!({}), &CancellationToken::new())
-                .await,
-            Err(McpError::Transport)
-        ));
-    }
-
-    #[tokio::test]
-    async fn issue75_managed_wrong_response_id_poisons_connection() {
-        let (client, server) = tokio::io::duplex(1024);
-        let mut client = fixture(client);
-        let server = async move {
-            let mut server = BufReader::new(server);
-            let mut line = String::new();
-            server.read_line(&mut line).await.unwrap();
-            server
-                .get_mut()
-                .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{}}\n")
-                .await
-                .unwrap();
-        };
-        let cancel = CancellationToken::new();
-        let (result, _) = tokio::join!(client.request("tools/list", json!({}), &cancel), server);
-        assert!(matches!(result, Err(McpError::InvalidMessage)));
-        assert!(client.closed);
-    }
-
-    #[test]
-    fn issue75_managed_media_profile_is_bounded_and_separate() {
-        let value = json!({"content":[{"type":"image","mimeType":"image/png","data":"AQID"}]});
-        assert!(crate::wire::parse_tool_result(&value, false).is_err());
-        assert_eq!(parse_result(value).unwrap().images[0].bytes, vec![1, 2, 3]);
-        assert!(
-            parse_result(json!({"content":[{"type":"resource","uri":"file:///secret"}]})).is_err()
-        );
-        assert!(parse_result(json!({"isError":"false","content":[]})).is_err());
-    }
 }

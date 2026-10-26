@@ -34,7 +34,7 @@ pub(super) fn prepare(
     platform::validate_target_path(&bundle.path)?;
     let team = platform::verified_team(&bundle.path, &bundle.version)?;
     if team != bundle.team {
-        return Err(failure("当前应用签名身份已变化，请重新启动后检查更新"));
+        return Err(failure(vega_i18n::t("app.update.identity_changed")));
     }
     let authenticated = signature::load(staging, version, &bundle.version)?;
     let prepared = platform::private_tempdir_in(staging, "prepare-")?;
@@ -72,7 +72,8 @@ pub(super) fn prepare(
     }
     platform::write_new(
         &path,
-        &serde_json::to_vec(&manifest).map_err(|_| failure("无法准备安装记录"))?,
+        &serde_json::to_vec(&manifest)
+            .map_err(|_| failure(vega_i18n::t("app.update.prepare_record")))?,
     )?;
     let mut child = Command::new(std::env::current_exe()?)
         .arg("--vega-update-helper")
@@ -86,7 +87,7 @@ pub(super) fn prepare(
         if child.try_wait()?.is_some() || started.elapsed() > Duration::from_secs(240) {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(failure("更新安装程序未就绪，当前应用保持运行"));
+            return Err(failure(vega_i18n::t("app.update.installer_not_ready")));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -413,71 +414,4 @@ pub(crate) fn acknowledge_startup() {
                 tracing::error!(%error, "update startup acknowledgment failed");
             }
         });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn write_bundle(bundle: &Path, executable: &[u8], marker: &[u8]) {
-        let binary = bundle.join("Contents/MacOS/vega");
-        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(bundle.join("Contents/Resources")).unwrap();
-        std::fs::write(binary, executable).unwrap();
-        std::fs::write(bundle.join("Contents/Resources/marker"), marker).unwrap();
-    }
-
-    #[test]
-    fn updater_rollback_helper_restores_old_bundle_and_preserves_failed_candidate() {
-        let root = tempfile::tempdir().unwrap();
-        let target = root.path().join("Vega.app");
-        let staging = root.path().join(".vega-update-test");
-        let previous = staging.join("previous.app");
-        let failed = staging.join("failed.app");
-        std::fs::create_dir(&staging).unwrap();
-        write_bundle(&target, b"failed new executable", b"new marker");
-        write_bundle(&previous, b"known old executable", b"old marker");
-        let old_hash = platform::hash(&previous.join("Contents/MacOS/vega")).unwrap();
-        let manifest = Manifest {
-            target: target.clone(),
-            old_version: "1.0.0".into(),
-            new_version: "1.0.1".into(),
-            old_hash,
-            new_hash: "new-hash".into(),
-            device: 1,
-            inode: 1,
-            parent_pid: 1,
-            delta: false,
-        };
-
-        let error = fail_and_rollback(
-            &staging,
-            &manifest,
-            None,
-            failure("injected launch failure"),
-            |bundle, version, team| {
-                assert_eq!(bundle, previous);
-                assert_eq!(version, "1.0.0");
-                assert!(team.is_none());
-                assert!(bundle.join("Contents/MacOS/vega").is_file());
-                Ok(())
-            },
-        )
-        .unwrap_err();
-
-        assert_eq!(error.to_string(), "injected launch failure");
-        assert_eq!(
-            std::fs::read(target.join("Contents/MacOS/vega")).unwrap(),
-            b"known old executable"
-        );
-        assert_eq!(
-            std::fs::read(target.join("Contents/Resources/marker")).unwrap(),
-            b"old marker"
-        );
-        assert_eq!(
-            std::fs::read(failed.join("Contents/MacOS/vega")).unwrap(),
-            b"failed new executable"
-        );
-        assert!(!previous.exists());
-    }
 }

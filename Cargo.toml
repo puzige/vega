@@ -13,8 +13,10 @@ members = [
     "crates/vega_token",
     "crates/vega_theme",
     "crates/vega_acp",
+    "crates/vega_i18n",
     "xtask",
 ]
+exclude = ["vendor/block", "vendor/mdstream"]
 
 [workspace.package]
 version = "0.1.0"
@@ -27,6 +29,7 @@ tokio-rustls = { version = "=0.26.4", default-features = false, features = ["rin
 rcgen = { version = "=0.14.7", default-features = false, features = ["ring", "pem"] }
 httparse = "=1.10.1"
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+html5ever = "=0.27.0"
 base64 = "=0.22.1"
 # 基础依赖（exec-guide §5 白名单）：版本精确锁定（=x.y.z），crate 内以 `workspace = true` 引用
 tokio = "=1.53.1"
@@ -35,35 +38,29 @@ serde_json = "=1.0.151"
 sha2 = "=0.10.9"
 ring = "=0.17.14"
 zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
-serde-saphyr = { version = "=0.0.29", default-features = false } # Issue #74: exact direct dependency approved by user 2026-09-20
+serde-saphyr = { version = "=0.0.29", default-features = false }
 thiserror = "=2.0.20"
 tracing = "=0.1.44"
 tracing-subscriber = "=0.3.23"
 # 数据依赖（exec-guide §5 白名单）：rusqlite 在 vega_store 内启用 `features = ["bundled"]`
 rusqlite = "=0.40.2"
-# 项目/线程 id（tech-spec §2：projects.id 与 threads.id 均为 ulid，线程 id 由 T11 crate 内生成）
 ulid = "=3.0.0"
 # 配置解析（exec-guide §5 白名单，2026-08-29 人类批准）
 toml = "=1.1.4"
-# 网络依赖（exec-guide §5 白名单，2026-08-29 S4-T19 首次激活，版本 cargo info 查最新稳定）：
 # reqwest 锁 0.12 线——任务卡指定 features=["rustls-tls","json"] 的 feature 名仅存在于 0.12
 # （0.13 已改名 rustls 且默认 TLS 语义变化）；"stream" 为 Response::bytes_stream 所必需
 reqwest = { version = "=0.12.24", default-features = false, features = ["rustls-tls", "json", "stream"] }
 eventsource-stream = "=0.2.3"
 tokio-util = "=0.7.19"
 futures = "=0.3.34"
-# R10: approved descriptor-relative Unix credential IO
 libc = "0.2"
-# R11 architect-approved native terminal and bounded ANSI screen parser
 portable-pty = "=0.9.0"
 vt100 = "=0.16.2"
-# 工具依赖（exec-guide §5 白名单，2026-08-29 T14 spike 确认引入并锁定 0.3.0，
 # tech-spec §5.0 路线 A：上游 0.4 已移除 committed/pending+BlockId 模型，禁止随上游升级）
 mdstream = "=0.3.0"
 pulldown-cmark = "=0.13.4"
 ignore = "=0.4.33"
 regex = "=1.13.1"
-# 代码块高亮（exec-guide §5 白名单，2026-08-29 T16 预授权；S3-T16）。
 # 架构师裁决（2026-08-29）：四语言 = rust / typescript / javascript / python，
 # markdown grammar 砍掉——tree-sitter-markdown 0.7.1 硬依赖 tree-sitter ^0.19，
 # 共存会引入第二个 tree-sitter C 运行时导致 SIGSEGV；未来如需走 fork/vendor 路线另议。
@@ -86,11 +83,15 @@ vega_ui = { path = "crates/vega_ui" }
 vega_markdown = { path = "crates/vega_markdown" }
 vega_token = { path = "crates/vega_token" }
 vega_acp = { path = "crates/vega_acp" }
+vega_i18n = { path = "crates/vega_i18n" }
 # 仅供 xtask 使用
 anyhow = "=1.0.104"
-# 仅供测试使用（dev-dependency）
 tempfile = "=3.27.0"
 # UI 依赖：GPUI Kit 是唯一入口；它 re-export 了匹配版本的 GPUI、平台层
 # 以及可选的组件层。源码使用 facade crate 的 `gpui_kit::…` 命名空间，
 # 避免 GPUI Kit re-export 的 `gpui` 模块与外层 crate 名发生 glob 冲突。
-gpui_kit = { package = "gpui-kit", version = "=0.6.0", default-features = false, features = ["component", "test-support", "assets"] }
+gpui_kit = { package = "gpui-kit", version = "=0.6.1", default-features = false, features = ["component", "assets"] }
+
+[patch.crates-io]
+block = { path = "vendor/block" }
+mdstream = { path = "vendor/mdstream" }

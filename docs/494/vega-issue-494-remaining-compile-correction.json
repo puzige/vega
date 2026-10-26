@@ -1,0 +1,29 @@
+{
+  "head": "636d3104a3322de1a7475c364d287f6a2edc9e5d",
+  "run": "https://github.com/puzige/vega/actions/runs/39370960515",
+  "discovered": null,
+  "executed": 0,
+  "behavior_green": false,
+  "nextest_job": "https://github.com/puzige/vega/actions/runs/39370960515/job/118458490815",
+  "nextest_log_sha256": "c9aeede0d46e8acebde696a50d8138c8cdcd532ff451dcde7100483e5a1e1298",
+  "nextest_log_bytes": 66129,
+  "clippy_job": "https://github.com/puzige/vega/actions/runs/39370960515/job/118458490728",
+  "clippy_log_sha256": "d7cbe6ca08a732b7732628e57f326c1bc050ace9e48e920ad794e37b0d5f2104",
+  "clippy_log_bytes": 103497,
+  "failure": "E0433 at compaction.rs:140: conn: &rusqlite::Connection; conversation has no production rusqlite dependency",
+  "other_checks": "Format and Python34 successful",
+  "review_before_edit": {
+    "file": "crates/vega_conversation/src/agent/compaction.rs",
+    "old": "conn: &rusqlite::Connection,",
+    "new": "conn: &vega_store::Connection,",
+    "reason": "vega_store/src/lib.rs already publicly reexports the identical rusqlite Connection type; use existing Store boundary without adding dependency or changing behavior",
+    "tests_and_dependencies": "No changes authorized; preserve all26 test artifacts and133 definitions"
+  },
+  "parent_review": {
+    "before_sha256": "241cd7e0de6049962e53f8c66a38fdbde29390bbf0dd138dd39d5ccf61fa7a67",
+    "after_sha256": "6b31abae7aeded0d8e63d38aa817325dc8b2c77710b69317f44f3223d33bd07d",
+    "exact_one_line_replacement": true,
+    "all26_artifact_hashes_unchanged": true,
+    "compiled_or_executed_locally": false
+  }
+}

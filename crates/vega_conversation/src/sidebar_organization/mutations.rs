@@ -27,11 +27,17 @@ pub(super) fn apply_in_transaction(
         });
     }
     let created_thread = mutate(store, &mut state, action)?;
-    state.revision = state
-        .revision
-        .checked_add(1)
-        .filter(|v| *v <= i64::MAX as u64)
-        .ok_or_else(|| SidebarOrganizationError::Limit("revision exhausted".into()))?;
+    let existing: std::collections::HashSet<_> =
+        state.threads.iter().map(|t| t.id.as_str()).collect();
+    let mut seen = std::collections::HashSet::new();
+    state
+        .preferences
+        .manual_thread_order
+        .retain(|id| existing.contains(id.as_str()) && seen.insert(id.clone()));
+    state.preferences.sort = SidebarTaskSort::Manual;
+    state.revision = sql::next_revision(state.revision).ok_or(
+        SidebarOrganizationError::LimitKey("domain.organization.validation.revision"),
+    )?;
     let rows = sql::OrganizationRows {
         revision: state.revision as i64,
         preferences: serde_json::to_string(&state.preferences).map_err(storage)?,
@@ -62,15 +68,13 @@ pub(super) fn apply_in_transaction(
         created_thread,
     })
 }
-fn invalid(message: &str) -> SidebarOrganizationError {
-    SidebarOrganizationError::Invalid(message.into())
+fn invalid_key(key: &'static str) -> SidebarOrganizationError {
+    SidebarOrganizationError::InvalidKey(key)
 }
 fn name(value: String) -> Result<String, SidebarOrganizationError> {
     let value = value.trim();
     if !(1..=64).contains(&value.chars().count()) {
-        return Err(invalid(
-            "group name must contain 1–64 characters after trimming",
-        ));
+        return Err(invalid_key("domain.organization.validation.name"));
     }
     Ok(value.into())
 }
@@ -82,7 +86,7 @@ fn group<'a>(
         .groups
         .iter_mut()
         .find(|g| g.id == id)
-        .ok_or_else(|| invalid("group does not exist"))
+        .ok_or_else(|| invalid_key("domain.organization.validation.group"))
 }
 fn move_before(
     ids: &mut Vec<String>,
@@ -90,14 +94,14 @@ fn move_before(
     before: Option<&str>,
 ) -> Result<(), SidebarOrganizationError> {
     if before == Some(id) {
-        return Err(invalid("cannot move an item before itself"));
+        return Err(invalid_key("domain.organization.validation.self_anchor"));
     }
     let from = ids
         .iter()
         .position(|v| v == id)
-        .ok_or_else(|| invalid("item does not exist"))?;
+        .ok_or_else(|| invalid_key("domain.organization.validation.missing"))?;
     if before.is_some_and(|anchor| !ids.iter().any(|v| v == anchor)) {
-        return Err(invalid("anchor does not belong to the destination"));
+        return Err(invalid_key("domain.organization.validation.destination"));
     }
     let moved = ids.remove(from);
     let at = before
@@ -112,10 +116,10 @@ fn validate_collapse(
 ) -> Result<(), SidebarOrganizationError> {
     match target {
         SidebarCollapseTarget::Project(id) if !state.projects.iter().any(|p| p.id == *id) => {
-            Err(invalid("project does not exist"))
+            Err(invalid_key("domain.organization.validation.project"))
         }
         SidebarCollapseTarget::Group(id) if !state.groups.iter().any(|g| g.id == *id) => {
-            Err(invalid("group does not exist"))
+            Err(invalid_key("domain.organization.validation.group"))
         }
         _ => Ok(()),
     }
@@ -130,7 +134,9 @@ fn mutate(
         CreateGroup { name: title, color } => {
             let title = name(title)?;
             if state.groups.len() >= MAX_SIDEBAR_GROUPS {
-                return Err(SidebarOrganizationError::Limit("maximum 128 groups".into()));
+                return Err(SidebarOrganizationError::LimitKey(
+                    "domain.organization.validation.groups_limit",
+                ));
             }
             state.groups.push(SidebarGroup {
                 id: crate::threads::new_thread_id(),
@@ -177,6 +183,12 @@ fn mutate(
             move_before(&mut ids, &project_id, before_id.as_deref())?;
             state.project_order = ids;
         }
+        ReorderThread {
+            thread_id,
+            before_id,
+        } => {
+            reorder_thread(state, &thread_id, before_id.as_deref())?;
+        }
         MoveThread {
             thread_id,
             group_id,
@@ -190,7 +202,10 @@ fn mutate(
                 .collapsed
                 .retain(|target| *target != SidebarCollapseTarget::Project(project_id.clone()));
         }
-        SetPreferences(preferences) => state.preferences = preferences,
+        SetPreferences(mut preferences) => {
+            preferences.manual_thread_order = state.preferences.manual_thread_order.clone();
+            state.preferences = preferences;
+        }
         SetCollapsed { target, collapsed } => {
             validate_collapse(state, &target)?;
             state.collapsed.retain(|t| *t != target);
@@ -239,15 +254,15 @@ fn mutate(
         } => {
             group(state, &group_id)?;
             if !state.projects.iter().any(|p| p.id == project_id) {
-                return Err(invalid("project does not exist"));
+                return Err(invalid_key("domain.organization.validation.project"));
             }
             if state.threads.len() >= MAX_SIDEBAR_THREADS {
-                return Err(SidebarOrganizationError::Limit(
-                    "maximum 10000 tasks".into(),
+                return Err(SidebarOrganizationError::LimitKey(
+                    "domain.organization.validation.tasks_limit",
                 ));
             }
             if !permission_mode.is_empty() && PermissionMode::parse(&permission_mode).is_none() {
-                return Err(invalid("invalid permission mode"));
+                return Err(invalid_key("domain.organization.validation.permissions"));
             }
             let thread =
                 crate::threads::create_thread(store, &project_id, &model, &permission_mode)
@@ -269,15 +284,15 @@ fn move_thread(
     before_id: Option<String>,
 ) -> Result<(), SidebarOrganizationError> {
     if !state.threads.iter().any(|t| t.id == thread_id) {
-        return Err(invalid("task does not exist"));
+        return Err(invalid_key("domain.organization.validation.task"));
     }
     if before_id.as_deref() == Some(&thread_id) {
-        return Err(invalid("cannot move a task before itself"));
+        return Err(invalid_key("domain.organization.validation.task_anchor"));
     }
     match group_id {
         None => {
             if before_id.is_some() {
-                return Err(invalid("ungrouping does not accept an anchor"));
+                return Err(invalid_key("domain.organization.validation.ungroup_anchor"));
             }
             state.memberships.retain(|m| m.thread_id != thread_id);
         }
@@ -289,7 +304,7 @@ fn move_thread(
                     .iter()
                     .any(|m| m.thread_id == *before && m.group_id == group_id)
             }) {
-                return Err(invalid("anchor does not belong to the destination group"));
+                return Err(invalid_key("domain.organization.validation.group_anchor"));
             }
             state.memberships.retain(|m| m.thread_id != thread_id);
             let at = before_id
@@ -304,5 +319,37 @@ fn move_thread(
             );
         }
     }
+    Ok(())
+}
+
+fn reorder_thread(
+    state: &mut SidebarOrganizationSnapshot,
+    thread_id: &str,
+    before_id: Option<&str>,
+) -> Result<(), SidebarOrganizationError> {
+    let source = state
+        .threads
+        .iter()
+        .find(|thread| thread.id == thread_id)
+        .ok_or_else(|| invalid_key("domain.organization.thread_missing"))?;
+    if let Some(before_id) = before_id {
+        let anchor = state
+            .threads
+            .iter()
+            .find(|thread| thread.id == before_id)
+            .ok_or_else(|| invalid_key("domain.organization.target_missing"))?;
+        if source.pinned != anchor.pinned
+            || (!source.pinned && source.project_binding() != anchor.project_binding())
+        {
+            return Err(invalid_key("domain.organization.same_region"));
+        }
+    }
+    let mut order = sorted_threads(&state.threads, &state.preferences)
+        .into_iter()
+        .map(|thread| thread.id)
+        .collect();
+    move_before(&mut order, thread_id, before_id)?;
+    state.preferences.manual_thread_order = order;
+    state.preferences.sort = SidebarTaskSort::Manual;
     Ok(())
 }

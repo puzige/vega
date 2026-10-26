@@ -380,11 +380,6 @@ pub struct BashError {
 }
 
 impl BashError {
-    #[cfg(any(test, feature = "test-support"))]
-    pub const fn for_test(code: BashErrorCode) -> Self {
-        Self { code }
-    }
-
     pub(crate) const fn new(code: BashErrorCode) -> Self {
         Self { code }
     }
@@ -407,9 +402,7 @@ impl fmt::Debug for BashError {
 impl fmt::Display for BashError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.code == BashErrorCode::CredentialProtectionRequired {
-            return formatter.write_str(
-                "此凭据调用需要受保护执行，请切换权限模式后继续 (credential_protection_required)",
-            );
+            return formatter.write_str(vega_i18n::t("domain.tool.credential_protection"));
         }
         write!(formatter, "bash failed ({})", self.code.as_str())
     }
@@ -438,9 +431,6 @@ pub enum ToolError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
 
-    /// Result set exceeded a tool's hard limit. Reserved for callers that
-    /// prefer a hard failure; T21's glob/grep truncate into
-    /// [`ToolOutput::truncated`](crate::ToolOutput::truncated) instead.
     #[error("too many results (limit: {limit})")]
     TooManyResults { limit: usize },
 

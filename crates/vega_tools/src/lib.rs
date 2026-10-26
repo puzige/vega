@@ -1,40 +1,3 @@
-//! Built-in project tools: `read`, `glob`, `grep`, `write`, and `edit`
-//! (tech-spec §4.4, A3-05~07 / S4-T21 / S5-T23).
-//!
-//! [`Tools`] is the single entry point: bind one instance to the canonical
-//! project root. Read/Edit/Write accept canonical absolute paths or paths relative
-//! to that root; runtime permissions authorize external targets. Search and shell
-//! retain their own project boundaries. Mutation requires a prior read version.
-//!
-//! Mutations remain disabled until the caller explicitly supplies a
-//! checkpoint root plus project/thread/call ids. All tools return the same
-//! success shape, [`ToolOutput`] (text plus a
-//! truncation flag), so the agentic loop (T20) can append every result as a
-//! `tool_result` without per-tool branching.
-//!
-//! The crate is headless — no gpui, no UI crate (`cargo tree -p vega_tools`
-//! must stay gpui-free, exec-guide §3).
-//!
-//! # Example
-//!
-//! ```
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let dir = tempfile::tempdir()?;
-//! std::fs::write(dir.path().join("lib.rs"), "fn main() {}\n")?;
-//!
-//! let tools = vega_tools::Tools::new(dir.path())?;
-//! let out = tools.read("lib.rs", None, None)?;
-//! assert_eq!(out.text, "1 | fn main() {}");
-//! assert!(!out.truncated);
-//!
-//! assert!(matches!(
-//!     tools.read("missing.txt", None, None),
-//!     Err(vega_tools::ToolError::NotFound(_))
-//! ));
-//! # Ok(())
-//! # }
-//! ```
-
 mod bash;
 mod checkpoint;
 mod codec;
@@ -48,6 +11,7 @@ mod mutation;
 mod output;
 mod project_instructions;
 mod read;
+pub use read::ReadIdentity;
 pub mod reference;
 mod sandbox;
 mod sha256;
@@ -64,9 +28,9 @@ pub use codec::{
 pub use error::{
     BashError, BashErrorCode, EditFailureContext, MutationError, MutationErrorCode, ToolError,
 };
+pub use grep::PreparedGrep;
 pub use mutation::{InvalidMutation, PrepareMutationError, PreparedEdit, PreparedWrite};
-#[cfg(feature = "test-support")]
-pub use output::collect_bash_output_for_test;
+
 pub use output::{
     BASH_LINE_MIDDLE_MARKER, BASH_MAX_BYTES_PER_SIDE, BASH_MAX_LINE_BYTES, BASH_MAX_LINES_PER_SIDE,
     BASH_OUTPUT_MIDDLE_MARKER, BASH_READ_CHUNK_BYTES, BashOutput, LINE_TRUNCATION_MARKER,
@@ -79,9 +43,6 @@ pub use project_instructions::{
 pub use tools::{ReadState, Tools};
 
 mod text_file;
-
-#[cfg(any(test, feature = "test-support"))]
-pub use bash::BashTestExecutor;
 
 mod credentials;
 pub use credentials::ToolCredentialPolicy;

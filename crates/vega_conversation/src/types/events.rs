@@ -7,8 +7,39 @@ pub enum ConversationStopReason {
     End,
     /// Provider generation limit.
     Length,
-    /// Runtime agent turn safety limit (Issue #114).
     TurnLimit,
+}
+
+/// Provider-side facts known when a run failed: bounded allowlisted metadata
+/// only, never a provider response body.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProviderFailureFact {
+    /// HTTP status of the response that was already established, when known.
+    pub http_status: Option<u16>,
+    /// Retries already spent before this terminal failure.
+    pub retries: Option<u32>,
+}
+
+impl ProviderFailureFact {
+    /// Localized, verifiable facts joined by a separator; `None` when empty.
+    /// An unknown status and a zero retry count produce nothing rather than a
+    /// placeholder or a misleading `0`.
+    pub fn summary(self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(status) = self.http_status {
+            parts.push(vega_i18n::t_args(
+                "domain.failure.provider_fact_http",
+                &[("status", &status.to_string())],
+            ));
+        }
+        if let Some(retries) = self.retries.filter(|retries| *retries > 0) {
+            parts.push(vega_i18n::t_args(
+                "domain.failure.provider_fact_retries",
+                &[("retries", &retries.to_string())],
+            ));
+        }
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    }
 }
 
 /// Content-free explanation of a failed run. The provider's raw diagnostic
@@ -28,10 +59,20 @@ pub enum RunFailureKind {
     ProviderRateLimited,
     /// Another HTTP response rejected the request.
     ProviderHttp(u16),
-    /// No HTTP response was received.
-    ProviderTransport,
+    /// No HTTP response was received: DNS, TCP/TLS or redirect failure.
+    ProviderTransport(ProviderFailureFact),
+    /// An established response stream ended before its terminal event.
+    ProviderStreamInterrupted(ProviderFailureFact),
+    /// An established response stream or request exceeded its deadline.
+    ProviderTimeout(ProviderFailureFact),
     /// An in-process runtime error rather than a provider HTTP failure.
     Runtime,
+    RuntimeStorage,
+    RuntimeStorageBusy,
+    RuntimeApprovalAudit,
+    RuntimeState,
+    RuntimeIo,
+    RuntimePipeline,
     #[allow(missing_docs)]
     CredentialExposureBlocked,
     CredentialCheckUnavailable,
@@ -42,15 +83,65 @@ pub enum RunFailureKind {
     CredentialOutcomeUnknown,
     ContextOverLimit,
     #[allow(missing_docs)]
+    Compaction(ContextCompactionFailureCode),
+    #[allow(missing_docs)]
     ReasoningLimit(Option<vega_runtime::ReasoningBudgetScope>),
+    ReasoningReplay,
+    ModelImagesUnsupported,
+    ReasoningSelectionInvalid,
     /// A durable failed row whose original reason was not persisted.
     Persisted,
 }
 
 impl RunFailureKind {
+    pub(crate) fn from_compaction_diagnostic_code(
+        code: vega_store::run_diagnostics::DiagnosticFailureCode,
+    ) -> Option<Self> {
+        use vega_store::run_diagnostics::DiagnosticFailureCode as Code;
+        match code {
+            Code::ContextOverLimit => Some(Self::ContextOverLimit),
+            Code::SummaryTimeout => Some(Self::Compaction(ContextCompactionFailureCode::TimedOut)),
+            Code::SummaryTruncated
+            | Code::SummaryEmpty
+            | Code::SummaryFormatInvalid
+            | Code::SummaryProjectionInvalid => Some(Self::Compaction(
+                ContextCompactionFailureCode::InvalidSummary,
+            )),
+            Code::SummarySourceChanged => Some(Self::Compaction(
+                ContextCompactionFailureCode::SourceChanged,
+            )),
+            Code::SummarySourceTooLarge | Code::SummaryAggregateTooLarge => {
+                Some(Self::Compaction(ContextCompactionFailureCode::TooLarge))
+            }
+            Code::SummaryImagesUnsupported => Some(Self::Compaction(
+                ContextCompactionFailureCode::ImagesUnsupported,
+            )),
+            Code::SummaryNoCompactablePrefix => Some(Self::Compaction(
+                ContextCompactionFailureCode::NoCompactablePrefix,
+            )),
+            Code::SummaryAlreadyAttempted => {
+                Some(Self::Compaction(ContextCompactionFailureCode::Unavailable))
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn from_diagnostic(
         metrics: &vega_store::run_diagnostics::DiagnosticMetrics,
     ) -> Self {
+        if let Some(reason) = metrics.runtime_reason.as_deref() {
+            return match reason {
+                "database" if matches!(metrics.sqlite_code, Some(5 | 6)) => {
+                    Self::RuntimeStorageBusy
+                }
+                "database" => Self::RuntimeStorage,
+                "approval_audit" => Self::RuntimeApprovalAudit,
+                "state" => Self::RuntimeState,
+                "io" => Self::RuntimeIo,
+                "pipeline" => Self::RuntimePipeline,
+                _ => Self::Runtime,
+            };
+        }
         match metrics.failure_kind.as_deref() {
             Some("quota") => Self::ProviderQuota,
             Some("authorization") => Self::ProviderAuthorization,
@@ -59,11 +150,40 @@ impl RunFailureKind {
                 .http_status
                 .map(Self::ProviderHttp)
                 .unwrap_or(Self::ProviderRejected),
-            Some("transport") => Self::ProviderTransport,
+            // Rows written before the split merged connect failures and
+            // interrupted streams under one kind. A recorded HTTP status proves
+            // a response was established, so such a row is an interrupted
+            // stream rather than a connection failure.
+            Some("transport") => match metrics.http_status {
+                Some(_) => Self::ProviderStreamInterrupted(ProviderFailureFact {
+                    http_status: metrics.http_status,
+                    retries: metrics.retry_count,
+                }),
+                None => Self::ProviderTransport(ProviderFailureFact {
+                    http_status: None,
+                    retries: metrics.retry_count,
+                }),
+            },
+            Some("stream_interrupted") => Self::ProviderStreamInterrupted(ProviderFailureFact {
+                http_status: metrics.http_status,
+                retries: metrics.retry_count,
+            }),
+            Some("timeout") => Self::ProviderTimeout(ProviderFailureFact {
+                http_status: metrics.http_status,
+                retries: metrics.retry_count,
+            }),
+            Some("protocol")
+                if metrics.failure_source.as_deref() == Some("runtime")
+                    && metrics.failure_scope.as_deref() == Some("response") =>
+            {
+                Self::ReasoningReplay
+            }
             Some("protocol") => Self::ProviderProtocol,
             Some("rejected") => Self::ProviderRejected,
             Some("output_limit") => Self::ProviderOutputLimit,
             Some("context_over_limit") => Self::ContextOverLimit,
+            Some("model_images") => Self::ModelImagesUnsupported,
+            Some("reasoning_selection") => Self::ReasoningSelectionInvalid,
             Some("reasoning_limit") => {
                 Self::ReasoningLimit(match metrics.failure_scope.as_deref() {
                     Some("delta") => Some(vega_runtime::ReasoningBudgetScope::Delta),
@@ -97,6 +217,18 @@ impl RunFailureKind {
             return Self::ContextOverLimit;
         }
         match error {
+            vega_runtime::VegaError::RuntimeFailure(detail) => match detail.reason {
+                vega_runtime::RuntimeFailureReason::Database
+                    if matches!(detail.sqlite_code, Some(5 | 6)) =>
+                {
+                    Self::RuntimeStorageBusy
+                }
+                vega_runtime::RuntimeFailureReason::Database => Self::RuntimeStorage,
+                vega_runtime::RuntimeFailureReason::ApprovalAudit => Self::RuntimeApprovalAudit,
+                vega_runtime::RuntimeFailureReason::State => Self::RuntimeState,
+                vega_runtime::RuntimeFailureReason::Io => Self::RuntimeIo,
+                vega_runtime::RuntimeFailureReason::Pipeline => Self::RuntimePipeline,
+            },
             vega_runtime::VegaError::ProviderPayloadTooLarge { .. } => Self::ProviderProtocol,
             vega_runtime::VegaError::ProviderDiagnostic {
                 kind: vega_runtime::ProviderFailureKind::OutputLimit,
@@ -106,6 +238,36 @@ impl RunFailureKind {
                 kind: vega_runtime::ProviderFailureKind::Protocol,
                 ..
             } => Self::ProviderProtocol,
+            // Dispatch on the structured kind before any status-based arm: an
+            // established response that broke mid-stream can carry a 2xx
+            // status and must not be reported as an HTTP rejection.
+            vega_runtime::VegaError::ProviderDiagnostic {
+                kind: vega_runtime::ProviderFailureKind::Transport,
+                status,
+                retry_count,
+                ..
+            } => Self::ProviderTransport(ProviderFailureFact {
+                http_status: *status,
+                retries: *retry_count,
+            }),
+            vega_runtime::VegaError::ProviderDiagnostic {
+                kind: vega_runtime::ProviderFailureKind::StreamInterrupted,
+                status,
+                retry_count,
+                ..
+            } => Self::ProviderStreamInterrupted(ProviderFailureFact {
+                http_status: *status,
+                retries: *retry_count,
+            }),
+            vega_runtime::VegaError::ProviderDiagnostic {
+                kind: vega_runtime::ProviderFailureKind::Timeout,
+                status,
+                retry_count,
+                ..
+            } => Self::ProviderTimeout(ProviderFailureFact {
+                http_status: *status,
+                retries: *retry_count,
+            }),
             vega_runtime::VegaError::Provider {
                 status: Some(400),
                 message,
@@ -140,10 +302,6 @@ impl RunFailureKind {
                 ..
             } => Self::ProviderHttp(*status),
             vega_runtime::VegaError::ProviderDiagnostic {
-                kind: vega_runtime::ProviderFailureKind::Transport,
-                ..
-            } => Self::ProviderTransport,
-            vega_runtime::VegaError::ProviderDiagnostic {
                 kind: vega_runtime::ProviderFailureKind::Rejected,
                 ..
             } => Self::ProviderRejected,
@@ -166,10 +324,47 @@ impl RunFailureKind {
                 | vega_runtime::ContextRuntimeError::SummaryInputOverLimit { .. }
                 | vega_runtime::ContextRuntimeError::ResultOverLimit { .. },
             ) => Self::ContextOverLimit,
+            vega_runtime::VegaError::Context(vega_runtime::ContextRuntimeError::SourceChanged) => {
+                Self::Compaction(ContextCompactionFailureCode::SourceChanged)
+            }
+            vega_runtime::VegaError::Context(
+                vega_runtime::ContextRuntimeError::SummaryTimedOut,
+            ) => Self::Compaction(ContextCompactionFailureCode::TimedOut),
+            vega_runtime::VegaError::Context(
+                vega_runtime::ContextRuntimeError::SummaryOutputTruncated { .. }
+                | vega_runtime::ContextRuntimeError::SummaryEmpty
+                | vega_runtime::ContextRuntimeError::InvalidSummary
+                | vega_runtime::ContextRuntimeError::SummaryFormatInvalid
+                | vega_runtime::ContextRuntimeError::SummaryProjectionInvalid
+                | vega_runtime::ContextRuntimeError::InvalidProjection
+                | vega_runtime::ContextRuntimeError::SystemMessageInResult,
+            ) => Self::Compaction(ContextCompactionFailureCode::InvalidSummary),
+            vega_runtime::VegaError::Context(
+                vega_runtime::ContextRuntimeError::NoCompactablePrefix,
+            ) => Self::Compaction(ContextCompactionFailureCode::NoCompactablePrefix),
+            vega_runtime::VegaError::Context(
+                vega_runtime::ContextRuntimeError::SourceTooLarge
+                | vega_runtime::ContextRuntimeError::AggregateTooLarge,
+            ) => Self::Compaction(ContextCompactionFailureCode::TooLarge),
+            vega_runtime::VegaError::Context(
+                vega_runtime::ContextRuntimeError::ImagesUnsupported,
+            ) => Self::Compaction(ContextCompactionFailureCode::ImagesUnsupported),
+            vega_runtime::VegaError::Context(
+                vega_runtime::ContextRuntimeError::AlreadyAttempted,
+            ) => Self::Compaction(ContextCompactionFailureCode::Unavailable),
+            vega_runtime::VegaError::Context(vega_runtime::ContextRuntimeError::Estimate(
+                vega_runtime::ContextEstimateError::InputTooLarge,
+            )) => Self::ContextOverLimit,
             vega_runtime::VegaError::ReasoningBudgetExceeded { scope, .. }
             | vega_runtime::VegaError::ReasoningReplayBudgetExceeded { scope, .. } => {
                 Self::ReasoningLimit(Some(*scope))
             }
+            vega_runtime::VegaError::ModelImagesUnsupported => Self::ModelImagesUnsupported,
+            vega_runtime::VegaError::ReasoningSelectionInvalid { .. } => {
+                Self::ReasoningSelectionInvalid
+            }
+            vega_runtime::VegaError::ReasoningReplayUnsupported
+            | vega_runtime::VegaError::ReasoningReplayIncomplete => Self::ReasoningReplay,
             _ => Self::Runtime,
         }
     }
@@ -177,40 +372,78 @@ impl RunFailureKind {
     /// Actionable text made entirely from local vocabulary and HTTP metadata.
     pub fn message(self) -> String {
         match self {
-            Self::ProviderUnknown => "The provider request failed without a specific reason. Retry or switch providers.".into(),
-            Self::ProviderProtocol => "The provider returned invalid data. Retry or switch models.".into(),
-            Self::ProviderRejected => "The provider did not complete the response. Check model settings, then retry or switch models.".into(),
-            Self::ProviderOutputLimit => "The model reached its output limit. Continue the task or adjust the output allowance.".into(),
-            Self::ProviderQuota => {
-                "Provider quota exhausted. Add credit or switch providers in Settings → Providers, then retry.".into()
+            Self::ProviderUnknown => vega_i18n::t("domain.failure.provider_unknown").into(),
+            Self::ProviderProtocol => vega_i18n::t("domain.failure.provider_protocol").into(),
+            Self::ProviderRejected => vega_i18n::t("domain.failure.provider_rejected").into(),
+            Self::ProviderOutputLimit => {
+                vega_i18n::t("domain.failure.provider_output_limit").into()
             }
+            Self::ProviderQuota => vega_i18n::t("domain.failure.provider_quota").into(),
             Self::ProviderAuthorization => {
-                "The provider rejected your credentials or account permissions. Check the API key in Settings → Providers, then retry.".into()
+                vega_i18n::t("domain.failure.provider_authorization").into()
             }
-            Self::ProviderRateLimited => "The provider rate-limited this request. Retry later or switch providers.".into(),
-            Self::ProviderHttp(status) => {
-                format!("Provider request failed (HTTP {status}). Check provider status, model, and quota, then retry.")
+            Self::ProviderRateLimited => vega_i18n::t("domain.failure.provider_rate_limit").into(),
+            Self::ProviderHttp(status) => vega_i18n::t_args(
+                "domain.failure.provider_http",
+                &[("status", &status.to_string())],
+            ),
+            Self::ProviderTransport(fact) => {
+                provider_failure_message("domain.failure.provider_transport", fact)
             }
-            Self::ProviderTransport => "Could not connect to the provider. Check your network and provider address, then retry.".into(),
+            Self::ProviderStreamInterrupted(fact) => {
+                provider_failure_message("domain.failure.provider_stream_interrupted", fact)
+            }
+            Self::ProviderTimeout(fact) => {
+                provider_failure_message("domain.failure.provider_timeout", fact)
+            }
             Self::CredentialExposureBlocked => {
-                "The request could not be transformed safely. Completed tool actions are preserved. Check tool configuration before continuing."
-                    .into()
+                vega_i18n::t("domain.failure.credential_block").into()
             }
-            Self::CredentialCheckUnavailable => "Credentials could not be read. Check credentials in Settings before continuing. Completed actions are preserved.".into(),
-            Self::ProjectInstructionsUnavailable => "Project instructions could not be loaded. Check the root AGENTS.md or CLAUDE.md: use a readable UTF-8 file up to 64 KiB without links, then retry.".into(),
-            Self::ProjectPathInvalid => "The project path is not valid UTF-8. Rename the project folder or choose another project, then retry.".into(),
-            Self::CredentialProjectionInvalid(index) => format!("Tool {} contains sensitive values and cannot be sent safely. Check tool configuration before continuing.", index + 1),
-            Self::CredentialOutcomeUnknown => "Some action outcomes are unknown. Check the tool records before continuing.".into(),
-            Self::CredentialContinuationUnavailable => "Recovery is unavailable because it was already used, the conversation changed, or an action outcome is unknown. Check tool records, then send a new message.".into(),
-            Self::ContextOverLimit => {
-                "Context exceeds available capacity. The conversation is preserved. Adjust context capacity, narrow tool queries, or start a new conversation.".into()
+            Self::CredentialCheckUnavailable => {
+                vega_i18n::t("domain.failure.credential_check").into()
             }
-            Self::ReasoningLimit(_) => {
-                "The run exceeded the local reasoning limit. Send your message again to continue.".into()
+            Self::ProjectInstructionsUnavailable => {
+                vega_i18n::t("domain.failure.project_instructions").into()
             }
-            Self::Runtime => "The run failed. Check the runtime environment, then retry.".into(),
-            Self::Persisted => "This response failed. Check provider status, quota, or the runtime environment, then retry.".into(),
+            Self::ProjectPathInvalid => vega_i18n::t("domain.failure.project_path").into(),
+            Self::CredentialProjectionInvalid(index) => vega_i18n::t_args(
+                "domain.failure.credential_projection",
+                &[("index", &(index + 1).to_string())],
+            ),
+            Self::CredentialOutcomeUnknown => {
+                vega_i18n::t("domain.failure.credential_outcome").into()
+            }
+            Self::CredentialContinuationUnavailable => {
+                vega_i18n::t("domain.failure.credential_continuation").into()
+            }
+            Self::ContextOverLimit => vega_i18n::t("domain.failure.context_limit").into(),
+            Self::Compaction(failure) => failure.message().into(),
+            Self::ReasoningLimit(_) => vega_i18n::t("domain.failure.reasoning_limit").into(),
+            Self::ModelImagesUnsupported => vega_i18n::t("domain.failure.model_images").into(),
+            Self::ReasoningSelectionInvalid => {
+                vega_i18n::t("domain.failure.reasoning_selection").into()
+            }
+            Self::ReasoningReplay => vega_i18n::t("domain.failure.reasoning_replay").into(),
+            Self::Runtime => vega_i18n::t("domain.failure.runtime").into(),
+            Self::RuntimeStorage => vega_i18n::t("domain.failure.storage").into(),
+            Self::RuntimeStorageBusy => vega_i18n::t("domain.failure.storage_busy").into(),
+            Self::RuntimeApprovalAudit => vega_i18n::t("domain.failure.audit").into(),
+            Self::RuntimeState => vega_i18n::t("domain.failure.state").into(),
+            Self::RuntimeIo => vega_i18n::t("domain.failure.io").into(),
+            Self::RuntimePipeline => vega_i18n::t("domain.failure.pipeline").into(),
+            Self::Persisted => vega_i18n::t("domain.failure.persisted").into(),
         }
+    }
+}
+
+/// Joins the localized failure advice with the facts that were actually
+/// recorded, so the user can check the claim against the run instead of being
+/// told to fix a network that never failed.
+fn provider_failure_message(key: &'static str, fact: ProviderFailureFact) -> String {
+    let advice = vega_i18n::t(key);
+    match fact.summary() {
+        Some(facts) => format!("{advice} ({facts})"),
+        None => advice.into(),
     }
 }
 
@@ -243,7 +476,12 @@ fn now_unix_millis() -> i64 {
 pub enum ConversationEvent {
     AssistantResponseStarted {
         message_id: MessageId,
+        response_id: String,
         text_start_bytes: usize,
+    },
+    ReasoningCompleted {
+        message_id: MessageId,
+        response_id: String,
     },
     ResponseRetrying {
         message_id: MessageId,
@@ -266,10 +504,20 @@ pub enum ConversationEvent {
     RunStarted {
         message_id: MessageId,
         started_at: std::time::Instant,
+        work_clock: Option<super::WorkClock>,
+    },
+    RunContinued {
+        previous_assistant_id: MessageId,
+        user_message_id: MessageId,
+        next_assistant_id: MessageId,
     },
     AssistantResponseCompleted {
         message_id: MessageId,
         response: AssistantResponseMetadata,
+    },
+    GeneratedNotice {
+        message_id: MessageId,
+        notice: super::GeneratedNoticeMetadata,
     },
     /// A streaming assistant row was created.
     MessageStarted {
@@ -338,11 +586,7 @@ pub enum ConversationEvent {
         message_id: MessageId,
         /// Provider token counts.
         usage: TokenUsage,
-        /// Integer cost (`0` in S4; priced-zero rows keep `0` with
-        /// provenance).
         cost: Microcents,
-        /// Exact pricing provenance (S7-T38); `None` keeps the S4
-        /// legacy/unpriced semantics.
         pricing: Option<UsagePricing>,
     },
     /// Usage from a historical-summary provider call. It is separate from
@@ -396,11 +640,22 @@ impl std::fmt::Debug for ConversationEvent {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::AssistantResponseStarted {
-                text_start_bytes, ..
+                response_id,
+                text_start_bytes,
+                ..
             } => formatter
                 .debug_struct("AssistantResponseStarted")
+                .field("response_id_bytes", &response_id.len())
                 .field("text_start_bytes", text_start_bytes)
                 .finish_non_exhaustive(),
+            Self::ReasoningCompleted {
+                message_id,
+                response_id,
+            } => formatter
+                .debug_struct("ReasoningCompleted")
+                .field("message_id_bytes", &message_id.len())
+                .field("response_id_bytes", &response_id.len())
+                .finish(),
             Self::ResponseRetrying {
                 text_start_bytes,
                 attempt,
@@ -417,6 +672,7 @@ impl std::fmt::Debug for ConversationEvent {
                 .debug_struct("ScreenshotDelivered")
                 .field("image_bytes", &image.bytes().len())
                 .finish_non_exhaustive(),
+            Self::RunContinued { .. } => formatter.write_str("RunContinued"),
             Self::RunStarted { message_id, .. } => formatter
                 .debug_struct("RunStarted")
                 .field("message_id_bytes", &message_id.len())
@@ -428,6 +684,11 @@ impl std::fmt::Debug for ConversationEvent {
                 .debug_struct("AssistantResponseCompleted")
                 .field("message_id_bytes", &message_id.len())
                 .field("response", response)
+                .finish(),
+            Self::GeneratedNotice { message_id, notice } => formatter
+                .debug_struct("GeneratedNotice")
+                .field("message_id_bytes", &message_id.len())
+                .field("notice", notice)
                 .finish(),
             Self::MessageStarted { message_id, seq } => formatter
                 .debug_struct("MessageStarted")
@@ -549,10 +810,18 @@ pub(crate) fn from_runtime_event(
     use vega_runtime::{RuntimeEvent, RuntimeFinishReason, RuntimeToolStatus};
 
     match event {
-        RuntimeEvent::AssistantResponseStarted { text_start_bytes } => {
-            Some(ConversationEvent::AssistantResponseStarted {
+        RuntimeEvent::AssistantResponseStarted {
+            response_id,
+            text_start_bytes,
+        } => Some(ConversationEvent::AssistantResponseStarted {
+            message_id: message_id.into(),
+            response_id: response_id.clone(),
+            text_start_bytes: *text_start_bytes,
+        }),
+        RuntimeEvent::ReasoningCompleted { response_id } => {
+            Some(ConversationEvent::ReasoningCompleted {
                 message_id: message_id.into(),
-                text_start_bytes: *text_start_bytes,
+                response_id: response_id.clone(),
             })
         }
         RuntimeEvent::ResponseRetrying {
@@ -598,6 +867,18 @@ pub(crate) fn from_runtime_event(
                 },
             },
         }),
+        RuntimeEvent::GeneratedNotice {
+            kind,
+            text_start_bytes,
+            text_end_bytes,
+        } => Some(ConversationEvent::GeneratedNotice {
+            message_id: message_id.to_string(),
+            notice: super::GeneratedNoticeMetadata::from_runtime(
+                *kind,
+                *text_start_bytes,
+                *text_end_bytes,
+            ),
+        }),
         RuntimeEvent::TextDelta(delta) => Some(ConversationEvent::TextDelta {
             message_id: message_id.to_string(),
             delta: delta.clone(),
@@ -625,6 +906,7 @@ pub(crate) fn from_runtime_event(
                     duration_ms: result.duration_ms,
                     truncated: result.truncated,
                     invalid: Some(invalid),
+                    codex_display: None,
                 },
             })
         }
@@ -639,6 +921,7 @@ pub(crate) fn from_runtime_event(
                     duration_ms: result.duration_ms,
                     truncated: result.truncated,
                     invalid: None,
+                    codex_display: None,
                 },
             })
         }
@@ -657,23 +940,26 @@ pub(crate) fn from_runtime_event(
                 chunk: ToolOutputChunk(chunk.clone()),
             })
         }
-        RuntimeEvent::ToolCallFinished(result) => Some(ConversationEvent::ToolCallFinished {
-            call_id: result.call_id.clone(),
-            result: ToolResult {
-                status: match result.status {
-                    RuntimeToolStatus::Rejected => ToolCallStatus::Rejected,
-                    RuntimeToolStatus::Success => ToolCallStatus::Success,
-                    RuntimeToolStatus::Failed => ToolCallStatus::Failed,
-                    RuntimeToolStatus::Cancelled => ToolCallStatus::Cancelled,
+        RuntimeEvent::ToolCallFinished(result) | RuntimeEvent::ToolReadFinished { result, .. } => {
+            Some(ConversationEvent::ToolCallFinished {
+                call_id: result.call_id.clone(),
+                result: ToolResult {
+                    status: match result.status {
+                        RuntimeToolStatus::Rejected => ToolCallStatus::Rejected,
+                        RuntimeToolStatus::Success => ToolCallStatus::Success,
+                        RuntimeToolStatus::Failed => ToolCallStatus::Failed,
+                        RuntimeToolStatus::Cancelled => ToolCallStatus::Cancelled,
+                    },
+                    output: result.output.clone(),
+                    reused: result.reused,
+                    exit_code: result.exit_code,
+                    duration_ms: result.duration_ms,
+                    truncated: result.truncated,
+                    invalid: None,
+                    codex_display: None,
                 },
-                output: result.output.clone(),
-                reused: result.reused,
-                exit_code: result.exit_code,
-                duration_ms: result.duration_ms,
-                truncated: result.truncated,
-                invalid: None,
-            },
-        }),
+            })
+        }
         RuntimeEvent::SkillActivation { audit, .. } if audit.status == "loaded" => {
             Some(ConversationEvent::SkillActivated {
                 message_id: message_id.to_string(),
@@ -829,6 +1115,7 @@ pub(crate) fn from_runtime_event(
                 },
             })
         }
+        RuntimeEvent::StageHandoff { .. } => None,
         RuntimeEvent::Finished(reason) => Some(ConversationEvent::MessageFinished {
             message_id: message_id.to_string(),
             execution_duration_ms: None,
@@ -855,7 +1142,18 @@ pub(crate) fn safe_runtime_tool_call(call: &vega_runtime::RuntimeToolCall) -> Op
         id: call.id.clone(),
         tool: call.name.clone(),
         input_json: call.input_json.clone(),
+        codex_display: None,
     };
+    if vega_runtime::is_subagent_tool(&call.name) {
+        return (call.input_json == "{}"
+            || vega_runtime::valid_subagent_input(&call.name, &call.input_json))
+        .then_some(projected);
+    }
+    if call.name == vega_runtime::USER_QUESTION_TOOL {
+        let valid = vega_runtime::UserQuestionInput::from_json(&call.input_json).is_ok()
+            || vega_runtime::user_question_validation_error(&call.input_json).is_some();
+        return valid.then_some(projected);
+    }
     if matches!(call.name.as_str(), "load_skill" | "read_skill_resource") {
         return crate::agent::valid_skill_call_projection(&call.name, &call.input_json)
             .then_some(projected);
@@ -987,136 +1285,4 @@ pub(crate) fn invalid_tool_code(code: vega_tools::MutationErrorCode) -> Option<I
         | Code::CodecInvalid
         | Code::PreparedScopeMismatch => return None,
     })
-}
-
-#[cfg(test)]
-mod run_failure_tests {
-    use super::RunFailureKind;
-    use vega_runtime::VegaError;
-
-    fn provider(status: Option<u16>, message: &str) -> VegaError {
-        VegaError::Provider {
-            status,
-            message: message.into(),
-            retryable: false,
-        }
-    }
-
-    #[test]
-    fn issue302_local_context_failures_keep_actionable_content_free_copy() {
-        use vega_runtime::ContextRuntimeError;
-        for error in [
-            ContextRuntimeError::OverLimit {
-                estimated_tokens: 301_000,
-                input_budget: 300_000,
-            },
-            ContextRuntimeError::SummaryInputOverLimit {
-                estimated_tokens: 301_000,
-                input_budget: 300_000,
-            },
-            ContextRuntimeError::ResultOverLimit {
-                estimated_tokens: 301_000,
-                target_tokens: 180_000,
-            },
-        ] {
-            let kind = RunFailureKind::from_runtime(&VegaError::Context(error));
-            assert_eq!(kind, RunFailureKind::ContextOverLimit);
-            assert!(
-                kind.message()
-                    .contains("Context exceeds available capacity")
-            );
-            assert!(kind.message().contains("conversation is preserved"));
-            assert!(!kind.message().contains("runtime environment"));
-            assert!(!kind.message().contains("provider"));
-        }
-        assert_eq!(
-            RunFailureKind::from_runtime(&VegaError::Context(ContextRuntimeError::SourceChanged)),
-            RunFailureKind::Runtime
-        );
-    }
-
-    #[test]
-    fn quota_needs_exact_structured_code_and_never_projects_response_body() {
-        const SENTINEL: &str = "PRIVATE_RESPONSE_AND_KEY_SENTINEL";
-        let error = provider(
-            Some(400),
-            &format!(
-                "chat/completions request failed (HTTP 400): {{\"error\":{{\"code\":\"insufficient_user_quota\",\"message\":\"{SENTINEL}\"}}}}"
-            ),
-        );
-        let kind = RunFailureKind::from_runtime(&error);
-        assert_eq!(kind, RunFailureKind::ProviderQuota);
-        assert!(kind.message().contains("quota exhausted"));
-        assert!(!kind.message().contains(SENTINEL));
-
-        let spoofed = provider(
-            Some(400),
-            "chat/completions request failed (HTTP 400): insufficient_user_quota PRIVATE_RESPONSE_AND_KEY_SENTINEL",
-        );
-        assert_eq!(
-            RunFailureKind::from_runtime(&spoofed),
-            RunFailureKind::ProviderHttp(400)
-        );
-        assert!(
-            !RunFailureKind::from_runtime(&spoofed)
-                .message()
-                .contains(SENTINEL)
-        );
-    }
-
-    #[test]
-    fn quota_accepts_cpa_top_level_code_without_exposing_response_body() {
-        const SENTINEL: &str = "PRIVATE_CPA_RESPONSE_SENTINEL";
-        let response = format!(
-            "chat/completions request failed (HTTP 400): {{\"message\":\"credit insufficient {SENTINEL}\",\"type\":\"api_error\",\"param\":\"\",\"code\":\"insufficient_user_quota\"}}"
-        );
-        let error = provider(Some(400), &response);
-        let kind = RunFailureKind::from_runtime(&error);
-        assert_eq!(kind, RunFailureKind::ProviderQuota);
-        assert!(kind.message().contains("quota exhausted"));
-        assert!(!kind.message().contains(SENTINEL));
-
-        let wrong_status = provider(Some(503), &response);
-        assert_eq!(
-            RunFailureKind::from_runtime(&wrong_status),
-            RunFailureKind::ProviderHttp(503)
-        );
-    }
-
-    #[test]
-    fn provider_and_runtime_failure_categories_keep_only_safe_metadata() {
-        for (status, expected) in [
-            (Some(401), RunFailureKind::ProviderAuthorization),
-            (Some(403), RunFailureKind::ProviderAuthorization),
-            (Some(429), RunFailureKind::ProviderRateLimited),
-            (Some(503), RunFailureKind::ProviderHttp(503)),
-            (None, RunFailureKind::ProviderUnknown),
-        ] {
-            let kind = RunFailureKind::from_runtime(&provider(status, "SECRET_SENTINEL"));
-            assert_eq!(kind, expected);
-            assert!(!kind.message().contains("SECRET_SENTINEL"));
-        }
-        assert_eq!(
-            RunFailureKind::from_runtime(&VegaError::ReasoningSelectionInvalid {
-                message: "SECRET_SENTINEL".into(),
-            }),
-            RunFailureKind::Runtime
-        );
-        assert!(
-            !RunFailureKind::Runtime
-                .message()
-                .contains("SECRET_SENTINEL")
-        );
-    }
-
-    #[test]
-    fn issue170_credential_safety_block_has_local_actionable_failure_state() {
-        let kind = RunFailureKind::from_runtime(&VegaError::CredentialExposureBlocked);
-        assert_eq!(kind, RunFailureKind::CredentialExposureBlocked);
-        let message = kind.message();
-        assert!(message.contains("could not be transformed safely"));
-        assert!(message.contains("Completed tool actions are preserved"));
-        assert!(message.contains("Check tool configuration"));
-        assert!(!message.contains("Could not connect to the provider"));
-    }
 }

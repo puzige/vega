@@ -1,4 +1,5 @@
 //! Bounded read-only file pane. Filesystem access remains in conversation/app.
+use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use vega_conversation::types::PaletteFilePreview;
@@ -12,6 +13,7 @@ pub struct FilePreview {
     preview: PaletteFilePreview,
     focus: FocusHandle,
     markdown: Option<crate::conversation_stream::StreamModel>,
+    scroll: ScrollHandle,
 }
 impl EventEmitter<RevealFileRequested> for FilePreview {}
 impl FilePreview {
@@ -33,6 +35,7 @@ impl FilePreview {
             None
         };
         Self {
+            scroll: ScrollHandle::new(),
             markdown,
             preview,
             focus: cx.focus_handle(),
@@ -52,7 +55,12 @@ impl Render for FilePreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(cx).colors;
         let body = if let Some(model) = &self.markdown {
-            crate::conversation_stream::markdown_item(model, None, &colors)
+            crate::conversation_stream::markdown_item(
+                model,
+                None,
+                &colors,
+                &format!("file-preview-{}", cx.entity_id()),
+            )
         } else {
             div()
                 .font_family("Menlo")
@@ -79,7 +87,6 @@ impl Render for FilePreview {
         };
         div()
             .id("file-preview")
-            .debug_selector(|| "file-preview".into())
             .track_focus(&self.focus)
             .size_full()
             .flex()
@@ -100,13 +107,13 @@ impl Render for FilePreview {
                             .overflow_hidden()
                             .child(self.preview.relative_path.replace(['\n', '\r'], " ")),
                     )
-                    .child("只读")
+                    .child(vega_i18n::t("ui.read_only"))
                     .child(
                         div()
                             .id("file-reveal")
                             .cursor_pointer()
                             .text_color(colors.text_secondary)
-                            .child("在 Finder 中显示")
+                            .child(vega_i18n::t("ui.show_in_finder"))
                             .on_mouse_up(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| {
@@ -121,11 +128,20 @@ impl Render for FilePreview {
                 div()
                     .id("file-preview-scroll")
                     .overflow_scroll()
+                    .track_scroll(&self.scroll)
                     .flex_1()
                     .min_h_0()
                     .p_3()
                     .text_size(px(Typography::CODE))
-                    .child(body),
+                    .child(
+                        crate::link_preview::MarkdownReadingScope::new(
+                            format!("file-preview-{}", cx.entity_id()),
+                            self.focus.clone(),
+                        )
+                        .track_scroll(self.scroll.clone())
+                        .child(body),
+                    )
+                    .scroll_edge_fade(colors.bg_base, ScrollFade::reading()),
             )
     }
 }

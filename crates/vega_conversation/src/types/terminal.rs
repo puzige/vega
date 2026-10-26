@@ -38,6 +38,7 @@ pub struct TerminalSnapshot {
     pub application_cursor: bool,
     pub bracketed_paste: bool,
     pub scrollback: usize,
+    pub max_scrollback: usize,
 }
 
 /// Trusted startup authority: either a caller-owned directory or a registered project.

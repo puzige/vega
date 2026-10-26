@@ -16,7 +16,7 @@ struct StoredSubmission {
 }
 
 fn failure() -> ConversationError {
-    ConversationError::Store("待处理消息保存失败，请重试".into())
+    ConversationError::Store(vega_i18n::t("domain.pending.error.save").into())
 }
 
 pub fn enqueue(
@@ -47,7 +47,7 @@ pub fn enqueue_cached(
     let tx = store.immediate_transaction().map_err(|_| failure())?;
     if rows::count(&tx, &message.thread_id).map_err(|_| failure())? >= 64 {
         return Err(ConversationError::Store(
-            "待处理消息已满，请先移除或处理队列".into(),
+            vega_i18n::t("domain.pending.error.full").into(),
         ));
     }
     rows::insert(
@@ -129,7 +129,9 @@ pub fn remove(
         .ok_or_else(failure)?;
     let message = decode(row)?;
     if !rows::remove(&tx, thread_id, id).map_err(|_| failure())? {
-        return Err(ConversationError::Store("消息正在交付，请稍后重试".into()));
+        return Err(ConversationError::Store(
+            vega_i18n::t("domain.pending.error.delivering").into(),
+        ));
     }
     tx.commit().map_err(|_| failure())?;
     Ok(message)
@@ -192,9 +194,15 @@ pub struct QueueSteeringSource {
     credentials: vega_runtime::CredentialReader,
     exceptions: Option<vega_runtime::CredentialExceptionFilter>,
     cancel: CancellationToken,
+    admission: Option<crate::types::ThreadAdmission>,
 }
 
 impl QueueSteeringSource {
+    pub fn with_thread_admission(mut self, admission: crate::types::ThreadAdmission) -> Self {
+        self.admission = Some(admission);
+        self
+    }
+
     pub fn with_credential_exceptions(
         mut self,
         filter: vega_runtime::CredentialExceptionFilter,
@@ -218,11 +226,32 @@ impl QueueSteeringSource {
             credentials,
             exceptions: None,
             cancel,
+            admission: None,
         }
     }
 }
 
 impl RuntimeSteeringSource for QueueSteeringSource {
+    fn ready(&self) -> BoxFuture<'_, Result<Option<String>, VegaError>> {
+        let database = self.database.clone();
+        let thread = self.thread_id.clone();
+        let generation = self.generation.clone();
+        let cancel = self.cancel.clone();
+        async move {
+            if cancel.is_cancelled() {
+                return Ok(None);
+            }
+            tokio::task::spawn_blocking(move || {
+                let store = Store::open_read_only(database).map_err(|_| runtime_failure())?;
+                rows::next_steer_metadata(store.conn(), &thread, &generation)
+                    .map_err(|_| runtime_failure())
+            })
+            .await
+            .map_err(|_| runtime_failure())?
+        }
+        .boxed()
+    }
+
     fn take(&self) -> BoxFuture<'_, Result<Option<RuntimeSteeringInput>, VegaError>> {
         let database = self.database.clone();
         let workspace = self.workspace.clone();
@@ -231,15 +260,28 @@ impl RuntimeSteeringSource for QueueSteeringSource {
         let credentials = Arc::clone(&self.credentials);
         let exceptions = self.exceptions.clone();
         let cancel = self.cancel.clone();
+        let admission = self.admission.clone();
         async move {
             tokio::task::spawn_blocking(move || {
+                if cancel.is_cancelled() {
+                    return Ok(None);
+                }
                 let store = Store::open(database)?;
-                let tx = store.immediate_transaction()?;
-                let row = rows::next_steer(&tx, &thread_id, &generation)?;
+                let _admission = match admission {
+                    Some(admission)
+                        if admission.verifies(store.database_identity(), &thread_id) =>
+                    {
+                        admission
+                    }
+                    Some(_) => return Err(runtime_failure()),
+                    None => crate::thread_access::acquire(&store, &thread_id)
+                        .map_err(|_| runtime_failure())?,
+                };
+                let row = rows::next_steer(store.conn(), &thread_id, &generation)?;
                 let Some(row) = row else {
                     return Ok(None);
                 };
-                let message = decode(row).map_err(|_| runtime_failure())?;
+                let message = decode(row.clone()).map_err(|_| runtime_failure())?;
                 let refs = vega_tools::reference::resolve_bounded_references(
                     &workspace,
                     &message.content,
@@ -267,6 +309,12 @@ impl RuntimeSteeringSource for QueueSteeringSource {
                 if cancel.is_cancelled() {
                     return Ok(None);
                 }
+                let tx = store.immediate_transaction()?;
+                if cancel.is_cancelled()
+                    || rows::next_steer(&tx, &thread_id, &generation)?.as_ref() != Some(&row)
+                {
+                    return Ok(None);
+                }
                 if !rows::claim_steer(&tx, &thread_id, &message.id, &generation)? {
                     return Ok(None);
                 }
@@ -290,9 +338,9 @@ impl RuntimeSteeringSource for QueueSteeringSource {
 }
 
 fn runtime_failure() -> VegaError {
-    VegaError::Io(std::io::Error::other(
-        "待处理消息准备失败，请取回编辑后重试",
-    ))
+    VegaError::Io(std::io::Error::other(vega_i18n::t(
+        "domain.pending.error.prepare",
+    )))
 }
 
 fn now_ms() -> i64 {

@@ -87,6 +87,193 @@ impl CodexAcpActivityIdentity {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodexArgumentPreview {
+    Object { count: u64 },
+    Array { count: u64 },
+    String,
+    Number,
+    Bool,
+    Null,
+}
+
+impl CodexArgumentPreview {
+    pub fn canonical(self) -> String {
+        match self {
+            Self::Object { count } => format!("object with {count} fields"),
+            Self::Array { count } => format!("array with {count} items"),
+            Self::String => "string value".into(),
+            Self::Number => "number value".into(),
+            Self::Bool => "boolean value".into(),
+            Self::Null => "null value".into(),
+        }
+    }
+
+    pub fn message(self) -> String {
+        match self {
+            Self::Object { count } => {
+                vega_i18n::t_args("app.codex.object_preview", &[("count", &count.to_string())])
+            }
+            Self::Array { count } => {
+                vega_i18n::t_args("app.codex.array_preview", &[("count", &count.to_string())])
+            }
+            Self::String => vega_i18n::t("app.codex.string_preview").into(),
+            Self::Number => vega_i18n::t("app.codex.number_preview").into(),
+            Self::Bool => vega_i18n::t("app.codex.boolean_preview").into(),
+            Self::Null => vega_i18n::t("app.codex.null_preview").into(),
+        }
+    }
+
+    pub fn storage_parts(self) -> (&'static str, Option<i64>) {
+        match self {
+            Self::Object { count } => ("object", i64::try_from(count).ok()),
+            Self::Array { count } => ("array", i64::try_from(count).ok()),
+            Self::String => ("string", None),
+            Self::Number => ("number", None),
+            Self::Bool => ("bool", None),
+            Self::Null => ("null", None),
+        }
+    }
+
+    fn matches(self, identity: &CodexAcpActivityIdentity) -> bool {
+        identity.is_valid()
+            && self.canonical() == identity.argument_preview
+            && match self {
+                Self::Object { count } | Self::Array { count } => count <= identity.arguments_bytes,
+                _ => true,
+            }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodexTerminalReason {
+    PermissionRejected,
+    PermissionInvalid,
+    PermissionEnded,
+    PermissionIncomplete,
+    ToolCompleted,
+    ToolFailed,
+    ToolCancelled,
+    ToolIncomplete,
+}
+
+impl CodexTerminalReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PermissionRejected => "permission_rejected",
+            Self::PermissionInvalid => "permission_invalid",
+            Self::PermissionEnded => "permission_ended",
+            Self::PermissionIncomplete => "permission_incomplete",
+            Self::ToolCompleted => "tool_completed",
+            Self::ToolFailed => "tool_failed",
+            Self::ToolCancelled => "tool_cancelled",
+            Self::ToolIncomplete => "tool_incomplete",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "permission_rejected" => Some(Self::PermissionRejected),
+            "permission_invalid" => Some(Self::PermissionInvalid),
+            "permission_ended" => Some(Self::PermissionEnded),
+            "permission_incomplete" => Some(Self::PermissionIncomplete),
+            "tool_completed" => Some(Self::ToolCompleted),
+            "tool_failed" => Some(Self::ToolFailed),
+            "tool_cancelled" => Some(Self::ToolCancelled),
+            "tool_incomplete" => Some(Self::ToolIncomplete),
+            _ => None,
+        }
+    }
+
+    pub fn canonical_output(self) -> &'static str {
+        match self {
+            Self::PermissionRejected => "Codex tool permission rejected",
+            Self::PermissionInvalid => "Codex tool permission option was invalid",
+            Self::PermissionEnded => "Codex tool permission request ended",
+            Self::PermissionIncomplete => "Codex stopped before permission completed",
+            Self::ToolCompleted => "Codex completed tool activity",
+            Self::ToolFailed => "Codex tool activity failed",
+            Self::ToolCancelled => "Codex tool activity cancelled",
+            Self::ToolIncomplete => "Codex ended before tool activity completed",
+        }
+    }
+
+    pub fn message(self) -> &'static str {
+        vega_i18n::t(match self {
+            Self::PermissionRejected => "app.codex.permission_rejected",
+            Self::PermissionInvalid => "app.codex.permission_invalid",
+            Self::PermissionEnded => "app.codex.permission_ended",
+            Self::PermissionIncomplete => "app.codex.permission_incomplete",
+            Self::ToolCompleted => "app.codex.tool_completed",
+            Self::ToolFailed => "app.codex.tool_failed",
+            Self::ToolCancelled => "app.codex.tool_cancelled",
+            Self::ToolIncomplete => "app.codex.tool_incomplete",
+        })
+    }
+
+    fn matches(self, status: ToolCallStatus, output: &str) -> bool {
+        output == self.canonical_output()
+            && match self {
+                Self::PermissionRejected
+                | Self::PermissionInvalid
+                | Self::PermissionEnded
+                | Self::PermissionIncomplete => status == ToolCallStatus::Rejected,
+                Self::ToolCompleted => status == ToolCallStatus::Success,
+                Self::ToolFailed => status == ToolCallStatus::Failed,
+                Self::ToolCancelled => status == ToolCallStatus::Cancelled,
+                Self::ToolIncomplete => {
+                    matches!(status, ToolCallStatus::Failed | ToolCallStatus::Cancelled)
+                }
+            }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CodexDisplayMetadata {
+    pub preview: CodexArgumentPreview,
+    pub reason: Option<CodexTerminalReason>,
+}
+
+impl CodexDisplayMetadata {
+    pub fn validated_preview(
+        self,
+        identity: &CodexAcpActivityIdentity,
+    ) -> Option<CodexArgumentPreview> {
+        self.preview.matches(identity).then_some(self.preview)
+    }
+
+    pub fn validated_reason(
+        self,
+        preview: Option<CodexArgumentPreview>,
+        status: ToolCallStatus,
+        output: &str,
+    ) -> Option<CodexTerminalReason> {
+        let reason = self.reason?;
+        (preview == Some(self.preview) && reason.matches(status, output)).then_some(reason)
+    }
+
+    pub fn from_stored(value: &vega_store::tool_calls::StoredCodexDisplayMetadata) -> Option<Self> {
+        let preview = match (value.preview_kind.as_str(), value.preview_count) {
+            ("object", Some(count)) => CodexArgumentPreview::Object {
+                count: count.try_into().ok()?,
+            },
+            ("array", Some(count)) => CodexArgumentPreview::Array {
+                count: count.try_into().ok()?,
+            },
+            ("string", None) => CodexArgumentPreview::String,
+            ("number", None) => CodexArgumentPreview::Number,
+            ("bool", None) => CodexArgumentPreview::Bool,
+            ("null", None) => CodexArgumentPreview::Null,
+            _ => return None,
+        };
+        let reason = match value.terminal_reason.as_deref() {
+            Some(reason) => Some(CodexTerminalReason::parse(reason)?),
+            None => None,
+        };
+        Some(Self { preview, reason })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodexAdapterKind {
     CodexAcp,
 }

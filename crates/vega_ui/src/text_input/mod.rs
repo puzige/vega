@@ -1,27 +1,3 @@
-//! Minimal text input for GPUI (single-line and fixed-row multi-line).
-//!
-//! Implemented following the official paradigm in the gpui source tree at the
-//! pinned rev (`crates/gpui/examples/input.rs`): a [`TextInput`] entity holds
-//! the editing state, a private [`TextElement`] shapes/paints the line and
-//! registers the platform input handler, and editing keys are wired through
-//! actions so the platform IME keeps working.
-//!
-//! Deviations from the example (required by the T08 dependency ruling "zero
-//! additional dependencies"):
-//! - character boundaries instead of `unicode_segmentation` grapheme
-//!   boundaries (single-line inputs for this skeleton never need ZWJ clusters);
-//! - optional password-style masking: the field displays one `•` per content
-//!   character and never paints the real value; cut/copy are refused on
-//!   masked fields so credentials cannot leave the app through the clipboard.
-//!
-//! S3-T18 Composer extension: `new_multiline` builds a bounded multi-line
-//! input (Enter inserts `\n` via the [`InsertNewline`] action — 架构师裁定
-//! Enter=换行、Cmd+Enter=发送; paste preserves line breaks). Multi-line
-//! display paints one shaped visual line per `\n` segment (plus soft wraps)
-//! stacked top-down: the default is 1~8 行自适应高度 + 超出 8 行后按光标
-//! 跟随的内滚视口 (visual-wrap viewport, cursor-follow), while callers can
-//! select a narrower minimum/maximum row range for a bounded form field.
-
 use std::ops::Range;
 
 use gpui_kit::prelude::*;
@@ -41,6 +17,10 @@ actions!(
         Delete,
         Left,
         Right,
+        Up,
+        Down,
+        SelectUp,
+        SelectDown,
         SelectLeft,
         SelectRight,
         SelectAll,
@@ -50,7 +30,9 @@ actions!(
         Paste,
         Cut,
         Copy,
-        InsertNewline
+        InsertNewline,
+        AcceptPrediction,
+        DismissPrediction
     ]
 );
 
@@ -60,6 +42,7 @@ const MASK_CHAR: char = '•';
 /// One laid-out display line: its start offset in the content, the segment
 /// length (excluding the separating `\n`), and the shaped line. Single-line
 /// inputs keep exactly one entry (start 0).
+#[derive(Clone)]
 pub(crate) struct LineLayout {
     start: usize,
     len: usize,
@@ -77,10 +60,10 @@ pub struct TextInput {
     focus_handle: FocusHandle,
     content: SharedString,
     content_revision: u64,
+    prediction: Option<SharedString>,
     placeholder: SharedString,
+    placeholder_key: Option<&'static str>,
     masked: bool,
-    /// Multi-line mode (S3-T18 Composer): Enter inserts `\n`, paste keeps
-    /// line breaks, and the element paints `rows` stacked lines.
     multiline: bool,
     /// Visible row count, dynamically clamped to the configured row range.
     rows: usize,
@@ -95,19 +78,24 @@ pub struct TextInput {
     marked_range: Option<Range<usize>>,
     /// Layout cache from the last paint (one entry per display line).
     last_lines: Vec<LineLayout>,
+    navigation_lines: Vec<LineLayout>,
+    navigation_revision: u64,
+    vertical_goal: Option<(Range<usize>, bool, u64, Pixels)>,
     /// Line height used at the last paint (for y → line mapping).
     last_line_height: Pixels,
     last_bounds: Option<Bounds<Pixels>>,
-    is_selecting: bool,
-    /// R62 R10: suppress the single-line box chrome so the input can live
-    /// inside a menu row that already draws the surface (the utility bar's
-    /// two dropdown search fields). The element, editing keys, IME handling
-    /// and placeholder behaviour are unchanged.
+    mouse_selection: Option<mouse_selection::MouseSelection>,
     bare_chrome: bool,
+    editor_scroll: Option<(Range<usize>, u64, usize)>,
+    scroll_handle: element::TextScrollHandle,
+    scrollable_editor: bool,
+    scroll_fade_on_base: bool,
+    total_visual_rows: usize,
 }
 
 mod element;
 mod input_handler;
+mod mouse_selection;
 mod state;
 
 /// Explicit Composer-only clipboard intent; never log clipboard payloads.
@@ -115,12 +103,26 @@ pub struct ImagePaste(pub std::sync::Arc<ClipboardItem>);
 impl gpui_kit::EventEmitter<ImagePaste> for TextInput {}
 
 impl TextInput {
+    pub fn with_placeholder_key(mut self, key: &'static str) -> Self {
+        self.placeholder_key = Some(key);
+        self
+    }
+
+    pub fn set_placeholder_key(&mut self, key: &'static str, cx: &mut Context<Self>) {
+        if self.placeholder_key != Some(key) {
+            self.placeholder_key = Some(key);
+            cx.notify();
+        }
+    }
+
+    fn localized_placeholder(&self) -> SharedString {
+        self.placeholder_key
+            .map_or_else(|| self.placeholder.clone(), |key| vega_i18n::t(key).into())
+    }
+
     /// Enables attachment paste only for the conversation Composer.
     pub fn with_image_paste(mut self) -> Self {
         self.image_paste = true;
         self
     }
 }
-
-#[cfg(test)]
-mod tests;

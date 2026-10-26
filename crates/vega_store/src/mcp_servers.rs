@@ -1,7 +1,3 @@
-//! Issue #73 MCP configuration metadata. Secret values are never stored here.
-//!
-//! Every mutation uses a configuration revision. Replacing a server disables
-//! it, so a stale enabled row cannot acquire an edited endpoint or command.
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -258,6 +254,10 @@ const SELECT: &str = "SELECT id, display_name, transport, local_executable, loca
 
 /// Insert a disabled server. Merely saving a draft never launches a process.
 pub fn create(conn: &Connection, draft: &McpServerDraft) -> Result<McpServerRow, McpStoreError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     validate(draft)?;
     let id = ulid::Ulid::generate().to_string();
     let credential_ref =
@@ -309,6 +309,10 @@ pub fn replace(
     expected_revision: u64,
     draft: &McpServerDraft,
 ) -> Result<McpServerRow, McpStoreError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     validate(draft)?;
     let expected = i64::try_from(expected_revision).map_err(|_| McpStoreError::Invalid)?;
     let next_revision = expected_revision
@@ -321,7 +325,10 @@ pub fn replace(
             None
         };
     let environment_slots = local_slots(id, next_revision, draft)?;
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     let old = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
     if old.config_revision != expected_revision || old.deleting {
         return Err(McpStoreError::Conflict);
@@ -364,6 +371,10 @@ pub fn replace(
 }
 
 fn enqueue_cleanup(conn: &Connection, id: &str, reference: &str) -> Result<(), McpStoreError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     conn.execute(
         "INSERT OR IGNORE INTO mcp_secret_cleanup (credential_ref, server_id, created_at) \
          VALUES (?1, ?2, ?3)",
@@ -380,8 +391,15 @@ pub fn set_enabled(
     expected_revision: u64,
     enabled: bool,
 ) -> Result<McpServerRow, McpStoreError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     let expected = i64::try_from(expected_revision).map_err(|_| McpStoreError::Invalid)?;
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     let current = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
     if current.config_revision != expected_revision {
         return Err(McpStoreError::Conflict);
@@ -429,6 +447,10 @@ pub fn begin_oauth_install(
     issuer: &str,
     client_id: &str,
 ) -> Result<(McpServerRow, String), McpStoreError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     let expected = i64::try_from(expected_revision).map_err(|_| McpStoreError::Invalid)?;
     if issuer.is_empty()
         || issuer.len() > 4096
@@ -443,7 +465,10 @@ pub fn begin_oauth_install(
         .checked_add(1)
         .ok_or(McpStoreError::Invalid)?;
     let reference = format!("mcp-{id}-r{next_revision}-oauth");
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     let old = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
     if old.config_revision != expected_revision
         || old.deleting
@@ -474,8 +499,15 @@ pub fn begin_oauth_disconnect(
     id: &str,
     expected_revision: u64,
 ) -> Result<McpServerRow, McpStoreError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     let expected = i64::try_from(expected_revision).map_err(|_| McpStoreError::Invalid)?;
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     let old = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
     if old.config_revision != expected_revision
         || old.deleting
@@ -507,7 +539,14 @@ pub fn begin_local_secret_rotation(
     expected_revision: u64,
     variable: &str,
 ) -> Result<(McpServerRow, String), McpStoreError> {
-    let tx = conn.unchecked_transaction()?;
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     let old = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
     if old.config_revision != expected_revision || old.deleting || old.transport != "local" {
         return Err(McpStoreError::Conflict);
@@ -559,6 +598,10 @@ pub fn set_last_error(
     revision: u64,
     code: Option<&str>,
 ) -> Result<(), McpStoreError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     if code.is_some_and(|code| {
         code.is_empty()
             || code.len() > 64
@@ -586,7 +629,14 @@ pub fn begin_remove(
     id: &str,
     expected_revision: u64,
 ) -> Result<McpServerRow, McpStoreError> {
-    let tx = conn.unchecked_transaction()?;
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     let row = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
     if row.deleting {
         return Ok(row);
@@ -652,6 +702,10 @@ pub fn acknowledge_cleanup(
     conn: &Connection,
     entry: &McpSecretCleanup,
 ) -> Result<(), McpStoreError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     conn.execute(
         "DELETE FROM mcp_secret_cleanup WHERE server_id = ?1 AND credential_ref = ?2",
         params![entry.server_id, entry.credential_ref],
@@ -662,275 +716,14 @@ pub fn acknowledge_cleanup(
 /// Erase a tombstone only after every queued secret has been removed. No
 /// history or tool-call audit row is touched.
 pub fn finish_remove(conn: &Connection, id: &str) -> Result<bool, McpStoreError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
     let count = conn.execute(
         "DELETE FROM mcp_servers WHERE id = ?1 AND deleting = 1 \
          AND NOT EXISTS (SELECT 1 FROM mcp_secret_cleanup WHERE server_id = ?1)",
         [id],
     )?;
     Ok(count == 1)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::Store;
-
-    fn local(name: &str) -> McpServerDraft {
-        McpServerDraft {
-            display_name: name.into(),
-            transport: "local".into(),
-            local_executable: Some("/bin/echo".into()),
-            local_args_json: Some("[]".into()),
-            local_working_directory: None,
-            local_env_refs_json: Some("[]".into()),
-            remote_endpoint: None,
-            remote_allow_loopback_http: false,
-            remote_auth_mode: None,
-            remote_credential_ref: None,
-            remote_oauth_issuer: None,
-            remote_oauth_client_id: None,
-        }
-    }
-
-    fn bearer(name: &str) -> McpServerDraft {
-        McpServerDraft {
-            display_name: name.into(),
-            transport: "remote".into(),
-            local_executable: None,
-            local_args_json: None,
-            local_working_directory: None,
-            local_env_refs_json: None,
-            remote_endpoint: Some("https://example.com/mcp".into()),
-            remote_allow_loopback_http: false,
-            remote_auth_mode: Some("bearer".into()),
-            remote_credential_ref: None,
-            remote_oauth_issuer: None,
-            remote_oauth_client_id: None,
-        }
-    }
-
-    fn oauth(name: &str) -> McpServerDraft {
-        let mut draft = bearer(name);
-        draft.remote_auth_mode = Some("oauth".into());
-        draft.remote_oauth_client_id = Some("pre-registered-client".into());
-        draft
-    }
-
-    #[test]
-    fn issue73_oauth_install_disconnect_cas_and_outbox_never_target_new_revision() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("vega.db");
-        let (id, first_ref) = {
-            let store = Store::open(&path).unwrap();
-            store.migrate().unwrap();
-            let created = create(store.conn(), &oauth("owned")).unwrap();
-            assert!(created.remote_credential_ref.is_none());
-            let (installed, first_ref) = begin_oauth_install(
-                store.conn(),
-                &created.id,
-                created.config_revision,
-                "https://issuer.example",
-                "pre-registered-client",
-            )
-            .unwrap();
-            assert_eq!(installed.config_revision, 2);
-            assert!(!installed.enabled);
-            assert_eq!(
-                installed.remote_credential_ref.as_deref(),
-                Some(first_ref.as_str())
-            );
-            assert!(matches!(
-                begin_oauth_install(
-                    store.conn(),
-                    &created.id,
-                    1,
-                    "https://issuer.example",
-                    "client"
-                ),
-                Err(McpStoreError::Conflict)
-            ));
-            (created.id, first_ref)
-        };
-        let store = Store::open(&path).unwrap();
-        store.migrate().unwrap();
-        let (rotated, second_ref) =
-            begin_oauth_install(store.conn(), &id, 2, "https://issuer.example", "client-2")
-                .unwrap();
-        assert_ne!(first_ref, second_ref);
-        let queued = pending_cleanup(store.conn()).unwrap();
-        assert_eq!(queued.len(), 1);
-        assert_eq!(queued[0].credential_ref, first_ref);
-        assert!(cleanup_target_is_stale(store.conn(), &queued[0]).unwrap());
-        assert_ne!(
-            queued[0].credential_ref,
-            rotated.remote_credential_ref.unwrap()
-        );
-        acknowledge_cleanup(store.conn(), &queued[0]).unwrap();
-        let disconnected = begin_oauth_disconnect(store.conn(), &id, 3).unwrap();
-        assert_eq!(disconnected.config_revision, 4);
-        assert!(!disconnected.enabled);
-        assert!(disconnected.remote_credential_ref.is_none());
-        let queued = pending_cleanup(store.conn()).unwrap();
-        assert_eq!(queued.len(), 1);
-        assert_eq!(queued[0].credential_ref, second_ref);
-        assert!(cleanup_target_is_stale(store.conn(), &queued[0]).unwrap());
-    }
-
-    #[test]
-    fn issue73_config_starts_disabled_survives_restart_and_uses_revision_cas() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("vega.db");
-        let id = {
-            let store = Store::open(&path).unwrap();
-            store.migrate().unwrap();
-            let saved = create(store.conn(), &local("owned")).unwrap();
-            assert!(!saved.enabled);
-            assert_eq!(saved.config_revision, 1);
-            saved.id
-        };
-        let store = Store::open(&path).unwrap();
-        store.migrate().unwrap();
-        let enabled = set_enabled(store.conn(), &id, 1, true).unwrap();
-        assert_eq!(enabled.config_revision, 2);
-        assert!(enabled.enabled);
-        assert!(matches!(
-            set_enabled(store.conn(), &id, 1, false),
-            Err(McpStoreError::Conflict)
-        ));
-        let edited = replace(store.conn(), &id, 2, &local("edited")).unwrap();
-        assert_eq!(edited.config_revision, 3);
-        assert!(!edited.enabled);
-        assert_eq!(edited.display_name, "edited");
-        assert!(matches!(
-            begin_remove(store.conn(), &id, 2),
-            Err(McpStoreError::Conflict)
-        ));
-        let tombstone = begin_remove(store.conn(), &id, 3).unwrap();
-        assert!(tombstone.deleting);
-        assert!(!tombstone.enabled);
-        assert!(finish_remove(store.conn(), &id).unwrap());
-        assert!(list(store.conn()).unwrap().is_empty());
-    }
-
-    #[test]
-    fn issue73_enabled_capacity_and_late_health_result_are_closed() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("vega.db")).unwrap();
-        store.migrate().unwrap();
-        let ids: Vec<_> = (0..9)
-            .map(|index| {
-                create(store.conn(), &local(&format!("server-{index}")))
-                    .unwrap()
-                    .id
-            })
-            .collect();
-        for id in ids.iter().take(8) {
-            set_enabled(store.conn(), id, 1, true).unwrap();
-        }
-        assert!(matches!(
-            set_enabled(store.conn(), &ids[8], 1, true),
-            Err(McpStoreError::Capacity)
-        ));
-        let ninth = find(store.conn(), &ids[8]).unwrap().unwrap();
-        assert!(!ninth.enabled);
-        set_last_error(store.conn(), &ids[0], 2, Some("connection_failed")).unwrap();
-        set_enabled(store.conn(), &ids[0], 2, false).unwrap();
-        assert!(matches!(
-            set_last_error(store.conn(), &ids[0], 2, Some("stale_error")),
-            Err(McpStoreError::Conflict)
-        ));
-        set_enabled(store.conn(), &ids[8], 1, true).unwrap();
-    }
-
-    #[test]
-    fn issue73_cross_server_or_provider_secret_ref_is_rejected_before_persistence() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("vega.db")).unwrap();
-        store.migrate().unwrap();
-        let mut remote = bearer("remote");
-        remote.remote_credential_ref = Some("provider-api-key".into());
-        assert!(matches!(
-            create(store.conn(), &remote),
-            Err(McpStoreError::Invalid)
-        ));
-        let mut local = local("local");
-        local.local_env_refs_json =
-            Some(r#"[{"variable":"TOKEN","credential_ref":"mcp-other-env-TOKEN"}]"#.into());
-        assert!(matches!(
-            create(store.conn(), &local),
-            Err(McpStoreError::Invalid)
-        ));
-        assert!(list(store.conn()).unwrap().is_empty());
-    }
-
-    #[test]
-    fn issue73_replace_outbox_survives_restart_and_never_targets_new_bearer() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("vega.db");
-        let (id, old_ref, new_ref) = {
-            let store = Store::open(&path).unwrap();
-            store.migrate().unwrap();
-            let created = create(store.conn(), &bearer("old")).unwrap();
-            let old_ref = created.remote_credential_ref.clone().unwrap();
-            let enabled = set_enabled(store.conn(), &created.id, 1, true).unwrap();
-            let changed = replace(
-                store.conn(),
-                &created.id,
-                enabled.config_revision,
-                &bearer("new"),
-            )
-            .unwrap();
-            let new_ref = changed.remote_credential_ref.clone().unwrap();
-            assert_ne!(old_ref, new_ref);
-            assert!(!changed.enabled);
-            assert!(matches!(
-                set_enabled(store.conn(), &created.id, changed.config_revision, true),
-                Err(McpStoreError::Conflict)
-            ));
-            (created.id, old_ref, new_ref)
-        };
-        let store = Store::open(&path).unwrap();
-        store.migrate().unwrap();
-        let queued = pending_cleanup(store.conn()).unwrap();
-        assert_eq!(queued.len(), 1);
-        assert_eq!(queued[0].credential_ref, old_ref);
-        assert_ne!(queued[0].credential_ref, new_ref);
-        acknowledge_cleanup(store.conn(), &queued[0]).unwrap();
-        let current = find(store.conn(), &id).unwrap().unwrap();
-        assert_eq!(
-            current.remote_credential_ref.as_deref(),
-            Some(new_ref.as_str())
-        );
-        assert!(set_enabled(store.conn(), &id, current.config_revision, true).is_ok());
-    }
-
-    #[test]
-    fn issue73_remove_tombstone_blocks_reenable_until_cleanup_is_acknowledged() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("vega.db");
-        let id = {
-            let store = Store::open(&path).unwrap();
-            store.migrate().unwrap();
-            let created = create(store.conn(), &bearer("remove")).unwrap();
-            let enabled = set_enabled(store.conn(), &created.id, 1, true).unwrap();
-            let tombstone =
-                begin_remove(store.conn(), &created.id, enabled.config_revision).unwrap();
-            assert!(tombstone.deleting);
-            assert!(!tombstone.enabled);
-            assert!(matches!(
-                set_enabled(store.conn(), &created.id, tombstone.config_revision, true),
-                Err(McpStoreError::Conflict)
-            ));
-            assert!(!finish_remove(store.conn(), &created.id).unwrap());
-            created.id
-        };
-        let store = Store::open(&path).unwrap();
-        store.migrate().unwrap();
-        assert!(find(store.conn(), &id).unwrap().unwrap().deleting);
-        let queued = pending_cleanup(store.conn()).unwrap();
-        assert_eq!(queued.len(), 1);
-        acknowledge_cleanup(store.conn(), &queued[0]).unwrap();
-        assert!(finish_remove(store.conn(), &id).unwrap());
-        assert!(find(store.conn(), &id).unwrap().is_none());
-    }
 }

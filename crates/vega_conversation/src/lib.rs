@@ -1,19 +1,16 @@
-//! Thread and message models, streaming state machine, and context assembly.
-//!
-//! T11 (A1-02) scope: the `types` data-model subset and the thread
-//! orchestration layer. The streaming state machine and context assembly
-//! land in S3/S4.
-
 pub mod agent;
 mod artifact;
 pub mod attachments;
 mod automatic_titles;
 pub mod codex_tasks;
+mod composer_predictions;
 mod git_workspace;
 pub mod history;
+pub mod link_preview;
 pub mod plans;
 mod pricing;
 pub mod summary;
+mod thread_access;
 pub mod threads;
 pub mod types;
 mod usage_dashboard;
@@ -23,8 +20,7 @@ pub use artifact::{ArtifactCaptureCandidate, ArtifactService};
 pub use git_workspace::{
     BranchSwitchPermit, BranchWorkspaceService, GitWorkspaceService, TrustedGitService,
 };
-// S7-T39: downstream crates (app/UI) receive the frozen pricing capability
-// through `vega_conversation` only — no direct pricing-engine dependency.
+
 pub use pricing::{
     PricingAuthority, PricingLoadOutcome, PricingSaveOutcome, PricingSavePlan,
     PricingSettingsService,
@@ -49,12 +45,14 @@ pub use mcp_settings::{McpRunReadiness, McpServerSettingsService, McpSettingsErr
 mod skill_settings;
 pub use skill_settings::{SkillSettingsError, SkillSettingsService};
 
-#[cfg(any(test, feature = "test-support"))]
-pub use git_workspace::{
-    FixtureGitCommand, GitCommandFixture, GitTestCommandExecutor, GitTestCommandGuard,
-    fixture_git_command, register_git_test_executor,
-};
-
+pub mod ordinary_submissions;
 pub mod pending_messages;
 
 pub mod privacy;
+
+pub mod automation;
+
+pub mod subagents;
+
+pub mod model_capabilities;
+pub use model_capabilities::{ModelCapabilityAuthority, ModelCapabilitySettingsService};

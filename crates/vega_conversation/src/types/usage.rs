@@ -1,6 +1,5 @@
 use super::*;
 
-/// Exact pricing provenance attached to a priced usage event (S7-T38/C3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsagePricing {
     /// Engine version that priced the row (e.g. `pricing_v1`).
@@ -21,15 +20,11 @@ pub struct TokenUsage {
     /// Completion tokens.
     pub output: u64,
     /// Cache-read tokens.
-    pub cache_read: u64,
+    pub cache_read: Option<u64>,
     /// Cache-write tokens.
-    pub cache_write: u64,
+    pub cache_write: Option<u64>,
 }
 
-/// Durable terminal outcome of one summarized assistant task (S7-T40).
-///
-/// Derived from the persisted `messages.status` DDL vocabulary, never from a
-/// UI claim, so the card can never present a running task as finished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskSummaryOutcome {
     /// The message converged (`messages.status = 'done'`).
@@ -40,11 +35,6 @@ pub enum TaskSummaryOutcome {
     Failed,
 }
 
-/// Checked cost total of a per-task summary (S7-T40/C4).
-///
-/// Mirrors `vega_store::token_usage::AggregateCost`: `Priced` only when every
-/// aggregated row carries the exact priced version, otherwise the total is
-/// unavailable rather than a partial sum that would look trustworthy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SummaryCost {
     /// Every provider-call row of the task is priced (may be zero microcents).
@@ -53,13 +43,6 @@ pub enum SummaryCost {
     Unavailable,
 }
 
-/// Bounded, typed per-task cost summary (S7-T40/A10-06, C4 contract).
-///
-/// All fields are projected by `vega_conversation` from the durable
-/// `token_usage`/`tool_calls` audits plus the live wall-clock duration; the
-/// UI never queries SQLite and never computes a cost formula. Unavailable
-/// facts stay typed (`None`/`Unavailable`) and must render as `—`, never as
-/// a fabricated zero.
 #[derive(Clone, PartialEq, Eq)]
 pub struct TaskCostSummary {
     /// Summarized assistant message id (durable recovery key).
@@ -89,12 +72,13 @@ impl TaskCostSummary {
     /// (C4). The arithmetic runs on `u128` and is checked, so a pathological
     /// aggregate degrades to unavailable instead of wrapping.
     pub fn cache_hit_percent(usage: TokenUsage) -> Option<u8> {
+        let cache_read = usage.cache_read?;
         if usage.input == 0 {
             return Some(0);
         }
         // percent = cache_read * 100 / input, half-up:
         // half_up(a/b) = (2a + b) / (2b) with a = cache_read*100, b = input.
-        let numerator = (u128::from(usage.cache_read)) * 200;
+        let numerator = (u128::from(cache_read)) * 200;
         let denominator = u128::from(usage.input) * 2;
         let percent = numerator
             .checked_add(u128::from(usage.input))?

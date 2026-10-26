@@ -1,42 +1,4 @@
-//! SQLite persistence: projects, threads, messages, tool_calls, and token_usage.
-//!
-//! [`Store`] owns a single SQLite connection opened in WAL mode
-//! (`journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`).
-//!
-//! # Migrations
-//!
-//! Schema migrations are embedded into the binary at compile time
-//! ([`MIGRATIONS`], an ordered array of `include_str!`'d SQL files under
-//! `migrations/`, so the SQL ships with the binary instead of being resolved
-//! from a runtime directory). [`Store::migrate`] reads `PRAGMA user_version`
-//! and applies every pending migration in order: `MIGRATIONS[i]` upgrades the
-//! schema from `user_version == i` to `user_version == i + 1`. Each migration
-//! runs in its own transaction (SQL batch + `user_version` bump) and is rolled
-//! back entirely on failure, so `user_version` and the schema always agree.
-//!
-//! # Accessing the connection
-//!
-//! [`Store::conn`] hands out the single connection for other crates' actors
-//! (e.g. `vega_conversation`) to run statements on. It is intentionally *not*
-//! `Sync`-friendly magic — do **not** call it inside `tokio::select!` branches:
-//! rusqlite calls are blocking synchronous IO, and running them in a `select!`
-//! branch blocks the whole executor and breaks cancellation semantics. Wrap
-//! such work in blocking-safe tasks / dedicated DB actors instead.
-//!
-//! # Error type evolution path
-//!
-//! This crate's API currently returns `rusqlite::Error` directly. The unified
-//! [`VegaError`](https://github.com/puzige/vega/blob/master/docs/vega-tech-spec-p1.md)
-//! (tech-spec §7) will live in `vega_conversation::types`, and the dependency
-//! direction is `vega_conversation → vega_store` (tech-spec §1), so
-//! `vega_store` must not depend back on `vega_conversation`. Once `VegaError`
-//! lands, a `From<rusqlite::Error>` bridge into `VegaError::Store` will be
-//! added at the `vega_conversation` layer.
-
-//! Module layout: `paths` owns the config/data roots (tech-spec §6), `config`
-//! owns `config.toml` under the config root, `keystore` owns
-//! owner-only plaintext local credentials; `projects` / `git_detect` are T10 additions.
-
+pub mod automation;
 pub mod codex_tasks;
 pub mod computer_use_delivery;
 pub mod config;
@@ -48,6 +10,7 @@ pub mod image_attachments;
 pub mod keystore;
 pub mod mcp_servers;
 pub mod messages;
+pub mod model_capabilities;
 pub mod palette;
 pub mod paths;
 pub mod pending_messages;
@@ -58,15 +21,22 @@ pub mod recovery;
 pub mod run_diagnostics;
 pub mod sidebar_organization;
 pub mod skills;
-// T11（A1-02）：threads 表 SQL 层（projects 域函数归 T10）。
+
+pub mod delegated_ownership;
+pub mod delegated_stages;
+pub mod subagents;
+pub mod thread_admission;
+pub mod thread_fork;
 pub mod threads;
 pub mod token_usage;
 pub mod tool_calls;
+pub mod write_coordination;
 
 use std::path::{Path, PathBuf};
 
-pub use rusqlite::Connection;
-use rusqlite::{Transaction, TransactionBehavior};
+pub use rusqlite::{Connection, Transaction};
+pub use thread_admission::DatabaseIdentity;
+use write_coordination::{WriteCategory, WriteTransaction};
 
 /// Ordered, compile-time-embedded schema migrations.
 ///
@@ -98,12 +68,26 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0023_credential_continuations.sql"),
     include_str!("../migrations/0024_credential_privacy.sql"),
     include_str!("../migrations/0025_failure_details.sql"),
+    include_str!("../migrations/0026_automation.sql"),
+    include_str!("../migrations/0027_subagents.sql"),
+    include_str!("../migrations/0028_runtime_failure_details.sql"),
+    include_str!("../migrations/0029_sidebar_message_order.sql"),
+    include_str!("../migrations/0030_delegated_executions.sql"),
+    include_str!("../migrations/0031_sidebar_project_order.sql"),
+    include_str!("../migrations/0032_codex_project_history.sql"),
+    include_str!("../migrations/0033_delegated_stage_recovery.sql"),
+    include_str!("../migrations/0034_run_continuations.sql"),
+    include_str!("../migrations/0035_thread_fork.sql"),
+    include_str!("../migrations/0036_generated_notices.sql"),
+    include_str!("../migrations/0037_codex_display_metadata.sql"),
+    include_str!("../migrations/0038_provider_failure_split.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
 pub struct Store {
     conn: Connection,
     database_path: Option<PathBuf>,
+    database_identity: DatabaseIdentity,
 }
 
 impl Store {
@@ -114,9 +98,11 @@ impl Store {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         conn.busy_timeout(std::time::Duration::from_secs(2))?;
+        let database_identity = DatabaseIdentity::for_connection(&conn)?;
         Ok(Self {
             conn,
             database_path: Some(path.as_ref().to_path_buf()),
+            database_identity,
         })
     }
 
@@ -124,6 +110,13 @@ impl Store {
     /// the standard Vega pragmas: `journal_mode=WAL`, `synchronous=NORMAL`,
     /// `foreign_keys=ON`.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, rusqlite::Error> {
+        Self::open_with_busy_timeout(path, std::time::Duration::from_secs(2))
+    }
+
+    pub fn open_with_busy_timeout(
+        path: impl AsRef<Path>,
+        busy_timeout: std::time::Duration,
+    ) -> Result<Self, rusqlite::Error> {
         let path = path.as_ref();
         let database_path = if path == Path::new(":memory:") || path.as_os_str().is_empty() {
             None
@@ -131,13 +124,19 @@ impl Store {
             Some(path.to_path_buf())
         };
         let conn = Connection::open(path)?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.busy_timeout(busy_timeout)?;
+        let mode: String = conn.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
+        if !mode.eq_ignore_ascii_case("wal") {
+            let _permit = write_coordination::acquire(&conn, WriteCategory::Initialization)?;
+            conn.pragma_update(None, "journal_mode", "WAL")?;
+        }
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.busy_timeout(std::time::Duration::from_secs(2))?;
+        let database_identity = DatabaseIdentity::for_connection(&conn)?;
         Ok(Self {
             conn,
             database_path,
+            database_identity,
         })
     }
 
@@ -151,21 +150,25 @@ impl Store {
         let current: u32 = self
             .conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if current as usize >= MIGRATIONS.len() {
+            return Ok(());
+        }
+        let _permit = write_coordination::acquire(&self.conn, WriteCategory::Migration)?;
+        let current: u32 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))?;
         for (index, sql) in MIGRATIONS.iter().enumerate() {
             let target = (index + 1) as u32;
             if current >= target {
                 continue;
             }
-            // SQLite cannot rebuild a table referenced by existing child rows
-            // while FK enforcement is enabled. R15 migration 0005 rebuilds
-            // `threads` and its two child tables as one atomic batch; keep the
-            // outer transaction and restore enforcement before returning.
+
             let rebuilds_threads = target == 5;
             if rebuilds_threads {
                 self.conn.pragma_update(None, "foreign_keys", false)?;
             }
             let result = (|| -> Result<(), rusqlite::Error> {
-                let tx = self.conn.unchecked_transaction()?;
+                let tx = WriteTransaction::new(&self.conn, WriteCategory::Migration)?;
                 tx.execute_batch(sql)?;
                 tx.pragma_update(None, "user_version", target)?;
                 tx.commit()
@@ -191,8 +194,8 @@ impl Store {
     /// Opens an unchecked `BEGIN IMMEDIATE` transaction through the shared
     /// connection reference. Conversation orchestration uses this to claim
     /// persisted one-shot work before any provider activity.
-    pub fn immediate_transaction(&self) -> Result<Transaction<'_>, rusqlite::Error> {
-        Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)
+    pub fn immediate_transaction(&self) -> Result<WriteTransaction<'_>, rusqlite::Error> {
+        WriteTransaction::new(&self.conn, WriteCategory::RuntimeEvent)
     }
 
     /// Returns the file backing this store, or `None` for SQLite in-memory or
@@ -200,742 +203,8 @@ impl Store {
     pub fn database_path(&self) -> Option<&Path> {
         self.database_path.as_deref()
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::{MIGRATIONS, Store, skills, tool_calls};
-    use rusqlite::ErrorCode;
-    use tempfile::tempdir;
-
-    /// Creates a migrated store backed by a fresh temporary directory.
-    fn open_temp_store() -> (Store, tempfile::TempDir) {
-        let dir = tempdir().unwrap();
-        let store = Store::open(dir.path().join("vega.db")).unwrap();
-        store.migrate().unwrap();
-        (store, dir)
-    }
-
-    fn user_version(store: &Store) -> u32 {
-        store
-            .conn()
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .unwrap()
-    }
-
-    #[test]
-    fn issue356_additive_timeout_migration_preserves_legacy_rows_and_rejects_invalid_details() {
-        use crate::context_compaction::{NewContextCompactionStatus, insert_status, latest_status};
-
-        let directory = tempdir().unwrap();
-        let database_path = directory.path().join("timeout-v19.db");
-        let store = Store::open(&database_path).unwrap();
-        for migration in MIGRATIONS.iter().take(19) {
-            store.conn().execute_batch(migration).unwrap();
-        }
-        store
-            .conn()
-            .pragma_update(None, "user_version", 19_u32)
-            .unwrap();
-        store.conn().execute_batch(
-            "INSERT INTO threads (id,model,created_at,updated_at) VALUES ('t','model',1,1); \
-             INSERT INTO messages (id,thread_id,seq,role,content,status,created_at) \
-               VALUES ('m','t',1,'user','original source','done',1); \
-             INSERT INTO context_checkpoints (id,thread_id,model,source_version,covered_through_seq,source_fingerprint,summary,estimator_version,created_at) \
-               VALUES (23,'t','model',1,1,'legacy-fingerprint','legacy summary','legacy-estimator',1);",
-        ).unwrap();
-        let failures = [
-            "cancelled",
-            "source_changed",
-            "no_compactable_prefix",
-            "too_large",
-            "invalid_summary",
-            "images_unsupported",
-            "over_limit",
-            "unavailable",
-        ];
-        for (index, failure) in failures.iter().enumerate() {
-            store.conn().execute(
-                "INSERT INTO context_compaction_status \
-                 (id,thread_id,model,operation_key,generation,phase,usage_state,failure,source_version,estimated_tokens,input_budget,target_tokens,created_at) \
-                 VALUES (?1,'t',?2,'legacy',1,'failed','unknown',?2,1,400,500,300,1)",
-                rusqlite::params![index as i64 + 10, failure],
-            ).unwrap();
-        }
-        let schema_identity = |store: &Store| {
-            store
-                .conn()
-                .prepare(
-                    "SELECT name,rootpage FROM sqlite_master WHERE name IN \
-                 ('context_compaction_status','context_compaction_status_latest') ORDER BY name",
-                )
-                .unwrap()
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-                })
-                .unwrap()
-                .collect::<Result<Vec<_>, _>>()
-                .unwrap()
-        };
-        let before_schema = schema_identity(&store);
-        store.migrate().unwrap();
-        store.migrate().unwrap();
-        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
-        assert_eq!(schema_identity(&store), before_schema);
-        for (index, failure) in failures.iter().enumerate() {
-            let legacy = latest_status(store.conn(), "t", failure).unwrap().unwrap();
-            assert_eq!(legacy.id, index as i64 + 10);
-            assert_eq!(legacy.failure.as_deref(), Some(*failure));
-            let detail: Option<String> = store
-                .conn()
-                .query_row(
-                    "SELECT failure_detail FROM context_compaction_status WHERE id=?1",
-                    [legacy.id],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(detail, None);
-        }
-        let audit: (String, i64, String) = store
-            .conn()
-            .query_row(
-                "SELECT (SELECT content FROM messages WHERE id='m'), \
-             (SELECT id FROM context_checkpoints WHERE id=23), \
-             (SELECT summary FROM context_checkpoints WHERE id=23)",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(
-            audit,
-            ("original source".into(), 23, "legacy summary".into())
-        );
-        let status = NewContextCompactionStatus {
-            thread_id: "t",
-            model: "model",
-            operation_key: "new-timeout",
-            generation: 2,
-            phase: "failed",
-            usage_state: "unknown",
-            failure: Some("summary_timeout"),
-            source_version: 1,
-            estimated_tokens: 400,
-            input_budget: 500,
-            target_tokens: 300,
-            created_at: 2,
-        };
-        let id = insert_status(store.conn(), status).unwrap();
-        assert_eq!(id, 18);
-        let raw: (String, String) = store
-            .conn()
-            .query_row(
-                "SELECT failure,failure_detail FROM context_compaction_status WHERE id=?1",
-                [id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(raw, ("invalid_summary".into(), "summary_timeout".into()));
-        for (base, detail) in [
-            (None, "summary_timeout"),
-            (Some("unavailable"), "summary_timeout"),
-            (Some("invalid_summary"), "unknown-detail"),
-        ] {
-            let error = store.conn().execute(
-                "INSERT INTO context_compaction_status \
-                 (thread_id,model,operation_key,generation,phase,usage_state,failure,failure_detail,source_version,estimated_tokens,input_budget,target_tokens,created_at) \
-                 VALUES ('t','model','invalid',3,'failed','unknown',?1,?2,1,400,500,300,3)",
-                rusqlite::params![base, detail],
-            ).unwrap_err();
-            assert_eq!(
-                error.sqlite_error_code(),
-                Some(ErrorCode::ConstraintViolation)
-            );
-        }
-        assert!(
-            insert_status(
-                store.conn(),
-                NewContextCompactionStatus {
-                    failure: Some("raw provider diagnostic"),
-                    ..status
-                }
-            )
-            .is_err()
-        );
-        drop(store);
-        let reopened = Store::open_read_only(&database_path).unwrap();
-        let timeout = latest_status(reopened.conn(), "t", "model")
-            .unwrap()
-            .unwrap();
-        assert_eq!(timeout.id, id);
-        assert_eq!(timeout.failure.as_deref(), Some("summary_timeout"));
-        assert_eq!(
-            latest_status(reopened.conn(), "t", "invalid_summary")
-                .unwrap()
-                .unwrap()
-                .failure
-                .as_deref(),
-            Some("invalid_summary")
-        );
-    }
-
-    #[test]
-    fn issue74_version_twelve_upgrade_adds_skills_without_losing_mcp_or_thread_rows() {
-        let dir = tempdir().unwrap();
-        let store = Store::open(dir.path().join("issue74-v12.db")).unwrap();
-        for migration in super::MIGRATIONS.iter().take(12) {
-            store.conn().execute_batch(migration).unwrap();
-        }
-        store
-            .conn()
-            .pragma_update(None, "user_version", 12_u32)
-            .unwrap();
-        store
-            .conn()
-            .execute_batch(
-                "INSERT INTO projects (id,path,name,created_at,last_opened_at) \
-                   VALUES ('p','/owned/project','project',1,1); \
-                 INSERT INTO threads (id,project_id,model,created_at,updated_at) \
-                   VALUES ('t','p','model',1,1); \
-                 INSERT INTO mcp_servers \
-                   (id,display_name,transport,local_executable,local_args_json, \
-                    local_env_refs_json,created_at,updated_at) \
-                   VALUES ('mcp-one','owned','local','/bin/echo','[]','[]',1,1);",
-            )
-            .unwrap();
-
-        store.migrate().unwrap();
-        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
-        let settings = skills::read_settings(store.conn()).unwrap();
-        assert!(!settings.global_enabled);
-        assert!(!settings.automatic_enabled);
-        let retained: (i64, i64) = store
-            .conn()
-            .query_row(
-                "SELECT (SELECT COUNT(*) FROM threads WHERE id = 't'), \
-                 (SELECT COUNT(*) FROM mcp_servers WHERE id = 'mcp-one')",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(retained, (1, 1));
-        let foreign_key_errors: i64 = store
-            .conn()
-            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(foreign_key_errors, 0);
-    }
-
-    #[test]
-    fn migrate_creates_exactly_the_thirty_six_tables() {
-        let (store, _dir) = open_temp_store();
-        let mut stmt = store
-            .conn()
-            .prepare(
-                "SELECT name FROM sqlite_master \
-                 WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
-            )
-            .unwrap();
-        let tables: Vec<String> = stmt
-            .query_map([], |row| row.get(0))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert_eq!(
-            tables,
-            vec![
-                "assistant_responses",
-                "assistant_run_durations",
-                "builtin_skill_activations",
-                "codex_session_creations",
-                "codex_task_snapshots",
-                "computer_screenshot_artifacts",
-                "context_checkpoints",
-                "context_compaction_status",
-                "context_settings",
-                "credential_continuations",
-                "credential_privacy_epoch",
-                "credential_privacy_exceptions",
-                "image_attachments",
-                "mcp_secret_cleanup",
-                "mcp_servers",
-                "messages",
-                "model_context_policies",
-                "pending_messages",
-                "permissions",
-                "projects",
-                "run_diagnostic_events",
-                "sidebar_groups",
-                "sidebar_memberships",
-                "sidebar_organization",
-                "sidebar_project_order",
-                "skill_activation_audits",
-                "skill_approvals",
-                "skill_project_settings",
-                "skill_run_snapshots",
-                "skill_settings",
-                "skill_sources",
-                "thread_skill_pins",
-                "threads",
-                "token_usage",
-                "tool_call_rounds",
-                "tool_calls",
-            ]
-        );
-    }
-
-    #[test]
-    fn database_path_distinguishes_file_backing_from_memory() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("vega.db");
-        let file_store = Store::open(&path).unwrap();
-        assert_eq!(file_store.database_path(), Some(path.as_path()));
-
-        let memory_store = Store::open(":memory:").unwrap();
-        assert_eq!(memory_store.database_path(), None);
-    }
-
-    #[test]
-    fn migrated_store_is_wal_at_user_version_20() {
-        let (store, _dir) = open_temp_store();
-        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
-        let journal_mode: String = store
-            .conn()
-            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(journal_mode, "wal");
-        // T38 (C5)：追加列存在且旧行读回 NULL（legacy/unpriced 语义）。
-        let legacy: (Option<String>, Option<String>, Option<i64>) = store
-            .conn()
-            .query_row(
-                "INSERT INTO token_usage (thread_id, model, input_tokens, output_tokens, \
-                        cost_microcents, created_at) \
-                 VALUES ('t', 'm', 1, 2, 0, 3) \
-                 RETURNING pricing_version, pricing_profile, call_started_at",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(legacy, (None, None, None));
-    }
-
-    #[test]
-    fn version_fifteen_upgrade_preserves_native_thread_and_children() {
-        let dir = tempdir().unwrap();
-        let store = Store::open(dir.path().join("v15.db")).unwrap();
-        for migration in MIGRATIONS.iter().take(15) {
-            store.conn().execute_batch(migration).unwrap();
-        }
-        store
-            .conn()
-            .pragma_update(None, "user_version", 15_u32)
-            .unwrap();
-        store.conn().execute_batch(
-            "INSERT INTO projects (id,path,name,created_at,last_opened_at) \
-               VALUES ('p','/owned/p','project',1,2); \
-             INSERT INTO threads \
-               (id,project_id,title,mode,permission_mode,model,status,pinned,unread,created_at,updated_at) \
-               VALUES ('t','p','legacy','plan','confirm','legacy-model','active',1,0,3,4); \
-             INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) \
-               VALUES ('m','t',1,'assistant','text','kept','done',5); \
-             INSERT INTO token_usage \
-               (thread_id,message_id,model,input_tokens,output_tokens,cost_microcents,created_at) \
-               VALUES ('t','m','legacy-model',1,2,0,6);",
-        ).unwrap();
-
-        store.migrate().unwrap();
-
-        let thread: (String, String, String, String, i64, i64, i64) = store
-            .conn()
-            .query_row(
-                "SELECT backend, project_id, title, model, pinned, created_at, updated_at \
-             FROM threads WHERE id = 't'",
-                [],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                        row.get(6)?,
-                    ))
-                },
-            )
-            .unwrap();
-        assert_eq!(
-            thread,
-            (
-                "native".into(),
-                "p".into(),
-                "legacy".into(),
-                "legacy-model".into(),
-                1,
-                3,
-                4
-            )
-        );
-        let preserved: (String, i64, i64) = store
-            .conn()
-            .query_row(
-                "SELECT messages.content, token_usage.input_tokens, token_usage.output_tokens \
-             FROM messages JOIN token_usage ON token_usage.message_id = messages.id \
-             WHERE messages.id = 'm'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(preserved, ("kept".into(), 1, 2));
-        let foreign_key_errors: i64 = store
-            .conn()
-            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(foreign_key_errors, 0);
-    }
-
-    #[test]
-    fn issue63_version_six_upgrade_adds_attachments_without_rebuilding_messages() {
-        let dir = tempdir().unwrap();
-        let store = Store::open(dir.path().join("vega.db")).unwrap();
-        // #65 R4: build the actual historical schema, not a partial downgrade.
-        for migration in super::MIGRATIONS.iter().take(6) {
-            store.conn().execute_batch(migration).unwrap();
-        }
-        store.conn().pragma_update(None, "user_version", 6).unwrap();
-        let before: String = store
-            .conn()
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE name = 'messages'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        store.migrate().unwrap();
-        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
-        let after: String = store
-            .conn()
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE name = 'messages'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(before, after);
-        let attachment_count: i64 = store
-            .conn()
-            .query_row("SELECT COUNT(*) FROM image_attachments", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(attachment_count, 0);
-    }
-
-    #[test]
-    fn automatic_title_version_seven_preserves_legacy_and_empty_eligibility() {
-        let dir = tempdir().unwrap();
-        let store = Store::open(dir.path().join("db")).unwrap();
-        for migration in super::MIGRATIONS.iter().take(7) {
-            store.conn().execute_batch(migration).unwrap();
-        }
-        store.conn().pragma_update(None, "user_version", 7).unwrap();
-        store.conn().execute_batch("INSERT INTO threads (id,title,mode,permission_mode,model,status,pinned,unread,created_at,updated_at) VALUES ('named','手动','ask','confirm','m','active',0,0,1,1),('populated','','ask','confirm','m','active',0,0,1,1),('empty','','ask','confirm','m','active',0,0,1,1); INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) VALUES ('u','populated',1,'user','text','hi','done',1);").unwrap();
-        store.migrate().unwrap();
-        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
-        let rows: Vec<(String, String, String)> = store
-            .conn()
-            .prepare("SELECT id,title,auto_title_state FROM threads ORDER BY id")
-            .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert_eq!(
-            rows,
-            vec![
-                ("empty".into(), "".into(), "eligible".into()),
-                ("named".into(), "手动".into(), "legacy".into()),
-                ("populated".into(), "".into(), "legacy".into())
-            ]
-        );
-    }
-
-    #[test]
-    fn migrate_is_idempotent() {
-        let (store, _dir) = open_temp_store();
-        // 第二次调用不报错
-        store.migrate().unwrap();
-        // 版本不前进
-        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
-        // 数据未被破坏：threads 仍为空
-        let thread_count: i64 = store
-            .conn()
-            .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(thread_count, 0);
-    }
-
-    #[test]
-    fn version_one_database_upgrades_in_place_preserving_existing_tables() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("legacy.db");
-        let store = Store::open(&path).unwrap();
-        store
-            .conn()
-            .execute_batch(include_str!("../migrations/0001_init.sql"))
-            .unwrap();
-        store
-            .conn()
-            .pragma_update(None, "user_version", 1_u32)
-            .unwrap();
-        store
-            .conn()
-            .execute_batch(
-                "INSERT INTO projects VALUES ('p','/tmp/p','project',NULL,1,2); \
-                 INSERT INTO threads VALUES ('t','p','thread','plan','confirm','mock','active',0,0,3,4); \
-                 INSERT INTO messages VALUES ('m','t',1,'assistant','text','kept','done',5); \
-                 INSERT INTO tool_calls (id,thread_id,message_id,seq,tool,input_json,status,created_at) \
-                   VALUES ('c','t','m',1,'read','{}','success',6); \
-                 INSERT INTO token_usage (thread_id,message_id,model,input_tokens,output_tokens,cost_microcents,created_at) \
-                   VALUES ('t','m','mock',1,2,0,7); \
-                 INSERT INTO permissions (project_id,tool,pattern,created_at) VALUES ('p','write','safe',8);",
-            )
-            .unwrap();
-        store.migrate().unwrap();
-        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
-        let kept: (String, Option<String>, Option<String>, Option<i64>) = store
-            .conn()
-            .query_row(
-                "SELECT content,plan_status,plan_review_note,plan_reviewed_at FROM messages WHERE id='m'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .unwrap();
-        assert_eq!(kept, ("kept".into(), None, None, None));
-        let tables: i64 = store
-            .conn()
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(tables, 36);
-        let response_count: i64 = store
-            .conn()
-            .query_row("SELECT COUNT(*) FROM assistant_responses", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(response_count, 0);
-        for table in [
-            "projects",
-            "threads",
-            "messages",
-            "tool_calls",
-            "token_usage",
-            "permissions",
-        ] {
-            let count: i64 = store
-                .conn()
-                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
-                    row.get(0)
-                })
-                .unwrap();
-            assert_eq!(count, 1, "lost data from {table}");
-        }
-    }
-
-    #[test]
-    fn r70_version_five_migration_retains_unknown_legacy_offsets() {
-        let dir = tempdir().unwrap();
-        let store = Store::open(dir.path().join("r70-legacy.db")).unwrap();
-        store
-            .conn()
-            .execute_batch(concat!(
-                include_str!("../migrations/0001_init.sql"),
-                include_str!("../migrations/0002_plan_review.sql"),
-                include_str!("../migrations/0003_token_usage_pricing.sql"),
-                include_str!("../migrations/0004_sidebar_organization.sql"),
-                include_str!("../migrations/0005_standalone_threads.sql"),
-            ))
-            .unwrap();
-        store
-            .conn()
-            .pragma_update(None, "user_version", 5_u32)
-            .unwrap();
-        store.conn().execute_batch(
-            "INSERT INTO projects VALUES ('p','/tmp/r70-owned','p',NULL,1,1); \
-             INSERT INTO threads (id,project_id,title,mode,permission_mode,model,status,pinned,unread,created_at,updated_at) \
-               VALUES ('t','p','t','execute','auto','mock','active',0,0,1,1); \
-             INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) \
-               VALUES ('m','t',1,'assistant','text','甲乙','done',1); \
-             INSERT INTO tool_calls (id,thread_id,message_id,seq,tool,input_json,status,created_at) \
-               VALUES ('old','t','m',1,'read','{}','success',1);"
-        ).unwrap();
-        store.migrate().unwrap();
-        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
-        let old: Option<i64> = store
-            .conn()
-            .query_row(
-                "SELECT text_offset_bytes FROM tool_calls WHERE id='old'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(old, None);
-        tool_calls::insert(
-            store.conn(),
-            tool_calls::NewToolCall {
-                id: "new",
-                thread_id: "t",
-                message_id: "m",
-                seq: 2,
-                tool: "read",
-                input_json: "{}",
-                status: "success",
-                created_at: 2,
-            },
-        )
-        .unwrap();
-        let new: i64 = store
-            .conn()
-            .query_row(
-                "SELECT text_offset_bytes FROM tool_calls WHERE id='new'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(new, 6, "UTF-8 byte length, not character count");
-        let tables: i64 = store.conn().query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-            [], |row| row.get(0),
-        ).unwrap();
-        assert_eq!(tables, 36);
-        let response_count: i64 = store
-            .conn()
-            .query_row("SELECT COUNT(*) FROM assistant_responses", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(response_count, 0);
-    }
-
-    #[test]
-    fn version_four_database_rebuild_preserves_sidebar_children_and_foreign_keys() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("legacy-r14.db");
-        let store = Store::open(&path).unwrap();
-        store
-            .conn()
-            .execute_batch(concat!(
-                include_str!("../migrations/0001_init.sql"),
-                include_str!("../migrations/0002_plan_review.sql"),
-                include_str!("../migrations/0003_token_usage_pricing.sql"),
-                include_str!("../migrations/0004_sidebar_organization.sql"),
-            ))
-            .unwrap();
-        store
-            .conn()
-            .pragma_update(None, "user_version", 4_u32)
-            .unwrap();
-        store
-            .conn()
-            .execute_batch(
-                "INSERT INTO projects VALUES ('p','/tmp/p-r14','project',NULL,1,2); \
-                 INSERT INTO threads VALUES ('t','p','thread','plan','confirm','mock','active',0,0,3,4); \
-                 INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) \
-                   VALUES ('m','t',1,'assistant','text','kept','done',5); \
-                 INSERT INTO tool_calls (id,thread_id,message_id,seq,tool,input_json,status,created_at) \
-                   VALUES ('c','t','m',1,'read','{}','success',6); \
-                 INSERT INTO token_usage (thread_id,message_id,model,input_tokens,output_tokens,cost_microcents,created_at) \
-                   VALUES ('t','m','mock',1,2,0,7); \
-                 INSERT INTO permissions (project_id,tool,pattern,created_at) VALUES ('p','write','safe',8); \
-                 INSERT INTO sidebar_groups (id,name,color,position) VALUES ('g','legacy','gray',0); \
-                 INSERT INTO sidebar_memberships (thread_id,group_id,position) VALUES ('t','g',0);",
-            )
-            .unwrap();
-
-        store.migrate().unwrap();
-        assert_eq!(user_version(&store), super::MIGRATIONS.len() as u32);
-        for table in [
-            "messages",
-            "tool_calls",
-            "token_usage",
-            "permissions",
-            "sidebar_memberships",
-        ] {
-            let count: i64 = store
-                .conn()
-                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
-                    row.get(0)
-                })
-                .unwrap();
-            assert_eq!(count, 1, "lost data from {table}");
-        }
-        let foreign_key_errors: i64 = store
-            .conn()
-            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(foreign_key_errors, 0);
-        let foreign_keys: u32 = store
-            .conn()
-            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(foreign_keys, 1);
-    }
-
-    #[test]
-    fn plan_status_check_rejects_unknown_values() {
-        let (store, _dir) = open_temp_store();
-        store
-            .conn()
-            .execute_batch(
-                "INSERT INTO projects VALUES ('p','/tmp/p','p',NULL,0,0); \
-                 INSERT INTO threads (id,project_id,model,created_at,updated_at) VALUES ('t','p','m',0,0);",
-            )
-            .unwrap();
-        let error = store
-            .conn()
-            .execute(
-                "INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at,plan_status) \
-                 VALUES ('m','t',1,'assistant','plan','x','done',0,'unknown')",
-                [],
-            )
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            rusqlite::Error::SqliteFailure(error, _)
-                if error.code == ErrorCode::ConstraintViolation
-        ));
-    }
-
-    #[test]
-    fn foreign_keys_are_enforced() {
-        let (store, _dir) = open_temp_store();
-        let fk: u32 = store
-            .conn()
-            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(fk, 1);
-        // project_id 指向不存在的 projects 行 → 必须报外键约束错
-        let err = store
-            .conn()
-            .execute(
-                "INSERT INTO threads (id, project_id, model, created_at, updated_at) \
-                 VALUES ('t1', 'missing-project', 'test-model', 0, 0)",
-                [],
-            )
-            .unwrap_err();
-        assert!(matches!(
-            err,
-            rusqlite::Error::SqliteFailure(e, _)
-                if e.code == ErrorCode::ConstraintViolation
-        ));
+    pub fn database_identity(&self) -> DatabaseIdentity {
+        self.database_identity
     }
 }

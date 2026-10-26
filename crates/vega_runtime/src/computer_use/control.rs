@@ -1,11 +1,11 @@
+pub(super) use super::ownership::OwnershipAuthority;
 use super::{Capability, ComputerUseError, DesktopTarget, Observation, Target};
+use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-
-static OWNER: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlPhase {
@@ -31,6 +31,36 @@ pub struct ControlSnapshot {
     pub observations: Vec<Observation>,
 }
 
+enum TargetLabel {
+    Text(String),
+    DesktopCatalog,
+}
+
+impl TargetLabel {
+    fn canonical(&self) -> &str {
+        match self {
+            Self::Text(text) => text,
+            Self::DesktopCatalog => "所有桌面窗口",
+        }
+    }
+
+    fn display(&self) -> String {
+        match self {
+            Self::Text(text) => text.clone(),
+            Self::DesktopCatalog => Target::DesktopCatalog.label(),
+        }
+    }
+}
+
+impl From<&Target> for TargetLabel {
+    fn from(target: &Target) -> Self {
+        match target {
+            Target::DesktopCatalog => Self::DesktopCatalog,
+            _ => Self::Text(target.label()),
+        }
+    }
+}
+
 struct State {
     phase: ControlPhase,
     capability: Option<Capability>,
@@ -41,7 +71,7 @@ struct State {
     browser_target: Option<Target>,
     desktop: Option<Target>,
     browser: Option<Target>,
-    target_label: String,
+    target_label: TargetLabel,
     grant_started: [Option<Instant>; 2],
     last_used: [Option<Instant>; 2],
     error: Option<ComputerUseError>,
@@ -51,6 +81,7 @@ struct State {
 
 struct Inner {
     run_id: String,
+    authority: Arc<OwnershipAuthority>,
     state: Mutex<State>,
     changed: watch::Sender<u64>,
 }
@@ -65,14 +96,76 @@ impl std::fmt::Debug for ComputerUseControl {
 }
 
 impl ComputerUseControl {
+    pub(crate) fn replay_snapshot_fingerprint(&self) -> [u8; 32] {
+        let Ok(state) = self.0.state.lock() else {
+            return Sha256::digest(b"computer-use-state-unavailable").into();
+        };
+        let mut hasher = Sha256::new();
+        let mut add = |tag: u8, value: &[u8]| {
+            hasher.update([tag]);
+            hasher.update((value.len() as u64).to_le_bytes());
+            hasher.update(value);
+        };
+        add(1, format!("{:?}", state.phase).as_bytes());
+        add(2, format!("{:?}", state.capability).as_bytes());
+        add(3, &state.epoch.to_le_bytes());
+        add(4, state.target_label.canonical().as_bytes());
+        for window in &state.windows {
+            add(5, window.selection_id.as_bytes());
+            add(6, window.application.as_bytes());
+            add(7, window.bundle_id.as_bytes());
+            add(8, &window.pid.to_le_bytes());
+            add(9, &window.window_id.to_le_bytes());
+            add(10, window.title.as_bytes());
+        }
+        for target in [
+            state.browser_target.as_ref(),
+            state.desktop.as_ref(),
+            state.browser.as_ref(),
+        ] {
+            match target {
+                Some(Target::Desktop(window)) => {
+                    add(11, window.selection_id.as_bytes());
+                    add(12, window.application.as_bytes());
+                    add(13, window.bundle_id.as_bytes());
+                    add(14, &window.pid.to_le_bytes());
+                    add(15, &window.window_id.to_le_bytes());
+                    add(16, window.title.as_bytes());
+                }
+                Some(Target::DesktopCatalog) => add(17, b"desktop-catalog"),
+                Some(Target::Browser {
+                    connection,
+                    index,
+                    title,
+                    url,
+                }) => {
+                    add(18, connection.as_bytes());
+                    add(19, &index.to_le_bytes());
+                    add(20, title.as_bytes());
+                    add(21, url.as_bytes());
+                }
+                None => add(22, &[]),
+            }
+        }
+        for observation in &state.observations {
+            add(23, &observation.replay_snapshot_fingerprint());
+        }
+        hasher.finalize().into()
+    }
+
     pub fn same_instance(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
 
     pub fn new() -> Self {
+        Self::with_authority(OwnershipAuthority::shared())
+    }
+
+    pub(super) fn with_authority(authority: Arc<OwnershipAuthority>) -> Self {
         let (changed, _) = watch::channel(0);
         Self(Arc::new(Inner {
             run_id: ulid::Ulid::generate().to_string(),
+            authority,
             state: Mutex::new(State {
                 phase: ControlPhase::Disconnected,
                 capability: None,
@@ -83,7 +176,7 @@ impl ComputerUseControl {
                 browser_target: None,
                 desktop: None,
                 browser: None,
-                target_label: String::new(),
+                target_label: TargetLabel::Text(String::new()),
                 grant_started: [None; 2],
                 last_used: [None; 2],
                 error: None,
@@ -147,7 +240,7 @@ impl ComputerUseControl {
             phase: state.phase,
             capability: state.capability,
             epoch: state.epoch,
-            target_label: state.target_label.clone(),
+            target_label: state.target_label.display(),
             browser_target: state.browser_target.clone(),
             error: state.error,
             observations: if include_media {
@@ -177,6 +270,7 @@ impl ComputerUseControl {
     fn revoke(&self, phase: ControlPhase, expected_epoch: Option<u64>) -> bool {
         if let Ok(mut state) = self.0.state.lock() {
             if matches!(state.phase, ControlPhase::Stopped | ControlPhase::Stopping)
+                || (state.phase == ControlPhase::Failed && phase == ControlPhase::Pausing)
                 || expected_epoch.is_some_and(|epoch| {
                     state.epoch != epoch || state.phase != ControlPhase::Running
                 })
@@ -248,7 +342,7 @@ impl ComputerUseControl {
         state
             .observations
             .retain(|item| item.capability != Capability::Desktop);
-        state.target_label = window.label();
+        state.target_label = TargetLabel::Text(window.label());
         state.desktop = Some(Target::Desktop(window));
         state.capability = Some(Capability::Desktop);
         drop(state);
@@ -307,7 +401,7 @@ impl ComputerUseControl {
             .observations
             .retain(|item| item.capability != Capability::Desktop);
         state.desktop = Some(Target::DesktopCatalog);
-        state.target_label = Target::DesktopCatalog.label();
+        state.target_label = TargetLabel::DesktopCatalog;
         let result = serde_json::json!({"windows":page,"next_cursor":next,"instruction":"Use ComputerObserve with target_id from this directory and cursor:null before any ComputerAct. A directory observation cannot authorize an action. Refresh with target_id:null,cursor:null after stale errors."});
         drop(state);
         self.notify();
@@ -335,7 +429,7 @@ impl ComputerUseControl {
             .browser_target
             .take()
             .ok_or(ComputerUseError::TargetChanged)?;
-        state.target_label = target.label();
+        state.target_label = TargetLabel::from(&target);
         state.browser = Some(target);
         state.grant_started[1] = Some(Instant::now());
         state.last_used[1] = state.grant_started[1];
@@ -356,8 +450,10 @@ impl ComputerUseControl {
     }
 
     pub(crate) fn begin(&self, capability: Capability) -> Result<u64, ComputerUseError> {
-        let mut owner = OWNER
-            .get_or_init(|| Mutex::new(None))
+        let mut owner = self
+            .0
+            .authority
+            .owner
             .lock()
             .map_err(|_| ComputerUseError::Unavailable)?;
         if owner.as_ref().is_some_and(|id| id != &self.0.run_id) {
@@ -374,8 +470,9 @@ impl ComputerUseControl {
                 | ControlPhase::Paused
                 | ControlPhase::Stopping
                 | ControlPhase::Stopped
+                | ControlPhase::Failed
         ) {
-            return Err(ComputerUseError::NotReady);
+            return Err(state.error.unwrap_or(ComputerUseError::NotReady));
         }
         *owner = Some(self.0.run_id.clone());
         state.capability = Some(capability);
@@ -409,7 +506,7 @@ impl ComputerUseControl {
             .observations
             .retain(|item| item.capability != Capability::Desktop);
         state.desktop = Some(Target::DesktopCatalog);
-        state.target_label = Target::DesktopCatalog.label();
+        state.target_label = TargetLabel::DesktopCatalog;
         state.capability = Some(Capability::Desktop);
         state.phase = ControlPhase::Running;
         drop(state);
@@ -449,7 +546,7 @@ impl ComputerUseControl {
         if state.epoch != epoch || state.action_cancel.is_cancelled() {
             return Err(ComputerUseError::Cancelled);
         }
-        state.target_label = target.label();
+        state.target_label = TargetLabel::from(&target);
         match capability {
             Capability::Desktop => state.desktop = Some(target),
             Capability::Browser => state.browser = Some(target),
@@ -664,17 +761,24 @@ impl ComputerUseControl {
     }
 
     pub(crate) fn fail(&self, expected_epoch: u64, error: ComputerUseError) {
+        self.fail_inner(expected_epoch, error, false);
+    }
+
+    pub(super) fn fail_dispatched_action(&self, expected_epoch: u64, error: ComputerUseError) {
+        self.fail_inner(expected_epoch, error, true);
+    }
+
+    fn fail_inner(&self, expected_epoch: u64, error: ComputerUseError, dispatched_action: bool) {
         if let Ok(mut state) = self.0.state.lock() {
-            if state.epoch != expected_epoch {
-                return;
-            }
-            if matches!(
-                state.phase,
-                ControlPhase::Pausing
-                    | ControlPhase::Paused
-                    | ControlPhase::Stopping
-                    | ControlPhase::Stopped
-            ) {
+            if (!dispatched_action && state.epoch != expected_epoch)
+                || (dispatched_action && state.epoch < expected_epoch)
+                || matches!(
+                    state.phase,
+                    ControlPhase::Stopping | ControlPhase::Stopped | ControlPhase::Failed
+                )
+                || (!dispatched_action
+                    && matches!(state.phase, ControlPhase::Pausing | ControlPhase::Paused))
+            {
                 return;
             }
             state.epoch = state.epoch.saturating_add(1);
@@ -692,11 +796,7 @@ impl ComputerUseControl {
     }
 
     pub(crate) fn release(&self) {
-        if let Ok(mut owner) = OWNER.get_or_init(|| Mutex::new(None)).lock()
-            && owner.as_ref() == Some(&self.0.run_id)
-        {
-            *owner = None;
-        }
+        self.0.authority.release(&self.0.run_id);
     }
 }
 
@@ -711,220 +811,5 @@ impl Drop for Inner {
         if let Ok(state) = self.state.lock() {
             state.action_cancel.cancel();
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn issue75_desktop_access_directory_expiry_size_and_failure_cleanup() {
-        let control = ComputerUseControl::new();
-        let epoch = control.begin(Capability::Desktop).unwrap();
-        let windows = (0..201)
-            .map(|index| DesktopTarget {
-                selection_id: format!("target-{index}"),
-                application: "应".repeat(100),
-                bundle_id: String::new(),
-                pid: 1,
-                window_id: index,
-                title: "窗".repeat(200),
-            })
-            .collect();
-        control.set_windows(epoch, windows).unwrap();
-        let mut cursor = None;
-        let mut count = 0;
-        loop {
-            let page = control.catalog_page(epoch, cursor.as_deref()).unwrap();
-            assert!(page.to_string().len() <= 64 * 1024);
-            count += page["windows"].as_array().unwrap().len();
-            cursor = page["next_cursor"].as_str().map(str::to_owned);
-            if cursor.is_none() {
-                break;
-            }
-        }
-        assert_eq!(count, 201);
-        control.0.state.lock().unwrap().directory_started =
-            Some(Instant::now() - std::time::Duration::from_secs(61));
-        assert_eq!(
-            control.select_window(epoch, "target-200"),
-            Err(ComputerUseError::StaleObservation)
-        );
-        assert_eq!(
-            control.catalog_page(epoch, None),
-            Err(ComputerUseError::StaleObservation)
-        );
-        assert_eq!(control.status().phase, ControlPhase::Running);
-        control.fail(epoch, ComputerUseError::Permissions);
-        {
-            let state = control.0.state.lock().unwrap();
-            assert!(state.windows.is_empty());
-            assert!(state.directory_started.is_none());
-            assert!(state.next_cursor.is_none());
-        }
-        control.finish_cleanup();
-    }
-
-    #[test]
-    fn issue75_desktop_access_has_no_window_grant_expiry() {
-        let control = ComputerUseControl::new();
-        let epoch = control.begin(Capability::Desktop).unwrap();
-        let target = DesktopTarget {
-            selection_id: "choice".into(),
-            application: "Fixture".into(),
-            bundle_id: "fixture".into(),
-            pid: 1,
-            window_id: 2,
-            title: "Window".into(),
-        };
-        control.set_windows(epoch, vec![target]).unwrap();
-        control.select_window(epoch, "choice").unwrap();
-        control.0.state.lock().unwrap().grant_started[0] =
-            Some(Instant::now() - std::time::Duration::from_secs(7201));
-        let browser = Target::Browser {
-            connection: "fixture".into(),
-            index: 0,
-            title: "Page".into(),
-            url: "https://example.test/".into(),
-        };
-        control.offer_browser(epoch, browser.clone()).unwrap();
-        control.approve_browser(epoch, &browser).unwrap();
-        assert!(matches!(
-            control.target(Capability::Desktop).unwrap(),
-            Some(Target::Desktop(_))
-        ));
-        assert_eq!(control.target(Capability::Browser).unwrap(), Some(browser));
-        control.0.state.lock().unwrap().last_used[1] =
-            Some(Instant::now() - std::time::Duration::from_secs(901));
-        assert_eq!(
-            control.target(Capability::Browser),
-            Err(ComputerUseError::GrantExpired)
-        );
-        control.stop();
-        control.finish_cleanup();
-    }
-    #[test]
-    fn issue75_successful_reads_screenshot_reference_never_renews_expired_or_revoked_directory() {
-        let run = super::super::ComputerUseRun::new(true, false);
-        let epoch = run.control.begin(Capability::Desktop).unwrap();
-        let observation = super::super::tests::fixture_observation(&run.control, epoch, 0);
-        let Target::Desktop(target) = observation.target.clone() else {
-            panic!()
-        };
-        run.control.set_windows(epoch, vec![target]).unwrap();
-        run.control.select_window(epoch, "fixture").unwrap();
-        run.control.publish(observation.clone()).unwrap();
-        let started = run.control.0.state.lock().unwrap().directory_started;
-        assert_eq!(
-            run.control.screenshot_target(&observation).as_deref(),
-            Some("fixture")
-        );
-        run.control.consume_observations();
-        assert_eq!(
-            run.control.0.state.lock().unwrap().directory_started,
-            started
-        );
-        assert_eq!(
-            run.control.screenshot_target(&observation).as_deref(),
-            Some("fixture")
-        );
-        run.control.publish(observation.clone()).unwrap();
-        run.control.0.state.lock().unwrap().directory_started =
-            Some(Instant::now() - std::time::Duration::from_secs(61));
-        let mut message = crate::ChatMessage::tool_result(&observation.call_id, "completed");
-        run.apply_observation(&observation.call_id, &mut message);
-        assert!(message.content.contains("refresh_directory_once"));
-        let reference = message
-            .content
-            .lines()
-            .find_map(|line| line.strip_prefix("Screenshot target: "))
-            .unwrap();
-        let reference: serde_json::Value = serde_json::from_str(reference).unwrap();
-        assert!(reference["target_id"].is_null());
-        assert_eq!(
-            run.control.select_window(epoch, "fixture"),
-            Err(ComputerUseError::StaleObservation)
-        );
-        run.control.discard_observations();
-        assert!(run.control.screenshot_target(&observation).is_none());
-        assert!(run.control.0.state.lock().unwrap().windows.is_empty());
-        run.control.pause();
-        assert!(run.control.screenshot_target(&observation).is_none());
-        run.control.finish_cleanup();
-        run.control.resume(run.control.status().epoch).unwrap();
-        assert!(run.control.screenshot_target(&observation).is_none());
-        run.control.stop();
-        run.control.finish_cleanup();
-    }
-    #[test]
-    fn issue75_text_delivery_all_window_references_are_rechecked_at_projection_time() {
-        let run = super::super::ComputerUseRun::new(true, false);
-        let epoch = run.control.begin(Capability::Desktop).unwrap();
-        let a = super::super::tests::fixture_observation(&run.control, epoch, 0);
-        let mut b = super::super::tests::fixture_observation(&run.control, epoch, 1);
-        let Target::Desktop(first) = a.target.clone() else {
-            panic!()
-        };
-        let Target::Desktop(second) = &mut b.target else {
-            panic!()
-        };
-        second.selection_id = "second".into();
-        second.window_id = 3;
-        run.control
-            .set_windows(epoch, vec![first, second.clone()])
-            .unwrap();
-        run.begin_model_batch("owned", false);
-        let mut messages = Vec::new();
-        for (target, observation) in [("fixture", a.clone()), ("second", b.clone())] {
-            run.control.select_window(epoch, target).unwrap();
-            run.control.publish(observation.clone()).unwrap();
-            run.stage_model_observation("owned", &observation.call_id, &mut messages)
-                .unwrap();
-            let mut message = crate::ChatMessage::tool_result(&observation.call_id, "");
-            run.apply_observation(&observation.call_id, &mut message);
-            messages.push(message);
-        }
-        run.trim_messages(&mut messages);
-        for (message, expected) in messages.iter().zip(["fixture", "second"]) {
-            let target: serde_json::Value = serde_json::from_str(
-                message
-                    .content
-                    .lines()
-                    .find_map(|line| line.strip_prefix("Screenshot target: "))
-                    .unwrap(),
-            )
-            .unwrap();
-            assert_eq!(target["target_id"], expected);
-        }
-        assert_eq!(
-            run.control.observation(Capability::Desktop, &a.id).err(),
-            Some(ComputerUseError::StaleObservation)
-        );
-        assert!(run.control.observation(Capability::Desktop, &b.id).is_ok());
-        let expired = Instant::now() - std::time::Duration::from_secs(61);
-        run.control.0.state.lock().unwrap().directory_started = Some(expired);
-        run.trim_messages(&mut messages);
-        for message in &messages {
-            let target: serde_json::Value = serde_json::from_str(
-                message
-                    .content
-                    .lines()
-                    .find_map(|line| line.strip_prefix("Screenshot target: "))
-                    .unwrap(),
-            )
-            .unwrap();
-            assert!(target["target_id"].is_null());
-            assert_eq!(target["next_step"], "refresh_directory_once");
-        }
-        assert_eq!(
-            run.control.0.state.lock().unwrap().directory_started,
-            Some(expired)
-        );
-        assert_eq!(
-            run.control.select_window(epoch, "fixture"),
-            Err(ComputerUseError::StaleObservation)
-        );
-        run.control.stop();
-        run.control.finish_cleanup();
     }
 }

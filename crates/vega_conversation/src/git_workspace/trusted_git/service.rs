@@ -39,12 +39,6 @@ impl TrustedGitService {
             instance_nonce,
             workspace,
             state: Arc::new(Mutex::new(CommitState::default())),
-            #[cfg(test)]
-            mutation_executable: None,
-            #[cfg(test)]
-            mutation_timeout: MUTATION_TIMEOUT,
-            #[cfg(test)]
-            read_executable: None,
         })
     }
 
@@ -280,22 +274,7 @@ impl TrustedGitService {
         };
         self.require_exact_authority(&authority, cancel.clone())
             .await?;
-        let request = ChatRequest {
-            model,
-            messages: vec![
-                ChatMessage::new(ChatRole::System, SYSTEM_PROMPT),
-                ChatMessage::new(
-                    ChatRole::User,
-                    format!(
-                        "{USER_PREFIX}{}\n--- staged diff ---\n{summary}",
-                        if truncated { "true" } else { "false" }
-                    ),
-                ),
-            ],
-            tools: Vec::new(),
-            max_tokens: Some(256),
-            reasoning: None,
-        };
+        let request = draft_request(model, &summary, truncated);
         let draft =
             collect_draft_with_deadline(provider, request, cancel.clone(), DRAFT_TIMEOUT).await?;
         self.require_exact_authority(&authority, cancel).await?;
@@ -414,24 +393,8 @@ impl TrustedGitService {
         cancel: CancellationToken,
     ) -> Result<IndexAuthority, CommitErrorCode> {
         let workspace = self.workspace.clone();
-        #[cfg(test)]
-        let read_executable = self.read_executable.clone();
         tokio::task::spawn_blocking(move || {
-            let runner = workspace
-                .runner_with_test_override(
-                    {
-                        #[cfg(test)]
-                        {
-                            read_executable
-                        }
-                        #[cfg(not(test))]
-                        {
-                            None
-                        }
-                    },
-                    &cancel,
-                )
-                .map_err(map_workspace_error)?;
+            let runner = workspace.runner(&cancel).map_err(map_workspace_error)?;
             capture_authority(&runner, workspace_generation, &cancel)
         })
         .await
@@ -639,24 +602,8 @@ impl TrustedGitService {
             input.push(0);
         }
         let workspace = self.workspace.clone();
-        #[cfg(test)]
-        let read_executable = self.read_executable.clone();
         tokio::task::spawn_blocking(move || {
-            let runner = workspace
-                .runner_with_test_override(
-                    {
-                        #[cfg(test)]
-                        {
-                            read_executable
-                        }
-                        #[cfg(not(test))]
-                        {
-                            None
-                        }
-                    },
-                    &cancel,
-                )
-                .map_err(map_workspace_error)?;
+            let runner = workspace.runner(&cancel).map_err(map_workspace_error)?;
             let output = runner
                 .run_with_input(
                     "check-attr",
@@ -694,32 +641,8 @@ impl TrustedGitService {
             input.push(0);
         }
         let workspace = self.workspace.clone();
-        #[cfg(test)]
-        let mutation_executable = self.mutation_executable.clone();
-        #[cfg(test)]
-        let mutation_timeout = self.mutation_timeout;
         tokio::task::spawn_blocking(move || {
-            let runner = workspace
-                .runner_with_test_override(None, &cancel)
-                .map_err(map_workspace_error)?;
-            #[cfg(test)]
-            if let Some(executable) = mutation_executable {
-                return runner
-                    .run_trusted_mutation_with_executable_and_timeout(
-                        "add",
-                        &[
-                            OsString::from("-A"),
-                            OsString::from("--pathspec-from-file=-"),
-                            OsString::from("--pathspec-file-nul"),
-                        ],
-                        Arc::from(input),
-                        &cancel,
-                        &executable,
-                        mutation_timeout,
-                    )
-                    .map(|_| ())
-                    .map_err(map_workspace_error);
-            }
+            let runner = workspace.runner(&cancel).map_err(map_workspace_error)?;
             runner
                 .run_trusted_mutation(
                     "add",
@@ -746,24 +669,8 @@ impl TrustedGitService {
         self.require_exact_authority(authority, cancel.clone())
             .await?;
         let workspace = self.workspace.clone();
-        #[cfg(test)]
-        let read_executable = self.read_executable.clone();
         let output = tokio::task::spawn_blocking(move || {
-            let runner = workspace
-                .runner_with_test_override(
-                    {
-                        #[cfg(test)]
-                        {
-                            read_executable
-                        }
-                        #[cfg(not(test))]
-                        {
-                            None
-                        }
-                    },
-                    &cancel,
-                )
-                .map_err(map_workspace_error)?;
+            let runner = workspace.runner(&cancel).map_err(map_workspace_error)?;
             runner
                 .run_commit_summary(SUMMARY_LIMIT, &cancel)
                 .map_err(map_workspace_error)
@@ -787,34 +694,14 @@ impl TrustedGitService {
             .await?;
         let before = prepared.authority.head.clone();
         let workspace = self.workspace.clone();
-        #[cfg(test)]
-        let mutation_executable = self.mutation_executable.clone();
-        #[cfg(test)]
-        let mutation_timeout = self.mutation_timeout;
         tokio::task::spawn_blocking(move || {
-            let runner = workspace
-                .runner_with_test_override(None, &cancel)
-                .map_err(map_workspace_error)?;
+            let runner = workspace.runner(&cancel).map_err(map_workspace_error)?;
             let input: Arc<[u8]> = Arc::from(message.into_bytes());
             let args = [
                 OsString::from("--no-gpg-sign"),
                 OsString::from("--file=-"),
                 OsString::from("--cleanup=verbatim"),
             ];
-            #[cfg(test)]
-            if let Some(executable) = mutation_executable {
-                return runner
-                    .run_trusted_mutation_with_executable_and_timeout(
-                        "commit",
-                        &args,
-                        input,
-                        &cancel,
-                        &executable,
-                        mutation_timeout,
-                    )
-                    .map(|_| ())
-                    .map_err(map_workspace_error);
-            }
             runner
                 .run_trusted_mutation("commit", &args, input, &cancel)
                 .map(|_| ())
@@ -833,25 +720,9 @@ impl TrustedGitService {
         let workspace = self.workspace.clone();
         let before = before.clone();
         let expected_tree = prepared.stages.clone();
-        #[cfg(test)]
-        let read_executable = self.read_executable.clone();
         tokio::task::spawn_blocking(move || {
             let cancel = CancellationToken::new();
-            let runner = workspace
-                .runner_with_test_override(
-                    {
-                        #[cfg(test)]
-                        {
-                            read_executable
-                        }
-                        #[cfg(not(test))]
-                        {
-                            None
-                        }
-                    },
-                    &cancel,
-                )
-                .map_err(map_workspace_error)?;
+            let runner = workspace.runner(&cancel).map_err(map_workspace_error)?;
             let head = capture_head(&runner, &cancel)?;
             if head.unborn || head.full_ref != before.full_ref || head.oid == before.oid {
                 return Err(CommitErrorCode::ChangedDuringRead);
@@ -898,5 +769,26 @@ impl TrustedGitService {
         })
         .await
         .map_err(|_| CommitErrorCode::GitFailed)?
+    }
+}
+
+fn draft_request(model: String, summary: &str, truncated: bool) -> ChatRequest {
+    ChatRequest {
+        model,
+        messages: vec![
+            ChatMessage::new(ChatRole::System, SYSTEM_PROMPT),
+            ChatMessage::new(
+                ChatRole::User,
+                format!(
+                    "{USER_PREFIX}{}\n--- staged diff ---\n{summary}",
+                    if truncated { "true" } else { "false" }
+                ),
+            ),
+        ],
+        tools: Vec::new(),
+        max_tokens: Some(256),
+        reasoning: None,
+        model_snapshot: None,
+        tool_choice: None,
     }
 }

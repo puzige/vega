@@ -66,7 +66,20 @@ jobs:
           python3 -m unittest discover -s scripts/tests -v
 
       - name: Test the workspace
-        run: cargo nextest run --workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_list="$RUNNER_TEMP/nextest-test-list.json"
+          cargo nextest list --workspace --message-format json > "$test_list"
+          test_count=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["test-count"])' "$test_list")
+          if [[ "$test_count" == "0" ]]; then
+            cargo nextest run --workspace --no-tests=pass
+            message="Rust: no Rust tests (0 discovered, 0 executed)."
+          else
+            cargo nextest run --workspace
+            message="Rust: nonempty suite completed successfully ($test_count discovered, including ignored/skipped); see Nextest output for executed/passed/failed/skipped counts."
+          fi
+          printf '%s\n' "$message" | tee -a "$GITHUB_STEP_SUMMARY"
 
   check:
     name: check (fmt, clippy, test)

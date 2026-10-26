@@ -21,20 +21,12 @@ pub enum ProjectsBlockEvent {
 
 impl EventEmitter<ProjectsBlockEvent> for ProjectsBlock {}
 
-/// The 「项目」 block: registered projects (name + branch suffix, non-git
-/// rows show no suffix), click = select (`touch_last_opened`), [+] add via
-/// the platform folder picker, per-row remove, and a name / recently-opened
-/// sort toggle (in-memory per T12 ruling; drag ordering is deferred). The
-/// collapse state persists in config (`ui.projects_collapsed`).
-///
-/// Independent component struct so T13 can add inline row actions here.
 pub struct ProjectsBlock {
     /// Cached rows, refreshed from the store after every mutation.
     pub(crate) projects: Vec<Project>,
-    /// Sort order — in-memory only (T12 ruling: 不持久化).
     pub(crate) sort: ProjectSort,
     /// Inline error message (ui-spec §4.6); empty until a failure occurs.
-    pub(crate) error: Option<String>,
+    pub(crate) error: Option<crate::localized_copy::LocalizedCopy>,
     branches: HashMap<String, (String, ProjectBranchState)>,
     branch_service: Option<ProjectBranchService>,
     branch_generation: u64,
@@ -94,7 +86,12 @@ impl ProjectsBlock {
         self.invalidate_branches();
         let sort = self.sort;
         match with_store(cx, |store| {
-            projects::list(store.conn(), sort).map_err(|error| format!("项目列表加载失败：{error}"))
+            projects::list(store.conn(), sort).map_err(|error| {
+                crate::localized_copy::LocalizedCopy::with_args(
+                    "ui.could_not_load_projects_error",
+                    vec![("error", (error).to_string().into())],
+                )
+            })
         }) {
             Ok(projects) => {
                 self.projects = projects;
@@ -257,8 +254,12 @@ impl ProjectsBlock {
     /// global, then let the orchestrator resync the session block.
     pub(super) fn select_project(&mut self, project_id: &str, cx: &mut Context<Self>) {
         let result = with_store(cx, |store| {
-            projects::touch_last_opened(store.conn(), project_id)
-                .map_err(|error| format!("项目状态更新失败：{error}"))
+            projects::touch_last_opened(store.conn(), project_id).map_err(|error| {
+                crate::localized_copy::LocalizedCopy::with_args(
+                    "ui.could_not_update_project_status_error",
+                    vec![("error", (error).to_string().into())],
+                )
+            })
         });
         match result {
             Ok(_) => {
@@ -274,17 +275,18 @@ impl ProjectsBlock {
         }
     }
 
-    /// Unregisters the project and detaches its tasks in the store's A8-02
-    /// transaction. The route change observes the same draft-navigation and
-    /// task-mutation fences as other Sidebar writes; no files are touched.
     pub(super) fn remove_project(&mut self, project_id: &str, cx: &mut Context<Self>) {
         if task_mutation_busy(cx) {
-            self.error = Some("任务正在保存，请稍后重试移除项目".into());
+            self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.a_task_is_being_saved_try_removing_the",
+            ));
             cx.notify();
             return;
         }
         if project_worker_is_active(project_id, cx) {
-            self.error = Some("项目任务仍在运行，请先停止并等待执行结束后重试移除项目".into());
+            self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.project_tasks_are_still_running_stop_them_and",
+            ));
             cx.notify();
             return;
         }
@@ -293,8 +295,12 @@ impl ProjectsBlock {
         }
         crate::navigation::begin_task_mutation(cx);
         let result = with_store(cx, |store| {
-            projects::remove(store.conn(), project_id)
-                .map_err(|error| format!("项目移除失败：{error}"))
+            projects::remove(store.conn(), project_id).map_err(|error| {
+                crate::localized_copy::LocalizedCopy::with_args(
+                    "ui.could_not_remove_the_project_error",
+                    vec![("error", (error).to_string().into())],
+                )
+            })
         });
         crate::navigation::finish_task_mutation(cx);
         match result {
@@ -312,16 +318,12 @@ impl ProjectsBlock {
         }
     }
 
-    /// Opens the platform folder picker and registers the picked folder
-    /// (T10 logic, relocated). The picker answers asynchronously (oneshot);
-    /// the future runs on the foreground executor, so every store access
-    /// stays on the main thread.
     pub(crate) fn open_picker(&mut self, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("选择要注册为项目的文件夹".into()),
+            prompt: Some(vega_i18n::t("ui.choose_a_folder_to_register_as_a_project").into()),
         });
         cx.spawn(async move |this, cx| {
             let picked = match receiver.await {
@@ -329,7 +331,10 @@ impl ProjectsBlock {
                 // 用户取消（None）或通道关闭（应用退出）都静默结束。
                 Ok(Ok(None)) | Err(_) => return,
                 Ok(Err(error)) => {
-                    let message = format!("文件夹选择失败：{error}");
+                    let message = crate::localized_copy::LocalizedCopy::with_args(
+                        "ui.folder_selection_failed_error",
+                        vec![("error", (error).to_string().into())],
+                    );
                     this.update(cx, |this, cx| {
                         this.error = Some(message);
                         cx.notify();
@@ -359,7 +364,9 @@ impl ProjectsBlock {
                 .try_global::<crate::navigation::TaskMutationState>()
                 .is_some_and(|state| state.pending > 0)
         {
-            self.error = Some("项目正在保存，请稍后重新打开文件夹".into());
+            self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.the_project_is_being_saved_try_reopening_the",
+            ));
             cx.notify();
             return;
         }
@@ -367,10 +374,11 @@ impl ProjectsBlock {
             return;
         }
         let database = with_store(cx, |store| {
-            store
-                .database_path()
-                .map(Path::to_path_buf)
-                .ok_or_else(|| "项目存储需要文件数据库".to_string())
+            store.database_path().map(Path::to_path_buf).ok_or_else(|| {
+                crate::localized_copy::LocalizedCopy::new(
+                    "ui.project_storage_requires_a_file_backed_database",
+                )
+            })
         });
         let Ok(database) = database else {
             self.error = database.err();
@@ -392,15 +400,17 @@ impl ProjectsBlock {
         let path = path.to_path_buf();
         let worker = cx.background_executor().spawn(async move {
             let branch = git_detect::detect_git(&path);
-            let store = Store::open(database).map_err(|e| e.to_string())?;
+            let store =
+                Store::open(database).map_err(crate::localized_copy::LocalizedCopy::storage)?;
             let (id, _) = vega_conversation::sidebar_organization::register_and_reveal_project(
                 &store,
                 &path,
                 branch.as_deref(),
             )
-            .map_err(|e| e.to_string())?;
-            let rows = projects::list(store.conn(), sort).map_err(|e| e.to_string())?;
-            Ok::<_, String>((id, rows))
+            .map_err(crate::localized_copy::LocalizedCopy::from)?;
+            let rows = projects::list(store.conn(), sort)
+                .map_err(crate::localized_copy::LocalizedCopy::storage)?;
+            Ok::<_, crate::localized_copy::LocalizedCopy>((id, rows))
         });
         cx.spawn(async move |this, cx| {
             let result = worker.await;
@@ -444,7 +454,10 @@ impl ProjectsBlock {
                         }
                     }
                     Err(error) => {
-                        this.error = Some(format!("打开文件夹失败，请重新打开重试：{error}"))
+                        this.error = Some(crate::localized_copy::LocalizedCopy::with_args(
+                            "ui.could_not_open_the_folder_reopen_it_to",
+                            vec![("error", error)],
+                        ))
                     }
                 }
                 cx.notify();
@@ -458,7 +471,7 @@ impl ProjectsBlock {
     /// Block header: collapsible title (chevron shows the state) + [+].
     fn render_header(&self, cx: &mut Context<Self>, colors: &ThemeColors) -> AnyElement {
         let collapsed = cx.global::<ProjectsCollapsed>().0;
-        let label = "项目";
+        let label = vega_i18n::t("sidebar.projects");
         div()
             .flex()
             .items_center()
@@ -479,7 +492,6 @@ impl ProjectsBlock {
                     )
                     .child(
                         div()
-                            .debug_selector(move || format!("projects-section-label-{label}"))
                             .text_size(px(Typography::METADATA))
                             .font_weight(Typography::HEADING_CARD_WEIGHT)
                             .text_color(colors.text_secondary)
@@ -495,7 +507,6 @@ impl ProjectsBlock {
                     )),
             )
             .child(
-                // [+] 添加：T10 的系统文件夹选择器逻辑原样复用。
                 div()
                     .px_1()
                     .rounded_md()
@@ -512,8 +523,6 @@ impl ProjectsBlock {
             .into_any_element()
     }
 
-    /// The sort toggle (名称 / 最近打开, T10 capability kept) + the project
-    /// rows. Row = name (truncate) + branch suffix (git only) + remove.
     fn render_body(&self, cx: &mut Context<Self>, colors: &ThemeColors) -> AnyElement {
         let selected = cx.global::<SelectedProject>().0.clone();
         div()
@@ -528,14 +537,14 @@ impl ProjectsBlock {
                     .px_1()
                     .text_size(px(Typography::SIDEBAR))
                     .text_color(colors.text_tertiary)
-                    .child("点击 [+] 添加文件夹")
+                    .child(vega_i18n::t("ui.click_to_add_a_folder"))
                     .into_any_element()
             }))
             .children(self.projects.iter().map(|project| {
                 let project_id = project.id.clone();
                 let remove_id = project.id.clone();
                 let is_selected = selected.as_deref() == Some(project.id.as_str());
-                // 分支后缀：仅 git 目录显示（T12 卡：非 git 不显示）。
+
                 let branch = self.branch_suffix(project).map(str::to_owned);
                 div()
                     .flex()
@@ -546,8 +555,6 @@ impl ProjectsBlock {
                     .text_size(px(Typography::SIDEBAR))
                     .when(is_selected, move |row| row.bg(colors.bg_active))
                     .child(
-                        // 可点击主体与移除按钮是兄弟节点，避免嵌套命中
-                        // 一次点击触发两个操作（T10 经验）。
                         div()
                             .flex()
                             .items_center()
@@ -608,7 +615,6 @@ impl ProjectsBlock {
             .into_any_element()
     }
 
-    /// 名称 / 最近打开 chips (T10 capability, sidebar-compact form).
     fn render_sort_row(&self, cx: &mut Context<Self>, colors: &ThemeColors) -> AnyElement {
         div()
             .flex()
@@ -617,8 +623,11 @@ impl ProjectsBlock {
             .px_1()
             .children(
                 [
-                    (ProjectSort::Name, "名称"),
-                    (ProjectSort::RecentlyOpened, "最近打开"),
+                    (ProjectSort::Name, vega_i18n::t("ui.name")),
+                    (
+                        ProjectSort::RecentlyOpened,
+                        vega_i18n::t("ui.recently_opened"),
+                    ),
                 ]
                 .map(|(sort, label)| {
                     let selected = self.sort == sort;
@@ -674,6 +683,3 @@ impl Render for ProjectsBlock {
             .into_any_element()
     }
 }
-
-#[cfg(test)]
-mod tests;

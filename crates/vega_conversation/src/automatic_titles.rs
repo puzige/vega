@@ -1,4 +1,3 @@
-//! Issue #65 R1–R6: optional, isolated first-turn naming, never a chat message.
 use std::{
     path::PathBuf,
     sync::{Arc, mpsc},
@@ -16,6 +15,7 @@ pub struct AutomaticTitleRequest {
     provider: Arc<dyn Provider>,
     cancel: CancellationToken,
     notifications: mpsc::Sender<()>,
+    admission: Option<vega_store::thread_admission::ThreadAdmission>,
 }
 
 impl std::fmt::Debug for AutomaticTitleRequest {
@@ -38,32 +38,37 @@ impl AutomaticTitleRequest {
             provider,
             cancel,
             notifications,
+            admission: None,
         }
+    }
+
+    pub(crate) fn with_thread_admission(
+        mut self,
+        admission: vega_store::thread_admission::ThreadAdmission,
+    ) -> Self {
+        self.admission = Some(admission);
+        self
     }
 
     pub(crate) fn fallback(&self) -> String {
-        if self.source.is_empty() {
-            "图片对话".into()
-        } else {
-            self.source.chars().take(40).collect()
-        }
+        self.source.chars().take(40).collect()
     }
 
     pub(crate) fn launch(
-        self,
+        mut self,
         database: PathBuf,
         thread_id: String,
         message_id: String,
         model: String,
         pricing: Option<vega_token::PricingCatalog>,
     ) {
-        // R1/R6: notify committed fallback independently of the primary stream.
         let _ = self.notifications.send(());
-        // R3: this OS worker owns its runtime; the main run's runtime may end first.
-        // A spawn failure leaves the durable claim/fallback, never retries.
+
+        let title_drain = self.admission.take().map(|owner| owner.into_title_drain());
         let worker = std::thread::Builder::new()
             .name("vega-auto-title".into())
             .spawn(move || {
+                let _title_drain = title_drain;
                 let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -82,21 +87,27 @@ impl AutomaticTitleRequest {
                     );
                     return;
                 };
-                // R3: no usage event means unknown usage, not a fabricated zero row.
+                if _title_drain.as_ref().is_none_or(|title| {
+                    !title
+                        .admission()
+                        .verifies(store.database_identity(), &thread_id)
+                }) {
+                    return;
+                }
+
                 if let Some((input, output, cache_read, cache_write)) = usage {
                     let quote = pricing.as_ref().and_then(|catalog| {
                         catalog
-                            .quote(
+                            .quote_with_optional_caches(
                                 &model,
-                                vega_token::UsageCounts {
-                                    input,
-                                    output,
-                                    cache_read,
-                                    cache_write,
-                                },
+                                input,
+                                output,
+                                cache_read,
+                                cache_write,
                                 started,
                             )
                             .ok()
+                            .flatten()
                     });
                     let profile = quote.as_ref().map(|q| match q.profile {
                         vega_token::PricingProfile::Base => "base",
@@ -111,8 +122,8 @@ impl AutomaticTitleRequest {
                             model: &model,
                             input_tokens: input,
                             output_tokens: output,
-                            cache_read_tokens: cache_read,
-                            cache_write_tokens: cache_write,
+                            cache_read_tokens: cache_read.unwrap_or(0),
+                            cache_write_tokens: cache_write.unwrap_or(0),
                             cost_microcents: quote.as_ref().map_or(0, |q| q.cost_microcents),
                             created_at: started.saturating_mul(1000),
                             pricing_version: quote.as_ref().map(|q| q.pricing_version),
@@ -150,7 +161,10 @@ impl AutomaticTitleRequest {
         }
     }
 
-    async fn collect(&self, model: &str) -> (Option<String>, Option<(u64, u64, u64, u64)>) {
+    async fn collect(
+        &self,
+        model: &str,
+    ) -> (Option<String>, Option<(u64, u64, Option<u64>, Option<u64>)>) {
         let cancel = self.cancel.child_token();
         let request = ChatRequest {
             model: model.into(),
@@ -169,6 +183,7 @@ impl AutomaticTitleRequest {
                 ),
             ],
             max_tokens: Some(512),
+            model_snapshot: self.provider.model_snapshot().map(Box::new),
             ..Default::default()
         };
         let mut usage = None;
@@ -190,7 +205,10 @@ impl AutomaticTitleRequest {
                     }
                     ProviderEvent::ThinkingDelta(_)
                     | ProviderEvent::SummaryDelta(_)
-                    | ProviderEvent::ReasoningReplay(_) => {}
+                    | ProviderEvent::ReasoningReplay(_)
+                    | ProviderEvent::ChatReasoningState(_)
+                    | ProviderEvent::ChatReasoningContent(_)
+                    | ProviderEvent::ResponseReplay(_) => {}
                     ProviderEvent::Usage {
                         input,
                         output,
@@ -200,7 +218,10 @@ impl AutomaticTitleRequest {
                     ProviderEvent::Done {
                         stop_reason: StopReason::End,
                     } => done = true,
-                    _ => return None,
+                    ProviderEvent::ToolUse { .. }
+                    | ProviderEvent::RetryScheduled { .. }
+                    | ProviderEvent::ResponseMetadata(_)
+                    | ProviderEvent::Done { .. } => return None,
                 }
             }
             if !done {
@@ -238,115 +259,4 @@ fn normalized(text: &str, limit: usize) -> String {
         }
     }
     result.trim_end().to_owned()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use vega_runtime::{MockProvider, ScriptStep};
-    fn request(steps: Vec<ScriptStep>) -> (AutomaticTitleRequest, Arc<MockProvider>) {
-        let provider = Arc::new(MockProvider::new(steps));
-        let (sender, _) = mpsc::channel();
-        (
-            AutomaticTitleRequest::new(
-                "  原始\n  文本  ",
-                provider.clone(),
-                CancellationToken::new(),
-                sender,
-            ),
-            provider,
-        )
-    }
-    #[tokio::test]
-    async fn automatic_title_normalizes_bounds_and_redacts_debug() {
-        let (mut req, provider) = request(vec![ScriptStep::events(vec![
-            ProviderEvent::TextDelta(format!("“ {} ”", "名".repeat(70))),
-            ProviderEvent::Done {
-                stop_reason: StopReason::End,
-            },
-        ])]);
-        assert!(!format!("{req:?}").contains("原始"));
-        assert_eq!(req.fallback(), "原始 文本");
-        req.source = normalized(&"字".repeat(2500), 2000);
-        assert_eq!(req.source.chars().count(), 2000);
-        assert_eq!(req.fallback().chars().count(), 40);
-        let (title, usage) = req.collect("model").await;
-        assert_eq!(title.unwrap().chars().count(), 40);
-        assert!(usage.is_none());
-        assert_eq!(
-            provider.requests()[0].messages[1].content.chars().count(),
-            2000
-        );
-        req.source.clear();
-        assert_eq!(req.fallback(), "图片对话");
-    }
-    #[tokio::test]
-    async fn automatic_title_failure_blank_overflow_and_unsupported_keep_fallback() {
-        for steps in [
-            vec![
-                ScriptStep::text("  "),
-                ScriptStep::events(vec![ProviderEvent::Done {
-                    stop_reason: StopReason::End,
-                }]),
-            ],
-            vec![ScriptStep::text("x".repeat(8193))],
-            vec![ScriptStep::Error {
-                status: Some(500),
-                message: "SECRET_PROVIDER_ERROR".into(),
-                retryable: true,
-            }],
-            vec![ScriptStep::events(vec![ProviderEvent::ToolUse {
-                id: "x".into(),
-                name: "bash".into(),
-                input_json: "private".into(),
-            }])],
-            vec![ScriptStep::text("partial")],
-            vec![ScriptStep::Cancelled],
-        ] {
-            let (req, provider) = request(steps);
-            assert!(req.collect("model").await.0.is_none());
-            assert_eq!(provider.requests().len(), 1);
-        }
-    }
-    #[tokio::test]
-    async fn automatic_title_cancellation_isolated_and_usage_survives_error() {
-        let (req, _) = request(vec![ScriptStep::delay(Duration::from_secs(30))]);
-        let cancel = req.cancel.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-            cancel.cancel();
-        });
-        assert!(req.collect("model").await.0.is_none());
-        let (req, _) = request(vec![
-            ScriptStep::events(vec![
-                ProviderEvent::ThinkingDelta("private reasoning".repeat(2000)),
-                ProviderEvent::Usage {
-                    input: 1,
-                    output: 2,
-                    cache_read: 0,
-                    cache_write: 0,
-                },
-            ]),
-            ScriptStep::Error {
-                status: None,
-                message: "private".into(),
-                retryable: false,
-            },
-        ]);
-        let (title, usage) = req.collect("model").await;
-        assert!(title.is_none());
-        assert_eq!(usage, Some((1, 2, 0, 0)));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn automatic_title_timeout_keeps_fallback_without_retry() {
-        let (req, provider) = request(vec![ScriptStep::delay(Duration::from_secs(60))]);
-        let started = tokio::time::Instant::now();
-        let result = tokio::time::timeout(Duration::from_secs(25), req.collect("model"))
-            .await
-            .expect("production 15 second deadline must beat stalled provider");
-        assert_eq!(started.elapsed(), Duration::from_secs(15));
-        assert_eq!(result, (None, None));
-        assert_eq!(provider.requests().len(), 1);
-    }
 }

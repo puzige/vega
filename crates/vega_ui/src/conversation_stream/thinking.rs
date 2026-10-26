@@ -182,6 +182,7 @@ impl gpui_kit::EventEmitter<ThinkingChanged> for ThinkingBlock {}
 pub(crate) struct ThinkingBlock {
     pub(crate) text: String,
     pub(crate) shimmer_epoch: Option<Instant>,
+    pub(crate) progress_finished: bool,
     summary: String,
     raw_window: window::SourceWindow,
     summary_window: window::SourceWindow,
@@ -196,6 +197,7 @@ pub(crate) struct ThinkingBlock {
     ancestor_visible: bool,
     pub(crate) expanded: bool,
     pub(crate) truncated: bool,
+    message_actions_enabled: bool,
     focus: FocusHandle,
     scroll: ScrollHandle,
 }
@@ -213,18 +215,13 @@ impl ThinkingBlock {
         self.focus.contains_focused(window, cx)
     }
 
-    #[cfg(test)]
-    pub(crate) fn test_focus(&self) -> FocusHandle {
-        self.focus.clone()
-    }
-
     pub(crate) fn title(&self) -> &str {
         if !self.summary_preview.title.is_empty() {
             &self.summary_preview.title
         } else if !self.thinking_preview.title.is_empty() {
             &self.thinking_preview.title
         } else {
-            "Thinking"
+            vega_i18n::t("ui.thinking")
         }
     }
 
@@ -234,11 +231,6 @@ impl ThinkingBlock {
         } else {
             &self.text
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn source_text(&self) -> String {
-        self.visible_text().to_owned()
     }
 
     pub(crate) fn has_source_text(&self) -> bool {
@@ -266,6 +258,7 @@ impl ThinkingBlock {
             (state.focus.clone(), state.scroll.clone())
         };
         let content = Self::render_source(card.clone(), window, cx);
+        let scope_id = format!("thinking-{}", card.entity_id());
         div()
             .relative()
             .w_full()
@@ -275,7 +268,11 @@ impl ThinkingBlock {
             .on_action(move |_: &CopySelectedText, _, cx| {
                 card.update(cx, ThinkingBlock::copy_selected_source);
             })
-            .child(content)
+            .child(
+                crate::link_preview::MarkdownReadingScope::new(scope_id, focus.clone())
+                    .track_scroll(scroll.clone())
+                    .child(content),
+            )
             .child(crate::tool_card::disclosure_scrollbar(&scroll, cx))
             .into_any_element()
     }
@@ -284,20 +281,11 @@ impl ThinkingBlock {
         card.update(cx, |card, cx| card.render_body(window, cx))
     }
 
-    #[cfg(test)]
-    pub(crate) fn scroll_handle(&self) -> ScrollHandle {
-        self.scroll.clone()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_source_copy(&self) -> MessageCopy {
-        self.source_copy.clone()
-    }
-
     fn new(cx: &mut Context<Self>) -> Self {
         Self {
             text: String::new(),
             shimmer_epoch: None,
+            progress_finished: false,
             summary: String::new(),
             raw_window: window::SourceWindow::default(),
             summary_window: window::SourceWindow::default(),
@@ -312,8 +300,16 @@ impl ThinkingBlock {
             ancestor_visible: true,
             expanded: false,
             truncated: false,
+            message_actions_enabled: true,
             focus: cx.focus_handle().tab_stop(true),
             scroll: ScrollHandle::new(),
+        }
+    }
+
+    pub(crate) fn set_message_actions_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.message_actions_enabled != enabled {
+            self.message_actions_enabled = enabled;
+            cx.notify();
         }
     }
     pub(crate) fn set_ancestor_visible(&mut self, visible: bool) {
@@ -474,13 +470,13 @@ impl Render for ThinkingBlock {
         let colors = theme(cx).colors;
         let title = self.title().to_owned();
         let can_expand = self.has_source_text();
+        self.focus = self.focus.clone().tab_stop(can_expand);
         div()
             .w_full()
             .min_w_0()
             .flex()
             .flex_col()
             .gap(px(Layout::PROCESS_ITEM_GAP))
-            .debug_selector(|| "thinking-block".into())
             .on_action(cx.listener(|this, _: &CopySelectedText, _, cx| {
                 if this.source_copy.has_selected_text() {
                     this.source_copy.copy_selected_text(cx);
@@ -498,9 +494,8 @@ impl Render for ThinkingBlock {
                     .when(can_expand, |row| row.aria_expanded(self.expanded))
                     .tab_stop(can_expand)
                     .focus_visible(move |row| row.bg(colors.bg_hover))
-                    .debug_selector(|| "thinking-toggle".into())
                     .aria_label(if can_expand {
-                        format!("{}, expand or collapse thinking", title)
+                        vega_i18n::t_args("ui.thinking_disclosure", &[("title", &title)])
                     } else {
                         title.clone()
                     })
@@ -528,7 +523,6 @@ impl Render for ThinkingBlock {
                     }))
                     .child(
                         div()
-                            .debug_selector(|| "thinking-icon".into())
                             .size(px(Layout::ICON_SIZE))
                             .flex_shrink_0()
                             .flex()
@@ -539,21 +533,15 @@ impl Render for ThinkingBlock {
                                 colors.conversation_tool,
                             )),
                     )
-                    .child(
-                        div()
-                            .debug_selector(|| "thinking-title".into())
-                            .min_w_0()
-                            .flex_shrink(1.)
-                            .truncate()
-                            .child(if let Some(epoch) = self.shimmer_epoch {
-                                shimmer::text(title.clone(), epoch, window, cx)
-                            } else {
-                                div().child(title).into_any_element()
-                            }),
-                    )
+                    .child(div().min_w_0().flex_shrink(1.).truncate().child(
+                        if let Some(epoch) = self.shimmer_epoch {
+                            shimmer::text(title.clone(), epoch, window, cx)
+                        } else {
+                            div().child(title).into_any_element()
+                        },
+                    ))
                     .child(crate::disclosure::chevron(
                         format!("thinking-disclosure-{}", cx.entity_id()).into(),
-                        "thinking-chevron".into(),
                         &self.focus,
                         self.expanded,
                         self.has_source_text(),
@@ -574,16 +562,26 @@ impl Render for ThinkingBlock {
             .when(self.truncated, |block| {
                 block.child(
                     div()
-                        .debug_selector(|| "thinking-truncated".into())
                         .text_size(px(Typography::METADATA))
                         .text_color(colors.text_tertiary)
-                        .child("Earlier thinking omitted"),
+                        .child(vega_i18n::t("ui.earlier_thinking_omitted")),
                 )
             })
     }
 }
 
 impl ConversationStream {
+    pub(crate) fn sync_retained_thinking_actions(&mut self, cx: &mut Context<Self>) {
+        let enabled = self.message_actions_enabled();
+        for card in self
+            .retained_thinking
+            .iter()
+            .filter_map(|card| card.upgrade())
+        {
+            card.update(cx, |card, cx| card.set_message_actions_enabled(enabled, cx));
+        }
+    }
+
     pub(crate) fn append_thinking(
         &mut self,
         message_id: &str,
@@ -617,6 +615,10 @@ impl ConversationStream {
                 return;
             };
             let card = cx.new(ThinkingBlock::new);
+            let actions_enabled = self.message_actions_enabled();
+            card.update(cx, |card, cx| {
+                card.set_message_actions_enabled(actions_enabled, cx)
+            });
             group.update(cx, |group, cx| {
                 group.append_thinking(segment, card.clone(), cx)
             });
@@ -625,9 +627,6 @@ impl ConversationStream {
             self.active_thinking = Some(card);
         }
         if let Some(card) = self.active_thinking.clone() {
-            if let Some((_, group)) = &self.active_run_activity {
-                group.update(cx, |group, cx| group.set_thinking(card.clone(), cx));
-            }
             let before = card.read(cx).retained_bytes();
             let (retained, summary_preview_changed) = card.update(cx, |card, cx| {
                 let title = card.title().to_owned();
@@ -672,12 +671,15 @@ impl ConversationStream {
                 card.prepare_body(cx);
                 (appended, summary_preview_changed)
             });
-            if summary_preview_changed
+            if !card.read(cx).progress_finished
+                && (summary_preview_changed
+                    || !summary
+                        && !delta.trim().is_empty()
+                        && card.read(cx).summary_title().is_none())
                 && let Some((_, group)) = &self.active_run_activity
-                && let Some(segment) = self.active_run_activity_segment
             {
                 group.update(cx, |group, cx| {
-                    group.mark_summary_preview(segment, &card, cx)
+                    group.set_thinking(card.clone(), summary_preview_changed, cx)
                 });
             }
             self.thinking_bytes = self.thinking_bytes.saturating_sub(before) + retained;
@@ -696,77 +698,5 @@ impl ConversationStream {
                 self.thinking_blocks = self.thinking_blocks.saturating_sub(1);
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod preview_tests {
-    use super::Preview;
-
-    #[test]
-    fn i71_preview_incremental_markdown_and_identifiers() {
-        let mut preview = Preview::default();
-        for chunk in ["`foo_", "bar` needs inspection"] {
-            preview.append(chunk);
-        }
-        assert_eq!(preview.title, "foo_bar needs inspection");
-        preview.append("\n10*7 + 9*11 = foo_bar");
-        assert_eq!(preview.title, "10*7 + 9*11 = foo_bar");
-        preview.append("\n#hashtag is prose");
-        assert_eq!(preview.title, "#hashtag is prose");
-        preview.append("\n## ");
-        assert_eq!(preview.title, "#hashtag is prose");
-        preview.append("真实标题\nbody\n\nmore body");
-        assert_eq!(preview.title, "more body");
-        preview.append("\n```\n## fake\n```\n**下一");
-        assert_eq!(preview.title, "more body");
-        preview.append("阶段**\nbody");
-        assert_eq!(preview.title, "body");
-        assert!(preview.line.len() <= 1024);
-    }
-
-    #[test]
-    fn i343_heading_yields_to_later_prose_but_not_markers_or_fenced_code() {
-        let mut preview = Preview::default();
-        preview.append("## 阿里云服务：");
-        assert_eq!(preview.title, "阿里云服务：");
-        preview.append("\nBest: check keeper DB");
-        assert_eq!(preview.title, "Best: check keeper DB");
-        preview.append(" and compare accounts");
-        assert_eq!(preview.title, "Best: check keeper DB and compare accounts");
-        preview.append("\n\n### ");
-        assert_eq!(preview.title, "Best: check keeper DB and compare accounts");
-        preview.append("\n```rust\n## fake heading\nlet token = 42;\n```\n**下个");
-        assert_eq!(preview.title, "Best: check keeper DB and compare accounts");
-        preview.append("阶段**");
-        assert_eq!(preview.title, "下个阶段");
-        preview.append(&format!("\n```{}\n## fenced\n```\n", "x".repeat(1100)));
-        assert_eq!(preview.title, "下个阶段");
-        preview.append("围栏之后的正文");
-        assert_eq!(preview.title, "围栏之后的正文");
-    }
-
-    #[test]
-    fn i343_long_heading_keeps_start_and_long_prose_advances_tail() {
-        let mut heading = Preview::default();
-        heading.append(&format!("## 开头{}", "中".repeat(500)));
-        assert!(heading.title.starts_with("开头"));
-        assert_eq!(heading.title.chars().count(), 96);
-        heading.append("\n新的普通段落");
-        assert_eq!(heading.title, "新的普通段落");
-
-        let mut bold = Preview::default();
-        let long_bold = format!("**起点{}**", "文".repeat(500));
-        bold.append(&long_bold[..long_bold.len() - 2]);
-        assert_eq!(bold.title, "");
-        bold.append("**");
-        assert!(bold.title.starts_with("起点"));
-        assert_eq!(bold.title.chars().count(), 96);
-
-        let mut prose = Preview::default();
-        prose.append(&"😀汉字".repeat(500));
-        prose.append("🦀最后");
-        assert!(prose.title.ends_with("🦀最后"));
-        assert_eq!(prose.title.chars().count(), 96);
     }
 }

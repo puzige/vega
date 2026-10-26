@@ -1,59 +1,40 @@
 use super::context_usage::ContextUsageDisplay;
 use super::*;
 use crate::interaction::InteractionExt;
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade, ScrollFadeTopGuards};
 use gpui_kit::{Anchor, AnchoredPositionMode, PathBuilder, anchored, canvas, point};
 // Re-exported so the permission picker's copy is testable from the suite the
 // same way `PICKER_EFFORT_LABEL`/`PICKER_LIST_HEADING` are.
 use super::composer_actions::{
-    PERMISSION_ORDER, permission_description, permission_icon, permission_icon_selector,
-    permission_is_warning, permission_label,
+    PERMISSION_ORDER, permission_description, permission_icon, permission_is_warning,
+    permission_label,
 };
 pub(crate) use super::composer_actions::{PERMISSION_PICKER_LEARN_MORE, PERMISSION_PICKER_TITLE};
 
-/// R59 R7: the trigger label while the tier slider (level one) is showing.
-///
-/// The reference implementation's `composer.modelPicker.selectEffort.label`
-/// ("Select effort") is shown "while adjusting the reasoning effort of an
-/// explicitly selected model". Vega's UI is Chinese and its existing wording
-/// for this concept is 档位/强度 (`settings/reasoning_render.rs`, R57 §2.2),
-/// so 选择强度 is the in-convention counterpart rather than a literal
-/// translation.
-pub(crate) const PICKER_EFFORT_LABEL: &str = "选择强度";
+pub(crate) const PICKER_EFFORT_LABEL: &str = "ui.select_effort";
 
-/// R59 R2: the level-two heading. The reference implementation's
-/// `composer.modelPicker.modelList.heading` is "Select model".
-pub(crate) const PICKER_LIST_HEADING: &str = "选择模型";
+pub(crate) const PICKER_LIST_HEADING: &str = "ui.select_model";
 
-/// R59 R7: the model trigger's label for one composer state.
-///
-/// Split out of the view so the rule is directly testable, and so the four
-/// states cannot drift from their documentation:
-/// 1. a durable save in flight shows the bounded pending text;
-/// 2. a model with no name yet shows the generic 模型 placeholder;
-/// 3. **the slider level shows [`PICKER_EFFORT_LABEL`]** — this is the R59 R7
-///    case, the one the reference implementation covers with
-///    `composer.modelPicker.selectEffort.label`;
-/// 4. every other state shows the selected model name, exactly as before.
 pub(crate) fn model_trigger_label(
     model: &str,
     level: ModelPickerLevel,
     save_pending: bool,
 ) -> &str {
     if save_pending {
-        return "保存中…";
+        return vega_i18n::t("ui.saving");
     }
     if model.is_empty() {
-        return "模型";
+        return vega_i18n::t("ui.model");
     }
     if level == ModelPickerLevel::Slider {
-        return PICKER_EFFORT_LABEL;
+        return vega_i18n::t(PICKER_EFFORT_LABEL);
     }
     model
 }
 
 impl ConversationStream {
-    fn emit_open_diff(&mut self, cx: &mut Context<Self>) {
-        if self.thread.is_standalone() {
+    pub(super) fn emit_open_diff(&mut self, cx: &mut Context<Self>) {
+        if self.reading_preview || self.thread.is_standalone() {
             return;
         }
         cx.emit(OpenWorkspaceDiffRequested {
@@ -99,7 +80,6 @@ impl ConversationStream {
             gpui_kit::linear_color_stop(colors.bg_base, 1.),
         );
         div()
-            .debug_selector(|| "conversation-foreground".into())
             .absolute()
             .bottom_0()
             .left_0()
@@ -131,7 +111,6 @@ impl ConversationStream {
             )
             .child(
                 div()
-                    .debug_selector(|| "conversation-bottom-fade".into())
                     .absolute()
                     .top(px(
                         Layout::READING_NAVIGATION_HEIGHT - Layout::CONVERSATION_BOTTOM_FADE_HEIGHT
@@ -144,7 +123,6 @@ impl ConversationStream {
             .child(self.render_resume_tail(cx))
             .child(
                 div()
-                    .debug_selector(|| "conversation-foreground-surface".into())
                     .w_full()
                     .flex()
                     .flex_col()
@@ -174,7 +152,6 @@ impl ConversationStream {
     fn render_resume_tail(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         div()
-            .debug_selector(|| "conversation-reading-navigation".into())
             .h(px(Layout::READING_NAVIGATION_HEIGHT))
             .flex_shrink_0()
             .py(px(Layout::READING_NAVIGATION_PADDING))
@@ -184,15 +161,16 @@ impl ConversationStream {
                 row.child(
                     div()
                         .id("scroll-to-bottom")
-                        .debug_selector(|| "scroll-to-bottom".into())
-                        .aria_label("回到底部")
+                        .aria_label(vega_i18n::t("ui.back_to_bottom"))
                         .track_focus(&self.resume_tail_focus)
                         .tab_stop(true)
                         .key_context("ResumeTailButton")
                         .on_action(cx.listener(Self::on_resume_tail))
                         .flex_shrink_0()
                         .size(px(Layout::SCROLL_TO_BOTTOM_SIZE))
-                        .tooltip(|_, cx| crate::icons::tooltip("回到底部", cx))
+                        .tooltip(|_, cx| {
+                            crate::icons::tooltip(vega_i18n::t("ui.back_to_bottom"), cx)
+                        })
                         .rounded(px(Layout::SCROLL_TO_BOTTOM_SIZE / 2.0))
                         .border_1()
                         .border_color(colors.border_subtle)
@@ -220,16 +198,6 @@ impl ConversationStream {
             .into_any_element()
     }
 
-    /// Renders the R19 composer: one growing input followed by one action row
-    /// with the existing context, permission status, model and send/stop
-    /// handlers. Project identity and branch controls live in the window
-    /// shell, so this surface never duplicates them or invents state.
-    ///
-    /// R57 P2b (spec §2.3 R1–R5) freezes the bottom row to
-    /// `+` | permission status | spacer | model | send/stop: the `Execute`
-    /// dropdown and the thinking chip are gone, and the permission control is
-    /// static text (not clickable). Thread mode and permission mode stay
-    /// reachable through the `+` menu (`composer_actions.rs`).
     fn render_composer(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let file_retry_visible = self.file_selector_wanted && self.file_index_failure.is_some();
@@ -237,21 +205,10 @@ impl ConversationStream {
             self.file_selector.is_open() || self.file_selector_wanted || self.file_index_loading;
         let can_send = self.can_submit_message(cx);
         div()
-            .debug_selector(|| "composer-wrapper".into())
             .px(px(Layout::CONVERSATION_PADDING))
             .pt(px(Layout::COMPOSER_PADDING_TOP))
             .pb(px(Layout::COMPOSER_PADDING_BOTTOM))
             .flex_shrink_0()
-            // R61 R2: the composer column no longer hosts the picker's
-            // floating layers — each layer is mounted inside the model
-            // trigger's own `.relative()` wrapper (`render_model_selector`),
-            // which is what makes the card hug the trigger. R59 pinned them
-            // here instead, to the column's top edge, to keep the R49 utility
-            // bar clear; the user ruled that trade-off out (R61 §2), so the
-            // column keeps no picker-related positioning role.
-            // R49: the utility bar is a real sibling above the card on the
-            // new-task page (zero overlap, no negative margin). The session
-            // page renders the card alone, exactly like Codex.
             .when(self.utility_bar_visible(cx), |column| {
                 column.child(self.render_composer_utility_bar(window, cx))
             })
@@ -261,13 +218,15 @@ impl ConversationStream {
                     .filter(|_| !self.controller_error_is_run_notice())
                     .map(|error| {
                         div()
-                            .debug_selector(|| "conversation-controller-error".to_string())
                             .w_full()
                             .max_w(px(Layout::COMPOSER_MAX_WIDTH))
                             .mx_auto()
                             .mt_1()
                             .mb_2()
-                            .child(render_rows::plain_error_notice(error, colors.danger))
+                            .child(render_rows::plain_error_notice(
+                                error.render(),
+                                colors.danger,
+                            ))
                     }),
             )
             .when(self.thread.backend == TaskBackend::Native, |column| {
@@ -275,12 +234,13 @@ impl ConversationStream {
             })
             .when(
                 self.thread.backend == TaskBackend::Native
-                    && !self.pending_queue.messages.is_empty(),
+                    && !self.visible_pending_messages().is_empty(),
                 |column| column.child(self.render_pending_queue(cx)),
             )
+            .children(self.active_user_question.clone())
+            .child(self.render_automation(cx))
             .child(
                 div()
-                    .debug_selector(|| "composer-shell".into())
                     .on_drop(cx.listener(Self::drop_images))
                     .w_full()
                     .max_w(px(Layout::COMPOSER_MAX_WIDTH))
@@ -331,10 +291,6 @@ impl ConversationStream {
                         div()
                             .relative()
                             .w_full()
-                            // 选择器打开时的按键作用域（A2-12）：Failed
-                            // 使用独立 Retry 上下文，避免隐藏后仍吞掉
-                            // Composer 的按键；其余可见状态由 FileSelect
-                            // 先处理 Up/Down/Enter/Tab/Esc。
                             .when(file_selector_active && !file_retry_visible, |row| {
                                 row.key_context("FileSelect")
                             })
@@ -355,17 +311,16 @@ impl ConversationStream {
                             .gap_2()
                             .when(self.compact_workspace, |row| row.gap_1())
                             .child(
-                                crate::icons::icon_button(
+                                crate::icons::localized_icon_button(
                                     crate::icons::Icon::Plus,
-                                    "添加上下文或切换模式",
+                                    "ui.add_context_or_change_mode",
                                     colors,
                                     cx.listener(|this, _, window, cx| {
                                         this.open_composer_actions(window, cx)
                                     }),
                                 )
                                 .size(px(Layout::TITLEBAR_CONTROL_SIZE))
-                                .track_focus(&self.action_focus[0])
-                                .debug_selector(|| "composer-add".into()),
+                                .track_focus(&self.action_focus[0]),
                             )
                             .when(self.thread.backend == TaskBackend::Native, |row| {
                                 row.child(self.render_permission_status(cx))
@@ -377,25 +332,27 @@ impl ConversationStream {
                             .when(self.thread.backend == TaskBackend::Native, |row| {
                                 row.child(self.render_model_controls(window, cx))
                             })
+                            .when(self.shows_running_send(cx), |row| {
+                                row.child(self.render_running_send(can_send, cx))
+                            })
                             .when(
-                                self.actions.running
-                                    && self.thread.backend == TaskBackend::Native
-                                    && (!self.input.read(cx).text().is_empty()
-                                        || !self.attachments.is_empty()),
-                                |row| row.child(self.render_running_send(can_send, cx)),
-                            )
-                            .when(
-                                self.actions.running || self.composer_submit_pending,
+                                (self.actions.running
+                                    || self.composer_submit_pending
+                                    || self.ordinary_pending_before_run()
+                                    || self.has_cancellable_queue_wait())
+                                    && !self.shows_running_send(cx),
                                 |row| row.child(self.render_composer_stop(cx)),
                             )
                             .when(
-                                !self.actions.running && !self.composer_submit_pending,
+                                !self.actions.running
+                                    && !self.composer_submit_pending
+                                    && !self.ordinary_pending_before_run()
+                                    && !self.has_cancellable_queue_wait(),
                                 |row| {
                                     row.child(
                                         div()
                                             .id("composer-send")
-                                            .debug_selector(|| "composer-send".into())
-                                            .aria_label("发送")
+                                            .aria_label(vega_i18n::t("ui.send"))
                                             .track_focus(&self.action_focus[1])
                                             .tab_stop(true)
                                             .flex_shrink_0()
@@ -443,53 +400,16 @@ impl ConversationStream {
                     ),
             )
             .child(self.render_active_skills(cx))
-            .children(self.mcp_warning.clone().map(|warning| {
-                div()
-                    .debug_selector(|| "conversation-mcp-warning".to_string())
-                    .w_full()
-                    .max_w(px(Layout::COMPOSER_MAX_WIDTH))
-                    .mx_auto()
-                    .mt_1()
-                    .child(render_rows::status_notice(warning, colors.warning, &colors))
-            }))
             .into_any_element()
     }
 
-    /// R57 P2b (spec §2.3 R2/R5) / R62 R7 / R63: the permission mode as a
-    /// clickable status chip.
-    ///
-    /// Glyph, ink and label all come from the same projections the picker's
-    /// rows read (`permission_icon`, `permission_is_warning`,
-    /// `permission_label`), so the two surfaces can never contradict each
-    /// other: 只读 shows the hand, 确认 the shield, and only 自动 — the
-    /// unrestricted mode — carries the warning triangle and the warning ink.
-    /// R63 fixes the one place that had drifted: this chip hard-coded
-    /// `Icon::Warning` plus `colors.warning`, so it showed a warning triangle
-    /// in every mode while the picker's rows already showed the right glyph.
-    ///
-    /// Every non-warning mode reads in `text_secondary`, the ink the `+`
-    /// button and the model trigger beside it in this row use, so the chip
-    /// stays one of the row's neutral controls instead of carrying a status
-    /// colour of its own.
-    ///
-    /// R62 R7 reverses R57 P2b's "static text" decision: the user's screenshot
-    /// proves the reference implementation's `Full access` label is a real
-    /// affordance that opens a three-option picker (R62 §7 records the wrong
-    /// reasoning chain behind P2b). The chip therefore keeps its exact frozen
-    /// geometry and gains the interaction, and the picker layer hangs from a
-    /// `.relative()` wrapper exactly like the model trigger's layer does
-    /// (`render_model_selector`), so the frozen bottom row's shape is
-    /// unchanged: an absolutely positioned child contributes nothing to the
-    /// wrapper's measured size.
     fn render_permission_status(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let mode = self.thread.permission_mode;
         let label = permission_label(mode);
-        // R63: the glyph is chosen once, and both the painted icon and the
-        // harness-visible tag below are that same value — so the tag can never
-        // name one icon while the chip paints another.
+
         let glyph = permission_icon(mode);
-        // R63: one rule decides both inks, and it is the picker's own rule.
+
         let ink = if permission_is_warning(mode) {
             colors.warning
         } else {
@@ -502,39 +422,29 @@ impl ConversationStream {
             .child(
                 div()
                     .id("composer-permission-status")
-                    .debug_selector(|| "composer-permission-status".into())
-                    // R62 R7: the same guard the model trigger carries. The
-                    // conversation root's own mouse-down closes any open
-                    // picker, so without this the chip's mouse-up toggle would
-                    // reopen the layer the same click had just closed.
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .flex_shrink_0()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .px_2()
-                    .h(px(Layout::TITLEBAR_CONTROL_SIZE))
+                    .px(px(Layout::COMPOSER_TEXT_TRIGGER_PADDING_X))
+                    .h(px(Layout::COMPOSER_TEXT_TRIGGER_HEIGHT))
+                    .min_w(px(Layout::COMPOSER_TEXT_TRIGGER_HEIGHT))
                     .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
-                    .rounded(px(Layout::DISCLOSURE_RADIUS))
+                    .rounded(px(Layout::COMPOSER_TEXT_TRIGGER_RADIUS))
                     .text_size(px(Typography::BODY))
                     .text_color(ink)
                     .cursor_pointer()
                     .interactive(colors, true, self.permission_picker_open)
-                    .tooltip(move |_, cx| crate::icons::tooltip("切换权限模式", cx))
+                    .tooltip(move |_, cx| {
+                        crate::icons::tooltip(vega_i18n::t("ui.change_permission_mode"), cx)
+                    })
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(Self::toggle_permission_picker),
                     )
-                    // R63: the wrapper exists only so the test harness can read
-                    // *which* glyph the chip painted — an `AnyElement` icon
-                    // carries no selector of its own. It is a transparent flex
-                    // box hugging the 16px icon (the same technique the
-                    // slider's chevron uses), so the chip's frozen geometry is
-                    // unchanged, and the tag is derived from `glyph` itself
-                    // rather than from a second match on the mode.
                     .child(
                         div()
-                            .debug_selector(move || permission_icon_selector(glyph).to_string())
                             .flex()
                             .flex_shrink_0()
                             .child(crate::icons::icon(glyph, ink)),
@@ -556,7 +466,6 @@ impl ConversationStream {
         };
         div()
             .id("composer-backend-status")
-            .debug_selector(|| "composer-backend-status".into())
             .aria_label(label)
             .min_w_0()
             .flex_shrink_1()
@@ -571,35 +480,6 @@ impl ConversationStream {
             .into_any_element()
     }
 
-    /// R62 R8: the permission picker — the reference implementation's
-    /// three-option approvals dropdown.
-    ///
-    /// Structure (2026-09-14 screenshot):
-    ///
-    /// ```text
-    /// How should ChatGPT actions be approved?          Learn more
-    ///   <icon> 只读 / 每次都询问
-    ///   <icon> 确认 / 仅对潜在不安全操作询问
-    ///   <icon> 自动 / 自动批准，使用沙箱
-    ///   <icon> 完全访问 / 不使用沙箱，危险操作仍需确认          ✓
-    /// ```
-    ///
-    /// Every row's icon, label and description come from the shared
-    /// `permission_*` projections in `composer_actions.rs`, and the rows are
-    /// ordered by the same [`PERMISSION_ORDER`] the `+` menu uses, so the two
-    /// entries can never disagree about what a mode is called or which one is
-    /// current (R62 R9).
-    ///
-    /// The layer is anchored to the chip's own box (`bottom: 100%` plus the
-    /// frozen [`Layout::COMPOSER_PICKER_TRIGGER_GAP`], `left_0()`), the same
-    /// technique R61 settled on for the model card. It opens **upward**,
-    /// because the composer sits at the window's bottom edge.
-    ///
-    /// The title row's `了解更多` is plain secondary text: the reference
-    /// implementation opens its docs page, and Vega has no such route, so the
-    /// row renders the label without inventing a target (R62 R11's rule for
-    /// actions with no implementation path — the *picker's own* actions are
-    /// all real; only this link has no Vega counterpart).
     fn render_permission_picker(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let current = self.thread.permission_mode;
@@ -621,7 +501,6 @@ impl ConversationStream {
                 };
                 div()
                     .id(("composer-permission-option", index))
-                    .debug_selector(move || format!("composer-permission-option-{}", mode.as_str()))
                     .min_h(px(44.))
                     .flex_shrink_0()
                     .px_2()
@@ -630,9 +509,6 @@ impl ConversationStream {
                     .items_center()
                     .gap_2()
                     .rounded_md()
-                    // R50 contract A: on the picker's white `bg_elevated`
-                    // surface the selection uses the derived 5%-ink fill, not
-                    // the sidebar's pre-composited `bg_active` constant.
                     .when(selected, |row| {
                         row.bg(crate::menu_list::selected_row_bg(colors))
                     })
@@ -674,24 +550,16 @@ impl ConversationStream {
                             .flex()
                             .justify_end()
                             .when(selected, |marker| {
-                                marker
-                                    .debug_selector(move || {
-                                        format!(
-                                            "composer-permission-option-{}-check",
-                                            mode.as_str()
-                                        )
-                                    })
-                                    .child(crate::icons::icon(
-                                        crate::icons::Icon::Check,
-                                        colors.brand_primary,
-                                    ))
+                                marker.child(crate::icons::icon(
+                                    crate::icons::Icon::Check,
+                                    colors.brand_primary,
+                                ))
                             }),
                     )
             });
-        // R64 R1/R3: deferred paint, priority 2 — see `render_file_dropdown`.
+
         gpui_kit::deferred(
             div()
-                .debug_selector(|| "composer-permission-picker".into())
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .absolute()
                 .bottom(gpui_kit::relative(1.0))
@@ -709,7 +577,6 @@ impl ConversationStream {
                 .shadow_sm()
                 .child(
                     div()
-                        .debug_selector(|| "composer-permission-picker-title".into())
                         .flex_shrink_0()
                         .px_2()
                         .pt_2()
@@ -723,14 +590,14 @@ impl ConversationStream {
                                 .min_w_0()
                                 .text_size(px(Typography::METADATA))
                                 .text_color(colors.text_secondary)
-                                .child(PERMISSION_PICKER_TITLE),
+                                .child(vega_i18n::t(PERMISSION_PICKER_TITLE)),
                         )
                         .child(
                             div()
                                 .flex_shrink_0()
                                 .text_size(px(Typography::METADATA))
                                 .text_color(colors.text_tertiary)
-                                .child(PERMISSION_PICKER_LEARN_MORE),
+                                .child(vega_i18n::t(PERMISSION_PICKER_LEARN_MORE)),
                         ),
                 )
                 .child(
@@ -746,9 +613,6 @@ impl ConversationStream {
         .into_any_element()
     }
 
-    /// R62 R7: opens/closes the permission picker. Closing every other
-    /// composer popover first is what keeps the picker, the `+` menu, the
-    /// file dropdown and the model picker mutually exclusive.
     pub(crate) fn toggle_permission_picker(
         &mut self,
         _: &MouseUpEvent,
@@ -777,11 +641,6 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// R62 R8/A10: applies a picker choice. The picker closes first (a mode
-    /// change is a completed round trip, exactly like the model picker's
-    /// R59 R3 rule), then the request goes out on the one existing
-    /// `ThreadSettingsRequested` path — the same one the `+` menu uses, so
-    /// persistence semantics cannot differ between the two entries (R62 R9).
     pub(crate) fn select_permission_mode(
         &mut self,
         mode: PermissionMode,
@@ -794,9 +653,6 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// The `@file` suggestion dropdown (A2-12): rendered above the input row
-    /// while an `@token` is being completed. Bounded candidate list, mouse
-    /// and keyboard parity; zero filesystem access from this view.
     fn render_file_dropdown(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         if !self.file_selector.is_open() && !self.file_selector_wanted && !self.file_index_loading {
@@ -809,7 +665,7 @@ impl ConversationStream {
                 .py_2()
                 .text_size(px(Typography::SIDEBAR))
                 .text_color(colors.text_secondary)
-                .child("正在索引文件…")
+                .child(vega_i18n::t("ui.indexing_files"))
                 .into_any_element()
         } else if let Some(code) = self.file_index_failure {
             div()
@@ -855,7 +711,7 @@ impl ConversationStream {
                         .rounded(px(Layout::DISCLOSURE_RADIUS))
                         .text_color(colors.text_primary)
                         .bg(colors.bg_hover)
-                        .aria_label("重试文件索引")
+                        .aria_label(vega_i18n::t("ui.retry_file_indexing"))
                         .focusable()
                         .track_focus(&self.file_retry_focus)
                         .tab_stop(true)
@@ -866,7 +722,7 @@ impl ConversationStream {
                         .key_context("FileSelectRetryButton")
                         .on_action(cx.listener(Self::on_selector_retry_action))
                         .on_mouse_up(MouseButton::Left, cx.listener(Self::on_selector_retry))
-                        .child("重试"),
+                        .child(vega_i18n::t("ui.retry")),
                 )
                 .into_any_element()
         } else if !self.file_selector.is_open() {
@@ -875,7 +731,7 @@ impl ConversationStream {
                 .py_2()
                 .text_size(px(Typography::SIDEBAR))
                 .text_color(colors.text_secondary)
-                .child("没有匹配文件")
+                .child(vega_i18n::t("ui.no_matching_files"))
                 .into_any_element()
         } else {
             div()
@@ -940,13 +796,13 @@ impl ConversationStream {
     }
 
     fn render_model_controls(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let (estimated_tokens, context_limit) = self.context_usage_source();
-        let display = ContextUsageDisplay::new(estimated_tokens, context_limit);
+        let has_content = !self.entries.is_empty();
+        let display = self.context_usage_display();
         let colors = theme(cx).colors;
         let focused = self.context_usage_focus.contains_focused(window, cx);
         let hovered = self.context_usage_trigger_hovered || self.context_usage_tooltip_hovered;
-        let shown =
-            self.context_usage_open || (!self.context_usage_dismissed && (focused || hovered));
+        let shown = has_content
+            && (self.context_usage_open || (!self.context_usage_dismissed && (focused || hovered)));
         div()
             .relative()
             .min_w_0()
@@ -954,8 +810,10 @@ impl ConversationStream {
             .flex()
             .items_center()
             .gap_1()
-            .child(self.render_context_usage_indicator(&display, colors, cx))
-            .child(self.render_model_selector(cx))
+            .children(
+                has_content.then(|| self.render_context_usage_indicator(&display, colors, cx)),
+            )
+            .child(self.render_model_selector(window, cx))
             .children(shown.then(|| {
                 let tooltip_hover = cx.listener(|this, hovered: &bool, _, cx| {
                     this.context_usage_tooltip_hovered = *hovered;
@@ -972,7 +830,6 @@ impl ConversationStream {
                                 gpui_kit::deferred(
                                     div()
                                         .id("context-usage-tooltip-popover")
-                                        .debug_selector(|| "context-usage-tooltip-popover".into())
                                         .on_hover(tooltip_hover)
                                         .on_mouse_down_out(cx.listener(
                                             |this, _: &MouseDownEvent, window, cx| {
@@ -1008,7 +865,6 @@ impl ConversationStream {
         let accessible_label = display.accessibility_label();
         let control = div()
             .id("composer-context-usage-hover-target")
-            .debug_selector(|| "composer-context-usage-hover-target".into())
             .flex_shrink_0()
             .min_h(px(Layout::TITLEBAR_CONTROL_SIZE))
             .flex()
@@ -1023,7 +879,6 @@ impl ConversationStream {
             .child(
                 div()
                     .id("composer-context-usage")
-                    .debug_selector(|| "composer-context-usage".into())
                     .aria_label(accessible_label)
                     .focusable()
                     .track_focus(&self.context_usage_focus)
@@ -1071,7 +926,6 @@ impl ConversationStream {
                     .focus_visible(move |style| style.bg(colors.bg_hover))
                     .child(
                         div()
-                            .debug_selector(|| "composer-context-usage-ring".into())
                             .size(px(16.0))
                             .flex_shrink_0()
                             .child(Self::context_usage_ring(display, colors)),
@@ -1150,7 +1004,6 @@ impl ConversationStream {
         let help = format!("{}；{}", display.estimate_label(), display.capacity_label());
         div()
             .id("context-usage-tooltip")
-            .debug_selector(|| "context-usage-tooltip".into())
             .w(px(Layout::CONTEXT_USAGE_WIDTH))
             .p(px(Layout::CONTEXT_USAGE_PADDING))
             .flex()
@@ -1170,17 +1023,15 @@ impl ConversationStream {
                     .gap_2()
                     .child(
                         div()
-                            .debug_selector(|| "context-usage-tooltip-title".into())
                             .flex_1()
                             .text_size(px(Typography::BODY))
                             .text_color(colors.text_primary)
                             .font_weight(FontWeight::MEDIUM)
-                            .child("上下文用量"),
+                            .child(vega_i18n::t("ui.context_usage")),
                     )
                     .child(
                         div()
                             .id("context-usage-help")
-                            .debug_selector(|| "context-usage-help".into())
                             .size(px(Layout::ICON_SIZE))
                             .tooltip(move |_, cx| crate::icons::tooltip(help.clone(), cx))
                             .child(crate::icons::icon(
@@ -1188,9 +1039,9 @@ impl ConversationStream {
                                 colors.text_secondary,
                             )),
                     )
-                    .child(crate::icons::icon_button(
+                    .child(crate::icons::localized_icon_button(
                         crate::icons::Icon::Close,
-                        "关闭上下文用量",
+                        "ui.close_context_usage",
                         colors,
                         cx.listener(|this, _, window, cx| this.dismiss_context_usage(window, cx)),
                     )),
@@ -1202,7 +1053,6 @@ impl ConversationStream {
                     .gap_3()
                     .children(display.percentage_value().map(|percentage| {
                         div()
-                            .debug_selector(|| "context-usage-tooltip-percentage".into())
                             .text_size(px(Typography::EMPTY_STATE_TITLE))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(status_color)
@@ -1214,14 +1064,9 @@ impl ConversationStream {
                             .flex()
                             .flex_col()
                             .gap_1()
+                            .child(div().child(display.usage_label()))
                             .child(
                                 div()
-                                    .debug_selector(|| "context-usage-tooltip-estimate".into())
-                                    .child("估算已用 / 配置输入上限"),
-                            )
-                            .child(
-                                div()
-                                    .debug_selector(|| "context-usage-tooltip-compact".into())
                                     .text_color(colors.text_primary)
                                     .child(display.compact_usage_label()),
                             ),
@@ -1229,7 +1074,6 @@ impl ConversationStream {
             )
             .children(display.percentage_value().map(|_| {
                 div()
-                    .debug_selector(|| "context-usage-bar".into())
                     .h(px(6.))
                     .w_full()
                     .rounded_full()
@@ -1250,16 +1094,15 @@ impl ConversationStream {
             .children(
                 (display.model_input_limit.is_none() || over_limit).then(|| {
                     div()
-                        .debug_selector(|| "context-usage-tooltip-capacity".into())
                         .text_color(if over_limit {
                             colors.warning
                         } else {
                             colors.text_secondary
                         })
                         .child(if over_limit {
-                            "已超过配置输入上限"
+                            vega_i18n::t("ui.configured_input_limit_exceeded")
                         } else {
-                            "配置输入上限未设置"
+                            vega_i18n::t("ui.input_limit_not_configured")
                         })
                 }),
             )
@@ -1273,43 +1116,44 @@ impl ConversationStream {
             )
     }
 
-    /// The model selector (A2-14): trigger shows the current selection;
-    /// options are the priced catalog projection installed by the app layer
-    /// (zero file IO). Keyboard: Enter/Space open, Up/Down move, Enter
-    /// accept (first-wins), Esc close.
-    ///
-    /// R59 R7: while the tier slider (level one) is showing, the trigger reads
-    /// `选择强度` — the Chinese counterpart of the reference implementation's
-    /// `Select effort`, which is what its `selectEffort.label` says the trigger
-    /// shows "while adjusting the reasoning effort of an explicitly selected
-    /// model". Vega's existing wording for this concept is 档位/强度 (see
-    /// `settings/reasoning_render.rs` and R57 §2.2), so 选择强度 is the
-    /// in-convention translation. Outside that state the trigger keeps the
-    /// existing model-name display.
-    ///
-    /// R61 R1/R2: this `.relative()` wrapper is the picker's containing block.
-    /// Both levels are its absolutely positioned children and hang off its
-    /// **top** edge (`bottom: 100%` plus the gap), right-aligned to its
-    /// **right** edge (`right: 0`), so the card hugs the model button instead
-    /// of the composer column's top edge. That means the card overlaps the R49
-    /// utility bar by design (R61 §2: the user chose the overlap), and the
-    /// bar's chips may be covered while a layer is open — the layers
-    /// `stop_propagation` on mouse-down, so an outside click still closes the
-    /// picker and restores the bar (R61 R6).
-    fn render_model_selector(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_model_selector(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let enabled = !self.trusted_action_busy
             && !self.model_selection_save_busy()
             && self.model_selection_pending.is_none();
-        // R1: while the durable save is in flight the chip shows a bounded
-        // pending state instead of claiming the new selection already.
-        // R59 R7: which model name (if any) the trigger shows is decided by
-        // `model_trigger_label`, so the rule is directly testable.
+
+        let model = &self.composer_defaults.model;
         let current = model_trigger_label(
-            &self.composer_defaults.model,
+            model,
             self.model_picker_level,
             self.model_selection_pending.is_some(),
         );
+        let label_width = [
+            current,
+            model_trigger_label(model, ModelPickerLevel::Closed, false),
+        ]
+        .into_iter()
+        .chain(
+            self.thinking_slider
+                .read(cx)
+                .has_tiers()
+                .then(|| model_trigger_label(model, ModelPickerLevel::Slider, false)),
+        )
+        .flat_map(str::lines)
+        .map(|label| {
+            window
+                .text_system()
+                .shape_line(
+                    label.to_owned().into(),
+                    px(Typography::SIDEBAR),
+                    &[window.text_style().to_run(label.len())],
+                    None,
+                )
+                .width()
+        })
+        .max()
+        .unwrap_or_default()
+        .ceil();
         div()
             .relative()
             .flex()
@@ -1318,7 +1162,6 @@ impl ConversationStream {
             .child(
                 div()
                     .id("composer-model")
-                    .debug_selector(|| "composer-model".into())
                     .aria_label(current.to_owned())
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .track_focus(&self.model_focus)
@@ -1327,13 +1170,13 @@ impl ConversationStream {
                     .on_action(cx.listener(Self::on_model_previous))
                     .on_action(cx.listener(Self::on_model_next))
                     .on_action(cx.listener(Self::on_model_close))
-                    .min_w_0()
+                    .min_w(px(Layout::COMPOSER_TEXT_TRIGGER_HEIGHT))
                     .flex_shrink_1()
                     .truncate()
-                    .px_2()
-                    .h(px(Layout::TITLEBAR_CONTROL_SIZE))
+                    .px(px(Layout::COMPOSER_TEXT_TRIGGER_PADDING_X))
+                    .h(px(Layout::COMPOSER_TEXT_TRIGGER_HEIGHT))
                     .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
-                    .rounded(px(Layout::DISCLOSURE_RADIUS))
+                    .rounded(px(Layout::COMPOSER_TEXT_TRIGGER_RADIUS))
                     .text_size(px(Typography::SIDEBAR))
                     .text_color(if enabled {
                         colors.text_secondary
@@ -1357,7 +1200,7 @@ impl ConversationStream {
                             .gap_1()
                             .child(
                                 div()
-                                    .debug_selector(|| "composer-model-label".into())
+                                    .w(label_width)
                                     .min_w_0()
                                     .flex_shrink_1()
                                     .truncate()
@@ -1373,39 +1216,6 @@ impl ConversationStream {
             .into_any_element()
     }
 
-    /// R59 R4 / R61 R1: the picker's two floating layers.
-    ///
-    /// The single `model_picker_level` value decides which arm below runs, so
-    /// at most one layer is in the element tree per frame and the slider can
-    /// never be nested inside the list's container (R59 A3). Each layer carries
-    /// its own border, background and shadow, which is what removes R57's
-    /// card-inside-a-card look (D1).
-    ///
-    /// R61 R2 removed the R59 `render_model_picker_overlay` wrapper that pinned
-    /// this call to the composer **column's** top edge with a
-    /// `max_w(COMPOSER_MAX_WIDTH) + mx_auto` inner box. That wrapper existed to
-    /// keep the R49 utility bar clear; the user ruled the trade-off out
-    /// (R61 §2), so the layers now hang from the model trigger's own
-    /// `.relative()` wrapper (see [`Self::render_model_selector`]) and each
-    /// layer right-aligns with `right_0()`.
-    ///
-    /// R64 R1: both layers are wrapped in `gpui_kit::deferred(...)` at
-    /// priority 2. GPUI paints an element's border **after** its children
-    /// (`Style::paint`), so the composer card's own 1px border crossed every
-    /// layer mounted inside it. `deferred` delays only the painting until after
-    /// the ancestors, keeping layout in the current tree, which is why the
-    /// trigger anchoring above is untouched.
-    ///
-    /// R59 recorded that a deferred card landed at x 1232.5 on a 1200-wide
-    /// window. R64 §3 established that this came from wrapping the R59
-    /// `max_w(COMPOSER_MAX_WIDTH) + mx_auto` **outer box** — the structure R61
-    /// R2 deleted — not from `deferred` itself, which records and replays the
-    /// element's own `absolute_offset` (`window.rs`'s `defer_draw`). The layers
-    /// below are measured to keep the exact bounds they had before the wrap.
-    ///
-    /// `occlude()` is kept on each layer: it supplies the mouse hit-testing
-    /// priority (`HitboxBehavior::BlockMouse`) and was never a paint-order
-    /// mechanism.
     fn render_model_picker_layers(&self, cx: &mut Context<Self>) -> AnyElement {
         match self.model_picker_level {
             ModelPickerLevel::Closed => div().into_any_element(),
@@ -1414,44 +1224,22 @@ impl ConversationStream {
         }
     }
 
-    /// R59 R5: the height bound shared by both layers.
-    ///
-    /// R57 shipped no bound at all, so the popup grew to 1409px with a 40-model
-    /// catalog and covered the whole transcript. The bound is what makes the
-    /// list scroll inside itself instead of growing the layer. R61 R3 keeps it
-    /// unchanged.
     fn picker_max_height(&self) -> Pixels {
         px(Layout::COMPOSER_PICKER_MAX_HEIGHT)
     }
 
-    /// R59 R1 / R61 R1: the tier slider card, and nothing else.
-    ///
-    /// R57 mounted this card as the model menu's last child (D1); here it is a
-    /// standalone floating layer with its own chrome (R4). A model that
-    /// declares no tiers opens the list directly (I68), so the slider layer
-    /// is not mounted rather than leaving an empty padded card behind (R57 R12).
-    ///
-    /// R61 R1: `bottom: 100%` + [`Layout::COMPOSER_PICKER_TRIGGER_GAP`] places
-    /// the card's bottom edge that far above the **trigger's** top edge, and
-    /// `right_0()` aligns its right edge with the trigger's — no arithmetic
-    /// inset, because the containing block *is* the trigger's wrapper. R61
-    /// accepts the resulting overlap with the R49 utility bar (§2).
     fn render_picker_slider_layer(&self, cx: &mut Context<Self>) -> AnyElement {
         if !self.thinking_slider.read(cx).has_tiers() {
             return div().into_any_element();
         }
-        // R64 R1/R3: deferred paint, priority 2 — see `render_file_dropdown`.
+
         gpui_kit::deferred(
             div()
-                .debug_selector(|| "composer-thinking-slider".into())
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .absolute()
                 .bottom(gpui_kit::relative(1.0))
                 .mb(px(Layout::COMPOSER_PICKER_TRIGGER_GAP))
                 .right_0()
-                // R59 R4: the card's own surface. `ThinkingSlider` already draws the
-                // measured 254.5px card with its own border, background and shadow,
-                // so this layer adds only placement and the height bound.
                 .max_h(self.picker_max_height())
                 .occlude()
                 .flex()
@@ -1462,26 +1250,12 @@ impl ConversationStream {
         .into_any_element()
     }
 
-    /// R59 R2/R3 / I68: the model list, reached from the slider title when
-    /// tiers exist or directly from the trigger when they do not.
-    ///
-    /// The list is bounded by [`Self::picker_max_height`] and scrolls inside
-    /// that bound, so a long catalog cannot grow the layer without limit (R61
-    /// A4). The heading is the reference implementation's
-    /// `composer.modelPicker.modelList.heading` ("Select model"); Vega's
-    /// existing Chinese wording for this surface is 选择模型.
-    ///
-    /// R61 R1: same trigger anchoring as the slider layer — `bottom: 100%`
-    /// minus the gap, `right_0()`. The list keeps its own frozen
-    /// [`Layout::MENU_MAX_WIDTH`], so it extends to the **left** of the trigger
-    /// rather than to its right.
     fn render_picker_list_layer(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        // R64 R1/R3: deferred paint, priority 2 — see `render_file_dropdown`.
+
         gpui_kit::deferred(
             div()
                 .id("composer-model-menu")
-                .debug_selector(|| "composer-model-menu".into())
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .absolute()
                 .bottom(gpui_kit::relative(1.0))
@@ -1500,80 +1274,121 @@ impl ConversationStream {
                 .shadow_sm()
                 .child(
                     div()
-                        .debug_selector(|| "composer-model-heading".into())
                         .flex_shrink_0()
                         .px_2()
                         .pt_2()
                         .pb_1()
                         .text_size(px(Typography::METADATA))
                         .text_color(colors.text_tertiary)
-                        .child(PICKER_LIST_HEADING),
+                        .child(vega_i18n::t(PICKER_LIST_HEADING)),
                 )
                 // Only the rows scroll: the heading stays visible so the layer never
                 // becomes an unbounded column of model names.
                 .child(
                     div()
                         .id("composer-model-rows")
-                        .debug_selector(|| "composer-model-rows".into())
                         .min_h_0()
                         .overflow_y_scroll()
                         .track_scroll(&self.model_menu_scroll)
-                        .children(self.model_options.iter().enumerate().map(|(index, model)| {
-                            let selected = index == self.model_selector_highlight;
-                            let current_model = *model == self.composer_defaults.model;
-                            let model = model.clone();
-                            let label = model.clone();
-                            div()
-                                .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                                .flex_shrink_0()
-                                .px_2()
-                                .flex()
-                                .items_center()
-                                .text_size(px(Typography::SIDEBAR))
-                                .truncate()
-                                .when(selected, |row| row.bg(colors.bg_active))
-                                .text_color(if current_model {
-                                    colors.brand_primary
-                                } else if selected {
-                                    colors.text_primary
-                                } else {
-                                    colors.text_secondary
-                                })
-                                .cursor_pointer()
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(
-                                        move |this, _: &MouseUpEvent, _: &mut Window, cx| {
-                                            this.select_model_option(&model, cx);
-                                        },
-                                    ),
-                                )
-                                .child(label)
-                        })),
+                        .children(self.model_picker_rows(colors, cx))
+                        .tracked_scroll_edge_fade(
+                            self.model_menu_scroll.clone(),
+                            colors.bg_elevated,
+                            ScrollFade::compact(),
+                        ),
                 ),
         )
         .with_priority(2)
         .into_any_element()
     }
 
+    fn model_picker_rows(&self, colors: ThemeColors, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut rows = Vec::new();
+        for (index, option) in self.model_options.iter().enumerate() {
+            if model_picker_starts_group(&self.model_options, index) {
+                let first_group = index == 0;
+                rows.push(
+                    div()
+                        .h(px(Layout::COMPOSER_PICKER_GROUP_HEIGHT))
+                        .flex_shrink_0()
+                        .px_2()
+                        .flex()
+                        .items_center()
+                        .text_size(px(Typography::METADATA))
+                        .text_color(colors.text_tertiary)
+                        .when(!first_group, |group| {
+                            group.mt(px(Layout::COMPOSER_PICKER_GROUP_GAP))
+                        })
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(option.provider.clone()),
+                        )
+                        .into_any_element(),
+                );
+            }
+            let selected = index == self.model_selector_highlight;
+            let current_model = option.model == self.composer_defaults.model;
+            let model = option.model.clone();
+            let label = option.model.clone();
+            rows.push(
+                div()
+                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                    .flex_shrink_0()
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_size(px(Typography::SIDEBAR))
+                    .when(selected, |row| row.bg(colors.bg_active))
+                    .text_color(if current_model {
+                        colors.brand_primary
+                    } else if selected {
+                        colors.text_primary
+                    } else {
+                        colors.text_secondary
+                    })
+                    .cursor_pointer()
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &MouseUpEvent, _: &mut Window, cx| {
+                            this.select_model_option(&model, cx);
+                        }),
+                    )
+                    .child(div().flex_1().min_w_0().truncate().child(label))
+                    .child(crate::menu_list::selection_marker(current_model, colors))
+                    .into_any_element(),
+            );
+        }
+        rows
+    }
+
     fn message_location_status_element(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let status = self.message_location_status?;
         let colors = theme(cx).colors;
         let (label, color) = match status {
-            MessageLocationStatus::Searching => ("正在定位消息…", colors.text_secondary),
-            MessageLocationStatus::Deferred => ("任务完成后定位消息…", colors.text_secondary),
-            MessageLocationStatus::NotFound => {
-                ("当前会话中没有这条消息，可选择其他消息。", colors.warning)
+            MessageLocationStatus::Searching => {
+                (vega_i18n::t("ui.locating_message"), colors.text_secondary)
             }
-            MessageLocationStatus::Failed => {
-                ("定位消息失败，可重试或选择其他消息。", colors.danger)
-            }
+            MessageLocationStatus::Deferred => (
+                vega_i18n::t("ui.the_message_will_be_located_after_the_task"),
+                colors.text_secondary,
+            ),
+            MessageLocationStatus::NotFound => (
+                vega_i18n::t("ui.this_message_is_not_in_the_current_conversation"),
+                colors.warning,
+            ),
+            MessageLocationStatus::Failed => (
+                vega_i18n::t("ui.could_not_locate_the_message_retry_or_choose"),
+                colors.danger,
+            ),
             MessageLocationStatus::Located => return None,
         };
         Some(
             div()
                 .id("message-anchor-status")
-                .debug_selector(|| "message-anchor-status".into())
                 .aria_label(label)
                 .w_full()
                 .px_2()
@@ -1588,7 +1403,9 @@ impl ConversationStream {
 
 impl Render for ConversationStream {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.reconcile_pending_focus(window, cx);
+        if !self.reading_preview {
+            self.reconcile_pending_focus(window, cx);
+        }
         if !self.context_usage_focus.contains_focused(window, cx) {
             self.context_usage_dismissed = false;
         }
@@ -1601,13 +1418,41 @@ impl Render for ConversationStream {
             });
             self.context_usage_focus_subscriptions = Some((focus_in, focus_out));
         }
-        if !self.selection_view_initialized {
+        if !self.reading_preview && !self.selection_view_initialized {
             gpui_kit::base::TextSelection::clear(window, cx);
             self.selection_view_initialized = true;
         }
-        if self.actions.restore_focus {
+        if !self.reading_preview && self.actions.restore_focus {
             self.actions.restore_focus = false;
             self.focus_composer(window, cx);
+        }
+        if self.rendered_language != vega_i18n::language() {
+            self.rendered_language = vega_i18n::language();
+            self.ensure_entry_identities();
+            let top = self.list.logical_scroll_top();
+            let anchor = self.scroll_anchor_snapshot();
+            for entry in &mut self.entries {
+                if let StreamEntry::User { copy, lines } = entry
+                    && copy.refresh_live_projection()
+                {
+                    let block = self.user_block_seq;
+                    self.user_block_seq += 1;
+                    *lines = user_message_lines(block, &copy.original_text());
+                }
+                if let StreamEntry::Assistant {
+                    copy,
+                    stream,
+                    model,
+                    ..
+                } = entry
+                {
+                    copy.sync_model(stream, model, &self.counters);
+                }
+            }
+            self.text_cache.get_mut().clear();
+            self.measured_entry_heights.clear();
+            self.list.remeasure();
+            self.restore_scroll_anchor_at(&anchor, top.item_ix);
         }
         self.reset_image_visibility(cx);
         for group in self.run_activity_groups.values() {
@@ -1627,20 +1472,21 @@ impl Render for ConversationStream {
         //    变化在各自的 apply 路径上已登记。
         if std::mem::take(&mut self.assistant_model_dirty)
             && let Some((_, index)) = self.active_agent_message.as_ref()
-            && let Some(StreamEntry::Assistant { stream, model, .. }) = self.entries.get_mut(*index)
+            && let Some(StreamEntry::Assistant {
+                copy,
+                stream,
+                model,
+                ..
+            }) = self.entries.get_mut(*index)
+            && copy.sync_model(stream, model, &self.counters)
         {
-            let snapshot = stream.snapshot();
-            if model.sync(&snapshot, &self.counters) {
-                self.invalidate_item(Some(*index));
-            }
+            self.invalidate_item(Some(*index));
         }
         self.settle_final_presentation(window, cx);
         self.refresh_run_notices(cx);
         let stage_top_insets = self.stage_top_insets(cx);
+        self.prepare_text_cache();
 
-        // 2) 顶部水合请求（S8-T45/C7）：视口到达顶部且仍存在更早历史时，
-        //    向 app 层请求上一页（typed 投影返回后 splice 前插，页边界保
-        //    anchor）。本 crate 零 SQLite；一页在飞，失败暂停直到离开顶部。
         let at_top = self.scroll_at_top();
         let at_bottom = self.scroll_at_bottom();
         if self.hydration_pause_is_stale(at_top, at_bottom) {
@@ -1664,7 +1510,9 @@ impl Render for ConversationStream {
         let mut message_anchor_preview = None;
         let mut message_anchor_rail_overlay = None;
         let mut message_anchor_preview_in_lane = false;
-        let body: AnyElement = if self.entries.is_empty() {
+        let body: AnyElement = if self.reading_preview && self.entries.is_empty() {
+            div().into_any_element()
+        } else if self.entries.is_empty() {
             div()
                 .w_full()
                 .h(px(72.))
@@ -1678,25 +1526,26 @@ impl Render for ConversationStream {
                         .text_size(px(Typography::EMPTY_STATE_TITLE))
                         .font_weight(Typography::EMPTY_STATE_TITLE_WEIGHT)
                         .text_color(colors.text_primary)
-                        .child("今天想做些什么？"),
+                        .child(vega_i18n::t("ui.what_would_you_like_to_do_today")),
                 )
                 .child(
                     div()
                         .text_size(px(Typography::METADATA))
                         .text_color(colors.text_secondary)
-                        .child("输入任务开始，或用 @ 引用文件"),
+                        .child(vega_i18n::t("ui.enter_a_task_to_start_or_use_to")),
                 )
                 .children(self.message_location_status_element(cx))
                 .into_any_element()
         } else {
+            let top_fade_guards = ScrollFadeTopGuards::default();
+            let rendered_top_fade_guards = top_fade_guards.clone();
             let (message_anchor_rail, preview, preview_in_lane) =
-                self.render_message_anchor_rail(window, cx);
+                self.render_message_anchor_rail(&stage_top_insets, window, cx);
             message_anchor_rail_overlay = Some(message_anchor_rail);
             message_anchor_preview = preview;
             message_anchor_preview_in_lane = preview_in_lane;
             div()
                 .id("conversation-scroll")
-                .debug_selector(|| "conversation-scroll".into())
                 .size_full()
                 .flex()
                 .flex_col()
@@ -1713,7 +1562,6 @@ impl Render for ConversationStream {
                         .child(
                             div()
                                 .id("conversation-message-list")
-                                .debug_selector(|| "conversation-message-list".into())
                                 .relative()
                                 .min_w_0()
                                 .flex_1()
@@ -1729,37 +1577,58 @@ impl Render for ConversationStream {
                                                   cx| {
                                                 let row_t0 = Instant::now();
                                                 let entry = this.entries.get(index);
-                                                let item = if this.process_entry_hidden(index, cx) || this.compaction_failure_is_represented(index) {
+                                                let mut pinned = None;
+                                                let item = if this.reading_preview && let Some(StreamEntry::Permission { card }) = entry {
+                                                    let card = card.read(cx);
+                                                    let (tool, target) = card.identity();
+                                                    let status = if card.is_resolved() { vega_i18n::t("ui.confirmation_handled") } else { vega_i18n::t("ui.awaiting_confirmation") };
+                                                    div().text_size(px(Typography::BODY)).text_color(theme(cx).colors.text_secondary).child(format!("{status} · {tool} · {target}")).into_any_element()
+                                                } else if this.reading_preview && let Some(StreamEntry::Plan { card }) = entry {
+                                                    PlanCard::render_read_only(card.clone(), window, cx)
+                                                } else if this.process_entry_hidden(index, cx) || this.compaction_failure_is_represented(index) {
                                                     div().h_0().into_any_element()
                                                 } else {
                                                     match entry {
                                                         Some(StreamEntry::RunActivity {
                                                             group,
-                                                        }) => this.render_run_details(
-                                                            group.clone(),
-                                                            window,
-                                                            cx,
-                                                        ),
-                                                        Some(StreamEntry::RunActivitySegment { group, segment }) => RunActivityGroup::render_segment_with_top(group.clone(), *segment, stage_top_insets.get(&index).copied().unwrap_or(Layout::CONVERSATION_STAGE_TOP), window, cx),
-                                                        Some(entry) => render_stream_entry(
-                                                            entry,
-                                                            index,
-                                                            this.entry_identities
-                                                                .get(index)
-                                                                .is_some_and(|identity| {
-                                                                    identity.message_id.is_some()
-                                                                }),
-                                                            stage_top_insets
-                                                                .get(&index)
-                                                                .copied()
-                                                                .unwrap_or(0.),
-                                                            window,
-                                                            cx,
-                                                            &this.selection_focus,
-                                                        ),
+                                                        }) => {
+                                                            pinned = group.read(cx).scroll_fade_pinned_indicator(None);
+                                                            this.render_run_details(group.clone(), window, cx)
+                                                        },
+                                                        Some(StreamEntry::RunActivitySegment { group, segment }) => {
+                                                            pinned = group.read(cx).scroll_fade_pinned_indicator(Some(*segment));
+                                                            RunActivityGroup::render_segment_with_top(group.clone(), *segment, stage_top_insets.get(&index).copied().unwrap_or(Layout::CONVERSATION_STAGE_TOP), window, cx)
+                                                        },
+                                                        Some(entry) => {
+                                                            let body = render_stream_entry(
+                                                                entry,
+                                                                this.entry_identities
+                                                                    .get(index)
+                                                                    .is_some_and(|identity| {
+                                                                        identity.message_id.is_some()
+                                                                    }),
+                                                                stage_top_insets
+                                                                    .get(&index)
+                                                                    .copied()
+                                                                    .unwrap_or(0.),
+                                                                window,
+                                                                cx,
+                                                                this.message_interaction(),
+                                                            );
+                                                            if let StreamEntry::Assistant { copy, .. } = entry
+                                                                && let Some(source) = this.copy_source_for_entry(index)
+                                                            {
+                                                                render_rows::message_with_copy(body, source, copy.id, false, theme(cx).colors, this.message_actions_enabled())
+                                                            } else {
+                                                                body
+                                                            }
+                                                        },
                                                         None => div().into_any_element(),
                                                     }
                                                 };
+                                                let item = if let Some(controls) = this.ordinary_controls(index, cx) {
+                                                    div().w_full().flex().flex_col().child(item).child(controls).into_any_element()
+                                                } else { item };
                                                 let item = if let Some(notice) =
                                                     this.run_notices.get(&index)
                                                 {
@@ -1771,7 +1640,21 @@ impl Render for ConversationStream {
                                                         .flex()
                                                         .flex_col()
                                                         .child(item)
-                                                        .child(notice.render(&colors, this.thread.id.clone(), cx))
+                                                        .child(notice.render(&colors, this.thread.id.clone(), this.reading_preview, cx))
+                                                        .into_any_element()
+                                                } else {
+                                                    item
+                                                };
+                                                let item = if let Some(notice) = this.mcp_notices.get(&index) {
+                                                    let colors = theme(cx).colors;
+                                                    div()
+                                                        .w_full()
+                                                        .min_w_0()
+                                                        .flex_shrink_0()
+                                                        .flex()
+                                                        .flex_col()
+                                                        .child(item)
+                                                        .child(notice.render(&colors, this.thread.id.clone(), this.reading_preview, cx))
                                                         .into_any_element()
                                                 } else {
                                                     item
@@ -1779,13 +1662,19 @@ impl Render for ConversationStream {
                                                 this.counters.record_row_callback(
                                                     row_t0.elapsed().as_nanos(),
                                                 );
-                                                item
+                                                if let Some(pinned) = pinned {
+                                                    rendered_top_fade_guards.observe(item, pinned)
+                                                } else {
+                                                    item
+                                                }
                                             },
                                         ),
                                     )
                                     .h_full()
                                     .w_full()
-                                    .pb(self.foreground_height),
+                                    .pb(self.foreground_height)
+                                    .tracked_scroll_edge_fade(self.list.clone(), colors.bg_base, ScrollFade::reading().top_only().vertical_list())
+                                    .preserve_pinned_headers(top_fade_guards),
                                 ),
                         ),
                 )
@@ -1807,9 +1696,6 @@ impl Render for ConversationStream {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
-                    // R59/R62: a click anywhere outside a picker closes
-                    // whichever level is mounted. The layers themselves stop
-                    // propagation, so this only sees genuine outside clicks.
                     if this.model_picker_level.is_open() || this.permission_picker_open {
                         this.model_picker_level = ModelPickerLevel::Closed;
                         this.permission_picker_open = false;
@@ -1819,6 +1705,9 @@ impl Render for ConversationStream {
             )
             .on_action(cx.listener(Self::open_diff_action))
             .on_action(cx.listener(Self::copy_selected_text))
+            .when(!self.reading_preview, |root| {
+                root.children(self.render_subagent_parent(cx))
+            })
             .child(
                 div()
                     .w_full()
@@ -1837,7 +1726,6 @@ impl Render for ConversationStream {
                     .relative()
                     .child(
                         div()
-                            .debug_selector(|| "conversation-column".into())
                             .min_w_0()
                             .w_full()
                             .max_w(px(Layout::CONVERSATION_MAX_WIDTH))
@@ -1852,19 +1740,30 @@ impl Render for ConversationStream {
                         message_anchor_preview
                     }),
             )
-            .when(!self.entries.is_empty(), |root| {
+            .when(!self.reading_preview && !self.entries.is_empty(), |root| {
                 root.child(self.render_conversation_foreground(window, cx))
             })
-            .when(self.entries.is_empty(), |root| {
+            .when(!self.reading_preview && self.entries.is_empty(), |root| {
                 root.when(self.privacy.opened, |view| {
                     view.child(self.render_privacy_control(cx))
                 })
                 .child(self.render_composer(window, cx))
                 .when(project_bound, |root| root.child(self.commit_panel.clone()))
             })
-            .children(self.render_pending_menu(cx))
+            .when(self.reading_preview, |root| {
+                root.child(self.render_resume_tail(cx))
+            })
+            .when(!self.reading_preview, |root| {
+                root.children(self.render_pending_menu(cx))
+            })
             .into_any_element();
         counters.record_render(render_t0);
-        element
+        crate::link_preview::MarkdownReadingScope::new(
+            format!("conversation-{}", self.thread.id),
+            self.selection_focus.clone(),
+        )
+        .track_list(self.list.clone())
+        .fill_height()
+        .child(element)
     }
 }

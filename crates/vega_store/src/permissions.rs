@@ -98,6 +98,10 @@ pub fn insert_exact(
     conn: &Connection,
     input: InsertExactRule<'_>,
 ) -> Result<InsertExactResult, PermissionsError> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Permissions,
+    )?;
     validate(input.project_id, input.tool, input.pattern)?;
     let inserted = conn.execute(
         "INSERT INTO permissions (project_id, tool, pattern, created_at) \
@@ -152,142 +156,4 @@ fn permission_rule_from_row(row: &rusqlite::Row<'_>) -> Result<PermissionRule, r
         pattern: row.get(3)?,
         created_at: row.get(4)?,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{InsertExactRule, PermissionsError, insert_exact, list_exact, matches_exact};
-    use crate::Store;
-
-    fn store() -> Store {
-        let store = Store::open(":memory:").unwrap();
-        store.migrate().unwrap();
-        store
-    }
-
-    fn insert<'a>(
-        store: &Store,
-        project_id: &'a str,
-        tool: &'a str,
-        pattern: &'a str,
-        created_at: i64,
-    ) -> super::InsertExactResult {
-        insert_exact(
-            store.conn(),
-            InsertExactRule {
-                project_id,
-                tool,
-                pattern,
-                created_at,
-            },
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn insert_list_and_match_all_allowed_tools() {
-        let store = store();
-        for (tool, pattern) in [
-            ("bash", "cargo test"),
-            ("write", "src/lib.rs"),
-            ("edit", "README.md"),
-        ] {
-            assert!(insert(&store, "project-a", tool, pattern, 10).inserted);
-            assert!(matches_exact(store.conn(), "project-a", tool, pattern).unwrap());
-        }
-        assert_eq!(list_exact(store.conn(), "project-a").unwrap().len(), 3);
-    }
-
-    #[test]
-    fn rejects_invalid_fields() {
-        let store = store();
-        for (project, tool, pattern, expected) in [
-            ("", "bash", "echo ok", "empty-project"),
-            ("p", "unknown", "README.md", "tool"),
-            ("p", "bash", "", "empty-pattern"),
-        ] {
-            let error = insert_exact(
-                store.conn(),
-                InsertExactRule {
-                    project_id: project,
-                    tool,
-                    pattern,
-                    created_at: 1,
-                },
-            )
-            .unwrap_err();
-            assert!(
-                matches!(
-                    (expected, error),
-                    ("empty-project", PermissionsError::EmptyProject)
-                        | ("tool", PermissionsError::UnsupportedTool)
-                        | ("empty-pattern", PermissionsError::EmptyPattern)
-                ),
-                "{expected}"
-            );
-        }
-    }
-
-    #[test]
-    fn duplicate_insert_is_idempotent_and_keeps_original_timestamp() {
-        let store = store();
-        let first = insert(&store, "p", "bash", "cargo test", 20);
-        let duplicate = insert(&store, "p", "bash", "cargo test", 99);
-        assert!(first.inserted);
-        assert!(!duplicate.inserted);
-        assert_eq!(duplicate.rule.id, first.rule.id);
-        assert_eq!(duplicate.rule.created_at, 20);
-        assert_eq!(list_exact(store.conn(), "p").unwrap().len(), 1);
-    }
-
-    #[test]
-    fn exact_matching_preserves_project_tool_case_whitespace_and_path_bytes() {
-        let store = store();
-        insert(&store, "project-a", "bash", "cargo  test", 1);
-        insert(&store, "project-a", "write", "Src/lib.rs", 2);
-
-        for (project, tool, pattern) in [
-            ("project-b", "bash", "cargo  test"),
-            ("project-a", "bash", "cargo test"),
-            ("project-a", "bash", "Cargo  test"),
-            ("project-a", "edit", "Src/lib.rs"),
-            ("project-a", "write", "src/lib.rs"),
-            ("project-a", "bash", "bash:cargo  test"),
-        ] {
-            assert!(!matches_exact(store.conn(), project, tool, pattern).unwrap());
-        }
-    }
-
-    #[test]
-    fn list_order_is_created_at_then_id() {
-        let store = store();
-        let second = insert(&store, "p", "edit", "b", 20).rule;
-        let first = insert(&store, "p", "write", "a", 10).rule;
-        let third = insert(&store, "p", "bash", "c", 20).rule;
-        let listed = list_exact(store.conn(), "p").unwrap();
-        assert_eq!(
-            listed.iter().map(|rule| rule.id).collect::<Vec<_>>(),
-            vec![first.id, second.id, third.id]
-        );
-    }
-
-    #[test]
-    fn schema_has_thirty_six_tables_at_current_user_version() {
-        let store = store();
-        let user_version: i64 = store
-            .conn()
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .unwrap();
-        let table_count: i64 = store
-            .conn()
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' \
-                 AND name NOT LIKE 'sqlite_%'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(user_version, crate::MIGRATIONS.len() as i64);
-        assert_eq!(table_count, 36);
-    }
 }

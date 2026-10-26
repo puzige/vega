@@ -8,8 +8,8 @@ pub enum PendingMessageBehavior {
 impl PendingMessageBehavior {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Queue => "排队",
-            Self::Steer => "插话",
+            Self::Queue => vega_i18n::t("domain.pending.queue"),
+            Self::Steer => vega_i18n::t("domain.pending.steer"),
         }
     }
 
@@ -34,9 +34,26 @@ pub struct PendingMessage {
 #[derive(Clone, Default)]
 pub struct PendingQueueProjection {
     pub messages: Vec<PendingMessage>,
+    pub committed_generation: Option<String>,
     pub paused: bool,
     pub busy: bool,
     pub error: Option<String>,
+}
+
+impl PendingQueueProjection {
+    pub fn committed_message_ids(&self) -> Vec<String> {
+        let Some(generation) = self.committed_generation.as_deref() else {
+            return Vec::new();
+        };
+        self.messages
+            .iter()
+            .filter(|message| {
+                message.behavior == PendingMessageBehavior::Steer
+                    && message.generation == generation
+            })
+            .map(|message| message.id.clone())
+            .collect()
+    }
 }
 
 #[derive(Clone)]

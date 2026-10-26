@@ -1,4 +1,3 @@
--- Issue 63 R5: attachment ownership is identical to the durable user turn.
 CREATE TABLE image_attachments (
     message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
     ordinal INTEGER NOT NULL CHECK (ordinal >= 0 AND ordinal < 4),

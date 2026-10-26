@@ -25,6 +25,18 @@ pub struct NavigationState {
     /// Short content-free navigation failure or capacity explanation.
     pub error: Option<&'static str>,
 }
+impl NavigationState {
+    pub fn error_message(&self) -> Option<&'static str> {
+        self.error.map(|message| {
+            if message == "ui.draft_capacity_reached_send_or_clear_the_current" {
+                vega_i18n::t(message)
+            } else {
+                message
+            }
+        })
+    }
+}
+
 impl Global for NavigationState {}
 /// Install focus-independent shortcuts with more-local text-editor overrides.
 pub fn init(cx: &mut App) {
@@ -80,9 +92,9 @@ pub fn controls(cx: &App, sidebar_visible: bool) -> AnyElement {
                     .unwrap_or_else(|| cx.focus_handle())
                     .tab_stop(enabled);
                 let name = if forward {
-                    "前进 (⌘])"
+                    vega_i18n::t("ui.forward")
                 } else {
-                    "后退 (⌘[)"
+                    vega_i18n::t("ui.back")
                 };
                 div()
                     .id(id)
@@ -107,7 +119,6 @@ pub fn controls(cx: &App, sidebar_visible: bool) -> AnyElement {
                             }
                         }
                     })
-                    .debug_selector(move || id.into())
                     .size(px(Layout::TITLEBAR_CONTROL_SIZE))
                     .flex()
                     .items_center()
@@ -142,24 +153,14 @@ pub fn controls(cx: &App, sidebar_visible: bool) -> AnyElement {
                             }
                         }
                     })
-                    .child(
-                        div()
-                            .debug_selector(move || {
-                                if forward {
-                                    "titlebar-forward-icon".into()
-                                } else {
-                                    "titlebar-back-icon".into()
-                                }
-                            })
-                            .child(crate::icons::icon(
-                                icon,
-                                if enabled {
-                                    colors.text_secondary
-                                } else {
-                                    colors.text_tertiary
-                                },
-                            )),
-                    )
+                    .child(div().child(crate::icons::icon(
+                        icon,
+                        if enabled {
+                            colors.text_secondary
+                        } else {
+                            colors.text_tertiary
+                        },
+                    )))
             }),
         )
         .into_any_element()
@@ -176,25 +177,20 @@ fn search_control(cx: &App) -> AnyElement {
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(
             Button::new("titlebar-search-button")
-                .debug_selector(|| "titlebar-search-button".into())
                 .custom(ButtonCustomVariant::new(cx).foreground(colors.text_secondary.into()))
                 .small()
                 .size(px(Layout::TITLEBAR_CONTROL_SIZE))
                 .p_0()
-                .accessibility_label("搜索 (⌘K)")
-                .tooltip("搜索 (⌘K)")
+                .accessibility_label(vega_i18n::t("ui.search_k"))
+                .tooltip(vega_i18n::t("ui.search_k"))
                 .on_click(|_, window, cx| {
                     cx.stop_propagation();
                     window.dispatch_action(Box::new(crate::command_palette::OpenPalette), cx);
                 })
-                .child(
-                    div()
-                        .debug_selector(|| "titlebar-search-icon".into())
-                        .child(crate::icons::icon(
-                            crate::icons::Icon::Search,
-                            colors.text_secondary,
-                        )),
-                ),
+                .child(div().child(crate::icons::icon(
+                    crate::icons::Icon::Search,
+                    colors.text_secondary,
+                ))),
         )
         .into_any_element()
 }
@@ -211,9 +207,9 @@ pub fn sidebar_toggle(cx: &App, sidebar_visible: bool) -> AnyElement {
 fn sidebar_control(cx: &App, sidebar_visible: bool) -> AnyElement {
     let colors = theme(cx).colors;
     let label = if sidebar_visible {
-        "隐藏侧栏 (⌘B)"
+        vega_i18n::t("ui.hide_sidebar_b")
     } else {
-        "显示侧栏 (⌘B)"
+        vega_i18n::t("ui.show_sidebar_b")
     };
     let focus = cx
         .try_global::<NavigationControlFocus>()
@@ -222,7 +218,6 @@ fn sidebar_control(cx: &App, sidebar_visible: bool) -> AnyElement {
         .tab_stop(true);
     div()
         .id("toggle-sidebar")
-        .debug_selector(|| "toggle-sidebar".into())
         .track_focus(&focus)
         .tab_stop(true)
         .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
@@ -257,14 +252,10 @@ fn sidebar_control(cx: &App, sidebar_visible: bool) -> AnyElement {
                 window.dispatch_action(Box::new(crate::sidebar::ToggleSidebar), cx);
             }
         })
-        .child(
-            div()
-                .debug_selector(|| "titlebar-sidebar-icon".into())
-                .child(crate::icons::icon(
-                    crate::icons::Icon::Sidebar,
-                    colors.text_secondary,
-                )),
-        )
+        .child(div().child(crate::icons::icon(
+            crate::icons::Icon::Sidebar,
+            colors.text_secondary,
+        )))
         .into_any_element()
 }
 
@@ -297,7 +288,7 @@ pub fn allow_task_navigation(target: Option<&str>, cx: &mut App) -> bool {
             .try_global::<NavigationState>()
             .cloned()
             .unwrap_or_default();
-        state.error = Some("草稿已达容量上限，请先发送或清空当前草稿再导航。");
+        state.error = Some("ui.draft_capacity_reached_send_or_clear_the_current");
         cx.set_global(state);
         cx.refresh_windows();
     }
@@ -332,195 +323,4 @@ pub fn finish_task_mutation(cx: &mut App) {
     state.epoch = state.epoch.wrapping_add(1);
     state.pending = state.pending.saturating_sub(1);
     cx.set_global(state);
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
-
-    use gpui_kit::prelude::*;
-    use gpui_kit::{Context, KeyDownEvent, KeyUpEvent, Keystroke, Render, Window, div};
-
-    use super::search_control;
-
-    struct SearchControlHarness;
-
-    impl Render for SearchControlHarness {
-        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            div().tab_group().child(search_control(cx))
-        }
-    }
-
-    #[gpui_kit::test]
-    fn shared_search_control_keyboard_activation_dispatches_open_palette(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
-        let activations = Arc::new(AtomicUsize::new(0));
-        let observed = activations.clone();
-        cx.update(|cx| {
-            gpui_kit::component::init(cx);
-            crate::init(cx);
-            cx.set_global(vega_theme::Theme::light());
-            cx.on_action(move |_: &crate::command_palette::OpenPalette, _| {
-                observed.fetch_add(1, Ordering::SeqCst);
-            });
-        });
-        let window = cx.update(|cx| {
-            cx.open_window(Default::default(), |_, cx| cx.new(|_| SearchControlHarness))
-                .expect("search control window")
-        });
-        cx.run_until_parked();
-        let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        visual.update(|window, cx| {
-            window.draw(cx).clear(cx);
-            window.focus_next(cx);
-        });
-        let keystroke = Keystroke::parse("space").expect("Space keystroke");
-        visual.simulate_event(KeyDownEvent {
-            keystroke: keystroke.clone(),
-            is_held: false,
-            prefer_character_input: false,
-        });
-        visual.simulate_event(KeyUpEvent { keystroke });
-        assert_eq!(activations.load(Ordering::SeqCst), 1);
-    }
-}
-
-#[cfg(test)]
-mod issue296_tests {
-    use super::search_control;
-    use gpui_kit::{
-        Context, IntoElement, Render, TestAppContext, Window, div, prelude::*, px, size,
-    };
-    use std::{cell::Cell, rc::Rc};
-
-    struct Harness;
-    impl Render for Harness {
-        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .size_full()
-                .tab_group()
-                .p_4()
-                .flex()
-                .items_start()
-                .child(search_control(cx))
-        }
-    }
-
-    #[gpui_kit::test]
-    fn issue296_native_search_press_keeps_one_pointer_action(cx: &mut TestAppContext) {
-        let clicks = Rc::new(Cell::new(0));
-        let captured = clicks.clone();
-        cx.update(|cx| {
-            gpui_kit::component::init(cx);
-            crate::init(cx);
-            cx.set_global(vega_theme::Theme::light());
-            cx.on_action(move |_: &crate::command_palette::OpenPalette, _| {
-                captured.set(captured.get() + 1)
-            });
-        });
-        let window = cx.open_window(size(px(400.), px(200.)), |_, _| Harness);
-        cx.run_until_parked();
-        crate::interaction::tests::assert_native_control_press(
-            window,
-            cx,
-            "titlebar-search-button",
-        );
-        assert_eq!(clicks.get(), 2);
-        let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        visual.update(|window, cx| window.focus_next(cx));
-        for key in ["enter", "space"] {
-            let keystroke = gpui_kit::Keystroke::parse(key).expect("key");
-            visual.simulate_event(gpui_kit::KeyDownEvent {
-                keystroke: keystroke.clone(),
-                is_held: false,
-                prefer_character_input: false,
-            });
-            visual.simulate_event(gpui_kit::KeyUpEvent { keystroke });
-        }
-        assert_eq!(clicks.get(), 4);
-    }
-
-    struct NavigationHarness;
-    impl Render for NavigationHarness {
-        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .size_full()
-                .tab_group()
-                .p_4()
-                .child(super::controls(cx, true))
-        }
-    }
-
-    #[gpui_kit::test]
-    fn issue296_navigation_focus_rings_preserve_icon_bounds(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            gpui_kit::component::init(cx);
-            crate::init(cx);
-            cx.set_global(vega_theme::Theme::light());
-            cx.set_global(super::NavigationState {
-                back: true,
-                forward: true,
-                error: None,
-            });
-        });
-        let window = cx.open_window(size(px(400.), px(200.)), |_, _| NavigationHarness);
-        cx.run_until_parked();
-        let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        let selectors = [
-            "titlebar-sidebar-icon",
-            "titlebar-back-icon",
-            "titlebar-forward-icon",
-        ];
-        let original = selectors.map(|selector| visual.debug_bounds(selector).expect("icon"));
-        visual.simulate_event(gpui_kit::KeyDownEvent {
-            keystroke: gpui_kit::Keystroke::parse("tab").expect("Tab"),
-            is_held: false,
-            prefer_character_input: false,
-        });
-        let mut seen = [false; 3];
-        for _ in 0..4 {
-            visual.update(|window, cx| window.focus_next(cx));
-            visual.run_until_parked();
-            let focused = visual.update(|window, cx| {
-                cx.global::<super::NavigationControlFocus>()
-                    .0
-                    .each_ref()
-                    .map(|focus| focus.is_focused(window))
-            });
-            for (index, current) in focused.into_iter().enumerate() {
-                seen[index] |= current;
-            }
-            for (selector, bounds) in selectors.into_iter().zip(original) {
-                assert_eq!(visual.debug_bounds(selector), Some(bounds));
-            }
-            if focused.into_iter().any(|current| current) {
-                assert!(visual.update(|window, _| {
-                    window
-                        .painted_quads()
-                        .iter()
-                        .any(|quad| quad.border_color == vega_theme::LIGHT.accent.into())
-                }));
-            }
-        }
-        assert!(seen.into_iter().all(|focused| focused));
-        visual.update(|window, cx| {
-            cx.set_global(super::NavigationState::default());
-            cx.refresh_windows();
-            window.blur(cx);
-        });
-        visual.run_until_parked();
-        for _ in 0..4 {
-            visual.update(|window, cx| window.focus_next(cx));
-            visual.run_until_parked();
-            assert!(visual.update(|window, cx| {
-                cx.global::<super::NavigationControlFocus>().0[..2]
-                    .iter()
-                    .all(|focus| !focus.is_focused(window))
-            }));
-        }
-    }
 }

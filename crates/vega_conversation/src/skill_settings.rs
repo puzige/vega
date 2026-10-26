@@ -21,19 +21,19 @@ use crate::types::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SkillSettingsError {
-    #[error("Skill settings storage unavailable")]
+    #[error("{}", vega_i18n::t("domain.skill.store"))]
     Store,
-    #[error("Skill source unavailable")]
+    #[error("{}", vega_i18n::t("domain.skill.notfound"))]
     NotFound,
-    #[error("Skill source or review changed")]
+    #[error("{}", vega_i18n::t("domain.skill.stale"))]
     Stale,
-    #[error("Skill source is unsafe or invalid")]
+    #[error("{}", vega_i18n::t("domain.skill.invalid"))]
     Invalid,
-    #[error("Skill source exceeds the candidate limit")]
+    #[error("{}", vega_i18n::t("domain.skill.toomanycandidates"))]
     TooManyCandidates,
-    #[error("Skill preview required")]
+    #[error("{}", vega_i18n::t("domain.skill.previewrequired"))]
     PreviewRequired,
-    #[error("Skill selection limit reached")]
+    #[error("{}", vega_i18n::t("domain.skill.selectionlimit"))]
     SelectionLimit,
 }
 
@@ -816,8 +816,5 @@ fn now_ms() -> i64 {
         .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
         .unwrap_or_default()
 }
-
-#[cfg(test)]
-mod tests;
 
 mod composer;

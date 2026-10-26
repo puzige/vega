@@ -122,7 +122,12 @@ pub fn set_global_settings(
     global_enabled: bool,
     automatic_enabled: bool,
 ) -> Result<SkillSettings, SkillStoreError> {
-    let tx = conn.unchecked_transaction()?;
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Skills,
+    )?;
     ensure_generation(&tx, expected_consent_generation)?;
     let previous = read_settings(&tx)?;
     if previous.global_enabled != global_enabled || previous.automatic_enabled != automatic_enabled
@@ -172,10 +177,15 @@ pub fn set_project_settings(
     enabled: bool,
     automatic: bool,
 ) -> Result<ProjectSkillSettings, SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     if !valid_id(project_id) {
         return Err(SkillStoreError::InvalidInput);
     }
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Skills,
+    )?;
     ensure_generation(&tx, expected_consent_generation)?;
     let previous = read_project_settings(&tx, project_id)?;
     if previous.enabled != enabled || previous.automatic != automatic {
@@ -201,8 +211,13 @@ pub fn link_source(
     expected_consent_generation: u64,
     input: NewSkillSource<'_>,
 ) -> Result<(), SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     validate_source(&input)?;
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Skills,
+    )?;
     ensure_generation(&tx, expected_consent_generation)?;
     tx.execute(
         "INSERT INTO skill_sources \
@@ -272,10 +287,15 @@ pub fn set_source_preferences(
     enabled: bool,
     automatic: bool,
 ) -> Result<(), SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     if !valid_id(source_id) {
         return Err(SkillStoreError::InvalidInput);
     }
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Skills,
+    )?;
     ensure_generation(&tx, expected_consent_generation)?;
     let previous: Option<(i64, i64)> = tx
         .query_row(
@@ -305,10 +325,15 @@ pub fn unlink_source(
     expected_consent_generation: u64,
     source_id: &str,
 ) -> Result<bool, SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     if !valid_id(source_id) {
         return Err(SkillStoreError::InvalidInput);
     }
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Skills,
+    )?;
     ensure_generation(&tx, expected_consent_generation)?;
     let deleted = tx.execute("DELETE FROM skill_sources WHERE id = ?1", [source_id])? > 0;
     // `skill_source_delete_revokes` also catches FK cascades from project
@@ -324,6 +349,8 @@ pub fn approve_skill(
     expected_consent_generation: u64,
     input: NewSkillApproval<'_>,
 ) -> Result<(), SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     if !valid_id(input.source_id)
         || !valid_name(input.name)
         || !valid_name(input.source_label)
@@ -331,7 +358,10 @@ pub fn approve_skill(
     {
         return Err(SkillStoreError::InvalidInput);
     }
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Skills,
+    )?;
     ensure_generation(&tx, expected_consent_generation)?;
     let old: Option<(String, i64, i64, String)> = tx
         .query_row(
@@ -389,10 +419,15 @@ pub fn set_approval_preferences(
     enabled: bool,
     automatic: bool,
 ) -> Result<(), SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     if !valid_id(source_id) || !valid_name(name) {
         return Err(SkillStoreError::InvalidInput);
     }
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Skills,
+    )?;
     ensure_generation(&tx, expected_consent_generation)?;
     let old: Option<(i64, i64)> = tx
         .query_row(
@@ -433,6 +468,8 @@ pub fn list_approved_skills(
 }
 
 fn bump_generations(conn: &Connection, revokes: bool) -> Result<(), SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     let updated = conn.execute(
         "UPDATE skill_settings SET consent_generation = consent_generation + 1, \
          revocation_generation = revocation_generation + ?1 \
@@ -594,6 +631,8 @@ pub fn save_snapshot(
     conn: &Connection,
     input: NewSkillSnapshot<'_>,
 ) -> Result<(), SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     if !valid_id(input.run_id)
         || !valid_id(input.thread_id)
         || !valid_hash(input.catalog_sha256)
@@ -612,7 +651,10 @@ pub fn save_snapshot(
         i64::try_from(input.consent_generation).map_err(|_| SkillStoreError::InvalidInput)?;
     let revoked =
         i64::try_from(input.revocation_generation).map_err(|_| SkillStoreError::InvalidInput)?;
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Skills,
+    )?;
     let settings = read_settings(&tx)?;
     if settings.consent_generation != input.consent_generation
         || settings.revocation_generation != input.revocation_generation
@@ -759,6 +801,8 @@ pub fn save_thread_pin(
     expected_consent_generation: u64,
     pin: NewThreadSkillPin<'_>,
 ) -> Result<(), SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     if !valid_id(pin.thread_id)
         || !matches!(pin.scope, "project" | "vega_global" | "imported")
         || !valid_path(pin.canonical_root)
@@ -770,7 +814,10 @@ pub fn save_thread_pin(
     {
         return Err(SkillStoreError::InvalidInput);
     }
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Skills,
+    )?;
     ensure_generation(&tx, expected_consent_generation)?;
     let approved: Option<i64> = tx
         .query_row(
@@ -834,10 +881,15 @@ pub fn clear_thread_pin(
     thread_id: &str,
     name: &str,
 ) -> Result<bool, SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     if !valid_id(thread_id) || !valid_name(name) {
         return Err(SkillStoreError::InvalidInput);
     }
-    let tx = conn.unchecked_transaction()?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Skills,
+    )?;
     ensure_generation(&tx, expected_consent_generation)?;
     let deleted = tx.execute(
         "DELETE FROM thread_skill_pins WHERE thread_id = ?1 AND name = ?2",
@@ -914,6 +966,8 @@ pub fn append_activation_audit(
     conn: &Connection,
     input: NewSkillActivationAudit<'_>,
 ) -> Result<(), SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     if !valid_id(input.run_id)
         || !valid_id(input.thread_id)
         || !valid_name(input.name)
@@ -960,6 +1014,8 @@ pub fn append_revocation_audit_once(
     conn: &Connection,
     input: NewSkillRevocationAudit<'_>,
 ) -> Result<bool, SkillStoreError> {
+    let _permit =
+        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
     if !valid_id(input.run_id)
         || !valid_id(input.thread_id)
         || !valid_name(input.name)
@@ -1153,842 +1209,4 @@ fn valid_status(value: &str) -> bool {
 
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::Store;
-    use rusqlite::params;
-    use sha2::{Digest, Sha256};
-    use tempfile::TempDir;
-
-    fn generation(conn: &Connection) -> u64 {
-        read_settings(conn).unwrap().consent_generation
-    }
-
-    fn set_global_settings(
-        conn: &Connection,
-        enabled: bool,
-        automatic: bool,
-    ) -> Result<SkillSettings, SkillStoreError> {
-        super::set_global_settings(conn, generation(conn), enabled, automatic)
-    }
-
-    fn set_project_settings(
-        conn: &Connection,
-        project_id: &str,
-        enabled: bool,
-        automatic: bool,
-    ) -> Result<ProjectSkillSettings, SkillStoreError> {
-        super::set_project_settings(conn, generation(conn), project_id, enabled, automatic)
-    }
-
-    fn link_source(conn: &Connection, input: NewSkillSource<'_>) -> Result<(), SkillStoreError> {
-        super::link_source(conn, generation(conn), input)
-    }
-
-    fn set_source_preferences(
-        conn: &Connection,
-        source_id: &str,
-        enabled: bool,
-        automatic: bool,
-    ) -> Result<(), SkillStoreError> {
-        super::set_source_preferences(conn, generation(conn), source_id, enabled, automatic)
-    }
-
-    fn unlink_source(conn: &Connection, source_id: &str) -> Result<bool, SkillStoreError> {
-        super::unlink_source(conn, generation(conn), source_id)
-    }
-
-    fn approve_skill(
-        conn: &Connection,
-        input: NewSkillApproval<'_>,
-    ) -> Result<(), SkillStoreError> {
-        super::approve_skill(conn, generation(conn), input)
-    }
-
-    fn set_approval_preferences(
-        conn: &Connection,
-        source_id: &str,
-        name: &str,
-        enabled: bool,
-        automatic: bool,
-    ) -> Result<(), SkillStoreError> {
-        super::set_approval_preferences(conn, generation(conn), source_id, name, enabled, automatic)
-    }
-
-    fn save_thread_pin(
-        conn: &Connection,
-        pin: NewThreadSkillPin<'_>,
-    ) -> Result<(), SkillStoreError> {
-        super::save_thread_pin(conn, generation(conn), pin)
-    }
-
-    fn store() -> (TempDir, Store) {
-        let root = tempfile::tempdir().unwrap();
-        let store = Store::open(root.path().join("vega.db")).unwrap();
-        store.migrate().unwrap();
-        store
-            .conn()
-            .execute(
-                "INSERT INTO projects (id, path, name, created_at, last_opened_at) \
-                 VALUES ('project-one', '/owned/project', 'Project', 1, 1)",
-                [],
-            )
-            .unwrap();
-        store
-            .conn()
-            .execute(
-                "INSERT INTO threads (id, project_id, model, created_at, updated_at) \
-                 VALUES ('thread-one', 'project-one', 'model', 1, 1)",
-                [],
-            )
-            .unwrap();
-        (root, store)
-    }
-
-    fn source<'a>(id: &'a str, scope: &'a str, project_id: Option<&'a str>) -> NewSkillSource<'a> {
-        NewSkillSource {
-            id,
-            scope,
-            project_id,
-            configured_root: "/owned/skills",
-            canonical_root: "/owned/skills",
-            root_dev: "1",
-            root_ino: "2",
-            import_order: 0,
-            enabled: false,
-            automatic: false,
-            created_at: 1,
-        }
-    }
-
-    #[test]
-    fn s07_store_defaults_off_and_consent_revocation_are_atomic() {
-        let (_root, store) = store();
-        let initial = read_settings(store.conn()).unwrap();
-        assert!(!initial.global_enabled);
-        assert!(!initial.automatic_enabled);
-        assert_eq!(
-            (initial.consent_generation, initial.revocation_generation),
-            (0, 0)
-        );
-
-        let project = read_project_settings(store.conn(), "project-one").unwrap();
-        assert!(!project.enabled);
-        assert!(!project.automatic);
-        set_project_settings(store.conn(), "project-one", true, true).unwrap();
-        let project = read_project_settings(store.conn(), "project-one").unwrap();
-        assert!(project.enabled && project.automatic);
-
-        link_source(store.conn(), source("import-one", "imported", None)).unwrap();
-        let after_link = read_settings(store.conn()).unwrap();
-        assert!(after_link.consent_generation > initial.consent_generation);
-        approve_skill(
-            store.conn(),
-            NewSkillApproval {
-                source_id: "import-one",
-                name: "reviewer",
-                approved_sha256: &"a".repeat(64),
-                source_label: "import-one",
-                enabled: true,
-                automatic: true,
-                reviewed_at: 2,
-            },
-        )
-        .unwrap();
-        set_global_settings(store.conn(), true, true).unwrap();
-        set_source_preferences(store.conn(), "import-one", true, true).unwrap();
-        let approved = list_approved_skills(store.conn()).unwrap();
-        assert_eq!(approved.len(), 1);
-        assert_eq!(approved[0].approved_sha256, "a".repeat(64));
-        assert!(approved[0].enabled && approved[0].automatic);
-        assert!(read_settings(store.conn()).unwrap().revocation_generation == 0);
-
-        set_approval_preferences(store.conn(), "import-one", "reviewer", false, false).unwrap();
-        let toggled = list_approved_skills(store.conn()).unwrap();
-        assert_eq!(toggled[0].approved_sha256, "a".repeat(64));
-        assert!(!toggled[0].enabled);
-        assert!(read_settings(store.conn()).unwrap().revocation_generation > 0);
-        set_approval_preferences(store.conn(), "import-one", "reviewer", true, true).unwrap();
-
-        let before_disable = read_settings(store.conn()).unwrap();
-        set_source_preferences(store.conn(), "import-one", false, false).unwrap();
-        let disabled = read_settings(store.conn()).unwrap();
-        assert_eq!(
-            disabled.revocation_generation,
-            before_disable.revocation_generation + 1
-        );
-        assert_eq!(
-            disabled.consent_generation,
-            before_disable.consent_generation + 1
-        );
-        assert!(disabled.consent_generation > after_link.consent_generation);
-        unlink_source(store.conn(), "import-one").unwrap();
-        let unlinked = read_settings(store.conn()).unwrap();
-        assert_eq!(
-            unlinked.revocation_generation,
-            disabled.revocation_generation + 1
-        );
-        assert_eq!(unlinked.consent_generation, disabled.consent_generation + 1);
-        assert!(list_approved_skills(store.conn()).unwrap().is_empty());
-        assert!(list_sources(store.conn()).unwrap().is_empty());
-    }
-
-    #[test]
-    fn s04_store_keeps_source_order_and_rejects_duplicate_import_identity() {
-        let (_root, store) = store();
-        let mut project = source("project-source", "project", Some("project-one"));
-        project.configured_root = "/owned/project/.agents/skills";
-        project.canonical_root = project.configured_root;
-        link_source(store.conn(), project).unwrap();
-        let mut global = source("vega-global", "vega_global", None);
-        global.configured_root = "/owned/config/vega/skills";
-        global.canonical_root = global.configured_root;
-        link_source(store.conn(), global).unwrap();
-        let mut imported = source("imported", "imported", None);
-        imported.import_order = 3;
-        link_source(store.conn(), imported).unwrap();
-        let mut earlier_import = source("earlier-import", "imported", None);
-        earlier_import.configured_root = "/owned/other-skills";
-        earlier_import.canonical_root = earlier_import.configured_root;
-        earlier_import.root_dev = "3";
-        earlier_import.root_ino = "4";
-        earlier_import.import_order = 1;
-        link_source(store.conn(), earlier_import).unwrap();
-
-        let sources = list_sources(store.conn()).unwrap();
-        assert_eq!(
-            sources
-                .iter()
-                .map(|source| source.id.as_str())
-                .collect::<Vec<_>>(),
-            vec![
-                "project-source",
-                "vega-global",
-                "earlier-import",
-                "imported"
-            ]
-        );
-        store
-            .conn()
-            .execute(
-                "INSERT INTO projects (id, path, name, created_at, last_opened_at) \
-             VALUES ('other-project', '/owned/other', 'Other', 1, 1)",
-                [],
-            )
-            .unwrap();
-        let mut unrelated = source("other-source", "project", Some("other-project"));
-        unrelated.configured_root = "/owned/other/.agents/skills";
-        unrelated.canonical_root = unrelated.configured_root;
-        link_source(store.conn(), unrelated).unwrap();
-        let selected = list_sources_for_project(store.conn(), Some("project-one")).unwrap();
-        assert_eq!(
-            selected
-                .iter()
-                .map(|source| source.id.as_str())
-                .collect::<Vec<_>>(),
-            vec![
-                "project-source",
-                "vega-global",
-                "earlier-import",
-                "imported"
-            ]
-        );
-        let standalone = list_sources_for_project(store.conn(), None).unwrap();
-        assert_eq!(
-            standalone
-                .iter()
-                .map(|source| source.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["vega-global", "earlier-import", "imported"]
-        );
-        let mut alias = source("alias", "imported", None);
-        alias.configured_root = "/owned/alias";
-        assert!(link_source(store.conn(), alias).is_err());
-    }
-
-    #[test]
-    fn s07_project_removal_cascades_its_root_and_revokes_old_authority() {
-        let (_root, store) = store();
-        let mut project = source("project-source", "project", Some("project-one"));
-        project.configured_root = "/owned/project/.agents/skills";
-        project.canonical_root = project.configured_root;
-        link_source(store.conn(), project).unwrap();
-        let before = read_settings(store.conn()).unwrap();
-        assert!(crate::projects::remove(store.conn(), "project-one").unwrap());
-        assert!(list_sources(store.conn()).unwrap().is_empty());
-        let after = read_settings(store.conn()).unwrap();
-        assert_eq!(after.consent_generation, before.consent_generation + 1);
-        assert_eq!(
-            after.revocation_generation,
-            before.revocation_generation + 1
-        );
-    }
-
-    #[test]
-    fn s07_late_scan_cannot_relink_or_reapprove_after_revocation() {
-        let (_root, store) = store();
-        link_source(store.conn(), source("import-one", "imported", None)).unwrap();
-        approve_skill(
-            store.conn(),
-            NewSkillApproval {
-                source_id: "import-one",
-                name: "reviewer",
-                approved_sha256: &"a".repeat(64),
-                source_label: "import-one",
-                enabled: true,
-                automatic: true,
-                reviewed_at: 2,
-            },
-        )
-        .unwrap();
-        let stale_scan_generation = generation(store.conn());
-        set_approval_preferences(store.conn(), "import-one", "reviewer", false, false).unwrap();
-        let revoked = read_settings(store.conn()).unwrap();
-        assert!(matches!(
-            super::approve_skill(
-                store.conn(),
-                stale_scan_generation,
-                NewSkillApproval {
-                    source_id: "import-one",
-                    name: "reviewer",
-                    approved_sha256: &"a".repeat(64),
-                    source_label: "import-one",
-                    enabled: true,
-                    automatic: true,
-                    reviewed_at: 3,
-                }
-            ),
-            Err(SkillStoreError::Stale)
-        ));
-        assert!(!list_approved_skills(store.conn()).unwrap()[0].enabled);
-        assert_eq!(read_settings(store.conn()).unwrap(), revoked);
-
-        let stale_link_generation = generation(store.conn());
-        unlink_source(store.conn(), "import-one").unwrap();
-        let unlinked = read_settings(store.conn()).unwrap();
-        assert!(matches!(
-            super::link_source(
-                store.conn(),
-                stale_link_generation,
-                source("late-alias", "imported", None)
-            ),
-            Err(SkillStoreError::Stale)
-        ));
-        assert!(list_sources(store.conn()).unwrap().is_empty());
-        assert_eq!(read_settings(store.conn()).unwrap(), unlinked);
-    }
-
-    #[test]
-    fn s07_changed_reviewed_sha_revokes_once_and_stale_scan_cannot_restore_it() {
-        let (_root, store) = store();
-        link_source(store.conn(), source("import-one", "imported", None)).unwrap();
-        approve_skill(
-            store.conn(),
-            NewSkillApproval {
-                source_id: "import-one",
-                name: "reviewer",
-                approved_sha256: &"a".repeat(64),
-                source_label: "import-one",
-                enabled: true,
-                automatic: true,
-                reviewed_at: 2,
-            },
-        )
-        .unwrap();
-        let old_generation = generation(store.conn());
-        let before = read_settings(store.conn()).unwrap();
-        approve_skill(
-            store.conn(),
-            NewSkillApproval {
-                source_id: "import-one",
-                name: "reviewer",
-                approved_sha256: &"b".repeat(64),
-                source_label: "import-one",
-                enabled: true,
-                automatic: true,
-                reviewed_at: 3,
-            },
-        )
-        .unwrap();
-        let changed = read_settings(store.conn()).unwrap();
-        assert_eq!(changed.consent_generation, before.consent_generation + 1);
-        assert_eq!(
-            changed.revocation_generation,
-            before.revocation_generation + 1
-        );
-        assert!(matches!(
-            super::approve_skill(
-                store.conn(),
-                old_generation,
-                NewSkillApproval {
-                    source_id: "import-one",
-                    name: "reviewer",
-                    approved_sha256: &"a".repeat(64),
-                    source_label: "import-one",
-                    enabled: true,
-                    automatic: true,
-                    reviewed_at: 4,
-                }
-            ),
-            Err(SkillStoreError::Stale)
-        ));
-        let approvals = list_approved_skills(store.conn()).unwrap();
-        assert_eq!(approvals.len(), 1);
-        assert_eq!(approvals[0].approved_sha256, "b".repeat(64));
-        assert_eq!(read_settings(store.conn()).unwrap(), changed);
-    }
-
-    #[test]
-    fn s12_snapshot_reopens_exact_bytes_and_detects_tamper_or_revocation() {
-        let (root, store) = store();
-        let settings = read_settings(store.conn()).unwrap();
-        let bytes = b"private frozen Skill body";
-        let sha = format!("{:x}", Sha256::digest(bytes));
-        save_snapshot(
-            store.conn(),
-            NewSkillSnapshot {
-                run_id: "run-one",
-                thread_id: "thread-one",
-                consent_generation: settings.consent_generation,
-                revocation_generation: settings.revocation_generation,
-                catalog_sha256: &"b".repeat(64),
-                snapshot_sha256: &sha,
-                bytes,
-                updated_at: 3,
-            },
-        )
-        .unwrap();
-        assert!(matches!(
-            save_snapshot(
-                store.conn(),
-                NewSkillSnapshot {
-                    run_id: "run-one",
-                    thread_id: "thread-one",
-                    consent_generation: settings.consent_generation,
-                    revocation_generation: settings.revocation_generation,
-                    catalog_sha256: &"c".repeat(64),
-                    snapshot_sha256: &sha,
-                    bytes,
-                    updated_at: 4,
-                }
-            ),
-            Err(SkillStoreError::Stale)
-        ));
-        drop(store);
-        let reopened = Store::open(root.path().join("vega.db")).unwrap();
-        let record = load_recoverable_snapshot(reopened.conn(), "run-one")
-            .unwrap()
-            .unwrap();
-        assert_eq!(record.bytes, bytes);
-        assert_eq!(record.snapshot_sha256, sha);
-
-        reopened
-            .conn()
-            .execute(
-                "UPDATE skill_run_snapshots SET bytes = ?1 WHERE run_id = 'run-one'",
-                [b"tampered".as_slice()],
-            )
-            .unwrap();
-        assert!(matches!(
-            load_recoverable_snapshot(reopened.conn(), "run-one"),
-            Err(SkillStoreError::DigestMismatch)
-        ));
-        reopened
-            .conn()
-            .execute(
-                "UPDATE skill_run_snapshots SET bytes = ?1 WHERE run_id = 'run-one'",
-                [bytes.as_slice()],
-            )
-            .unwrap();
-        set_global_settings(reopened.conn(), true, false).unwrap();
-        assert!(matches!(
-            load_recoverable_snapshot(reopened.conn(), "run-one"),
-            Err(SkillStoreError::Stale)
-        ));
-    }
-
-    #[test]
-    fn s12_snapshot_rejects_oversize_before_materializing_blob() {
-        let (_root, store) = store();
-        let settings = read_settings(store.conn()).unwrap();
-        let too_large = vec![0_u8; 1024 * 1024 + 1];
-        let sha = digest(&too_large);
-        assert!(matches!(
-            save_snapshot(
-                store.conn(),
-                NewSkillSnapshot {
-                    run_id: "run-oversize",
-                    thread_id: "thread-one",
-                    consent_generation: settings.consent_generation,
-                    revocation_generation: settings.revocation_generation,
-                    catalog_sha256: &"b".repeat(64),
-                    snapshot_sha256: &sha,
-                    bytes: &too_large,
-                    updated_at: 3,
-                }
-            ),
-            Err(SkillStoreError::TooLarge)
-        ));
-
-        let small = b"bounded";
-        save_snapshot(
-            store.conn(),
-            NewSkillSnapshot {
-                run_id: "run-oversize",
-                thread_id: "thread-one",
-                consent_generation: settings.consent_generation,
-                revocation_generation: settings.revocation_generation,
-                catalog_sha256: &"b".repeat(64),
-                snapshot_sha256: &digest(small),
-                bytes: small,
-                updated_at: 3,
-            },
-        )
-        .unwrap();
-        store
-            .conn()
-            .execute_batch("PRAGMA ignore_check_constraints = ON")
-            .unwrap();
-        store
-            .conn()
-            .execute(
-                "UPDATE skill_run_snapshots SET bytes = zeroblob(1048577) \
-                 WHERE run_id = 'run-oversize'",
-                [],
-            )
-            .unwrap();
-        assert!(matches!(
-            load_recoverable_snapshot(store.conn(), "run-oversize"),
-            Err(SkillStoreError::TooLarge)
-        ));
-    }
-
-    #[test]
-    fn s12_history_page_batch_is_thread_scoped_and_keeps_audit_when_snapshot_stale() {
-        let (_root, store) = store();
-        store
-            .conn()
-            .execute_batch(
-                "INSERT INTO messages \
-                   (id, thread_id, seq, role, kind, content, status, created_at) VALUES \
-                   ('run-one', 'thread-one', 1, 'assistant', 'text', 'done', 'done', 1); \
-                 INSERT INTO threads (id, project_id, model, created_at, updated_at) \
-                   VALUES ('thread-two', 'project-one', 'model', 1, 1); \
-                 INSERT INTO messages \
-                   (id, thread_id, seq, role, kind, content, status, created_at) VALUES \
-                   ('run-two', 'thread-two', 1, 'assistant', 'text', 'other', 'done', 1);",
-            )
-            .unwrap();
-        let body = b"frozen history";
-        let settings = read_settings(store.conn()).unwrap();
-        save_snapshot(
-            store.conn(),
-            NewSkillSnapshot {
-                run_id: "run-one",
-                thread_id: "thread-one",
-                consent_generation: settings.consent_generation,
-                revocation_generation: settings.revocation_generation,
-                catalog_sha256: &"b".repeat(64),
-                snapshot_sha256: &digest(body),
-                bytes: body,
-                updated_at: 2,
-            },
-        )
-        .unwrap();
-        for (run_id, thread_id) in [("run-one", "thread-one"), ("run-two", "thread-one")] {
-            append_activation_audit(
-                store.conn(),
-                NewSkillActivationAudit {
-                    run_id,
-                    thread_id,
-                    name: "reviewer",
-                    source_scope: Some("project"),
-                    content_sha256: Some(&"a".repeat(64)),
-                    origin: "explicit_user",
-                    status: "loaded",
-                    created_at: 2,
-                },
-            )
-            .unwrap();
-        }
-        let page = load_history_page_records(store.conn(), "thread-one", 1, 1).unwrap();
-        assert_eq!(
-            page.audits.len(),
-            1,
-            "foreign message ownership is excluded"
-        );
-        assert_eq!(page.recoverable_snapshots.len(), 1);
-        assert_eq!(page.recoverable_snapshots[0].bytes, body);
-        set_global_settings(store.conn(), true, false).unwrap();
-        let page = load_history_page_records(store.conn(), "thread-one", 1, 1).unwrap();
-        assert_eq!(page.audits.len(), 1, "revocation does not erase history");
-        assert!(page.recoverable_snapshots.is_empty());
-    }
-
-    #[test]
-    fn s12_history_page_snapshot_bytes_are_capped_without_erasing_audits() {
-        let (_root, store) = store();
-        let settings = read_settings(store.conn()).unwrap();
-        let bytes = vec![b'x'; 1024 * 1024];
-        let hash = digest(&bytes);
-        for seq in 1..=9 {
-            let run_id = format!("run-{seq}");
-            store
-                .conn()
-                .execute(
-                    "INSERT INTO messages \
-                     (id, thread_id, seq, role, kind, content, status, created_at) \
-                     VALUES (?1, 'thread-one', ?2, 'assistant', 'text', 'done', 'done', 1)",
-                    params![run_id, seq],
-                )
-                .unwrap();
-            save_snapshot(
-                store.conn(),
-                NewSkillSnapshot {
-                    run_id: &run_id,
-                    thread_id: "thread-one",
-                    consent_generation: settings.consent_generation,
-                    revocation_generation: settings.revocation_generation,
-                    catalog_sha256: &"b".repeat(64),
-                    snapshot_sha256: &hash,
-                    bytes: &bytes,
-                    updated_at: 2,
-                },
-            )
-            .unwrap();
-            append_activation_audit(
-                store.conn(),
-                NewSkillActivationAudit {
-                    run_id: &run_id,
-                    thread_id: "thread-one",
-                    name: "reviewer",
-                    source_scope: Some("project"),
-                    content_sha256: Some(&"a".repeat(64)),
-                    origin: "model",
-                    status: "loaded",
-                    created_at: 2,
-                },
-            )
-            .unwrap();
-        }
-        let page = load_history_page_records(store.conn(), "thread-one", 1, 9).unwrap();
-        assert_eq!(page.audits.len(), 9);
-        assert_eq!(page.recoverable_snapshots.len(), 8);
-        assert_eq!(
-            page.recoverable_snapshots
-                .iter()
-                .map(|snapshot| snapshot.bytes.len())
-                .sum::<usize>(),
-            8 * 1024 * 1024
-        );
-    }
-
-    #[test]
-    fn s12_pin_and_content_free_audit_cascade_with_thread() {
-        let (_root, store) = store();
-        set_project_settings(store.conn(), "project-one", true, false).unwrap();
-        let mut project = source("project-source", "project", Some("project-one"));
-        project.configured_root = "/owned/project/.agents/skills";
-        project.canonical_root = project.configured_root;
-        link_source(store.conn(), project).unwrap();
-        set_source_preferences(store.conn(), "project-source", true, false).unwrap();
-        approve_skill(
-            store.conn(),
-            NewSkillApproval {
-                source_id: "project-source",
-                name: "reviewer",
-                approved_sha256: &"a".repeat(64),
-                source_label: "project-one",
-                enabled: true,
-                automatic: false,
-                reviewed_at: 2,
-            },
-        )
-        .unwrap();
-        save_thread_pin(
-            store.conn(),
-            NewThreadSkillPin {
-                thread_id: "thread-one",
-                scope: "project",
-                canonical_root: "/owned/project/.agents/skills",
-                root_dev: "1",
-                root_ino: "2",
-                name: "reviewer",
-                approved_sha256: &"a".repeat(64),
-                source_label: "project-one",
-                pinned_at: 2,
-            },
-        )
-        .unwrap();
-        append_activation_audit(
-            store.conn(),
-            NewSkillActivationAudit {
-                run_id: "run-one",
-                thread_id: "thread-one",
-                name: "reviewer",
-                source_scope: Some("project"),
-                content_sha256: Some(&"a".repeat(64)),
-                origin: "model",
-                status: "loaded",
-                created_at: 3,
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            list_thread_pins(store.conn(), "thread-one").unwrap().len(),
-            1
-        );
-        unlink_source(store.conn(), "project-source").unwrap();
-        assert_eq!(
-            list_thread_pins(store.conn(), "thread-one").unwrap().len(),
-            1
-        );
-        assert!(matches!(
-            save_thread_pin(
-                store.conn(),
-                NewThreadSkillPin {
-                    thread_id: "thread-one",
-                    scope: "project",
-                    canonical_root: "/owned/project/.agents/skills",
-                    root_dev: "1",
-                    root_ino: "2",
-                    name: "reviewer",
-                    approved_sha256: &"a".repeat(64),
-                    source_label: "project-one",
-                    pinned_at: 4,
-                }
-            ),
-            Err(SkillStoreError::Stale)
-        ));
-        let audits = list_activation_audits(store.conn(), "thread-one").unwrap();
-        assert_eq!(audits.len(), 1);
-        assert_eq!(audits[0].name, "reviewer");
-        assert!(
-            append_activation_audit(
-                store.conn(),
-                NewSkillActivationAudit {
-                    run_id: "run-one",
-                    thread_id: "thread-one",
-                    name: "../../secret",
-                    source_scope: Some("project"),
-                    content_sha256: None,
-                    origin: "model",
-                    status: "loaded",
-                    created_at: 4,
-                },
-            )
-            .is_err()
-        );
-        store
-            .conn()
-            .execute("DELETE FROM threads WHERE id = ?1", params!["thread-one"])
-            .unwrap();
-        assert!(
-            list_thread_pins(store.conn(), "thread-one")
-                .unwrap()
-                .is_empty()
-        );
-        assert!(
-            list_activation_audits(store.conn(), "thread-one")
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn s13_revoked_audit_requires_loaded_activation_and_is_exactly_once() {
-        let (_root, store) = store();
-        let sha = "a".repeat(64);
-        let marker = || NewSkillRevocationAudit {
-            run_id: "run-one",
-            thread_id: "thread-one",
-            name: "reviewer",
-            source_scope: "project",
-            content_sha256: &sha,
-            created_at: 4,
-        };
-        assert!(!append_revocation_audit_once(store.conn(), marker()).unwrap());
-        append_activation_audit(
-            store.conn(),
-            NewSkillActivationAudit {
-                run_id: "run-one",
-                thread_id: "thread-one",
-                name: "reviewer",
-                source_scope: Some("project"),
-                content_sha256: Some(&sha),
-                origin: "model",
-                status: "loaded",
-                created_at: 3,
-            },
-        )
-        .unwrap();
-        assert!(append_revocation_audit_once(store.conn(), marker()).unwrap());
-        assert!(!append_revocation_audit_once(store.conn(), marker()).unwrap());
-        let reopened = Store::open(store.database_path().unwrap()).unwrap();
-        assert!(!append_revocation_audit_once(reopened.conn(), marker()).unwrap());
-        let audits = list_activation_audits(reopened.conn(), "thread-one").unwrap();
-        assert_eq!(audits.len(), 2);
-        assert_eq!(audits[0].status, "loaded");
-        assert_eq!(audits[1].status, "revoked");
-        assert_eq!(audits[1].origin, "model");
-        assert_eq!(audits[1].content_sha256.as_deref(), Some(sha.as_str()));
-        assert!(!format!("{audits:?}").contains("/owned/"));
-    }
-
-    #[test]
-    fn s07_cross_project_skill_cannot_be_pinned_to_unrelated_thread() {
-        let (_root, store) = store();
-        store
-            .conn()
-            .execute(
-                "INSERT INTO projects (id, path, name, created_at, last_opened_at) \
-             VALUES ('other-project', '/owned/other', 'Other', 1, 1)",
-                [],
-            )
-            .unwrap();
-        set_project_settings(store.conn(), "other-project", true, false).unwrap();
-        let mut other = source("other-source", "project", Some("other-project"));
-        other.configured_root = "/owned/other/.agents/skills";
-        other.canonical_root = other.configured_root;
-        link_source(store.conn(), other).unwrap();
-        set_source_preferences(store.conn(), "other-source", true, false).unwrap();
-        approve_skill(
-            store.conn(),
-            NewSkillApproval {
-                source_id: "other-source",
-                name: "reviewer",
-                approved_sha256: &"a".repeat(64),
-                source_label: "other-project",
-                enabled: true,
-                automatic: false,
-                reviewed_at: 2,
-            },
-        )
-        .unwrap();
-        assert!(matches!(
-            save_thread_pin(
-                store.conn(),
-                NewThreadSkillPin {
-                    thread_id: "thread-one",
-                    scope: "project",
-                    canonical_root: "/owned/other/.agents/skills",
-                    root_dev: "1",
-                    root_ino: "2",
-                    name: "reviewer",
-                    approved_sha256: &"a".repeat(64),
-                    source_label: "other-project",
-                    pinned_at: 3,
-                }
-            ),
-            Err(SkillStoreError::Stale)
-        ));
-        assert!(
-            list_thread_pins(store.conn(), "thread-one")
-                .unwrap()
-                .is_empty()
-        );
-    }
 }

@@ -2,7 +2,7 @@
 
 **版本** v0.22 · 2026-10-11 文档整理 · 关联：[vega-features.md](vega-features.md)
 
-> **实现事实与新方案分开。** 当前 UI 基线为 [#296 v2 / 0.1.67](vega-issue-296-ui-hierarchy-v2.md)；本轮目标见 [18点评审总览](vega-issue-296-ui-redesign-review.md)与[v3 spec](vega-issue-296-ui-redesign-v3.md)。v3尚待评审、未实施，其§8列出的展示契约将在获准实施时替代旧条款。下列业务/安全条款继续有效；不得从历史视觉描述推导本轮已实现。
+> **实现事实与新方案分开。** 当前 UI 基线为 [#296 v2 / 0.1.67](296/vega-issue-296-ui-hierarchy-v2.md)；本轮目标见 [18点评审总览](296/vega-issue-296-ui-redesign-review.md)与[v3 spec](296/vega-issue-296-ui-redesign-v3.md)。v3尚待评审、未实施，其§8列出的展示契约将在获准实施时替代旧条款。下列业务/安全条款继续有效；不得从历史视觉描述推导本轮已实现。
 
 > **规范分层**：跨任务的视觉语言、语义 token 与新 UI 默认规则以
 > [Vega 设计守则](vega-design-guidelines.md)为入口；本文件继续承载组件行为和
@@ -75,7 +75,7 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 | 正文字体 | 系统字体（SF Pro），13px/1.55 行高 |
 | 会话消息正文 | 15px/1.65 |
 | 代码字体 | SF Mono / JetBrains Mono，12.5px，等宽对齐 |
-| 侧边栏条目 | 主条目 13px；分组标题与辅助信息 12px；行高 32px，超出省略号 |
+| 侧边栏条目 | 主条目 13px；分组标题 14px/500；辅助信息 12px；行高 32px，超出省略号 |
 | 标题层级 | 仅三级：页面 16px 600 / 区块 14px 600 / 卡片 13px 500 |
 | 空态主标题 | 28px / 600 |
 | 说明 / 元数据 | 12px |
@@ -90,7 +90,7 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 - 项目、会话和 Settings 导航行使用 8px 圆角；Settings 保持 32px 高及12px左右/底部 inset。外层48px占高是 v3 U01提案，不能误称当前已实现。
 
 ### 4.2 工具调用卡片（信息密度核心）
-- 工具业务行为见 [Issue #70 compact tool activity groups](vega-issue-70-tool-activity.md)。过程表面的已交付基线由 v2 H5覆盖；新目标v3 U18撤掉整组灰底。连续调用分组、子调用和安全详情仍可展开，不能因表面变化删能力。
+- 工具业务行为见 [Issue #70 compact tool activity groups](70/vega-issue-70-tool-activity.md)。过程表面的已交付基线由 v2 H5覆盖；新目标v3 U18撤掉整组灰底。连续调用分组、子调用和安全详情仍可展开，不能因表面变化删能力。
 - 前导图标只表达工具分类并统一使用 `text-secondary`：Shell=`Terminal`、Search=`Search`、Read/Find/Write/Edit/Skill=`Document`、MCP/Other=`Summary`；成功不替换为 Check，失败/拒绝/取消不替换为 Warning，也不使用 success/danger 图标色。状态继续由真实摘要文字、非零退出码与展开详情的语义 footer 表达；完整摘要文字保持中性层级。
 - Bash 在真实 `ToolCallRunning` 到达后于具体命令行显示按整秒刷新的实时耗时；终态立即改用 runtime 持久化的精确 `duration_ms`。具体 Bash 行保留可靠耗时和展开入口；已交付布局与v3 U16标题邻接时长目标分开，新布局不采用把时间推到最右的规则。多调用聚合摘要始终不显示子项或合计耗时，非 Bash 工具不显示耗时，重启不伪造运行起点。
 - 写操作摘要显示安全的规范相对路径、bytes/replacements；完整 Diff 仍由既有 Artifact/Diff 路径承载。
@@ -107,10 +107,10 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 
 ### 4.4 Composer
 - 多行自适应（1~8 行，超出内滚）；placeholder `描述任务，或用 @ 引用文件`
-- 键位（v0.18 冻结，Issue #66 / A2-11）：`Enter` 发送、`Shift+Enter` 换行、`Cmd+Enter` 发送；IME 组合态一律交输入法确认、绝不发送；浮层（`@file` 候选/失败重试、`+` 菜单与 `/` 命令、模型选择器、停止按钮、权限卡）打开时 `Enter` 归浮层，绝不发送。详见 [Issue 66 键位契约](vega-issue-66-enter-to-send.md)。
+- 键位（v0.18 冻结，Issue #66 / A2-11）：`Enter` 发送、`Shift+Enter` 换行、`Cmd+Enter` 发送；IME 组合态一律交输入法确认、绝不发送；浮层（`@file` 候选/失败重试、`+` 菜单与 `/` 命令、模型选择器、停止按钮、权限卡）打开时 `Enter` 归浮层，绝不发送。详见 [Issue 66 键位契约](66/vega-issue-66-enter-to-send.md)。
 - 主输入区在上；下方只有一行真实操作：添加上下文、Ask/Plan/Execute、权限（只读 / 确认 / 自动）、模型、thinking 与 send/stop；空间不足时允许自适应收紧或换行
 - 模式与权限当前值持续可见；菜单、键盘路径、loading/error 和提交 guard 继续使用真实 controller 状态
-- Issue #294：Composer 卡片底部不挂载 branch 图标、名称、选择入口、焦点目标或占位，覆盖 Native/Codex、已有消息及历史水合会话。新建任务上方独立 utility bar 保留项目/分支选择器与 live branch projection；已有消息的会话不渲染 utility bar，Environment 不恢复分支行。此规则取代 #191 底行入口要求，详见 [Issue #294](vega-issue-294-composer-footer-no-branch.md) 与 [设计守则 §9](vega-design-guidelines.md#9-composer)。
+- Issue #294：Composer 卡片底部不挂载 branch 图标、名称、选择入口、焦点目标或占位，覆盖 Native/Codex、已有消息及历史水合会话。新建任务上方独立 utility bar 保留项目/分支选择器与 live branch projection；已有消息的会话不渲染 utility bar，Environment 不恢复分支行。此规则取代 #191 底行入口要求，详见 [Issue #294](294/vega-issue-294-composer-footer-no-branch.md) 与 [设计守则 §9](vega-design-guidelines.md#9-composer)。
 - 不显示虚构 token / 成本仪表。v3 U09提出Composer真实上下文环与浮层，替代旧位置限制；当前上下文、输入预算、估算和累计计费分别处理，无数据不得显示0或伪比例。
 
 ### 4.5 Diff 视图
@@ -163,17 +163,18 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 - v0.9 (2026-09-10) R23 Sidebar footer 修正：常驻设置入口使用完整 32px 行高并铺满 Sidebar 的 12px 内边距内容列；不得叠加额外水平缩进或固定宽度。精确验收见 [R23 Sidebar footer fill](vega-r23-sidebar-footer-fill.md)。
 - v0.10 (2026-09-10) R24 Sidebar footer 复验修正：用户确认 R23 视觉未解决；设置入口保持 32px，但 hover/点击面改为与 Sidebar 左右及底部 edge-to-edge，普通内容继续保留 12px inset。精确验收见 [R24 Sidebar footer edge-to-edge](vega-r24-sidebar-footer-edge-to-edge.md)。
 - v0.11 (2026-09-10) R25 Sidebar 导航复验修正：普通 hover/selected token 改为中性灰；项目行去除独立 Chevron 并以 Folder open/closed 表达展开状态；导航行圆角统一为 8px；Settings 撤销 edge-to-edge 条带并回归 12px inset。精确验收见 [R25 Sidebar navigation](vega-r25-sidebar-navigation.md)。
-- v0.13 (2026-09-21) Issue #100 宽度一致：正文列与 Composer 统一为 768px（参考实现共用 `--thread-content-max-width: 48rem`），`CONTENT_MAX_WIDTH`/`COMPOSER_MAX_WIDTH` 恒等；窄窗下两者同时钳制且仍等宽。详见 [Issue #100 composer width](vega-issue-100-composer-width.md)。
-- v0.12 (2026-09-21) Issue #70 工具活动层级：连续调用默认收敛为无常驻 surface 的单行分组，展开后显示有序子调用并允许按调用展开安全 detail；严格投影、权限和失败可见性不变。精确验收见 [Issue #70 compact tool activity groups](vega-issue-70-tool-activity.md)。
+- v0.13 (2026-09-21) Issue #100 宽度一致：正文列与 Composer 统一为 768px（参考实现共用 `--thread-content-max-width: 48rem`），`CONTENT_MAX_WIDTH`/`COMPOSER_MAX_WIDTH` 恒等；窄窗下两者同时钳制且仍等宽。详见 [Issue #100 composer width](100/vega-issue-100-composer-width.md)。
+- v0.12 (2026-09-21) Issue #70 工具活动层级：连续调用默认收敛为无常驻 surface 的单行分组，展开后显示有序子调用并允许按调用展开安全 detail；严格投影、权限和失败可见性不变。精确验收见 [Issue #70 compact tool activity groups](70/vega-issue-70-tool-activity.md)。
 - v0.12 (2026-09-10) R26 Sidebar 分组与渐进显现：生产投影固定为 `PINNED / PROJECTS / RECENTS`，任务只出现一次；section、project 与 task 的辅助操作仅在所属区域 hover、键盘 focus 或菜单打开时可见，且保持既有 hitbox 与无布局跳动。精确验收见 [R26 Sidebar sections](vega-r26-sidebar-sections-hover.md)。
 - v0.13 (2026-09-11) R27 Sidebar 行栅格修正：Pinned 行移除重复 Pin 图标与空槽；项目 Folder 到名称使用 8px gap；项目名称与所有任务标题统一 32px 内容 inset；Pinned 项目元数据固定 85px 列宽。精确验收见 [R27 Sidebar row alignment](vega-r27-sidebar-row-alignment.md)。
 - v0.14 (2026-09-11) R28 Sidebar 标题大小写：生产区块标题由全大写收敛为 `Pinned / Projects / Recents`，其余字体 token、层级、顺序、几何与渐进显现规则不变。精确验收见 [R28 Sidebar heading case](vega-r28-sidebar-heading-case.md)。
 - v0.15 (2026-09-11) R29 Sidebar 渐进列表：区块按自然高度排列，Projects/Recents 初始分别展示 5/10 条，超出时提供独立的 `Show More / Show Less`；外层 Sidebar 统一滚动，既有排序与投影语义不变。精确验收见 [R29 Sidebar progressive lists](vega-r29-sidebar-progressive-lists.md)。
 - v0.16 (2026-09-11) R30 Sidebar 字号：导航主条目提升为 15px，分组标题、项目归属、相对时间与快捷键提升为 13px；32px 行高和非 Sidebar typography 保持不变。精确验收见 [R30 Sidebar typography](vega-r30-sidebar-typography.md)。
 - v0.17 (2026-09-11) R31 Sidebar 字号回退与 Pinned 左缘：按用户原生复验恢复主条目 13px、分组与辅助信息 12px；无图标的 Pinned 标题不再保留 32px 空槽，直接与 Pinned 分组标题左对齐，其余导航栅格不变。精确验收见 [R31 Sidebar rollback and Pinned leading edge](vega-r31-sidebar-typography-revert-pinned-leading.md)。
-- v0.18 (2026-09-20) Issue #66 键位冻结：§4.4 明确 `Enter` 发送、`Shift+Enter` 换行、`Cmd+Enter` 发送，IME 组合态与浮层优先级不得被发送抢走；依据 A2-11（Shift+Enter 换行）与用户 2026-09-20 裁决，见 [Issue 66 键位契约](vega-issue-66-enter-to-send.md)。
+- v0.18 (2026-09-20) Issue #66 键位冻结：§4.4 明确 `Enter` 发送、`Shift+Enter` 换行、`Cmd+Enter` 发送，IME 组合态与浮层优先级不得被发送抢走；依据 A2-11（Shift+Enter 换行）与用户 2026-09-20 裁决，见 [Issue 66 键位契约](66/vega-issue-66-enter-to-send.md)。
 - v0.19 (2026-09-21) Issue #70 前导图标语义修正：工具活动行与分组始终使用中性的工具分类图标，不再以 Check/Warning 或 success/danger 图标色重复编码生命周期；失败真实性继续由摘要、退出码与详情 footer 表达。
 - v0.20 (2026-09-21) Issue #70 Bash 实时耗时：具体 Bash 行从真实 runtime Running 事件开始按整秒显示 UI 内存态 elapsed；聚合摘要与非 Bash 行不显示时间，终态继续使用 runtime 的精确持久化 `duration_ms`。
 - v0.21 (2026-09-21) Issue #70 Bash 耗时布局：超长命令标题单行省略，运行中与终态耗时固定保留在右侧，disclosure Chevron 继续可见；聚合与分类图标语义不变。
 
 - Issue #294 (2026-10-11)：Composer footer 移除分支入口与占位；保留新建任务独立 utility bar 的分支选择与安全语义，取代 #191 的底行入口要求。
+- v0.22 (2026-10-16) 侧栏分组标题对齐 ChatGPT：`Pinned / Projects / Recents` 标题由 12px 常规字重改为 `SIDEBAR_SECTION` 14px/500，仍弱于 13px 行标题的对比层级；英文 `sidebar.recents` 文案由 `Recent tasks` 收敛为 `Recents`。行高、内缩、顺序与辅助操作显隐不变。

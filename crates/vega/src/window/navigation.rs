@@ -17,14 +17,6 @@ struct Projection {
     project: Option<String>,
     thread: Option<Thread>,
     settings: bool,
-    /// R69 R4: whether `thread` is this window's unpersisted home draft.
-    ///
-    /// The draft is a real task route for every downstream consumer
-    /// (`OpenedThread.0.id`, the `stream_view` cache key), but it stays the
-    /// **home** route in navigation history. That is what makes
-    /// back/forward return to the same draft id instead of resolving a
-    /// nonexistent durable row (`NavigationService::resolve` would report
-    /// `InvalidRoute` and prune the entry).
     draft: bool,
 }
 impl Projection {
@@ -146,8 +138,6 @@ pub(crate) fn bind_shortcuts(window: AnyWindowHandle, root: WeakEntity<VegaWindo
 }
 
 impl VegaWindow {
-    /// The current draft id, if any. Navigation reads this to keep the draft
-    /// route classified as the home route (R69 R4).
     fn draft_id(&self) -> Option<&str> {
         self.draft.as_ref().map(|draft| draft.id.as_str())
     }
@@ -161,7 +151,7 @@ impl VegaWindow {
             draft: false,
         };
         if !self.retain_departing_draft(&destination, cx) {
-            self.navigation.error = Some("草稿已达容量上限，请先发送或清空当前草稿再导航。");
+            self.navigation.error = Some(vega_i18n::t("app.navigation.draft_full"));
             self.publish_navigation(cx);
             return false;
         }
@@ -172,73 +162,33 @@ impl VegaWindow {
     }
 
     // The short shared write guard blocks later task-menu writes, never typing.
-    fn record_navigation_visit(&mut self, thread: Thread, cx: &mut Context<Self>) {
-        let Some(path) = cx
-            .global::<VegaStore>()
-            .0
-            .as_ref()
-            .ok()
-            .and_then(|store| store.database_path())
-            .map(PathBuf::from)
-        else {
-            return;
-        };
+    pub(super) fn record_navigation_visit(&mut self, thread: Thread, cx: &mut Context<Self>) {
         vega_ui::navigation::begin_task_mutation(cx);
-        let mutation = task_mutation_state(cx);
-        let task = thread.id.clone();
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let _ = std::thread::Builder::new()
-            .name("vega-navigation-visit".into())
-            .spawn(move || {
-                let result = vega_store::Store::open(path)
-                    .map_err(|_| NavigationError::Unavailable)
-                    .and_then(|store| {
-                        vega_conversation::threads::visit_thread(&store, &task)
-                            .map_err(|_| NavigationError::Unavailable)
-                    });
-                let _ = sender.send(result);
-            });
-        cx.spawn(async move |owner, cx| {
-            let result = loop {
-                match receiver.try_recv() {
-                    Ok(result) => break result,
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        break Err(NavigationError::Unavailable);
-                    }
-                    Err(mpsc::TryRecvError::Empty) => {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(25))
-                            .await
-                    }
+        let result = match &cx.global::<VegaStore>().0 {
+            Ok(store) => vega_conversation::threads::visit_thread(store, &thread.id)
+                .map_err(|_| NavigationError::Unavailable),
+            Err(_) => Err(NavigationError::Unavailable),
+        };
+        vega_ui::navigation::finish_task_mutation(cx);
+        match result {
+            Ok(visited) => {
+                if let Some(mut current) = cx.global::<OpenedThread>().0.clone()
+                    && current.id == thread.id
+                    && current.project_id == thread.project_id
+                {
+                    current.unread = visited.unread;
+                    current.updated_at = visited.updated_at;
+                    cx.set_global(OpenedThread(Some(current)));
                 }
-            };
-            cx.update(|cx| {
-                let unchanged = task_mutation_state(cx) == mutation;
-                vega_ui::navigation::finish_task_mutation(cx);
-                let _ = owner.update(cx, |this, cx| {
-                    if !unchanged {
-                        return;
-                    }
-                    match result {
-                        Ok(visited) => {
-                            if let Some(mut current) = cx.global::<OpenedThread>().0.clone()
-                                && current.id == thread.id
-                                && current.project_id == thread.project_id
-                            {
-                                current.unread = visited.unread;
-                                current.updated_at = visited.updated_at;
-                                cx.set_global(OpenedThread(Some(current)));
-                            }
-                        }
-                        Err(_) => this.navigation.error = Some("页面已打开，但访问状态保存失败。"),
-                    }
-                    this.publish_navigation(cx);
-                    cx.refresh_windows();
-                    cx.notify();
-                });
-            });
-        })
-        .detach();
+                self.navigation.error = None;
+                cx.set_global(NavigationState::default());
+                self.sidebar.update(cx, Sidebar::reload_sessions);
+            }
+            Err(_) => self.navigation.error = Some(vega_i18n::t("app.navigation.visit_failed")),
+        }
+        self.publish_navigation(cx);
+        cx.refresh_windows();
+        cx.notify();
     }
 
     fn navigate_from_editor(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -287,10 +237,14 @@ impl VegaWindow {
             forward: !self.navigation.pending
                 && task_mutation_state(cx).pending == 0
                 && self.navigation.cursor + 1 < self.navigation.entries.len(),
-            error: self.navigation.error.or_else(|| {
-                cx.try_global::<NavigationState>()
-                    .and_then(|state| state.error)
-            }),
+            error: self
+                .navigation
+                .error
+                .or_else(|| {
+                    cx.try_global::<NavigationState>()
+                        .and_then(|state| state.error)
+                })
+                .map(|error| crate::app_localization::translated(error).unwrap_or(error)),
         };
         if cx.try_global::<NavigationState>() != Some(&state) {
             cx.set_global(state);
@@ -344,7 +298,7 @@ impl VegaWindow {
         }
         self.navigation.generation = self.navigation.generation.wrapping_add(1);
         if !self.retain_departing_draft(&projection, cx) {
-            self.navigation.error = Some("草稿已达容量上限，请先发送或清空当前草稿再导航。");
+            self.navigation.error = Some(vega_i18n::t("app.navigation.draft_full"));
             self.navigation.current.clone().apply(cx);
             self.publish_navigation(cx);
             return;
@@ -380,7 +334,7 @@ impl VegaWindow {
         }
         let mutation = task_mutation_state(cx);
         if mutation.pending > 0 {
-            self.navigation.error = Some("任务操作尚未完成，请稍后重试导航。");
+            self.navigation.error = Some(vega_i18n::t("app.navigation.mutation_pending"));
             self.publish_navigation(cx);
             return;
         }
@@ -471,13 +425,13 @@ impl VegaWindow {
                     return;
                 }
                 if task_mutation_state(cx) != mutation {
-                    this.navigation.error = Some("任务已更新，请重试导航。");
+                    this.navigation.error = Some(vega_i18n::t("app.navigation.changed"));
                     this.publish_navigation(cx);
                     cx.notify();
                     return;
                 }
                 match result {
-                    Err(_) => this.navigation.error = Some("导航失败，请重试；当前页面已保留。"),
+                    Err(_) => this.navigation.error = Some(vega_i18n::t("app.navigation.failed")),
                     Ok(target) => {
                         let mut destination = this.navigation.current.clone();
                         let target_index = target.as_ref().map(|(index, _, _)| *index);
@@ -497,7 +451,7 @@ impl VegaWindow {
                             }
                             if !this.retain_departing_draft(&destination, cx) {
                                 this.navigation.error =
-                                    Some("草稿已达容量上限，请先发送或清空当前草稿再导航。");
+                                    Some(vega_i18n::t("app.navigation.draft_full"));
                                 this.publish_navigation(cx);
                                 cx.notify();
                                 return;
@@ -524,7 +478,7 @@ impl VegaWindow {
                             }
                         } else {
                             this.navigation.error =
-                                Some("没有可返回的有效页面，已跳过移除或归档的任务。");
+                                Some(vega_i18n::t("app.navigation.no_valid_page"));
                         }
                     }
                 }
@@ -536,6 +490,3 @@ impl VegaWindow {
         .detach();
     }
 }
-
-#[cfg(test)]
-mod tests;

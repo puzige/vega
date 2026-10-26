@@ -1,6 +1,8 @@
 # ✦ Vega — Phase 1 技术实现规格（SDD · Spec-Driven Development）
 
-> **2026-09-22 Issue #112 supersession:** Read/Edit/Write paths, read-before-mutation, replacement matching and audit/checkpoint path support follow [the file edit parity contract](vega-issue-112-file-edit-parity.md). Its user-authorized absolute/external paths and resolved symlinks replace the earlier project-only/relative-only prohibition for those tools; glob/grep/bash boundaries are unchanged. Existing permission, Git/checkpoint protection and race checks remain.
+> **2026-09-22 Issue #112 supersession:** Read/Edit/Write paths, read-before-mutation, replacement matching and audit/checkpoint path support follow [the file edit parity contract](112/vega-issue-112-file-edit-parity.md). Its user-authorized absolute/external paths and resolved symlinks replace the earlier project-only/relative-only prohibition for those tools. Existing permission, Git/checkpoint protection and race checks remain.
+
+> **2026-10-18 Issue #426 supersession:** Explicit grep file/directory targets follow [the external grep contract](426/vega-issue-426-external-grep.md), with Read approvals, isolated exact directory-search rules and descriptor-scoped traversal. Null/empty grep remains project-root-only; glob and bash boundaries remain unchanged.
 
 **版本** v0.7 · 2026-09-21 · 关联：[vega-phase1-plan.md](vega-phase1-plan.md) · [vega-features.md](vega-features.md) · [vega-ui-spec.md](vega-ui-spec.md)
 
@@ -357,7 +359,7 @@ validation step -2 是 permission 前置安全边界：invalid write/edit 不产
 
 #### 4.4.2 bash
 
-> 2026-09-18 · Issue #58 用户裁决：新增独立 FullAccess（`full_access`），Auto 仍保留沙箱。Execute + FullAccess 直接启动 shell，绕过下面仅适用于沙箱模式的 Seatbelt、profile 自测与 hardlink preflight；不会在沙箱失败时自动降级。其余模式继续按下文执行，危险确认与进程/输出生命周期保持不变。具体范围和验收见 [Issue 58 规格](vega-issue-58-full-access.md)。
+> 2026-09-18 · Issue #58 用户裁决：新增独立 FullAccess（`full_access`），Auto 仍保留沙箱。Execute + FullAccess 直接启动 shell，绕过下面仅适用于沙箱模式的 Seatbelt、profile 自测与 hardlink preflight；不会在沙箱失败时自动降级。其余模式继续按下文执行，危险确认与进程/输出生命周期保持不变。具体范围和验收见 [Issue 58 规格](58/vega-issue-58-full-access.md)。
 
 - bash 仅接收 `cmd` 与逻辑可选的 `timeout_ms`；strict provider schema 将后者列为 required + nullable，执行器对字段缺省与显式 `null` 都使用 120_000ms 默认值，0 与不可表示值拒绝。调用方不存在 cwd 参数；执行固定为 `/bin/zsh -lc`，cwd 固定 canonical project root，无 PTY。参数误用的固定反馈、安全工具卡与旧记录恢复按 [Issue #90 规格](vega-issue90-bash-validation.md)；`command` 别名不得执行。
 - 所有生产 bash 都由 `/usr/bin/sandbox-exec` 启动。workspace-write profile 基线 deny `file-write*`，只放行 project root 与当次 Vega-owned temp exact subpath，再 deny `.git` 与实际 gitdir；禁止 broad-allow 共享 `/private/tmp`，网络按 tech-risks §4 workspace-write 档开放。sandbox-exec 缺失/profile 自测失败必须 fail closed，禁止裸 shell。

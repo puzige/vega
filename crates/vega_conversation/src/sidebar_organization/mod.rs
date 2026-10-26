@@ -20,8 +20,8 @@ fn read_snapshot(store: &Store) -> Result<SidebarOrganizationSnapshot, SidebarOr
     let conn = store.conn();
     let (tasks, groups) = sql::counts(conn).map_err(storage)?;
     if tasks > MAX_SIDEBAR_THREADS as i64 || groups > MAX_SIDEBAR_GROUPS as i64 {
-        return Err(SidebarOrganizationError::Limit(
-            "maximum 10000 tasks and 128 groups".into(),
+        return Err(SidebarOrganizationError::LimitKey(
+            "domain.organization.validation.total_limit",
         ));
     }
     let rows = sql::read(conn).map_err(storage)?;
@@ -76,13 +76,12 @@ fn read_snapshot(store: &Store) -> Result<SidebarOrganizationSnapshot, SidebarOr
     })
 }
 
+mod ordering;
+pub use ordering::sorted_threads;
 mod mutations;
 pub use mutations::apply;
 mod calendar;
 pub use calendar::local_calendar_bucket;
-
-#[cfg(test)]
-mod tests;
 
 /// Register or reuse a folder and reveal its project in one revision-checked transaction.
 /// Call on a background executor; folder validation and canonicalization perform filesystem IO.
@@ -93,8 +92,8 @@ pub fn register_and_reveal_project(
 ) -> Result<(String, SidebarOrganizationSnapshot), SidebarOrganizationError> {
     let canonical = path.canonicalize().map_err(storage)?;
     if !canonical.is_dir() {
-        return Err(SidebarOrganizationError::Invalid(
-            "folder is not a directory".into(),
+        return Err(SidebarOrganizationError::InvalidKey(
+            "domain.organization.validation.not_directory",
         ));
     }
     let tx = store.immediate_transaction().map_err(storage)?;

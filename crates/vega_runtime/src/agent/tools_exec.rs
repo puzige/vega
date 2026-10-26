@@ -4,8 +4,35 @@ use sha2::{Digest, Sha256};
 
 const MCP_ARGUMENT_LIMIT: usize = 256 * 1024;
 const MCP_RESULT_LIMIT: usize = 256 * 1024;
+pub const GREP_INVALID_INPUT_OUTPUT: &str = "Tool error: invalid grep input. Use {\"pattern\":\"TODO\",\"path\":null}. pattern must be a valid regular expression; path must be a readable file or directory, or null to search the project root. Other fields are unsupported.";
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GrepInput {
+    pattern: String,
+    path: Option<String>,
+}
 
 pub(crate) enum PreparedRuntimeCall {
+    UserQuestion {
+        call: RuntimeToolCall,
+        input: UserQuestionInput,
+        hook: Option<Arc<dyn RuntimeUserQuestionHook>>,
+    },
+    InvalidUserQuestion {
+        call: RuntimeToolCall,
+        code: String,
+    },
+    Subagent {
+        call: RuntimeToolCall,
+        arguments: Value,
+        hook: Arc<dyn RuntimeSubagentHook>,
+    },
+    Automation {
+        call: RuntimeToolCall,
+        arguments: Value,
+        hook: Arc<dyn automation::RuntimeAutomationHook>,
+    },
     ComputerUse {
         call: RuntimeToolCall,
         arguments: Value,
@@ -22,6 +49,14 @@ pub(crate) enum PreparedRuntimeCall {
         call: RuntimeToolCall,
         target: RuntimePermissionTarget,
     },
+    Grep {
+        call: RuntimeToolCall,
+        model_input: String,
+        prepared: vega_tools::PreparedGrep,
+        target: Option<RuntimePermissionTarget>,
+    },
+    InvalidGrep(RuntimeToolCall),
+    CompletedGrep(RuntimeToolCall),
     MixedRejected(RuntimeToolCall),
     Skill {
         call: RuntimeToolCall,
@@ -77,7 +112,11 @@ impl fmt::Debug for PreparedRuntimeCall {
 impl PreparedRuntimeCall {
     pub(crate) fn call(&self) -> &RuntimeToolCall {
         match self {
-            Self::ComputerUse { call, .. }
+            Self::UserQuestion { call, .. }
+            | Self::InvalidUserQuestion { call, .. }
+            | Self::Subagent { call, .. }
+            | Self::Automation { call, .. }
+            | Self::ComputerUse { call, .. }
             | Self::Readonly(call)
             | Self::InvalidRead(call)
             | Self::PinnedRead { call, .. }
@@ -89,6 +128,9 @@ impl PreparedRuntimeCall {
             | Self::InvalidBash { call, .. }
             | Self::InvalidMcp { call }
             | Self::ExternalRead { call, .. }
+            | Self::Grep { call, .. }
+            | Self::InvalidGrep(call)
+            | Self::CompletedGrep(call)
             | Self::Mcp { call, .. }
             | Self::Write { call, .. }
             | Self::Edit { call, .. }
@@ -99,9 +141,11 @@ impl PreparedRuntimeCall {
 
     pub(crate) async fn superseded_after_wait(&self, cancel: &CancellationToken) -> bool {
         if let Self::ComputerUse { run, epoch, .. } = self {
-            run.wait_ready(cancel).await.is_ok()
-                && run.check_request_epoch(*epoch, cancel)
-                    == Err(crate::computer_use::ComputerUseError::Superseded)
+            matches!(
+                run.wait_ready(cancel).await,
+                Ok(crate::computer_use::Readiness::Ready)
+            ) && run.check_request_epoch(*epoch, cancel)
+                == Err(crate::computer_use::ComputerUseError::Superseded)
         } else {
             false
         }
@@ -127,19 +171,21 @@ impl PreparedRuntimeCall {
     pub(crate) fn model_call(&self) -> Option<ChatToolCall> {
         let call = self.call();
         let input_json = match self {
-            Self::ComputerUse { arguments, .. } | Self::Mcp { arguments, .. } => arguments.to_string(),
+            Self::UserQuestion { input, .. } => input.to_json().ok()?,
+            Self::Subagent { arguments, .. } | Self::Automation { arguments, .. } | Self::ComputerUse { arguments, .. } | Self::Mcp { arguments, .. } => arguments.to_string(),
             Self::Write { prepared, .. } => prepared.model_input_json(),
             Self::Edit { prepared, .. } => prepared.model_input_json()?,
             Self::Bash { prepared, .. } if prepared.timeout_ms() % 1000 == 0 => serde_json::json!({"command":prepared.command(),"timeout":prepared.timeout_ms()/1000}).to_string(),
             Self::PinnedRead { execution, .. } => canonical_read_input(&execution.input_json)?,
             Self::ExternalRead { call, .. } => canonical_read_input(&call.input_json)?,
+            Self::Grep { model_input, .. } => model_input.clone(),
+            Self::CompletedGrep(call) => call.input_json.clone(),
             Self::Readonly(call) => {
                 let input = parse_input(&call.name, &call.input_json).ok()?;
-                match call.name.as_str() {
-                    "glob" => { required_str(&input, "pattern").ok()?; }
-                    "grep" => { required_str(&input, "pattern").ok()?; optional_str(&input, "path").ok()?; }
-                    _ => return None,
+                if call.name != "glob" {
+                    return None;
                 }
+                required_str(&input, "pattern").ok()?;
                 input.to_string()
             }
             Self::Skill { action: SkillToolAction::Load { name }, .. } => serde_json::json!({"name":name}).to_string(),
@@ -262,6 +308,86 @@ pub(crate) fn prepare_runtime_call(
     capabilities: &RunCapabilitySnapshot,
     raw_call: RuntimeToolCall,
 ) -> Result<PreparedRuntimeCall, VegaError> {
+    if raw_call.name == USER_QUESTION_TOOL {
+        let parsed = UserQuestionInput::from_json(&raw_call.input_json).and_then(|input| {
+            let json = input.to_json()?;
+            if !config
+                .redact_tool_output(&json)
+                .is_ok_and(|redacted| redacted == json)
+            {
+                return Err("credentials");
+            }
+            Ok((input, json))
+        });
+        return Ok(match parsed {
+            Ok((input, input_json)) => PreparedRuntimeCall::UserQuestion {
+                call: RuntimeToolCall {
+                    input_json,
+                    ..raw_call
+                },
+                input,
+                hook: config.user_questions.clone(),
+            },
+            Err(code) => PreparedRuntimeCall::InvalidUserQuestion {
+                call: RuntimeToolCall {
+                    input_json: user_question_validation_audit(code, &raw_call.input_json),
+                    ..raw_call
+                },
+                code: code.into(),
+            },
+        });
+    }
+    if is_subagent_tool(&raw_call.name) {
+        if let Some(hook) = if raw_call.name == "checkpoint_stage" {
+            config.stage.clone()
+        } else {
+            config.subagents.clone()
+        } && capabilities
+            .definitions()
+            .iter()
+            .any(|definition| definition.name == raw_call.name)
+            && valid_subagent_input(&raw_call.name, &raw_call.input_json)
+            && config.redact_tool_output(&raw_call.input_json)? == raw_call.input_json
+            && let Ok(arguments) = serde_json::from_str::<Value>(&raw_call.input_json)
+        {
+            let canonical = arguments.to_string();
+            if config.redact_tool_output(&canonical)? == canonical {
+                return Ok(PreparedRuntimeCall::Subagent {
+                    call: raw_call,
+                    arguments,
+                    hook,
+                });
+            }
+        }
+        return Ok(PreparedRuntimeCall::Unknown(RuntimeToolCall {
+            input_json: "{}".into(),
+            ..raw_call
+        }));
+    }
+    if automation::is_tool(&raw_call.name) {
+        if let Some(hook) = config.automation.clone()
+            && capabilities
+                .definitions()
+                .iter()
+                .any(|definition| definition.name == raw_call.name)
+            && raw_call.input_json.len() <= 32 * 1024
+            && config.redact_tool_output(&raw_call.input_json)? == raw_call.input_json
+            && let Ok(arguments) = serde_json::from_str::<Value>(&raw_call.input_json)
+            && arguments
+                .as_object()
+                .is_some_and(|object| raw_call.name != "get_goal" || object.is_empty())
+        {
+            return Ok(PreparedRuntimeCall::Automation {
+                call: raw_call,
+                arguments,
+                hook,
+            });
+        }
+        return Ok(PreparedRuntimeCall::Unknown(RuntimeToolCall {
+            input_json: "{}".into(),
+            ..raw_call
+        }));
+    }
     if let Some(capability) = crate::computer_use::ComputerUseRun::tool_capability(&raw_call.name) {
         let arguments = serde_json::from_str::<Value>(&raw_call.input_json).unwrap_or(Value::Null);
         let input =
@@ -302,44 +428,9 @@ pub(crate) fn prepare_runtime_call(
         }));
     }
     match raw_call.name.as_str() {
-        "Read" | "read" => {
-            // Resolve before approval and replace aliases with the exact target.
-            // A failed resolution remains a normal failed Read, never a bypass.
-            if let Ok(mut input) = parse_input(&raw_call.name, &raw_call.input_json)
-                && validate_read_input(&input).is_ok()
-                && let Ok(path) = file_input_path(&input)
-                && let Ok(resolved) = base_tools.file_path(path)
-            {
-                let external = !resolved.starts_with(base_tools.root());
-                let target_path = resolved.to_string_lossy().into_owned();
-                if let Some(object) = input.as_object_mut() {
-                    object.remove("path");
-                    object.insert("file_path".into(), Value::String(target_path.clone()));
-                }
-                let call = RuntimeToolCall {
-                    input_json: input.to_string(),
-                    ..raw_call.clone()
-                };
-                if external {
-                    let target = RuntimePermissionTarget {
-                        call_id: call.id.clone(),
-                        tool: RuntimeMutatingTool::Read,
-                        exact_pattern: target_path.clone(),
-                        display_target: target_path,
-                    };
-                    return Ok(PreparedRuntimeCall::ExternalRead { call, target });
-                }
-                return Ok(PreparedRuntimeCall::PinnedRead {
-                    call: raw_call,
-                    execution: call,
-                });
-            }
-            Ok(PreparedRuntimeCall::InvalidRead(RuntimeToolCall {
-                input_json: "{}".into(),
-                ..raw_call
-            }))
-        }
-        "glob" | "grep" => Ok(PreparedRuntimeCall::Readonly(raw_call)),
+        "Read" | "read" => prepare_read_call(base_tools, raw_call),
+        "glob" => Ok(PreparedRuntimeCall::Readonly(raw_call)),
+        "grep" => Ok(prepare_grep_call(base_tools, raw_call)),
         "Write" | "Edit" | "write" | "edit" => {
             let tool = if matches!(raw_call.name.as_str(), "Write" | "write") {
                 vega_tools::MutationTool::Write
@@ -561,6 +652,80 @@ fn prepare_skill_call(
     })
 }
 
+pub(crate) fn prepare_completed_grep(
+    tools: &vega_tools::Tools,
+    call: RuntimeToolCall,
+    prior: &CompletedToolCall,
+) -> PreparedRuntimeCall {
+    if prior.tool == call.name
+        && prior.input_json == call.input_json
+        && call.input_json.trim_start().starts_with('{')
+        && serde_json::from_str::<GrepInput>(&call.input_json).is_ok()
+    {
+        return PreparedRuntimeCall::CompletedGrep(call);
+    }
+    prepare_grep_call(tools, call)
+}
+
+fn prepare_grep_call(tools: &vega_tools::Tools, raw_call: RuntimeToolCall) -> PreparedRuntimeCall {
+    if !raw_call.input_json.trim_start().starts_with('{') {
+        return invalid_grep_call(raw_call);
+    }
+    let input = serde_json::from_str::<GrepInput>(&raw_call.input_json);
+    let prepared = input.ok().and_then(|input| {
+        tools
+            .prepare_grep(&input.pattern, input.path.as_deref())
+            .ok()
+            .map(|prepared| (input, prepared))
+    });
+    let Some((input, prepared)) = prepared else {
+        return invalid_grep_call(raw_call);
+    };
+    let Some(path) = prepared.path().to_str() else {
+        return invalid_grep_call(raw_call);
+    };
+    let target = (!prepared.path().starts_with(tools.root())).then(|| RuntimePermissionTarget {
+        call_id: raw_call.id.clone(),
+        tool: RuntimeMutatingTool::Read,
+        exact_pattern: if prepared.is_directory() {
+            format!("grep-dir:v1:{path}")
+        } else {
+            path.to_owned()
+        },
+        display_target: path.to_owned(),
+    });
+    let input_json = if target.is_some() {
+        serde_json::json!({"pattern":input.pattern,"path":path}).to_string()
+    } else {
+        raw_call.input_json.clone()
+    };
+    PreparedRuntimeCall::Grep {
+        model_input: raw_call.input_json,
+        call: RuntimeToolCall {
+            input_json,
+            ..raw_call
+        },
+        prepared,
+        target,
+    }
+}
+
+fn invalid_grep_call(raw_call: RuntimeToolCall) -> PreparedRuntimeCall {
+    let mut digest = Sha256::new();
+    digest.update(b"vega.grep.invalid-input.v1\0");
+    digest.update(raw_call.input_json.len().to_be_bytes());
+    digest.update(raw_call.input_json.as_bytes());
+    PreparedRuntimeCall::InvalidGrep(RuntimeToolCall {
+        input_json: serde_json::json!({
+            "audit_version":"grep_invalid_v1",
+            "raw_input_bytes":raw_call.input_json.len(),
+            "raw_input_sha256":format!("{:x}", digest.finalize()),
+        })
+        .to_string(),
+        ..raw_call
+    })
+}
+
 fn prepare_mcp_call(
     raw_call: RuntimeToolCall,
     frozen: FrozenMcpTool,
@@ -670,15 +835,54 @@ pub(crate) async fn authorize_call(
     cancel: &CancellationToken,
 ) -> Result<Authorization, VegaError> {
     match prepared {
+        PreparedRuntimeCall::InvalidRead(call) => {
+            if cancel.is_cancelled() {
+                return Ok(cancelled_permission(call));
+            }
+            Ok(Authorization::Terminal(invalid_read_result(call)))
+        }
+        PreparedRuntimeCall::InvalidUserQuestion { call, code } => {
+            Ok(Authorization::Terminal(terminal_result(
+                call,
+                user_question_validation_output(code),
+                RuntimeToolStatus::Rejected,
+                Some(validation_audit()),
+            )))
+        }
+        PreparedRuntimeCall::UserQuestion { .. } => {
+            match decide_capability(config.run_mode, RuntimeToolClass::Readonly) {
+                RuntimeCapabilityOutcome::Approved(audit) => Ok(Authorization::Approved {
+                    audit,
+                    remember_rule: None,
+                }),
+                _ => Err(safe_permission_error()),
+            }
+        }
         PreparedRuntimeCall::ComputerUse {
             call,
             run,
             arguments,
             epoch,
         } => {
+            if cancel.is_cancelled() {
+                return Ok(Authorization::Terminal(terminal_result(
+                    call,
+                    run.error_feedback(
+                        &call.name,
+                        crate::computer_use::ComputerUseError::Cancelled,
+                        false,
+                    ),
+                    RuntimeToolStatus::Rejected,
+                    Some(RuntimeApprovalAudit {
+                        decision: RuntimeApprovalDecision::Deny,
+                        note: None,
+                        source: RuntimeApprovalSource::ComputerUse,
+                        danger: None,
+                    }),
+                )));
+            }
             if config.run_mode != RuntimeRunMode::Execute
                 || config.permission_mode == RuntimePermissionMode::ReadOnly
-                || cancel.is_cancelled()
             {
                 return Ok(Authorization::Terminal(terminal_result(
                     call,
@@ -707,15 +911,7 @@ pub(crate) async fn authorize_call(
                 }
                 Err(error) => Ok(Authorization::Terminal(terminal_result(
                     call,
-                    format!(
-                        "Tool error: computer use{}: {}",
-                        if error == crate::computer_use::ComputerUseError::NoProgress {
-                            ""
-                        } else {
-                            " not_dispatched"
-                        },
-                        error.feedback()
-                    ),
+                    run.error_feedback(&call.name, error, false),
                     RuntimeToolStatus::Rejected,
                     Some(RuntimeApprovalAudit {
                         decision: RuntimeApprovalDecision::Deny,
@@ -725,6 +921,9 @@ pub(crate) async fn authorize_call(
                     }),
                 ))),
             }
+        }
+        PreparedRuntimeCall::CompletedGrep(call) => {
+            Ok(Authorization::Terminal(conflict_result(call)))
         }
         PreparedRuntimeCall::MixedRejected(call) => Ok(Authorization::Terminal(terminal_result(
             call,
@@ -854,9 +1053,14 @@ pub(crate) async fn authorize_call(
             RuntimeToolStatus::Rejected,
             Some(run_mode_denial()),
         ))),
-        PreparedRuntimeCall::ExternalRead { call, target } => {
+        PreparedRuntimeCall::ExternalRead { call, target }
+        | PreparedRuntimeCall::Grep {
+            call,
+            target: Some(target),
+            ..
+        } => {
             if cancel.is_cancelled() {
-                return Ok(cancelled_permission(call));
+                return Ok(cancelled_permission(prepared.call()));
             }
             let known = exact_rules.contains(&RuntimeExactRule {
                 tool: RuntimeMutatingTool::Read,
@@ -908,7 +1112,7 @@ pub(crate) async fn authorize_call(
                 danger: None,
             };
             if cancel.is_cancelled() {
-                return Ok(cancelled_permission(call));
+                return Ok(cancelled_permission(prepared.call()));
             }
             if decision == RuntimeApprovalDecision::Deny {
                 Ok(Authorization::Terminal(terminal_result(
@@ -924,9 +1128,12 @@ pub(crate) async fn authorize_call(
                 })
             }
         }
-        PreparedRuntimeCall::Readonly(_)
-        | PreparedRuntimeCall::InvalidRead(_)
-        | PreparedRuntimeCall::PinnedRead { .. } => {
+        PreparedRuntimeCall::Subagent { .. }
+        | PreparedRuntimeCall::Automation { .. }
+        | PreparedRuntimeCall::Readonly(_)
+        | PreparedRuntimeCall::InvalidGrep(_)
+        | PreparedRuntimeCall::PinnedRead { .. }
+        | PreparedRuntimeCall::Grep { target: None, .. } => {
             if cancel.is_cancelled() {
                 return Ok(cancelled_permission(prepared.call()));
             }
@@ -1112,9 +1319,14 @@ pub(crate) async fn wait_for_permission(
     let future = hook.request(prompt, prompt_cancel.clone());
     let waited = tokio::select! {
         biased;
-        _ = cancel.cancelled() => (RuntimeUserDecision::Timeout, true),
+        _ = prompt_cancel.cancelled() => (RuntimeUserDecision::Timeout, true),
         _ = tokio::time::sleep(timeout) => (RuntimeUserDecision::Timeout, false),
         decision = future => (decision.unwrap_or(RuntimeUserDecision::Timeout), false),
+    };
+    let waited = if prompt_cancel.is_cancelled() {
+        (RuntimeUserDecision::Timeout, true)
+    } else {
+        waited
     };
     prompt_cancel.cancel();
     waited
@@ -1187,16 +1399,17 @@ pub(crate) fn conflict_result(call: &RuntimeToolCall) -> RuntimeToolResult {
     )
 }
 
-pub fn tool_names_equivalent(left: &str, right: &str) -> bool {
-    fn canonical(name: &str) -> &str {
-        match name {
-            "Read" => "read",
-            "Write" => "write",
-            "Edit" => "edit",
-            other => other,
-        }
+pub(crate) fn canonical_tool_name(name: &str) -> &str {
+    match name {
+        "Read" => "read",
+        "Write" => "write",
+        "Edit" => "edit",
+        other => other,
     }
-    canonical(left) == canonical(right)
+}
+
+pub fn tool_names_equivalent(left: &str, right: &str) -> bool {
+    canonical_tool_name(left) == canonical_tool_name(right)
 }
 
 pub(crate) fn runtime_inputs_semantically_equal(tool: &str, left: &str, right: &str) -> bool {
@@ -1239,6 +1452,127 @@ pub(crate) async fn execute_prepared_waiting(
     cancel: &CancellationToken,
 ) -> (RuntimeToolResult, bool) {
     match prepared {
+        PreparedRuntimeCall::InvalidUserQuestion { call, code } => (
+            terminal_result(
+                &call,
+                user_question_validation_output(&code),
+                RuntimeToolStatus::Rejected,
+                Some(validation_audit()),
+            ),
+            false,
+        ),
+        PreparedRuntimeCall::UserQuestion { call, input, hook } => {
+            let response = match hook {
+                Some(hook) => {
+                    hook.request(
+                        RuntimeUserQuestionRequest {
+                            call_id: call.id.clone(),
+                            input: input.clone(),
+                        },
+                        cancel.clone(),
+                    )
+                    .await
+                }
+                None => RuntimeUserQuestionResponse::Unavailable,
+            };
+            let (output, status, cancelled) = match response {
+                RuntimeUserQuestionResponse::Answered(answers) => match answers.to_json(&input) {
+                    Ok(output) => (output, RuntimeToolStatus::Success, false),
+                    Err(_) => (
+                        USER_QUESTION_UNSAFE_RESPONSE.into(),
+                        RuntimeToolStatus::Failed,
+                        false,
+                    ),
+                },
+                RuntimeUserQuestionResponse::Cancelled => (
+                    USER_QUESTION_CANCELLED.into(),
+                    RuntimeToolStatus::Cancelled,
+                    true,
+                ),
+                RuntimeUserQuestionResponse::Unavailable => (
+                    USER_QUESTION_UNAVAILABLE.into(),
+                    RuntimeToolStatus::Failed,
+                    false,
+                ),
+            };
+            {
+                let mut result = terminal_result(&call, output, status, None);
+                result.truncated = (status == RuntimeToolStatus::Success).then_some(false);
+                (result, cancelled)
+            }
+        }
+        PreparedRuntimeCall::Subagent {
+            call,
+            arguments,
+            hook,
+        } => {
+            if cancel.is_cancelled() {
+                return (
+                    terminal_result(
+                        &call,
+                        CANCELLED_BEFORE_EXECUTION_OUTPUT.into(),
+                        RuntimeToolStatus::Cancelled,
+                        None,
+                    ),
+                    true,
+                );
+            }
+            match hook
+                .call(
+                    call.id.clone(),
+                    call.name.clone(),
+                    arguments,
+                    cancel.clone(),
+                )
+                .await
+            {
+                Ok(value) => {
+                    let mut result =
+                        terminal_result(&call, value.to_string(), RuntimeToolStatus::Success, None);
+                    result.truncated = Some(false);
+                    (result, false)
+                }
+                Err(VegaError::Cancelled) => (
+                    terminal_result(
+                        &call,
+                        SUBAGENT_CANCELLED_OUTPUT.into(),
+                        RuntimeToolStatus::Cancelled,
+                        None,
+                    ),
+                    true,
+                ),
+                Err(error) => (failed_tool_result(&call, error.to_string()), false),
+            }
+        }
+        PreparedRuntimeCall::Automation {
+            call,
+            arguments,
+            hook,
+        } => {
+            if cancel.is_cancelled() {
+                return (
+                    terminal_result(
+                        &call,
+                        CANCELLED_BEFORE_EXECUTION_OUTPUT.into(),
+                        RuntimeToolStatus::Cancelled,
+                        None,
+                    ),
+                    true,
+                );
+            }
+            let result = hook
+                .call(call.name.clone(), arguments, cancel.clone())
+                .await;
+            match result {
+                Ok(value) => {
+                    let mut result =
+                        terminal_result(&call, value.to_string(), RuntimeToolStatus::Success, None);
+                    result.truncated = Some(false);
+                    (result, false)
+                }
+                Err(error) => (failed_tool_result(&call, error.to_string()), false),
+            }
+        }
         PreparedRuntimeCall::ComputerUse {
             call,
             arguments,
@@ -1249,53 +1583,25 @@ pub(crate) async fn execute_prepared_waiting(
             .await
         {
             Ok(output) => {
-                let failed = output.starts_with("outcome_unknown:");
-                let mut result = terminal_result(
-                    &call,
-                    output,
-                    if failed {
-                        RuntimeToolStatus::Failed
-                    } else {
-                        RuntimeToolStatus::Success
-                    },
-                    None,
-                );
-                if !failed {
-                    result.truncated = Some(false);
-                }
+                let mut result = terminal_result(&call, output, RuntimeToolStatus::Success, None);
+                result.truncated = Some(false);
                 (result, cancel.is_cancelled())
             }
-            Err(crate::computer_use::ComputerUseError::Superseded) => (
+            Err(failure) => (
                 terminal_result(
                     &call,
-                    crate::computer_use::SUPERSEDED_CONTROL_OUTPUT.into(),
-                    RuntimeToolStatus::Cancelled,
-                    None,
-                ),
-                cancel.is_cancelled(),
-            ),
-            Err(error) => (
-                terminal_result(
-                    &call,
-                    if error == crate::computer_use::ComputerUseError::Cancelled {
-                        "outcome_unknown: control was cancelled; do not retry a potentially dispatched action".into()
+                    failure.feedback(),
+                    if failure.superseded() {
+                        RuntimeToolStatus::Cancelled
                     } else {
-                        format!(
-                            "Tool error: computer use{}: {}",
-                            if error == crate::computer_use::ComputerUseError::NoProgress {
-                                ""
-                            } else {
-                                " not_dispatched"
-                            },
-                            error.feedback()
-                        )
+                        RuntimeToolStatus::Failed
                     },
-                    RuntimeToolStatus::Failed,
                     None,
                 ),
                 cancel.is_cancelled(),
             ),
         },
+        PreparedRuntimeCall::CompletedGrep(call) => (conflict_result(&call), false),
         PreparedRuntimeCall::MixedRejected(call) => (
             terminal_result(
                 &call,
@@ -1415,16 +1721,59 @@ pub(crate) async fn execute_prepared_waiting(
                 ),
             }
         }
-        PreparedRuntimeCall::PinnedRead { execution, .. } => {
-            execute_readonly_waiting(base_tools, &execution, cancel).await
+        PreparedRuntimeCall::Grep { call, prepared, .. } => {
+            let tools = base_tools.clone();
+            let worker_call = call.clone();
+            let worker_cancel = cancel.child_token();
+            let mut task = tokio::task::spawn_blocking(move || {
+                if worker_cancel.is_cancelled() {
+                    return terminal_result(
+                        &worker_call,
+                        CANCELLED_BEFORE_EXECUTION_OUTPUT.to_owned(),
+                        RuntimeToolStatus::Cancelled,
+                        None,
+                    );
+                }
+                let output = tools.execute_grep(prepared, &worker_cancel);
+                if worker_cancel.is_cancelled() {
+                    terminal_result(
+                        &worker_call,
+                        "Tool error: grep cancelled".to_owned(),
+                        RuntimeToolStatus::Cancelled,
+                        None,
+                    )
+                } else {
+                    readonly_result(&worker_call, output.map_err(|error| error.to_string()))
+                }
+            });
+            let (result, waited_cancel) = wait_blocking_result(&call, &mut task, cancel).await;
+            if waited_cancel || cancel.is_cancelled() {
+                (
+                    terminal_result(
+                        &call,
+                        "Tool error: grep cancelled".to_owned(),
+                        RuntimeToolStatus::Cancelled,
+                        None,
+                    ),
+                    true,
+                )
+            } else {
+                (result, false)
+            }
         }
-        PreparedRuntimeCall::InvalidRead(call) => (
-            failed_tool_result(
+        PreparedRuntimeCall::InvalidGrep(call) => (
+            terminal_result(
                 &call,
-                "read requires path identifying a regular text file. Expected {\"path\":\"src/lib.rs\",\"offset\":null,\"limit\":null}".into(),
+                GREP_INVALID_INPUT_OUTPUT.to_owned(),
+                RuntimeToolStatus::Failed,
+                None,
             ),
             false,
         ),
+        PreparedRuntimeCall::PinnedRead { execution, .. } => {
+            execute_readonly_waiting(base_tools, &execution, cancel).await
+        }
+        PreparedRuntimeCall::InvalidRead(call) => (invalid_read_result(&call), false),
         PreparedRuntimeCall::Readonly(call) | PreparedRuntimeCall::ExternalRead { call, .. } => {
             execute_readonly_waiting(base_tools, &call, cancel).await
         }
@@ -1537,7 +1886,10 @@ pub(crate) async fn execute_prepared_waiting(
         PreparedRuntimeCall::InvalidBash { call } => (
             terminal_result(
                 &call,
-                InvalidBashAudit::from_json(&call.input_json).map_or_else(|| BASH_INVALID_INPUT_OUTPUT.to_owned(), |audit| audit.feedback()),
+                InvalidBashAudit::from_json(&call.input_json).map_or_else(
+                    || BASH_INVALID_INPUT_OUTPUT.to_owned(),
+                    |audit| audit.feedback(),
+                ),
                 RuntimeToolStatus::Rejected,
                 Some(validation_audit()),
             ),
@@ -1642,51 +1994,6 @@ pub(crate) fn outcome(
     }
 }
 
-// A one-shot test barrier at the worker's committed-to-execute boundary.
-#[cfg(test)]
-struct ReadonlyExecutionGate {
-    started: tokio::sync::oneshot::Sender<()>,
-    release: std::sync::mpsc::Receiver<()>,
-}
-
-#[cfg(test)]
-thread_local! {
-    static READONLY_EXECUTION_GATE: std::cell::RefCell<Option<ReadonlyExecutionGate>> = const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(test)]
-pub(super) struct ReadonlyExecutionGateScope(std::marker::PhantomData<std::rc::Rc<()>>);
-
-#[cfg(test)]
-impl Drop for ReadonlyExecutionGateScope {
-    fn drop(&mut self) {
-        READONLY_EXECUTION_GATE.with(|gate| gate.borrow_mut().take());
-    }
-}
-
-#[cfg(test)]
-pub(super) fn register_readonly_execution_gate() -> (
-    ReadonlyExecutionGateScope,
-    tokio::sync::oneshot::Receiver<()>,
-    std::sync::mpsc::Sender<()>,
-) {
-    let (started, observed) = tokio::sync::oneshot::channel();
-    let (release, released) = std::sync::mpsc::channel();
-    READONLY_EXECUTION_GATE.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        assert!(slot.is_none(), "readonly gate already registered");
-        *slot = Some(ReadonlyExecutionGate {
-            started,
-            release: released,
-        });
-    });
-    (
-        ReadonlyExecutionGateScope(std::marker::PhantomData),
-        observed,
-        release,
-    )
-}
-
 pub(crate) async fn execute_readonly_waiting(
     tools: &vega_tools::Tools,
     call: &RuntimeToolCall,
@@ -1695,8 +2002,6 @@ pub(crate) async fn execute_readonly_waiting(
     let owned_tools = tools.clone();
     let owned_call = call.clone();
     let worker_cancel = cancel.child_token();
-    #[cfg(test)]
-    let gate = READONLY_EXECUTION_GATE.with(|gate| gate.borrow_mut().take());
     let mut task = tokio::task::spawn_blocking(move || {
         if worker_cancel.is_cancelled() {
             terminal_result(
@@ -1706,13 +2011,6 @@ pub(crate) async fn execute_readonly_waiting(
                 None,
             )
         } else {
-            #[cfg(test)]
-            if let Some(gate) = gate {
-                gate.started.send(()).expect("read observer remains alive");
-                gate.release
-                    .recv_timeout(std::time::Duration::from_secs(5))
-                    .expect("read gate released within bound");
-            }
             execute_readonly(&owned_tools, &owned_call)
         }
     });
@@ -1769,18 +2067,28 @@ pub(crate) fn execute_readonly(
             }
             _ => Err("permission gate rejected a non-readonly tool".to_string()),
         });
+    readonly_result(call, result)
+}
+
+fn readonly_result(
+    call: &RuntimeToolCall,
+    result: Result<vega_tools::ToolOutput, String>,
+) -> RuntimeToolResult {
     match result {
-        Ok(output) => RuntimeToolResult {
-            call_id: call.id.clone(),
-            output: truncate_output_lines(&output.text),
-            status: RuntimeToolStatus::Success,
-            reused: false,
-            exit_code: None,
-            duration_ms: None,
-            truncated: Some(output.truncated),
-            approval: None,
-            remember_rule: None,
-        },
+        Ok(output) => {
+            let (text, line_truncated) = truncate_output_lines(&output.text);
+            RuntimeToolResult {
+                call_id: call.id.clone(),
+                output: text,
+                status: RuntimeToolStatus::Success,
+                reused: false,
+                exit_code: None,
+                duration_ms: None,
+                truncated: Some(output.truncated || line_truncated),
+                approval: None,
+                remember_rule: None,
+            }
+        }
         Err(message) => RuntimeToolResult {
             call_id: call.id.clone(),
             output: format!("Tool error: {message}"),
@@ -1793,6 +2101,15 @@ pub(crate) fn execute_readonly(
             remember_rule: None,
         },
     }
+}
+
+fn invalid_read_result(call: &RuntimeToolCall) -> RuntimeToolResult {
+    terminal_result(
+        call,
+        INVALID_READ_INPUT_OUTPUT.to_owned(),
+        RuntimeToolStatus::Rejected,
+        Some(validation_audit()),
+    )
 }
 
 pub(crate) fn failed_tool_result(call: &RuntimeToolCall, message: String) -> RuntimeToolResult {
@@ -1888,16 +2205,16 @@ pub(crate) fn optional_usize(input: &Value, key: &str) -> Result<Option<usize>, 
     }
 }
 
-pub(crate) fn truncate_output_lines(text: &str) -> String {
+pub(crate) fn truncate_output_lines(text: &str) -> (String, bool) {
     let lines: Vec<&str> = text.lines().collect();
     if lines.len() <= OUTPUT_HALF_LINES * 2 {
-        return text.to_string();
+        return (text.to_string(), false);
     }
     let mut kept = Vec::with_capacity(OUTPUT_HALF_LINES * 2 + 1);
     kept.extend_from_slice(&lines[..OUTPUT_HALF_LINES]);
     kept.push(OUTPUT_TRUNCATION_MARKER);
     kept.extend_from_slice(&lines[lines.len() - OUTPUT_HALF_LINES..]);
-    kept.join("\n")
+    (kept.join("\n"), true)
 }
 
 /// Returns the exact primary-wire tool schemas for one run mode.  Conversation
@@ -1905,9 +2222,10 @@ pub(crate) fn truncate_output_lines(text: &str) -> String {
 /// so controllers never reconstruct a drifted schema locally.
 pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
     let mut definitions = vec![
+        user_questions::definition(),
         ToolDefinition {
             name: "read".into(),
-            description: "Read a text file. path is relative to the project root or absolute; external files require permission. Output has line numbers: omit those prefixes when editing. Read an existing file before write/edit and read again if it changes. offset is one-based; null offset/limit uses the default range. Example: {\"path\":\"src/lib.rs\",\"offset\":null,\"limit\":null}. bash cd does not change this tool's project root.".into(),
+            description: "Read a text file. path is relative to the project root or absolute; external files require permission. Output has line numbers: omit those prefixes when editing. Read an existing file before write/edit and read again if it changes. Locate the relevant file/symbol first; prefer focused offset/limit ranges for large files. offset is one-based; null offset/limit uses the default range. Example: {\"path\":\"src/lib.rs\",\"offset\":null,\"limit\":null}. bash cd does not change this tool's project root.".into(),
             input_schema: serde_json::json!({"type":"object","properties":{
                 "path":{"type":"string","description":"File path, relative to project root or absolute."},
                 "offset":{"type":["integer","null"],"minimum":1},
@@ -1917,13 +2235,13 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "glob".into(),
-            description: "Find files with a pattern relative to the project root. Absolute patterns and parent traversal are unsupported. Example: {\"pattern\":\"src/**/*.rs\"}.".into(),
+            description: "Find files with a pattern relative to the project root. Use a focused pattern before reading matching files. Absolute patterns and parent traversal are unsupported. Example: {\"pattern\":\"src/**/*.rs\"}.".into(),
             input_schema: serde_json::json!({"type":"object","properties":{"pattern":{"type":"string"}},"required":["pattern"],"additionalProperties":false}),
             strict: true,
         },
         ToolDefinition {
             name: "grep".into(),
-            description: "Search a regular expression within the project. path may be project-relative or an absolute path inside the project; null searches the project root. External targets are unsupported. Example: {\"pattern\":\"TODO\",\"path\":null}.".into(),
+            description: "Search a regular expression in a file or directory. Locate relevant symbols with a focused path and pattern before reading surrounding ranges. path may be project-relative or absolute, including an external target with Read permission; null or empty searches only the project root. External directory permission covers only that exact search entry, not other paths or file reads. Example: {\"pattern\":\"TODO\",\"path\":null}.".into(),
             input_schema: serde_json::json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":["string","null"]}},"required":["pattern","path"],"additionalProperties":false}),
             strict: true,
         },
@@ -1944,11 +2262,139 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
             },
             ToolDefinition {
                 name: "bash".into(),
-                description: "Run a non-empty command at the project root after approval, sandboxed unless Full access. timeout is a positive integer in seconds; null uses 120 seconds. A cd affects only this command. Example: {\"command\":\"pwd\",\"timeout\":null}.".into(),
+                description: "Run a non-empty command at the project root after approval, sandboxed unless Full access. timeout is a positive integer in seconds; null uses 120 seconds. A cd affects only this command. Filter large output and combine independent queries when useful; inspect omitted detail without automatically replaying commands with side effects. Example: {\"command\":\"pwd\",\"timeout\":null}.".into(),
                 input_schema: serde_json::json!({"type":"object","properties":{"command":{"type":"string","minLength":1},"timeout":{"type":["integer","null"],"minimum":1,"maximum":18446744073709551u64}},"required":["command","timeout"],"additionalProperties":false}),
                 strict: true,
             },
         ]);
     }
     definitions
+}
+
+fn prepare_read_call(
+    base_tools: &vega_tools::Tools,
+    raw_call: RuntimeToolCall,
+) -> Result<PreparedRuntimeCall, VegaError> {
+    if let Ok(mut input) = parse_input(&raw_call.name, &raw_call.input_json)
+        && validate_read_input(&input).is_ok()
+        && let Ok(path) = file_input_path(&input)
+        && let Ok(resolved) = base_tools.file_path(path)
+    {
+        let external = !resolved.starts_with(base_tools.root());
+        let target_path = resolved.to_string_lossy().into_owned();
+        if let Some(object) = input.as_object_mut() {
+            object.remove("path");
+            object.insert("file_path".into(), Value::String(target_path.clone()));
+        }
+        let call = RuntimeToolCall {
+            input_json: input.to_string(),
+            ..raw_call.clone()
+        };
+        if external {
+            let target = RuntimePermissionTarget {
+                call_id: call.id.clone(),
+                tool: RuntimeMutatingTool::Read,
+                exact_pattern: target_path.clone(),
+                display_target: target_path,
+            };
+            return Ok(PreparedRuntimeCall::ExternalRead { call, target });
+        }
+        return Ok(PreparedRuntimeCall::PinnedRead {
+            call: raw_call,
+            execution: call,
+        });
+    }
+    Ok(PreparedRuntimeCall::InvalidRead(RuntimeToolCall {
+        input_json: "{}".into(),
+        ..raw_call
+    }))
+}
+
+pub async fn read_identity_with_permission(
+    tools: &vega_tools::Tools,
+    config: &RuntimeToolConfig,
+    path: &str,
+    hook: &dyn RuntimePermissionHook,
+    cancel: &CancellationToken,
+) -> Result<vega_tools::ReadIdentity, VegaError> {
+    let call = RuntimeToolCall {
+        id: ulid::Ulid::generate().to_string(),
+        name: "Read".into(),
+        input_json: serde_json::json!({"file_path":path}).to_string(),
+    };
+    let prepared = prepare_read_call(tools, call)?;
+    let rules = config.exact_rules.iter().cloned().collect();
+    match authorize_call(&prepared, config, &rules, hook, cancel).await? {
+        Authorization::Approved { .. } => {}
+        _ => return Err(safe_permission_error()),
+    }
+    let execution = match prepared {
+        PreparedRuntimeCall::PinnedRead { execution, .. } => execution,
+        PreparedRuntimeCall::ExternalRead { call, .. } => call,
+        _ => return Err(safe_permission_error()),
+    };
+    let (result, cancelled, identity) =
+        execute_read_identity_waiting(tools, &execution, cancel).await;
+    if cancelled
+        || cancel.is_cancelled()
+        || result.status != RuntimeToolStatus::Success
+        || result.truncated != Some(false)
+        || config.redact_tool_output(&result.output)? != result.output
+    {
+        return Err(safe_permission_error());
+    }
+    identity
+        .filter(|identity| identity.complete)
+        .ok_or_else(safe_permission_error)
+}
+
+pub(crate) async fn execute_read_identity_waiting(
+    tools: &vega_tools::Tools,
+    call: &RuntimeToolCall,
+    cancel: &CancellationToken,
+) -> (RuntimeToolResult, bool, Option<vega_tools::ReadIdentity>) {
+    let tools = tools.clone();
+    let worker_call = call.clone();
+    let worker_cancel = cancel.child_token();
+    let mut task = tokio::task::spawn_blocking(move || {
+        let result = (|| {
+            if worker_cancel.is_cancelled() {
+                return Err("Read cancelled".into());
+            }
+            let input = parse_input(&worker_call.name, &worker_call.input_json)?;
+            validate_read_input(&input)?;
+            let path = file_input_path(&input)?;
+            if tools
+                .file_path(path)
+                .map_err(|_| "Read target unavailable")?
+                != std::path::Path::new(path)
+            {
+                return Err("Read target changed after approval".into());
+            }
+            tools
+                .read_with_identity(
+                    path,
+                    optional_usize(&input, "offset")?,
+                    optional_usize(&input, "limit")?,
+                )
+                .map_err(|error| error.to_string())
+        })();
+        match result {
+            Ok((output, identity)) => (readonly_result(&worker_call, Ok(output)), Some(identity)),
+            Err(error) => (readonly_result(&worker_call, Err(error)), None),
+        }
+    });
+    let (result, cancelled) = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => (task.await, true),
+        result = &mut task => (result, false),
+    };
+    match result {
+        Ok((result, identity)) => (result, cancelled, identity),
+        Err(error) => (
+            failed_tool_result(call, format!("tool worker failed: {error}")),
+            cancelled,
+            None,
+        ),
+    }
 }

@@ -349,6 +349,65 @@ impl PricingCatalog {
         })
     }
 
+    pub fn quote_with_optional_caches(
+        &self,
+        model: &str,
+        input: u64,
+        output: u64,
+        cache_read: Option<u64>,
+        cache_write: Option<u64>,
+        unix_utc_seconds: i64,
+    ) -> Result<Option<PricingQuote>, PricingError> {
+        validate_model_id(model)?;
+        let position =
+            self.index
+                .get(model)
+                .copied()
+                .ok_or_else(|| PricingError::ModelNotFound {
+                    model: model.to_string(),
+                })?;
+        let pricing = &self.models[position];
+        if let Some(max_tokens) = pricing.spec.max_standard_input_tokens
+            && input > max_tokens
+        {
+            return Err(PricingError::UnsupportedInputLimit {
+                model: model.to_string(),
+                max_tokens,
+            });
+        }
+        let (rates, profile) = match (&pricing.spec.schedule, &pricing.peak) {
+            (Some(schedule), Some(peak)) if schedule_matches(schedule, unix_utc_seconds) => {
+                (peak, PricingProfile::PeakUtcWeekly)
+            }
+            _ => (&pricing.base, PricingProfile::Base),
+        };
+        let cache_read = match cache_read {
+            Some(cache_read) if cache_read <= input => cache_read,
+            Some(_) => return Err(PricingError::InvalidCacheUsage),
+            None if rates.input == rates.cache_read => 0,
+            None => return Ok(None),
+        };
+        let cache_write = match cache_write {
+            Some(cache_write) => cache_write,
+            None if rates.cache_write == 0 => 0,
+            None => return Ok(None),
+        };
+        let cost_microcents = quote_rates(
+            rates,
+            UsageCounts {
+                input,
+                output,
+                cache_read,
+                cache_write,
+            },
+        )?;
+        Ok(Some(PricingQuote {
+            cost_microcents,
+            pricing_version: "pricing_v1",
+            profile,
+        }))
+    }
+
     fn rebuild_index(&mut self) {
         self.index.clear();
         for (position, model) in self.models.iter().enumerate() {
@@ -630,8 +689,7 @@ impl<'de> Deserialize<'de> for RawModel {
         D: Deserializer<'de>,
     {
         let decoded = RawModelDecoded::deserialize(deserializer)?;
-        #[cfg(test)]
-        RAW_MODEL_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
+
         Ok(Self {
             model: decoded.model,
             input_usd_per_million: decoded.input_usd_per_million,
@@ -676,8 +734,7 @@ impl<'de> Deserialize<'de> for RawWindow {
         D: Deserializer<'de>,
     {
         let decoded = RawWindowDecoded::deserialize(deserializer)?;
-        #[cfg(test)]
-        RAW_WINDOW_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
+
         Ok(Self {
             weekdays: decoded.weekdays,
             start_minute: decoded.start_minute,
@@ -764,25 +821,6 @@ where
         message,
         marker: std::marker::PhantomData,
     })
-}
-
-#[cfg(test)]
-thread_local! {
-    static RAW_MODEL_CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static RAW_WINDOW_CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-pub(crate) fn reset_raw_construction_counts() {
-    RAW_MODEL_CONSTRUCTIONS.with(|count| count.set(0));
-    RAW_WINDOW_CONSTRUCTIONS.with(|count| count.set(0));
-}
-
-#[cfg(test)]
-pub(crate) fn raw_construction_counts() -> (usize, usize) {
-    let models = RAW_MODEL_CONSTRUCTIONS.with(std::cell::Cell::get);
-    let windows = RAW_WINDOW_CONSTRUCTIONS.with(std::cell::Cell::get);
-    (models, windows)
 }
 
 impl From<RawModel> for ModelPricingSpec {

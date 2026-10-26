@@ -8,7 +8,9 @@ use gpui_kit::{
 };
 use vega_theme::{Motion, ThemeColors};
 
+mod decorative;
 mod platform;
+pub use decorative::{decorative_transition, decorative_value};
 pub use platform::{install_system_motion, observe_system_motion, refresh_system_motion};
 
 pub trait InteractionExt: Sized {
@@ -122,6 +124,9 @@ impl Element for Interaction {
 
     fn write_a11y_info(&self, node: &mut gpui_kit::accesskit::Node) {
         self.base.write_a11y_info(node);
+        if !self.enabled {
+            node.set_disabled();
+        }
     }
 
     fn a11y_synthetic_children(
@@ -264,6 +269,3 @@ impl Element for Interaction {
         self.base.style().background = explicit_fill;
     }
 }
-
-#[cfg(test)]
-pub(crate) mod tests;

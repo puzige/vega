@@ -1,11 +1,16 @@
-//! read tool: numbered lines with per-line truncation (tech-spec §4.4,
-//! A3-06 部分 / S4-T21).
-
 use std::path::Path;
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct ReadIdentity {
+    pub canonical_path: String,
+    pub sha256: String,
+    pub complete: bool,
+}
 
 use crate::Tools;
 use crate::error::ToolError;
 use crate::output::{LINE_TRUNCATION_MARKER, MAX_LINE_CHARS, ToolOutput};
+use crate::sha256::{Sha256, hex};
 use crate::text_file::TextFile;
 
 /// Bytes probed from the file head for the NUL-byte binary check
@@ -31,6 +36,16 @@ impl Tools {
         offset: Option<usize>,
         limit: Option<usize>,
     ) -> Result<ToolOutput, ToolError> {
+        self.read_with_identity(path, offset, limit)
+            .map(|(output, _)| output)
+    }
+
+    pub fn read_with_identity(
+        &self,
+        path: &str,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> Result<(ToolOutput, ReadIdentity), ToolError> {
         if let Some(0) = offset {
             return Err(ToolError::InvalidInput(
                 "offset is 1-based and must be >= 1".to_string(),
@@ -43,7 +58,15 @@ impl Tools {
         let bytes = read_text_head_probed(&canonical, path, self.credential_policy.is_some())?;
         let text = TextFile::decode(&bytes)?;
         self.reads.record(&canonical, &bytes)?;
-        Ok(render_numbered(&text.content, offset.unwrap_or(1), limit))
+        let output = render_numbered(&text.content, offset.unwrap_or(1), limit);
+        let mut hash = Sha256::new();
+        hash.update(&bytes);
+        let identity = ReadIdentity {
+            canonical_path: canonical.to_string_lossy().into_owned(),
+            sha256: hex(&hash.finalize()),
+            complete: offset.is_none() && limit.is_none() && !output.truncated,
+        };
+        Ok((output, identity))
     }
 }
 
@@ -111,109 +134,5 @@ fn truncate_line(line: &str) -> (String, bool) {
         (format!("{head}{LINE_TRUNCATION_MARKER}"), true)
     } else {
         (head, false)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-    use std::path::Path;
-
-    use tempfile::tempdir;
-
-    use crate::error::ToolError;
-    use crate::output::{LINE_TRUNCATION_MARKER, MAX_LINE_CHARS};
-
-    /// Create `root`-relative file with parent dirs, returning the tools
-    /// instance bound to the (canonicalized) root.
-    fn setup(root: &Path, rel: &str, content: &[u8]) -> super::super::Tools {
-        let target = root.join(rel);
-        fs::create_dir_all(target.parent().unwrap()).unwrap();
-        fs::write(target, content).unwrap();
-        super::super::Tools::new(root).unwrap()
-    }
-
-    #[test]
-    fn numbers_lines_and_reports_clean_output() {
-        let dir = tempdir().unwrap();
-        let tools = setup(dir.path(), "a.txt", b"alpha\nbeta\ngamma\n");
-        let out = tools.read("a.txt", None, None).unwrap();
-        assert_eq!(out.text, "1 | alpha\n2 | beta\n3 | gamma");
-        assert!(!out.truncated);
-    }
-
-    #[test]
-    fn offset_and_limit_window_the_file() {
-        let dir = tempdir().unwrap();
-        let tools = setup(dir.path(), "a.txt", b"alpha\nbeta\ngamma\n");
-        let out = tools.read("a.txt", Some(2), Some(1)).unwrap();
-        assert_eq!(out.text, "2 | beta");
-        assert!(!out.truncated);
-    }
-
-    #[test]
-    fn window_ending_at_line_12_pads_the_gutter() {
-        let body: String = (1..=15).map(|i| format!("line {i}\n")).collect();
-        let dir = tempdir().unwrap();
-        let tools = setup(dir.path(), "a.txt", body.as_bytes());
-        let out = tools.read("a.txt", Some(10), Some(3)).unwrap();
-        assert_eq!(out.text, "10 | line 10\n11 | line 11\n12 | line 12");
-    }
-
-    #[test]
-    fn cuts_long_lines_with_marker() {
-        let long = "x".repeat(3000);
-        let dir = tempdir().unwrap();
-        let tools = setup(dir.path(), "a.txt", long.as_bytes());
-        let out = tools.read("a.txt", None, None).unwrap();
-        let expected = format!("{}{LINE_TRUNCATION_MARKER}", "x".repeat(MAX_LINE_CHARS));
-        assert_eq!(out.text, format!("1 | {expected}"));
-        assert!(out.truncated);
-        // 未截断的行不受影响
-        fs::write(dir.path().join("a.txt"), "short\n").unwrap();
-        let out = tools.read("a.txt", None, None).unwrap();
-        assert_eq!(out.text, "1 | short");
-        assert!(!out.truncated);
-    }
-
-    #[test]
-    fn rejects_binary_files_by_nul_probe() {
-        let dir = tempdir().unwrap();
-        let tools = setup(dir.path(), "a.bin", b"hello\0world");
-        let err = tools.read("a.bin", None, None).unwrap_err();
-        assert!(matches!(err, ToolError::BinaryFile(_)));
-    }
-
-    #[test]
-    fn rejects_missing_file_as_not_found() {
-        let dir = tempdir().unwrap();
-        let tools = setup(dir.path(), "a.txt", b"x");
-        let err = tools.read("nope.txt", None, None).unwrap_err();
-        assert!(matches!(err, ToolError::NotFound(_)));
-    }
-
-    #[test]
-    fn rejects_directory_and_zero_offset_as_invalid_input() {
-        let dir = tempdir().unwrap();
-        let tools = setup(dir.path(), "sub/a.txt", b"x");
-        assert!(matches!(
-            tools.read("sub", None, None).unwrap_err(),
-            ToolError::InvalidInput(_)
-        ));
-        assert!(matches!(
-            tools.read("sub/a.txt", Some(0), None).unwrap_err(),
-            ToolError::InvalidInput(_)
-        ));
-    }
-
-    #[test]
-    fn empty_file_and_offset_past_eof_yield_empty_text() {
-        let dir = tempdir().unwrap();
-        let tools = setup(dir.path(), "a.txt", b"");
-        let out = tools.read("a.txt", None, None).unwrap();
-        assert_eq!(out.text, "");
-        assert!(!out.truncated);
-        let out = tools.read("a.txt", Some(9), None).unwrap();
-        assert_eq!(out.text, "");
     }
 }

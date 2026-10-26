@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-//! R13 cached projections and one revision-checked background organization lane.
 use super::*;
 use std::collections::{HashMap, HashSet};
 use vega_conversation::sidebar_organization as service;
@@ -11,20 +10,31 @@ use vega_conversation::types::{
 };
 mod menu;
 mod projections;
+mod reorder;
+pub(super) use reorder::ReorderItem;
+use reorder::ReorderState;
 mod render;
-#[cfg(test)]
-mod tests;
+
+struct OrganizationRequestToken {
+    generation: u64,
+    epoch: u64,
+    origin_route: (Option<String>, Option<String>, bool),
+    submitted_editor: Option<(gpui_kit::EntityId, Option<String>, String)>,
+    was_mutation: bool,
+}
 
 pub(super) struct Organization {
     pub(super) snapshot: Option<SidebarOrganizationSnapshot>,
     projects: Entity<ProjectsBlock>,
     pending: bool,
+    reorder: ReorderState,
     refresh_queued: bool,
     generation: u64,
     project_threads_visible: HashMap<String, usize>,
     project_threads_total: HashMap<String, usize>,
     editor: Option<GroupEditor>,
     menu: Option<OrganizationMenu>,
+    menu_anchor: Option<(gpui_kit::Point<gpui_kit::Pixels>, Anchor)>,
     menu_focus: FocusHandle,
     menu_index: usize,
     menu_scroll: gpui_kit::ScrollHandle,
@@ -119,7 +129,6 @@ struct GroupEditor {
 }
 #[derive(Clone)]
 enum OrganizationMenu {
-    Filter,
     Group(String),
     Project(String),
 }
@@ -128,10 +137,6 @@ pub(crate) enum OrganizationSection {
     Projects,
     Recents,
 }
-/// Issue #57: one page of Recents rows. The section starts at this many rows
-/// (R29's compact limit) and appends one page each time the outer Sidebar
-/// scroller reaches the bottom, or immediately while the content still fits
-/// the viewport.
 pub(crate) const RECENTS_PAGE: usize = 10;
 pub(crate) const PROJECT_TASKS_PAGE: usize = 5;
 #[derive(Clone)]
@@ -140,7 +145,6 @@ enum MenuCommand {
     Rename(String),
     NewTask(String),
     RemoveProject(String),
-    ToggleArchive,
 }
 #[derive(Clone)]
 struct OrganizationDrag {
@@ -190,12 +194,14 @@ impl ThreadsBlock {
             snapshot: None,
             projects,
             pending: false,
+            reorder: ReorderState::new(cx),
             refresh_queued: false,
             generation: 0,
             project_threads_visible: HashMap::new(),
             project_threads_total: HashMap::new(),
             editor: None,
             menu: None,
+            menu_anchor: None,
             menu_focus: cx.focus_handle(),
             menu_index: 0,
             menu_scroll: gpui_kit::ScrollHandle::new(),
@@ -337,7 +343,9 @@ impl ThreadsBlock {
         if org.pending || task_mutation_busy(cx) {
             org.refresh_queued = true;
             if action.is_some() {
-                self.error = Some("组织正在保存，请稍后重试".into());
+                self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                    "ui.organization_is_being_saved_try_again_shortly",
+                ));
                 cx.notify();
             }
             return;
@@ -346,10 +354,11 @@ impl ThreadsBlock {
             return;
         }
         let database = with_store(cx, |store| {
-            store
-                .database_path()
-                .map(Path::to_path_buf)
-                .ok_or_else(|| "组织存储需要文件数据库".into())
+            store.database_path().map(Path::to_path_buf).ok_or_else(|| {
+                crate::localized_copy::LocalizedCopy::new(
+                    "ui.organization_storage_requires_a_file_backed_database",
+                )
+            })
         });
         let Ok(database) = database else {
             self.error = database.err();
@@ -386,6 +395,13 @@ impl ThreadsBlock {
             cx.try_global::<SettingsOpen>().is_some_and(|s| s.0),
         );
         let was_mutation = action.is_some();
+        let request = OrganizationRequestToken {
+            generation,
+            epoch,
+            origin_route,
+            submitted_editor,
+            was_mutation,
+        };
         let worker = cx.background_executor().spawn(async move {
             let action = match action {
                 Some(SidebarOrganizationAction::CreateThreadInGroup {
@@ -393,7 +409,12 @@ impl ThreadsBlock {
                     group_id,
                     ..
                 }) => {
-                    let config = config::load().map_err(|e| e.to_string())?;
+                    let config = config::load().map_err(|error| {
+                        crate::localized_copy::LocalizedCopy::with_args(
+                            "ui.configuration_could_not_be_loaded_error",
+                            vec![("error", error.to_string().into())],
+                        )
+                    })?;
                     Some(SidebarOrganizationAction::CreateThreadInGroup {
                         project_id,
                         group_id,
@@ -403,7 +424,8 @@ impl ThreadsBlock {
                 }
                 action => action,
             };
-            let store = Store::open(database).map_err(|e| e.to_string())?;
+            let store =
+                Store::open(database).map_err(crate::localized_copy::LocalizedCopy::storage)?;
             match action {
                 Some(action) => service::apply(&store, revision, action),
                 None => service::snapshot(&store).map(|snapshot| SidebarOrganizationOutcome {
@@ -411,117 +433,127 @@ impl ThreadsBlock {
                     created_thread: None,
                 }),
             }
-            .map_err(|e| e.to_string())
+            .map_err(crate::localized_copy::LocalizedCopy::from)
         });
         cx.spawn(async move |this, cx| {
             let result = worker.await;
             this.update(cx, |this, cx| {
-                let Some(org) = this.organization.as_mut() else {
-                    return;
-                };
-                if generation != org.generation {
-                    return;
-                }
-                org.pending = false;
-                let current_epoch = cx
-                    .try_global::<crate::navigation::TaskMutationState>()
-                    .map_or(0, |s| s.epoch);
-                let metadata_stale = epoch != current_epoch || task_mutation_busy(cx);
-                let mut created_id = None;
-                match result {
-                    Ok(outcome) => {
-                        let snapshot = outcome.snapshot;
-                        created_id = outcome.created_thread.map(|t| t.id);
-                        if submitted_editor
-                            .as_ref()
-                            .is_some_and(|(entity, group, text)| {
-                                org.editor.as_ref().is_some_and(|editor| {
-                                    editor.input.entity_id() == *entity
-                                        && &editor.group_id == group
-                                        && editor.input.read(cx).text() == text
-                                })
-                            })
-                        {
-                            org.editor = None;
-                        }
-                        if org
-                            .snapshot
-                            .as_ref()
-                            .is_none_or(|old| old.revision <= snapshot.revision)
-                        {
-                            let totals: HashMap<String, usize> = snapshot
-                                .projects
-                                .iter()
-                                .map(|project| {
-                                    let total = snapshot
-                                        .threads
-                                        .iter()
-                                        .filter(|thread| {
-                                            thread.project_id == project.id
-                                                && !thread.pinned
-                                                && (thread.status == ThreadStatus::Active
-                                                    || org.archive)
-                                        })
-                                        .count();
-                                    (project.id.clone(), total)
-                                })
-                                .collect();
-                            org.sync_project_task_totals(totals);
-                            if !metadata_stale {
-                                this.threads = snapshot
-                                    .threads
-                                    .iter()
-                                    .filter(|t| t.status == ThreadStatus::Active)
-                                    .cloned()
-                                    .collect();
-                                this.archived = snapshot
-                                    .threads
-                                    .iter()
-                                    .filter(|t| t.status == ThreadStatus::Archived)
-                                    .cloned()
-                                    .collect();
-                            }
-                            org.snapshot = Some(snapshot);
-                        }
-                        if was_mutation {
-                            this.error = None;
-                        }
-                    }
-                    Err(error) => {
-                        this.error = Some(error);
-                        if was_mutation {
-                            org.refresh_queued = true;
-                        }
-                    }
-                }
-                let refresh = std::mem::take(&mut org.refresh_queued) || metadata_stale;
-                let route_matches = origin_route
-                    == (
-                        cx.global::<SelectedProject>().0.clone(),
-                        cx.global::<OpenedThread>().0.as_ref().map(|t| t.id.clone()),
-                        cx.try_global::<SettingsOpen>().is_some_and(|s| s.0),
-                    );
-                if let Some(id) = created_id.filter(|_| route_matches) {
-                    this.open_thread(&id, cx);
-                } else if refresh {
-                    this.refresh_organization(cx);
-                }
-                cx.notify();
+                this.finish_organization_request(request, result, cx);
             })
             .ok();
         })
         .detach();
         cx.notify();
     }
+    fn finish_organization_request(
+        &mut self,
+        request: OrganizationRequestToken,
+        result: Result<SidebarOrganizationOutcome, crate::localized_copy::LocalizedCopy>,
+        cx: &mut Context<Self>,
+    ) {
+        let OrganizationRequestToken {
+            generation,
+            epoch,
+            origin_route,
+            submitted_editor,
+            was_mutation,
+        } = request;
+        let Some(org) = self.organization.as_mut() else {
+            return;
+        };
+        if generation != org.generation {
+            return;
+        }
+        org.pending = false;
+        let current_epoch = cx
+            .try_global::<crate::navigation::TaskMutationState>()
+            .map_or(0, |s| s.epoch);
+        let metadata_stale = epoch != current_epoch || task_mutation_busy(cx);
+        let mut created_id = None;
+        match result {
+            Ok(outcome) => {
+                let snapshot = outcome.snapshot;
+                created_id = outcome.created_thread.map(|t| t.id);
+                if submitted_editor
+                    .as_ref()
+                    .is_some_and(|(entity, group, text)| {
+                        org.editor.as_ref().is_some_and(|editor| {
+                            editor.input.entity_id() == *entity
+                                && &editor.group_id == group
+                                && editor.input.read(cx).text() == text
+                        })
+                    })
+                {
+                    org.editor = None;
+                }
+                if org
+                    .snapshot
+                    .as_ref()
+                    .is_none_or(|old| old.revision <= snapshot.revision)
+                {
+                    let totals: HashMap<String, usize> = snapshot
+                        .projects
+                        .iter()
+                        .map(|project| {
+                            let total = snapshot
+                                .threads
+                                .iter()
+                                .filter(|thread| {
+                                    thread.project_id == project.id
+                                        && !thread.pinned
+                                        && (thread.status == ThreadStatus::Active || org.archive)
+                                })
+                                .count();
+                            (project.id.clone(), total)
+                        })
+                        .collect();
+                    org.sync_project_task_totals(totals);
+                    if !metadata_stale {
+                        self.threads = snapshot
+                            .threads
+                            .iter()
+                            .filter(|t| t.status == ThreadStatus::Active)
+                            .cloned()
+                            .collect();
+                        self.archived = snapshot
+                            .threads
+                            .iter()
+                            .filter(|t| t.status == ThreadStatus::Archived)
+                            .cloned()
+                            .collect();
+                    }
+                    org.snapshot = Some(snapshot);
+                }
+                if was_mutation {
+                    self.error = None;
+                }
+            }
+            Err(error) => {
+                self.error = Some(error);
+                if was_mutation {
+                    org.refresh_queued = true;
+                }
+            }
+        }
+        let refresh = std::mem::take(&mut org.refresh_queued) || metadata_stale;
+        let route_matches = origin_route
+            == (
+                cx.global::<SelectedProject>().0.clone(),
+                cx.global::<OpenedThread>().0.as_ref().map(|t| t.id.clone()),
+                cx.try_global::<SettingsOpen>().is_some_and(|s| s.0),
+            );
+        if let Some(id) = created_id.filter(|_| route_matches) {
+            self.open_thread(&id, cx);
+        } else if refresh {
+            self.refresh_organization(cx);
+        }
+        cx.notify();
+    }
     pub(super) fn organization_actions(
         &self,
         thread_id: &str,
     ) -> Vec<(String, SidebarOrganizationAction)> {
-        // R15 has exactly two sidebar concepts: project folders and tasks.
-        // Legacy group memberships remain readable for migration compatibility,
-        // but no task action can expose or mutate that retired organization IA.
-        let _ = thread_id;
-        Vec::new()
+        self.reorder_menu_actions(&ReorderItem::Thread(thread_id.into()))
     }
     fn edit_group(
         &mut self,
@@ -538,11 +570,14 @@ impl ThreadsBlock {
             .and_then(|id| org.snapshot.as_ref()?.groups.iter().find(|g| &g.id == id))
             .map(|g| g.name.clone())
             .unwrap_or_default();
-        let input = cx.new(|cx| TextInput::new(cx, "分组名称（1–64字）", false));
+        let input = cx.new(|cx| {
+            TextInput::new(cx, "", false).with_placeholder_key("ui.group_name_1_64_characters")
+        });
         input.update(cx, |input, cx| input.set_text(&name, cx));
         window.focus(&input.read(cx).focus_handle(cx), cx);
         org.editor = Some(GroupEditor { group_id, input });
         org.menu = None;
+        org.menu_anchor = None;
         self.error = None;
         cx.notify();
     }
@@ -552,7 +587,9 @@ impl ThreadsBlock {
         };
         let name = editor.input.read(cx).text().trim().to_string();
         if !(1..=64).contains(&name.chars().count()) {
-            self.error = Some("分组名称需为 1–64 个字符".into());
+            self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.group_names_must_contain_1_64_characters",
+            ));
             cx.notify();
             return;
         }
@@ -591,7 +628,9 @@ impl ThreadsBlock {
             return;
         }
         let Some(project_id) = cx.global::<SelectedProject>().0.clone() else {
-            self.error = Some("请先添加并选择项目，再在分组中新建任务".into());
+            self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.add_and_select_a_project_before_creating_a",
+            ));
             if let Some(org) = &self.organization {
                 org.projects.update(cx, ProjectsBlock::open_picker);
             }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 impl ThreadsBlock {
     pub(super) fn organization_menu_items(&self) -> Vec<(String, MenuCommand)> {
         let Some(org) = &self.organization else {
@@ -12,49 +13,23 @@ impl ThreadsBlock {
         };
         let mut items = Vec::new();
         match menu {
-            OrganizationMenu::Filter => {
-                for (sort, label) in [
-                    (SidebarTaskSort::Updated, "更新时间"),
-                    (SidebarTaskSort::Created, "创建时间"),
-                ] {
-                    let mut preferences = snapshot.preferences.clone();
-                    preferences.sort = sort;
-                    items.push((
-                        format!(
-                            "{} {label}",
-                            if snapshot.preferences.sort == sort {
-                                "✓"
-                            } else {
-                                "  "
-                            }
-                        ),
-                        MenuCommand::Apply(SidebarOrganizationAction::SetPreferences(preferences)),
-                    ));
-                }
-                items.push((
-                    format!(
-                        "{} {}",
-                        if org.archive { "✓" } else { "  " },
-                        if org.archive {
-                            "隐藏已归档"
-                        } else {
-                            "显示已归档"
-                        },
-                    ),
-                    MenuCommand::ToggleArchive,
-                ));
-            }
             OrganizationMenu::Group(id) => {
-                items.push(("新建任务".into(), MenuCommand::NewTask(id.clone())));
-                items.push(("重命名".into(), MenuCommand::Rename(id.clone())));
+                items.push((
+                    vega_i18n::t("ui.new_task").into(),
+                    MenuCommand::NewTask(id.clone()),
+                ));
+                items.push((
+                    vega_i18n::t("ui.rename").into(),
+                    MenuCommand::Rename(id.clone()),
+                ));
                 for (color, label) in [
-                    (SidebarGroupColor::Gray, "灰"),
-                    (SidebarGroupColor::Red, "红"),
-                    (SidebarGroupColor::Orange, "橙"),
-                    (SidebarGroupColor::Yellow, "黄"),
-                    (SidebarGroupColor::Green, "绿"),
-                    (SidebarGroupColor::Blue, "蓝"),
-                    (SidebarGroupColor::Purple, "紫"),
+                    (SidebarGroupColor::Gray, vega_i18n::t("ui.gray")),
+                    (SidebarGroupColor::Red, vega_i18n::t("ui.red")),
+                    (SidebarGroupColor::Orange, vega_i18n::t("ui.orange")),
+                    (SidebarGroupColor::Yellow, vega_i18n::t("ui.yellow")),
+                    (SidebarGroupColor::Green, vega_i18n::t("ui.green")),
+                    (SidebarGroupColor::Blue, vega_i18n::t("ui.blue")),
+                    (SidebarGroupColor::Purple, vega_i18n::t("ui.purple")),
                 ] {
                     let selected = snapshot
                         .groups
@@ -62,7 +37,13 @@ impl ThreadsBlock {
                         .find(|g| &g.id == id)
                         .is_some_and(|g| g.color == color);
                     items.push((
-                        format!("{} 更改颜色 · {label}", if selected { "✓" } else { "  " }),
+                        vega_i18n::t_args(
+                            "ui.selected_change_color_label",
+                            &[
+                                ("selected", if selected { "✓" } else { "  " }),
+                                ("label", label),
+                            ],
+                        ),
                         MenuCommand::Apply(SidebarOrganizationAction::SetGroupColor {
                             group_id: id.clone(),
                             color,
@@ -72,7 +53,7 @@ impl ThreadsBlock {
                 if let Some(index) = snapshot.groups.iter().position(|g| &g.id == id) {
                     if index > 0 {
                         items.push((
-                            "分组上移".into(),
+                            vega_i18n::t("ui.move_group_up").into(),
                             MenuCommand::Apply(SidebarOrganizationAction::MoveGroup {
                                 group_id: id.clone(),
                                 before_id: Some(snapshot.groups[index - 1].id.clone()),
@@ -81,7 +62,7 @@ impl ThreadsBlock {
                     }
                     if index + 1 < snapshot.groups.len() {
                         items.push((
-                            "分组下移".into(),
+                            vega_i18n::t("ui.move_group_down").into(),
                             MenuCommand::Apply(SidebarOrganizationAction::MoveGroup {
                                 group_id: id.clone(),
                                 before_id: snapshot.groups.get(index + 2).map(|g| g.id.clone()),
@@ -90,14 +71,22 @@ impl ThreadsBlock {
                     }
                 }
                 items.push((
-                    "取消分组并删除".into(),
+                    vega_i18n::t("ui.ungroup_and_delete").into(),
                     MenuCommand::Apply(SidebarOrganizationAction::DissolveGroup {
                         group_id: id.clone(),
                     }),
                 ));
             }
             OrganizationMenu::Project(id) => {
-                items.push(("移除项目".into(), MenuCommand::RemoveProject(id.clone())));
+                items.push((
+                    vega_i18n::t("ui.remove_project").into(),
+                    MenuCommand::RemoveProject(id.clone()),
+                ));
+                items.extend(
+                    self.reorder_menu_actions(&ReorderItem::Project(id.clone()))
+                        .into_iter()
+                        .map(|(label, action)| (label, MenuCommand::Apply(action))),
+                );
             }
         }
         items
@@ -113,6 +102,7 @@ impl ThreadsBlock {
         };
         if let Some(org) = self.organization.as_mut() {
             org.menu = None;
+            org.menu_anchor = None;
         }
         match command {
             MenuCommand::Apply(action) => self.submit_organization(action, cx),
@@ -125,36 +115,6 @@ impl ThreadsBlock {
                     org.projects.update(cx, |p, cx| p.remove_project(&id, cx));
                 }
             }
-            MenuCommand::ToggleArchive => {
-                let show_archived = if let Some(organization) = self.organization.as_mut() {
-                    organization.archive = !organization.archive;
-                    organization.archive
-                } else {
-                    false
-                };
-                let projects: Vec<_> =
-                    self.organization
-                        .as_ref()
-                        .and_then(|organization| organization.snapshot.as_ref())
-                        .map(|snapshot| {
-                            let mut projects: Vec<_> = snapshot
-                                .project_order
-                                .iter()
-                                .filter_map(|id| {
-                                    snapshot.projects.iter().find(|project| &project.id == id)
-                                })
-                                .collect();
-                            projects.extend(
-                                snapshot.projects.iter().filter(|project| {
-                                    !snapshot.project_order.contains(&project.id)
-                                }),
-                            );
-                            projects.into_iter().cloned().collect()
-                        })
-                        .unwrap_or_default();
-                let project_refs: Vec<_> = projects.iter().collect();
-                self.sync_project_task_windows(&project_refs, show_archived);
-            }
         }
         cx.notify();
     }
@@ -163,15 +123,16 @@ impl ThreadsBlock {
         let Some(org) = &self.organization else {
             return div().into_any_element();
         };
+        let Some((position, anchor)) = org.menu_anchor else {
+            return div().into_any_element();
+        };
         let items = self.organization_menu_items();
         let title = match org.menu {
-            Some(OrganizationMenu::Filter) => "排序与归档",
-            Some(OrganizationMenu::Group(_)) => "分组操作",
-            _ => "项目操作",
+            Some(OrganizationMenu::Group(_)) => vega_i18n::t("ui.group_actions"),
+            _ => vega_i18n::t("ui.project_actions"),
         };
         let menu = div()
             .id("organization-menu")
-            .debug_selector(|| "organization-menu".into())
             .track_focus(&org.menu_focus)
             .occlude()
             .w(px(Layout::TASK_MENU_WIDTH))
@@ -197,15 +158,22 @@ impl ThreadsBlock {
                 cx.listener(|this, _, _, cx| {
                     if let Some(org) = this.organization.as_mut() {
                         org.menu = None;
+                        org.menu_anchor = None;
                     }
                     cx.notify();
                 }),
+            )
+            .tracked_scroll_edge_fade(
+                org.menu_scroll.clone(),
+                colors.bg_elevated,
+                ScrollFade::compact(),
             )
             // VegaWindow binds Escape to CloseSettings before raw key_down.
             // Handle the action in this focused menu so it cannot reach the route.
             .on_action(cx.listener(|this, _: &CloseSettings, _, cx| {
                 if let Some(org) = this.organization.as_mut() {
                     org.menu = None;
+                    org.menu_anchor = None;
                 }
                 cx.stop_propagation();
                 cx.notify();
@@ -229,7 +197,10 @@ impl ThreadsBlock {
                                 (org.menu_index + 1) % count
                             }
                         }
-                        "escape" => org.menu = None,
+                        "escape" => {
+                            org.menu = None;
+                            org.menu_anchor = None;
+                        }
                         "enter" | "space" => {
                             let index = org.menu_index;
                             this.activate_organization_menu(index, window, cx);
@@ -251,34 +222,45 @@ impl ThreadsBlock {
                     .text_color(colors.text_tertiary)
                     .child(title),
             )
-            .children(items.into_iter().enumerate().map(|(index, (label, _))| {
-                div()
-                    .id(ElementId::Name(format!("organization-menu-{index}").into()))
-                    .debug_selector(move || format!("organization-menu-{index}"))
-                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .px_2()
-                    .rounded_md()
-                    .text_size(px(Typography::SIDEBAR))
-                    .text_color(if label.contains("取消分组并删除") {
-                        colors.danger
-                    } else {
-                        colors.text_primary
-                    })
-                    .when(org.menu_index == index, |s| s.bg(colors.bg_active))
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(colors.bg_hover))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.activate_organization_menu(index, window, cx);
-                        }),
-                    )
-                    .child(label)
-            }));
+            .children(
+                items
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (label, command))| {
+                        div()
+                            .id(ElementId::Name(format!("organization-menu-{index}").into()))
+                            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .px_2()
+                            .rounded_md()
+                            .text_size(px(Typography::SIDEBAR))
+                            .text_color(
+                                if matches!(
+                                    command,
+                                    MenuCommand::Apply(
+                                        SidebarOrganizationAction::DissolveGroup { .. }
+                                    )
+                                ) {
+                                    colors.danger
+                                } else {
+                                    colors.text_primary
+                                },
+                            )
+                            .when(org.menu_index == index, |s| s.bg(colors.bg_active))
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(colors.bg_hover))
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.activate_organization_menu(index, window, cx);
+                                }),
+                            )
+                            .child(label)
+                    }),
+            );
         div()
             .absolute()
             .top_0()
@@ -287,12 +269,9 @@ impl ThreadsBlock {
             .h_full()
             .child(
                 anchored()
-                    .anchor(Anchor::TopRight)
-                    .position_mode(AnchoredPositionMode::Local)
-                    .position(point(
-                        px(crate::sidebar::width(cx) - 16.),
-                        px(Typography::SIDEBAR_LINE_HEIGHT),
-                    ))
+                    .anchor(anchor)
+                    .position_mode(AnchoredPositionMode::Window)
+                    .position(position)
                     .snap_to_window_with_margin(px(8.))
                     .child(deferred(menu).with_priority(3)),
             )

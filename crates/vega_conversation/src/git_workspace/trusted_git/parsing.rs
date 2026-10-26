@@ -548,6 +548,10 @@ pub(crate) async fn collect_draft(
     request: ChatRequest,
     cancel: CancellationToken,
 ) -> Result<String, CommitErrorCode> {
+    let mut request = request;
+    if request.model_snapshot.is_none() {
+        request.model_snapshot = provider.model_snapshot().map(Box::new);
+    }
     let mut stream = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(CommitErrorCode::DraftFailed),
@@ -564,20 +568,36 @@ pub(crate) async fn collect_draft(
             _ = cancel.cancelled() => return Err(CommitErrorCode::DraftFailed),
             item = stream.next() => item,
         };
-        match item {
-            Some(Ok(ProviderEvent::TextDelta(delta))) if !usage_started && !done => {
+        let event = match item {
+            Some(Ok(event)) if !done => event,
+            None if done && !text.is_empty() => return Ok(text),
+            Some(_) | None => return Err(CommitErrorCode::DraftFailed),
+        };
+        match event {
+            ProviderEvent::TextDelta(delta) => {
+                if usage_started {
+                    return Err(CommitErrorCode::DraftFailed);
+                }
                 checked_draft_len(text.len(), delta.len())?;
                 if delta.as_bytes().contains(&0) {
                     return Err(CommitErrorCode::DraftFailed);
                 }
                 text.push_str(&delta);
             }
-            Some(Ok(ProviderEvent::Usage { .. })) if !done => usage_started = true,
-            Some(Ok(ProviderEvent::Done {
+            ProviderEvent::Usage { .. } => usage_started = true,
+            ProviderEvent::ChatReasoningState(_)
+            | ProviderEvent::ChatReasoningContent(_)
+            | ProviderEvent::ResponseReplay(_) => {}
+            ProviderEvent::Done {
                 stop_reason: StopReason::End,
-            })) if !done => done = true,
-            None if done && !text.is_empty() => return Ok(text),
-            _ => return Err(CommitErrorCode::DraftFailed),
+            } => done = true,
+            ProviderEvent::ThinkingDelta(_)
+            | ProviderEvent::SummaryDelta(_)
+            | ProviderEvent::ReasoningReplay(_)
+            | ProviderEvent::ToolUse { .. }
+            | ProviderEvent::RetryScheduled { .. }
+            | ProviderEvent::ResponseMetadata(_)
+            | ProviderEvent::Done { .. } => return Err(CommitErrorCode::DraftFailed),
         }
     }
 }

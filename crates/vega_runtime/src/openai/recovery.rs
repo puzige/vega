@@ -25,20 +25,8 @@ impl OpenAiProvider {
         if cancel.is_cancelled() {
             return Err(VegaError::Cancelled);
         }
-        crate::images::validate_messages(&request.messages)?;
-        if let Some(reasoning) = &request.reasoning {
-            reasoning.validate()?;
-            if reasoning.model != request.model {
-                return Err(VegaError::ReasoningSelectionInvalid {
-                    message: "reasoning profile model does not match request model".into(),
-                });
-            }
-        }
-        let body = if self.responses_api {
-            responses::build_body(&request)?
-        } else {
-            build_request_body(&request)
-        };
+        let request = self.prepare_request(request)?;
+        let body = self.request_body(&request)?;
         let state = RecoveryStream {
             provider: self,
             request,
@@ -104,6 +92,9 @@ impl RecoveryStream {
                 self.ended = true;
                 return Some(Err(error));
             }
+            // Metadata describes the response of the current attempt only; a
+            // previous attempt's status must not be reported as this one's.
+            self.metadata = ProviderResponseMetadata::default();
             let sent = tokio::select! {
                 biased;
                 _ = self.cancel.cancelled() => {
@@ -131,17 +122,13 @@ impl RecoveryStream {
                     let retry_after = retry_after_of(&response);
                     let request_id = request_id_from_headers(response.headers());
                     let retryable = status == 408 || is_retryable_status(status);
-                    let snippet = if self.provider.responses_api || retryable {
-                        "<response body omitted>".to_string()
-                    } else {
-                        let snippet = tokio::time::timeout(
-                            REQUEST_TIMEOUT,
-                            error_snippet(response, &self.cancel),
-                        )
-                        .await
-                        .unwrap_or_else(|_| "<response body omitted>".into());
-                        self.provider.redact_key(&snippet)
-                    };
+                    let snippet = tokio::time::timeout(
+                        REQUEST_TIMEOUT,
+                        error_snippet(response, &self.cancel),
+                    )
+                    .await
+                    .unwrap_or_else(|_| "<response body unavailable>".into());
+                    let snippet = self.provider.redact_key(&snippet);
                     if self.cancel.is_cancelled() {
                         self.ended = true;
                         return Some(Err(VegaError::Cancelled));
@@ -185,7 +172,10 @@ impl RecoveryStream {
         let retryable = matches!(
             &error,
             VegaError::ProviderDiagnostic {
-                kind: ProviderFailureKind::Transport | ProviderFailureKind::Http,
+                kind: ProviderFailureKind::Transport
+                    | ProviderFailureKind::StreamInterrupted
+                    | ProviderFailureKind::Timeout
+                    | ProviderFailureKind::Http,
                 retryable: true,
                 ..
             }
@@ -213,11 +203,14 @@ impl RecoveryStream {
                     ..
                 } => VegaError::ProviderDiagnostic {
                     kind,
-                    status,
+                    // An established response keeps its status so the failure
+                    // line can state the fact instead of implying the
+                    // connection never opened.
+                    status: status.or(self.metadata.http_status),
                     message,
                     retryable: false,
                     retry_count: Some(self.attempt),
-                    request_id,
+                    request_id: request_id.or_else(|| self.metadata.request_id.clone()),
                 },
                 other => other,
             }))
@@ -227,7 +220,7 @@ impl RecoveryStream {
 
 pub(super) fn incomplete_stream_error() -> VegaError {
     VegaError::ProviderDiagnostic {
-        kind: ProviderFailureKind::Transport,
+        kind: ProviderFailureKind::StreamInterrupted,
         status: None,
         message: "provider stream ended before completion".into(),
         retryable: true,
@@ -238,7 +231,7 @@ pub(super) fn incomplete_stream_error() -> VegaError {
 
 fn transport_timeout_error() -> VegaError {
     VegaError::ProviderDiagnostic {
-        kind: ProviderFailureKind::Transport,
+        kind: ProviderFailureKind::Timeout,
         status: None,
         message: "provider request timed out".into(),
         retryable: true,

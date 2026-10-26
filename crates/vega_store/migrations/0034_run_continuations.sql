@@ -1,0 +1,2 @@
+ALTER TABLE pending_messages ADD COLUMN accepted_after_assistant_id TEXT;
+CREATE INDEX pending_messages_continuation_predecessor ON pending_messages(thread_id, accepted_after_assistant_id) WHERE accepted_after_assistant_id IS NOT NULL;

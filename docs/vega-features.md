@@ -52,6 +52,7 @@
 | A2-19 | 错误态 | API 失败/限流，自动重试+可见提示 | P1 | 全员 |
 | A2-20 | 思考流展示 | reasoning delta 折叠区（模型支持时） | P1 | ZC/AG |
 | A2-21 | /命令 | /model /plan /permissions /clear 等快捷指令 | P2 | CD/AG |
+| A2-22 | 结构化提问面板 | Composer 上方逐题回答、Other/备注、跳过/停止及只读问答历史；见 [#445 规格](445/vega-issue-445-ask-user-question.md) | P1 | CD |
 
 ## A3 · Vega Runtime（自研 Agent 核心）[Phase 1-2]
 
@@ -70,10 +71,11 @@
 | A3-11 | 上下文管理 v1 | system prompt 模板、滑动窗口、超限朴素截断 | P0 | 全员 |
 | A3-12 | Trace 全量落库 | 每事件（思考/工具/结果/usage）写 SQLite，Harness 数据基础 | P0 | ✦ |
 | A3-13 | 上下文压缩 v2 | 摘要压缩长会话 | P1 (Ph2) | CD |
-| A3-14 | 子 agent 派发 | 主 agent 可 spawn 子任务并行，结果汇总 | P1 (Ph2) | 全员 |
+| A3-14 | 子 agent 派发 | Native 父任务通过 spawn/list/wait/cancel 管理最多四个并行子会话；独立历史、打开/停止/续聊；[规格](448/vega-issue-448-multi-agent.md) | P1 (Ph2) | 全员 |
 | A3-15 | 多 Provider | Anthropic 原生、DeepSeek、Ollama | P1 (Ph2) | AG/ZC |
 | A3-16 | web_fetch 工具 | 抓取网页转 markdown 注入 | P1 (Ph2) | 全员 |
 | A3-17 | 闲时执行接口 | 任务可标记「闲时跑」，由 A7 调度低价模型 | P2 (Ph3) | ZC |
+| A3-18 | AskUserQuestion 工具 | Native agent 挂起等待用户答复，按问题 ID 回灌；无默认超时，沿用工具持久化与取消链路；见 [#445 规格](445/vega-issue-445-ask-user-question.md) | P1 | CD |
 
 ## A5 · 产物 & Diff 审阅 [Phase 1-2]
 
@@ -144,7 +146,7 @@
 - A8-02 连接器配置 UI（启用/禁用/凭据）
 - A8-03 WASI 插件沙箱 + 插件 API（Ph4）
 - A8-04 插件市场 MVP（Ph4）
-- A8-05 Agent Skills v1（项目/全局发现、按需加载、自动触发与 UI 授权；Issue #74，规格见 [vega-issue-74-skills.md](vega-issue-74-skills.md)）
+- A8-05 Agent Skills v1（项目/全局发现、按需加载、自动触发与 UI 授权；Issue #74，规格见 [vega-issue-74-skills.md](74/vega-issue-74-skills.md)）
 
 ### A9 · Harness 质量引擎 [Phase 3]
 - A9-01 Trace 可视化（时间轴：思考/工具/耗时/成本逐步回放）

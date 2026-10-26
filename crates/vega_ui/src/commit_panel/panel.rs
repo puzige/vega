@@ -1,4 +1,5 @@
 use super::*;
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 
 pub struct CommitPanel {
     pub(crate) thread_id: String,
@@ -32,7 +33,9 @@ impl Focusable for CommitPanel {
 impl CommitPanel {
     pub fn new(thread_id: String, project_id: String, cx: &mut Context<Self>) -> Self {
         let message = cx.new(|cx| {
-            TextInput::new_multiline(cx, "Commit message… (Enter newline · Cmd+Enter commit)", 4)
+            TextInput::new_multiline(cx, "", 4)
+                .with_placeholder_key("ui.commit_message_enter_newline_cmd_enter_commit")
+                .with_scroll_fade_on_base()
         });
         cx.observe(&message, |this, _, cx| {
             match this.editor_revision.checked_add(1) {
@@ -82,16 +85,6 @@ impl CommitPanel {
 
     pub fn stage(&self) -> CommitPanelStage {
         self.model.stage()
-    }
-
-    /// Returns the safe control focus projection used by controller/UI tests.
-    pub fn focused_control(&self) -> CommitPanelFocus {
-        self.model.focus()
-    }
-
-    /// Returns the bounded editable commit message projection.
-    pub fn commit_message(&self, cx: &App) -> String {
-        self.message.read(cx).text().to_owned()
     }
 
     pub fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
@@ -430,7 +423,7 @@ impl Render for CommitPanel {
                         div()
                             .text_size(px(Typography::HEADING_BLOCK))
                             .text_color(colors.text_primary)
-                            .child("Commit changes"),
+                            .child(vega_i18n::t("ui.commit_changes")),
                     )
                     .child(
                         div()
@@ -451,7 +444,7 @@ impl Render for CommitPanel {
                                     let _ = this.request_close(cx);
                                 }),
                             )
-                            .child("Cancel"),
+                            .child(vega_i18n::t("ui.cancel")),
                     ),
             )
             .when_some(inline_error, |panel, code| {
@@ -459,7 +452,10 @@ impl Render for CommitPanel {
                     div()
                         .text_size(px(Typography::BODY))
                         .text_color(colors.danger)
-                        .child(format!("Commit unavailable: {code}")),
+                        .child(vega_i18n::t_args(
+                            "ui.commit_unavailable_code",
+                            &[("code", code)],
+                        )),
                 )
             })
             .child(
@@ -470,68 +466,82 @@ impl Render for CommitPanel {
                     .border_color(colors.border_subtle)
                     .rounded_md()
                     .overflow_hidden()
-                    .child(
-                        uniform_list(
-                            "commit-checklist",
-                            rows,
-                            cx.processor(move |this: &mut CommitPanel, range, _, _cx| {
-                                this.model
-                                    .rows(range)
-                                    .into_iter()
-                                    .map(|(index, row, selected)| {
-                                        let row_id = row.file_id;
-                                        let view = view.clone();
-                                        let key =
-                                            commit_row_key(workspace_generation, index, staged_len);
-                                        div()
-                                            .id(key)
-                                            .h(px(COMMIT_ROW_HEIGHT))
-                                            .px_2()
-                                            .flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .text_size(px(Typography::CODE))
-                                            .text_color(if row.forced {
-                                                colors.text_tertiary
-                                            } else {
-                                                colors.text_primary
-                                            })
-                                            .when(
-                                                this.model.focus
-                                                    == CommitPanelFocus::Optional(
-                                                        index.saturating_sub(staged_len),
-                                                    )
-                                                    && !row.forced,
-                                                |element| element.bg(colors.bg_hover),
-                                            )
-                                            .when(commit_row_is_focusable(row.forced), |element| {
-                                                element.cursor_pointer().on_mouse_up(
-                                                    MouseButton::Left,
-                                                    move |_, _, cx| {
-                                                        view.update(cx, |this, cx| {
-                                                            this.toggle_row(row_id, cx)
-                                                        });
+                    .map(|mut frame| {
+                        let fade = ScrollFade::reading().rounded_parent(frame.style());
+                        frame.child(
+                            uniform_list(
+                                "commit-checklist",
+                                rows,
+                                cx.processor(move |this: &mut CommitPanel, range, _, _cx| {
+                                    this.model
+                                        .rows(range)
+                                        .into_iter()
+                                        .map(|(index, row, selected)| {
+                                            let row_id = row.file_id;
+                                            let view = view.clone();
+                                            let key = commit_row_key(
+                                                workspace_generation,
+                                                index,
+                                                staged_len,
+                                            );
+                                            div()
+                                                .id(key)
+                                                .h(px(COMMIT_ROW_HEIGHT))
+                                                .px_2()
+                                                .flex()
+                                                .items_center()
+                                                .gap_2()
+                                                .text_size(px(Typography::CODE))
+                                                .text_color(if row.forced {
+                                                    colors.text_tertiary
+                                                } else {
+                                                    colors.text_primary
+                                                })
+                                                .when(
+                                                    this.model.focus
+                                                        == CommitPanelFocus::Optional(
+                                                            index.saturating_sub(staged_len),
+                                                        )
+                                                        && !row.forced,
+                                                    |element| element.bg(colors.bg_hover),
+                                                )
+                                                .when(
+                                                    commit_row_is_focusable(row.forced),
+                                                    |element| {
+                                                        element.cursor_pointer().on_mouse_up(
+                                                            MouseButton::Left,
+                                                            move |_, _, cx| {
+                                                                view.update(cx, |this, cx| {
+                                                                    this.toggle_row(row_id, cx)
+                                                                });
+                                                            },
+                                                        )
                                                     },
                                                 )
-                                            })
-                                            .child(if row.forced || selected {
-                                                "●"
-                                            } else {
-                                                "○"
-                                            })
-                                            .child(
-                                                div()
-                                                    .text_color(colors.text_tertiary)
-                                                    .child(commit_row_status(row.forced, selected)),
-                                            )
-                                            .child(div().min_w_0().truncate().child(row.label))
-                                    })
-                                    .collect::<Vec<_>>()
-                            }),
+                                                .child(if row.forced || selected {
+                                                    "●"
+                                                } else {
+                                                    "○"
+                                                })
+                                                .child(
+                                                    div().text_color(colors.text_tertiary).child(
+                                                        commit_row_status(row.forced, selected),
+                                                    ),
+                                                )
+                                                .child(div().min_w_0().truncate().child(row.label))
+                                        })
+                                        .collect::<Vec<_>>()
+                                }),
+                            )
+                            .track_scroll(&self.scroll)
+                            .h_full()
+                            .tracked_scroll_edge_fade(
+                                self.scroll.clone(),
+                                colors.bg_base,
+                                fade,
+                            ),
                         )
-                        .track_scroll(&self.scroll)
-                        .h_full(),
-                    ),
+                    }),
             )
             .when(ready, |panel| {
                 panel
@@ -566,7 +576,7 @@ impl Render for CommitPanel {
                                     this.draft(&RequestCommitDraft, window, cx)
                                 }),
                             )
-                            .child("Generate message"),
+                            .child(vega_i18n::t("ui.generate_message")),
                     )
             })
             .child(
@@ -596,9 +606,9 @@ impl Render for CommitPanel {
                         )
                     })
                     .child(if ready {
-                        "Commit (⌘↵)"
+                        vega_i18n::t("ui.commit")
                     } else {
-                        "Prepare (⌘↵)"
+                        vega_i18n::t("ui.prepare")
                     }),
             )
             .into_any_element()
@@ -608,11 +618,11 @@ impl Render for CommitPanel {
 fn commit_error_label(code: CommitErrorCode) -> &'static str {
     match code {
         CommitErrorCode::GitUnavailable => {
-            "Git 2.40+ was not found. Install Homebrew Git and retry."
+            vega_i18n::t("ui.git_2_40_was_not_found_install_homebrew")
         }
-        CommitErrorCode::GitUnsupported => "Git 2.40+ is required. Upgrade Git and retry.",
+        CommitErrorCode::GitUnsupported => vega_i18n::t("ui.git_2_40_is_required_upgrade_git_and"),
         CommitErrorCode::GitExecutableChanged => {
-            "Git changed while Vega was running. Restart Vega and retry."
+            vega_i18n::t("ui.git_changed_while_vega_was_running_restart_vega")
         }
         _ => code.as_str(),
     }

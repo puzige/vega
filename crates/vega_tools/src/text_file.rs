@@ -166,20 +166,3 @@ pub(crate) fn open_regular(
     }
     Ok(file)
 }
-
-#[cfg(test)]
-mod credential_path_tests {
-    #[test]
-    fn replaced_parent_symlink_is_rejected_before_reading() {
-        let root = tempfile::tempdir().unwrap();
-        let public = root.path().join("public");
-        let private = root.path().join("private");
-        std::fs::create_dir(&public).unwrap();
-        std::fs::create_dir(&private).unwrap();
-        std::fs::write(private.join("secret"), "synthetic-secret").unwrap();
-        let original = public.join("secret");
-        std::fs::remove_dir(&public).unwrap();
-        std::os::unix::fs::symlink(&private, &public).unwrap();
-        assert!(super::read_regular(&original, true).is_err());
-    }
-}

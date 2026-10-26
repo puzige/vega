@@ -1,3 +1,4 @@
+use super::mouse_selection::{MouseSelection, SelectionGranularity};
 use super::*;
 
 impl TextInput {
@@ -9,7 +10,9 @@ impl TextInput {
             focus_handle: cx.focus_handle(),
             content: "".into(),
             content_revision: 0,
+            prediction: None,
             placeholder: placeholder.into(),
+            placeholder_key: None,
             masked,
             multiline: false,
             rows: 1,
@@ -20,15 +23,21 @@ impl TextInput {
             selection_reversed: false,
             marked_range: None,
             last_lines: Vec::new(),
+            navigation_lines: Vec::new(),
+            navigation_revision: 0,
+            vertical_goal: None,
             last_line_height: px(0.),
             last_bounds: None,
-            is_selecting: false,
+            mouse_selection: None,
             bare_chrome: false,
+            editor_scroll: None,
+            scroll_handle: element::TextScrollHandle::default(),
+            scrollable_editor: false,
+            scroll_fade_on_base: false,
+            total_visual_rows: 1,
         }
     }
 
-    /// Creates an empty fixed-`rows` multi-line input (S3-T18 Composer):
-    /// Enter inserts a newline, paste preserves line breaks.
     pub fn new_multiline(
         cx: &mut Context<Self>,
         placeholder: impl Into<SharedString>,
@@ -62,10 +71,19 @@ impl TextInput {
         self
     }
 
-    /// R62 R10: drops the single-line box chrome (background, border, radius,
-    /// padding) so the input can be the editable body of a menu row that draws
-    /// its own surface. Only the decoration changes: content, selection, IME
-    /// handling, editing keys and the placeholder are untouched.
+    pub fn with_editor_viewport(mut self) -> Self {
+        self.scrollable_editor = true;
+        self.scroll_fade_on_base = true;
+        self.min_rows = 1;
+        self.max_rows = 24;
+        self
+    }
+
+    pub(crate) fn with_scroll_fade_on_base(mut self) -> Self {
+        self.scroll_fade_on_base = true;
+        self
+    }
+
     pub fn with_bare_chrome(mut self) -> Self {
         self.bare_chrome = true;
         self
@@ -79,6 +97,7 @@ impl TextInput {
 
     /// Clears content and selection (used to reset the add-provider form).
     pub fn clear(&mut self, cx: &mut Context<Self>) {
+        self.prediction = None;
         self.content_revision = self.content_revision.wrapping_add(1);
         self.content = "".into();
         self.selected_range = 0..0;
@@ -86,19 +105,68 @@ impl TextInput {
         self.marked_range = None;
         self.rows = self.min_rows;
         self.first_visible_row = 0;
+        self.total_visual_rows = 1;
+        self.editor_scroll = None;
+        self.scroll_handle.reset();
         cx.notify();
     }
 
-    /// Replaces the whole content and collapses the selection to the end
-    /// (used to seed the T13 inline rename editor with the current title).
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.prediction = None;
         self.content_revision = self.content_revision.wrapping_add(1);
         self.content = text.to_string().into();
         self.selected_range = self.content.len()..self.content.len();
         self.selection_reversed = false;
         self.marked_range = None;
+        self.editor_scroll = None;
+        self.scroll_handle.reset();
         self.update_logical_viewport();
         cx.notify();
+    }
+
+    pub fn prediction_text(&self) -> Option<&str> {
+        self.prediction
+            .as_deref()
+            .filter(|_| self.content.is_empty() && !self.is_composing())
+    }
+
+    pub(crate) fn set_prediction(&mut self, suggestion: Option<String>, cx: &mut Context<Self>) {
+        let prediction = suggestion
+            .filter(|_| self.content.is_empty() && !self.is_composing())
+            .map(SharedString::from);
+        if self.prediction != prediction {
+            self.prediction = prediction;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn accept_prediction(
+        &mut self,
+        _: &AcceptPrediction,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.prediction_text().is_none() {
+            cx.propagate();
+            return;
+        }
+        if let Some(suggestion) = self.prediction.take() {
+            self.set_text(&suggestion, cx);
+        }
+    }
+
+    pub(crate) fn dismiss_prediction(
+        &mut self,
+        _: &DismissPrediction,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.prediction.take().is_some() {
+            self.content_revision = self.content_revision.wrapping_add(1);
+            cx.notify();
+        } else {
+            cx.propagate();
+        }
     }
 
     pub(crate) fn content_revision(&self) -> u64 {
@@ -113,12 +181,6 @@ impl TextInput {
     /// Number of currently visible rows (always within the configured range).
     pub fn visible_rows(&self) -> usize {
         self.rows
-    }
-
-    /// First visual row in the bounded multi-line viewport.
-    #[cfg(test)]
-    pub(crate) fn first_visible_row(&self) -> usize {
-        self.first_visible_row
     }
 
     /// Whether Up should enter Composer history rather than move inside a
@@ -138,10 +200,6 @@ impl TextInput {
         )
     }
 
-    /// Byte range + body of a trailing `@token` at the caret (A2-12): the
-    /// token starts after an `@` that sits at text start or right after
-    /// whitespace, extends to the caret, and contains no whitespace.
-    /// `None` when the caret is not completing an `@` token.
     pub fn trailing_at_query(&self) -> Option<(Range<usize>, String)> {
         let cursor = self.cursor_offset();
         let prefix = self.content.get(..cursor)?;
@@ -156,15 +214,12 @@ impl TextInput {
         Some((at + 1..cursor, query.to_string()))
     }
 
-    /// Completes the trailing `@token` with `path`: the token body is
-    /// replaced with `path ` (the existing `@` stays in place; the trailing
-    /// space terminates the token so the selector closes deterministically).
-    /// No-op without a trailing token (A2-12 completion seam).
     pub fn complete_at_query(&mut self, path: &str, cx: &mut Context<Self>) {
         let Some((range, _)) = self.trailing_at_query() else {
             return;
         };
         let replacement = format!("{path} ");
+        self.prediction = None;
         self.content_revision = self.content_revision.wrapping_add(1);
         self.content =
             (self.content[..range.start].to_owned() + &replacement + &self.content[range.end..])
@@ -193,7 +248,7 @@ impl TextInput {
         if self.last_bounds.is_none() {
             self.rows = logical_rows;
         } else {
-            self.rows = self.rows.max(logical_rows).min(8);
+            self.rows = self.rows.max(logical_rows).min(self.max_rows);
         }
         let cursor_row = self.content[..self.cursor_offset()]
             .bytes()
@@ -269,6 +324,95 @@ impl TextInput {
         }
     }
 
+    pub(crate) fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_vertical(false, false, cx);
+    }
+
+    pub(crate) fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_vertical(true, false, cx);
+    }
+
+    pub(crate) fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_vertical(false, true, cx);
+    }
+
+    pub(crate) fn select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_vertical(true, true, cx);
+    }
+
+    fn navigate_vertical(&mut self, down: bool, extend: bool, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
+        if !self.multiline {
+            cx.propagate();
+            return;
+        }
+        if self.navigation_revision != self.content_revision || self.navigation_lines.is_empty() {
+            cx.notify();
+            return;
+        }
+        let cursor = self.cursor_offset();
+        let row = self
+            .navigation_lines
+            .iter()
+            .rposition(|line| cursor >= line.start)
+            .unwrap_or_default();
+        let current = &self.navigation_lines[row];
+        let x = self
+            .vertical_goal
+            .as_ref()
+            .filter(|(selection, reversed, revision, _)| {
+                *selection == self.selected_range
+                    && *reversed == self.selection_reversed
+                    && *revision == self.content_revision
+            })
+            .map_or_else(
+                || {
+                    current
+                        .line
+                        .x_for_index((cursor - current.start).min(current.len))
+                },
+                |(_, _, _, x)| *x,
+            );
+        let target_row = if down {
+            (row + 1).min(self.navigation_lines.len() - 1)
+        } else {
+            row.saturating_sub(1)
+        };
+        let target = &self.navigation_lines[target_row];
+        let mut offset = target.start + target.line.closest_index_for_x(x).min(target.len);
+        if target_row != row
+            && offset == target.start + target.len
+            && self
+                .navigation_lines
+                .get(target_row + 1)
+                .is_some_and(|next| next.start == offset)
+        {
+            let last_cluster = target
+                .line
+                .runs
+                .iter()
+                .flat_map(|run| run.glyphs.iter())
+                .map(|glyph| glyph.index)
+                .filter(|index| *index < target.len)
+                .max()
+                .unwrap_or_default();
+            offset = target.start + last_cluster;
+        }
+        if extend {
+            self.select_to(offset, cx);
+        } else {
+            self.move_to(offset, cx);
+        }
+        self.vertical_goal = Some((
+            self.selected_range.clone(),
+            self.selection_reversed,
+            self.content_revision,
+            x,
+        ));
+    }
+
     pub(crate) fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
         self.select_to(self.previous_boundary(self.cursor_offset()), cx);
     }
@@ -320,12 +464,40 @@ impl TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        gpui_kit::base::GlobalState::init(cx);
+        gpui_kit::base::GlobalState::suppress_text_selection(cx);
         window.focus(&self.focus_handle, cx);
-        self.is_selecting = true;
         if event.modifiers.shift {
+            let anchor = if self.selection_reversed {
+                self.selected_range.end
+            } else {
+                self.selected_range.start
+            };
             self.select_to(self.index_for_mouse_position(event.position), cx);
+            self.mouse_selection = Some(MouseSelection {
+                anchor: anchor..anchor,
+                granularity: SelectionGranularity::Character,
+                content_revision: self.content_revision,
+            });
         } else {
-            self.move_to(self.index_for_mouse_position(event.position), cx);
+            let granularity = match event.click_count {
+                0 | 1 => SelectionGranularity::Character,
+                2 => SelectionGranularity::Word,
+                _ => SelectionGranularity::Line,
+            };
+            let offset = self.mouse_index_for_position(
+                event.position,
+                !matches!(granularity, SelectionGranularity::Character),
+            );
+            let range = granularity.range(&self.content, offset);
+            self.selected_range = range.clone();
+            self.selection_reversed = false;
+            self.mouse_selection = Some(MouseSelection {
+                anchor: range,
+                granularity,
+                content_revision: self.content_revision,
+            });
+            cx.notify();
         }
     }
 
@@ -335,7 +507,7 @@ impl TextInput {
         _window: &mut Window,
         _: &mut Context<Self>,
     ) {
-        self.is_selecting = false;
+        self.mouse_selection = None;
     }
 
     pub(crate) fn on_mouse_move(
@@ -344,9 +516,24 @@ impl TextInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.is_selecting {
-            self.select_to(self.index_for_mouse_position(event.position), cx);
+        if event.pressed_button != Some(MouseButton::Left) {
+            self.mouse_selection = None;
+            return;
         }
+        let Some(selection) = self.mouse_selection.as_ref() else {
+            return;
+        };
+        if selection.content_revision != self.content_revision {
+            self.mouse_selection = None;
+            return;
+        }
+        let offset = self.mouse_index_for_position(
+            event.position,
+            !matches!(selection.granularity, SelectionGranularity::Character),
+        );
+        let unit = selection.granularity.range(&self.content, offset);
+        (self.selected_range, self.selection_reversed) = selection.extend(unit);
+        cx.notify();
     }
 
     pub(crate) fn show_character_palette(
@@ -405,6 +592,9 @@ impl TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_composing() {
+            return;
+        }
         if !self.multiline {
             window.play_system_bell();
             return;
@@ -440,6 +630,7 @@ impl TextInput {
     }
 
     pub(crate) fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.vertical_goal = None;
         self.selected_range = offset..offset;
         cx.notify();
     }
@@ -453,6 +644,10 @@ impl TextInput {
     }
 
     pub(crate) fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
+        self.mouse_index_for_position(position, false)
+    }
+
+    fn mouse_index_for_position(&self, position: Point<Pixels>, glyph: bool) -> usize {
         if self.content.is_empty() {
             return 0;
         }
@@ -481,7 +676,19 @@ impl TextInput {
             return 0;
         };
         // The layout is over the painted text, so map back through the mask.
-        let display_offset = layout.line.closest_index_for_x(position.x - bounds.left());
+        let x = position.x - bounds.left();
+        let display_offset = if glyph {
+            layout.line.index_for_x(x).unwrap_or_else(|| {
+                layout
+                    .line
+                    .text
+                    .char_indices()
+                    .next_back()
+                    .map_or(0, |(index, _)| index)
+            })
+        } else {
+            layout.line.closest_index_for_x(x)
+        };
         let local = self.content_offset_for_display_offset(display_offset);
         let offset = layout.start + local;
         if self.masked {
@@ -500,6 +707,7 @@ impl TextInput {
     }
 
     pub(crate) fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.vertical_goal = None;
         if self.selection_reversed {
             self.selected_range.start = offset;
         } else {
@@ -570,10 +778,6 @@ impl TextInput {
         start..start.max(end)
     }
 
-    // Character boundaries instead of the example's grapheme boundaries: no
-    // unicode-segmentation dependency is allowed for this crate (T08 ruling).
-    // Both helpers tolerate out-of-range offsets (they are fed selection
-    // state that the platform may have written between our edits).
     pub(crate) fn previous_boundary(&self, offset: usize) -> usize {
         self.content
             .char_indices()

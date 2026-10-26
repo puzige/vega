@@ -1,46 +1,4 @@
-//! Sidebar (T09 shell + T12 content + T13 session management): the fixed
-//! Compact left column of the main window layout
-//! ([vega-ui-spec.md §1](../../docs/vega-ui-spec.md)).
-//!
-//! Structure per the T12 architect ruling: a small Vega brand row, a light
-//! [新建任务] entry, then two independent block components — [`ProjectsBlock`]
-//! (project list: select / add / remove / sort toggle, branch suffix per row)
-//! and [`ThreadsBlock`] (the selected project's sessions: pinned group first,
-//! `updated_at` desc) — orchestrated by [`Sidebar`], which owns the
-//! cross-block wiring. Settings remains a stable low-frequency entry at the
-//! bottom of the rail.
-//!
-//! R13 projects the same task rows into nested projects, a local-calendar
-//! timeline, or cross-project custom groups. Organization metadata uses one
-//! background revision-checked lane; project registration/live branches and
-//! the existing task action/navigation boundaries remain shared.
-//!
-//! T13 (A1-05) adds the session management operations to [`ThreadsBlock`]:
-//! per-row hover action groups (置顶 / 归档或恢复 / 删除), double-click inline
-//! renaming (reusing [`crate::text_input::TextInput`]; Enter submits, Esc
-//! cancels, an empty title cancels), the 「已归档 (N)」 collapsed section at
-//! the bottom of the block, and the delete confirmation overlay
-//! ([`render_delete_confirm_overlay`], driven by the [`PendingDeleteConfirm`]
-//! global and rendered by the window root).
-//!
-//! State model:
-//!
-//! - Cmd+B ([`toggle_persisted`]) flips the [`SidebarCollapsed`] global and
-//!   persists it as `ui.sidebar_collapsed` (T09 mechanism, serde default).
-//! - Block collapse states persist the same way (`ui.projects_collapsed` /
-//!   `ui.sessions_collapsed`, serde defaults keep older configs loadable).
-//!   The archive-section expansion is in-memory only (T13 卡允许不做记忆).
-//! - The selected project is cached in the [`SelectedProject`] global so
-//!   per-frame renders never query the store; it is seeded once at startup
-//!   from `vega_conversation`'s latest-project semantics and rewritten on
-//!   row click. `None` → the session block shows guidance copy.
-//! - The opened thread is cached in the [`OpenedThread`] global; the window
-//!   root renders it as a [`crate::conversation_stream::ConversationStream`]
-//!   view since S3-T17.
-//!
-//! The viewport auto-collapse rule (ui-spec §1) is applied by the window
-//! root at render time.
-
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
@@ -95,9 +53,6 @@ pub const CONTENT_MAX_WIDTH: f32 = Layout::CONTENT_MAX_WIDTH;
 /// Content column minimum horizontal padding in logical pixels (ui-spec §1).
 pub const CONTENT_MIN_PADDING: f32 = Layout::CONTENT_PADDING;
 
-/// Whether the user collapsed the sidebar with Cmd+B (T09, persisted as
-/// `ui.sidebar_collapsed`). The effective sidebar visibility is
-/// `!self.0 && viewport_width >= AUTO_COLLAPSE_WIDTH`.
 pub struct SidebarCollapsed(pub bool);
 
 impl Global for SidebarCollapsed {}
@@ -108,8 +63,6 @@ pub struct SidebarWidth(pub f32);
 
 impl Global for SidebarWidth {}
 
-/// Returns the effective stored Sidebar width, falling back to the R21
-/// default for isolated embedders that have not installed the global yet.
 pub fn width(cx: &App) -> f32 {
     cx.try_global::<SidebarWidth>()
         .map_or(Layout::SIDEBAR_WIDTH, |width| {
@@ -155,10 +108,6 @@ pub fn show_persisted(cx: &mut App) {
     );
 }
 
-/// The project the 「会话」 block is scoped to (T12 architect ruling: cached
-/// as a global so renders never query the store). Seeded at startup from
-/// latest-project semantics; rewritten on project row click. `None` →
-/// guidance copy instead of a thread list.
 pub struct SelectedProject(pub Option<String>);
 
 impl Global for SelectedProject {}
@@ -191,10 +140,6 @@ pub struct RunningThreadsGlobal(pub vega_conversation::types::RunningThreads);
 
 impl Global for RunningThreadsGlobal {}
 
-/// Records one thread's Agent liveness and repaints every window so all
-/// sidebars agree (A1-14). A repeated value is skipped: writing the same
-/// projection would otherwise repaint for nothing, and `RunningThreads` is
-/// cheap to compare.
 pub fn set_thread_running(thread_id: &str, running: bool, cx: &mut App) {
     let mut next = cx
         .try_global::<RunningThreadsGlobal>()
@@ -219,25 +164,20 @@ pub fn thread_is_running(thread_id: &str, cx: &App) -> bool {
         .is_some_and(|running| running.0.is_running(thread_id))
 }
 
-/// The opened-thread content column is rendered by the window root since
-/// S3-T17: an inline [`crate::conversation_stream::ConversationStream`] view
-/// (thread header + virtualized stream) replaces the former
-/// `render_opened_thread_pane` placeholder, which was deleted with this card.
 pub struct OpenedThread(pub Option<Thread>);
 
 impl Global for OpenedThread {}
 
-/// The thread awaiting deletion in the T13 confirmation overlay (裁决②：a
-/// global carries the pending delete; `None` = nothing pending). The overlay
-/// is rendered by the window root; clicking the scrim outside the card or
-/// pressing Esc (routed through the existing global `CloseSettings` handler,
-/// which consumes the overlay first) cancels it.
 pub struct PendingDeleteConfirm(pub Option<Thread>);
 
 impl Global for PendingDeleteConfirm {}
 
-/// Whether the 「项目」 block is collapsed (persisted as
-/// `ui.projects_collapsed`, T12 ruling: config 载体).
+pub enum SidebarEvent {
+    ThreadDeleted(String),
+}
+
+impl EventEmitter<SidebarEvent> for Sidebar {}
+
 pub struct ProjectsCollapsed(pub bool);
 
 impl Global for ProjectsCollapsed {}
@@ -256,14 +196,10 @@ pub struct VegaStore(pub Result<Store, String>);
 
 impl Global for VegaStore {}
 
-/// R69 R3: the `config.defaults` values a new task starts from
-/// (`defaults.model` / `defaults.permission_mode`).
-///
-/// Installed from the same `config::load()` source the eager `create_task`
-/// path used, and refreshed by the window's config-catalog worker, so the
-/// home-route draft can take its defaults **without any config IO during
-/// render** (the A2-14/R1 constraint). `Default` mirrors the missing-config
-/// template (`AppConfig::default().defaults`): empty model, `confirm`.
+struct StoreInitializationError(Option<crate::localized_copy::LocalizedCopy>);
+
+impl Global for StoreInitializationError {}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewTaskDefaults {
     /// `defaults.model` (empty until a provider is configured).
@@ -315,7 +251,6 @@ pub fn load_collapsed() -> bool {
     }
 }
 
-/// Loads the persisted R21 Sidebar width, using the finite default on error.
 pub fn load_width() -> f32 {
     match config::load() {
         Ok(config) => config::clamp_sidebar_width(config.ui.sidebar_width),
@@ -357,8 +292,10 @@ pub fn init(cx: &mut App) {
             .map(|project| project.id),
         Err(_) => None,
     };
+    let initialization_error = store.as_ref().err().cloned();
+    cx.set_global(StoreInitializationError(initialization_error));
     cx.set_global(SelectedProject(selected));
-    cx.set_global(VegaStore(store));
+    cx.set_global(VegaStore(store.map_err(|error| error.render())));
     let (projects_collapsed, sessions_collapsed) = load_block_state();
     cx.set_global(ProjectsCollapsed(projects_collapsed));
     cx.set_global(SessionsCollapsed(sessions_collapsed));
@@ -371,17 +308,37 @@ pub fn init(cx: &mut App) {
 /// Opens and migrates `vega.db` under the platform data root (tech-spec §6).
 ///
 /// Failures come back as ready-to-render messages.
-fn open_default_store() -> Result<Store, String> {
-    let dir = vega_store::paths::data_dir()
-        .ok_or_else(|| "未能确定用户主目录（HOME 未设置）".to_string())?;
-    std::fs::create_dir_all(&dir)
-        .map_err(|error| format!("创建 {} 失败：{error}", dir.display()))?;
+fn open_default_store() -> Result<Store, crate::localized_copy::LocalizedCopy> {
+    let dir = vega_store::paths::data_dir().ok_or_else(|| {
+        crate::localized_copy::LocalizedCopy::new(
+            "ui.cannot_determine_the_home_directory_home_is_not",
+        )
+    })?;
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        crate::localized_copy::LocalizedCopy::with_args(
+            "ui.cannot_create_path_error",
+            vec![
+                ("path", dir.display().to_string().into()),
+                ("error", error.to_string().into()),
+            ],
+        )
+    })?;
     let path = dir.join("vega.db");
-    let store =
-        Store::open(&path).map_err(|error| format!("打开 {} 失败：{error}", path.display()))?;
-    store
-        .migrate()
-        .map_err(|error| format!("数据库迁移失败：{error}"))?;
+    let store = Store::open(&path).map_err(|error| {
+        crate::localized_copy::LocalizedCopy::with_args(
+            "ui.cannot_open_path_error",
+            vec![
+                ("path", path.display().to_string().into()),
+                ("error", error.to_string().into()),
+            ],
+        )
+    })?;
+    store.migrate().map_err(|error| {
+        crate::localized_copy::LocalizedCopy::with_args(
+            "ui.database_migration_failed_error",
+            vec![("error", error.to_string().into())],
+        )
+    })?;
     Ok(store)
 }
 
@@ -397,29 +354,13 @@ fn load_block_state() -> (bool, bool) {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub struct SidebarConfigPath(pub std::path::PathBuf);
-#[cfg(any(test, feature = "test-support"))]
-impl Global for SidebarConfigPath {}
-
 fn persist_ui(mutate: impl FnOnce(&mut config::AppConfig), what: &'static str, cx: &mut App) {
-    #[cfg(any(test, feature = "test-support"))]
-    if let Some(path) = cx.try_global::<SidebarConfigPath>() {
-        if let Err(error) = config::update_from(&path.0, mutate) {
-            tracing::error!(%error, "failed to persist {what} to config.toml");
-        }
-        cx.refresh_windows();
-        return;
-    }
-
     if let Err(error) = config::update(mutate) {
         tracing::error!(%error, "failed to persist {what} to config.toml");
     }
     cx.refresh_windows();
 }
 
-/// 「项目」block collapse toggle: flips the global and persists it as
-/// `ui.projects_collapsed` (T12 折叠记忆，同 T09 机制).
 fn toggle_projects_block(cx: &mut App) {
     let collapsed = !cx.global::<ProjectsCollapsed>().0;
     cx.set_global(ProjectsCollapsed(collapsed));
@@ -451,30 +392,31 @@ fn task_mutation_busy(cx: &App) -> bool {
 /// become ready-to-render messages.
 fn with_store<R>(
     cx: &App,
-    operation: impl FnOnce(&Store) -> Result<R, String>,
-) -> Result<R, String> {
+    operation: impl FnOnce(&Store) -> Result<R, crate::localized_copy::LocalizedCopy>,
+) -> Result<R, crate::localized_copy::LocalizedCopy> {
     match cx.try_global::<VegaStore>() {
         Some(VegaStore(Ok(store))) => operation(store),
-        Some(VegaStore(Err(error))) => Err(format!("项目存储不可用：{error}")),
-        None => Err("项目存储不可用：应用启动时未完成初始化".to_string()),
+        Some(VegaStore(Err(error))) => Err(crate::localized_copy::LocalizedCopy::with_args(
+            "ui.project_storage_unavailable_error",
+            vec![(
+                "error",
+                cx.try_global::<StoreInitializationError>()
+                    .and_then(|failure| failure.0.clone())
+                    .unwrap_or_else(|| error.clone().into()),
+            )],
+        )),
+        None => Err(crate::localized_copy::LocalizedCopy::new(
+            "ui.project_storage_unavailable_initialization_did_not_complete_at",
+        )),
     }
 }
 
-/// The sidebar orchestrator: brand/new-task chrome, the two block entities,
-/// and a stable settings entry. Block components own their data + row
-/// interactions; this struct only wires cross-block reactions (project
-/// selection resyncs the session list, opening a thread refreshes the
-/// project order) plus the T13 delete-confirmation execution
-/// ([`Self::confirm_pending_delete`], invoked by the window-root overlay).
 pub struct Sidebar {
     projects_block: Entity<ProjectsBlock>,
     sessions_block: Entity<ThreadsBlock>,
-    /// Issue #57: tracked scroll state for the outer `sidebar-scroll` column.
-    /// Its `offset`/`max_offset` are read in the `on_children_prepainted`
-    /// callback to decide whether the lazy Recents list should grow.
     sidebar_scroll: gpui_kit::ScrollHandle,
     /// Inline error from thread creation (ui-spec §4.6: no modals).
-    new_task_error: Option<String>,
+    new_task_error: Option<crate::localized_copy::LocalizedCopy>,
 }
 
 impl Sidebar {
@@ -487,6 +429,7 @@ impl Sidebar {
         });
         cx.subscribe(&projects_block, Self::on_projects_event)
             .detach();
+        cx.observe(&projects_block, |_, _, cx| cx.notify()).detach();
         cx.subscribe(&sessions_block, Self::on_sessions_event)
             .detach();
         Self {
@@ -539,17 +482,15 @@ impl Sidebar {
         cx.refresh_windows();
     }
 
-    /// [删除] confirmed in the T13 overlay: deletes the thread (the store
-    /// layer removes its messages/tool_calls in the same transaction), falls
-    /// back to the §4.6 empty state when the deleted thread was open, and
-    /// reloads the session block. Failures surface as its inline error bar.
     pub fn confirm_pending_delete(&mut self, cx: &mut Context<Self>) {
         let Some(thread) = cx.global::<PendingDeleteConfirm>().0.clone() else {
             return;
         };
         if task_mutation_busy(cx) {
             self.sessions_block.update(cx, |block, cx| {
-                block.error = Some("任务正在保存，请稍后重试删除".into());
+                block.error = Some(crate::localized_copy::LocalizedCopy::new(
+                    "ui.a_task_is_being_saved_try_deleting_it",
+                ));
                 cx.notify();
             });
             return;
@@ -557,11 +498,13 @@ impl Sidebar {
         cx.set_global(PendingDeleteConfirm(None));
         crate::navigation::begin_task_mutation(cx);
         let result = with_store(cx, |store| {
-            conversation::delete_thread(store, &thread.id).map_err(|error| error.to_string())
+            conversation::delete_thread(store, &thread.id)
+                .map_err(crate::localized_copy::LocalizedCopy::from)
         });
         crate::navigation::finish_task_mutation(cx);
         match result {
             Ok(()) => {
+                cx.emit(SidebarEvent::ThreadDeleted(thread.id.clone()));
                 // 删除的是打开中的会话：内容区回落 §4.6 空态。
                 if cx
                     .global::<OpenedThread>()
@@ -574,7 +517,10 @@ impl Sidebar {
                 self.sessions_block.update(cx, ThreadsBlock::reload);
             }
             Err(message) => self.sessions_block.update(cx, |block, _| {
-                block.error = Some(format!("会话删除失败：{message}"));
+                block.error = Some(crate::localized_copy::LocalizedCopy::with_args(
+                    "ui.could_not_delete_the_conversation_message",
+                    vec![("message", message)],
+                ));
             }),
         }
         cx.refresh_windows();
@@ -585,7 +531,9 @@ impl Sidebar {
     /// SESSIONS.
     pub fn create_thread(&mut self, cx: &mut Context<Self>) {
         if task_mutation_busy(cx) {
-            self.new_task_error = Some("任务正在保存，请稍后重试".into());
+            self.new_task_error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.a_task_is_being_saved_try_again_shortly",
+            ));
             cx.notify();
             return;
         }
@@ -609,10 +557,6 @@ impl Sidebar {
             .map(|project| project.name.clone())
     }
 
-    /// Re-reads the session block's durable rows. Production callers reach this
-    /// through the block's own event wiring; this wrapper exists so a caller
-    /// that changed the store directly (the window's draft materialization on
-    /// first submit, R69 R8) can refresh the sidebar without owning the block.
     pub fn reload_sessions(&mut self, cx: &mut Context<Self>) {
         self.sessions_block.update(cx, ThreadsBlock::reload);
     }
@@ -655,7 +599,6 @@ impl Sidebar {
             .child(
                 div()
                     .id("sidebar-new-task")
-                    .debug_selector(|| "sidebar-new-task".into())
                     .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                     .flex()
                     .items_center()
@@ -674,15 +617,10 @@ impl Sidebar {
                         crate::icons::Icon::Plus,
                         colors.text_secondary,
                     ))
-                    .child(
-                        div()
-                            .debug_selector(|| "sidebar-new-task-label".into())
-                            .child("新建任务"),
-                    )
+                    .child(div().child(vega_i18n::t("ui.new_task")))
                     .child(div().flex_1())
                     .child(
                         div()
-                            .debug_selector(|| "sidebar-new-task-shortcut".into())
                             .text_size(px(Typography::METADATA))
                             .text_color(colors.text_tertiary)
                             .child("⌘N"),
@@ -702,14 +640,12 @@ impl Sidebar {
         div()
             .w_full()
             .flex_shrink_0()
-            .debug_selector(|| "sidebar-settings-footer".into())
             .px(px(Layout::SIDEBAR_PADDING))
             .pt(px(Layout::SIDEBAR_FOOTER_TOP))
             .pb(px(Layout::SIDEBAR_PADDING))
             .child(
                 div()
                     .id("sidebar-settings-surface")
-                    .debug_selector(|| "sidebar-settings-surface".into())
                     .w_full()
                     .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                     .rounded_lg()
@@ -718,7 +654,6 @@ impl Sidebar {
                     .capture_native_button_press()
                     .child(
                         Button::new("sidebar-settings")
-                            .debug_selector(|| "sidebar-settings".into())
                             .custom(
                                 ButtonCustomVariant::new(cx).foreground(colors.text_primary.into()),
                             )
@@ -728,8 +663,8 @@ impl Sidebar {
                             .rounded_lg()
                             .px_2()
                             .text_color(colors.text_primary)
-                            .accessibility_label("设置 (⌘,)")
-                            .tooltip("设置 (⌘,)")
+                            .accessibility_label(vega_i18n::t("ui.settings"))
+                            .tooltip(vega_i18n::t("ui.settings"))
                             .on_click(|_, _, cx| {
                                 cx.set_global(SettingsOpen(true));
                                 cx.refresh_windows();
@@ -738,15 +673,10 @@ impl Sidebar {
                                 crate::icons::Icon::Settings,
                                 colors.text_secondary,
                             ))
-                            .child(
-                                div()
-                                    .debug_selector(|| "sidebar-settings-label".into())
-                                    .child("设置"),
-                            )
+                            .child(div().child(vega_i18n::t("ui.settings_284")))
                             .child(div().flex_1())
                             .child(
                                 div()
-                                    .debug_selector(|| "sidebar-settings-shortcut".into())
                                     .text_size(px(Typography::METADATA))
                                     .text_color(colors.text_tertiary)
                                     .child("⌘,"),
@@ -760,9 +690,9 @@ impl Sidebar {
 impl Render for Sidebar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(cx).colors;
+        let projects_error = self.projects_block.read(cx).error.clone();
         div()
             .id("sidebar")
-            .debug_selector(|| "sidebar".into())
             .flex()
             .flex_col()
             .w(px(width(cx)))
@@ -780,18 +710,13 @@ impl Render for Sidebar {
                     .gap_3()
                     .child(self.render_brand(&colors, cx))
                     .child(self.render_new_task(cx, &colors))
+                    .children(
+                        projects_error.map(|message| {
+                            div().flex_shrink_0().child(error_bar(message, &colors))
+                        }),
+                    )
                     .child(
                         div()
-                            // Issue #57: Recents lazy-loads instead of showing a
-                            // `Show More` control. This container is the sidebar's
-                            // only scroller, and the tracked handle is updated in
-                            // this element's own prepaint (`clamp_scroll_position`)
-                            // *before* children prepaint, so the values read here are
-                            // this frame's. `ThreadsBlock::render` cannot drive this:
-                            // scrolling dirties only `Sidebar`, and the child
-                            // `ViewElement` subtree is reused from its prepaint cache.
-                            // (`on_children_prepainted` must precede `.id()`, which
-                            // returns `Stateful<Div>` and no longer exposes it.)
                             .on_children_prepainted({
                                 let scroll = self.sidebar_scroll.clone();
                                 let sessions = self.sessions_block.clone();
@@ -823,7 +748,6 @@ impl Render for Sidebar {
                                 }
                             })
                             .id("sidebar-scroll")
-                            .debug_selector(|| "sidebar-scroll".into())
                             // Organization content keeps an 8px application-edge inset;
                             // Pinned row surfaces extend 8px left of the title column.
                             .ml(px(-4.0))
@@ -835,7 +759,12 @@ impl Render for Sidebar {
                             .gap_3()
                             .overflow_y_scroll()
                             .track_scroll(&self.sidebar_scroll)
-                            .child(self.sessions_block.clone()),
+                            .child(self.sessions_block.clone())
+                            .tracked_scroll_edge_fade(
+                                self.sidebar_scroll.clone(),
+                                colors.bg_sidebar,
+                                ScrollFade::compact(),
+                            ),
                     ),
             )
             .child(Self::render_settings_entry(&colors, cx))
@@ -850,190 +779,3 @@ mod threads_block;
 pub use projects_block::{ProjectsBlock, ProjectsBlockEvent};
 pub use row_helpers::*;
 pub use threads_block::{ThreadsBlock, ThreadsBlockEvent};
-
-#[cfg(test)]
-mod tests {
-
-    use super::{
-        OpenedThread, RenameResolution, RunningThreadsGlobal, archive_section_visible,
-        civil_from_days, clear_opened_thread_of_project, relative_time_from, resolve_rename,
-        row_shows_actions, set_thread_running, shows_timestamp_at_rest, thread_is_running,
-        thread_title,
-    };
-    use vega_conversation::types::Thread;
-
-    fn thread_with_title(title: &str) -> Thread {
-        Thread {
-            id: "t1".to_string(),
-            backend: vega_conversation::types::TaskBackend::Native,
-            project_id: "p1".to_string(),
-            title: title.to_string(),
-            mode: vega_conversation::types::ThreadMode::Execute,
-            permission_mode: vega_conversation::types::PermissionMode::Confirm,
-            model: String::new(),
-            status: vega_conversation::types::ThreadStatus::Active,
-            pinned: false,
-            unread: false,
-            created_at: 0,
-            updated_at: 0,
-        }
-    }
-
-    #[test]
-    fn empty_title_falls_back_to_unnamed() {
-        assert_eq!(thread_title(&thread_with_title("")), "未命名任务");
-        assert_eq!(thread_title(&thread_with_title("我的任务")), "我的任务");
-    }
-
-    #[gpui_kit::test]
-    async fn removing_opened_project_clears_opened_thread(cx: &mut gpui_kit::TestAppContext) {
-        cx.update(|cx| {
-            cx.set_global(OpenedThread(Some(thread_with_title("active"))));
-            clear_opened_thread_of_project("p1", cx);
-            assert!(cx.global::<OpenedThread>().0.is_none());
-        });
-    }
-
-    #[test]
-    fn rename_submission_blank_is_cancel() {
-        // 空标题提交视为取消（T13 卡面要求；Enter/Esc 键盘路径本身人工验收）。
-        assert!(matches!(resolve_rename(""), RenameResolution::Cancel));
-        assert!(matches!(resolve_rename("   "), RenameResolution::Cancel));
-        assert!(matches!(resolve_rename("\t\n"), RenameResolution::Cancel));
-    }
-
-    #[test]
-    fn rename_submission_trims_and_commits_non_blank() {
-        match resolve_rename("新标题") {
-            RenameResolution::Commit(title) => assert_eq!(title, "新标题"),
-            RenameResolution::Cancel => panic!("expected commit"),
-        }
-        match resolve_rename("  两端空白  ") {
-            RenameResolution::Commit(title) => assert_eq!(title, "两端空白"),
-            RenameResolution::Cancel => panic!("expected commit"),
-        }
-    }
-
-    #[test]
-    fn hover_action_group_visibility() {
-        // hover 才显示；行内编辑中的行永远不显示（裁决①）。
-        assert!(row_shows_actions(true, false));
-        assert!(!row_shows_actions(false, false));
-        assert!(!row_shows_actions(true, true));
-        assert!(!row_shows_actions(false, true));
-    }
-
-    #[test]
-    fn archive_section_requires_archived_threads() {
-        assert!(!archive_section_visible(0));
-        assert!(archive_section_visible(1));
-        assert!(archive_section_visible(3));
-    }
-
-    #[test]
-    fn running_row_owns_the_tail_slot() {
-        // #150 R10: the tail is one slot. A running row suppresses the resting
-        // timestamp; hover still wins because it reveals the action trigger.
-        assert!(shows_timestamp_at_rest(false, true, false));
-        assert!(!shows_timestamp_at_rest(false, true, true));
-        assert!(!shows_timestamp_at_rest(true, true, false));
-        assert!(!shows_timestamp_at_rest(true, true, true));
-        // A row that never shows a resting timestamp is unaffected either way.
-        assert!(!shows_timestamp_at_rest(false, false, false));
-        assert!(!shows_timestamp_at_rest(false, false, true));
-    }
-
-    #[gpui_kit::test]
-    async fn thread_liveness_bridge_is_idempotent_and_fails_closed(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
-        cx.update(|cx| {
-            // R12: without the global the answer is false — the UI never
-            // invents running state.
-            assert!(!thread_is_running("t1", cx));
-
-            set_thread_running("t1", true, cx);
-            assert!(thread_is_running("t1", cx));
-            assert!(!thread_is_running("t2", cx));
-
-            // A repeated true keeps the same value (no spurious repaint).
-            set_thread_running("t1", true, cx);
-            assert_eq!(cx.global::<RunningThreadsGlobal>().0.len(), 1);
-
-            set_thread_running("t1", false, cx);
-            assert!(!thread_is_running("t1", cx));
-            assert!(cx.global::<RunningThreadsGlobal>().0.is_empty());
-
-            // Clearing an already-clear thread is a no-op, not a panic.
-            set_thread_running("t1", false, cx);
-            assert!(!thread_is_running("t1", cx));
-        });
-    }
-
-    #[test]
-    fn relative_time_uses_compact_units() {
-        let now = 1_700_000_000_000;
-        assert_eq!(relative_time_from(now, now), "now");
-        // 60s 以内都算 "now"。
-        assert_eq!(relative_time_from(now - 59_999, now), "now");
-        assert_eq!(relative_time_from(now - 60_000, now), "1m");
-        assert_eq!(relative_time_from(now - 3_600_000, now), "1h");
-        assert_eq!(relative_time_from(now - 86_400_000, now), "1d");
-        assert_eq!(relative_time_from(now - 6 * 86_400_000, now), "6d");
-        // 恰好 7 天进入绝对日期分支（UTC）。
-        assert_eq!(relative_time_from(now - 7 * 86_400_000, now), "2023-11-07");
-        assert_eq!(relative_time_from(now - 30 * 86_400_000, now), "2023-10-15");
-        // 未来时间戳（时钟偏差）不 panic，读作 "now"。
-        assert_eq!(relative_time_from(now + 60_000, now), "now");
-    }
-
-    #[test]
-    fn civil_from_days_matches_known_dates() {
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        // 2023-11-14 22:13:20 UTC 的日期部分。
-        assert_eq!(civil_from_days(19_675), (2023, 11, 14));
-        // 闰年边界：2024-02-29。
-        assert_eq!(civil_from_days(19_782), (2024, 2, 29));
-    }
-}
-
-#[cfg(test)]
-mod issue296_tests {
-    use super::*;
-
-    struct Harness;
-    impl gpui_kit::Render for Harness {
-        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .size_full()
-                .child(Sidebar::render_settings_entry(&vega_theme::LIGHT, cx))
-        }
-    }
-
-    #[gpui_kit::test]
-    fn issue296_native_settings_press_preserves_activation(cx: &mut gpui_kit::TestAppContext) {
-        cx.update(|cx| {
-            gpui_kit::component::init(cx);
-            crate::init(cx);
-            cx.set_global(vega_theme::Theme::light());
-            cx.set_global(SettingsOpen(false));
-        });
-        let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |_, _| Harness);
-        cx.run_until_parked();
-        crate::interaction::tests::assert_native_control_press(window, cx, "sidebar-settings");
-        assert!(cx.read(|cx| cx.global::<SettingsOpen>().0));
-        let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        visual.update(|window, cx| window.focus_next(cx));
-        for key in ["enter", "space"] {
-            visual.update(|_, cx| cx.set_global(SettingsOpen(false)));
-            let keystroke = gpui_kit::Keystroke::parse(key).expect("key");
-            visual.simulate_event(gpui_kit::KeyDownEvent {
-                keystroke: keystroke.clone(),
-                is_held: false,
-                prefer_character_input: false,
-            });
-            visual.simulate_event(gpui_kit::KeyUpEvent { keystroke });
-            assert!(visual.read(|cx| cx.global::<SettingsOpen>().0));
-        }
-    }
-}

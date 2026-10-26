@@ -1,4 +1,6 @@
 use super::*;
+use gpui_kit::{Bounds, Pixels, Point};
+use std::{cell::Cell, rc::Rc};
 
 #[derive(Clone)]
 pub(super) enum Control {
@@ -14,9 +16,49 @@ pub(super) enum Control {
     NewStandalone,
     NewProjectTask(String),
     ToggleProject(String),
-    ToggleSort,
 }
 impl ThreadsBlock {
+    pub(super) fn open_organization_menu(
+        &mut self,
+        menu: OrganizationMenu,
+        position: Point<Pixels>,
+        anchor: Anchor,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_actions();
+        if let Some(org) = self.organization.as_mut() {
+            org.menu = Some(menu);
+            org.menu_anchor = Some((position, anchor));
+            org.menu_index = 0;
+            window.focus(&org.menu_focus, cx);
+        }
+        cx.notify();
+    }
+
+    fn control_action_from_button(
+        &mut self,
+        action: Control,
+        bounds: Option<Bounds<Pixels>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            Control::Menu(menu) => {
+                if let Some(bounds) = bounds {
+                    self.open_organization_menu(
+                        menu,
+                        bounds.bottom_right(),
+                        Anchor::TopRight,
+                        window,
+                        cx,
+                    );
+                }
+            }
+            action => self.control_action(action, window, cx),
+        }
+    }
+
     pub(super) fn control_action(
         &mut self,
         action: Control,
@@ -28,6 +70,7 @@ impl ThreadsBlock {
                 self.close_actions();
                 if let Some(org) = self.organization.as_mut() {
                     org.menu = None;
+                    org.menu_anchor = None;
                     if let Some(snapshot) = &org.snapshot {
                         let mut preferences = snapshot.preferences.clone();
                         preferences.view = view;
@@ -41,18 +84,36 @@ impl ThreadsBlock {
             Control::CollapseAll => {
                 self.submit_organization(SidebarOrganizationAction::CollapseAll, cx)
             }
-            Control::Menu(menu) => {
-                self.close_actions();
-                if let Some(org) = self.organization.as_mut() {
-                    org.menu = Some(menu);
-                    org.menu_index = 0;
-                    window.focus(&org.menu_focus, cx);
-                }
-            }
+            Control::Menu(_) => return,
             Control::Archive => {
-                if let Some(org) = self.organization.as_mut() {
-                    org.archive = !org.archive;
-                }
+                let show_archived = if let Some(organization) = self.organization.as_mut() {
+                    organization.archive = !organization.archive;
+                    organization.archive
+                } else {
+                    false
+                };
+                let projects: Vec<_> =
+                    self.organization
+                        .as_ref()
+                        .and_then(|organization| organization.snapshot.as_ref())
+                        .map(|snapshot| {
+                            let mut projects: Vec<_> = snapshot
+                                .project_order
+                                .iter()
+                                .filter_map(|id| {
+                                    snapshot.projects.iter().find(|project| &project.id == id)
+                                })
+                                .collect();
+                            projects.extend(
+                                snapshot.projects.iter().filter(|project| {
+                                    !snapshot.project_order.contains(&project.id)
+                                }),
+                            );
+                            projects.into_iter().cloned().collect()
+                        })
+                        .unwrap_or_default();
+                let project_refs: Vec<_> = projects.iter().collect();
+                self.sync_project_task_windows(&project_refs, show_archived);
             }
             Control::NewGroup => self.edit_group(None, window, cx),
             Control::AddProject => {
@@ -85,23 +146,6 @@ impl ThreadsBlock {
                     self.toggle_organization_collapse(SidebarCollapseTarget::Project(id), cx);
                 }
             }
-            Control::ToggleSort => {
-                if let Some(snapshot) = self
-                    .organization
-                    .as_ref()
-                    .and_then(|organization| organization.snapshot.as_ref())
-                {
-                    let mut preferences = snapshot.preferences.clone();
-                    preferences.sort = match preferences.sort {
-                        SidebarTaskSort::Updated => SidebarTaskSort::Created,
-                        SidebarTaskSort::Created => SidebarTaskSort::Updated,
-                    };
-                    self.submit_organization(
-                        SidebarOrganizationAction::SetPreferences(preferences),
-                        cx,
-                    );
-                }
-            }
         }
         cx.notify();
     }
@@ -117,15 +161,17 @@ impl ThreadsBlock {
         let id = id.into();
         let label = label.into();
         let aria = match &action {
-            Control::CollapseAll => "收起全部".to_string(),
-            Control::Menu(OrganizationMenu::Filter) => "排序与归档".to_string(),
-            Control::Menu(_) => "组织操作".to_string(),
+            Control::CollapseAll => vega_i18n::t("ui.collapse_all").to_string(),
+            Control::Menu(_) => vega_i18n::t("ui.organization_actions").to_string(),
             _ => label.clone(),
         };
         let keyboard_action = action.clone();
-        div()
+        let button_bounds =
+            matches!(&action, Control::Menu(_)).then(|| Rc::new(Cell::new(None::<Bounds<Pixels>>)));
+        let mouse_bounds = button_bounds.clone();
+        let keyboard_bounds = button_bounds.clone();
+        let control = div()
             .id(ElementId::Name(id.clone().into()))
-            .debug_selector(move || id.clone())
             .focusable()
             .tab_stop(true)
             .aria_label(aria)
@@ -164,19 +210,42 @@ impl ThreadsBlock {
                         return;
                     }
                     cx.stop_propagation();
-                    this.control_action(action.clone(), window, cx);
+                    this.control_action_from_button(
+                        action.clone(),
+                        mouse_bounds.as_ref().and_then(|bounds| bounds.get()),
+                        window,
+                        cx,
+                    );
                 }),
             )
             .on_key_down(
                 cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
                     if event.keystroke.key == "enter" || event.keystroke.key == "space" {
                         cx.stop_propagation();
-                        this.control_action(keyboard_action.clone(), window, cx);
+                        this.control_action_from_button(
+                            keyboard_action.clone(),
+                            keyboard_bounds.as_ref().and_then(|bounds| bounds.get()),
+                            window,
+                            cx,
+                        );
                     }
                 }),
             )
             .child(label)
-            .into_any_element()
+            .when_some(button_bounds, |control, bounds| {
+                let button_geometry = gpui_kit::ScrollHandle::new();
+                control.relative().track_scroll(&button_geometry).child(
+                    gpui_kit::canvas(
+                        move |_, _, _| bounds.set(Some(button_geometry.bounds())),
+                        |_, (), _, _| {},
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+                )
+            });
+        control.into_any_element()
     }
     pub(in crate::sidebar::threads_block) fn render_organization(
         &mut self,
@@ -188,16 +257,18 @@ impl ThreadsBlock {
         // `&mut self` section renderer runs, so no borrow of
         // `self.organization` is held across it. `render_recents_pi` is
         // `&mut self` because lazy loading records the live total.
-        let Some((snapshot, show_archived, menu_open, projects_error)) =
-            self.organization.as_ref().map(|org| {
-                (
-                    org.snapshot.clone(),
-                    org.archive,
-                    org.menu.is_some(),
-                    org.projects.read(cx).error.clone(),
-                )
-            })
-        else {
+        let Some((snapshot, show_archived, menu_open)) = self.organization.as_ref().map(|org| {
+            (
+                org.snapshot.clone().map(|mut snapshot| {
+                    if let Some((_, order)) = &org.reorder.pointer_order {
+                        snapshot.preferences.manual_thread_order = order.clone();
+                    }
+                    snapshot
+                }),
+                org.archive,
+                org.menu.is_some(),
+            )
+        }) else {
             return div().into_any_element();
         };
         let Some(snapshot) = snapshot else {
@@ -206,25 +277,70 @@ impl ThreadsBlock {
                 .flex()
                 .flex_col()
                 .gap_1()
-                .child(self.section_label("正在载入", cx))
+                .child(self.section_label(vega_i18n::t("ui.loading_335"), cx))
                 .into_any_element();
         };
+        self.prepare_reorder();
         let mut body = div()
             .id("sidebar-organization")
-            .debug_selector(|| "sidebar-organization".into())
+            .when_some(
+                self.organization.as_ref().filter(|org| org.reorder.gesture),
+                |body, org| body.track_focus(&org.reorder.focus),
+            )
+            .capture_any_mouse_up(cx.listener(Self::release_reorder))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::release_reorder))
+            .capture_any_mouse_down(cx.listener(|this, _, window, cx| {
+                this.reset_reorder(window, cx);
+            }))
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !hovered {
+                    this.clear_reorder_projection(cx);
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &CloseSettings, window, cx| {
+                this.clear_reorder_projection(cx);
+                this.cancel_reorder(window, cx);
+            }))
+            .capture_key_down(
+                cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    this.clear_reorder_projection(cx);
+                    if event.keystroke.key == "escape" {
+                        this.cancel_reorder(window, cx);
+                    }
+                }),
+            )
+            .on_key_down(
+                cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    let modifiers = &event.keystroke.modifiers;
+                    if event.keystroke.key != "tab"
+                        || modifiers.control
+                        || modifiers.alt
+                        || modifiers.platform
+                        || modifiers.function
+                        || this.actions_open.is_some()
+                        || this.editing.is_some()
+                        || cx.has_active_drag()
+                        || this.organization.as_ref().is_none_or(|org| {
+                            org.menu.is_some() || org.editor.is_some() || org.reorder.gesture
+                        })
+                    {
+                        return;
+                    }
+                    if modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                    cx.stop_propagation();
+                }),
+            )
             .flex()
             .flex_col()
-            // R50: one explicit section pitch for every section boundary.
-            // This replaces the shared `gap_2()` (8px) that, combined with the
-            // Pinned section's extra `mb_1()` (4px), gave Pinned→Projects 12px
-            // and Projects→Recents 8px — the same relationship rendered at two
-            // different values.
             .gap(px(Layout::SIDEBAR_SECTION_GAP));
         body = body.children(self.render_pinned_pi(&snapshot, show_archived, cx));
         body = body.child(self.render_projects_pi(&snapshot, show_archived, cx));
         body = body.child(self.render_recents_pi(&snapshot, show_archived, cx));
         body = body.children(menu_open.then(|| self.render_organization_menu(cx)));
-        body = body.children(projects_error.map(|message| error_bar(message, &colors)));
         body = body.children(
             self.error
                 .clone()
@@ -241,53 +357,116 @@ impl ThreadsBlock {
         action: Control,
         hidden_until_hover: bool,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
         let colors = theme(cx).colors;
         let id = id.into();
         let label = label.into();
-        let keyboard_action = action.clone();
-        div()
+        let selected = matches!(action, Control::Archive)
+            && self.organization.as_ref().is_some_and(|org| org.archive);
+        let button_bounds =
+            matches!(&action, Control::Menu(_)).then(|| Rc::new(Cell::new(None::<Bounds<Pixels>>)));
+        let mouse_bounds = button_bounds.clone();
+        let keyboard_bounds = button_bounds.clone();
+        let control = div()
             .id(ElementId::Name(id.clone().into()))
-            .debug_selector(move || id.clone())
             .aria_label(label.clone())
             .focusable()
             .tab_stop(true)
-            .size(px(24.))
+            .size(px(Layout::SIDEBAR_ACTION_SIZE))
             .flex_shrink_0()
             .flex()
             .items_center()
             .justify_center()
             .rounded_md()
             .cursor_pointer()
-            .when(hidden_until_hover, |style| style.opacity(0.))
-            .hover(move |style| style.opacity(1.).bg(colors.bg_hover))
+            .when(selected, |style| style.bg(colors.bg_active))
+            .when(hidden_until_hover && !selected, |style| style.opacity(0.))
+            .hover(move |style| {
+                style.opacity(1.).bg(if selected {
+                    colors.bg_active
+                } else {
+                    colors.bg_hover
+                })
+            })
             .focus_visible(move |style| {
                 style
                     .opacity(1.)
                     .bg(colors.bg_active)
                     .border_1()
                     .border_color(colors.border_subtle)
-            })
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _, window, cx| {
+            });
+        let control = if matches!(action, Control::Archive) {
+            control
+                .role(gpui_kit::Role::Button)
+                .on_click(cx.listener(|this, _, window, cx| {
                     cx.stop_propagation();
-                    this.control_action(action.clone(), window, cx);
-                }),
-            )
-            .on_key_down(
-                cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    this.control_action(Control::Archive, window, cx);
+                }))
+        } else {
+            let keyboard_action = action.clone();
+            control
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
-                        this.control_action(keyboard_action.clone(), window, cx);
-                    }
-                }),
+                        this.control_action_from_button(
+                            action.clone(),
+                            mouse_bounds.as_ref().and_then(|bounds| bounds.get()),
+                            window,
+                            cx,
+                        );
+                    }),
+                )
+                .on_key_down(cx.listener(
+                    move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            cx.stop_propagation();
+                            this.control_action_from_button(
+                                keyboard_action.clone(),
+                                keyboard_bounds.as_ref().and_then(|bounds| bounds.get()),
+                                window,
+                                cx,
+                            );
+                        }
+                    },
+                ))
+        }
+        .when_some(button_bounds, |control, bounds| {
+            let button_geometry = gpui_kit::ScrollHandle::new();
+            control.relative().track_scroll(&button_geometry).child(
+                gpui_kit::canvas(
+                    move |_, _, _| bounds.set(Some(button_geometry.bounds())),
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
             )
-            .child(crate::icons::icon(kind, colors.text_secondary))
-            .into_any_element()
+        });
+        control.child(crate::icons::icon(kind, colors.text_secondary))
     }
 
-    fn eligible_threads(&self, show_archived: bool) -> Vec<Thread> {
+    pub(super) fn archive_control(
+        &self,
+        hidden_until_hover: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
+        self.vector_control(
+            "organization-archive",
+            if self.organization.as_ref().is_some_and(|org| org.archive) {
+                vega_i18n::t("ui.hide_archived")
+            } else {
+                vega_i18n::t("ui.show_archived")
+            },
+            crate::icons::Icon::Archive,
+            Control::Archive,
+            hidden_until_hover,
+            cx,
+        )
+    }
+
+    pub(super) fn eligible_threads(&self, show_archived: bool) -> Vec<Thread> {
         let mut threads = self.threads.clone();
         if show_archived {
             threads.extend(self.archived.iter().cloned());
@@ -302,13 +481,13 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let colors = theme(cx).colors;
-        let label = "已固定";
+        let label = vega_i18n::t("sidebar.pinned");
         let mut pinned: Vec<_> = self
             .eligible_threads(show_archived)
             .into_iter()
             .filter(|thread| thread.pinned)
             .collect();
-        pinned = super::projections::sorted_threads(&pinned, snapshot.preferences.sort);
+        pinned = super::projections::sorted_threads(&pinned, &snapshot.preferences);
         if pinned.is_empty() {
             return None;
         }
@@ -320,43 +499,25 @@ impl ThreadsBlock {
         Some(
             div()
                 .id("organization-pinned")
-                .debug_selector(|| "organization-section-pinned".into())
                 .flex()
                 .flex_col()
                 .flex_shrink_0()
-                // R50: Pinned is not a special section. Its former `mb_1()`
-                // added 4px on top of the shared body gap, so Pinned→Projects
-                // measured 12px while Projects→Recents measured 8px. Section
-                // pitch now comes from `Layout::SIDEBAR_SECTION_GAP` alone.
                 .child(
                     div()
-                        .debug_selector(|| "organization-header-pinned".into())
                         .h(px(28.))
                         .flex()
                         .items_center()
-                        .text_size(px(Typography::METADATA))
+                        .text_size(px(Typography::SIDEBAR_SECTION))
+                        .font_weight(Typography::SIDEBAR_SECTION_WEIGHT)
                         .text_color(colors.text_tertiary)
-                        .child(
-                            div()
-                                .debug_selector(move || {
-                                    format!("organization-section-label-{label}")
-                                })
-                                // R48: the label column is an explicit ladder
-                                // step (base + SIDEBAR_LABEL_INSET) instead of
-                                // an implicit inheritance from the container.
-                                .pl(px(Layout::SIDEBAR_LABEL_INSET))
-                                .child(label),
-                        ),
+                        .child(div().pl(px(Layout::SIDEBAR_LABEL_INSET)).child(label)),
                 )
                 .child(
                     div()
                         .id("organization-pinned-scroll")
-                        .debug_selector(|| "organization-pinned-scroll".into())
                         // Include the row surface outset inside the scroll clip.
                         .ml(px(-8.0))
                         .pl_2()
-                        .max_h(px(Typography::SIDEBAR_LINE_HEIGHT * 5.0))
-                        .overflow_y_scroll()
                         .flex()
                         .flex_col()
                         .children(pinned.iter().map(|thread| {
@@ -381,7 +542,7 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        let label = "最近任务";
+        let label = vega_i18n::t("sidebar.recents");
         let mut standalone: Vec<_> = self
             .threads
             .iter()
@@ -396,15 +557,11 @@ impl ThreadsBlock {
                     .cloned(),
             );
         }
-        standalone = super::projections::sorted_threads(&standalone, snapshot.preferences.sort);
+        standalone = super::projections::sorted_threads(&standalone, &snapshot.preferences);
         let header_actions_visible = self.hovered_section == Some(OrganizationSection::Recents)
-            || self.focused_section == Some(OrganizationSection::Recents)
-            || self.organization.as_ref().is_some_and(|organization| {
-                matches!(organization.menu, Some(OrganizationMenu::Filter))
-            });
+            || self.focused_section == Some(OrganizationSection::Recents);
         let header = div()
             .id("organization-recents-header")
-            .debug_selector(|| "organization-header-recents".into())
             .track_focus(&self.recents_header_focus)
             .flex()
             .items_center()
@@ -412,39 +569,21 @@ impl ThreadsBlock {
             .h(px(28.))
             .child(
                 div()
-                    .debug_selector(move || format!("organization-section-label-{label}"))
-                    .text_size(px(Typography::METADATA))
+                    .text_size(px(Typography::SIDEBAR_SECTION))
+                    .font_weight(Typography::SIDEBAR_SECTION_WEIGHT)
                     .text_color(colors.text_tertiary)
-                    // R48: explicit label ladder step (base + LABEL_INSET).
                     .pl(px(Layout::SIDEBAR_LABEL_INSET))
                     .child(label),
             )
             .child(
                 div()
-                    .debug_selector(move || {
-                        format!(
-                            "organization-recents-actions-{}",
-                            if header_actions_visible {
-                                "visible"
-                            } else {
-                                "rest"
-                            }
-                        )
-                    })
                     .flex()
                     .items_center()
                     .gap_1()
-                    .child(self.vector_control(
-                        "organization-session-sort",
-                        "任务排序与归档",
-                        crate::icons::Icon::ArrowUpDown,
-                        Control::Menu(OrganizationMenu::Filter),
-                        !header_actions_visible,
-                        cx,
-                    ))
+                    .child(self.archive_control(!header_actions_visible, cx))
                     .child(self.vector_control(
                         "organization-new-session",
-                        "新建独立任务",
+                        vega_i18n::t("ui.new_standalone_task"),
                         crate::icons::Icon::Plus,
                         Control::NewStandalone,
                         !header_actions_visible,
@@ -460,11 +599,7 @@ impl ThreadsBlock {
             .as_ref()
             .map(|thread| thread.id.clone());
         let empty = standalone.is_empty();
-        // Issue #57: Recents is a lazy list, not a Show More list. Record the
-        // total so the outer scroller can grow the render window one page at a
-        // time; the rows are always the first `recents_visible` of the stable
-        // sort, so growing only appends and never reorders what is already
-        // painted.
+
         self.recents_total = standalone.len();
         let rows = standalone
             .into_iter()
@@ -483,18 +618,16 @@ impl ThreadsBlock {
         let empty = empty.then(|| {
             div()
                 .id("organization-recents-empty")
-                .debug_selector(|| "organization-recents-empty".into())
                 .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                 .px_3()
                 .flex()
                 .items_center()
                 .text_size(px(Typography::SIDEBAR))
                 .text_color(colors.text_tertiary)
-                .child("暂无最近任务")
+                .child(vega_i18n::t("ui.no_recent_tasks"))
         });
         div()
             .id("organization-recents")
-            .debug_selector(|| "organization-section-recents".into())
             .flex()
             .flex_col()
             .flex_shrink_0()
@@ -517,12 +650,11 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        let label = "项目";
+        let label = vega_i18n::t("sidebar.projects");
         let header_actions_visible = self.hovered_section == Some(OrganizationSection::Projects)
             || self.focused_section == Some(OrganizationSection::Projects);
         let header = div()
             .id("organization-projects-header")
-            .debug_selector(|| "organization-header-projects".into())
             .track_focus(&self.projects_header_focus)
             .flex()
             .items_center()
@@ -530,34 +662,20 @@ impl ThreadsBlock {
             .h(px(28.))
             .child(
                 div()
-                    .debug_selector(move || format!("organization-section-label-{label}"))
-                    .text_size(px(Typography::METADATA))
+                    .text_size(px(Typography::SIDEBAR_SECTION))
+                    .font_weight(Typography::SIDEBAR_SECTION_WEIGHT)
                     .text_color(colors.text_tertiary)
-                    // R48: explicit label ladder step (base + LABEL_INSET).
                     .pl(px(Layout::SIDEBAR_LABEL_INSET))
                     .child(label),
             )
-            .child(
-                div()
-                    .debug_selector(move || {
-                        format!(
-                            "organization-projects-actions-{}",
-                            if header_actions_visible {
-                                "visible"
-                            } else {
-                                "rest"
-                            }
-                        )
-                    })
-                    .child(self.vector_control(
-                        "organization-add-project",
-                        "添加项目文件夹",
-                        crate::icons::Icon::FolderPlus,
-                        Control::AddProject,
-                        !header_actions_visible,
-                        cx,
-                    )),
-            )
+            .child(div().child(self.vector_control(
+                "organization-add-project",
+                vega_i18n::t("ui.add_project_folder"),
+                crate::icons::Icon::FolderPlus,
+                Control::AddProject,
+                !header_actions_visible,
+                cx,
+            )))
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 this.set_hovered_section(OrganizationSection::Projects, *hovered, cx);
             }));
@@ -589,7 +707,6 @@ impl ThreadsBlock {
         );
         div()
             .id("organization-projects")
-            .debug_selector(|| "organization-section-projects".into())
             .flex()
             .flex_col()
             .child(header)
@@ -597,26 +714,24 @@ impl ThreadsBlock {
             .into_any_element()
     }
 
-    /// Issue #57: the `Show More / Show Less` row is **Projects-only**. Recents
-    /// is now a lazy list (viewport fill + scroll-to-bottom growth), so it has
-    /// no progressive control and no `organization-recents-show-*` selector.
     fn render_progressive_control(&self, expanded: bool, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let state_name = if expanded { "less" } else { "more" };
-        let label = if expanded { "收起" } else { "展开更多" };
+        let label = if expanded {
+            vega_i18n::t("ui.collapse")
+        } else {
+            vega_i18n::t("ui.show_more")
+        };
         let id = format!("organization-projects-show-{state_name}");
-        let label_id = "organization-projects-progressive-label".to_string();
         let focus = &self.projects_progressive_focus;
         div()
             .id(ElementId::Name(id.clone().into()))
-            .debug_selector(move || id.clone())
             .track_focus(focus)
             .focusable()
             .tab_stop(true)
             .role(gpui_kit::Role::Button)
             .aria_label(label)
             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-            // R48: Show More / Show Less shares the child text column.
             .pl(px(Layout::SIDEBAR_ROW_INSET))
             .rounded_lg()
             .flex()
@@ -647,7 +762,7 @@ impl ThreadsBlock {
                     }
                 }),
             )
-            .child(div().debug_selector(move || label_id.clone()).child(label))
+            .child(div().child(label))
             .into_any_element()
     }
 
@@ -662,14 +777,12 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        let label = "展开更多";
+        let label = vega_i18n::t("ui.show_more");
         let id = format!("project-{project_id}-show-more");
-        let label_id = format!("project-{project_id}-progressive-label");
         let mouse_project_id = project_id.to_owned();
         let keyboard_project_id = project_id.to_owned();
         div()
             .id(ElementId::Name(id.clone().into()))
-            .debug_selector(move || id.clone())
             .focusable()
             .tab_stop(true)
             .role(gpui_kit::Role::Button)
@@ -708,7 +821,7 @@ impl ThreadsBlock {
                     }
                 }),
             )
-            .child(div().debug_selector(move || label_id.clone()).child(label))
+            .child(div().child(label))
             .into_any_element()
     }
 
@@ -741,27 +854,28 @@ impl ThreadsBlock {
             .id(ElementId::Name(
                 format!("project-header-{}", project.id).into(),
             ))
-            .debug_selector({
-                let id = project.id.clone();
-                move || format!("project-header-{id}")
-            })
             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
             .flex()
             .items_center()
             .gap_2()
-            // R48: the row surface starts at the navigation content origin, so
-            // the folder icon shares the section label column (base + LABEL
-            // INSET). Only the trailing padding remains; the text column is
-            // reached by icon (16) + gap_2 (8) = SIDEBAR_ROW_INSET.
             .pr_2()
             .rounded_lg()
             .focusable()
             .tab_stop(true)
             .role(gpui_kit::Role::Button)
-            .aria_label(format!(
-                "{}，{}",
-                project.name,
-                if collapsed { "已收起" } else { "已展开" }
+            .aria_label(vega_i18n::t_args(
+                "ui.disclosure_state",
+                &[
+                    ("name", &project.name),
+                    (
+                        "state",
+                        if collapsed {
+                            vega_i18n::t("ui.collapsed")
+                        } else {
+                            vega_i18n::t("ui.expanded")
+                        },
+                    ),
+                ],
             ))
             .aria_expanded(!collapsed)
             .cursor_pointer()
@@ -816,15 +930,6 @@ impl ThreadsBlock {
                         )
                         .into(),
                     ))
-                    .debug_selector({
-                        let id = project.id.clone();
-                        move || {
-                            format!(
-                                "project-folder-{id}-{}",
-                                if collapsed { "closed" } else { "open" }
-                            )
-                        }
-                    })
                     .size(px(16.))
                     .flex_shrink_0()
                     .child(crate::icons::icon(
@@ -841,10 +946,6 @@ impl ThreadsBlock {
                     .id(ElementId::Name(
                         format!("organization-project-{}", project.id).into(),
                     ))
-                    .debug_selector({
-                        let id = project.id.clone();
-                        move || format!("organization-project-{id}")
-                    })
                     .flex_1()
                     .min_w_0()
                     .truncate()
@@ -857,17 +958,12 @@ impl ThreadsBlock {
                     .when_some(self.project_focuses.get(&project.id), |actions, focus| {
                         actions.track_focus(focus)
                     })
-                    .debug_selector({
-                        let id = project.id.clone();
-                        let state = if actions_visible { "visible" } else { "rest" };
-                        move || format!("project-actions-{id}-{state}")
-                    })
                     .flex()
                     .items_center()
                     .gap_1()
                     .child(self.vector_control(
                         format!("project-add-{}", project.id),
-                        format!("在 {} 中新建任务", project.name),
+                        vega_i18n::t_args("ui.new_task_in_project", &[("project", &project.name)]),
                         crate::icons::Icon::Plus,
                         Control::NewProjectTask(project_for_add),
                         !actions_visible,
@@ -875,7 +971,10 @@ impl ThreadsBlock {
                     ))
                     .child(self.vector_control(
                         format!("project-more-{}", project.id),
-                        format!("{} 项目操作", project.name),
+                        vega_i18n::t_args(
+                            "ui.project_project_actions",
+                            &[("project", &project.name)],
+                        ),
                         crate::icons::Icon::More,
                         Control::Menu(OrganizationMenu::Project(project_for_menu)),
                         !actions_visible,
@@ -886,18 +985,14 @@ impl ThreadsBlock {
             .id(ElementId::Name(
                 format!("project-section-{}", project_id).into(),
             ))
-            .debug_selector({
-                let project_id = project_id.clone();
-                move || {
-                    format!(
-                        "project-persistent-surface-{project_id}-{}",
-                        if selected { "active" } else { "rest" }
-                    )
-                }
-            })
             .flex()
             .flex_col()
-            .child(row);
+            .child(self.render_reorder_row(
+                ReorderItem::Project(project.id.clone()),
+                project.name.clone(),
+                row,
+                cx,
+            ));
         if !collapsed {
             let mut tasks: Vec<_> = self
                 .threads
@@ -915,7 +1010,7 @@ impl ThreadsBlock {
                         .cloned(),
                 );
             }
-            tasks = super::projections::sorted_threads(&tasks, snapshot.preferences.sort);
+            tasks = super::projections::sorted_threads(&tasks, &snapshot.preferences);
             let (visible_count, has_hidden) = if let Some(organization) = self.organization.as_mut()
             {
                 organization
@@ -945,7 +1040,7 @@ impl ThreadsBlock {
                 .as_ref()
                 .map(|thread| thread.id.clone());
             if tasks.is_empty() && !has_pinned {
-                section = section.child(self.section_label("暂无任务", cx));
+                section = section.child(self.section_label(vega_i18n::t("ui.no_tasks"), cx));
             } else {
                 section = section.children(tasks.iter().take(visible_count).map(|thread| {
                     self.render_pi_row(

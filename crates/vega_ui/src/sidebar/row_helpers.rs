@@ -1,18 +1,9 @@
 use super::*;
 
-/// The full-window delete confirmation overlay (T13): a token-derived
-/// semi-transparent scrim over everything with a centered small card in the
-/// ui-spec §4.3 权限卡 style — no shadow, `border_subtle` border, buttons
-/// [删除] (danger) + [取消]. Clicking the scrim (any mouse down outside the
-/// card) or pressing Esc cancels — Esc routes through the global
-/// `CloseSettings` handler, which consumes the overlay first (裁决②). No
-/// system modal is used (ui-spec §4.6). Rendered by the window root while
-/// [`PendingDeleteConfirm`] is `Some`.
 pub fn render_delete_confirm_overlay(
     thread: &Thread,
     sidebar: Entity<Sidebar>,
     colors: ThemeColors,
-    before_delete: impl Fn(&str, &mut App) + 'static,
 ) -> AnyElement {
     let thread_id = thread.id.clone();
     let cancel = |_event: &MouseDownEvent, _window: &mut Window, cx: &mut App| {
@@ -45,15 +36,15 @@ pub fn render_delete_confirm_overlay(
                         .text_size(px(Typography::HEADING_CARD))
                         .font_weight(Typography::HEADING_CARD_WEIGHT)
                         .text_color(colors.text_primary)
-                        .child("删除会话"),
+                        .child(vega_i18n::t("ui.delete_conversation")),
                 )
                 .child(
                     div()
                         .text_size(px(Typography::SIDEBAR))
                         .text_color(colors.text_secondary)
-                        .child(format!(
-                            "确定删除「{}」？将同时删除该会话的全部消息与工具调用记录，且无法恢复。",
-                            thread_title(thread)
+                        .child(vega_i18n::t_args(
+                            "ui.delete_title_all_messages_and_tool_call_records",
+                            &[("title", &(thread_title(thread)).to_string())],
                         )),
                 )
                 .child(
@@ -80,11 +71,10 @@ pub fn render_delete_confirm_overlay(
                                         cx.refresh_windows();
                                     },
                                 )
-                                .child("取消"),
+                                .child(vega_i18n::t("ui.cancel")),
                         )
                         .child(
                             div()
-                                .debug_selector(|| "delete-confirm-action".into())
                                 .px_3()
                                 .py_1()
                                 .rounded_md()
@@ -96,13 +86,17 @@ pub fn render_delete_confirm_overlay(
                                 .on_mouse_up(
                                     MouseButton::Left,
                                     move |_: &MouseUpEvent, _window, cx: &mut App| {
-                                        if cx.global::<PendingDeleteConfirm>().0.as_ref().is_some_and(|thread| thread.id == thread_id) {
-                                            before_delete(&thread_id, cx);
+                                        if cx
+                                            .global::<PendingDeleteConfirm>()
+                                            .0
+                                            .as_ref()
+                                            .is_some_and(|thread| thread.id == thread_id)
+                                        {
                                             sidebar.update(cx, Sidebar::confirm_pending_delete);
                                         }
                                     },
                                 )
-                                .child("删除"),
+                                .child(vega_i18n::t("ui.delete")),
                         ),
                 ),
         )
@@ -135,7 +129,10 @@ pub(crate) fn clear_opened_thread_of_project(project_id: &str, cx: &mut App) {
 }
 
 /// Inline danger bar (ui-spec §4.6: errors are inline, never modals).
-pub(crate) fn error_bar(message: String, colors: &ThemeColors) -> AnyElement {
+pub(crate) fn error_bar(
+    message: crate::localized_copy::LocalizedCopy,
+    colors: &ThemeColors,
+) -> AnyElement {
     div()
         .px_2()
         .py_1()
@@ -145,14 +142,13 @@ pub(crate) fn error_bar(message: String, colors: &ThemeColors) -> AnyElement {
         .border_color(colors.danger)
         .text_color(colors.danger)
         .text_size(px(Typography::SIDEBAR))
-        .child(message)
+        .child(message.render())
         .into_any_element()
 }
 
-/// Row/header label for a thread: 「未命名任务」 until T13 adds renaming.
 pub(crate) fn thread_title(thread: &Thread) -> String {
     if thread.title.is_empty() {
-        "未命名任务".to_string()
+        vega_i18n::t("ui.untitled_task").to_string()
     } else {
         thread.title.clone()
     }
@@ -191,18 +187,32 @@ pub(crate) fn archive_section_visible(archived_count: usize) -> bool {
     archived_count > 0
 }
 
-/// Whether the row tail shows the relative timestamp at rest (#150 R10).
-///
-/// The tail is one slot. A running row owns it with its indicator, so the
-/// timestamp is suppressed there: showing both would either push the action
-/// trigger sideways or crowd the 28px slot. Hover (which reveals the action
-/// trigger) keeps its existing precedence over the resting timestamp.
-pub(crate) fn shows_timestamp_at_rest(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SessionRowTrailing {
+    Actions,
+    Running,
+    Unread,
+    Timestamp,
+    Empty,
+}
+
+pub(crate) fn session_row_trailing(
     actions_visible: bool,
-    show_timestamp_at_rest: bool,
     running: bool,
-) -> bool {
-    !actions_visible && show_timestamp_at_rest && !running
+    unread: bool,
+    show_timestamp_at_rest: bool,
+) -> SessionRowTrailing {
+    if actions_visible {
+        SessionRowTrailing::Actions
+    } else if running {
+        SessionRowTrailing::Running
+    } else if unread {
+        SessionRowTrailing::Unread
+    } else if show_timestamp_at_rest {
+        SessionRowTrailing::Timestamp
+    } else {
+        SessionRowTrailing::Empty
+    }
 }
 
 /// Relative time for a session row (ui-spec §4.1, "2h" style).

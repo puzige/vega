@@ -1,19 +1,3 @@
-//! Typed conversation-history hydration (S8-T45/C7): turns `messages.seq`
-//! keyset pages into UI-ready entries. This crate is the redaction boundary
-//! the card mandates before anything reaches `vega_ui` — tool inputs reduce
-//! through the owner projections ([`tool_card_input_projection`] /
-//! [`tool_card_result_projection`]), raw write/edit bodies and audit JSON
-//! never leave it, and interrupted/failed rows plus Plan/summary references
-//! stay visible (C7 内容完整性).
-//!
-//! One page load is a bounded constant of store statements: the store reads
-//! the message page and the tool-call batch under one read snapshot, then a
-//! separately bounded Skill audit/snapshot batch (8 MiB maximum) without
-//! source-file reads. The newest page additionally re-projects the S7
-//! summary reference (T40 real persisted form: durable `token_usage`/
-//! `tool_calls` audits keyed by the terminal assistant message id). No
-//! per-message queries anywhere.
-
 use std::collections::HashMap;
 
 use vega_runtime::skills::SourceScope;
@@ -23,16 +7,19 @@ use vega_store::recovery;
 use vega_store::skills::{self, SkillActivationAuditRecord};
 
 use crate::types::{
-    Approval, ApprovalAudit, ApprovalSource, ConversationError, InvalidToolCode, InvalidToolKind,
-    Plan, PlanStatus, TaskCostSummary, ToolCallStatus, ToolCardInputProjection,
-    ToolCardResultProjection, ToolResult, tool_card_input_projection, tool_card_result_projection,
+    Approval, ApprovalAudit, ApprovalSource, CodexDisplayMetadata, ConversationError,
+    InvalidToolCode, InvalidToolKind, Plan, PlanStatus, TaskCostSummary, ToolCallStatus,
+    ToolCardInputProjection, ToolCardResultProjection, ToolResult, tool_card_input_projection,
+    tool_card_result_projection,
 };
 
-/// One hydratable conversation entry in ascending message position. R70
-/// offsets interleave new tool audits with independently finalized text
-/// segments; legacy audits retain their original text-then-tools order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryEntry {
+    RunContinuation {
+        previous_assistant_id: String,
+        user_message_id: String,
+        next_assistant_id: String,
+    },
     CredentialContinuation {
         seq: i64,
         message_id: String,
@@ -48,6 +35,13 @@ pub enum HistoryEntry {
         seq: i64,
         message_id: String,
         response: crate::types::AssistantResponseMetadata,
+    },
+    GeneratedNotice {
+        seq: i64,
+        message_id: String,
+        notice: crate::types::GeneratedNoticeMetadata,
+        display_text_start_bytes: usize,
+        display_text_end_bytes: usize,
     },
     /// Durable user text (the synthetic approval instruction is controller
     /// capability, not conversation content, and is dropped — same rule as
@@ -77,9 +71,10 @@ pub enum HistoryEntry {
         plan: Plan,
         execution_duration_ms: Option<u64>,
     },
-    /// Read-only S7 per-task cost summary reference, attached directly after
-    /// the assistant message (and its tools) it summarizes.
-    Summary { seq: i64, summary: TaskCostSummary },
+    Summary {
+        seq: i64,
+        summary: TaskCostSummary,
+    },
     /// Audited tool call reduced to the safe UI projection. `call_id` is an
     /// opaque map key (never rendered), matching the live event shape.
     Tool {
@@ -182,6 +177,7 @@ impl AssistantStatus {
 /// Result of one hydration projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryPage {
+    pub subagents: Vec<crate::types::SubagentSnapshot>,
     /// Entries in ascending seq position (oldest → newest).
     pub entries: Vec<HistoryEntry>,
     /// `Some(oldest_seq)` when older history may exist — pass
@@ -202,12 +198,23 @@ pub fn restart_history_page(
     thread_id: &str,
     limit: usize,
 ) -> Result<HistoryPage, ConversationError> {
+    guard_legacy_history(store, thread_id)?;
+    let admission = vega_store::thread_admission::try_acquire(store.database_identity(), thread_id)
+        .map_err(|_| {
+            ConversationError::Store(vega_i18n::t("domain.ordinary_send.access_unavailable").into())
+        })?;
+    let Some(_admission) = admission else {
+        return latest_history_page(store, thread_id, limit);
+    };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as i64)
         .unwrap_or_default();
-    recovery::recover_thread(store.conn(), thread_id, now)
-        .map_err(|error| ConversationError::Store(error.to_string()))?;
+    crate::subagents::recover_children(store, thread_id, now)?;
+    if !crate::subagents::is_live(store, thread_id) {
+        recovery::recover_thread(store.conn(), thread_id, now)
+            .map_err(|error| ConversationError::Store(error.to_string()))?;
+    }
     latest_history_page(store, thread_id, limit)
 }
 
@@ -247,6 +254,7 @@ pub fn latest_history_page(
     thread_id: &str,
     limit: usize,
 ) -> Result<HistoryPage, ConversationError> {
+    guard_legacy_history(store, thread_id)?;
     let page = page_read(store, thread_id, PageCursor::Head, limit)?;
     assemble(store, thread_id, page, limit, true)
 }
@@ -260,6 +268,7 @@ pub fn history_page_before(
     cursor: PageCursor,
     limit: usize,
 ) -> Result<HistoryPage, ConversationError> {
+    guard_legacy_history(store, thread_id)?;
     let page = page_read(store, thread_id, cursor, limit)?;
     assemble(store, thread_id, page, limit, false)
 }
@@ -270,6 +279,7 @@ pub fn history_page_containing_message(
     message_id: &str,
     limit: usize,
 ) -> Result<Option<HistoryPage>, ConversationError> {
+    guard_legacy_history(store, thread_id)?;
     let page = messages::page_containing_message(store.conn(), thread_id, message_id, limit)
         .map_err(page_failure)?;
     let Some(page) = page else {
@@ -284,6 +294,7 @@ pub fn history_page_after(
     cursor: i64,
     limit: usize,
 ) -> Result<HistoryPage, ConversationError> {
+    guard_legacy_history(store, thread_id)?;
     let page =
         messages::page_after(store.conn(), thread_id, cursor, limit).map_err(page_failure)?;
     assemble(store, thread_id, page, limit, true)
@@ -302,118 +313,12 @@ fn assemble(
         )));
     }
     let mut page = page;
-    let projection = crate::privacy::DisplayProjection::load(store, thread_id)?;
-    for row in &mut page.rows {
-        let positions: Vec<_> = page
-            .tool_calls
-            .iter()
-            .enumerate()
-            .filter_map(|(index, call)| {
-                (call.message_id == row.id)
-                    .then_some((index, call.text_offset_bytes))
-                    .and_then(|(index, offset)| {
-                        offset
-                            .and_then(|offset| usize::try_from(offset).ok())
-                            .map(|offset| (index, offset))
-                    })
-            })
-            .collect();
-        let offsets: Vec<_> = positions.iter().map(|(_, offset)| *offset).collect();
-        for response in page
-            .assistant_responses
-            .iter_mut()
-            .filter(|response| response.message_id == row.id)
-        {
-            let (_, positions) = projection.offsets(
-                &row.content,
-                &[response.text_start_bytes, response.text_end_bytes],
-            );
-            if let [start, end] = positions.as_slice() {
-                response.text_start_bytes = *start;
-                response.text_end_bytes = *end;
-            }
-        }
-        let (content, offsets) = projection.offsets(&row.content, &offsets);
-        row.content = content;
-        for ((index, _), offset) in positions.into_iter().zip(offsets) {
-            page.tool_calls[index].text_offset_bytes = i64::try_from(offset).ok();
-        }
-        if let Some(note) = &mut row.plan_review_note {
-            *note = projection.text(note);
-        }
-    }
-    for call in &mut page.tool_calls {
-        call.input_json = projection.json(&call.input_json);
-        if let Some(output) = &mut call.output_text {
-            *output = projection.text(output);
-        }
-    }
+    let generated_notices = project_page_privacy(store, thread_id, &mut page)?;
     let newest_seq = page.rows.last().map(|row| row.seq);
-    let mut entries = project_rows(&page)?;
-    if let (Some(oldest), Some(newest)) = (page.rows.first(), page.rows.last()) {
-        let records =
-            skills::load_history_page_records(store.conn(), thread_id, oldest.seq, newest.seq)
-                .map_err(|error| ConversationError::Store(error.to_string()))?;
-        let by_run = project_skill_history(records);
-        // Insert after each owning assistant's final text/tool segment. This
-        // preserves the ordinary user/tool timeline and never creates a fake
-        // tool call for an explicitly preloaded Skill.
-        for row in page.rows.iter().rev().filter(|row| row.role == "assistant") {
-            let Some(activations) = by_run.get(&row.id) else {
-                continue;
-            };
-            let Some(position) = entries.iter().rposition(|entry| match entry {
-                HistoryEntry::AssistantText { message_id, .. }
-                | HistoryEntry::Tool { message_id, .. } => message_id == &row.id,
-                HistoryEntry::Plan { plan, .. } => plan.id == row.id,
-                _ => false,
-            }) else {
-                continue;
-            };
-            for activation in activations.iter().rev() {
-                entries.insert(
-                    position + 1,
-                    HistoryEntry::SkillActivation {
-                        seq: row.seq,
-                        activation: activation.clone(),
-                    },
-                );
-            }
-        }
-    }
-    // S7 summary reference (C7): the thread's latest terminal assistant task
-    // re-projects its cost summary from the durable audits exactly like the
-    // restart recovery of S7-T40. Attach it only while its message is on this
-    // page so the hydrated transcript keeps the card in sequence position.
-    if attach_summary
-        && let Some(summary) = crate::summary::latest_task_summary(store, thread_id, None)?
-        && let Some(position) = entries.iter().rposition(|entry| {
-            matches!(
-                entry,
-                HistoryEntry::AssistantText { message_id, .. }
-                    | HistoryEntry::Tool { message_id, .. }
-                    if *message_id == summary.message_id
-            )
-        })
-    {
-        let assistant_seq = match &entries[position] {
-            HistoryEntry::AssistantText { seq, .. } => *seq,
-            HistoryEntry::Tool { .. } => page
-                .rows
-                .iter()
-                .find(|row| row.id == summary.message_id)
-                .map(|row| row.seq)
-                .ok_or_else(|| ConversationError::CorruptRow("summary owner missing".into()))?,
-            _ => unreachable!("position matched an owner entry"),
-        };
-        entries.insert(
-            position + 1,
-            HistoryEntry::Summary {
-                seq: assistant_seq,
-                summary,
-            },
-        );
-    }
+    let mut entries = project_rows(&page, &generated_notices)?;
+    append_skill_history(store, thread_id, &page, &mut entries)?;
+
+    append_task_summary(store, thread_id, &page, &mut entries, attach_summary)?;
     for row in page.rows.iter().filter(|row| row.role == "assistant") {
         if let Some(receipt) = vega_store::credential_continuation::find(store.conn(), &row.id)
             .map_err(|error| ConversationError::Store(error.to_string()))?
@@ -443,11 +348,96 @@ fn assemble(
         }
     }
     Ok(HistoryPage {
+        subagents: crate::subagents::history(store, thread_id)?
+            .into_iter()
+            .filter(|agent| {
+                page.rows
+                    .iter()
+                    .any(|message| message.id == agent.parent_message_id)
+            })
+            .collect(),
         entries,
         older_cursor: page.older_cursor,
         newer_cursor: page.newer_cursor,
         newest_seq,
     })
+}
+
+fn append_task_summary(
+    store: &Store,
+    thread_id: &str,
+    page: &MessagePage,
+    entries: &mut Vec<HistoryEntry>,
+    attach_summary: bool,
+) -> Result<(), ConversationError> {
+    if attach_summary
+        && let Some(summary) = crate::summary::latest_task_summary(store, thread_id, None)?
+        && let Some(position) = entries.iter().rposition(|entry| {
+            matches!(
+                entry,
+                HistoryEntry::AssistantText { message_id, .. }
+                    | HistoryEntry::Tool { message_id, .. }
+                    if *message_id == summary.message_id
+            )
+        })
+    {
+        let assistant_seq = match &entries[position] {
+            HistoryEntry::AssistantText { seq, .. } => *seq,
+            HistoryEntry::Tool { .. } => page
+                .rows
+                .iter()
+                .find(|row| row.id == summary.message_id)
+                .map(|row| row.seq)
+                .ok_or_else(|| ConversationError::CorruptRow("summary owner missing".into()))?,
+            _ => unreachable!("position matched an owner entry"),
+        };
+        entries.insert(
+            position + 1,
+            HistoryEntry::Summary {
+                seq: assistant_seq,
+                summary,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn append_skill_history(
+    store: &Store,
+    thread_id: &str,
+    page: &MessagePage,
+    entries: &mut Vec<HistoryEntry>,
+) -> Result<(), ConversationError> {
+    if let (Some(oldest), Some(newest)) = (page.rows.first(), page.rows.last()) {
+        let records =
+            skills::load_history_page_records(store.conn(), thread_id, oldest.seq, newest.seq)
+                .map_err(|error| ConversationError::Store(error.to_string()))?;
+        let by_run = project_skill_history(records);
+        for row in page.rows.iter().rev().filter(|row| row.role == "assistant") {
+            let Some(activations) = by_run.get(&row.id) else {
+                continue;
+            };
+            let Some(position) = entries.iter().rposition(|entry| match entry {
+                HistoryEntry::AssistantText { message_id, .. }
+                | HistoryEntry::Tool { message_id, .. } => message_id == &row.id,
+                HistoryEntry::Plan { plan, .. } => plan.id == row.id,
+                _ => false,
+            }) else {
+                continue;
+            };
+            for activation in activations.iter().rev() {
+                entries.insert(
+                    position + 1,
+                    HistoryEntry::SkillActivation {
+                        seq: row.seq,
+                        activation: activation.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn project_skill_history(
@@ -529,7 +519,18 @@ fn parsed_skill_audit(
 /// keep independent seq counters, so ownership is the only reliable join).
 /// Any row outside the typed vocabulary fails closed: hydration never
 /// silently drops durable content.
-fn project_rows(page: &MessagePage) -> Result<Vec<HistoryEntry>, ConversationError> {
+fn project_rows(
+    page: &MessagePage,
+    generated_notices: &[HistoryEntry],
+) -> Result<Vec<HistoryEntry>, ConversationError> {
+    project_rows_with(page, generated_notices, &tool_entry)
+}
+
+fn project_rows_with(
+    page: &MessagePage,
+    generated_notices: &[HistoryEntry],
+    project_tool: &impl Fn(&PageToolCall) -> HistoryEntry,
+) -> Result<Vec<HistoryEntry>, ConversationError> {
     if page.images.iter().any(|image| {
         !page.rows.iter().any(|row| {
             row.id == image.message_id
@@ -556,8 +557,19 @@ fn project_rows(page: &MessagePage) -> Result<Vec<HistoryEntry>, ConversationErr
     for calls in calls_by_message.values_mut() {
         calls.sort_by_key(|call| call.seq);
     }
-    let mut entries: Vec<HistoryEntry> = Vec::new();
+    let mut entries: Vec<HistoryEntry> = page
+        .continuations
+        .iter()
+        .map(|relation| HistoryEntry::RunContinuation {
+            previous_assistant_id: relation.previous_assistant_id.clone(),
+            user_message_id: relation.user_message_id.clone(),
+            next_assistant_id: relation.next_assistant_id.clone(),
+        })
+        .collect();
     for row in &page.rows {
+        entries.extend(generated_notices.iter().filter(|entry| {
+            matches!(entry, HistoryEntry::GeneratedNotice { message_id, .. } if message_id == &row.id)
+        }).cloned());
         match row.role.as_str() {
             "user" => {
                 if row.kind != "text" || row.status != "done" {
@@ -661,6 +673,7 @@ fn project_rows(page: &MessagePage) -> Result<Vec<HistoryEntry>, ConversationErr
                         page.execution_durations_ms.get(&row.id).copied(),
                         &calls,
                         &mut entries,
+                        project_tool,
                     )?;
                 }
             },
@@ -696,7 +709,7 @@ fn project_rows(page: &MessagePage) -> Result<Vec<HistoryEntry>, ConversationErr
         }
         if let Some(calls) = calls_by_message.remove(row.id.as_str()) {
             for call in calls {
-                entries.push(tool_entry(call));
+                entries.push(project_tool(call));
             }
         }
     }
@@ -716,6 +729,7 @@ fn project_assistant(
     execution_duration_ms: Option<i64>,
     calls: &[&PageToolCall],
     entries: &mut Vec<HistoryEntry>,
+    project_tool: &impl Fn(&PageToolCall) -> HistoryEntry,
 ) -> Result<(), ConversationError> {
     // One NULL makes the whole message legacy. Prior content has no exact
     // boundary, so never infer positions from timestamps or adjacent text.
@@ -728,7 +742,7 @@ fn project_assistant(
             execution_duration_ms: execution_duration_ms
                 .and_then(|duration| u64::try_from(duration).ok()),
         });
-        entries.extend(calls.iter().map(|call| tool_entry(call)));
+        entries.extend(calls.iter().map(|call| project_tool(call)));
         return Ok(());
     }
     let mut start = 0;
@@ -747,7 +761,7 @@ fn project_assistant(
                 execution_duration_ms: None,
             });
         }
-        entries.push(tool_entry(call));
+        entries.push(project_tool(call));
         start = offset;
     }
     if start < row.content.len()
@@ -831,8 +845,39 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
         id: call.id.clone(),
         tool: call.tool.clone(),
         input_json: call.input_json.clone(),
+        codex_display: call
+            .codex_display
+            .as_ref()
+            .and_then(CodexDisplayMetadata::from_stored),
     };
     let input = tool_card_input_projection(&proposal);
+    if matches!(
+        &input,
+        ToolCardInputProjection::UserQuestion { input: Ok(_) }
+    ) && matches!(
+        status,
+        ToolCallStatus::PendingApproval | ToolCallStatus::Approved | ToolCallStatus::Running
+    ) {
+        let result = crate::types::ToolResult {
+            status: ToolCallStatus::Cancelled,
+            output: crate::types::USER_QUESTION_CANCELLED.into(),
+            codex_display: None,
+            reused: true,
+            exit_code: None,
+            duration_ms: None,
+            truncated: None,
+            invalid: None,
+        };
+        return HistoryEntry::Tool {
+            seq: call.seq,
+            message_id: call.message_id.clone(),
+            call_id: call.id.clone(),
+            status: ToolCallStatus::Cancelled,
+            approval,
+            result: Some(tool_card_result_projection(Some(&input), &result)),
+            input: Some(input),
+        };
+    }
     let invalid_superseded_claim = matches!(input, ToolCardInputProjection::ComputerUse { .. })
         && call.output_text.as_deref()
             == Some(vega_runtime::computer_use::SUPERSEDED_CONTROL_OUTPUT)
@@ -842,7 +887,33 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
                 && audit.note.is_none()
                 && audit.danger.is_none()
         });
+    let invalid_computer_use_audit = matches!(input, ToolCardInputProjection::ComputerUse { .. })
+        && !approval_audit.as_ref().is_some_and(|audit| {
+            let runtime_status = match status {
+                ToolCallStatus::Success => vega_runtime::RuntimeToolStatus::Success,
+                ToolCallStatus::Failed => vega_runtime::RuntimeToolStatus::Failed,
+                ToolCallStatus::Rejected => vega_runtime::RuntimeToolStatus::Rejected,
+                ToolCallStatus::Cancelled => vega_runtime::RuntimeToolStatus::Cancelled,
+                _ => return false,
+            };
+            crate::agent::validate_recovered_projection(
+                "",
+                "",
+                &call.id,
+                &call.tool,
+                &call.input_json,
+                call.output_text.as_deref().unwrap_or_default(),
+                runtime_status,
+                audit,
+                call.exit_code,
+                call.duration_ms
+                    .and_then(|duration| u64::try_from(duration).ok()),
+            )
+            .is_ok()
+                && call.duration_ms.is_none()
+        });
     let (input, result) = if invalid_bash_claim
+        || invalid_computer_use_audit
         || invalid_superseded_claim
         || matches!(input, ToolCardInputProjection::Corrupt)
         || matches!(
@@ -856,6 +927,7 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
         let result = ToolResult {
             status,
             output: call.output_text.clone().unwrap_or_default(),
+            codex_display: proposal.codex_display,
             reused: true,
             exit_code: call.exit_code,
             duration_ms: call.duration_ms.and_then(|ms| u64::try_from(ms).ok()),
@@ -881,325 +953,327 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
     }
 }
 
-#[cfg(test)]
-mod issue90_tests {
-    use super::*;
-
-    fn old_invalid_bash_row() -> PageToolCall {
-        PageToolCall {
-            id: "old-bash".into(),
-            message_id: "assistant".into(),
-            seq: 1,
-            text_offset_bytes: None,
-            tool: "bash".into(),
-            input_json: r#"{"command":"SECRET_HISTORICAL_COMMAND"}"#.into(),
-            output_text: Some("Tool error: invalid bash input (invalid_input)".into()),
-            status: "rejected".into(),
-            approval: Some(
-                r#"{"decision":"deny","note":null,"source":"validation","danger":null}"#.into(),
-            ),
-            exit_code: None,
-            duration_ms: None,
-        }
+fn guard_legacy_history(store: &Store, thread: &str) -> Result<(), ConversationError> {
+    if vega_store::thread_fork::has_archived_delegation(store.conn(), thread)
+        .map_err(|error| ConversationError::Store(error.to_string()))?
+    {
+        return Err(ConversationError::UnsupportedHistoricalConsumer);
     }
+    Ok(())
+}
 
-    #[test]
-    fn legacy_invalid_bash_hydrates_as_safe_rejection_only_for_exact_validation_row() {
-        let row = old_invalid_bash_row();
-        assert!(matches!(
-            tool_entry(&row),
+pub fn latest_historical_history_page(
+    store: &Store,
+    thread: &str,
+    limit: usize,
+) -> Result<crate::types::HistoricalHistoryPage, ConversationError> {
+    assemble_historical(
+        store,
+        thread,
+        page_read(store, thread, PageCursor::Head, limit)?,
+        true,
+    )
+}
+
+pub fn historical_history_page_before(
+    store: &Store,
+    thread: &str,
+    cursor: PageCursor,
+    limit: usize,
+) -> Result<crate::types::HistoricalHistoryPage, ConversationError> {
+    assemble_historical(
+        store,
+        thread,
+        page_read(store, thread, cursor, limit)?,
+        false,
+    )
+}
+
+pub fn historical_history_page_after(
+    store: &Store,
+    thread: &str,
+    cursor: i64,
+    limit: usize,
+) -> Result<crate::types::HistoricalHistoryPage, ConversationError> {
+    let page = messages::page_after(store.conn(), thread, cursor, limit).map_err(page_failure)?;
+    assemble_historical(store, thread, page, true)
+}
+
+pub fn historical_history_page_containing_message(
+    store: &Store,
+    thread: &str,
+    message: &str,
+    limit: usize,
+) -> Result<Option<crate::types::HistoricalHistoryPage>, ConversationError> {
+    messages::page_containing_message(store.conn(), thread, message, limit)
+        .map_err(page_failure)?
+        .map(|page| assemble_historical(store, thread, page, true))
+        .transpose()
+}
+
+fn assemble_historical(
+    store: &Store,
+    thread: &str,
+    mut page: MessagePage,
+    attach_summary: bool,
+) -> Result<crate::types::HistoricalHistoryPage, ConversationError> {
+    use crate::types::{HistoricalHistoryEntry, HistoricalHistoryPage};
+    let generated_notices = project_page_privacy(store, thread, &mut page)?;
+    let projection = crate::privacy::DisplayProjection::load(store, thread)?;
+    let archives = if let (Some(first), Some(last)) = (page.rows.first(), page.rows.last()) {
+        vega_store::thread_fork::historical_receipts_in_range(
+            store.conn(),
+            thread,
+            first.seq,
+            last.seq,
+        )
+        .map_err(|error| ConversationError::Store(error.to_string()))?
+    } else {
+        Vec::new()
+    };
+    let mut delegations = HashMap::new();
+    for call in page
+        .tool_calls
+        .iter()
+        .filter(|call| vega_runtime::is_subagent_tool(&call.tool))
+    {
+        let archive = archives
+            .iter()
+            .find(|archive| archive.call_id == call.id && archive.kind == "delegation");
+        let input = archive.map_or_else(
+            || call.input_json.clone(),
+            |archive| projection.json(&archive.input_json),
+        );
+        let receipt = archive.map_or_else(
+            || {
+                call.output_text
+                    .as_deref()
+                    .map(|text| project_historical_receipt(&projection, text))
+            },
+            |archive| {
+                archive
+                    .output_text
+                    .as_ref()
+                    .map(|text| project_historical_receipt(&projection, text))
+            },
+        );
+        let mut references = archive.map_or_else(Vec::new, |archive| {
+            archive
+                .references
+                .iter()
+                .map(|reference| crate::types::HistoricalReference {
+                    field: projection.text(&reference.field),
+                    source_id: projection.text(&reference.source_id),
+                    destination_id: reference
+                        .destination_id
+                        .as_ref()
+                        .map(|id| projection.text(id)),
+                })
+                .collect()
+        });
+        if archive.is_none() {
+            vega_store::thread_fork::delegation_references(
+                &input,
+                receipt.as_deref(),
+                &mut references,
+            )
+            .map_err(|error| ConversationError::CorruptRow(error.to_string()))?;
+        }
+        let status = ToolCallStatus::parse(&call.status)
+            .ok_or_else(|| ConversationError::CorruptRow("historical tool status".into()))?;
+        delegations.insert(
+            call.id.clone(),
+            HistoricalHistoryEntry::Delegation {
+                seq: call.seq,
+                message_id: call.message_id.clone(),
+                call_id: call.id.clone(),
+                tool: call.tool.clone(),
+                input_json: input,
+                status,
+                approval: call
+                    .approval
+                    .as_deref()
+                    .and_then(|raw| ApprovalAudit::from_json(raw).ok())
+                    .map(|audit| audit.decision),
+                result: decode_historical_delegation(receipt, references)?,
+            },
+        );
+    }
+    let mut entries = project_rows_with(&page, &generated_notices, &|call| {
+        if delegations.contains_key(&call.id) {
             HistoryEntry::Tool {
-                status: ToolCallStatus::Rejected,
-                input: None,
-                result: Some(result),
-                ..
-            } if !matches!(result, ToolCardResultProjection::Corrupt)
-        ));
-
-        for tamper in 0..5 {
-            let mut row = old_invalid_bash_row();
-            match tamper {
-                0 => row.status = "failed".into(),
-                1 => {
-                    row.approval = Some(
-                        r#"{"decision":"deny","note":null,"source":"user","danger":null}"#.into(),
-                    )
-                }
-                2 => row.exit_code = Some(0),
-                3 => row.output_text = Some("SECRET_FORGED_OUTPUT".into()),
-                _ => row.input_json = r#"{"cmd":"printf valid"}"#.into(),
-            }
-            assert!(matches!(
-                tool_entry(&row),
-                HistoryEntry::Tool {
-                    result: Some(ToolCardResultProjection::Corrupt),
-                    ..
-                }
-            ));
-        }
-    }
-}
-
-#[cfg(test)]
-mod issue287_codex_acp_history_tests {
-    use super::*;
-
-    fn page(call: PageToolCall) -> MessagePage {
-        MessagePage {
-            images: Vec::new(),
-            rows: vec![vega_store::messages::MessageRow {
-                id: "assistant".into(),
-                thread_id: "thread".into(),
-                seq: 1,
-                role: "assistant".into(),
-                kind: "text".into(),
-                content: String::new(),
-                status: "done".into(),
-                created_at: 1,
-                plan_status: None,
-                plan_review_note: None,
-                plan_reviewed_at: None,
-            }],
-            execution_durations_ms: HashMap::new(),
-            assistant_responses: Vec::new(),
-            older_cursor: None,
-            newer_cursor: None,
-            tool_calls: vec![call],
-        }
-    }
-
-    fn codex_call() -> PageToolCall {
-        PageToolCall {
-            id: "codex-call".into(),
-            message_id: "assistant".into(),
-            seq: 1,
-            text_offset_bytes: Some(0),
-            tool: "codex_acp".into(),
-            input_json: r#"{"kind":"execute","arguments_bytes":35,"arguments_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","argument_preview":"object with 1 fields"}"#.into(),
-            output_text: Some("saved Codex output".into()),
-            status: "success".into(),
-            approval: None,
-            exit_code: None,
-            duration_ms: None,
-        }
-    }
-
-    #[test]
-    fn issue287_codex_acp_history_hydrates_success_and_keeps_corruption_strict() {
-        let entries = project_rows(&page(codex_call())).unwrap();
-        assert!(matches!(
-            entries.as_slice(),
-            [HistoryEntry::Tool {
+                seq: call.seq,
+                message_id: call.message_id.clone(),
+                call_id: call.id.clone(),
                 status: ToolCallStatus::Success,
-                input: Some(ToolCardInputProjection::CodexAcp { .. }),
-                result: Some(ToolCardResultProjection::CodexAcp {
-                    status: ToolCallStatus::Success,
-                    output,
-                    reused: true,
-                }),
-                ..
-            }] if output == "saved Codex output"
-        ));
-
-        let mut malformed_identity = codex_call();
-        malformed_identity.input_json = r#"{"kind":"unknown","arguments_bytes":35,"arguments_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","argument_preview":"object with 1 fields"}"#.into();
-        assert!(matches!(
-            project_rows(&page(malformed_identity)).unwrap().as_slice(),
-            [HistoryEntry::Tool {
-                result: Some(ToolCardResultProjection::Corrupt),
-                ..
-            }]
-        ));
-
-        let mut oversized_output = codex_call();
-        oversized_output.output_text = Some("x".repeat(2049));
-        assert!(matches!(
-            project_rows(&page(oversized_output)).unwrap().as_slice(),
-            [HistoryEntry::Tool {
-                result: Some(ToolCardResultProjection::Corrupt),
-                ..
-            }]
-        ));
-
-        let reused_bash = PageToolCall {
-            id: "bash-call".into(),
-            message_id: "assistant".into(),
-            seq: 1,
-            text_offset_bytes: Some(0),
-            tool: "bash".into(),
-            input_json: r#"{"cmd":"echo ok"}"#.into(),
-            output_text: Some("ok".into()),
-            status: "success".into(),
-            approval: None,
-            exit_code: Some(0),
-            duration_ms: Some(1),
-        };
-        assert!(matches!(
-            project_rows(&page(reused_bash.clone())).unwrap().as_slice(),
-            [HistoryEntry::Tool {
-                result: Some(ToolCardResultProjection::Bash {
-                    status: ToolCallStatus::Success,
-                    truncated: None,
-                    reused: true,
-                    ..
-                }),
-                ..
-            }]
-        ));
-
-        let mut invalid_reused_bash = reused_bash;
-        invalid_reused_bash.exit_code = None;
-        assert!(matches!(
-            project_rows(&page(invalid_reused_bash)).unwrap().as_slice(),
-            [HistoryEntry::Tool {
-                result: Some(ToolCardResultProjection::Corrupt),
-                ..
-            }]
-        ));
-    }
-}
-
-#[cfg(test)]
-mod issue146_tests {
-    use super::*;
-
-    #[test]
-    fn issue146_history_attaches_duration_only_to_final_assistant_segment() {
-        let page = MessagePage {
-            images: Vec::new(),
-            rows: vec![vega_store::messages::MessageRow {
-                id: "assistant".into(),
-                thread_id: "thread".into(),
-                seq: 2,
-                role: "assistant".into(),
-                kind: "text".into(),
-                content: "beforeafter".into(),
-                status: "done".into(),
-                created_at: 1,
-                plan_status: None,
-                plan_review_note: None,
-                plan_reviewed_at: None,
-            }],
-            execution_durations_ms: HashMap::from([("assistant".into(), 10_001)]),
-            assistant_responses: Vec::new(),
-            older_cursor: None,
-            newer_cursor: None,
-            tool_calls: vec![PageToolCall {
-                id: "call".into(),
-                message_id: "assistant".into(),
-                seq: 1,
-                text_offset_bytes: Some(6),
-                tool: "unknown".into(),
-                input_json: "{}".into(),
-                output_text: None,
-                status: "failed".into(),
                 approval: None,
-                exit_code: None,
-                duration_ms: None,
-            }],
-        };
-        let entries = project_rows(&page).unwrap();
-        assert!(matches!(
-            &entries[0],
-            HistoryEntry::AssistantText {
-                content,
-                execution_duration_ms: None,
-                ..
-            } if content == "before"
-        ));
-        assert!(matches!(&entries[1], HistoryEntry::Tool { .. }));
-        assert!(matches!(
-            &entries[2],
-            HistoryEntry::AssistantText {
-                content,
-                execution_duration_ms: Some(10_001),
-                ..
-            } if content == "after"
-        ));
+                input: None,
+                result: None,
+            }
+        } else {
+            tool_entry(call)
+        }
+    })?;
+    append_skill_history(store, thread, &page, &mut entries)?;
+    append_task_summary(store, thread, &page, &mut entries, attach_summary)?;
+    let entries = entries
+        .into_iter()
+        .map(|entry| {
+            if let HistoryEntry::Tool { call_id, .. } = &entry
+                && let Some(delegation) = delegations.remove(call_id)
+            {
+                return delegation;
+            }
+            HistoricalHistoryEntry::Ordinary(entry)
+        })
+        .collect();
+    Ok(HistoricalHistoryPage {
+        entries,
+        older_cursor: page.older_cursor,
+        newer_cursor: page.newer_cursor,
+        newest_seq: page.rows.last().map(|row| row.seq),
+    })
+}
 
-        let mut legacy = page.clone();
-        legacy.execution_durations_ms.clear();
-        let entries = project_rows(&legacy).unwrap();
-        assert!(matches!(
-            entries.last(),
-            Some(HistoryEntry::AssistantText {
-                execution_duration_ms: None,
-                ..
-            })
-        ));
-
-        let mut unavailable_offsets = page.clone();
-        unavailable_offsets.tool_calls[0].text_offset_bytes = None;
-        let entries = project_rows(&unavailable_offsets).unwrap();
-        assert!(matches!(
-            entries.first(),
-            Some(HistoryEntry::AssistantText {
-                execution_duration_ms: Some(10_001),
-                ..
-            })
-        ));
-
-        let mut empty_success = page;
-        empty_success.rows[0].content.clear();
-        empty_success.tool_calls.clear();
-        let entries = project_rows(&empty_success).unwrap();
-        assert!(matches!(
-            entries.as_slice(),
-            [HistoryEntry::AssistantText {
-                content,
-                execution_duration_ms: Some(10_001),
-                ..
-            }] if content.is_empty()
-        ));
+fn project_historical_receipt(
+    projection: &crate::privacy::DisplayProjection,
+    text: &str,
+) -> String {
+    let projected = projection.json(text);
+    match (
+        serde_json::from_str::<serde_json::Value>(text),
+        serde_json::from_str::<serde_json::Value>(&projected),
+    ) {
+        (Ok(original), Ok(safe)) if original == safe => text.into(),
+        _ => projected,
     }
 }
 
-#[cfg(test)]
-mod issue75_resume_refresh_tests {
-    use super::*;
-
-    #[test]
-    fn issue75_resume_refresh_history_requires_complete_approval_audit() {
-        let receipt = vega_runtime::computer_use::SUPERSEDED_CONTROL_OUTPUT;
-        let approved = serde_json::json!({"decision":"once","source":"computer_use","note":null,"danger":null});
-        let row = |approval: serde_json::Value| {
-            PageToolCall {
-            id: "superseded".into(),
-            message_id: "assistant".into(),
-            seq: 1,
-            text_offset_bytes: None,
-            tool: "ComputerScreenshot".into(),
-            input_json: serde_json::json!({"kind":"computer_use","version":1,"action":"screenshot","argument_bytes":2,"argument_digest":"a".repeat(64)}).to_string(),
-            output_text: Some(receipt.into()),
-            status: "cancelled".into(),
-            approval: Some(approval.to_string()),
-            exit_code: None,
-            duration_ms: None,
-        }
-        };
-        assert!(matches!(tool_entry(&row(approved.clone())),
-            HistoryEntry::Tool { status: ToolCallStatus::Cancelled,
-                approval: Some(Approval::Once),
-                result: Some(ToolCardResultProjection::ComputerUse { output, .. }), ..
-            } if output == receipt
-        ));
-        for field in ["source", "note", "danger", "decision"] {
-            let mut invalid = approved.clone();
-            invalid[field] = match field {
-                "source" => serde_json::json!("user"),
-                "note" => serde_json::json!("unrelated approval"),
-                "danger" => {
-                    serde_json::json!({"rule_id":"unrelated","decision":"once","note":null})
-                }
-                _ => serde_json::json!("deny"),
+fn decode_historical_delegation(
+    receipt: Option<String>,
+    references: Vec<crate::types::HistoricalReference>,
+) -> Result<crate::types::HistoricalDelegationResult, ConversationError> {
+    use crate::types::{HistoricalAgentSummary, HistoricalDelegationResult};
+    let mut agents = Vec::new();
+    if let Some(text) = &receipt
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(text)
+    {
+        let recorded = value.get("agent").into_iter().chain(
+            value
+                .get("agents")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten(),
+        );
+        for agent in recorded {
+            let text = |field| {
+                agent
+                    .get(field)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
             };
-            assert!(matches!(
-                tool_entry(&row(invalid)),
-                HistoryEntry::Tool {
-                    result: Some(ToolCardResultProjection::Corrupt),
-                    ..
-                }
-            ));
+            agents.push(HistoricalAgentSummary {
+                historical_agent_id: text("agent_id"),
+                historical_message_id: text("message_id"),
+                name: text("name"),
+                state: text("state"),
+                result: text("result"),
+                release_state: text("release_state"),
+                checkpoint_json: agent
+                    .get("checkpoint")
+                    .filter(|value| !value.is_null())
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|_| {
+                        ConversationError::CorruptRow("historical checkpoint JSON".into())
+                    })?,
+            });
         }
     }
+    Ok(HistoricalDelegationResult {
+        receipt,
+        agents,
+        references,
+    })
+}
+
+fn project_page_privacy(
+    store: &Store,
+    thread_id: &str,
+    page: &mut MessagePage,
+) -> Result<Vec<HistoryEntry>, ConversationError> {
+    let projection = crate::privacy::DisplayProjection::load(store, thread_id)?;
+    let mut generated_notices = Vec::new();
+    for row in &mut page.rows {
+        for stored in page
+            .generated_notices
+            .iter()
+            .filter(|notice| notice.message_id == row.id)
+        {
+            let notice = crate::types::GeneratedNoticeMetadata::from_store(stored)
+                .filter(|notice| row.role == "assistant" && notice.is_valid_for(&row.content))
+                .ok_or_else(|| {
+                    ConversationError::CorruptRow("generated notice provenance".into())
+                })?;
+            let (display_content, positions) = projection.offsets(
+                &row.content,
+                &[notice.text_start_bytes, notice.text_end_bytes],
+            );
+            if let [start, end] = positions.as_slice()
+                && display_content.get(*start..*end) == Some(notice.canonical_text().as_str())
+            {
+                generated_notices.push(HistoryEntry::GeneratedNotice {
+                    seq: row.seq,
+                    message_id: row.id.clone(),
+                    notice,
+                    display_text_start_bytes: *start,
+                    display_text_end_bytes: *end,
+                });
+            }
+        }
+        let positions: Vec<_> = page
+            .tool_calls
+            .iter()
+            .enumerate()
+            .filter_map(|(index, call)| {
+                (call.message_id == row.id)
+                    .then_some((index, call.text_offset_bytes))
+                    .and_then(|(index, offset)| {
+                        offset
+                            .and_then(|offset| usize::try_from(offset).ok())
+                            .map(|offset| (index, offset))
+                    })
+            })
+            .collect();
+        let offsets: Vec<_> = positions.iter().map(|(_, offset)| *offset).collect();
+        for response in page
+            .assistant_responses
+            .iter_mut()
+            .filter(|response| response.message_id == row.id)
+        {
+            let (_, positions) = projection.offsets(
+                &row.content,
+                &[response.text_start_bytes, response.text_end_bytes],
+            );
+            if let [start, end] = positions.as_slice() {
+                response.text_start_bytes = *start;
+                response.text_end_bytes = *end;
+            }
+        }
+        let (content, offsets) = projection.offsets(&row.content, &offsets);
+        row.content = content;
+        for ((index, _), offset) in positions.into_iter().zip(offsets) {
+            page.tool_calls[index].text_offset_bytes = i64::try_from(offset).ok();
+        }
+        if let Some(note) = &mut row.plan_review_note {
+            *note = projection.text(note);
+        }
+    }
+    for call in &mut page.tool_calls {
+        call.input_json = projection.json(&call.input_json);
+        if let Some(output) = &mut call.output_text {
+            *output = projection.text(output);
+        }
+    }
+    Ok(generated_notices)
 }

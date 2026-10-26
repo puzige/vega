@@ -1,5 +1,6 @@
 use super::*;
 use crate::interaction::InteractionExt;
+use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use crate::settings::state::{
     PROVIDER_MODELS_FRAME_INSET, PROVIDER_MODELS_MAX_ROWS, PROVIDER_MODELS_MIN_ROWS,
 };
@@ -15,7 +16,7 @@ impl SettingsView {
             .gap_2()
             .justify_between()
             .child(section_title(
-                "模型定价（USD / 1M tokens）",
+                t("settings.pricing.title"),
                 colors.text_primary,
             ))
             .child(
@@ -23,7 +24,7 @@ impl SettingsView {
                     .flex()
                     .gap_2()
                     .child(action_button(
-                        "重新加载",
+                        t("settings.action.reload"),
                         colors,
                         self.pricing_focus(&PricingFocusTarget::Reload),
                         cx.listener(|this, _, _, cx| {
@@ -33,7 +34,7 @@ impl SettingsView {
                         }),
                     ))
                     .child(action_button(
-                        "添加自定义",
+                        t("settings.pricing.add_custom"),
                         colors,
                         self.pricing_focus(&PricingFocusTarget::Add),
                         cx.listener(|this, _, _, cx| {
@@ -44,15 +45,15 @@ impl SettingsView {
 
         let mut column = settings_section()
             .child(if self.model_settings.is_some() {
-                "此模型的共享价格 · 所有提供方共用"
+                t("settings.pricing.shared_model")
             } else {
-                "模型价格库 · 所有提供方共享"
+                t("settings.pricing.library")
             })
             .child(header);
         match &self.pricing {
             PricingSettingsProjection::Loading | PricingSettingsProjection::Reloading => {
                 column = column.child(settings_status(
-                    "正在加载定价…",
+                    t("settings.pricing.loading"),
                     colors.text_secondary,
                     colors,
                 ));
@@ -91,9 +92,9 @@ impl SettingsView {
                 if let Some(draft_reason) = draft_reason {
                     column = column.child(settings_status(
                         match draft_reason {
-                            PricingDraftReason::RetryPending => "保存未提交；原草稿可重试或放弃",
+                            PricingDraftReason::RetryPending => t("settings.pricing.draft.retry"),
                             PricingDraftReason::ExternalConflict => {
-                                "已采用外部有效版本；当前编辑草稿仍有冲突"
+                                t("settings.pricing.draft.conflict")
                             }
                         },
                         colors.warning,
@@ -104,7 +105,7 @@ impl SettingsView {
                             .flex()
                             .gap_2()
                             .child(action_button(
-                                "重试原草稿",
+                                t("settings.pricing.retry_draft"),
                                 colors,
                                 self.pricing_focus(&PricingFocusTarget::Retry),
                                 cx.listener(move |_, _, _, cx| {
@@ -112,7 +113,7 @@ impl SettingsView {
                                 }),
                             ))
                             .child(action_button(
-                                "放弃草稿",
+                                t("settings.pricing.discard_draft"),
                                 colors,
                                 self.pricing_focus(&PricingFocusTarget::Discard),
                                 cx.listener(move |_, _, _, cx| {
@@ -139,7 +140,7 @@ impl SettingsView {
             PricingSettingsProjection::Saving { entries, .. } => {
                 let entries = entries.clone();
                 column = column.child(settings_status(
-                    "正在保存并复验…",
+                    t("settings.pricing.saving_verifying"),
                     colors.text_secondary,
                     colors,
                 ));
@@ -166,11 +167,11 @@ impl SettingsView {
     ) -> AnyElement {
         let colors = theme(cx).colors;
         let summary = if entry.kind == PricingEntryKind::BuiltInScheduled {
-            "内置 · Base 4 项 + Peak 4 项 · UTC 时段锁定"
+            t("settings.pricing.kind.peak")
         } else if entry.kind == PricingEntryKind::CustomStatic {
-            "自定义 · Static 4 项"
+            t("settings.pricing.kind.custom")
         } else {
-            "内置 · Base 4 项 · Profile metadata 锁定"
+            t("settings.pricing.kind.builtin")
         };
         let edit_entry = entry.clone();
         let model_for_reset = entry.model.clone();
@@ -189,12 +190,7 @@ impl SettingsView {
                     .flex_col()
                     .min_w_0()
                     .flex_1()
-                    .child(
-                        div()
-                            .debug_selector(move || format!("pricing-model-name-{index}"))
-                            .min_w_0()
-                            .child(entry.model),
-                    )
+                    .child(div().min_w_0().child(entry.model))
                     .child(
                         div()
                             .text_size(px(Typography::BODY))
@@ -208,7 +204,7 @@ impl SettingsView {
                     .flex_shrink_0()
                     .gap_2()
                     .child(action_button(
-                        "编辑",
+                        t("settings.action.edit"),
                         colors,
                         self.pricing_focus(&PricingFocusTarget::Edit(index)),
                         cx.listener(move |this, _, _, cx| {
@@ -217,7 +213,7 @@ impl SettingsView {
                     ))
                     .when(entry.kind != PricingEntryKind::CustomStatic, |row| {
                         row.child(action_button(
-                            "重置",
+                            t("settings.action.reset"),
                             colors,
                             self.pricing_focus(&PricingFocusTarget::Secondary(index)),
                             cx.listener(move |this, _, _, cx| {
@@ -232,7 +228,7 @@ impl SettingsView {
                     })
                     .when(entry.kind == PricingEntryKind::CustomStatic, |row| {
                         row.child(action_button(
-                            "删除",
+                            t("settings.action.delete"),
                             colors,
                             self.pricing_focus(&PricingFocusTarget::Secondary(index)),
                             cx.listener(move |this, _, _, cx| {
@@ -261,7 +257,6 @@ impl SettingsView {
             .when_some(editor.model.clone(), |form, model| {
                 form.child(
                     div()
-                        .debug_selector(|| "pricing-editor-model".into())
                         .min_w_0()
                         .mb_3()
                         .font_weight(Typography::HEADING_CARD_WEIGHT)
@@ -270,8 +265,7 @@ impl SettingsView {
             })
             .when(editor.kind == PricingEditorKind::AddCustom, |form| {
                 form.child(settings_field(
-                    "pricing-model",
-                    "模型 ID",
+                    t("settings.field.model_id"),
                     None,
                     self.pricing_model_input.clone(),
                     colors,
@@ -284,19 +278,18 @@ impl SettingsView {
                     .take(if show_peak && expanded { 8 } else { 4 })
                     .map(|(index, input)| {
                         let label = [
-                            "基础输入",
-                            "基础输出",
-                            "基础缓存读取",
-                            "基础缓存写入",
-                            "高峰输入",
-                            "高峰输出",
-                            "高峰缓存读取",
-                            "高峰缓存写入",
+                            t("settings.pricing.base_input"),
+                            t("settings.pricing.base_output"),
+                            t("settings.pricing.base_cache_read"),
+                            t("settings.pricing.base_cache_write"),
+                            t("settings.pricing.peak_input"),
+                            t("settings.pricing.peak_output"),
+                            t("settings.pricing.peak_cache_read"),
+                            t("settings.pricing.peak_cache_write"),
                         ][index];
                         settings_field(
-                            format!("pricing-rate-{index}"),
                             label,
-                            Some("USD / 1M tokens".into()),
+                            Some(t("settings.pricing.units").into()),
                             input.clone(),
                             colors,
                         )
@@ -306,9 +299,9 @@ impl SettingsView {
                 form.child(self.settings_route_button(
                     "pricing-advanced",
                     if expanded {
-                        "收起高峰费率"
+                        t("settings.pricing.collapse_peak")
                     } else {
-                        "高峰费率"
+                        t("settings.pricing.peak_rates")
                     },
                     true,
                     cx.listener(|this, _, _, cx| {
@@ -323,7 +316,7 @@ impl SettingsView {
                     .flex()
                     .gap_2()
                     .child(action_button(
-                        "保存定价",
+                        t("settings.pricing.save"),
                         colors,
                         self.pricing_focus(&PricingFocusTarget::Save),
                         cx.listener(|this, _, _, cx| {
@@ -331,7 +324,7 @@ impl SettingsView {
                         }),
                     ))
                     .child(action_button(
-                        "取消",
+                        t("settings.action.cancel"),
                         colors,
                         self.pricing_focus(&PricingFocusTarget::Cancel),
                         cx.listener(|this, _, _, cx| {
@@ -423,18 +416,21 @@ impl SettingsView {
 
         settings_group(colors)
             .key_context("ProviderSettings")
-            .child(section_title("添加或更新 Provider", colors.text_primary))
+            .child(section_title(
+                t("settings.provider.add_update"),
+                colors.text_primary,
+            ))
             .child(
                 settings_actions().children(
                     [
                         (
                             vega_conversation::types::ProviderApi::ChatCompletions,
-                            "Chat Completions",
+                            t("settings.provider.api.chat_completions"),
                             "provider-api-chat",
                         ),
                         (
                             vega_conversation::types::ProviderApi::Responses,
-                            "Responses",
+                            t("settings.provider.api.responses"),
                             "provider-api-responses",
                         ),
                     ]
@@ -443,8 +439,16 @@ impl SettingsView {
                     .map(|(index, (api, label, id))| {
                         settings_action_chrome(colors)
                             .id(id)
-                            .interaction_surface(if self.provider_management.form_api == api { colors.bg_active } else { colors.bg_elevated }, colors.bg_hover, colors.bg_active, !self.provider_management.saving)
-                            .debug_selector(move || id.into())
+                            .interaction_surface(
+                                if self.provider_management.form_api == api {
+                                    colors.bg_active
+                                } else {
+                                    colors.bg_elevated
+                                },
+                                colors.bg_hover,
+                                colors.bg_active,
+                                !self.provider_management.saving,
+                            )
                             .cursor_pointer()
                             .track_focus(&self.provider_api_focuses[index])
                             .tab_stop(true)
@@ -480,12 +484,23 @@ impl SettingsView {
                     }),
                 ),
             )
-            .child(settings_field("provider-name", "名称", None, self.name_input.clone(), colors))
-            .child(settings_field("provider-url", "服务地址", None, self.base_url_input.clone(), colors))
-            .child(settings_field("provider-models", "模型 ID", None,
+            .child(settings_field(
+                t("settings.field.name"),
+                None,
+                self.name_input.clone(),
+                colors,
+            ))
+            .child(settings_field(
+                t("settings.provider.service_url"),
+                None,
+                self.base_url_input.clone(),
+                colors,
+            ))
+            .child(settings_field(
+                t("settings.field.model_id"),
+                None,
                 div()
                     .id("provider-models-input-frame")
-                    .debug_selector(|| "provider-models-input-frame".to_string())
                     .w_full()
                     .h(models_height)
                     .flex_shrink_0()
@@ -494,26 +509,39 @@ impl SettingsView {
                     .border_color(colors.border_subtle)
                     .bg(colors.bg_elevated)
                     .p_2()
-                    .child(self.models_input.clone()), colors))
+                    .child(self.models_input.clone()),
+                colors,
+            ))
             .child(
                 div()
-                    .debug_selector(|| "provider-models-input-help".to_string())
                     .text_color(colors.text_tertiary)
                     .text_size(px(Typography::BODY))
-                    .child(format!(
-                        "每行填写一个模型 ID；保留大小写和 / - .；最多 {} 个",
-                        PROVIDER_MODEL_COUNT_MAX
+                    .child(t_args(
+                        "settings.provider.models_hint",
+                        &[("limit", &PROVIDER_MODEL_COUNT_MAX.to_string())],
                     )),
             )
-            .child(div().text_color(colors.text_tertiary).text_size(px(Typography::BODY))
-                .child("Responses 请求摘要；需要兼容的 reasoning 配置，不支持原始思考回传或 Zhipu thinking 开关。"))
-            .child(settings_field("provider-key", "API Key", Some("更新时留空以保留现有密钥".into()), self.key_input.clone(), colors))
-
+            .child(
+                div()
+                    .text_color(colors.text_tertiary)
+                    .text_size(px(Typography::BODY))
+                    .child(t("settings.provider.responses_hint")),
+            )
+            .child(settings_field(
+                t("settings.field.api_key"),
+                Some(t("settings.provider.keep_key").into()),
+                self.key_input.clone(),
+                colors,
+            ))
             .child(
                 settings_action_chrome(colors)
                     .id("provider-save")
-                    .interaction_surface(button_bg, colors.brand_primary_strong, colors.brand_primary_strong, submittable)
-                    .debug_selector(|| "provider-save".into())
+                    .interaction_surface(
+                        button_bg,
+                        colors.brand_primary_strong,
+                        colors.brand_primary_strong,
+                        submittable,
+                    )
                     .key_context("ProviderAction")
                     .track_focus(&self.provider_save_focus)
                     .tab_stop(true)
@@ -526,7 +554,7 @@ impl SettingsView {
                             .cursor_pointer()
                             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_submit))
                     })
-                    .child("保存 Provider"),
+                    .child(t("settings.provider.save")),
             )
             .into_any_element()
     }
@@ -541,56 +569,134 @@ impl SettingsView {
         self.save_preferences(candidate, cx);
     }
 
+    fn set_ui_language(&mut self, value: &str, cx: &mut Context<Self>) {
+        if self.provider_management.saving || !matches!(value, "en" | "zh-CN") {
+            return;
+        }
+        let mut candidate = self.config.clone();
+        candidate.ui.language = value.to_string();
+        self.save_preferences(candidate, cx);
+    }
+
     pub(crate) fn render_defaults(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let sidebar_visible = !cx
             .try_global::<crate::sidebar::SidebarCollapsed>()
             .is_some_and(|sidebar| sidebar.0);
+        let enabled = !self.provider_management.saving;
+        let languages = settings_actions().children(
+            [
+                ("en", "settings-language-en", "settings.language.english"),
+                (
+                    "zh-CN",
+                    "settings-language-zh-cn",
+                    "settings.language.chinese",
+                ),
+            ]
+            .into_iter()
+            .map(|(value, id, key)| {
+                let selected = vega_i18n::language() == value;
+                settings_action_chrome(colors)
+                    .id(id)
+                    .role(gpui_kit::Role::Button)
+                    .aria_label(if selected {
+                        t_args("settings.selection.selected", &[("label", t(key))])
+                    } else {
+                        t(key).to_string()
+                    })
+                    .aria_toggled(selected.into())
+                    .interaction_surface(
+                        if selected {
+                            colors.bg_active
+                        } else {
+                            colors.bg_elevated
+                        },
+                        if selected {
+                            colors.bg_active
+                        } else {
+                            colors.bg_hover
+                        },
+                        colors.bg_active,
+                        enabled,
+                    )
+                    .focus_visible(move |style| style.border_color(colors.accent))
+                    .when(enabled, |button| {
+                        button
+                            .focusable()
+                            .tab_stop(true)
+                            .cursor_pointer()
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.set_ui_language(value, cx);
+                                }),
+                            )
+                            .on_key_down(cx.listener(
+                                move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                        this.set_ui_language(value, cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
+                    })
+                    .child(t(key))
+            }),
+        );
         let themes = settings_actions().children(
-            [("light", "浅色"), ("dark", "深色"), ("system", "跟随系统")]
-                .into_iter()
-                .map(|(value, label)| {
-                    settings_action_chrome(colors)
-                        .id(label)
-                        .interaction_surface(
-                            if self.config.ui.theme == value {
-                                colors.bg_active
-                            } else {
-                                colors.bg_elevated
-                            },
-                            if self.config.ui.theme == value {
-                                colors.bg_active
-                            } else {
-                                colors.bg_hover
-                            },
-                            colors.bg_active,
-                            !self.provider_management.saving,
-                        )
-                        .focusable()
-                        .tab_stop(true)
-                        .focus_visible(move |style| style.border_color(colors.accent))
-                        .cursor_pointer()
-                        .child(label)
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| this.set_appearance(value, cx)),
-                        )
-                        .on_key_down(cx.listener(
-                            move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                    this.set_appearance(value, cx);
-                                    cx.stop_propagation();
-                                }
-                            },
-                        ))
-                }),
+            [
+                ("light", t("settings.appearance.light")),
+                ("dark", t("settings.appearance.dark")),
+                ("system", t("settings.appearance.system")),
+            ]
+            .into_iter()
+            .map(|(value, label)| {
+                settings_action_chrome(colors)
+                    .id(format!("settings-theme-{value}"))
+                    .role(gpui_kit::Role::Button)
+                    .aria_label(label)
+                    .interaction_surface(
+                        if self.config.ui.theme == value {
+                            colors.bg_active
+                        } else {
+                            colors.bg_elevated
+                        },
+                        if self.config.ui.theme == value {
+                            colors.bg_active
+                        } else {
+                            colors.bg_hover
+                        },
+                        colors.bg_active,
+                        !self.provider_management.saving,
+                    )
+                    .focus_visible(move |style| style.border_color(colors.accent))
+                    .child(label)
+                    .when(enabled, |button| {
+                        button
+                            .focusable()
+                            .tab_stop(true)
+                            .cursor_pointer()
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| this.set_appearance(value, cx)),
+                            )
+                            .on_key_down(cx.listener(
+                                move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                        this.set_appearance(value, cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
+                    })
+            }),
         );
         let sidebar = settings_switch(
             "settings-sidebar-switch",
             if sidebar_visible {
-                "隐藏侧栏"
+                t("settings.sidebar.hide")
             } else {
-                "显示侧栏"
+                t("settings.sidebar.show")
             },
             sidebar_visible,
             true,
@@ -614,18 +720,24 @@ impl SettingsView {
             .gap(px(Layout::SETTINGS_SECTION_GAP))
             .child(
                 settings_group(colors)
-                    .debug_selector(|| "settings-general-appearance".into())
-                    .child(section_title("外观与布局", colors.text_primary))
+                    .child(section_title(
+                        t("settings.appearance.title"),
+                        colors.text_primary,
+                    ))
                     .child(settings_field(
-                        "settings-theme",
-                        "主题",
+                        t("settings.appearance.theme"),
                         None,
                         themes,
                         colors,
                     ))
                     .child(settings_field(
-                        "settings-sidebar",
-                        "侧栏",
+                        t("settings.language"),
+                        None,
+                        languages,
+                        colors,
+                    ))
+                    .child(settings_field(
+                        t("settings.appearance.sidebar"),
                         None,
                         sidebar,
                         colors,
@@ -633,25 +745,30 @@ impl SettingsView {
             )
             .child(
                 settings_group(colors)
-                    .debug_selector(|| "settings-general-defaults".into())
-                    .child(section_title("默认项", colors.text_primary))
+                    .child(section_title(
+                        t("settings.defaults.title"),
+                        colors.text_primary,
+                    ))
                     .child(settings_field(
-                        "settings-permission",
-                        "权限模式",
+                        t("settings.defaults.permission_mode"),
                         None,
                         self.render_mode_selector(cx),
                         colors,
                     ))
                     .child(settings_field(
-                        "settings-model",
-                        "模型",
+                        t("settings.defaults.model"),
                         None,
                         self.render_model_selector(cx),
                         colors,
                     ))
                     .child(settings_field(
-                        "settings-running-message",
-                        "运行中发送消息",
+                        t("settings.defaults.predictions"),
+                        Some(t("settings.defaults.predictions_hint").into()),
+                        self.render_composer_predictions_switch(cx),
+                        colors,
+                    ))
+                    .child(settings_field(
+                        t("settings.defaults.running_message"),
                         None,
                         self.render_running_message_behavior(cx),
                         colors,
@@ -659,6 +776,36 @@ impl SettingsView {
             )
             .child(self.render_updater(cx))
             .into_any_element()
+    }
+
+    pub(super) fn render_composer_predictions_switch(&self, cx: &mut Context<Self>) -> AnyElement {
+        let enabled = !self.provider_management.saving;
+        settings_switch(
+            "settings-composer-predictions-switch",
+            t("settings.defaults.predictions"),
+            self.config.agent.composer_predictions_enabled,
+            enabled,
+            theme(cx).colors,
+        )
+        .role(gpui_kit::Role::Switch)
+        .aria_toggled(self.config.agent.composer_predictions_enabled.into())
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                if enabled {
+                    this.toggle_composer_predictions(cx);
+                }
+            }),
+        )
+        .on_key_down(
+            cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                if enabled && matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    this.toggle_composer_predictions(cx);
+                    cx.stop_propagation();
+                }
+            }),
+        )
+        .into_any_element()
     }
 
     fn render_running_message_behavior(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -674,16 +821,14 @@ impl SettingsView {
                             self.config.agent.running_message_behavior == behavior.as_str();
                         let label = behavior.label();
                         let description = match behavior {
-                            PendingMessageBehavior::Queue => "当前任务结束后发送",
-                            PendingMessageBehavior::Steer => "补充要求或调整当前任务方向",
+                            PendingMessageBehavior::Queue => t("settings.defaults.queue_hint"),
+                            PendingMessageBehavior::Steer => t("settings.defaults.steer_hint"),
                         };
                         let id = format!("settings-running-message-{}", behavior.as_str());
-                        let selector = id.clone();
                         settings_action_chrome(colors)
                             .id(id)
-                            .debug_selector(move || selector.clone())
                             .aria_label(if selected {
-                                format!("{label}，已选中")
+                                t_args("settings.selection.selected", &[("label", label)])
                             } else {
                                 label.to_string()
                             })
@@ -709,17 +854,10 @@ impl SettingsView {
                             .tooltip(move |_, cx| crate::icons::tooltip(description, cx))
                             .child(label)
                             .child(div().size(px(Layout::ICON_SIZE)).when(selected, |element| {
-                                element
-                                    .debug_selector(move || {
-                                        format!(
-                                            "settings-running-message-{}-selected",
-                                            behavior.as_str()
-                                        )
-                                    })
-                                    .child(crate::icons::icon(
-                                        crate::icons::Icon::Check,
-                                        colors.text_primary,
-                                    ))
+                                element.child(crate::icons::icon(
+                                    crate::icons::Icon::Check,
+                                    colors.text_primary,
+                                ))
                             }))
                             .on_mouse_up(
                                 MouseButton::Left,
@@ -764,7 +902,6 @@ impl SettingsView {
                         colors.bg_active,
                         true,
                     )
-                    .debug_selector(|| "settings-mode-picker".into())
                     .focusable()
                     .tab_stop(true)
                     .focus_visible(move |style| style.border_color(colors.accent))
@@ -783,11 +920,7 @@ impl SettingsView {
                             cx.notify();
                         }),
                     )
-                    .child(if current == "full_access" {
-                        "完全访问".to_string()
-                    } else {
-                        current.clone()
-                    })
+                    .child(permission_mode_label(&current))
                     .child(crate::icons::icon(
                         if self.mode_open {
                             crate::icons::Icon::ChevronDown
@@ -818,7 +951,6 @@ impl SettingsView {
                             colors.bg_active,
                             true,
                         )
-                        .debug_selector(move || format!("settings-permission-option-{mode}"))
                         .focusable()
                         .tab_stop(true)
                         .border_1()
@@ -856,11 +988,7 @@ impl SettingsView {
                                     colors.warning,
                                 ))
                         })
-                        .child(if *mode == "full_access" {
-                            "完全访问"
-                        } else {
-                            *mode
-                        })
+                        .child(permission_mode_label(mode))
                 }))
             })
             .into_any_element()
@@ -873,7 +1001,7 @@ impl SettingsView {
         let models = all_models(&self.config.providers);
         let current = self.config.defaults.model.clone();
         let trigger_label = if current.is_empty() {
-            "未选择".to_string()
+            t("settings.model.not_selected").to_string()
         } else {
             current.clone()
         };
@@ -892,7 +1020,6 @@ impl SettingsView {
                         colors.bg_active,
                         true,
                     )
-                    .debug_selector(|| "settings-model-picker".into())
                     .focusable()
                     .tab_stop(true)
                     .focus_visible(move |style| style.border_color(colors.accent))
@@ -927,7 +1054,7 @@ impl SettingsView {
                         div()
                             .text_color(colors.text_tertiary)
                             .text_size(px(Typography::BODY))
-                            .child("暂无可选模型，先在下方添加 Provider")
+                            .child(t("settings.model.none_available"))
                     }))
                     .children(models.iter().map(|model| {
                         let model = model.clone();
@@ -986,6 +1113,10 @@ impl SettingsView {
 
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.config.ui.language != vega_i18n::language() {
+            self.config.ui.language = vega_i18n::language().to_string();
+            self.refresh_localized_inputs(cx);
+        }
         if cx
             .try_global::<PricingSettingsRequested>()
             .is_some_and(|request| request.0)
@@ -993,7 +1124,16 @@ impl Render for SettingsView {
             self.request_settings_section(3, cx);
             cx.set_global(PricingSettingsRequested(false));
         }
+        if cx
+            .try_global::<NativePreparationSettingsRequested>()
+            .is_some_and(|request| request.0)
+        {
+            self.request_settings_section(7, cx);
+            cx.set_global(NativePreparationSettingsRequested(false));
+        }
         self.resume_settings_navigation(window, cx);
+        self.prepare_provider_presentation(window);
+        self.project_settings_motion(window, cx);
         self.ensure_model_catalog(cx);
         let current_theme = theme(cx);
         self.config.ui.theme = if current_theme.follow_system {
@@ -1016,24 +1156,24 @@ impl Render for SettingsView {
             self.config.ui.sessions_collapsed = sessions.0;
         }
         let colors = theme(cx).colors;
-        let (page_title, page_selector) = match self.section {
-            0 => ("服务提供方", "settings-page-providers"),
-            1 => ("通用", "settings-page-general"),
-            2 => ("服务提供方", "settings-page-reasoning"),
-            3 => ("服务提供方", "settings-page-pricing"),
-            4 => ("用量", "settings-page-usage"),
-            5 => ("MCP", "settings-page-mcp"),
-            6 => ("Skills", "settings-page-skills"),
-            7 => ("Agents", "settings-page-agents"),
-            _ => ("用量", "settings-page-usage"),
+        let page_title = match self.section {
+            0 => t("settings.nav.providers"),
+            1 => t("settings.nav.general"),
+            2 => t("settings.nav.providers"),
+            3 => t("settings.nav.providers"),
+            4 => t("settings.nav.usage"),
+            5 => t("settings.nav.mcp"),
+            6 => t("settings.nav.skills"),
+            7 => t("settings.nav.agents"),
+            _ => t("settings.nav.usage"),
         };
         let navigation = [
-            (1, "通用", "settings-nav-general"),
-            (0, "服务提供方", "settings-nav-providers"),
-            (5, "MCP", "settings-nav-mcp"),
-            (7, "Agents", "settings-nav-agents"),
-            (6, "Skills", "settings-nav-skills"),
-            (4, "用量", "settings-nav-usage"),
+            (1, t("settings.nav.general")),
+            (0, t("settings.nav.providers")),
+            (5, t("settings.nav.mcp")),
+            (7, t("settings.nav.agents")),
+            (6, t("settings.nav.skills")),
+            (4, t("settings.nav.usage")),
         ];
         div()
             .id("settings-page")
@@ -1075,7 +1215,6 @@ impl Render for SettingsView {
             .child(
                 div()
                     .id("settings-navigation")
-                    .debug_selector(|| "settings-navigation".into())
                     .w(px(Layout::SETTINGS_NAV_WIDTH))
                     .h_full()
                     .flex_shrink_0()
@@ -1090,7 +1229,6 @@ impl Render for SettingsView {
                         div()
                             .id("settings-back")
                             .interactive(colors, true, false)
-                            .debug_selector(|| "settings-back".into())
                             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                             .flex()
                             .items_center()
@@ -1125,14 +1263,13 @@ impl Render for SettingsView {
                                 crate::icons::Icon::ArrowLeft,
                                 colors.text_primary,
                             ))
-                            .child("返回应用"),
+                            .child(t("settings.navigation.back_app")),
                     )
                     .child(div().h(px(24.)).flex_shrink_0())
-                    .children(navigation.into_iter().map(|(index, label, selector)| {
+                    .children(navigation.into_iter().map(|(index, label)| {
                         div()
                             .id(("settings-section", index))
                             .interactive(colors, true, self.navigation_section() == index)
-                            .debug_selector(move || selector.into())
                             .track_focus(&self.section_focuses[index])
                             .tab_stop(true)
                             .focus_visible(move |style| style.border_color(colors.accent))
@@ -1210,7 +1347,6 @@ impl Render for SettingsView {
                     .child(
                         div()
                             .id("settings-content-column")
-                            .debug_selector(|| "settings-content-column".into())
                             .w_full()
                             .max_w(px(Layout::SETTINGS_CONTENT_MAX_WIDTH))
                             .h_full()
@@ -1221,16 +1357,13 @@ impl Render for SettingsView {
                             .child(
                                 div()
                                     .flex_shrink_0()
-                                    .debug_selector(move || page_selector.into())
                                     .text_size(px(Typography::SETTINGS_TITLE))
                                     .font_weight(Typography::HEADING_PAGE_WEIGHT)
                                     .child(page_title),
                             )
-                            .children(
-                                self.error
-                                    .clone()
-                                    .map(|message| settings_status(message, colors.danger, colors)),
-                            )
+                            .children(self.error.clone().map(|message| {
+                                settings_status(message.render(), colors.danger, colors)
+                            }))
                             .children(
                                 self.pending_section
                                     .map(|_| self.render_settings_navigation_guard(cx)),
@@ -1243,7 +1376,6 @@ impl Render for SettingsView {
                             .child(
                                 div()
                                     .id(("settings-section-content", self.section))
-                                    .debug_selector(|| "settings-section-content".into())
                                     .when_some(
                                         self.section_scrolls.get(self.section),
                                         |body, scroll| body.track_scroll(scroll),
@@ -1277,7 +1409,12 @@ impl Render for SettingsView {
                                     })
                                     .when(self.section == 7, |body| {
                                         body.child(self.render_agents(cx))
-                                    }),
+                                    })
+                                    .tracked_scroll_edge_fade(
+                                        self.section_scrolls[self.section].clone(),
+                                        colors.bg_base,
+                                        ScrollFade::reading().enabled(self.section != 0),
+                                    ),
                             ),
                     ),
             )

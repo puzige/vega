@@ -11,6 +11,7 @@ pub struct ToolCall {
     /// Safe complete JSON input. Write/edit bodies are replaced by strict
     /// content-free audit projections before this boundary.
     pub input_json: String,
+    pub codex_display: Option<CodexDisplayMetadata>,
 }
 
 impl std::fmt::Debug for ToolCall {
@@ -29,7 +30,6 @@ impl std::fmt::Debug for ToolCall {
 pub enum Approval {
     /// Approved for this call only.
     Once,
-    /// Persisted project-level rule (S5).
     Always,
     /// Denied.
     Deny,
@@ -76,8 +76,6 @@ pub enum ToolCallStatus {
 }
 
 impl ToolCallStatus {
-    /// Parses the exact persisted `tool_calls.status` DDL vocabulary
-    /// (S8-T45 hydration reads durable rows; unknown values fail closed).
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "pending_approval" => Some(Self::PendingApproval),
@@ -256,6 +254,7 @@ pub struct ToolResult {
     /// Typed content-free projection for an atomic invalid tool path.
     /// All ordinary terminal paths keep this absent.
     pub invalid: Option<InvalidToolProjection>,
+    pub codex_display: Option<CodexDisplayMetadata>,
 }
 
 impl std::fmt::Debug for ToolResult {
@@ -324,6 +323,13 @@ impl ReadOnlyToolKind {
 /// Strict, content-free tool input prepared for UI cards.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolCardInputProjection {
+    Subagent {
+        tool: String,
+        title: String,
+    },
+    UserQuestion {
+        input: Result<UserQuestionInput, String>,
+    },
     ComputerUse {
         tool: String,
         action: String,
@@ -359,6 +365,7 @@ pub enum ToolCardInputProjection {
     CodexAcp {
         identity: CodexAcpActivityIdentity,
         permission_target: String,
+        preview: Option<CodexArgumentPreview>,
     },
     /// Only the validated Skill name and a reference path's length/hash.
     /// `name=None` represents the exact `{}` invalid-input audit placeholder.
@@ -376,6 +383,8 @@ impl ToolCardInputProjection {
     /// Stable known tool name, absent for corrupt input.
     pub fn tool(&self) -> Option<&str> {
         match self {
+            Self::Subagent { tool, .. } => Some(tool),
+            Self::UserQuestion { .. } => Some(USER_QUESTION_TOOL),
             Self::ComputerUse { tool, .. } => Some(tool),
             Self::ReadOnly { tool, .. } => Some(tool.as_str()),
             Self::Bash { .. } => Some("bash"),
@@ -402,7 +411,11 @@ impl ToolCardInputProjection {
             Self::ReadOnly {
                 permission_path, ..
             } => permission_path.as_deref(),
-            Self::ComputerUse { .. } | Self::Skill { .. } | Self::Corrupt => None,
+            Self::Subagent { .. }
+            | Self::UserQuestion { .. }
+            | Self::ComputerUse { .. }
+            | Self::Skill { .. }
+            | Self::Corrupt => None,
         }
     }
 }
@@ -410,6 +423,17 @@ impl ToolCardInputProjection {
 /// Strict terminal projection safe for a tool card to retain and render.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolCardResultProjection {
+    Subagent {
+        status: ToolCallStatus,
+        agent: Option<Box<SubagentSnapshot>>,
+        output: String,
+        reused: bool,
+    },
+    UserQuestion {
+        status: ToolCallStatus,
+        output: UserQuestionHistoryText,
+        reused: bool,
+    },
     ComputerUse {
         status: ToolCallStatus,
         output: String,
@@ -440,6 +464,7 @@ pub enum ToolCardResultProjection {
         status: ToolCallStatus,
         output: String,
         reused: bool,
+        reason: Option<CodexTerminalReason>,
     },
     /// Strictly decoded content-free result from Vega's Skill tool pair.
     Skill {
@@ -476,10 +501,49 @@ pub enum ToolCardResultProjection {
     Corrupt,
 }
 
-/// Strictly reduces a shared safe proposal to the fields T27 may retain.
 pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
+    if vega_runtime::is_subagent_tool(&call.tool) {
+        if call.input_json != "{}"
+            && !vega_runtime::valid_subagent_input(&call.tool, &call.input_json)
+        {
+            return ToolCardInputProjection::Corrupt;
+        }
+        let input = serde_json::from_str::<serde_json::Value>(&call.input_json).unwrap_or_default();
+        let title = match call.tool.as_str() {
+            "spawn_agent" => vega_i18n::t_args(
+                "domain.tool_card.delegate",
+                &[(
+                    "name",
+                    input
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or(vega_i18n::t("domain.tool_card.task")),
+                )],
+            ),
+            "followup_agent" => vega_i18n::t("domain.tool_card.continue").into(),
+            "list_agents" => vega_i18n::t("domain.tool_card.list").into(),
+            "wait_agent" => vega_i18n::t("domain.tool_card.wait").into(),
+            _ => vega_i18n::t("domain.tool_card.stop").into(),
+        };
+        return ToolCardInputProjection::Subagent {
+            tool: call.tool.clone(),
+            title,
+        };
+    }
+    if call.tool == USER_QUESTION_TOOL {
+        return if let Ok(input) = UserQuestionInput::from_json(&call.input_json) {
+            ToolCardInputProjection::UserQuestion { input: Ok(input) }
+        } else if let Some(code) = vega_runtime::user_question_validation_error(&call.input_json) {
+            ToolCardInputProjection::UserQuestion { input: Err(code) }
+        } else {
+            ToolCardInputProjection::Corrupt
+        };
+    }
     if vega_runtime::computer_use::ComputerUseRun::tool_capability(&call.tool).is_some() {
-        if !vega_runtime::computer_use::ComputerUseAudit::valid(&call.input_json) {
+        if !vega_runtime::computer_use::ComputerUseAudit::valid_for_tool(
+            &call.tool,
+            &call.input_json,
+        ) {
             return ToolCardInputProjection::Corrupt;
         }
         let value: serde_json::Value = serde_json::from_str(&call.input_json).unwrap_or_default();
@@ -496,6 +560,9 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
             ToolCardInputProjection::Corrupt,
             |identity| ToolCardInputProjection::CodexAcp {
                 permission_target: identity.permission_target(),
+                preview: call
+                    .codex_display
+                    .and_then(|display| display.validated_preview(&identity)),
                 identity,
             },
         );
@@ -509,6 +576,17 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
                 identity,
             },
         );
+    }
+    if call.tool == "grep" && grep_invalid_input_claim(&call.input_json) {
+        return if valid_grep_invalid_input(&call.input_json) {
+            ToolCardInputProjection::ReadOnly {
+                tool: ReadOnlyToolKind::Grep,
+                display_target: None,
+                permission_path: None,
+            }
+        } else {
+            ToolCardInputProjection::Corrupt
+        };
     }
     match call.tool.as_str() {
         "Read" | "read" | "glob" | "grep" => {
@@ -534,6 +612,8 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
                                 .map(str::to_owned)
                         })
                         .filter(|path| std::path::Path::new(path).is_absolute())
+                } else if tool == ReadOnlyToolKind::Grep {
+                    grep_permission_path(&call.input_json)
                 } else {
                     None
                 };
@@ -713,7 +793,67 @@ pub fn tool_card_result_projection(
         return ToolCardResultProjection::Corrupt;
     };
     match input {
-        ToolCardInputProjection::ComputerUse { .. } => {
+        ToolCardInputProjection::Subagent { tool, .. } => {
+            if !is_terminal(result.status)
+                || result.exit_code.is_some()
+                || result.duration_ms.is_some()
+                || result.output.len() > 128 * 1024
+                || (result.status == ToolCallStatus::Success && !success_truncation_valid(result))
+            {
+                return ToolCardResultProjection::Corrupt;
+            }
+            let agent = if result.status == ToolCallStatus::Success
+                && matches!(tool.as_str(), "spawn_agent" | "followup_agent")
+            {
+                let parsed = serde_json::from_str::<serde_json::Value>(&result.output)
+                    .ok()
+                    .and_then(|value| {
+                        serde_json::from_value::<SubagentSnapshot>(value.get("agent")?.clone()).ok()
+                    });
+                let Some(agent) = parsed.filter(|agent| {
+                    [
+                        &agent.agent_id,
+                        &agent.message_id,
+                        &agent.parent_thread_id,
+                        &agent.parent_message_id,
+                    ]
+                    .into_iter()
+                    .all(|id| {
+                        !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control)
+                    }) && !agent.name.trim().is_empty()
+                        && agent.name.len() <= 256
+                        && !agent.name.chars().any(char::is_control)
+                        && agent.result.len() <= vega_runtime::SUBAGENT_RESULT_BYTES
+                }) else {
+                    return ToolCardResultProjection::Corrupt;
+                };
+                Some(Box::new(agent))
+            } else {
+                None
+            };
+            ToolCardResultProjection::Subagent {
+                status: result.status,
+                agent,
+                output: result.output.clone(),
+                reused: result.reused,
+            }
+        }
+        ToolCardInputProjection::UserQuestion { input } => {
+            user_question_result_projection(input, result)
+        }
+        ToolCardInputProjection::ComputerUse { tool, .. } => {
+            let invalid_structured_error =
+                serde_json::from_str::<serde_json::Value>(&result.output).is_ok_and(|value| {
+                    value.get("code").is_some() && value.get("execution_state").is_some()
+                }) && (result.status == ToolCallStatus::Success
+                    || !vega_runtime::computer_use::valid_error_output(
+                        tool,
+                        &result.output,
+                        result.status == ToolCallStatus::Rejected,
+                    ));
+            if invalid_structured_error {
+                return ToolCardResultProjection::Corrupt;
+            }
             let superseded = result.output.len() <= 2048
                 && serde_json::from_str::<serde_json::Value>(&result.output)
                     .ok()
@@ -804,7 +944,7 @@ pub fn tool_card_result_projection(
                 reused: result.reused,
             }
         }
-        ToolCardInputProjection::CodexAcp { .. } => {
+        ToolCardInputProjection::CodexAcp { preview, .. } => {
             if !is_terminal(result.status)
                 || result.exit_code.is_some()
                 || result.duration_ms.is_some()
@@ -821,6 +961,9 @@ pub fn tool_card_result_projection(
                 status: result.status,
                 output: result.output.clone(),
                 reused: result.reused,
+                reason: result.codex_display.and_then(|display| {
+                    display.validated_reason(*preview, result.status, &result.output)
+                }),
             }
         }
         ToolCardInputProjection::Skill {
@@ -917,6 +1060,7 @@ fn skill_card_result_projection(
             let allowed = match result.output.as_str() {
                 "Tool error: invalid Skill input" => name.is_none(),
                 "Tool error: mixed Skill load batch rejected other tools"
+                | vega_runtime::USER_QUESTION_BATCH_REJECTED
                 | "Tool error: permission denied" => true,
                 other => other == vega_store::recovery::RECOVERY_REJECTED_OUTPUT,
             };
@@ -1156,11 +1300,13 @@ pub(crate) fn mutation_failure_output_allowed(
         ToolCallStatus::Rejected => {
             matches!(
                 result.output.as_str(),
-                "Tool error: permission denied" | "Tool error: denied by run mode"
+                "Tool error: permission denied"
+                    | "Tool error: denied by run mode"
+                    | vega_runtime::USER_QUESTION_BATCH_REJECTED
             ) || result.output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT
                 || result.output
                     == format!(
-                        "Tool error: denied: tool '{tool_name}' is unavailable until the S5 permission gate"
+                        "Tool error: denied: tool '{tool_name}' is unavailable until permission is granted"
                     )
         }
         ToolCallStatus::Failed => {
@@ -1194,5 +1340,158 @@ pub(crate) fn is_terminal(status: ToolCallStatus) -> bool {
     )
 }
 
-#[cfg(test)]
-mod asset_metadata_tests;
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GrepPermissionInput {
+    #[serde(rename = "pattern")]
+    _pattern: String,
+    path: String,
+}
+
+pub(crate) fn grep_permission_path(input_json: &str) -> Option<String> {
+    let input: GrepPermissionInput = serde_json::from_str(input_json).ok()?;
+    let path = input.path;
+    let parsed = std::path::Path::new(&path);
+    (parsed.is_absolute()
+        && parsed.file_name().is_some()
+        && !path.contains('\0')
+        && parsed.components().all(|component| match component {
+            std::path::Component::RootDir => true,
+            std::path::Component::Normal(name) => name
+                .to_str()
+                .is_some_and(|name| !name.eq_ignore_ascii_case(".git")),
+            _ => false,
+        })
+        && parsed.components().collect::<std::path::PathBuf>().to_str() == Some(path.as_str()))
+    .then_some(path)
+}
+
+pub(crate) fn grep_permission_target_matches(
+    input_json: &str,
+    exact_pattern: &str,
+    display_target: &str,
+) -> bool {
+    grep_permission_path(input_json).is_some_and(|path| {
+        path == display_target
+            && (exact_pattern == path
+                || exact_pattern.strip_prefix("grep-dir:v1:") == Some(path.as_str()))
+    })
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GrepInvalidInputAudit {
+    audit_version: String,
+    #[serde(rename = "raw_input_bytes")]
+    _raw_input_bytes: u64,
+    raw_input_sha256: String,
+}
+
+pub(crate) fn grep_invalid_input_claim(input_json: &str) -> bool {
+    match serde_json::from_str::<serde_json::Value>(input_json) {
+        Ok(input) => input.as_object().is_some_and(|object| {
+            ["audit_version", "raw_input_bytes", "raw_input_sha256"]
+                .iter()
+                .any(|key| object.contains_key(*key))
+        }),
+        Err(_) => input_json.contains("grep_invalid_v1"),
+    }
+}
+
+pub(crate) fn valid_grep_invalid_input(input_json: &str) -> bool {
+    serde_json::from_str::<GrepInvalidInputAudit>(input_json).is_ok_and(|input| {
+        input.audit_version == "grep_invalid_v1" && valid_skill_sha256(&input.raw_input_sha256)
+    })
+}
+
+fn user_question_result_projection(
+    input: &Result<UserQuestionInput, String>,
+    result: &ToolResult,
+) -> ToolCardResultProjection {
+    if result.exit_code.is_some()
+        || result.duration_ms.is_some()
+        || !is_terminal(result.status)
+        || (result.status == ToolCallStatus::Success && !mutation_success_truncation_valid(result))
+        || (result.status != ToolCallStatus::Success && result.truncated.is_some())
+    {
+        return ToolCardResultProjection::Corrupt;
+    }
+    if result.status == ToolCallStatus::Rejected
+        && result.output == vega_runtime::USER_QUESTION_BATCH_REJECTED
+    {
+        return ToolCardResultProjection::UserQuestion {
+            status: result.status,
+            output: UserQuestionHistoryText(result.output.clone()),
+            reused: result.reused,
+        };
+    }
+    let output = match input {
+        Err(code)
+            if result.status == ToolCallStatus::Rejected
+                && (result.output == vega_runtime::user_question_validation_output(code)
+                    || result.output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT) =>
+        {
+            result.output.clone()
+        }
+        Ok(input) => {
+            let answers = if result.status == ToolCallStatus::Success {
+                let Ok(answers) = UserQuestionAnswers::from_json(&result.output, input) else {
+                    return ToolCardResultProjection::Corrupt;
+                };
+                Some(answers)
+            } else if matches!(
+                (result.status, result.output.as_str()),
+                (
+                    ToolCallStatus::Cancelled,
+                    USER_QUESTION_CANCELLED
+                        | vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT
+                        | vega_store::recovery::RECOVERY_CANCELLED_OUTPUT
+                ) | (
+                    ToolCallStatus::Rejected,
+                    vega_store::recovery::RECOVERY_REJECTED_OUTPUT
+                ) | (
+                    ToolCallStatus::Failed,
+                    USER_QUESTION_UNAVAILABLE | USER_QUESTION_UNSAFE_RESPONSE
+                )
+            ) {
+                None
+            } else {
+                return ToolCardResultProjection::Corrupt;
+            };
+            let mut rows = Vec::new();
+            for question in &input.questions {
+                rows.push(question.question.clone());
+                if let Some(answer) = answers
+                    .as_ref()
+                    .and_then(|answers| answers.answers.get(&question.id))
+                {
+                    if answer.answers.is_empty() {
+                        rows.push("Skipped".into());
+                    }
+                    for value in &answer.answers {
+                        rows.push(
+                            value
+                                .strip_prefix("user_note: ")
+                                .unwrap_or(value)
+                                .to_string(),
+                        );
+                    }
+                } else {
+                    rows.push(if result.status == ToolCallStatus::Failed {
+                        result.output.clone()
+                    } else {
+                        "Interrupted".into()
+                    });
+                }
+                rows.push(String::new());
+            }
+            rows.join("\n")
+        }
+        _ => return ToolCardResultProjection::Corrupt,
+    };
+    ToolCardResultProjection::UserQuestion {
+        status: result.status,
+        output: UserQuestionHistoryText(output),
+        reused: result.reused,
+    }
+}

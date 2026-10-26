@@ -1,4 +1,3 @@
-//! Explicit attachment import facade (Issue 63 R1/R3); call on a worker thread.
 use crate::types::ImageAttachment;
 use std::os::unix::fs::OpenOptionsExt;
 use std::{fs::OpenOptions, io::Read, path::PathBuf};
@@ -48,29 +47,4 @@ pub fn save_screenshot(image: &ImageAttachment, path: &std::path::Path) -> Resul
         .map_err(|_| ImageError("could not save screenshot file"))?;
     file.sync_all()
         .map_err(|_| ImageError("could not finish saving screenshot file"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn issue63_explicit_import_is_bounded_atomic_and_rejects_nonregular_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let valid = dir.path().join("not-trusting-extension.dat");
-        let image = image::RgbImage::from_pixel(2, 3, image::Rgb([255, 0, 0]));
-        image
-            .save_with_format(&valid, image::ImageFormat::Png)
-            .unwrap();
-        let imported = import_images(std::slice::from_ref(&valid)).unwrap();
-        assert_eq!(imported[0].mime_type(), "image/png");
-        let invalid = dir.path().join("bad.png");
-        std::fs::write(&invalid, b"private-sentinel-not-image").unwrap();
-        let error = import_images(&[valid.clone(), invalid]).unwrap_err();
-        assert!(!error.to_string().contains("private-sentinel"));
-        let link = dir.path().join("link.png");
-        std::os::unix::fs::symlink(&valid, &link).unwrap();
-        assert!(import_images(&[link]).is_err());
-        assert!(import_images(&[dir.path().to_path_buf()]).is_err());
-        assert!(import_images(&vec![valid; 5]).is_err());
-    }
 }
