@@ -15,7 +15,13 @@ impl Default for ComposerPredictionsEnabled {
 impl Global for ComposerPredictionsEnabled {}
 
 pub fn set_composer_predictions_enabled(enabled: bool, cx: &mut App) {
-    cx.set_global(ComposerPredictionsEnabled(enabled));
+    if cx
+        .try_global::<ComposerPredictionsEnabled>()
+        .is_none_or(|current| current.0)
+        != enabled
+    {
+        cx.set_global(ComposerPredictionsEnabled(enabled));
+    }
 }
 
 pub(crate) struct ComposerPredictionOwner {

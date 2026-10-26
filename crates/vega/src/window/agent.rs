@@ -1231,6 +1231,7 @@ impl VegaWindow {
                             && let Some(message_id) = terminal_message_id.as_deref()
                         {
                             this.prepare_composer_prediction(
+                                &thread_id,
                                 &display_stream,
                                 request,
                                 message_id,
