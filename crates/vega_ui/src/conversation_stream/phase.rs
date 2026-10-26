@@ -283,27 +283,16 @@ impl ConversationStream {
         let Some(artifact_index) = artifact_index else {
             return self.reply_copy_source_for_entry(index);
         };
-        let owner = self.entries[..artifact_index]
+        let source = self.entries[..artifact_index]
             .iter()
             .enumerate()
             .rev()
             .find_map(|(index, _)| {
                 (self.entry_identities.get(index)?.message_id.as_deref() == message_id)
-                    .then(|| {
-                        self.reply_copy_source_for_entry(index)
-                            .map(|source| (index, source))
-                    })
+                    .then(|| self.reply_copy_source_for_entry(index))
                     .flatten()
             });
-        if let Some((owner_index, source)) = owner {
-            if index == artifact_index {
-                return Some(source);
-            }
-            if index == owner_index {
-                return None;
-            }
-        }
-        self.reply_copy_source_for_entry(index)
+        (index == artifact_index).then_some(source).flatten()
     }
 
     fn reply_copy_source_for_entry(&self, index: usize) -> Option<&MessageCopy> {
