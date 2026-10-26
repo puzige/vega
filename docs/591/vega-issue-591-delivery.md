@@ -4,7 +4,8 @@
 
 - Issue：[#591](https://github.com/puzige/vega/issues/591)；PR：[#608](https://github.com/puzige/vega/pull/608)。
 - 规格：[Native composer Resume](vega-issue-591-composer-resume.md)，A01–A10；Codex ACP 与 Failed 重试不在范围。
-- 当前生产基线：`dee2009d8cbe93f3765ea8360a1239da9df2d972`。保留其 #632/#654 共享准备期 Interrupted 收尾、停止事件与停止行投影。
+- 开发验证基线：`dee2009d8cbe93f3765ea8360a1239da9df2d972`。保留其 #632/#654 共享准备期 Interrupted 收尾、停止事件与停止行投影。
+- 最终交付同步基线：`9b3182ce9cc2bc3c34de6269f3cfe82c6f81477a`（#661 输入建议恢复与诊断）。严格 required CI 要求最新基线；此次无直接文件重叠，保留上游建议身份/活动运行阻塞检查及新增迁移，本卡不修改它们。
 - 开发验证 head：`698e22a9b69defe6b0aad48388d5a8f7d517f114`。
 - 固定基线到开发 head 的 diff SHA-256：`2f7cd38360c38c99797ff6d3bc15f6ca5ef228a55ce2d023441d561a9cdcdc8a`。
 
@@ -55,6 +56,8 @@
 
 本地仅静态 diff / 格式 / locale 及 Rust 测试残留清点；未运行 Vega、编译、构建、打包或本地 Rust/Python 测试，未安装应用或操作生产数据。
 
-本记录提交时，删测后的精确最终 head 独立审查与完整 required CI 待取得，结果在 PR / Issue 绑定完整 SHA 留痕。最终要求 Rust **0 discovered / 0 executed**，明确写 `no Rust tests`，不冒充功能测试成功。最终门禁通过才 squash merge，合并后 Issue 保持开放、Project In review。
+首个删测 head `9d6d060812a7e673870f384ca2ed543d665bfe1d` 的 [run 40371363871](https://github.com/puzige/vega/actions/runs/40371363871) 完整通过：Clippy job `121742662194`、Nextest job `121742661439`、required job `121745409518`。原始日志确认 Rust 0 discovered / 0 executed，Python 5+15+40 均 OK；随后为满足严格基线门禁同步 #661，上述结果不代替更新后 head 验证。最终审查会话中断未产出结论，须完成恢复或独立替代审查。
+
+本记录提交时，最新精确最终 head 独立审查与完整 required CI 待取得，结果在 PR / Issue 绑定完整 SHA 留痕。最终要求 Rust **0 discovered / 0 executed**，明确写 `no Rust tests`，不冒充功能测试成功。最终门禁通过才 squash merge，合并后 Issue 保持开放、Project In review。
 
 用户仍需手测 A01–A10：真实停止/继续、无新用户消息、历史和工具结果保留、草稿/附件优先及清空、快速重复激活、重开、Done/Failed 不误判、Tab/Enter/Space/读屏和停止行兼容。CI 与合并不代表用户验收；不保证不同 call ID 的外部副作用 exactly-once。
