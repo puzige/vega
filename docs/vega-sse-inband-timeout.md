@@ -2,7 +2,7 @@
 
 ## Scope and evidence
 
-2026-10-27: CPA requests 4ed46240, b3c5cba9, 50ec543a and b8e712eb returned HTTP 200 SSE followed by an error object with type `server_error`, code `request_timeout`, and an upstream stream-closed message. Vega currently maps every top-level error to nonretryable Protocol.
+2026-10-27: CPA requests 4ed46240, b3c5cba9, 50ec543a and b8e712eb returned HTTP 200 SSE followed by an error object with type `server_error`, code `request_timeout`, and an upstream stream-closed message. At the initial investigated baseline, Vega mapped every top-level error to nonretryable Protocol.
 
 ## Contract
 
@@ -28,4 +28,9 @@ Change `openai/sse.rs` at `SseAssembler::absorb`, with a narrowly scoped structu
 
 ## Integration validation
 
-Master PR #659 landed during validation. The user explicitly selected its recovery policy over the original strict Protocol policy. Re-run the preserved task-specific regressions on the merged production implementation, replacing only the superseded malformed-error expectation and adding before/after-visible-output cases. Prior five-test evidence applies only to the earlier baseline; merged validation is pending.
+Master PR #659 landed during validation. The user explicitly selected its recovery policy over the original strict Protocol policy. Re-run the preserved task-specific regressions on the merged production implementation, replacing only the superseded malformed-error expectation and adding before/after-visible-output cases. Prior five-test evidence applies only to the earlier baseline.
+
+- Integrated test-bearing SHA: `02d5814735ba28a2fe6138d51b737923532d9d0b` ([source](https://github.com/puzige/vega/blob/02d5814735ba28a2fe6138d51b737923532d9d0b/crates/vega_runtime/tests/sse_timeout.rs)).
+- [Actions 40375083654](https://github.com/puzige/vega/actions/runs/40375083654): Clippy and required aggregate passed; Nextest executed 7 tests, 7 passed, 0 skipped.
+- Independent integrated static review found no blocking issue. Core tool lifecycle and execution assertions remained unchanged; two Protocol cases assert the user-selected before/after-visible-output behavior.
+- Final delivery removes the integrated development test file only, preserving the exact production code verified above. Final-head CI remains independently required.
