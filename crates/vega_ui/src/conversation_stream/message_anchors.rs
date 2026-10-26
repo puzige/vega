@@ -140,6 +140,7 @@ impl ConversationStream {
                 continue;
             };
             let (kind, preview) = match entry {
+                StreamEntry::User { lines, .. } if !user_message_has_text(lines) => continue,
                 StreamEntry::User { .. } => (
                     MessageAnchorKind::User,
                     self.text_cache
@@ -908,6 +909,9 @@ pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
 }
 
 pub(super) fn estimate_user_height(lines: &[StreamLine], text_width: f32) -> f32 {
+    if !user_message_has_text(lines) {
+        return 0.;
+    }
     let bubble_width =
         text_width * Layout::CONVERSATION_USER_RATIO - 2. * Layout::CONVERSATION_USER_PADDING;
     let user_chars_per_line = (bubble_width / (Typography::CONVERSATION * 0.56)).max(12.0) as usize;
