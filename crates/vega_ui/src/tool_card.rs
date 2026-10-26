@@ -1076,7 +1076,10 @@ impl ToolCard {
                         &mutation_verb("write", self.activity_state(), self.status),
                     ),
                     ("path", path),
-                    ("content_bytes", &content_bytes.to_string()),
+                    (
+                        "content_bytes",
+                        &crate::file_size::format_file_size(*content_bytes),
+                    ),
                 ],
             ),
             (
@@ -1110,7 +1113,10 @@ impl ToolCard {
                 "ui.wrote_path_bytes_written_bytes",
                 &[
                     ("path", path),
-                    ("bytes_written", &bytes_written.to_string()),
+                    (
+                        "bytes_written",
+                        &crate::file_size::format_file_size(*bytes_written),
+                    ),
                 ],
             ),
             (

@@ -9,6 +9,7 @@ pub mod diff_view;
 mod disclosure;
 pub mod file_preview;
 pub mod file_selector;
+mod file_size;
 pub mod image_preview;
 pub mod interaction;
 pub mod link_preview;

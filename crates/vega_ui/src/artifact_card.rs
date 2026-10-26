@@ -384,7 +384,11 @@ impl ArtifactCard {
             vega_i18n::t("ui.file_unavailable")
         };
         let details = match projection.size_bytes {
-            Some(size) => format!("{} · {}", projection.label, format_size(size)),
+            Some(size) => format!(
+                "{} · {}",
+                projection.label,
+                crate::file_size::format_file_size(size)
+            ),
             None => projection.label.clone(),
         };
         let details = if preview_enabled {
@@ -1174,20 +1178,6 @@ fn artifact_path(label: &str) -> (&str, &str) {
     label
         .rfind('/')
         .map_or(("", label), |index| label.split_at(index + 1))
-}
-
-fn format_size(size: u64) -> String {
-    if size < 1024 {
-        return format!("{size} B");
-    }
-    let units = ["KB", "MB", "GB", "TB", "PB", "EB"];
-    let mut value = size as f64 / 1024.;
-    let mut unit = 0;
-    while value >= 1024. && unit + 1 < units.len() {
-        value /= 1024.;
-        unit += 1;
-    }
-    format!("{value:.1} {}", units[unit])
 }
 
 fn compact_button(
