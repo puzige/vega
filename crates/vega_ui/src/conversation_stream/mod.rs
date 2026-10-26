@@ -30,10 +30,11 @@ use vega_conversation::agent::{PendingPermission, PermissionQueue};
 use vega_conversation::history::{HistoryEntry, HistoryPage};
 use vega_conversation::types::{
     ComposerDefaults, ConversationEvent, ConversationMeter, FileIndexSnapshot, FrozenReasoning,
-    PendingMessageBehavior, PendingQueueProjection, PermissionMode, Plan, ProviderPreflightFailure,
-    ReasoningChoice, ReasoningProfileProjection, ReasoningSupport, RestoredUsage, RunFailureKind,
-    RunUsageEstimator, SkillComposerMutation, SkillComposerProjection, SkillSelectionIntent,
-    TaskBackend, TaskCostSummary, Thread, ThreadMode,
+    ModelOption, PendingMessageBehavior, PendingQueueProjection, PermissionMode, Plan,
+    ProviderPreflightFailure, ReasoningChoice, ReasoningProfileProjection, ReasoningSupport,
+    RestoredUsage, RunFailureKind, RunUsageEstimator, SkillComposerMutation,
+    SkillComposerProjection, SkillSelectionIntent, TaskBackend, TaskCostSummary, Thread,
+    ThreadMode,
 };
 use vega_markdown::{
     BlockView, HighlightKind, HighlightSpan, Inline, ListBlock, MarkdownStream, MockReplay,

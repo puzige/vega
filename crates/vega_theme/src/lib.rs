@@ -482,6 +482,8 @@ impl Layout {
     pub const ATTACHMENT_THUMBNAIL: f32 = 72.0;
     pub const COMPOSER_PICKER_MAX_HEIGHT: f32 = 320.0;
     pub const COMPOSER_PICKER_TRIGGER_GAP: f32 = 8.0;
+    pub const COMPOSER_PICKER_GROUP_HEIGHT: f32 = 24.0;
+    pub const COMPOSER_PICKER_GROUP_GAP: f32 = 4.0;
     pub const COMPOSER_TEXT_TRIGGER_HEIGHT: f32 = 28.0;
     pub const COMPOSER_TEXT_TRIGGER_RADIUS: f32 = 14.0;
     pub const COMPOSER_TEXT_TRIGGER_PADDING_X: f32 = 12.0;

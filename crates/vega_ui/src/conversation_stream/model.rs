@@ -62,6 +62,25 @@ pub(crate) fn hydration_request(hydration: HistoryHydration, at_top: bool) -> Op
     hydration.older_cursor
 }
 
+pub(crate) fn model_picker_starts_group(options: &[ModelOption], index: usize) -> bool {
+    index == 0
+        || options
+            .get(index - 1)
+            .map(|previous| previous.provider.as_str())
+            != options.get(index).map(|option| option.provider.as_str())
+}
+
+pub(crate) fn model_picker_row_index(options: &[ModelOption], option_index: usize) -> usize {
+    if options.is_empty() {
+        return 0;
+    }
+    let last = option_index.min(options.len() - 1);
+    (0..=last)
+        .filter(|index| model_picker_starts_group(options, *index))
+        .count()
+        + last
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BlockOrigin {
     Committed,
