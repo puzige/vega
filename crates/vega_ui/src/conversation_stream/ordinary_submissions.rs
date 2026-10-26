@@ -426,7 +426,8 @@ impl ConversationStream {
     /// A stopped turn already states its outcome with one stop line. The send
     /// row must not repeat it as a failed send with a retry action.
     fn attempt_shows_stop_line(&self, row: &OrdinaryRow, cx: &App) -> bool {
-        let Some(attempt) = row.submission.snapshot().attempts.last() else {
+        let snapshot = row.submission.snapshot();
+        let Some(attempt) = snapshot.attempts.last() else {
             return false;
         };
         self.run_activity_groups
