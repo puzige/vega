@@ -204,6 +204,7 @@ pub struct ConversationStream {
     /// artifact operations.
     pub(crate) model_selection_save_owner: Option<u64>,
     pub(crate) next_model_request_id: u64,
+    pub(crate) next_turn_model: Option<String>,
     /// Keyboard-accessible return-to-tail action shown after the user scrolls
     /// away from the live bottom (P4).
     pub(crate) resume_tail_focus: FocusHandle,
@@ -624,6 +625,7 @@ impl ConversationStream {
             model_selection_pending: None,
             model_selection_save_owner: None,
             next_model_request_id: 0,
+            next_turn_model: None,
             resume_tail_focus: cx.focus_handle().tab_index(18).tab_stop(true),
             _permission_listener_task: permission_listener_task,
         }
@@ -906,6 +908,13 @@ impl ConversationStream {
             if !thread.model.is_empty() {
                 self.composer_defaults.model = thread.model.clone();
             }
+            if self
+                .next_turn_model
+                .as_deref()
+                .is_some_and(|model| model == thread.model)
+            {
+                self.next_turn_model = None;
+            }
             self.thread = thread;
             self.acknowledge_mode_action(cx);
             self.controller_runtime_error = None;
@@ -1127,6 +1136,7 @@ impl ConversationStream {
             self.reset_context_control(cx);
         }
         self.thread = projected;
+        self.next_turn_model = None;
         self.composer_defaults.model = model.to_owned();
         self.controller_runtime_error = None;
         self.controller_error = None;
@@ -1377,7 +1387,7 @@ impl ConversationStream {
         self.model_selector_highlight = self
             .model_options
             .iter()
-            .position(|option| option.model == self.composer_defaults.model)
+            .position(|option| option.model == self.selector_model())
             .unwrap_or(0);
         cx.notify();
     }
@@ -1439,6 +1449,7 @@ impl ConversationStream {
             self.reset_context_control(cx);
         }
         self.composer_defaults.model = model.to_owned();
+        self.next_turn_model = None;
         self.thread = projected;
         self.model_selection_pending = None;
         self.clear_model_selection_save_owner(request_id, cx);
@@ -1473,6 +1484,44 @@ impl ConversationStream {
         cx.notify();
     }
 
+    pub fn apply_thread_model_staged(
+        &mut self,
+        thread_id: &str,
+        request_id: u64,
+        model: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if thread_id != self.thread.id {
+            return;
+        }
+        if !self.owns_model_selection_request(request_id) {
+            return;
+        }
+        if model.is_empty() {
+            return;
+        }
+        self.next_turn_model = Some(model.to_owned());
+        self.model_selection_pending = None;
+        self.clear_model_selection_save_owner(request_id, cx);
+        self.model_picker_level = ModelPickerLevel::Closed;
+        self.controller_runtime_error = None;
+        self.controller_error = None;
+        cx.notify();
+    }
+
+    pub fn restore_next_turn_model(&mut self, model: Option<String>, cx: &mut Context<Self>) {
+        if self.model_selection_pending.is_none() {
+            self.next_turn_model = model;
+            cx.notify();
+        }
+    }
+
+    pub fn selector_model(&self) -> &str {
+        self.next_turn_model
+            .as_deref()
+            .unwrap_or(&self.composer_defaults.model)
+    }
+
     pub(crate) fn on_activate_model(
         &mut self,
         _: &ActivateModel,
@@ -1488,7 +1537,9 @@ impl ConversationStream {
         }
         if !self.model_picker_level.is_open() {
             self.close_composer_popovers(cx);
-            if self.thinking_slider.read(cx).has_tiers() {
+            if self.selector_model() == self.displayed_model()
+                && self.thinking_slider.read(cx).has_tiers()
+            {
                 self.open_model_picker_slider(cx);
             } else {
                 self.open_model_picker_list(cx);
@@ -1513,11 +1564,15 @@ impl ConversationStream {
     }
 
     pub(crate) fn open_model_picker_slider(&mut self, cx: &mut Context<Self>) {
+        if self.selector_model() != self.displayed_model() {
+            self.open_model_picker_list(cx);
+            return;
+        }
         self.model_picker_level = ModelPickerLevel::Slider;
         self.model_selector_highlight = self
             .model_options
             .iter()
-            .position(|option| option.model == self.thread.model)
+            .position(|option| option.model == self.selector_model())
             .unwrap_or(0);
         self.model_menu_scroll
             .scroll_to_item(model_picker_row_index(
@@ -1547,7 +1602,7 @@ impl ConversationStream {
         self.model_selector_highlight = self
             .model_options
             .iter()
-            .position(|option| option.model == self.thread.model)
+            .position(|option| option.model == self.selector_model())
             .unwrap_or(0);
         self.model_menu_scroll
             .scroll_to_item(model_picker_row_index(

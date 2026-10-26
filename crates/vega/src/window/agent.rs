@@ -681,10 +681,28 @@ impl VegaWindow {
         admission: Option<ThreadAdmission>,
         cx: &mut Context<Self>,
     ) {
-        // Programmatic/Plan callers use the same run-start freeze as the
-        // Composer path. An invalid declared profile is rejected while the
-        // draft remains in the stream; it must never silently become a
-        // provider-default request in the worker.
+        let admission = match admission {
+            Some(admission) => admission,
+            None => {
+                let owner = cx.global::<VegaStore>().0.as_ref().ok().and_then(|store| {
+                    vega_store::thread_admission::try_acquire(store.database_identity(), thread_id)
+                        .ok()
+                        .flatten()
+                });
+                let Some(owner) = owner else {
+                    stream.update(cx, ConversationStream::apply_agent_busy);
+                    return;
+                };
+                owner
+            }
+        };
+        if self
+            .promote_model_before_run(&stream, thread_id, &admission, cx)
+            .is_err()
+        {
+            stream.update(cx, ConversationStream::apply_controller_error);
+            return;
+        }
         let reasoning = match stream.read(cx).frozen_reasoning_for_submit() {
             Ok(reasoning) => reasoning,
             Err(_) => {
@@ -702,7 +720,7 @@ impl VegaWindow {
                 return;
             }
         };
-        self.start_agent_run_with_authority(stream, thread_id, run, reasoning, admission, cx);
+        self.start_agent_run_with_authority(stream, thread_id, run, reasoning, Some(admission), cx);
     }
 
     pub(crate) fn start_agent_run_with_reasoning(
@@ -1238,6 +1256,7 @@ impl VegaWindow {
                                 cx,
                             );
                         }
+                        this.settle_next_turn_model(display_stream.clone(), thread_id.clone(), cx);
                         this.finish_pending_run(&thread_id, &display_stream, queue_ready, cx);
                         this.resume_deferred_message_location(&thread_id, cx);
                         false
@@ -1300,30 +1319,15 @@ impl VegaWindow {
             self.submit_codex_composer(stream, request, cx);
             return;
         }
-        let reasoning = match request.reasoning.clone() {
-            Ok(reasoning) => reasoning,
-            Err(_) => {
-                // Preserve the draft and make the invalid explicit profile
-                // visible. Never turn a failed declared profile into a
-                // provider-default request.
-                stream.update(cx, |stream, cx| {
-                    stream.reject_composer_submission(cx);
-                    stream.apply_controller_error(cx);
-                });
-                return;
-            }
-        };
-
         if self.trusted_actions.is_busy()
             || self.reasoning_save_pending.is_some()
             || self.model_catalog_loading
             || stream.read(cx).has_pending_model_selection()
-            || stream.read(cx).reasoning_unavailable()
         {
             stream.update(cx, ConversationStream::apply_agent_busy);
             return;
         }
-        self.submit_ordinary(stream, request, reasoning, cx);
+        self.submit_ordinary(stream, request, cx);
     }
 
     pub(crate) fn submit_codex_composer(
@@ -1755,6 +1759,7 @@ impl VegaWindow {
                         this.finish_context_primary_owner(generation);
                         this.agent_controller.pending_review.remove(&thread_id);
                         vega_ui::sidebar::set_thread_running(&thread_id, false, cx);
+                        this.settle_next_turn_model(stream.clone(), thread_id.clone(), cx);
                         this.resume_deferred_message_location(&thread_id, cx);
                         if let (Some(()), Some(thread)) =
                             (recoverable_codex_submission, authoritative_thread)
