@@ -98,6 +98,8 @@ impl ModelSelectionRefresh {
 }
 
 pub(crate) struct VegaWindow {
+    #[cfg(test)]
+    fixture_config_path: Option<PathBuf>,
     pub(crate) composer_prediction_config_generation: u64,
     pub(crate) composer_predictions:
         std::collections::HashMap<String, composer_predictions::ComposerPredictionOwner>,
@@ -302,6 +304,8 @@ impl VegaWindow {
         })
         .detach();
         let mut window = Self {
+            #[cfg(test)]
+            fixture_config_path: None,
             composer_prediction_config_generation: 0,
             composer_predictions: std::collections::HashMap::new(),
             updater: crate::updater::Updater::default(),

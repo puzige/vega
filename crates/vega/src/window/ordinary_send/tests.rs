@@ -17,6 +17,95 @@ use vega_conversation::types::{
 use vega_store::Store;
 use vega_store::config::{self, AppConfig, ProviderConfig};
 
+#[gpui_kit::test]
+fn navigation_return_reuses_preparing_entity_and_committed_authority(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::window::VegaWindow;
+    use gpui_kit::{AppContext, Render};
+    use vega_ui::conversation_stream::ConversationStream;
+    use vega_ui::settings::SettingsOpen;
+    use vega_ui::sidebar::{
+        NewTaskDefaults, OpenedThread, PendingDeleteConfirm, ProjectsCollapsed, SelectedProject,
+        SessionsCollapsed, SidebarCollapsed, SidebarWidth, VegaStore,
+    };
+
+    let fixture = Fixture::new(true);
+    let source = fixture.draft();
+    let request = fixture.request(&source, Some(source.clone()));
+    let attempt = request.run.worker.attempt_id();
+    let committed = request.materialize().expect("commit draft");
+    request.cancel.cancel();
+    let mut outcome = request.finish_preparation(Ok(committed));
+    let receipt = outcome.materialized.take().expect("committed receipt");
+    let durable = receipt.thread.clone();
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        vega_ui::init(cx);
+        cx.set_global(vega_theme::Theme::light());
+        cx.set_global(VegaStore(Ok(fixture.store())));
+        cx.set_global(SelectedProject(None));
+        cx.set_global(OpenedThread(Some(source.clone())));
+        cx.set_global(SettingsOpen(false));
+        cx.set_global(SidebarCollapsed(true));
+        cx.set_global(SidebarWidth(240.0));
+        cx.set_global(ProjectsCollapsed(false));
+        cx.set_global(SessionsCollapsed(false));
+        cx.set_global(PendingDeleteConfirm(None));
+        cx.set_global(NewTaskDefaults::default());
+    });
+    let window = cx.add_window(|_, cx| {
+        let mut owner = VegaWindow::new_with_services(cx, false);
+        owner.fixture_config_path = Some(fixture.config.clone());
+        owner.configured_models = Some(Vec::new());
+        owner.draft = Some(source.clone());
+        owner
+    });
+    window
+        .update(cx, |owner, window, cx| {
+            let original = cx.new(|cx| ConversationStream::new(source.clone(), cx));
+            owner.stream_view = Some((source.id.clone(), original.clone()));
+            owner.agent_controller.preparation_stream = Some(original.clone());
+            owner.agent_controller.ordinary_preparing.insert(
+                source.id.clone(),
+                OrdinaryPreparationOwner {
+                    attempt,
+                    cancel: CancellationToken::new(),
+                },
+            );
+            let other = fixture.draft();
+            cx.set_global(OpenedThread(Some(other.clone())));
+            drop(owner.render(window, cx));
+            assert_ne!(owner.stream_view.as_ref().expect("other view").1, original);
+            cx.set_global(OpenedThread(Some(source.clone())));
+            drop(owner.render(window, cx));
+            assert_eq!(
+                owner.stream_view.as_ref().expect("returned view").1,
+                original
+            );
+            assert!(owner.owns_stream_request(&original, &source.id, cx));
+            assert!(
+                take_preparation_owner(
+                    &mut owner.agent_controller.ordinary_preparing,
+                    &source.id,
+                    attempt
+                )
+                .is_some()
+            );
+            owner.agent_controller.preparation_stream = None;
+            owner.apply_ordinary_materialization(&original, attempt, receipt, cx);
+            assert!(owner.draft.is_none());
+            assert_eq!(original.read(cx).thread_snapshot(), durable);
+            assert_eq!(cx.global::<OpenedThread>().0.as_ref(), Some(&durable));
+            assert!(durable.full_access_grant.is_some());
+        })
+        .expect("navigate real window");
+    drop(outcome);
+    let fresh = fixture.request(&durable, None).prepare();
+    assert!(fresh.launch.is_ok());
+    assert!(fresh.materialized.is_none());
+}
+
 struct Fixture {
     root: tempfile::TempDir,
     database: PathBuf,

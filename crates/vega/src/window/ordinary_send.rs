@@ -9,6 +9,37 @@ const ORDINARY_POLL: std::time::Duration = std::time::Duration::from_millis(4);
 #[cfg(test)]
 mod tests;
 
+impl VegaWindow {
+    fn apply_ordinary_materialization(
+        &mut self,
+        stream: &Entity<ConversationStream>,
+        attempt: AttemptId,
+        materialized: OrdinaryMaterialization,
+        cx: &mut Context<Self>,
+    ) {
+        let current_route = self.owns_stream_request(stream, &materialized.thread.id, cx);
+        let opened = cx.global::<OpenedThread>().0.as_ref();
+        let route = if current_route { opened } else { None };
+        if let Some(projection) = materialized.reconcile(
+            attempt,
+            &mut self.draft,
+            &stream.read(cx).thread_snapshot(),
+            route,
+        ) {
+            if projection.stream {
+                stream.update(cx, |stream, cx| {
+                    stream.apply_thread(materialized.thread.clone(), cx);
+                    stream.set_draft_route(false, cx);
+                });
+            }
+            if projection.route {
+                cx.set_global(OpenedThread(Some(materialized.thread)));
+            }
+            self.sidebar.update(cx, Sidebar::reload_sessions);
+        }
+    }
+}
+
 fn take_preparation_owner(
     owners: &mut std::collections::HashMap<String, OrdinaryPreparationOwner>,
     thread_id: &str,
@@ -409,27 +440,7 @@ impl VegaWindow {
                         return;
                     };
                     if let Some(materialized) = outcome.materialized {
-                        let current_route = this.owns_stream_request(&stream, &thread_id, cx);
-                        let opened = cx.global::<OpenedThread>().0.as_ref();
-                        let route = if current_route { opened } else { None };
-                        if let Some(projection) = materialized.reconcile(
-                            attempt,
-                            &mut this.draft,
-                            &stream.read(cx).thread_snapshot(),
-                            route,
-                        ) {
-                            if projection.stream {
-                                stream.update(cx, |stream, cx| {
-                                    stream.apply_thread(materialized.thread.clone(), cx);
-                                    stream.set_draft_route(false, cx);
-                                });
-                            }
-                            if projection.route {
-                                cx.set_global(OpenedThread(Some(materialized.thread)));
-                            }
-                            this.sidebar
-                                .update(cx, |sidebar, cx| sidebar.reload_sessions(cx));
-                        }
+                        this.apply_ordinary_materialization(&stream, attempt, materialized, cx);
                     }
                     if let Ok(launch) = outcome.launch {
                         if !released
