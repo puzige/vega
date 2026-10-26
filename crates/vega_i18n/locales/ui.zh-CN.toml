@@ -704,6 +704,8 @@
 "ui.ordinary_send.incomplete" = "发送未完成"
 "ui.ordinary_send.cleanup_incomplete" = "清理尚未确认；暂不能重试"
 "ui.ordinary_send.history_changed" = "会话已变化；请查看历史后再发送"
+"ui.ordinary_send.permission_invalidated" = "本次发送的授权已失效；请检查保留的消息后重新发送"
+"ui.ordinary_send.permission_invalidated_unknown" = "本次发送的授权已失效，发送结果仍未确认；请查看会话历史后再决定是否重新发送"
 "ui.ordinary_send.finishing" = "正在结束本次发送"
 "ui.ordinary_send.retry_unconfirmed" = "无法确认安全重试；请先核实状态"
 "ui.ordinary_send.check_finishing" = "正在结束本次发送；结束后可再次核实"

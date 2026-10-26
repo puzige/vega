@@ -2,9 +2,14 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use ulid::Ulid;
-use vega_store::thread_admission::{self, AdmissionError, DatabaseIdentity, ThreadAdmission};
+use vega_store::thread_admission::{
+    self, AdmissionError, DatabaseAdmissionPause, DatabaseIdentity, ThreadAdmission,
+};
 
 use crate::types::{FrozenReasoning, ImageAttachment, ResolvedModel};
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct SubmissionId(Ulid);
@@ -283,6 +288,7 @@ pub enum RetryBlocker {
     CleanupIncomplete,
     NoFailure,
     HistoryChanged,
+    PermissionInvalidated,
     Retired,
 }
 
@@ -429,6 +435,7 @@ struct SubmissionState {
     accepted: Option<Arc<AcceptedPayload>>,
     authority: Option<Arc<EffectiveAuthority>>,
     permission_fence: Option<crate::types::PermissionFence>,
+    permission_invalidated: bool,
     attempts: Vec<AttemptState>,
     active: Option<ThreadAdmission>,
     retired: bool,
@@ -510,6 +517,40 @@ pub fn for_thread(
         .unwrap_or_default())
 }
 
+pub fn invalidate_database_recovery(
+    database: DatabaseIdentity,
+    pause: &DatabaseAdmissionPause,
+) -> Result<(), SubmissionError> {
+    if !pause.verifies(database)? {
+        return Err(SubmissionError::Busy);
+    }
+    let registry = submissions()
+        .lock()
+        .map_err(|_| SubmissionError::Unavailable)?;
+    let mut states = Vec::new();
+    for (key, submissions) in registry.iter().filter(|(key, _)| key.database == database) {
+        for submission in submissions {
+            if submission.0.database != database || submission.0.thread_id != key.thread_id {
+                return Err(SubmissionError::AdmissionMismatch);
+            }
+            let state = submission.lock()?;
+            if state.active.is_some()
+                || state
+                    .attempts
+                    .iter()
+                    .any(|attempt| !attempt.workers.is_empty())
+            {
+                return Err(SubmissionError::WorkersActive);
+            }
+            states.push(state);
+        }
+    }
+    for mut state in states {
+        state.permission_invalidated = true;
+    }
+    Ok(())
+}
+
 impl OrdinarySubmission {
     pub fn begin(
         database: DatabaseIdentity,
@@ -551,6 +592,7 @@ impl OrdinarySubmission {
                 accepted: None,
                 authority: None,
                 permission_fence: None,
+                permission_invalidated: false,
                 attempts: vec![AttemptState::new(attempt, AttemptKind::Initial, worker)],
                 active: Some(admission.clone()),
                 retired: false,
@@ -783,6 +825,9 @@ fn retry_eligibility(state: &SubmissionState) -> RetryEligibility {
     let blocked = |reason| RetryEligibility::Blocked(reason);
     if state.retired {
         return blocked(RetryBlocker::Retired);
+    }
+    if state.permission_invalidated {
+        return blocked(RetryBlocker::PermissionInvalidated);
     }
     let Some(attempt) = state.attempts.last() else {
         return blocked(RetryBlocker::Unknown);

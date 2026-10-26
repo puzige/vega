@@ -135,6 +135,13 @@ pub struct DatabaseAdmissionPause {
 }
 
 impl DatabaseAdmissionPause {
+    pub fn verifies(&self, database: DatabaseIdentity) -> Result<bool, AdmissionError> {
+        if self.database != database {
+            return Ok(false);
+        }
+        self.owners_released()
+    }
+
     pub fn owners_released(&self) -> Result<bool, AdmissionError> {
         let registry = ADMISSIONS
             .get_or_init(Default::default)

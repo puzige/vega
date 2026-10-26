@@ -704,6 +704,8 @@
 "ui.ordinary_send.incomplete" = "The message was not sent."
 "ui.ordinary_send.cleanup_incomplete" = "Cleanup is unconfirmed. You cannot retry yet."
 "ui.ordinary_send.history_changed" = "The conversation changed. Check its history before sending again."
+"ui.ordinary_send.permission_invalidated" = "This send's authorization was revoked. Review the retained message before sending anew."
+"ui.ordinary_send.permission_invalidated_unknown" = "This send's authorization was revoked, and its result is still unconfirmed. Check the conversation history before sending anew."
 "ui.ordinary_send.finishing" = "Finishing this send"
 "ui.ordinary_send.retry_unconfirmed" = "A safe retry is unconfirmed. Check the status first."
 "ui.ordinary_send.check_finishing" = "This send is still finishing. Check again when it has ended."
