@@ -283,6 +283,7 @@ pub(crate) fn failure_code(error: &vega_runtime::VegaError) -> Option<Diagnostic
                 DiagnosticFailureCode::ProviderStreamInterrupted
             }
             ProviderFailureKind::Timeout => DiagnosticFailureCode::ProviderTimeout,
+            ProviderFailureKind::Overloaded => DiagnosticFailureCode::ProviderOverloaded,
             ProviderFailureKind::Protocol => DiagnosticFailureCode::ProviderProtocol,
             ProviderFailureKind::Rejected | ProviderFailureKind::OutputLimit => {
                 DiagnosticFailureCode::ProviderRejected
@@ -414,6 +415,7 @@ fn runtime_failure(value: RuntimeDiagnosticFailure) -> DiagnosticFailureCode {
             DiagnosticFailureCode::ProviderStreamInterrupted
         }
         RuntimeDiagnosticFailure::ProviderTimeout => DiagnosticFailureCode::ProviderTimeout,
+        RuntimeDiagnosticFailure::ProviderOverloaded => DiagnosticFailureCode::ProviderOverloaded,
         RuntimeDiagnosticFailure::ProviderProtocol => DiagnosticFailureCode::ProviderProtocol,
         RuntimeDiagnosticFailure::ProviderRejected => DiagnosticFailureCode::ProviderRejected,
         RuntimeDiagnosticFailure::UnknownSafeFailure => DiagnosticFailureCode::UnknownSafeFailure,

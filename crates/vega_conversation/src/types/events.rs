@@ -65,6 +65,9 @@ pub enum RunFailureKind {
     ProviderStreamInterrupted(ProviderFailureFact),
     /// An established response stream or request exceeded its deadline.
     ProviderTimeout(ProviderFailureFact),
+    /// The provider reported inside an established response that it cannot
+    /// serve the request right now.
+    ProviderOverloaded(ProviderFailureFact),
     /// An in-process runtime error rather than a provider HTTP failure.
     Runtime,
     RuntimeStorage,
@@ -172,6 +175,10 @@ impl RunFailureKind {
                 http_status: metrics.http_status,
                 retries: metrics.retry_count,
             }),
+            Some("overloaded") => Self::ProviderOverloaded(ProviderFailureFact {
+                http_status: metrics.http_status,
+                retries: metrics.retry_count,
+            }),
             Some("protocol")
                 if metrics.failure_source.as_deref() == Some("runtime")
                     && metrics.failure_scope.as_deref() == Some("response") =>
@@ -265,6 +272,15 @@ impl RunFailureKind {
                 retry_count,
                 ..
             } => Self::ProviderTimeout(ProviderFailureFact {
+                http_status: *status,
+                retries: *retry_count,
+            }),
+            vega_runtime::VegaError::ProviderDiagnostic {
+                kind: vega_runtime::ProviderFailureKind::Overloaded,
+                status,
+                retry_count,
+                ..
+            } => Self::ProviderOverloaded(ProviderFailureFact {
                 http_status: *status,
                 retries: *retry_count,
             }),
@@ -395,6 +411,9 @@ impl RunFailureKind {
             }
             Self::ProviderTimeout(fact) => {
                 provider_failure_message("domain.failure.provider_timeout", fact)
+            }
+            Self::ProviderOverloaded(fact) => {
+                provider_failure_message("domain.failure.provider_overloaded", fact)
             }
             Self::CredentialExposureBlocked => {
                 vega_i18n::t("domain.failure.credential_block").into()

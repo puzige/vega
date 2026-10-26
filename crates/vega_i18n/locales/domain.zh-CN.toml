@@ -145,6 +145,7 @@
 "domain.failure.provider_fact_retries" = "已重试 {retries} 次"
 "domain.failure.provider_http" = "供应商请求失败（HTTP {status}）。请检查供应商状态、模型和额度后重试。"
 "domain.failure.provider_output_limit" = "模型已达到输出上限。请继续任务或调整输出额度。"
+"domain.failure.provider_overloaded" = "供应商当前过载。请稍后重试；若持续出现，请更换供应商。"
 "domain.failure.provider_protocol" = "供应商返回了无效数据。请重试或更换模型。"
 "domain.failure.provider_quota" = "供应商额度已用完。请在设置 → 供应商中充值或更换供应商后重试。"
 "domain.failure.provider_rate_limit" = "供应商限制了此请求的频率。请稍后重试或更换供应商。"

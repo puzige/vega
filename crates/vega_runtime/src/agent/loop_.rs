@@ -142,6 +142,7 @@ fn diagnostic_failure(error: &VegaError) -> RuntimeDiagnosticFailure {
                 RuntimeDiagnosticFailure::ProviderStreamInterrupted
             }
             crate::ProviderFailureKind::Timeout => RuntimeDiagnosticFailure::ProviderTimeout,
+            crate::ProviderFailureKind::Overloaded => RuntimeDiagnosticFailure::ProviderOverloaded,
             crate::ProviderFailureKind::Protocol => RuntimeDiagnosticFailure::ProviderProtocol,
             crate::ProviderFailureKind::Rejected | crate::ProviderFailureKind::OutputLimit => {
                 RuntimeDiagnosticFailure::ProviderRejected

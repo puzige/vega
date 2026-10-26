@@ -89,6 +89,78 @@ pub(crate) fn protocol_error() -> VegaError {
     }
 }
 
+/// The provider stated, inside an established response, that it cannot serve
+/// the request right now. This is an upstream capacity condition, not
+/// malformed data, so it is never reported as an invalid-data failure.
+pub(crate) fn overloaded_error() -> VegaError {
+    VegaError::ProviderDiagnostic {
+        kind: crate::ProviderFailureKind::Overloaded,
+        status: None,
+        message: "provider reported it is temporarily unavailable".into(),
+        retryable: true,
+        retry_count: None,
+        request_id: None,
+    }
+}
+
+/// Exact structured markers a compatible provider uses for a transient
+/// capacity condition. Only these allowlisted values are trusted; free-form
+/// prose in an error frame is never interpreted.
+const OVERLOAD_CODES: &[&str] = &[
+    "server_is_overloaded",
+    "overloaded",
+    "overloaded_error",
+    "service_unavailable",
+    "service_unavailable_error",
+    "capacity_exceeded",
+];
+
+/// The provider refused to complete an already-established response. The
+/// structured frame is well-formed, so this is never reported as malformed
+/// data; its text is not interpreted.
+pub(crate) fn rejected_error() -> VegaError {
+    VegaError::ProviderDiagnostic {
+        kind: crate::ProviderFailureKind::Rejected,
+        status: None,
+        message: "provider reported the response could not be completed".into(),
+        retryable: false,
+        retry_count: None,
+        request_id: None,
+    }
+}
+
+/// Whether a structured error payload carries an allowlisted capacity marker.
+/// Only these exact values are trusted; free-form prose is never interpreted.
+pub(crate) fn is_overload_marker(error: &serde_json::Value) -> bool {
+    if error.is_null() {
+        return false;
+    }
+    let marker = ["code", "type"]
+        .iter()
+        .filter_map(|field| error.get(*field).and_then(serde_json::Value::as_str))
+        .any(|value| OVERLOAD_CODES.contains(&value));
+    let status = error
+        .get("status")
+        .and_then(serde_json::Value::as_u64)
+        .is_some_and(|status| matches!(status, 503 | 529));
+    marker || status
+}
+
+/// Classifies a structured error payload carried by an already-established
+/// response. A well-formed error frame is not malformed data: an allowlisted
+/// capacity marker becomes [`overloaded_error`], any other structured payload
+/// becomes [`rejected_error`], and only an unstructured payload stays a
+/// protocol failure.
+pub(crate) fn stream_error_frame(error: &serde_json::Value) -> VegaError {
+    if is_overload_marker(error) {
+        overloaded_error()
+    } else if error.is_object() {
+        rejected_error()
+    } else {
+        protocol_error()
+    }
+}
+
 pub fn chat_compatibility(base_url: Option<&str>, model: &str) -> Option<ChatCompatibility> {
     resolve(base_url, model).ok()
 }
