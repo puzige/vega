@@ -312,9 +312,7 @@ fn resume_rejects_stale_identity_and_rolls_back_cancelled_preparation() {
     assert!(fixture.tail().is_some());
 }
 
-#[test]
-fn resume_rehydrates_terminal_tool_results_without_mutating_them() {
-    let fixture = Fixture::new();
+fn add_completed_tool(fixture: &Fixture) {
     tool_calls::insert_pending(
         fixture.store.conn(),
         tool_calls::NewToolCall {
@@ -352,6 +350,12 @@ fn resume_rehydrates_terminal_tool_results_without_mutating_them() {
         },
     )
     .expect("finish tool");
+}
+
+#[test]
+fn resume_rehydrates_terminal_tool_results_without_mutating_them() {
+    let fixture = Fixture::new();
+    add_completed_tool(&fixture);
     let before =
         tool_calls::terminal_results(fixture.store.conn(), "thread").expect("load original tools");
     let prepared = fixture
@@ -375,5 +379,121 @@ fn resume_rehydrates_terminal_tool_results_without_mutating_them() {
         tool_calls::terminal_results(fixture.store.conn(), "thread")
             .expect("reload original tools"),
         before
+    );
+}
+
+#[derive(Default)]
+struct ObservedProvider(std::sync::atomic::AtomicUsize);
+
+impl Provider for ObservedProvider {
+    fn chat_stream(
+        &self,
+        _: vega_runtime::ChatRequest,
+        _: CancellationToken,
+    ) -> BoxFuture<'static, Result<vega_runtime::EventStream, VegaError>> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async { Err(VegaError::Cancelled) })
+    }
+}
+
+#[tokio::test]
+async fn resume_cancelled_after_commit_remains_resumable_without_starting_provider() {
+    let fixture = Fixture::new();
+    add_completed_tool(&fixture);
+    let before = fixture.rows();
+    let tools_before = tool_calls::terminal_results(fixture.store.conn(), "thread")
+        .expect("original terminal tools");
+    let expected = fixture.tail().expect("resumable original");
+    let admission =
+        crate::thread_access::acquire(&fixture.store, "thread").expect("controller admission");
+    let provider = ObservedProvider::default();
+    let tools = vega_tools::Tools::new(&fixture.directory).expect("fixture tools");
+    let cancel = CancellationToken::new();
+    let callback_cancel = cancel.clone();
+    let path = fixture.directory.join("history.sqlite");
+    let reached = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let callback_reached = reached.clone();
+    let config = PersistenceActorConfig {
+        before_runtime_start: Some(Arc::new(move || {
+            let store = Store::open(&path).expect("observe committed preparation");
+            let streaming: i64 = store.conn().query_row(
+                "SELECT COUNT(*) FROM messages WHERE role = 'assistant' AND seq = 3 AND status = 'streaming'",
+                [],
+                |row| row.get(0),
+            ).expect("committed assistant row");
+            assert_eq!(streaming, 1);
+            callback_reached.store(true, std::sync::atomic::Ordering::SeqCst);
+            callback_cancel.cancel();
+        })),
+        ..Default::default()
+    }.with_thread_admission(admission.clone());
+    let mut started = 0;
+    let result = resume_interrupted_assistant_with_mcp(
+        &fixture.store,
+        &provider,
+        &tools,
+        "thread",
+        &expected,
+        "fixture system",
+        cancel,
+        &PermissionQueue::new(),
+        |event| {
+            if matches!(event, ConversationEvent::MessageStarted { .. }) {
+                started += 1;
+            }
+            Ok(())
+        },
+        config,
+        None,
+        None,
+        Vec::new(),
+    )
+    .await;
+    assert!(
+        matches!(result, Err(ConversationError::Runtime(error)) if matches!(error.as_ref(), VegaError::Cancelled))
+    );
+    assert!(reached.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(started, 0);
+    assert_eq!(provider.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let after = fixture.rows();
+    assert_eq!(&after[..2], before.as_slice());
+    assert_eq!(after.len(), 3);
+    assert_eq!(after[2].2, "assistant");
+    assert_eq!(after[2].3, "interrupted");
+    assert_eq!(after.iter().filter(|row| row.2 == "user").count(), 1);
+    assert_eq!(
+        tool_calls::terminal_results(fixture.store.conn(), "thread").expect("preserved tools"),
+        tools_before
+    );
+    drop(admission);
+    let next = fixture
+        .tail()
+        .expect("cancelled preparation remains resumable");
+    assert_eq!(next.message_id, after[2].0);
+    assert_eq!(next.seq, 3);
+    let resumed = resume_interrupted_assistant_with_mcp(
+        &fixture.store,
+        &provider,
+        &tools,
+        "thread",
+        &next,
+        "fixture system",
+        CancellationToken::new(),
+        &PermissionQueue::new(),
+        |_| Ok(()),
+        PersistenceActorConfig::default(),
+        None,
+        None,
+        Vec::new(),
+    )
+    .await
+    .expect("released ownership allows another resume");
+    assert!(resumed.interrupted);
+    assert!(!resumed.failed);
+    assert_eq!(resumed.user_message_id, "user");
+    assert_eq!(provider.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        fixture.rows().iter().filter(|row| row.2 == "user").count(),
+        1
     );
 }

@@ -136,6 +136,8 @@ running                                  → Stop
 - Resume 不接管 pending message，也不绕过 credential continuation 的身份、source fence 或未知效果保护。历史投影、工具终态结果映射与 call ID/输入一致性校验保持原有契约；不宣称跨不同 call ID 的外部副作用 exactly-once。
 - 图标用现有 `Icon::Play`。#589 已合入，主按钮、loading 态及 tooltip 使用 `ui.composer_resume` 国际化 key（Resume / 继续），不修改其他恢复动作的文案。
 - 2026-10-26 同步 master：保留 ordinary submission 的准备、取消、恢复与用户回显契约；Resume 不接管 ordinary pending/recovery，也不创建 ordinary user 行。历史末尾候选从 composer 使用的当前历史投影与队列恢复路径刷新，不能取分页内旧行；未接入 composer 的历史 fork 投影不在本卡扩展。
+- 2026-10-26 独立审查补充 A02/A05 边界：worker 必须沿用 controller 已持有的线程 admission，不能重新竞争自身占用。开发回归从应用实际配置入口携带已持有 admission 启动，观察一次 MessageStarted/模型请求、无新增 user 与旧请求拒绝。
+- A01/A02 准备期停止边界：新 assistant 已提交、尚未发送 MessageStarted 时停止 Resume，须落为 Interrupted 而非 Failed；不得调用 provider，旧行和工具不变，释放运行占用后实际尾行仍可继续。该修正仅限本卡 Resume，不改 ordinary/Plan/凭据路径的既有清理契约。开发回归在此边界确定性取消。
 
 ## 6. 验证与交付
 

@@ -923,6 +923,9 @@ where
 
     let work_time_source = actor_config.work_time_source.clone();
     let user_questions = actor_config.user_questions.clone();
+    let resuming_interrupted = actor_config.interrupted_assistant.is_some();
+    #[cfg(test)]
+    let before_runtime_start = actor_config.before_runtime_start.clone();
     let actor = match PersistenceActor::start(PersistenceActorStart {
         database_path: prepared.database_path.clone(),
         project_id: prepared.project_id.clone(),
@@ -955,14 +958,24 @@ where
         }
     };
 
+    #[cfg(test)]
+    if let Some(before_runtime_start) = before_runtime_start {
+        before_runtime_start();
+    }
     if cancel.is_cancelled() {
-        let cleanup = finish_prepared_failure(
-            prepared.database_path.clone(),
-            prepared.assistant_message_id.clone(),
-            ordinary.clone(),
-            admission.clone(),
-        )
-        .await;
+        let cleanup = if resuming_interrupted {
+            actor
+                .event(RuntimeEvent::Interrupted, String::new(), None)
+                .await
+        } else {
+            finish_prepared_failure(
+                prepared.database_path.clone(),
+                prepared.assistant_message_id.clone(),
+                ordinary.clone(),
+                admission.clone(),
+            )
+            .await
+        };
         let closed = actor.close().await;
         super::ordinary::record_cleanup(ordinary.as_ref(), cleanup.is_ok() && closed.is_ok());
         return Err(ConversationError::Runtime(Arc::new(VegaError::Cancelled)));

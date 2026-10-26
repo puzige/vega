@@ -10,6 +10,9 @@ use vega_store::Store;
 use vega_ui::conversation_stream::*;
 use vega_ui::plan_card::PlanReviewRequested;
 
+#[cfg(test)]
+mod resume_tests;
+
 type CredentialReader = Arc<dyn Fn() -> Result<Vec<String>, ()> + Send + Sync>;
 
 pub(crate) const AGENT_EVENT_POLL: Duration = Duration::from_millis(4);
@@ -820,8 +823,10 @@ fn provider_replay_route_fingerprint(
 fn replay_persistence_config(
     registry: Option<&vega_conversation::agent::ReplaySessionRegistry>,
     route_fingerprint: Option<[u8; 32]>,
+    admission: ThreadAdmission,
 ) -> vega_conversation::agent::PersistenceActorConfig {
-    let config = vega_conversation::agent::PersistenceActorConfig::default();
+    let config = vega_conversation::agent::PersistenceActorConfig::default()
+        .with_thread_admission(admission);
     if let (Some(registry), Some(route_fingerprint)) = (registry, route_fingerprint) {
         config.with_replay_session_registry(registry.clone(), route_fingerprint)
     } else {
@@ -1461,9 +1466,8 @@ pub(crate) fn run_agent_worker_with_mcp(
                         cancel,
                         &permission_queue,
                         event_sink,
-                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint)
+                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint, admission.clone())
                             .with_subagent_host(subagent_host.clone())
-                            .with_thread_admission(admission.clone())
                             .with_ordinary_submission(ordinary.clone())
                             .with_automation_claim(automation_claim.clone())
                             .with_automatic_title(automatic_title)
@@ -1543,8 +1547,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         pricing_catalog,
                         Some(reasoning),
                         mcp_servers,
-                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint)
-                            .with_thread_admission(admission.clone())
+                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint, admission.clone())
                             .with_subagent_host(subagent_host.clone())
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
@@ -1612,8 +1615,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         cancel,
                         &permission_queue,
                         event_sink,
-                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint)
-                            .with_thread_admission(admission.clone())
+                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint, admission.clone())
                             .with_subagent_host(subagent_host.clone())
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
@@ -1684,7 +1686,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         cancel,
                         &permission_queue,
                         event_sink,
-                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint)
+                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint, admission.clone())
                             .with_subagent_host(subagent_host.clone())
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())

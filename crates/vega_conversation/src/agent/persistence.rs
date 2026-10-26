@@ -36,6 +36,8 @@ pub(crate) struct DelegatedAuthority {
 
 #[derive(Clone, Default)]
 pub struct PersistenceActorConfig {
+    #[cfg(test)]
+    pub(crate) before_runtime_start: Option<Arc<dyn Fn() + Send + Sync>>,
     pub(crate) ordinary: Option<super::ordinary::OrdinaryRun>,
     pub(crate) admission: Option<crate::types::ThreadAdmission>,
     pub(crate) subagent_host: Option<Arc<dyn crate::types::SubagentHost>>,
