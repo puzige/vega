@@ -1706,10 +1706,8 @@ impl Render for ConversationStream {
                                                                 cx,
                                                                 this.message_interaction(),
                                                             );
-                                                            if let StreamEntry::Assistant { copy, .. } = entry
-                                                                && let Some(source) = this.copy_source_for_entry(index)
-                                                            {
-                                                                render_rows::message_with_copy(body, source, copy.id, false, theme(cx).colors, this.message_actions_enabled())
+                                                            if let Some(source) = this.copy_source_for_entry(index) {
+                                                                render_rows::message_with_copy(body, source, source.id, false, theme(cx).colors, this.message_actions_enabled())
                                                             } else {
                                                                 body
                                                             }
