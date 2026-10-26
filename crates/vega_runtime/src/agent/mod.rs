@@ -941,7 +941,12 @@ pub enum RuntimeDiagnosticFailure {
     ReasoningLimit,
     ReasoningReplay,
     ProviderHttp,
-    ProviderTransportOrStream,
+    /// No HTTP response was received while establishing the request.
+    ProviderTransport,
+    /// An established response stream ended before its terminal event.
+    ProviderStreamInterrupted,
+    /// An established response stream or request exceeded its deadline.
+    ProviderTimeout,
     ProviderProtocol,
     ProviderRejected,
     UnknownSafeFailure,
