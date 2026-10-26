@@ -163,7 +163,26 @@ impl SseAssembler {
         if chunk.is_null() {
             return Ok(Vec::new());
         }
-        if !chunk.is_object() || chunk.get("error").is_some() {
+        if !chunk.is_object() {
+            return Err(invalid_protocol());
+        }
+        if let Some(error) = chunk.get("error") {
+            if chunk.get("choices").is_none()
+                && error.get("type").and_then(serde_json::Value::as_str) == Some("server_error")
+                && error.get("code").and_then(serde_json::Value::as_str) == Some("request_timeout")
+                && error
+                    .get("message")
+                    .is_some_and(serde_json::Value::is_string)
+            {
+                return Err(VegaError::ProviderDiagnostic {
+                    kind: ProviderFailureKind::Timeout,
+                    status: None,
+                    message: "provider stream reported request_timeout".into(),
+                    retryable: true,
+                    retry_count: None,
+                    request_id: None,
+                });
+            }
             return Err(invalid_protocol());
         }
         let mut events = Vec::new();
