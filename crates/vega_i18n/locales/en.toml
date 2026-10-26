@@ -532,3 +532,7 @@
 "settings.usage.unpriced_calls" = "{cost} + {count} unpriced calls"
 "settings.usage.utc" = "App usage · By UTC date"
 "settings.usage.weekly" = "Weekly"
+
+"settings.mcp.test_rejected" = "No tools were accepted. Open rejected tool details below to check compatibility."
+"settings.mcp.show_rejected" = "Rejected tools ({count}) — Show details"
+"settings.mcp.hide_rejected" = "Rejected tools ({count}) — Hide details"
