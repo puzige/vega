@@ -244,7 +244,10 @@ impl ConversationStream {
     }
 
     pub(super) fn reset_composer_stopping_if_idle(&mut self) {
-        if !self.actions.running && !self.composer_submit_pending {
+        if !self.actions.running
+            && !self.composer_submit_pending
+            && !self.ordinary_pending_before_run()
+        {
             self.actions.stopping = false;
         }
     }
@@ -263,15 +266,18 @@ impl ConversationStream {
     pub fn request_composer_stop(&mut self, cx: &mut Context<Self>) {
         if (!self.actions.running
             && !self.composer_submit_pending
+            && !self.ordinary_pending_before_run()
             && !self.has_cancellable_queue_wait())
             || self.actions.stopping
         {
             return;
         }
         self.actions.stopping = true;
-        cx.emit(ComposerStopRequested {
-            thread_id: self.thread.id.clone(),
-        });
+        if !self.cancel_ordinary_pending(cx) {
+            cx.emit(ComposerStopRequested {
+                thread_id: self.thread.id.clone(),
+            });
+        }
         cx.notify();
     }
 
@@ -423,7 +429,10 @@ impl ConversationStream {
                 }
             }
         }
-        if self.actions.running || self.composer_submit_pending || self.has_cancellable_queue_wait()
+        if self.actions.running
+            || self.composer_submit_pending
+            || self.ordinary_pending_before_run()
+            || self.has_cancellable_queue_wait()
         {
             controls.push(self.action_focus[1].clone());
         }
