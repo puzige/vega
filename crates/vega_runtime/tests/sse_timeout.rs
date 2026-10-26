@@ -72,7 +72,7 @@ async fn exercise(responses: Vec<String>, retries: u32) -> vega_runtime::AgentOu
             socket.write_all(response.as_bytes()).await.unwrap();
         }
     });
-    let root = std::env::temp_dir().join(format!("vega-sse-{}", ulid::Ulid::new()));
+    let root = std::env::temp_dir().join(format!("vega-sse-{}", ulid::Ulid::generate()));
     std::fs::create_dir(&root).unwrap();
     std::fs::write(root.join("sample.txt"), "fixture").unwrap();
     let tools = vega_tools::Tools::new(&root).unwrap();
@@ -120,6 +120,53 @@ fn retry_count(outcome: &vega_runtime::AgentOutcome) -> usize {
         .count()
 }
 
+fn assert_tool_lifecycle(outcome: &vega_runtime::AgentOutcome, completed_before_retry: bool) {
+    let retry = outcome
+        .events
+        .iter()
+        .position(|event| matches!(event, RuntimeEvent::ResponseRetrying { .. }))
+        .unwrap();
+    let running: Vec<_> = outcome
+        .events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| {
+            matches!(event, RuntimeEvent::ToolCallRunning { .. }).then_some(index)
+        })
+        .collect();
+    assert_eq!(running.len(), 1);
+    assert_eq!(running[0] < retry, completed_before_retry);
+    let results: Vec<_> = outcome
+        .events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| match event {
+            RuntimeEvent::ToolCallFinished(result)
+            | RuntimeEvent::ToolReadFinished { result, .. } => Some((index, result)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), if completed_before_retry { 2 } else { 1 });
+    for (_, result) in &results {
+        assert_eq!(result.status, vega_runtime::RuntimeToolStatus::Success);
+        assert!(result.output.contains("fixture"));
+    }
+    assert!(!results[0].1.reused);
+    assert_eq!(results[0].0 < retry, completed_before_retry);
+    if completed_before_retry {
+        assert!(results[1].0 > retry);
+        assert!(results[1].1.reused);
+    } else {
+        assert!(!outcome.events[..retry].iter().any(|event| matches!(
+            event,
+            RuntimeEvent::ToolCallProposed(_)
+                | RuntimeEvent::ToolCallRunning { .. }
+                | RuntimeEvent::ToolCallFinished(_)
+                | RuntimeEvent::ToolReadFinished { .. }
+        )));
+    }
+}
+
 #[tokio::test]
 async fn timeout_recovers_without_executing_partial_arguments() {
     let outcome = exercise(vec![tool("{\"path\":") + &timeout(), done()], 1).await;
@@ -150,6 +197,7 @@ async fn retry_discards_complete_but_uncommitted_tool_proposal() {
     assert!(!outcome.failed);
     assert_eq!(retry_count(&outcome), 1);
     assert_eq!(outcome.executed_tool_call_count, 1);
+    assert_tool_lifecycle(&outcome, false);
 }
 
 #[tokio::test]
@@ -168,6 +216,7 @@ async fn retry_after_completed_tool_does_not_execute_it_again() {
     assert!(!outcome.failed);
     assert_eq!(retry_count(&outcome), 1);
     assert_eq!(outcome.executed_tool_call_count, 1);
+    assert_tool_lifecycle(&outcome, true);
 }
 
 #[tokio::test]
