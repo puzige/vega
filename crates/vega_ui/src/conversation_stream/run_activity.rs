@@ -132,6 +132,7 @@ pub(crate) struct RunActivityGroup {
     continued: bool,
     continuation_successor: bool,
     process_copies: HashSet<u64>,
+    attached_tools: Vec<Entity<ToolCard>>,
     final_confirmed: bool,
     body_in_details: bool,
     scroll: ScrollHandle,
@@ -552,6 +553,7 @@ impl RunActivityGroup {
             return true;
         }
         let has_details = !self.process_copies.is_empty()
+            || !self.attached_tools.is_empty()
             || self
                 .segments
                 .iter()
@@ -727,6 +729,7 @@ impl RunActivityGroup {
             continued: false,
             continuation_successor: false,
             process_copies: HashSet::new(),
+            attached_tools: Vec::new(),
             final_confirmed: false,
             body_in_details: false,
             scroll: ScrollHandle::new(),
@@ -1032,15 +1035,24 @@ impl RunActivityGroup {
         cx.observe(group, |_, _, cx| cx.notify()).detach();
     }
 
+    pub(crate) fn attach_tool(&mut self, card: Entity<ToolCard>, cx: &mut Context<Self>) {
+        if !self.attached_tools.contains(&card) {
+            self.attached_tools.push(card);
+            cx.notify();
+        }
+    }
+
     pub(crate) fn contains_tool(&self, card: &Entity<ToolCard>, cx: &App) -> bool {
-        self.segments
-            .iter()
-            .flat_map(|segment| segment.children.iter())
-            .any(|child| match child {
-                RunActivityChild::Tool(owned) => owned == card,
-                RunActivityChild::ToolGroup(group) => group.read(cx).contains(card),
-                RunActivityChild::Thinking(_) | RunActivityChild::Compaction { .. } => false,
-            })
+        self.attached_tools.contains(card)
+            || self
+                .segments
+                .iter()
+                .flat_map(|segment| segment.children.iter())
+                .any(|child| match child {
+                    RunActivityChild::Tool(owned) => owned == card,
+                    RunActivityChild::ToolGroup(group) => group.read(cx).contains(card),
+                    RunActivityChild::Thinking(_) | RunActivityChild::Compaction { .. } => false,
+                })
     }
 
     pub(crate) fn contains_tool_group(&self, group: &Entity<ToolActivityGroup>) -> bool {
@@ -1316,12 +1328,13 @@ impl RunActivityGroup {
         } else {
             Vec::new()
         };
-        Self::render_with_details(group, details, window, cx)
+        Self::render_with_details(group, details, false, window, cx)
     }
 
     pub(crate) fn render_with_details(
         group: Entity<Self>,
         details: Vec<AnyElement>,
+        attached_details: bool,
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
@@ -1335,7 +1348,9 @@ impl RunActivityGroup {
         let label = group_ref.label();
         let status_color = colors.conversation_clock;
         let can_expand = group_ref.process_in_details()
-            && (group_ref.has_children() || !group_ref.process_copies.is_empty());
+            && (group_ref.has_children()
+                || !group_ref.process_copies.is_empty()
+                || attached_details);
         let scroll = group_ref.scroll.clone();
         let focus = group_ref.focus.clone();
         let clock = group.downgrade();
