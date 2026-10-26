@@ -781,7 +781,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                 rollback_preparation(
                     transaction,
                     ordinary,
-                    recovery.as_ref(),
+                    recovery.as_deref(),
                     &user_message_id,
                     &user_content,
                     &images,
@@ -1377,7 +1377,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             rollback_preparation(
                 transaction,
                 ordinary,
-                recovery.as_ref(),
+                recovery.as_deref(),
                 &user_message_id,
                 &user_content,
                 &images,

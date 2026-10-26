@@ -30,4 +30,6 @@
 
 ## 验证状态
 
-本阶段实现及七项开发回归已写入；本地仅执行 Rust 1.98.0 rustfmt 与 diff-whitespace 静态检查，尚无编译、云端执行或独立实现审查结果。回归使用真实临时文件 Store、keystore、pipeline、Provider guard、runtime reader 和 ChildSettings；不执行真实 Provider 请求、MCP 服务或原生进程。基线 `21342c5107ccabdcc8f0c5638d981127733cd1b7` 的 required CI 已成功（70 执行/通过、0 跳过）；这不验证后续差异。
+实现及七项开发回归保存在 `38c99f38164c10dab616dd157cd60b6c4e45a32e`；非写入者对该提交相对 `21342c5107ccabdcc8f0c5638d981127733cd1b7` 的 14 文件增量审查无发现。回归使用真实临时文件 Store、keystore、pipeline、Provider guard、runtime reader 和 ChildSettings；不执行真实 Provider 请求、MCP 服务或原生进程。本地仅执行 Rust 1.98.0 rustfmt 与 diff-whitespace 静态检查。
+
+该 head 的 [run 40421469864](https://github.com/puzige/vega/actions/runs/40421469864) 在编译阶段失败：Clippy `121916683817`、Nextest `121916684229`、汇总 `121917714624` 均失败；`pipeline.rs:784,1380` 两个 E0308 来自回滚 helper 接收 `Option<&CommittedReceipt>`，调用却提供 `Option<&Arc<CommittedReceipt>>`。测试发现/执行计数未取得，不能写成测试通过或 no Rust tests。修正两个调用为 `as_deref()`，不改变回滚语义、权限逻辑或测试断言；修正提交仍须新精确 head 的 Actions 和增量独立审查。基线 `21342c5107ccabdcc8f0c5638d981127733cd1b7` 的 required CI 已成功（70 执行/通过、0 跳过），不验证后续差异。
