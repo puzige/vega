@@ -18,7 +18,6 @@ pub use agent::{
     CredentialExceptionFilter, CredentialFinding, CredentialReader, GREP_INVALID_INPUT_OUTPUT,
     INVALID_READ_INPUT_OUTPUT, InvalidBashAudit, LEGACY_BASH_INVALID_INPUT_OUTPUT, McpReadyServer,
     McpRevocationLease, PERMISSION_TIMEOUT, PROVIDER_CREDENTIAL_REDACTION_MARKER,
-    REASONING_DELTA_MAX_BYTES, REASONING_RUN_MAX_BYTES, REASONING_TURN_MAX_BYTES,
     RuntimeAssistantResponseKind, RuntimeAutomationHook, RuntimeDiagnosticAttempt,
     RuntimeDiagnosticFailure, RuntimeDiagnosticMetrics, RuntimeDiagnosticPhase,
     RuntimeDiagnosticState, RuntimeEvent, RuntimeExactRule, RuntimeFinishReason,

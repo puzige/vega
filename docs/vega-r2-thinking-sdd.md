@@ -87,6 +87,8 @@ assistant tool-call message 的 `reasoning_content` 必须逐字保留并序列�
 
 ## 6. Reasoning 有界策略
 
+**SUPERSEDED（#393 契约，2026-10-15）**：以下 64 KiB / 256 KiB / 1 MiB 三档固定思考字节终止门禁已被废止，见 [issue 393 思考流连续性规格](393/vega-issue-393-thinking-stream-diagnostics.md)：「Valid ThinkingDelta, SummaryDelta and provider-required reasoning replay must not terminate a task solely for fixed thinking byte thresholds (delta, response, run)... Remove gates, not raise them.」现行实现只保留展示裁剪 `REASONING_DISPLAY_MAX_BYTES`，达到上限丢弃后续展示事件，不终止任务。本节保留为历史记录；#503 曾按本节回退过该契约，导致长任务必然中断（见 issue #641）。
+
 计数单位为 UTF-8 bytes，并使用 checked arithmetic：
 
 - 单个 SSE reasoning delta：`64 KiB`；
@@ -113,7 +115,7 @@ assistant tool-call message 的 `reasoning_content` 必须逐字保留并序列�
 
 1. Provider default 省略控制字段；支持的 effort 发送精确值；显式 disabled 只发送已声明的真实关闭操作；GLM-5.3/FLASH disabled 与未声明值 fail-closed；unknown/CPA 未声明协议省略字段。
 2. retry 的每次 body 相同；两轮 tool request 逐字回传原 reasoning_content。
-3. SSE reasoning 分片超过 64 KiB、单轮超过 256 KiB、全 run 超过 1 MiB 均得到 typed failure，不能发送截断内容。
+3. 说明：原「SSE reasoning 分片超过 64 KiB、单轮超过 256 KiB、全 run 超过 1 MiB 均得到 typed failure」已被 #393 废止，现行验收见 [issue 393 规格](393/vega-issue-393-thinking-stream-diagnostics.md)。通用 SSE 帧上限（`WIRE_LIMIT`）与 256 KiB 工具参数校验仍然有效。
 
 保留既有 `ThinkingDelta` parser/事件与 redaction 测试；不为 R2 删除或改名。性能 bench/soak、真实 provider dogfood、权限和 `@file` 逻辑均不在本卡。
 

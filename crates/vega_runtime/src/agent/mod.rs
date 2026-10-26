@@ -52,9 +52,8 @@ pub use credential_redaction::{
 };
 pub use mcp_registry::{McpReadyServer, McpRevocationLease};
 
-pub const REASONING_DELTA_MAX_BYTES: usize = 64 * 1024;
-pub const REASONING_TURN_MAX_BYTES: usize = 256 * 1024;
-pub const REASONING_RUN_MAX_BYTES: usize = 1024 * 1024;
+/// Upper bound on retained reasoning bytes rendered into the conversation.
+/// Reaching it drops further display events; it never fails the run.
 const REASONING_DISPLAY_MAX_BYTES: usize = 256 * 1024;
 /// Stable content-free result for a provider call id that conflicts with
 /// persisted owner, tool, or safe input identity.
