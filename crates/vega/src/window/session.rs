@@ -8,7 +8,7 @@ type ReasoningAuthority = (
 );
 type ModelCatalogLoadResult = Result<
     (
-        Vec<String>,
+        Vec<ModelOption>,
         Vec<ReasoningProfileProjection>,
         Option<ReasoningSettingsErrorCode>,
         Option<ReasoningAuthority>,
@@ -544,7 +544,7 @@ impl VegaWindow {
         }
     }
 
-    pub(crate) fn model_options_for_pricing(&self) -> Vec<String> {
+    pub(crate) fn model_options_for_pricing(&self) -> Vec<ModelOption> {
         self.configured_models.clone().unwrap_or_default()
     }
 
@@ -571,7 +571,7 @@ impl VegaWindow {
             .spawn(move || {
                 let result = vega_store::config::read_from(&config_path)
                     .map(|config| {
-                        let mut models = Vec::new();
+                        let mut models: Vec<ModelOption> = Vec::new();
                         let mut reasoning_profiles = Vec::new();
                         let mut reasoning_error = None;
                         let mut reasoning_authority = None;
@@ -600,10 +600,13 @@ impl VegaWindow {
                         for provider in config.providers.iter().filter(|provider| provider.enabled)
                         {
                             for model in &provider.models {
-                                if !models.contains(model)
+                                if !models.iter().any(|option| option.model == model.as_str())
                                     && unique_provider_for_model(&config, model).is_some()
                                 {
-                                    models.push(model.clone());
+                                    models.push(ModelOption {
+                                        provider: provider.name.clone(),
+                                        model: model.clone(),
+                                    });
                                     let profile = reasoning.as_ref().and_then(|reasoning| {
                                         reasoning
                                             .profile(&provider.name, model)

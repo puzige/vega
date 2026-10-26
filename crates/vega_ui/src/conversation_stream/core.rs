@@ -175,7 +175,7 @@ pub struct ConversationStream {
     pub(crate) file_retry_focus: FocusHandle,
     pub(crate) composer_defaults: ComposerDefaults,
     pub(crate) thinking_slider: Entity<ThinkingSlider>,
-    pub(crate) model_options: Vec<String>,
+    pub(crate) model_options: Vec<ModelOption>,
     pub(crate) model_picker_level: ModelPickerLevel,
     pub(crate) model_menu_scroll: ScrollHandle,
     pub(crate) compact_workspace: bool,
@@ -1372,12 +1372,12 @@ impl ConversationStream {
         self.composer_defaults.reasoning_unavailable
     }
 
-    pub fn apply_model_options(&mut self, options: Vec<String>, cx: &mut Context<Self>) {
+    pub fn apply_model_options(&mut self, options: Vec<ModelOption>, cx: &mut Context<Self>) {
         self.model_options = options;
         self.model_selector_highlight = self
             .model_options
             .iter()
-            .position(|model| *model == self.composer_defaults.model)
+            .position(|option| option.model == self.composer_defaults.model)
             .unwrap_or(0);
         cx.notify();
     }
@@ -1502,12 +1502,12 @@ impl ConversationStream {
             cx.notify();
             return;
         }
-        if let Some(model) = self
+        if let Some(option) = self
             .model_options
             .get(self.model_selector_highlight)
             .cloned()
         {
-            self.select_model_option(&model, cx);
+            self.select_model_option(&option.model, cx);
         }
         cx.notify();
     }
@@ -1517,10 +1517,13 @@ impl ConversationStream {
         self.model_selector_highlight = self
             .model_options
             .iter()
-            .position(|model| *model == self.thread.model)
+            .position(|option| option.model == self.thread.model)
             .unwrap_or(0);
         self.model_menu_scroll
-            .scroll_to_item(self.model_selector_highlight);
+            .scroll_to_item(model_picker_row_index(
+                &self.model_options,
+                self.model_selector_highlight,
+            ));
         cx.notify();
     }
 
@@ -1544,10 +1547,13 @@ impl ConversationStream {
         self.model_selector_highlight = self
             .model_options
             .iter()
-            .position(|model| *model == self.thread.model)
+            .position(|option| option.model == self.thread.model)
             .unwrap_or(0);
         self.model_menu_scroll
-            .scroll_to_item(self.model_selector_highlight);
+            .scroll_to_item(model_picker_row_index(
+                &self.model_options,
+                self.model_selector_highlight,
+            ));
         cx.notify();
     }
 
@@ -1565,7 +1571,10 @@ impl ConversationStream {
         }
         self.model_selector_highlight = self.model_selector_highlight.saturating_sub(1);
         self.model_menu_scroll
-            .scroll_to_item(self.model_selector_highlight);
+            .scroll_to_item(model_picker_row_index(
+                &self.model_options,
+                self.model_selector_highlight,
+            ));
         cx.notify();
     }
 
@@ -1577,7 +1586,10 @@ impl ConversationStream {
             self.model_selector_highlight += 1;
         }
         self.model_menu_scroll
-            .scroll_to_item(self.model_selector_highlight);
+            .scroll_to_item(model_picker_row_index(
+                &self.model_options,
+                self.model_selector_highlight,
+            ));
         cx.notify();
     }
 

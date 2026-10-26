@@ -1290,38 +1290,7 @@ impl ConversationStream {
                         .min_h_0()
                         .overflow_y_scroll()
                         .track_scroll(&self.model_menu_scroll)
-                        .children(self.model_options.iter().enumerate().map(|(index, model)| {
-                            let selected = index == self.model_selector_highlight;
-                            let current_model = *model == self.composer_defaults.model;
-                            let model = model.clone();
-                            let label = model.clone();
-                            div()
-                                .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                                .flex_shrink_0()
-                                .px_2()
-                                .flex()
-                                .items_center()
-                                .text_size(px(Typography::SIDEBAR))
-                                .truncate()
-                                .when(selected, |row| row.bg(colors.bg_active))
-                                .text_color(if current_model {
-                                    colors.brand_primary
-                                } else if selected {
-                                    colors.text_primary
-                                } else {
-                                    colors.text_secondary
-                                })
-                                .cursor_pointer()
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(
-                                        move |this, _: &MouseUpEvent, _: &mut Window, cx| {
-                                            this.select_model_option(&model, cx);
-                                        },
-                                    ),
-                                )
-                                .child(label)
-                        }))
+                        .children(self.model_picker_rows(colors, cx))
                         .tracked_scroll_edge_fade(
                             self.model_menu_scroll.clone(),
                             colors.bg_elevated,
@@ -1331,6 +1300,63 @@ impl ConversationStream {
         )
         .with_priority(2)
         .into_any_element()
+    }
+
+    fn model_picker_rows(&self, colors: ThemeColors, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut rows = Vec::new();
+        for (index, option) in self.model_options.iter().enumerate() {
+            if model_picker_starts_group(&self.model_options, index) {
+                let first_group = index == 0;
+                rows.push(
+                    div()
+                        .h(px(Layout::COMPOSER_PICKER_GROUP_HEIGHT))
+                        .flex_shrink_0()
+                        .px_2()
+                        .flex()
+                        .items_center()
+                        .text_size(px(Typography::METADATA))
+                        .text_color(colors.text_tertiary)
+                        .when(!first_group, |group| {
+                            group.mt(px(Layout::COMPOSER_PICKER_GROUP_GAP))
+                        })
+                        .child(div().flex_1().min_w_0().truncate().child(option.provider.clone()))
+                        .into_any_element(),
+                );
+            }
+            let selected = index == self.model_selector_highlight;
+            let current_model = option.model == self.composer_defaults.model;
+            let model = option.model.clone();
+            let label = option.model.clone();
+            rows.push(
+                div()
+                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                    .flex_shrink_0()
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_size(px(Typography::SIDEBAR))
+                    .when(selected, |row| row.bg(colors.bg_active))
+                    .text_color(if current_model {
+                        colors.brand_primary
+                    } else if selected {
+                        colors.text_primary
+                    } else {
+                        colors.text_secondary
+                    })
+                    .cursor_pointer()
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &MouseUpEvent, _: &mut Window, cx| {
+                            this.select_model_option(&model, cx);
+                        }),
+                    )
+                    .child(div().flex_1().min_w_0().truncate().child(label))
+                    .child(crate::menu_list::selection_marker(current_model, colors))
+                    .into_any_element(),
+            );
+        }
+        rows
     }
 
     fn message_location_status_element(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
