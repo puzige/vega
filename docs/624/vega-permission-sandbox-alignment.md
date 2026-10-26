@@ -2,20 +2,21 @@
 
 ## 状态与授权
 
-- 版本：D3，2026-10-26；阶段：用户已选择 P2 规格方向 / 待实现授权，尚未实现。
+- 版本：D4，2026-10-26；阶段：具体契约设计 / 待独立设计审查与实施确认，尚未实现。D4 的产品细项均为待确认方案，不把文档更新当作放权批准。
 - 关联：[Issue #624](https://github.com/puzige/vega/issues/624)、[#58](https://github.com/puzige/vega/issues/58)、[#378](https://github.com/puzige/vega/issues/378)、[#619](https://github.com/puzige/vega/issues/619)。
-- 当前代码基线：`410758d36e8fbe0802f816227948ece1486d8494`；任务分支：`feat/624-permission-alignment`。D2 基线为 `dc7e37106f3e97aa22702e3dee6d4c7627bb3359`；本轮同步的 #544 / #627 为既有上游变更，不是本卡新增生产实现。
+- 当前代码基线：`e481cd28d5de685dc79f39080a8c6cb79b9412b8`；任务分支：`feat/624-permission-alignment`。D3 基线为 `410758d36e8fbe0802f816227948ece1486d8494`；本轮先以 `580ae08acd43942875968cd8db3cac5ed0fbf1fe` 合入 `d87957c8b68a49a033bb5a8b81ee71fedd57c0ca`，再以 `2c8481710b89a749adcab0b5fec99642e0828091` 正常合入当前基线，未重写历史。新增的模型分组、预测、运行中消息操作、Provider 失败分类和 reasoning 修复均为既有上游内容，不是本卡生产实现。
 - 用户在“下一步沿哪条路线完善规格；这一步不修改运行权限”的问题中选择 **P2：更全面开放**，补充“全面对齐 ChatGPT”。这是规格方向裁决，不是执行放权、修改本机配置或合并生产实现的批准。P1/P3 不再作为本轮推荐；生产修改前另行明确确认本规格的范围、影响与回滚。
-- “全面对齐”覆盖 Full access、受限模式、审批、凭证、界面、迁移及恢复委派；以可验证的公开 Codex 契约作参照，不宣称复刻闭源 ChatGPT App，不把只完成 Full access 当作整卡完成。
+- “全面对齐”覆盖 Full access、受限模式、审批、凭证、界面、迁移及恢复委派；以可验证的公开 Codex 契约作参照，不宣称复刻闭源 ChatGPT App，不把只完成 Full access 当作整卡完成。用户进一步选择 **正常重启保留授权**、**同卡完成受限模式对齐**；本版据此提出完整范围，仍待具体实施确认。
+- 本轮用户明确允许 #624 超过通常的 3 个提交，以保留已发布 D1–D3 证据、正常同步基线并追加必要提交；不重写、不强推历史，最终 PR 仍 squash。该例外只适用于本卡提交记录，不是生产权限授权。
 - 仓库规则：本地不运行 Vega、不编译或测试；自动检查交现有 PR Actions，真实平台集成交用户手测。Rust 开发测试如使用，必须在合并前留痕并清除，不恢复历史测试集合。
 
 ## 目标、范围与非目标
 
 让审批、实际 OS 隔离、权限名称及风险提示一致。Ask/Plan/Execute 是任务能力门禁，ReadOnly/Confirm/Auto/FullAccess 是审批与执行策略，两者不机械映射为 Codex 三个模式。
 
-本轮只完善规格及静态审查。实施路线分为 Full access 契约与旧数据兼容、受限模式差异裁决、完整验收三个阶段；阶段不是新增独立卡，也不替代整卡验收。下文逐项登记尚未定案的受限策略，不在 P2 名义下顺带放宽。
+本轮只完善规格及静态审查。拟议实施范围同时包含 P2、版本化持久授权、只读 Bash、受限默认禁网与单次扩围，按依赖顺序实现但在同卡验收，不将受限工作推迟成未获批准的另卡。受限策略是下文明确提出的新产品契约，不在 P2 名义下暗中改变。
 
-凭据存储后端、Keychain 迁移、Broker 重写、MCP 独立保护、具名工具入口检查、浏览器内层沙箱均不因 P2 自动改变。受限模式网络和进程/Mach 规则只有在其独立差异与风险获准后才可变更。禁止读取真实 secret 做验证、修改本机配置/凭据或接管日常浏览器。
+不改凭据存储后端、不迁 Keychain、不重写 Broker 的认证/目的地规则、不撤销 MCP 独立保护和具名工具入口检查、不关闭浏览器内层沙箱。允许进入实施确认范围的是 Bash 的 Broker 启动时机、受限执行策略、独立扩围授权及必要接线；这不批准当前 Agent 修改本机配置/凭据、读取真实 secret 验证或接管日常浏览器。
 
 ## 已核实的 Vega 调用链
 
@@ -30,6 +31,10 @@
 7. Composer 仍显示“不使用沙箱，危险操作仍需确认”。因此常规应用配置下，Full access 的声明与实际边界不一致。
 8. `vega_credentials::ProtectedProcess` 是 MCP 等进程的独立路径，不由 Bash 的 `full_access` 标志控制，不应顺带删除保护。
 9. Bash 之前还有统一凭据读取：`vega::app_agent` 的 `broker_credential_reader` 收集全部 binding key refs，任一 `get_key` 失败即传播错误；`owner_credential_reader` 将其与 Provider/MCP 凭据合并；`vega_conversation::agent::pipeline` 在构造运行前读取，失败为 `CredentialCheckUnavailable`。因此仅改 Bash 分支仍无法满足 A3 的缺失绑定 key 场景。
+10. `vega_store::keystore::get_key` 的 `Missing` 同时覆盖 key 不存在、根/凭据目录缺失；`platform::read` 还把凭据文件缺失转换为空文档。不能用 `Err(Missing) => 忽略` 代替严格缺失分类。
+11. `vega_store::migrate` 在 `user_version >= MIGRATIONS.len()` 时直接返回；任意旧 binary 不认识新授权，也不必留下可检测标志。新 marker 无法普遍检测手动降级/恢复旧数据，D4 明确修正 D3 对任意降级往返的过强保证。
+12. `PermissionRequest`、runtime target/prompt 与项目 `permissions` 精确规则均无沙箱范围。`PermissionQueue` 已有 first-wins latch、取消和消失转 Timeout；新请求替换旧请求也使旧请求失效。可以复用终态机制，不能把旧 Once/Always 解释为网络/目录授权。
+13. 自动化 claim 目前没有权限快照，凭据续跑仅绑定 source/raw-user fingerprint，委派 authority JSON 仅含旧 mode/rules。必须沿实际创建、排队、恢复与派发链传递新 fence，而不只在 Composer 添加确认框。
 
 可复核文件：`crates/vega/src/agent_context.rs`、`crates/vega_conversation/src/agent/pipeline.rs`、`crates/vega_runtime/src/agent/tools_exec.rs`、`crates/vega_runtime/src/permission.rs`、`crates/vega_tools/src/bash/mod.rs`、`crates/vega_tools/src/sandbox.rs`、`crates/vega_tools/src/credentials.rs`、`crates/vega_credentials/src/lib.rs`、`crates/vega_ui/src/conversation_stream/composer_actions.rs`。
 
@@ -82,24 +87,31 @@
 
 ## 验收用例（先于实现计划）
 
-以下为 P2 设计预期，不是运行结果或实施批准。均使用合成凭据、独立项目和可恢复标记；A2/A4 对受限模式的预期是首阶段保留项，后续如需改变，必须先更新相应规格与回归，不删除其安全不变量求通过。
+以下为 D4 待确认设计预期，不是运行结果或实施批准。均使用合成凭据、独立项目和可恢复标记。相对 [D3 已审版本](https://github.com/puzige/vega/blob/aae1d34001f21c9756b28630f6343fbc4fd5fc26/docs/624/vega-permission-sandbox-alignment.md)，明确修改 A2/A4/A12 的受限策略和 A13 的回滚保证，并增加 A15–A21；不是删掉回归或按实现结果改预期。所有行为验收均未运行。
 
 | ID | 前置 / 操作 | 可观察结果 | 验证路线 / 当前状态 |
 |---|---|---|---|
 | A1 | Execute + 新契约已授权 Full access；零绑定但有合成凭据文件；包含正常配置和无配置工具实例 | Bash 不经过 Vega Seatbelt；不创建 Broker/保护上下文；对合成文件的访问仅受 OS/外层策略约束，不能写成凭据不可读 | 启动分支审查 + CI 必要回归 + 用户手测；未运行 |
-| A2 | 同一无害命令切到 Confirm / Auto | 保留受限启动；项目外写入拒绝，普通项目写入可用，Git/配置根保护保留；有绑定的受控环境及代理约束不回退 | 静态差异 + CI 必要回归 + 用户 owned-fixture 手测；未运行 |
+| A2 | Execute 下分别选 Confirm / Auto，运行项目写入、项目外写入、Git/配置根写入及联网命令；有/无绑定均覆盖 | 普通审批仅决定执行；默认项目/私有临时目录可写，其余写入拒绝；Git/配置根保护保留。默认不联网、不创建 Bash Broker；单次扩围按 A15/A16 执行，有绑定时不绕过代理目的地规则 | 策略/接线静态审查 + 必要 CI + 用户 owned-fixture 手测；未运行 |
 | A3 | 已授权 Full access，Provider/MCP 必需凭据正常、绑定语法有效；分别引用存在/缺失的合成 binding key、使用无关命令；排队期间增加/删除有效绑定 | 绑定本身不拒绝 Bash；不启动受限 Broker、不调用其 SecretReader、不创建租约/CA/别名环境、不直接注入真值；不自动删绑定、切模式或加沙箱。配置错误和授权失配仍按各自原因阻断 | Bash 策略与实际接线审查 + CI 必要回归；未运行，不沿用 P1“非空即拒绝”断言 |
-| A4 | Ask / Plan，或 Execute + ReadOnly，含 once/always 规则 | 首阶段保留当前 Bash 拒绝；P2 不越过任务能力门禁。是否新增受限只读 shell 属对齐差异表，不冒称已等价 Codex read-only | runtime 静态审查 + CI 必要回归；未运行 |
+| A4 | Ask / Plan 的四种权限选择，以及 Execute + ReadOnly；读取、重定向写入、解释器/子进程写入、网络、危险命令；存在旧 Once/Always | 提供 OS 约束的只读 Bash，普通读取可执行，工作区/临时目录写入和网络拒绝；不依命令文本猜只读。Ask/Plan 不因 Full access 选择解除约束，目录写扩围拒绝，网络仅可单次确认；危险匹配仍拒绝，旧规则不能扩大能力 | 能力决策/沙箱接线审查 + 必要 CI + 用户正反例手测；未运行 |
 | A5 | 危险命令、取消、超时、scope mismatch、临时目录身份异常 | 危险门禁、审计、进程组收拢、输出上限和安全清理不回退；不将现有收拢机制夸称为能追回所有脱离后台进程 | 静态审查 + CI 必要回归 + 用户进程手测；未运行 |
-| A6 | 旧 Full access 线程/默认值，未知契约；排队、重启恢复、自动化、fork、子 Agent followup/resume | 缺失/未知/旧授权不能得到 P2；运行不热升级；继承与恢复必须同时匹配模式及新授权版本/范围；普通 fork 保持 Confirm | 迁移与恢复接线审查 + 存储/runtime CI + 用户手测；持久化方案待实现前冻结 |
+| A6 | 旧 Full access 线程/默认值、缺失/未知授权；排队、重启恢复、自动化、fork、子 Agent followup/resume | 旧记录不自动获得 P2；新持久授权正常重启后仍有效，但不自动续跑。恢复同时匹配新旧任务身份及授权 fence，不从后来设置补权；普通 fork 保持 Confirm；自动化须有自身任务身份绑定的确认 | 存储/恢复/runtime CI + 用户手测；未运行 |
 | A7 | 运行前选 P2，运行中改为 Confirm；P2 曾修改合成安全配置 | 活动 run 的执行快照不热切换，后续新 run 使用受限策略；需要立即停止则用 Stop。切回不恢复配置可信性、不撤销外部效果或后台进程 | 快照/取消审查 + CI 必要回归 + 用户手测；未运行 |
 | A8 | 鼠标/键盘选择与取消 P2；旧同名模式重新授权；保存失败、重开线程、默认设置 | 风险在确认前可见；取消/持久化失败不生效，重选旧同名模式有入口；授权范围与生效时点清楚；有绑定不再显示 P1 冲突拒绝 | UI/服务契约审查 + 必要 CI + 用户手测；未运行 |
 | A9 | Full access 下的模型工具说明、结果、日志；read/glob/grep/write/edit 与 MCP | 具名工具检查与 MCP 独立保护保留；现有脱敏保留但不承诺覆盖编码/旁路；不把 Bash 声明为仍可使用受限绑定，也不因 Bash 模式删除 MCP 所需绑定 | 接线与独立安全审查 + 必要 CI；未运行 |
 | A10 | 有/无绑定的 P2 改合成安全配置，后续受限 run 或其他线程读取 | 记录后续上下文可将修改后配置作为新快照的持久风险；不以快照相等、模式切回或数据库标记冒充用户批准或防同 UID 篡改 | 静态调用链 + 用户合成配置手测；信任取舍待实施授权 |
 | A11 | P2 授权后新增一个合成明文凭据；再启动 Bash | 不自动扫描、搬迁、注入或转沙箱；不承诺自动隔离该凭据，绑定增减不改变 P2 路线 | 设计/启动审查 + 用户手测；未运行 |
-| A12 | 从 P2 切回受限并建立新 run，有有效绑定；再使绑定与快照失配或 key 缺失 | 仅受限路径恢复原 Broker 行为；失配/不可用时 fail closed，不将 P2 的忽略绑定语义泄漏到受限路径，不静默降级无沙箱 | CI 必要凭据回归 + 用户合成代理手测；未运行 |
-| A13 | P2 启动失败、取消发生在派发前、持久化/配置解析失败、回滚后再升级 | 无未授权启动或自动重试放权；原始失败原因可恢复；旧标记不在升级/降级往返时被重新解释为新批准 | 错误/迁移审查 + 必要 CI + 用户手测；未运行 |
+| A12 | 从 P2 切回受限建立新 run，有有效绑定；不请求网络、批准代理联网、绑定变更/key 缺失分别覆盖 | 受限严格凭据检查保留；仅单次网络授权后创建 Broker/CA/alias，失配或不可用时拒绝，不退到直连/无沙箱/真值注入；无网络授权不创建代理能力 | CI 必要凭据回归 + 用户合成代理手测；未运行 |
+| A13 | P2 spawn 失败、派发前取消、保存/解析失败；受支持的授权重置中途失败/重启，再完成回滚并升级 | 无未授权启动或自动重试放权；保存失败不展示成功。重置 pending 阻止 P2，完成后旧 grant 不复活；任意未走重置的手动降级/数据还原不作自动检测保证 | 错误/迁移审查 + 必要 CI + 用户手测；未运行 |
 | A14 | 核对下方全面对齐差异表及所有批准的受限策略正反例 | 每项有固定依据、批准/保留差异、实现与验证结果；未决项不能标整卡完成；CI 或浏览器单次成功不能替代权限矩阵 | 最终规格/实现独立审查 + 用户验收；未运行 |
+| A15 | Confirm/Auto/ReadOnly 的联网请求；普通 Once/Always、无响应、取消、卡片替换/消失、超时、重复 call、重启后旧响应 | 只有独立范围卡的本次批准提供网络能力；不记住、不继承、不自动重试；迟到/重复响应无效。受限默认阻断直连、loopback、Unix socket 和非白名单 Mach 中继 | 授权状态机 CI + 用户合成端点/IPC 手测；未运行 |
+| A16 | 项目外专用目录扩围；目录路径/身份/命令变化、symlink/hardlink、Git 元数据/凭据根及祖先、Ask/Plan/ReadOnly | 仅 Execute + Confirm/Auto 可请求写目录；单次确认和身份复核后仅放行该范围，保留强制 deny；不可表示或不安全的根拒绝，不偷换成 Full access | 路径/权限 CI + 用户文件标记手测；未运行 |
+| A17 | 线程/默认授权、同模式重授权、模式退出再进入、旧草稿、新建/已有线程、保存冲突 | mode/revision/grant 原子保存；同名重授权更换 identity；默认授权只供之后新建的线程独立派生，已有线程和旧草稿不补权；切离即撤销未来使用，再进入需确认 | 存储/配置/服务 CI + 用户 UI/重启手测；未运行 |
+| A18 | 自动化任务修订、手动 followup/resume、凭据续跑、排队任务在授权改变前后 | 同一 fence 可恢复且仍遵守原启动规则；失配/旧序列化不得静默重建更宽授权。活动父 run 只传已有权限，单次扩围不传给子 Agent | 恢复/序列化 CI + 用户手测；未运行 |
+| A19 | P2 的可选 binding 引用：安全文件中 key 存在/不存在；文件/目录/根缺失、unsafe 权限、hardlink、格式/IO 故障；同 ref 又为必需 Provider/MCP key | 仅安全、存在、完整解析的存储中缺少无关 key 可忽略；其余错误保留；必需 key 缺失仍失败。运行前和后续脱敏读取都覆盖，不记录真实值 | 严格读取与调用策略 CI；未运行 |
+| A20 | 受限无/有绑定、只读/项目写/单次扩围的环境、子进程、实际 final profile、自检失败 | 统一受控环境，不继承用户代理/秘密环境或登录脚本；子进程保持约束。自检使用本次最终策略，失败不启动命令；`true` 成功不冒充所有边界已验证 | 接线审查 + 必要 CI + 用户平台手测；未运行 |
+| A21 | 三类授权卡鼠标/键盘、Esc、焦点、窄窗口/浅深色、保存/派发失败、当前 run 与下次设置 | 不混用普通审批/扩围/持久 Full access；范围和必要风险在确认前可见，错误不折叠隐藏；取消不生效，保存失败留在原状态，活动权限不虚假更新 | UI/服务必要 CI + 用户纯手动验收；未运行 |
 
 ## 已选方向：P2 的执行契约
 
@@ -107,16 +119,16 @@ P1（非空绑定仍拒绝）和 P3（保留凭证 Seatbelt）仅作为 [D2 历�
 
 ### 模式、绑定与网络
 
-下表描述取得新契约授权后的首阶段目标；不是当前已实现行为。默认仍为 Confirm。
+下表是 D4 整卡目标，尚未实现，须在实施确认中一并批准。默认仍为 Confirm；不新增一组独立模式选择器，而是在内部区分能力、普通审批、执行范围三维，并提供明确的单次扩围卡。
 
-| 条件 | 普通 Bash | Vega OS 沙箱 | 凭证绑定/Broker | 网络与环境 |
+| 条件 | 普通 Bash | Vega OS 策略 | 凭证绑定/Broker | 网络与环境 |
 |---|---|---|---|---|
-| Ask / Plan，任意权限 | 保留能力拒绝 | 不启动 | 不启动 | 不适用 |
-| Execute / ReadOnly | 保留只读门禁拒绝 | 不启动 | 不启动 | 不适用 |
-| Execute / Confirm，无/有绑定 | 原确认或精确规则；危险门禁优先 | 保留受限 Seatbelt | 无绑定无租约；有绑定保留受限代理与注入 | 保留现状，网络差异另行裁决 |
-| Execute / Auto，无/有绑定 | 普通命令自动批准；危险门禁优先 | 同 Confirm | 同 Confirm | 同 Confirm；不是 Codex auto-review |
-| Execute / 新授权 Full access，无/有绑定 | 普通命令自动批准；危险门禁优先 | 不附加 Vega Seatbelt | 绑定不拒绝 Bash；不启动其受限 Broker、不提供代理替身或真值注入 | 不加 Vega 网络限制；保留直接 shell 的环境/启动方式与私有临时目录，不主动修改用户代理；仍受 OS/外层环境约束 |
-| 旧/缺失/未知 P2 授权 | 不得派发 P2 Bash | 不通过换名字或自动降级掩盖 | 不删绑定以绕过状态 | 提供重新授权或改用受限模式的动作 |
+| Ask / Plan，任意权限 | 新增只读 Bash；危险匹配拒绝 | ReadOnly；不因权限控件为 Full access 放宽 | 默认不建 Bash Broker；批准网络后有绑定才启用 | 默认禁网，网络可单次确认；受控环境；不能扩为可写 |
+| Execute / ReadOnly | 同上，不按文本猜测只读 | ReadOnly | 同上 | 同上 |
+| Execute / Confirm | 原普通确认/精确规则；危险优先 | WorkspaceWrite | 默认不建 Bash Broker；有绑定时获网络授权才建 | 默认禁网；联网/额外写目录分别单次确认；受控环境 |
+| Execute / Auto | 普通命令自动批准；危险优先 | 同 Confirm | 同 Confirm | 同 Confirm，扩围不会自动批准；不是 Codex auto-review |
+| Execute / 新授权 Full access | 普通自动批准；危险优先 | 不附加 Vega Seatbelt | 不因绑定拒绝 Bash；不建其 Broker/租约/CA/alias/context，不注入真值 | 不加 Vega 网络限制；保留直接 shell 环境/启动与私有临时目录，不主动修改用户代理；OS/外层约束仍在 |
+| 选择 Full access 但缺失/旧/未知授权 | 不获得 P2；需用户重新授权或明确选受限 | 不静默改名/降级掩盖 | 不删绑定 | 旧数据可查看，但不得靠切任务模式再切回补出授权 |
 
 P2 必须在创建 Broker、CA 和 `ShellCredentialContext` 之前分流。只删除 `CredentialProtectionRequired` 不满足契约，因为后续共享路径还会创建代理/上下文；只把 sandbox 参数改成 None 也不满足契约。保留整个 `Tools` 的凭据策略，避免连带取消具名文件工具检查。绑定本身格式非法、配置解析失败、Provider 不可用等仍是独立失败，不承诺 P2 绕过整个应用的就绪条件。与当前 Provider/MCP 无关的 binding key 缺失不属于这些例外，不能包装成通用“就绪失败”继续阻断 P2。统一脱敏仍可由可信 owner reader 读取实际存在的已知凭据；须区分缺失引用与凭据库/配置故障，不关闭统一脱敏、不吞全部错误、不放宽受限 Broker/MCP 的凭据检查。
 
@@ -129,64 +141,150 @@ Full access 下“绑定不自动用于 Bash 请求”与“凭据不可访问�
 - 受限 run 的配置快照/SecretReader 一致性检查保留；变动失配时按既有错误停止凭据使用，不借 P2 自动退化为直接 shell。新建受限上下文会重读配置，因此旧快照的相等检查不证明新配置获得用户批准。
 - 无沙箱 Bash 可修改共享配置及授权数据，影响后续 run、其他线程或后台进程。P2 采用当前用户级可信执行，不提供同 UID 防篡改；数据库中的契约版本只解决正常迁移/意外继承，不是针对恶意 shell 的权威边界。该持久影响仍须在实施授权中明确接受。
 
-### 授权与迁移提案（生产修改前冻结具体表示）
+### 持久授权、原子更新与恢复（D4 拟议契约）
 
-1. 将“权限模式”与“新 Full access 契约授权”分开表达。建议持久化版本化授权记录，包含契约版本及作用范围；不只加一个可误用的全局 `true`。缺失、未知和旧 `full_access` 均视为需要重新授权，保留历史值，不批量把旧记录写成“已同意”。
-2. 线程授权仅用于该线程后续新 run；默认设置的全局授权应在独立设置动作中确认，并明确覆盖未来新建线程，不能由一次线程选择隐式提升全局默认。更改默认值不追溯授权既有线程或自动化；旧默认值不能产生 P2 线程。
-3. 运行快照同时绑定权限模式、契约版本和授权范围；在 admission、排队恢复、runtime 构造及 Bash 派发核对同一来源。运行中的切换仅用于下一个 run，不热升级/撤销当前 run；需要立即停止时走现有取消链。以明确事件失效 pending/replay，不靠 UI 一段说明替代真实状态。
-4. 子 Agent 仅继承父活动 run 已有授权，不从后来更宽的线程设置补权；followup/resume 同时检查契约、authority、source/version/fingerprint，失配拒绝。普通 fork 保持 Confirm；旧自动化/持续任务/凭据续跑没有新契约时不得无交互放权。
-5. 当前接线证据：`composer::request_permission_mode` 对同模式不发请求；`pipeline` 快照比较现行模式；`DelegatedAuthority` 只有 run_mode/permission_mode/exact_rules；`delegated_stages::authority` 无新契约字段。必须改实际授权事件及完整接线，不能仅改 tooltip。UI 不直接读写 SQLite，runtime 不依赖 UI。
-6. 实施前补齐字段/类型、增量 migration 编号、旧/缺失/未知解析、默认继承、恢复序列化与降级再升级方案；不能在文档中把未选定的 schema 或尚不存在的 API 写成实现事实。回滚旧二进制后的再升级不得凭遗留授权标记静默复活 P2。
+以下类型和字段均是**拟新增**，不是现有 API。UI/服务共享产品类型置于 `vega_conversation::types`；store 使用持久化表示，runtime 经现有转换边界接受 headless 执行策略，不反向依赖 conversation/UI，不在各 crate 复制一套产品类型。
+
+#### 数据表示与旧数据
+
+- `FullAccessGrant`：`schema_version=1`、`contract_version=1`、不透明 `grant_id`（ULID）、`authority_epoch`、`scope`、`origin`、`issued_at`。线程 scope 为精确 thread id；默认 scope 为当前应用配置的“未来新线程”；origin 区分用户线程确认和默认授权派生（记录来源 grant id），不得伪造为逐线程点击确认。
+- `PermissionFence`：`schema_version`、执行策略版本、数据库/项目/工作区身份、thread 身份、任务模式、权限模式、`permission_revision`、有效 grant identity/version/epoch/scope，外加现有 source/version/fingerprint、exact rules 等上下文约束。入队时绑定已分配的 submission/attempt 身份；尚未存在的 run id 不伪造为已运行，在 admission 建立 execution binding 后只追加该身份、不重新取权，运行和范围许可必须同时匹配 fence 与 execution binding。记录中无 secret，时间戳不是授权依据；必需字段缺失、版本未知、scope 错误或不一致均 fail closed。
+- 拟增量 migration `0039_permission_contracts.sql`（当前上游已用 `0038_provider_failure_split.sql`；若实施前编号再被占用则顺延，不改已有 migration）：`threads.permission_revision INTEGER NOT NULL DEFAULT 0`、`threads.full_access_grant TEXT NULL`；单例 `permission_contract_state` 保存逻辑 `authority_epoch` 与 `reset_state`（ready/pending）；`credential_continuations.permission_fence TEXT NULL`；独立 `command_scope_audits` 记范围请求身份/规范化范围/来源/终态和时间。结构化 JSON 校验与 typed decode 必须共同检查；创建 epoch 不创建任何用户 grant。schema 只增不删，重置仅修改记录值。
+- `NewTaskDefaults` 拟增 `permission_revision`（缺失为 0）、`full_access_grant`（缺失为 None），同已有 `permission_mode` 一起原子保存到 config；不把一次默认授权再拆成 config+SQLite 两份必须同时成功的 grant 写入。默认 grant 绑定同一逻辑 epoch，数据库替换或配置复制不自动认作新批准。
+- 迁移保留旧 `full_access` 字符串用于显示“需重新授权”，新 grant 留空；旧默认值不能生成已授权 P2 线程。无效原始记录不强行转换成 Confirm 后继续执行；允许查看/修复，运行入口提供重新授权或用户明确改选受限。其他旧模式按 D4 受限策略使用，旧 Once/Always 精确规则仍只是普通审批。
+
+#### 授权动作、草稿和撤销
+
+1. 线程变更走 conversation 服务及现有 admission/write coordination；以 expected revision 做 compare-and-set。在同一事务中更新 mode、revision、grant 与必要 pending/replay 失效标记，提交后才发布 UI 事件。首次确认和同名重授权都生成新 grant id、递增 revision；当前 equality guard 不能吞掉授权动作。取消、CAS 冲突或写入失败不提交新权限，UI 保留原状态及重试入口。
+2. 切离 Full access 清除该线程未来授权并增加 revision；之后再切回需重新确认，不能复活旧 grant。普通模式切换也递增 revision。已开始的 run 使用不可变执行快照，不热升级或热降级；用户需要立即停止用 Stop。过期 pending 请求拒绝，而非按新 mode 重投自动启动。
+3. 默认设置在独立动作中确认，只覆盖之后创建的新线程。`ConfigEdit` 在共同配置锁下检查 expected revision，将 mode/revision/grant 原子保存；磁盘失败不更新 UI。既有线程、旧草稿和既有自动化不补权。新草稿记录创建时的默认 fence；materialize 时在服务中重新核对，默认已改变则要求用户重新选择，不临时继承更宽权限。
+4. 新线程从有效默认 grant 派生自己的 thread-scoped grant，保存来源而非共享同一 thread id；创建线程与 grant 在同一数据库事务。线程自己的显式确认可先通过同一服务 materialize 空草稿，提交失败不产生已授权半成品。随后默认被撤销只影响未来线程，不追溯撤销已派生线程；提供独立的全量重置动作，不用修改默认冒充全局撤销。
+5. 正常退出/重启不轮换 epoch，不清有效 grant，也不自动续跑。应用重新读取并验证完整记录后，之后的合法运行无需重复确认。当前用户级数据库/配置可以被 P2 改写；这些字段防意外继承，不提供同 UID 防伪、密码学授权或可靠降级检测。
+
+线程/默认授权变更、默认派生、自动化授权、admission 和全局重置必须经过同一服务级协调门禁；涉及配置与 DB 时固定顺序为协调门禁 → ConfigEdit → DB 事务，不持有锁等待用户确认或运行收尾。默认派生在配置锁保护下重核 default fence 和 ready/epoch，再提交线程事务；重置不能插入该窗口。此锁序约束应用内正常并发，不声称能阻止外部同 UID 改文件。服务启动先恢复 pending 重置再开放授权/调度；任何读写故障不生成临时授权，也不以旧缓存替代。
+
+#### 运行、排队、自动化与委派
+
+| 路径 | 必须绑定/核对的权限来源 | 不允许的恢复方式 |
+|---|---|---|
+| 普通提交、队列、replay | 入队时捕获 PermissionFence；admission 与 worker 启动时原样核对；运行内派发绑定已接纳快照及准备好的 command | 只比较旧 permission_mode；排队后从更宽默认/线程设置补 grant |
+| 活动 run | 接纳时的不可变策略及 grant；派发再次检查 run 存活、取消、工具/工作区身份和单次许可 | 模式切换后把仍在运行的策略显示成已降级；忽略 Stop |
+| 普通 fork | 新线程 Confirm、无 Full access grant | 复制源线程 grant 或默认 P2 覆盖 fork 安全预设 |
+| spawn 子 Agent | 从父活动 run 导出上限相同的 delegated authority，绑定 parent run、child/execution id、source fence；不得把它当作独立用户线程 grant | 从父线程后来更宽设置补权，或继承父命令的单次网络/目录许可 |
+| followup / resume | 保存的 delegated authority 加新契约字段；原有 parent/source/checkpoint/fingerprint/ownership/pending 条件继续成立，当前父能力不小于保存能力且对应 grant 来源未失配 | 旧序列化缺字段自动接受，重新构造 full_access=true 绕过恢复检查 |
+| 自动化 | 任务创建/启用 P2 时单独确认，授权绑定 thread grant + task kind/identity/revision；保存到 task JSON，claim/run JSON 捕获相同 fence；任务修订/权限变化后需重新确认 | 线程后来授权就让既有任务无人值守变宽；默认授权直接覆盖旧任务 |
+| 凭据续跑 | suspend 保存 PermissionFence；claim 同时核对该 fence、source version/fingerprint/raw-user fingerprint；旧缺失/unknown-effect 记录拒绝自动继续 | 凭据补齐后按当前更宽线程权限重新开始同一个未决操作 |
+
+自动化已有的暂停/重启/预算语义不因 grant 持久化改变；扩围请求需要活跃的用户审批入口，没有响应按现有超时拒绝，不提供自动化长期网络/目录授权。重启后待审批卡不复活可消费许可，恢复同一任务也须重新请求该命令范围；持久审计记录不是可执行 token。
+
+### 受限 Bash 与单次扩围（D4 拟议契约）
+
+#### 能力与策略
+
+- 新增执行策略 `ReadOnly` / `WorkspaceWrite` / `FullAccess`；前两种再带 `network=Denied|Direct|Broker` 和规范化的额外写根。策略由可信 runtime 决策产生，不接受模型指定“已批准”“full_access=true”或任意 Seatbelt 文本。
+- Ask/Plan 和 Execute+ReadOnly 暴露 Bash，但强制 ReadOnly。它是“把任意命令放进只读约束执行”，不是把 shell 文本分类成不会写入；workspace、HOME 和 Vega 私有临时目录均不给 shell 写权限，仅保留 stdout/stderr 管道、`/dev/null` 等明确设备例外。TempRoot 由宿主管理，不能借 shell 启动需要临时目录就把 ReadOnly 变成可写。
+- ReadOnly 路径仍先做工具/任务能力校验、危险检测；危险匹配直接拒绝，不通过 `Readonly` 通用工具自动批准分支绕掉检测。普通安全命令不需普通确认，但 OS 拒绝的写尝试按实际失败返回；目录扩围永远不允许。网络可独立申请一次，不保证远端 API 无副作用，所以“只读”只描述本地文件边界。
+- Execute+Confirm/Auto 保留现有“危险 → ReadOnly 门禁 → 精确规则 → Auto/FullAccess → Confirm”对原有可写工具的决策顺序。新增只读执行分支是显式能力契约变更，不放宽 Write/Edit；Auto 的绝对路径文件工具特例、MCP、ComputerUse 和 ACP 审批继续独立。
+- `WorkspaceWrite` 保留项目和每次私有 TempRoot 可写、项目外默认不可写、Git entry/真实 git dir 与凭据配置根强制 deny；读取沿 OS/TCC 及显式 deny，不新宣称“只读项目”或“所有凭据自动保护”。网络默认 deny，不因有 bindings 自动开代理。
+
+#### 沙箱、环境和 IPC 的可验证边界
+
+仅在现有 `(allow default)` 上加一行 `deny network*` 不足以宣称隔离。拟改为明确的默认拒绝 profile：允许执行/fork、OS 允许的文件读取、指定文件写例外及受控系统调用；未列的网络、Mach、IPC、进程控制默认拒绝。保留自身 `process-info-pidinfo`/`process-info-setcontrol`，signal 最多到同 sandbox，拒绝对外部进程控制及 taskgated；不批量复制 Codex 的 process-info*、Mach/IOKit/PTY/共享内存例外。
+
+基础兼容集合只允许实现所需的系统读取、`kern.grade_cputype` 写入和账户查询 `com.apple.system.opendirectoryd.libinfo`；详细 sysctl allowlist 在实现 diff 逐项列出来源。网络启用时只追加 DNS/网络配置和证书服务所需例外，参照固定 [network policy](https://github.com/openai/codex/blob/970111f6cb62cc02fe36a82ea7d71b37a2889c97/codex-rs/sandboxing/src/seatbelt_network_policy.sbpl) 与 [conditional builder](https://github.com/openai/codex/blob/970111f6cb62cc02fe36a82ea7d71b37a2889c97/codex-rs/sandboxing/src/seatbelt.rs#L319-L380)核对；不是复制全部白名单的授权。离线不允许 DNS/网络 helper 的 Mach 查找、Unix socket、loopback 或任意 Apple Events/外部进程代理。若必要 API 不在已列范围内，先修订策略与正反例再扩大，不通过无沙箱重试解决。
+
+所有受限 Bash 统一复用/提取现有 `controlled_environment`，显式 `env_clear`、私有 HOME/TMP 和 `zsh -fc`，不读取用户登录脚本或继承代理/SSH socket/任意秘密环境。现有 builder 已静态核对：PATH 固定 `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`，HOME/ZDOTDIR/TMPDIR/TMP/TEMP/TEMPDIR 指向本次私有 temp，LANG 为 `en_US.UTF-8`；不从父环境补其他项，绑定 alias/CA/proxy 环境仅在获批 Broker 路径追加。固定 PATH 不是可执行文件可信性保证，也不把环境过滤冒充文件隔离。此变化可能影响依赖 shell rc、缓存、GUI Mach 服务或全局临时路径的命令，须在实施确认中明示，不能以浏览器必然兼容收尾。
+
+final profile 必须一次构造并同时用于自检与 spawn，包含本次网络、额外根、Git/凭据 deny 和私有临时目录；现有只用 base profile 执行 `true` 的自检需修正。`true` 成功只证明该 profile 可启动，不证明写/网络/IPC 阴性案例；这些由用户合成 fixture 手测。FD 不继承不必要的宿主能力，后代继承约束；这些不是全产品 DLP，也不防已存在的无沙箱同 UID 进程、用户主动转发或所有系统漏洞。
+
+#### 请求、审批与执行状态机
+
+1. Bash 输入拟新增可选 `requested_scope`：`network`（bool，默认 false）、`write_roots`（绝对目录列表，默认空）以及有非空范围时必填的简短 `reason`。未知字段/空请求/不合法路径拒绝，原 command/timeout 兼容。模型只能请求，不能指定批准结果；无沙箱升级不是这里的选项，必须由用户在权限控件确认 P2 后开始新的 run。
+2. 新增独立 `CommandScopeRequest` / `CommandScopeDecision`（AllowOnce、Deny、Timeout）。UI 可复用 PermissionQueue 展示与 first-wins 生命周期，但类型/验证/codec 与普通 PermissionRequest 分离；不得接受 Always/AcpOption/MCP 响应，也不写项目 `permissions`。保留原始 ordinary/danger 审计，范围审计写独立记录，不把范围批准当成危险批准。
+3. prepare 后，先验证能力、命令危险门禁与普通审批；任何拒绝不进入扩围。已有 ordinary Once/Always 或 Auto 只免普通卡；范围卡仍必须显式响应。卡片绑定 exact command bytes（摘要只作索引，不能替代相等比较）、有效 timeout、cwd/项目/工具实例身份、run/call/request id、PermissionFence、规范化范围及相关 bindings 配置快照。改命令、目标、范围或来源都使卡失效，不能凭同 command 重用另一次 call 的许可。
+4. 范围批准只生成该 live run 内可消费一次的 token；dispatch 前重核取消、身份、scope 与快照，再在任何本次进程启动尝试前原子消费。取消、超时、替换/消失、重启、无监听者、存储审计失败均不启动；spawn 失败或效果未知也不把 token 放回。Broker/CA/lease 和 shell 都在必要审批完成后创建，不先启动代理再等人批准。受限路径先取得获批网络所需 lease 参数，再构造同一 final profile 自检并启动命令；自检失败或期间取消要回收已建 lease/temp，不启动用户命令、不返回可复用 token。
+5. 限制内命令失败不自动重试，不根据 EPERM/非零 exit 猜测哪项权限缺失就去掉沙箱；反馈实际已知错误及“需要更大范围时提交新的请求”。后续新请求需新 call 和明确确认，原调用可能已产生的部分副作用不能隐藏。普通范围批准不切线程模式、不更改默认、不授予子 Agent 或下一条命令权限。
+
+#### 网络与目录范围
+
+- 默认网络 Denied：包括外网、loopback、入站监听、Unix socket 与未经允许的代理通道。无 bindings 的一次网络批准采用 Direct，允许该命令及受约束后代的直接网络（含可能访问本机服务/外传），卡片必须准确显示“允许本次命令联网”，不伪称限定某个 URL/域名；不开放 Unix socket 或任意 Mach/外部进程控制。
+- 有有效 bindings 的一次网络批准采用 Broker：仅允许 shell 到本次 lease 的 loopback TCP，既有代理校验绑定 HTTPS host/port，真值注入仍要求 path+alias 匹配。卡片展示可连接目的地范围，不把认证 path 说成所有请求 path 围栏。绑定目的地之外的普通下载仍可能失败；本卡不重写代理为通用转发，也不因失败切 Direct。去除绑定/申请 P2 都不是自动恢复动作。
+- 受限读取必需/绑定凭据仍严格；默认离线虽不创建 Broker，也不扩大 D3 对缺失 binding key 的 P2 豁免到受限 run。有 binding 的配置快照在范围审批及 dispatch 复核，变化即本次失效，不把旧批准解释成新目的地批准。
+- 写目录扩围仅 Execute+Confirm/Auto；本次 shell 及受约束后代可写明确的额外目录，不代表只允许一条文件 API。目录必须已存在、可 canonicalize，绑定设备/inode 并复核；不支持 root/home 等过宽根、不直接授权 Git 元数据、凭据根或覆盖这些强制保护的祖先。保留项目/额外写树 hardlink 检查和不可表示路径拒绝；强制 deny 排在允许规则之后，不因父目录 grant 被覆盖。
+- 目录 grant 不是对用户文件的所有权/删除批准，也不能覆盖危险硬门禁。symlink/hardlink、别名、目录替换的实际 OS 边界须用专用 fixture 正反验；若不能保证所声明路径边界，拒绝该扩围并报告，不把预检当作消除全部 TOCTOU 的证明。路径归属不明、需要修改真实用户数据时仍遵守任务授权。
+
+### 严格凭据读取与脱敏（D4 拟新增 API）
+
+新增只读 `lookup_existing_key(root, ref) -> Result<Option<SecretValue>, LookupError>` 或等价的内部 typed API：`None` **仅**表示已通过根/目录/文件身份、owner/mode/nlink、大小与格式检查的现存安全文档内没有这个 ref。根/目录/文件不存在分别返回 `StoreAbsent`，其他 Unsafe/IO/Malformed/Limit/Unsupported 保持错误；不在 lookup 中创建目录/空文件，也不复用会把文件缺失变空文档的 `platform::read` 而丢失原因。现有写入/初始化 API 可保留其行为，不改存储后端。
+
+owner 汇总按接纳的执行策略选择：P2 的可选 binding refs 用上述严格 lookup，Some 进入脱敏集合，None 可忽略；必需 Provider/MCP 和受限 Broker 仍要求存在。相同 ref 若也是必需凭据，必需条件优先；真实存储错误在 P2 也失败。没有可选 refs 时不凭空初始化或探测不存在的 store。身份/私有权限/格式验证保持严格，不能 catch-all 成空列表。
+
+改动覆盖 `app_agent` 的汇总闭包、pipeline 的运行前读取和后续 Provider/输出隐私检查；先取得可信执行策略再选择缺失处理，不能按 UI 标签或模型参数选择。旧统一 reader 为脱敏读取已存在的 key 仍允许，不属于 Bash Broker 读取；不要为绕过 A3 关闭 privacy authority 刷新或 owner redaction。启动之后的真实错误按现有失败/取消链报告，不声称可撤回已传出的内容；不新增通用 secret 扫描或记录密钥值。
+
+### 正常重启与受支持的回滚
+
+用户选择正常重启保留授权；D4 不承诺自动发现任意旧 binary 曾运行、手改配置或备份还原。旧 binary 对更高 schema 直接接受的事实，使“仅加新 marker 就保证所有降级后重授权”不可成立；这是对 D3 A13/迁移提案的显式修正，需随实施范围确认。
+
+拟提供服务级“重置完全访问授权”动作，供用户准备降级时执行：先暂停新 admission/自动化及授权变更，要求活动 run 停止并完成可确认的收尾；未知效果保留恢复阻塞。进入上述协调门禁并取得 ConfigEdit 后，数据库事务设置 reset pending、轮换 epoch、清线程 grant/自动化授权并把 Full access 线程改为 Confirm，递增受影响 revision，失效未启动任务和所有单次许可；随后原子保存默认 Confirm、清默认 grant 并增加 revision；最后事务标 ready。它是跨 DB/config 的可恢复 fail-closed 协议，不声称跨两种存储原子提交。首个事务前失败则没有持久重置完成、不得提示可降级；pending 一经落库，后续失败就保持 pending，不恢复旧 grant。重启幂等继续同一重置，不反复轮换 epoch，期间不派发 P2，也不重新开放自动调度。
+
+只有读回线程/默认/自动化与 pending 均已完成重置，才提示可退出并安装兼容旧版；回滚代码保留新增列/表，不降 schema、不删凭据。之后升级不恢复已清 grant。若直接手动降级、用旧程序改 mode 再切回、还原含旧 grant 的整份备份，则不保证自动检测；必须先走上述重置或由用户明确接受未走流程的风险。此限制不能隐藏成“正常重启会自动重新确认”。
 
 ### 界面行为与必要提示
 
-保留简洁权限选择器；首次获得 P2、旧同名模式重新授权以及全局默认授权时显示必要确认。确认前讲清：可访问当前用户文件/凭据并联网，配置修改可能影响后续任务，绑定不会自动用于 Bash，请求取消或切回不能撤销既有影响。提供明确的启用/取消动作；取消、持久化失败不更新有效权限。旧同名模式必须能触发重新授权，不能被 `mode == current` 吞掉。
+保留简洁权限选择器；首次获得 P2、旧同名模式重新授权以及全局默认授权时显示必要确认。确认前讲清：可访问当前用户文件/凭据并联网，配置修改可能影响后续任务，绑定不会自动用于 Bash，切回/停止/回滚不能撤销既有影响；授权正常重启后保留，准备降级须先重置。提供明确的启用/取消动作；线程、未来新线程默认及自动化任务范围分别展示，不默认勾选更广范围。取消、持久化失败不更新有效权限；旧同名模式必须能触发重新授权，不能被 `mode == current` 吞掉。
+
+三类卡有不同动作：普通命令审批保留现行选项；扩围卡显示完整命令、网络实际范围/额外写目录与理由，仅“允许本次/拒绝”；Full access 为持久范围确认。危险卡不与范围卡合并成含糊的“全部允许”。默认禁网改变在升级后的相关权限帮助与第一次阻断时可发现，不每次命令附说明；只读模式说明本地只读，网络批准可能影响远端状态。
 
 模式控件表达真实选择，活动 run 与下次设置不混淆；普通成功不叠加常驻提示。绑定存在时仅在相关授权/绑定入口说明 Bash 不使用受限代理，不对所有命令重复警告。错误就近说明原因与可采取动作，键盘可达、Esc 取消并合理回焦；风险不得只藏在 hover。逐项验收默认、运行、保存失败、未授权、取消与恢复状态。
 
 ## 全面对齐差异表与范围门禁
 
-不能用“全面对齐”自动撤销 Vega 现有危险门禁或把受限模式一起放宽。以下差异全部属于本卡跟踪范围；“保留”是当前方案边界，不是已获用户接受的完全等价声明。
+不能用“全面对齐”自动撤销 Vega 危险门禁。D4 将同卡目标具体化，同时要求用户在实施确认中接受下列保留差异；当前均未实现、未验收，不是等价 ChatGPT App 的声明。公开 Codex 参照仍绑定上述 SHA/文档边界。
 
-| 维度 | 对齐目标 / 当前差异 | 下一步与完成条件 |
+| 维度 | 本卡拟对齐行为 | 明确保留差异 / 完成条件 |
 |---|---|---|
-| Full access | 当前隐含凭证 Seatbelt、非空绑定拒绝与名称冲突；P2 取消二者 | A1/A3/A11 与新授权链验证；本轮已选规格方向，未实现 |
-| 审批 vs 隔离 | Codex 两维独立；Vega Confirm/Auto/FullAccess 是预设组合 | 文档和 UI 准确映射；保留危险门禁，不把 P2 冒称 `never` 或把 Auto 冒称 auto-review；若要求独立选择器另定具体产品契约 |
-| 只读 | Vega ReadOnly/Ask/Plan 拒绝 Bash，Codex read-only sandbox 是可运行受限命令的策略 | 首阶段保留；需明确是否增加只读 shell，不能仅凭 shell 文本判断“只读”，若改变须独立 OS 策略/能力验收 |
-| 受限读写、Git、临时目录 | 两者都不能简化成只读项目；Vega 有额外配置根保护、Git 写入保护与私有临时目录 | 列正反例，比较固定 profile/构造器；先保留现行围栏，任何改变注明具体路径类别、风险与回滚 |
-| 受限网络 | Vega 无绑定放行网络、有绑定按租约代理收窄；与 Codex 特定配置的网络关闭/升级审批并不等价 | 单独冻结默认联网、域名/代理及失败后的审批路径；不得复制局部 profile 或默认为这次已批准放宽/收紧 |
-| 环境/子进程/IPC | Vega 直接 shell 与 Broker shell 环境不同；受限进程规则不等于 Codex same-sandbox | 不批量复制白名单或禁用浏览器内层沙箱；每项兼容需求有静态依据及用户平台正反例，无证据不许宣称兼容 |
-| 凭据分层 | Vega owner-only 明文、Broker、具名工具/MCP 与 Codex 的后端/工具组织并不相同 | 本卡不迁入 Keychain；明确 Bash 与其他工具边界，不承诺无沙箱下同 UID 明文不可读；不以存储后端差异阻塞已明确的 P2 规格 |
-| 旧数据/恢复/委派 | 现有 mode 字符串不足以区分旧契约 | 冻结并验证版本化授权、默认/线程范围、排队与恢复 fences，A6/A8/A13 |
-| UI 与可操作错误 | 当前“不使用沙箱”与运行冲突；旧同项不能发重新授权请求 | 实际行为、有效权限与下一 run 设置一致，必要风险/恢复/键盘状态可验收 |
+| Full access | 经新契约确认的 Execute Bash 无 Vega Seatbelt/Broker，绑定不阻断 | danger、任务能力、生命周期仍在；不是全部工具的 `never`；A1/A3/A5/A11 |
+| 审批 vs 隔离 | 普通批准与执行范围分离；联网/目录范围独立单次确认 | 保留四种预设而非任意两维 UI 组合；Auto 不是 auto-review，无持久扩围规则；A15/A21 |
+| 只读 | Ask/Plan/ReadOnly 可用 OS 约束的 Bash，不靠文本猜测 | 本地只读，私有 temp 也不可写；网络须单次确认且可能有远端副作用；危险命令拒绝，不升级可写；A4 |
+| 受限读写、Git、临时目录 | WorkspaceWrite + 明确额外写根，强制 deny 不被父目录 grant 覆盖 | Vega 配置根/Git 保护保留；不提供单次无沙箱逃生或 Git 元数据扩围；A2/A16 |
+| 受限网络 | 默认禁网，授权后 Direct 或 Broker；失败不自动重试 | 有 bindings 仍限既有 HTTPS host/port，不改代理为全网转发；无 bindings 的 Direct 不伪称按域名隔离；A12/A15 |
+| 环境/子进程/IPC | 默认拒绝边界、统一受控受限环境、子进程继承 | 不照搬 Codex 白名单；不承诺受限 GUI/浏览器完全兼容，不关闭内层 sandbox；A20 与平台正反例 |
+| 凭据分层 | P2 与受限分流，准确缺失分类，保留脱敏 | owner-only 明文后端、具名工具/MCP 独立保护保留；不迁 Keychain、不宣称所有新 secret 自动隔离；A9/A10/A19 |
+| 旧数据/恢复/委派 | 版本化 grant/fence；正常重启保留；旧数据不补权 | 自动化独立确认；普通 fork Confirm；支持显式重置后回滚，不保证任意手动降级检测；A6/A13/A17/A18 |
+| UI 与错误 | mode/活动快照/下次设置一致，三类授权入口清楚 | 必要风险/失败/恢复可见，不以解释代替控件，不常驻堆提示；A8/A21 |
 
 完成定义：每项差异最终应是“已按批准契约实现并验证”或“用户明确接受的差异”；仍未裁决或未验收的行不打勾。若先交 Full access 阶段，应明确部分交付，不关闭 #624，也不声称实现 ChatGPT App 全部安全特性。
 
 ## 实现顺序（另获实施授权后执行）
 
-1. 本轮先完成 D3 规格静态检查和非写入者的独立安全设计审查，保存精确版本；补齐具体授权表示与受限策略差异的裁决，不把审查本身当批准放权。
-2. 先实现新授权的 UI/服务/持久化/快照/恢复接线，再启用 P2 启动分支；不得让中间提交仅删除 Seatbelt 而所有旧 `full_access` 自动变宽。涉及 `vega_conversation::types`、`threads`、`agent::pipeline`、`agent::persistence`/`subagents`、`vega_store` 默认配置/增量迁移/`delegated_stages`/`credential_continuation`、`vega::window::session` 与相关 UI 事件。
-3. `vega_tools::bash::execute_bash_inner` 删除仅对 Full access 的绑定冲突；`execute_bash_with_temp` 在 P2 分支跳过 Broker/context 创建；`sandbox::spawn_full_access_shell` 使用直接 shell。保留共享 runner、TempRoot、scope/cancel/timeout/output、受限路径、文件工具的 `ToolCredentialPolicy`、MCP 保护；不扩大通用 API 或引入依赖凑测试。
-4. 核对 `vega::app_agent` 的 `broker_credential_reader` / `owner_credential_reader` 与 `vega_conversation::agent::pipeline` 运行前读取及后续脱敏调用，明确 P2 下无关 binding key 缺失的错误分类与处理；保留当前 Provider/MCP 必需凭据和真实凭据库故障门禁。核对 runtime 工具说明、绑定投影：P2 不宣称 Bash 代理可用，不输出真值补兼容性；错误区分未授权、独立就绪失败与 spawn 失败。根据差异表分别处理受限模式，任何验收变更先写 spec。
-5. 按风险选择必要进程内回归交现有 PR Actions，重点覆盖新旧授权、默认与继承、A3 的存在/缺失 key 和配置变化、P2 与受限凭据路径分流、失败/取消。不能仅比较源码字符串或 mock 替代权限判断；不新增真实外部 E2E，本地只做静态检查。
-6. 如使用 Rust 开发测试，先固定可恢复来源与云端结果，再清除测试及独占支持；最终 head 独立实现审查和完整 required CI。空集如实写 `no Rust tests`，不能用空集证明权限行为。
-7. 最新 head 门禁与独立审查合格才合并；阶段交付与整卡状态明确记录，系统手测由用户使用合成项目/凭据及独立浏览器实例完成。只有完整范围获用户确认后才关闭/Done。
+1. 本轮冻结 D4 精确版本，做文档静态检查与非写入者独立设计审查；将范围、必要性、风险、保留差异和回滚一次性提交用户确认。未获具体批准不改生产，审查不是权限批准。
+2. 实施先完成 `vega_conversation::types::permission/thread/automation` 与 `vega_store` 的增量迁移、线程 CAS、默认 ConfigEdit、重置状态机；接 `conversation::threads/ordinary_submissions`、`agent::pipeline/persistence/subagents`、`delegated_stages`、`credential_continuation`、`automation`。构造及恢复原样携带 fence；旧授权 fail closed 后才可接无沙箱启动。
+3. 在 `vega_runtime::permission`、`agent::tools_exec`、`RuntimeToolConfig` 和工具定义中增加受限只读执行与范围请求；在 conversation permission_queue/codec/persistence 及 `vega_ui::permission_card` 分开三类请求；不覆盖 MCP/ACP/文件工具特例。对权限状态机、单次 token、CAS/恢复/旧记录等安全边界选择必要进程内开发回归，交现有 Actions；不以文本比较或 mock 代替真实决策。
+4. `vega_tools::bash` 用已批准执行策略替代松散 bool 分支；P2 在 Broker/CA/context 前分流并直接启动，保留 scope/cancel/timeout/output/TempRoot/清理。`sandbox.rs` 构造只读/项目写/网络/额外根的同一 final profile 供自检与 spawn；`credentials.rs` 仅在获批网络的受限路径创建 Broker，不把配置根检查从其他工具移除。
+5. `vega_store::keystore` 新增严格 existing lookup，`vega::app_agent` 与 pipeline/后续脱敏调用按可信执行策略处理可选 binding 缺失；保留必需 Provider/MCP/受限 key、privacy authority 与真实故障。同步模型工具说明、错误分类、本地化和 UI 服务事件，不能将只有错误码写作已实现可操作指引。
+6. `vega::window::session`、Composer 与 settings 完成同名重授权、保存失败、默认派生及当前/后续 run 状态；新增 UI 文案逐项审视用途、键盘/Esc/回焦与真实错误恢复。无新依赖；新增 libc/unsafe 若超出既有批准范围需先具体列出再确认，不能借此设计自动授权。
+7. 本地仅差异/格式/静态；开发 Rust 测试如使用，固定源码/patch、完整 SHA 和实际云端结果，再清理独占支持。最终无 Rust 测试 head 做独立实现审查与完整 required CI，空集写 `no Rust tests`（0 发现/0 执行），不是权限行为通过。真实 shell/network/IPC/浏览器/原生 UI 仅用户手测，不新增真实外部 E2E 门禁。
+8. 最新 head required CI 与独立审查通过才 squash 合并；整卡保留 In review 等用户对合成凭据/独立项目的 A1–A21 验收。受限平台不满足目标时报告原始证据并修责任层，不放宽断言、自动去沙箱或只交 P2 后关闭卡。
 
 ## 影响、必要性与回滚
 
 必要性是修正声明与实际执行边界冲突，不是绕过某个浏览器报错。P2 移除获准 Full access Bash 的 Vega Seatbelt 及绑定冲突拦截，并跳过该路径的受限 Broker；仍受 OS 当前用户权限/TCC/外层策略。它不保证能读所有凭据，但也不能保证同 UID 可读明文凭据对它不可读。现有/新增凭据、配置与项目外文件、Git、网络外传及跨运行持久影响都属于授权前必须告知的范围。
 
-回滚通过 revert 本卡生产实现与兼容的数据迁移策略恢复既有启动保护；切回 Confirm/Auto 只恢复后续新运行的受限执行规则，不自动修复配置、恢复凭证授权可信性，也不撤销已执行命令、外部写入、已发送请求或后台进程。配置若被修改，需用户核查/恢复；不能通过回滚代码恢复已经泄露的凭据，如发生真实泄露需轮换。未获准前无运行时变化。
+受限侧同时改变可用性：默认禁网、私有受控环境和更窄 IPC 可能让现有依赖联网、shell rc、全局缓存或 GUI 服务的命令失败。必要性是使“受限”有实际 OS 边界和可解释的单次授权，不是保证所有命令无感兼容；本版不是零风险或零行为变化的一行修复。
+
+回滚先执行上文受支持的授权重置，再退出并 revert/安装兼容旧版；schema 增量保留。切回 Confirm/Auto 只恢复后续新 run 的受限规则，不修复配置可信性，不撤销已执行命令、外部写入、网络外传或脱离的后台进程。用户须核查/恢复被改配置，真实泄露须轮换凭据。任意未走重置的降级/备份还原不保证检测。当前尚无生产实现，因此本轮无需撤销运行配置，也未执行任何重置。
 
 ## 当前验证与下一步
 
-- 已核对：Issue 开放、Project In progress；任务分支无他人修改，主仓用户原有未跟踪文件保留。fetch 并同步上述最新 master；复核 Bash 分流、配置快照、模式解析、Composer 同项选择、普通 fork 和委派/恢复相关静态入口。本卡相对新基线仅改 `docs/624/`。
-- 旧独立审查绑定 D1 提交 `528409bf50a5180bd27873a76fca5aa6f23e9829`（文档 SHA256 `84a22b2769a1b1d70a7e4f04c35f96dafe0b35cbe3ff15f300536daa6c3b567b`）。D2 提交 `1f98926e6ed77aac1eebef138a0a227e7461f86b` 纳入其发现。D3 初稿独立审查绑定文档 SHA256 `b56f1eaa8d9c66240e9186a8dae51e29bc4604df85e7bed5aa78369a398ba57c`，结论为可作 P2 规格/待授权设计、无本轮文档阻塞；指出 Bash 前统一读取全部 binding key 的实施风险，主 Agent 已读回实际调用链并在本版明确。具体迁移、受限差异及实施授权仍未完成；最终增量审查证据另行绑定最终版本。
-- 本轮未运行 Vega、编译/构建/测试、CI、真实 shell 凭据读取、浏览器或 UI 集成；未改本机权限/运行配置/凭据，无 #624 生产实现、PR 或合并。本轮纯文档，静态检查与独立审查结果须绑定实际最终版本另行记录。
-- 下一步：完成 D3 独立审查，冻结授权持久化/降级兼容和受限差异后，向用户展示具体实施范围、风险及回滚并取得明确实施授权；不再要求重新选择已经选定的 P2，也不把选择规格方向当作工具权限批准。
+- 本轮已 fetch 并正常合入上述最新 master；已核对权限核心、工具/Broker、keystore、线程/恢复/审批链与 D3 基线无上游差异。新增 `0038_provider_failure_split.sql` 占用的编号已在设计中顺延；`RuntimeToolConfig` 的权限字段未改。续接时仅有本卡 D4 草稿，合入上游保留该草稿；未操作主仓用户原有未跟踪内容。本卡相对新基线仅 `docs/624/`，以最终 scope 检查为准。
+- D1 审查绑定 `528409bf50a5180bd27873a76fca5aa6f23e9829`；D2 `1f98926e6ed77aac1eebef138a0a227e7461f86b` 吸收其发现。D3 最终独立审查绑定 `aae1d34001f21c9756b28630f6343fbc4fd5fc26` / SHA256 `c26502a9499dc3c74069e97bbadcdc4ecf2bbfad9b9be8026891f8bde2e1197f`，结论为可作 P2 待授权设计，无该版文档阻塞，不是生产 READY。原版本与 Issue 评论保留。
+- D4 已提出具体 grant/schema/原子性/恢复、只读与单次扩围、严格凭据读取、受支持回滚及保留差异；新增字段/API 全部是待实现设计。最终静态检查与独立设计审查结果另行绑定精确提交/hash 写回 Issue，不将旧 D3 审查算成 D4 通过。
+- 未运行 Vega、编译/构建/测试、CI、真实凭据读取、浏览器或 UI 集成；未改本机权限/配置/凭据，无 #624 生产实现、PR 或合并。文档静态检查不能证明 Seatbelt、网络或恢复行为。
+- 下一步：完成 D4 独立设计审查，保存可恢复版本，向用户集中展示实施范围与保留差异并取得明确实施确认。Issue 保持开放/In progress；不再重问 P2，不把继续设计当生产放权。
 
 ### 版本变更
 
 - D1：记录根因、P1/P2/P3 候选及最初验收；独立安全设计审查完成。
 - D2：补持久配置风险、零绑定含义、错误指引证据及具名工具/网络边界。
 - D3：记录用户选择 P2 规格方向；取消 P1 专属拒绝预期，明确无 Broker/无注入、新凭据与配置变动；增加固定 Codex 来源和过强结论更正、授权/迁移提案、整卡差异表与分阶段实施/验收。尚非实施授权。
+- D4：落实正常重启保留授权/同卡受限对齐的方向，给出持久 grant/fence、线程/default/自动化范围、只读 Bash、默认禁网/单次扩围、严格缺失读取、回滚重置协议；显式替换 D3 A2/A4/A12/A13 预期，扩至 A1–A21；记录提交数例外和新基线。保留差异、具体生产修改与手动降级限制仍待用户实施确认。
