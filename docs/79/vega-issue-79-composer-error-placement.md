@@ -21,4 +21,6 @@
 
 ## 2026-10-16 Agent 错误位置修订
 
-用户明确要求 Agent 发送、启动和运行失败展示在对话中。对应执行方案见 [Issue #427](vega-issue-427-agent-start-error-placement.md)，其契约覆盖本页中 Agent 错误的 Composer 位置；普通非 Agent 字段/保存错误不因此改动。旧工具数据可继续被拒绝，本次不要求兼容或修写历史。
+用户明确要求 Agent 发送、启动和运行失败展示在对话中。对应执行方案见 [Issue #427](../427/vega-issue-427-agent-start-error-placement.md)，其契约覆盖本页中 Agent 错误的 Composer 位置；普通非 Agent 字段/保存错误不因此改动。旧工具数据可继续被拒绝，本次不要求兼容或修写历史。
+
+2026-10-26 补充：Agent 发送失败自 #544/#627 起已由 ordinary 提交事实行在对话流内表示。本页“凭据失败和引用校验失败在 Composer 上方显示原错误”一条中，属于 Agent 发送准备的那部分由 #427 接手去重与归属；非 Agent 的字段、保存、Plan 审阅与 Skill 投影错误仍按本页契约留在 Composer 上方。
