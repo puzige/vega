@@ -144,10 +144,8 @@ pub enum SidebarOrganizationAction {
     },
     CollapseAll,
     CreateThreadInGroup {
-        project_id: String,
         group_id: String,
-        model: String,
-        permission_mode: String,
+        draft: Box<super::Thread>,
     },
 }
 /// Stable distinguishable service failures; a conflict requires a fresh snapshot.

@@ -35,31 +35,12 @@ impl OrdinaryPreparationRequest {
                 return Err(SubmissionFailure::PreparationFailed);
             }
             let thread_id = self.run.submission.snapshot().thread_id;
-            if let Some(draft) = &self.draft
-                && vega_store::threads::find(store.conn(), &thread_id)
-                    .map_err(|_| SubmissionFailure::PreparationFailed)?
-                    .is_none()
-            {
-                vega_conversation::threads::materialize_draft(&store, draft)
-                    .map_err(|_| SubmissionFailure::PreparationFailed)?;
-            }
-            let thread = vega_conversation::threads::open_thread(&store, &thread_id)
-                .map_err(|_| SubmissionFailure::PreparationFailed)?;
-            if thread.model != self.run.submission.raw().model()
-                || thread.backend != TaskBackend::Native
-                || thread.status == ThreadStatus::Archived
-                || thread.project_id != self.expected.project_id
-                || thread.mode != self.expected.mode
-                || thread.permission_mode != self.expected.permission_mode
-                || thread.permission_revision != self.expected.permission_revision
-                || thread.full_access_grant != self.expected.full_access_grant
-            {
-                return Err(SubmissionFailure::PreparationFailed);
-            }
-            vega_conversation::permission_contracts::bind_submission_permission(
+            let thread = vega_conversation::permission_contracts::prepare_submission_permission(
                 &store,
                 &self.run.submission,
+                &self.run.worker,
                 &self.expected,
+                self.draft.as_ref(),
             )
             .map_err(|_| SubmissionFailure::PreparationFailed)?;
             let workspace = vega_conversation::threads::task_workspace_root(&store, &thread_id)

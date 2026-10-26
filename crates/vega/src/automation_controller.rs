@@ -230,6 +230,7 @@ impl AutomationGlobal {
 
 #[derive(Default)]
 pub(crate) struct AutomationController {
+    pub(crate) draft_creation: Option<(String, crate::trusted_action::TrustedActionToken)>,
     pub(crate) streams: HashMap<String, Entity<ConversationStream>>,
     pub(crate) pending: HashSet<String>,
     pub(crate) dispatch: HashMap<String, AutomationRunClaim>,

@@ -212,6 +212,7 @@ pub use model_capabilities::ModelCapabilityFocusTarget;
 mod model_configuration;
 mod motion;
 use model_configuration::SettingsDestination;
+mod permissions;
 mod preferences;
 mod provider_management;
 mod reasoning_render;

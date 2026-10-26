@@ -8,16 +8,24 @@ pub fn apply(
     expected_revision: u64,
     action: SidebarOrganizationAction,
 ) -> Result<SidebarOrganizationOutcome, SidebarOrganizationError> {
+    let creation = match &action {
+        SidebarOrganizationAction::CreateThreadInGroup { draft, .. } => {
+            Some(crate::permission_contracts::DraftCreationGuard::begin(draft).map_err(storage)?)
+        }
+        _ => None,
+    };
     let tx = store.immediate_transaction().map_err(storage)?;
-    let result = apply_in_transaction(store, expected_revision, action)?;
+    let result = apply_in_transaction(store, &tx, expected_revision, action, creation.as_ref())?;
     tx.commit().map_err(storage)?;
     Ok(result)
 }
 
 pub(super) fn apply_in_transaction(
     store: &Store,
+    transaction: &vega_store::Transaction<'_>,
     expected_revision: u64,
     action: SidebarOrganizationAction,
+    creation: Option<&crate::permission_contracts::DraftCreationGuard>,
 ) -> Result<SidebarOrganizationOutcome, SidebarOrganizationError> {
     let mut state = read_snapshot(store)?;
     if state.revision != expected_revision {
@@ -26,7 +34,7 @@ pub(super) fn apply_in_transaction(
             actual: state.revision,
         });
     }
-    let created_thread = mutate(store, &mut state, action)?;
+    let created_thread = mutate(transaction, &mut state, action, creation)?;
     let existing: std::collections::HashSet<_> =
         state.threads.iter().map(|t| t.id.as_str()).collect();
     let mut seen = std::collections::HashSet::new();
@@ -125,9 +133,10 @@ fn validate_collapse(
     }
 }
 fn mutate(
-    store: &Store,
+    transaction: &vega_store::Transaction<'_>,
     state: &mut SidebarOrganizationSnapshot,
     action: SidebarOrganizationAction,
+    creation: Option<&crate::permission_contracts::DraftCreationGuard>,
 ) -> Result<Option<Thread>, SidebarOrganizationError> {
     use SidebarOrganizationAction::*;
     match action {
@@ -246,14 +255,9 @@ fn mutate(
                 }
             }
         }
-        CreateThreadInGroup {
-            project_id,
-            group_id,
-            model,
-            permission_mode,
-        } => {
+        CreateThreadInGroup { group_id, draft } => {
             group(state, &group_id)?;
-            if !state.projects.iter().any(|p| p.id == project_id) {
+            if !state.projects.iter().any(|p| p.id == draft.project_id) {
                 return Err(invalid_key("domain.organization.validation.project"));
             }
             if state.threads.len() >= MAX_SIDEBAR_THREADS {
@@ -261,12 +265,13 @@ fn mutate(
                     "domain.organization.validation.tasks_limit",
                 ));
             }
-            if !permission_mode.is_empty() && PermissionMode::parse(&permission_mode).is_none() {
+            let thread = creation
+                .ok_or_else(|| invalid_key("domain.organization.validation.permissions"))?
+                .materialize(transaction)
+                .map_err(storage)?;
+            if thread.id != draft.id || thread.project_id != draft.project_id {
                 return Err(invalid_key("domain.organization.validation.permissions"));
             }
-            let thread =
-                crate::threads::create_thread(store, &project_id, &model, &permission_mode)
-                    .map_err(storage)?;
             state.memberships.push(SidebarMembership {
                 thread_id: thread.id.clone(),
                 group_id,

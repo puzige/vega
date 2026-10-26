@@ -204,31 +204,31 @@ impl Global for StoreInitializationError {}
 pub struct NewTaskDefaults {
     /// `defaults.model` (empty until a provider is configured).
     pub model: String,
-    /// `defaults.permission_mode` (`readonly` | `confirm` | `auto` | `full_access`).
-    pub permission_mode: String,
+    pub permission: vega_conversation::types::DefaultPermissionSnapshot,
 }
 
 impl Default for NewTaskDefaults {
     fn default() -> Self {
         let defaults = config::AppConfig::default().defaults;
-        Self {
-            model: defaults.model,
-            permission_mode: defaults.permission_mode,
-        }
+        Self::from_config(None, &defaults)
     }
 }
 
 impl NewTaskDefaults {
-    /// Reads `config.defaults` from the resolved config root. A missing or
-    /// malformed file falls back to the same `AppConfig::default()` values the
-    /// generated template carries, so the draft's defaults match what
-    /// `create_task` would have used on the missing-config path.
+    pub fn from_config(path: Option<&std::path::Path>, defaults: &config::Defaults) -> Self {
+        Self {
+            model: defaults.model.clone(),
+            permission: vega_conversation::permission_contracts::default_permission_snapshot(
+                path, defaults,
+            ),
+        }
+    }
+
     pub fn load() -> Self {
-        match config::load() {
-            Ok(config) => Self {
-                model: config.defaults.model,
-                permission_mode: config.defaults.permission_mode,
-            },
+        match config::config_path().and_then(|path| {
+            config::load_from(&path).map(|config| Self::from_config(Some(&path), &config.defaults))
+        }) {
+            Ok(defaults) => defaults,
             Err(error) => {
                 tracing::error!(%error, "failed to read defaults from config.toml");
                 Self::default()

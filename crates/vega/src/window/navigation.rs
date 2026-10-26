@@ -144,6 +144,9 @@ impl VegaWindow {
 
     /// Final palette acceptance shares the same draft reservation and visit ordering as history.
     pub(crate) fn accept_palette_thread(&mut self, thread: Thread, cx: &mut Context<Self>) -> bool {
+        if self.default_permission_save_pending(cx) {
+            return false;
+        }
         let destination = Projection {
             project: thread.project_binding().map(str::to_owned),
             thread: Some(thread.clone()),
@@ -288,7 +291,17 @@ impl VegaWindow {
     }
 
     /// Coalesce all route globals before render tears down the departing editor.
+    fn default_permission_save_pending(&self, cx: &App) -> bool {
+        self.settings_view
+            .as_ref()
+            .is_some_and(|settings| settings.read(cx).default_permission_save_pending())
+    }
+
     pub(super) fn sync_navigation(&mut self, cx: &mut Context<Self>) {
+        if self.default_permission_save_pending(cx) && !cx.global::<SettingsOpen>().0 {
+            self.navigation.current.clone().apply(cx);
+            return;
+        }
         let projection = Projection::read(cx, self.draft_id());
         let route = projection.route();
         if route == self.navigation.current.route() {
@@ -329,7 +342,7 @@ impl VegaWindow {
 
     pub(crate) fn navigate(&mut self, forward: bool, cx: &mut Context<Self>) {
         self.sync_navigation(cx);
-        if self.navigation.pending {
+        if self.navigation.pending || self.default_permission_save_pending(cx) {
             return;
         }
         let mutation = task_mutation_state(cx);
@@ -417,6 +430,11 @@ impl VegaWindow {
             };
             let _ = owner.update(cx, |this, cx| {
                 this.navigation.pending = false;
+                if this.default_permission_save_pending(cx) {
+                    this.publish_navigation(cx);
+                    cx.notify();
+                    return;
+                }
                 if this.navigation.generation != generation
                     || Projection::read(cx, this.draft_id()).route() != origin
                 {

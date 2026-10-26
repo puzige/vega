@@ -56,6 +56,8 @@ pub struct NewThread<'a> {
     pub mode: &'a str,
     /// Permission mode DDL string.
     pub permission_mode: &'a str,
+    pub permission_revision: i64,
+    pub full_access_grant: Option<&'a str>,
     /// Model id.
     pub model: &'a str,
     /// Lifecycle status DDL string.
@@ -91,8 +93,8 @@ fn insert(
     )?;
     conn.execute(
         "INSERT INTO threads (id, project_id, title, mode, permission_mode, model, \
-         status, pinned, unread, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+         status, pinned, unread, created_at, updated_at, permission_revision, full_access_grant) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             thread.id,
             project_id,
@@ -105,6 +107,8 @@ fn insert(
             thread.unread,
             thread.created_at,
             thread.updated_at,
+            thread.permission_revision,
+            thread.full_access_grant,
         ],
     )?;
     Ok(())

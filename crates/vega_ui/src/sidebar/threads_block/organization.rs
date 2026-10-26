@@ -403,27 +403,6 @@ impl ThreadsBlock {
             was_mutation,
         };
         let worker = cx.background_executor().spawn(async move {
-            let action = match action {
-                Some(SidebarOrganizationAction::CreateThreadInGroup {
-                    project_id,
-                    group_id,
-                    ..
-                }) => {
-                    let config = config::load().map_err(|error| {
-                        crate::localized_copy::LocalizedCopy::with_args(
-                            "ui.configuration_could_not_be_loaded_error",
-                            vec![("error", error.to_string().into())],
-                        )
-                    })?;
-                    Some(SidebarOrganizationAction::CreateThreadInGroup {
-                        project_id,
-                        group_id,
-                        model: config.defaults.model,
-                        permission_mode: config.defaults.permission_mode,
-                    })
-                }
-                action => action,
-            };
             let store =
                 Store::open(database).map_err(crate::localized_copy::LocalizedCopy::storage)?;
             match action {
@@ -637,12 +616,19 @@ impl ThreadsBlock {
             cx.notify();
             return;
         };
+        let defaults = cx
+            .try_global::<crate::sidebar::NewTaskDefaults>()
+            .cloned()
+            .unwrap_or_default();
+        let draft = vega_conversation::threads::draft_thread_from_defaults(
+            Some(&project_id),
+            &defaults.model,
+            defaults.permission,
+        );
         self.submit_organization(
             SidebarOrganizationAction::CreateThreadInGroup {
-                project_id,
                 group_id,
-                model: String::new(),
-                permission_mode: String::new(),
+                draft: Box::new(draft),
             },
             cx,
         );

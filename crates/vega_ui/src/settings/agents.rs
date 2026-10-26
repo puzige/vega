@@ -6,7 +6,7 @@ use vega_conversation::types::{ComponentState, PermissionState};
 
 impl SettingsView {
     pub(crate) fn save_codex_profile(&mut self, cx: &mut Context<Self>) {
-        if self.codex_profile_saving {
+        if self.codex_profile_saving || self.default_permission.io_pending() {
             return;
         }
         let name = self.codex_name_input.read(cx).text().trim().to_string();
@@ -61,7 +61,7 @@ impl SettingsView {
                 match result {
                     Ok(config) => {
                         let replay_identity_changed = this.config.agent != config.agent;
-                        this.config = config;
+                        this.apply_unrelated_config(config);
                         this.error = None;
                         cx.emit(SettingsSaved {
                             replay_identity_changed,

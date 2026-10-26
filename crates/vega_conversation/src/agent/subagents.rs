@@ -1423,7 +1423,7 @@ async fn create_child(
                 permission_mode,
             );
             draft.id = snapshot.agent_id.clone();
-            crate::threads::materialize_draft(&store, &draft)
+            crate::threads::materialize_draft_in_transaction(&tx, &draft)
                 .map_err(|_| failure("admission_failed"))?;
             if vega_store::threads::rename(&tx, &snapshot.agent_id, &snapshot.name, now_ms())
                 .map_err(|_| failure("admission_failed"))?

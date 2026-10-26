@@ -54,7 +54,7 @@ pub fn new_thread_id() -> String {
 }
 
 /// Unix-milliseconds timestamp for `created_at`/`updated_at`.
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as i64)
@@ -159,8 +159,7 @@ fn create_thread_with_binding(
     permission_mode: &str,
 ) -> Result<Thread, ConversationError> {
     let thread = assemble_thread(project_id, model, parse_permission_mode(permission_mode)?);
-    insert_thread(store, project_id, &thread)?;
-    Ok(thread)
+    materialize_draft(store, &thread)
 }
 
 /// Strict config-string → [`PermissionMode`] bridge for the durable
@@ -193,6 +192,7 @@ fn assemble_thread(
         permission_mode,
         permission_revision: 0,
         full_access_grant: None,
+        default_permission: None,
         model: model.to_string(),
         status: ThreadStatus::Active,
         pinned: false,
@@ -202,21 +202,25 @@ fn assemble_thread(
     }
 }
 
-/// The one INSERT shared by [`create_thread_with_binding`] and
-/// [`materialize_draft`]. A `Some` project id uses the FK-checked statement,
-/// `None` writes a real SQL `NULL` so standalone tasks never become a
-/// synthetic project.
 fn insert_thread(
-    store: &Store,
+    transaction: &vega_store::Transaction<'_>,
     project_id: Option<&str>,
     thread: &Thread,
 ) -> Result<(), ConversationError> {
+    let grant = thread
+        .full_access_grant
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(store_error)?;
     let values = store::NewThread {
         id: &thread.id,
         project_id: &thread.project_id,
         title: &thread.title,
         mode: thread.mode.as_str(),
         permission_mode: thread.permission_mode.as_str(),
+        permission_revision: thread.permission_revision,
+        full_access_grant: grant.as_deref(),
         model: &thread.model,
         status: thread.status.as_str(),
         pinned: thread.pinned,
@@ -225,9 +229,9 @@ fn insert_thread(
         updated_at: thread.updated_at,
     };
     if project_id.is_some() {
-        store::create(store.conn(), values).map_err(store_error)?;
+        store::create(transaction, values).map_err(store_error)?;
     } else {
-        store::create_standalone(store.conn(), values).map_err(store_error)?;
+        store::create_standalone(transaction, values).map_err(store_error)?;
     }
     Ok(())
 }
@@ -237,12 +241,47 @@ pub fn draft_thread(project_id: Option<&str>, model: &str, permission_mode: &str
     assemble_thread(project_id, model, permission_mode)
 }
 
+pub fn draft_thread_from_defaults(
+    project_id: Option<&str>,
+    model: &str,
+    permission: crate::types::DefaultPermissionSnapshot,
+) -> Thread {
+    let mut thread = draft_thread(project_id, model, &permission.permission_mode);
+    thread.default_permission = Some(permission);
+    thread
+}
+
 pub fn materialize_draft(store: &Store, thread: &Thread) -> Result<Thread, ConversationError> {
+    let creation = crate::permission_contracts::DraftCreationGuard::begin(thread)?;
+    let transaction = store.immediate_transaction().map_err(store_error)?;
+    let thread = creation.materialize(&transaction)?;
+    transaction.commit().map_err(store_error)?;
+    Ok(thread)
+}
+
+pub(crate) fn materialize_draft_in_transaction(
+    transaction: &vega_store::Transaction<'_>,
+    thread: &Thread,
+) -> Result<Thread, ConversationError> {
+    let state = vega_store::permission_contracts::load_state(transaction).map_err(store_error)?;
+    if state.reset_pending || thread.default_permission.is_some() {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
+    if let Some(grant) = &thread.full_access_grant
+        && (thread.permission_mode != PermissionMode::FullAccess
+            || !grant.verifies(
+                &state.authority_epoch,
+                &crate::types::FullAccessScope::Thread {
+                    thread_id: thread.id.clone(),
+                },
+            ))
+    {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
     let project_id = thread.project_binding();
     if let Some(project_id) = project_id {
-        // 与 create_thread 同源的显式守卫：无项目行时给类型化错误，而不是裸外键失败。
         let exists =
-            store_projects::project_exists(store.conn(), project_id).map_err(store_error)?;
+            store_projects::project_exists(transaction, project_id).map_err(store_error)?;
         if !exists {
             return Err(ConversationError::NoProject);
         }
@@ -253,7 +292,7 @@ pub fn materialize_draft(store: &Store, thread: &Thread) -> Result<Thread, Conve
         updated_at: now,
         ..thread.clone()
     };
-    insert_thread(store, project_id, &materialized)?;
+    insert_thread(transaction, project_id, &materialized)?;
     Ok(materialized)
 }
 
@@ -614,6 +653,7 @@ pub(crate) fn thread_from_row(row: &store::ThreadRow) -> Result<Thread, Conversa
             .full_access_grant
             .as_deref()
             .and_then(|encoded| serde_json::from_str(encoded).ok()),
+        default_permission: None,
         model: row.model.clone(),
         status,
         pinned: row.pinned,

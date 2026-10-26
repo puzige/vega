@@ -362,7 +362,7 @@ const FILE_HEADER: &str = "\
 
 /// Path of the config file: `${XDG_CONFIG_HOME:-$HOME/.config}/vega/config.toml`
 /// (resolved by [`crate::paths`]; `HOME` must be set).
-fn config_path() -> Result<PathBuf, ConfigError> {
+pub fn config_path() -> Result<PathBuf, ConfigError> {
     let dir = crate::paths::config_dir()
         .ok_or_else(|| io::Error::other("HOME environment variable is not set"))?;
     Ok(dir.join("config.toml"))

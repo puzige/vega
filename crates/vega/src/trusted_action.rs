@@ -7,6 +7,7 @@ pub(crate) enum TrustedActionKind {
     ArtifactOpen,
     Commit,
     ModelSelection,
+    DraftAutomationCreation,
     AgentPreflight,
     SkillSelection,
     /// Conversation context settings and manual summary operations own the

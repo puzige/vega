@@ -89,9 +89,18 @@ impl Render for VegaWindow {
                     .map(|(database, config_root)| {
                         SkillSettingsService::new(database, config_root, self.shell_project_id(cx))
                     });
+                let permission_service =
+                    self.context_database(cx)
+                        .zip(config_path.clone())
+                        .map(|(database, config)| {
+                            vega_conversation::permission_contracts::DefaultPermissionService::new(
+                                database, config,
+                            )
+                        });
                 let settings = cx.new(|cx| SettingsView::from_path(config_path, cx));
                 settings.update(cx, |view, cx| {
-                    view.install_mcp_service(self.mcp_settings.clone(), cx)
+                    view.install_mcp_service(self.mcp_settings.clone(), cx);
+                    view.install_default_permission_service(permission_service, cx);
                 });
                 crate::app_usage::bind(&settings, cx);
                 settings.update(cx, |view, cx| {
@@ -205,7 +214,13 @@ impl Render for VegaWindow {
             }
         } else {
             // 设置已关闭：丢弃缓存，下次打开时重新构造并载入最新配置。
-            let returning_from_settings = self.settings_view.take().is_some();
+            let departing_settings = self.settings_view.take();
+            let returning_from_settings = departing_settings.is_some();
+            if let Some(settings) = departing_settings {
+                settings.update(cx, |settings, _| {
+                    settings.close_default_permission_session()
+                });
+            }
 
             let thread = self.resolve_route_thread(cx);
             self.update_message_location_route(Some(&thread.id));

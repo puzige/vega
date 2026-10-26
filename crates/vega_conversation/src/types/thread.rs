@@ -89,6 +89,7 @@ pub struct Thread {
     pub permission_mode: PermissionMode,
     pub permission_revision: i64,
     pub full_access_grant: Option<FullAccessGrant>,
+    pub default_permission: Option<DefaultPermissionSnapshot>,
     pub model: String,
     /// Lifecycle status (`active|archived`).
     pub status: ThreadStatus,

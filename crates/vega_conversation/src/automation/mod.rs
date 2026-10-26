@@ -108,6 +108,7 @@ pub fn command(
     command: &AutomationCommand,
     now: i64,
 ) -> Result<Vec<AutomationTask>, String> {
+    let _coordination = crate::permission_contracts::coordinate().map_err(storage)?;
     let tx = store.immediate_transaction().map_err(storage)?;
     let tasks = command_in_transaction(&tx, thread, command, now)?;
     tx.commit().map_err(storage)?;
@@ -119,12 +120,14 @@ pub fn command_for_draft(
     draft: &Thread,
     command: &AutomationCommand,
     now: i64,
-) -> Result<Vec<AutomationTask>, String> {
+) -> Result<(Vec<AutomationTask>, Thread), String> {
+    let creation =
+        crate::permission_contracts::DraftCreationGuard::begin(draft).map_err(storage)?;
     let tx = store.immediate_transaction().map_err(storage)?;
-    crate::threads::materialize_draft(store, draft).map_err(storage)?;
-    let tasks = command_in_transaction(&tx, &draft.id, command, now)?;
+    let thread = creation.materialize(&tx).map_err(storage)?;
+    let tasks = command_in_transaction(&tx, &thread.id, command, now)?;
     tx.commit().map_err(storage)?;
-    Ok(tasks)
+    Ok((tasks, thread))
 }
 
 fn command_in_transaction(

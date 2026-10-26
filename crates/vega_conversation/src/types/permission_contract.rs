@@ -3,6 +3,49 @@ use serde::{Deserialize, Serialize};
 const SCHEMA_VERSION: u32 = 1;
 const CONTRACT_VERSION: u32 = 1;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DefaultPermissionSnapshot {
+    pub config_path: Option<std::path::PathBuf>,
+    pub configuration_id: Option<String>,
+    pub permission_mode: String,
+    pub permission_revision: i64,
+    pub full_access_grant: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DefaultPermissionValues {
+    pub permission_mode: String,
+    pub permission_revision: i64,
+    pub full_access_grant: Option<String>,
+}
+
+impl From<&vega_store::config::Defaults> for DefaultPermissionValues {
+    fn from(defaults: &vega_store::config::Defaults) -> Self {
+        Self {
+            permission_mode: defaults.permission_mode.clone(),
+            permission_revision: defaults.permission_revision,
+            full_access_grant: defaults.full_access_grant.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DefaultPermissionChange {
+    pub(crate) source: DefaultPermissionSnapshot,
+    pub(crate) database_identity: String,
+    pub(crate) authority_epoch: String,
+    pub(crate) mode: super::PermissionMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DefaultPermissionError {
+    Unavailable,
+    Conflict,
+    ResetPending,
+    ConfirmationRequired,
+    OutcomeUnknown,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum FullAccessScope {
