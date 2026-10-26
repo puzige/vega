@@ -1,3 +1,4 @@
+mod prediction_diagnostics;
 pub use crate::automatic_titles::AutomaticTitleRequest;
 pub use crate::composer_predictions::{ComposerPredictionFence, ComposerPredictionRequest};
 pub use crate::ordinary_submissions::{
@@ -6,6 +7,7 @@ pub use crate::ordinary_submissions::{
     OrdinaryWorker, PersistedPayload, PrimaryFact, RawSubmission, RetryBlocker, RetryEligibility,
     RollbackFailure, SubmissionError, SubmissionFailure, SubmissionId, SubmissionSnapshot,
 };
+pub use prediction_diagnostics::{PredictionEvent, record_prediction_event};
 use std::sync::Arc;
 pub use vega_runtime::ImageAttachment;
 pub use vega_runtime::computer_use::{

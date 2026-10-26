@@ -13,6 +13,10 @@ struct RecoveryStream {
     attempt: u32,
     delay: Option<Duration>,
     completed: bool,
+    /// Whether this attempt already forwarded user-visible content (text or a
+    /// tool call). Replaying such an attempt would duplicate what the user
+    /// already saw, so it is never retried.
+    emitted_visible: bool,
     ended: bool,
 }
 
@@ -37,6 +41,7 @@ impl OpenAiProvider {
             attempt: 0,
             delay: None,
             completed: false,
+            emitted_visible: false,
             ended: false,
         };
         Ok(ProviderStream {
@@ -75,6 +80,13 @@ impl RecoveryStream {
             match item {
                 Some(Ok(event)) => {
                     self.completed |= matches!(event, ProviderEvent::Done { .. });
+                    self.emitted_visible |= match &event {
+                        ProviderEvent::TextDelta(text) => {
+                            text.chars().any(|character| !character.is_whitespace())
+                        }
+                        ProviderEvent::ToolUse { .. } => true,
+                        _ => false,
+                    };
                     return Some(Ok(event));
                 }
                 Some(Err(error)) => (error, None),
@@ -179,9 +191,23 @@ impl RecoveryStream {
                 retryable: true,
                 ..
             }
-        );
+        ) || (!self.emitted_visible
+            && !self.completed
+            && matches!(
+                &error,
+                VegaError::ProviderDiagnostic {
+                    // A stream that failed on an upstream capacity notice or an
+                    // unparseable frame before showing anything can be replayed
+                    // safely: nothing was displayed and no tool ran. After the
+                    // first visible delta the same failure stays terminal so a
+                    // consumed attempt is never duplicated.
+                    kind: ProviderFailureKind::Overloaded | ProviderFailureKind::Protocol,
+                    ..
+                }
+            ));
         if retryable && !self.completed && self.attempt < self.provider.recovery_retry.max_retries {
             self.stream = None;
+            self.emitted_visible = false;
             self.delay = Some(
                 self.provider
                     .recovery_retry

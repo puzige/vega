@@ -74,6 +74,9 @@ pub enum DiagnosticFailureCode {
     ProviderStreamInterrupted,
     /// An established response stream or request exceeded its deadline.
     ProviderTimeout,
+    /// The provider reported inside an established response that it cannot
+    /// serve the request right now.
+    ProviderOverloaded,
     /// Legacy merged code written before the transport split; still read back
     /// and still produced by nothing new.
     ProviderTransportOrStream,
@@ -106,6 +109,7 @@ impl DiagnosticFailureCode {
             Self::ProviderTransport => "provider_transport",
             Self::ProviderStreamInterrupted => "provider_stream_interrupted",
             Self::ProviderTimeout => "provider_timeout",
+            Self::ProviderOverloaded => "provider_overloaded",
             Self::ProviderTransportOrStream => "provider_transport_or_stream",
             Self::ProviderProtocol => "provider_protocol",
             Self::ProviderRejected => "provider_rejected",
@@ -496,6 +500,7 @@ fn validate(event: &NewDiagnosticEvent) -> Result<(), DiagnosticError> {
                 | "transport"
                 | "stream_interrupted"
                 | "timeout"
+                | "overloaded"
                 | "protocol"
                 | "rejected"
                 | "output_limit"
@@ -854,6 +859,7 @@ fn parse_failure(value: &str) -> Result<DiagnosticFailureCode, DiagnosticError> 
         "provider_transport" => Ok(DiagnosticFailureCode::ProviderTransport),
         "provider_stream_interrupted" => Ok(DiagnosticFailureCode::ProviderStreamInterrupted),
         "provider_timeout" => Ok(DiagnosticFailureCode::ProviderTimeout),
+        "provider_overloaded" => Ok(DiagnosticFailureCode::ProviderOverloaded),
         "provider_transport_or_stream" => Ok(DiagnosticFailureCode::ProviderTransportOrStream),
         "provider_protocol" => Ok(DiagnosticFailureCode::ProviderProtocol),
         "provider_rejected" => Ok(DiagnosticFailureCode::ProviderRejected),
