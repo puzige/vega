@@ -73,10 +73,18 @@ fn main() {
                 window_min_size: Some(size(px(WINDOW_MIN_WIDTH), px(WINDOW_MIN_HEIGHT))),
                 ..Default::default()
             },
-            |window, cx| cx.new(|cx| startup_controller::StartupView::new(window, cx)),
+            |_, cx| cx.new(startup_controller::StartupView::new),
         );
-        if let Err(error) = window {
-            tracing::error!(%error, "failed to open the startup window");
+        let window = match window {
+            Ok(window) => window,
+            Err(error) => {
+                tracing::error!(%error, "failed to open the startup window");
+                cx.quit();
+                return;
+            }
+        };
+        if let Err(error) = window.update(cx, |view, window, cx| view.start(window, cx)) {
+            tracing::error!(%error, "failed to start workspace recovery");
             cx.quit();
             return;
         }
@@ -154,7 +162,7 @@ fn open_workspace(
     let handle = window.window_handle();
     app_palette::bind_shortcuts(handle, root.downgrade(), cx);
     app_notifications::bind(handle, root.downgrade(), cx);
-    updater::acknowledge_startup();
+    updater::acknowledge_workspace();
     cx.on_action(|_: &ToggleTheme, cx| {
         let appearance = {
             let theme = cx.global_mut::<Theme>();

@@ -21,13 +21,7 @@ pub(crate) struct StartupView {
 }
 
 impl StartupView {
-    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let mut view = Self::idle(cx);
-        view.start(window, cx);
-        view
-    }
-
-    fn idle(cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         cx.bind_keys([
             KeyBinding::new("tab", NextFocus, Some("Startup")),
             KeyBinding::new("shift-tab", PreviousFocus, Some("Startup")),
@@ -42,7 +36,7 @@ impl StartupView {
         }
     }
 
-    fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.running {
             return;
         }
@@ -66,7 +60,13 @@ impl StartupView {
                 let appearance = vega_store::config::config_path()
                     .ok()
                     .and_then(|path| vega_store::config::read_from(&path).ok());
-                let result = vega_conversation::startup::prepare_default_workspace();
+                let result = match crate::updater::acknowledge_startup() {
+                    Ok(()) => vega_conversation::startup::prepare_default_workspace(),
+                    Err(error) => {
+                        tracing::error!(%error, "update launch acknowledgment failed");
+                        Err(StartupError::WorkerUnavailable)
+                    }
+                };
                 let _ = sender.send((appearance, result));
             })
             .is_err()

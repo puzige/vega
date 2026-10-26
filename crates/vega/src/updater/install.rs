@@ -3,12 +3,25 @@ use std::io::Read;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
 use super::platform::{self, Bundle};
 use super::{UpdateResult, failure, signature};
+
+#[cfg(test)]
+mod tests;
+
+static LAUNCH_ACKNOWLEDGED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy)]
+enum CandidateStatus {
+    Running,
+    Exited,
+    TimedOut,
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -60,7 +73,7 @@ pub(super) fn prepare(
         parent_pid: std::process::id(),
         delta,
     };
-    for name in ["helper-ready", "startup-ok"] {
+    for name in ["helper-ready", "startup-ok", "workspace-ready"] {
         let path = staging.join(name);
         if path.exists() {
             std::fs::remove_file(path)?;
@@ -200,7 +213,10 @@ fn helper(staging: &Path) -> UpdateResult<()> {
     )?;
     drop(prepared);
     let previous = staging.join("previous.app");
-    if previous.exists() || staging.join("startup-ok").exists() {
+    if previous.exists()
+        || staging.join("startup-ok").exists()
+        || staging.join("workspace-ready").exists()
+    {
         return Err(failure("安装记录已被使用"));
     }
     platform::write_new(&staging.join("helper-ready"), b"ready")?;
@@ -221,7 +237,7 @@ fn helper(staging: &Path) -> UpdateResult<()> {
     }
     let result = replace_and_launch(staging, &mut manifest, team.as_deref());
     if result.is_err() {
-        let _ = platform::write_new(&staging.join("install-failed.txt"), b"Update did not complete. Keep this directory for recovery. If previous.app exists, quit Vega before manually restoring it. User data is unchanged.");
+        let _ = platform::write_new(&staging.join("install-failed.txt"), b"Update requires attention. Keep this directory and application data for recovery. Do not restore previous.app until data compatibility and permission-reset completion have been verified.");
         if validate_old(&manifest).is_ok() {
             let _ = launch(&manifest.target, None, true);
         }
@@ -273,33 +289,45 @@ fn replace_and_launch(
     };
     let start = Instant::now();
     loop {
-        if staging.join("startup-ok").is_file() {
-            if platform::hash(&manifest.target.join("Contents/MacOS/vega"))? == manifest.new_hash {
-                if std::fs::remove_dir_all(&previous).is_err() {
-                    let _ = platform::write_new(&staging.join("cleanup-required.txt"), b"Update succeeded and the new application confirmed startup. The previous application could not be removed with current user permissions. Keep or manually remove this backup when convenient; no rollback is required.");
-                    return Ok(());
-                }
-                if std::fs::remove_dir_all(staging).is_err() {
-                    let _ = platform::write_new(&staging.join("cleanup-required.txt"), b"Update succeeded. Temporary update files could not be completely removed with current user permissions. They may be manually cleaned up; no rollback is required.");
-                }
-            }
+        let status = if child.try_wait()?.is_some() {
+            CandidateStatus::Exited
+        } else if start.elapsed() > Duration::from_secs(90) {
+            CandidateStatus::TimedOut
+        } else {
+            CandidateStatus::Running
+        };
+        if finish_startup(staging, manifest, status)? {
             return Ok(());
-        }
-        if child.try_wait()?.is_some() {
-            return fail_and_rollback(
-                staging,
-                manifest,
-                team,
-                failure("新版本未正常启动，已恢复原应用"),
-                platform::verify_candidate,
-            );
-        }
-        if start.elapsed() > Duration::from_secs(90) {
-            platform::write_new(&staging.join("recovery-required.txt"), b"Startup acknowledgment timed out. The new application is still running. Quit it before manually restoring previous.app. User data is unchanged.")?;
-            return Err(failure("启动确认超时；保留运行应用和原版备份，需手动恢复"));
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+fn finish_startup(
+    staging: &Path,
+    manifest: &Manifest,
+    status: CandidateStatus,
+) -> UpdateResult<bool> {
+    if staging.join("startup-ok").is_file() && staging.join("workspace-ready").is_file() {
+        if platform::hash(&manifest.target.join("Contents/MacOS/vega"))? != manifest.new_hash {
+            return Err(failure("新应用身份已变化，保留恢复记录"));
+        }
+        if std::fs::remove_dir_all(staging.join("previous.app")).is_err() {
+            let _ = platform::write_new(&staging.join("cleanup-required.txt"), b"The new application confirmed workspace readiness. The previous application could not be removed with current user permissions. Keep or manually remove this backup when convenient; no rollback is required.");
+            return Ok(true);
+        }
+        if std::fs::remove_dir_all(staging).is_err() {
+            let _ = platform::write_new(&staging.join("cleanup-required.txt"), b"The new application confirmed workspace readiness. Temporary update files could not be completely removed with current user permissions. They may be manually cleaned up; no rollback is required.");
+        }
+        return Ok(true);
+    }
+    if !matches!(status, CandidateStatus::Running) {
+        platform::write_new(&staging.join("recovery-required.txt"), b"The new application launched but workspace readiness was not confirmed. The candidate application, previous.app and recovery records are retained. Do not downgrade or restore the backup until data compatibility and permission-reset completion have been verified.")?;
+        return Err(failure(
+            "工作区启动尚未确认；保留新版、原版备份与恢复记录，禁止自动降级",
+        ));
+    }
+    Ok(false)
 }
 
 fn prepare_candidate(
@@ -387,31 +415,47 @@ pub(crate) fn run_helper_if_requested() -> bool {
     true
 }
 
-pub(crate) fn acknowledge_startup() {
+fn update_staging() -> Option<PathBuf> {
     let args: Vec<_> = std::env::args_os().collect();
-    if args.len() != 3 || args[1] != "--vega-update-started" {
-        return;
+    (args.len() == 3 && args[1] == "--vega-update-started").then(|| PathBuf::from(&args[2]))
+}
+
+fn write_startup_receipt(staging: &Path, name: &str) -> UpdateResult<()> {
+    let manifest = load(staging)?;
+    validate_layout(staging, &manifest)?;
+    let executable = std::env::current_exe()?.canonicalize()?;
+    if executable != manifest.target.join("Contents/MacOS/vega")
+        || platform::hash(&executable)? != manifest.new_hash
+        || !File::open(staging.join("helper-ready"))?
+            .metadata()?
+            .is_file()
+    {
+        return Err(failure("启动确认身份不匹配"));
     }
-    let staging = PathBuf::from(&args[2]);
+    platform::write_new(&staging.join(name), b"ready")
+}
+
+pub(crate) fn acknowledge_startup() -> UpdateResult<()> {
+    if LAUNCH_ACKNOWLEDGED.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let Some(staging) = update_staging() else {
+        return Ok(());
+    };
+    write_startup_receipt(&staging, "startup-ok")?;
+    LAUNCH_ACKNOWLEDGED.store(true, Ordering::Release);
+    Ok(())
+}
+
+pub(crate) fn acknowledge_workspace() {
+    let Some(staging) = update_staging() else {
+        return;
+    };
     let _ = std::thread::Builder::new()
-        .name("vega-update-startup".into())
+        .name("vega-update-workspace".into())
         .spawn(move || {
-            let result = (|| -> UpdateResult<()> {
-                let manifest = load(&staging)?;
-                validate_layout(&staging, &manifest)?;
-                let executable = std::env::current_exe()?.canonicalize()?;
-                if executable != manifest.target.join("Contents/MacOS/vega")
-                    || platform::hash(&executable)? != manifest.new_hash
-                    || !File::open(staging.join("helper-ready"))?
-                        .metadata()?
-                        .is_file()
-                {
-                    return Err(failure("启动确认身份不匹配"));
-                }
-                platform::write_new(&staging.join("startup-ok"), b"ready")
-            })();
-            if let Err(error) = result {
-                tracing::error!(%error, "update startup acknowledgment failed");
+            if let Err(error) = write_startup_receipt(&staging, "workspace-ready") {
+                tracing::error!(%error, "update workspace acknowledgment failed");
             }
         });
 }

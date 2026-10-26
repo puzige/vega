@@ -86,16 +86,21 @@ fn startup_failure_retains_gate_and_keyboard_retry_without_opening_workspace(
         gpui_kit::init(cx);
         crate::apply_appearance(None, cx);
     });
-    let window = cx.add_window(|window, cx| {
-        let mut view = StartupView::idle(cx);
+    let window = cx.add_window(|_, cx| {
+        let mut view = StartupView::new(cx);
         view.fixture_paths = Some((fixture.database.clone(), fixture.config.clone()));
-        view.start(window, cx);
-        assert!(view.running);
-        assert!(view.quit_focus.is_focused(window));
-        view.move_focus(window, cx);
-        assert!(view.quit_focus.is_focused(window));
         view
     });
+    window
+        .update(cx, |view, window, cx| {
+            assert!(!view.running);
+            view.start(window, cx);
+            assert!(view.running);
+            assert!(view.quit_focus.is_focused(window));
+            view.move_focus(window, cx);
+            assert!(view.quit_focus.is_focused(window));
+        })
+        .expect("start only after the window opens");
     draw(window, cx);
     wait_for_failure(window, cx);
     assert!(!fixture.config.exists());

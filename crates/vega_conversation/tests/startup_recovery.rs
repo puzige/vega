@@ -152,10 +152,12 @@ fn pending_startup_preserves_missing_malformed_and_conflicting_configuration() {
             "malformed" => {
                 std::fs::write(&fixture.config, "[broken").expect("malformed fixture config")
             }
-            _ => config::update_from(&fixture.config, |config| {
-                config.defaults.permission_revision += 1
-            })
-            .expect("conflicting config"),
+            _ => {
+                config::update_from(&fixture.config, |config| {
+                    config.defaults.permission_revision += 1
+                })
+                .expect("conflicting config");
+            }
         }
         let before = std::fs::read(&fixture.config).ok();
         let result = prepare_workspace(&fixture.database, &fixture.config);

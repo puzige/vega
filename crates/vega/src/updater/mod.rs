@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use vega_conversation::types::{UpdatePhase, UpdateProjection, UpdateRequest};
 
-pub(crate) use install::{acknowledge_startup, run_helper_if_requested};
+pub(crate) use install::{acknowledge_startup, acknowledge_workspace, run_helper_if_requested};
 
 pub(crate) const RELEASE_PAGE: &str = "https://github.com/puzige/vega/releases/latest";
 static INSTALLING: AtomicBool = AtomicBool::new(false);
