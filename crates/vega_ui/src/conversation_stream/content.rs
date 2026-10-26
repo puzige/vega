@@ -478,15 +478,6 @@ impl ConversationStream {
                     self.observe_tool_card(&card, cx);
                     self.tool_cards.insert(call_id.clone(), card.clone());
                     self.refresh_subagent_card(&card, cx);
-                    if card.read(cx).is_subagent_invocation() {
-                        hydrated.push(StreamEntry::Tool { card });
-                        hydrated_identities.push(self.tool_call_identity(
-                            &call_id,
-                            Some(&message_id),
-                            Some(seq),
-                        ));
-                        continue;
-                    }
                     let run_details =
                         self.run_activity_groups
                             .get(&message_id)
@@ -503,6 +494,18 @@ impl ConversationStream {
                                     )
                                 })
                             });
+                    if card.read(cx).is_subagent_invocation() {
+                        if let Some(group) = run_details {
+                            group.update(cx, |group, cx| group.attach_tool(card.clone(), cx));
+                        }
+                        hydrated.push(StreamEntry::Tool { card });
+                        hydrated_identities.push(self.tool_call_identity(
+                            &call_id,
+                            Some(&message_id),
+                            Some(seq),
+                        ));
+                        continue;
+                    }
                     if let Some(group) = run_details {
                         let segment = hydrated.last().and_then(|entry| match entry {
                             StreamEntry::RunActivitySegment {
@@ -2058,6 +2061,9 @@ impl ConversationStream {
 
     fn append_live_tool(&mut self, card: Entity<ToolCard>, proposed: bool, cx: &mut Context<Self>) {
         if card.read(cx).is_subagent_invocation() {
+            if let Some((_, group)) = self.active_run_activity.clone() {
+                group.update(cx, |group, cx| group.attach_tool(card.clone(), cx));
+            }
             self.active_run_activity_segment = None;
             let index = self.entries.len();
             self.entries.push(StreamEntry::Tool { card });
