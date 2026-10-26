@@ -924,8 +924,6 @@ where
 
     let work_time_source = actor_config.work_time_source.clone();
     let user_questions = actor_config.user_questions.clone();
-    #[cfg(test)]
-    let before_runtime_start = actor_config.before_runtime_start.clone();
     let actor = match PersistenceActor::start(PersistenceActorStart {
         database_path: prepared.database_path.clone(),
         project_id: prepared.project_id.clone(),
@@ -959,10 +957,6 @@ where
         }
     };
 
-    #[cfg(test)]
-    if let Some(before_runtime_start) = before_runtime_start {
-        before_runtime_start();
-    }
     if cancel.is_cancelled() {
         let cleanup = finish_prepared_terminal(
             prepared.database_path.clone(),

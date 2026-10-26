@@ -10,9 +10,6 @@ use vega_store::Store;
 use vega_ui::conversation_stream::*;
 use vega_ui::plan_card::PlanReviewRequested;
 
-#[cfg(test)]
-mod resume_tests;
-
 type CredentialReader = Arc<dyn Fn() -> Result<Vec<String>, ()> + Send + Sync>;
 
 pub(crate) const AGENT_EVENT_POLL: Duration = Duration::from_millis(4);

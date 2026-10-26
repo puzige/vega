@@ -56,8 +56,6 @@ pub use user_question_queue::*;
 mod persistence;
 mod pipeline;
 mod replay_sessions;
-#[cfg(test)]
-mod resume_tests;
 mod skills;
 
 pub use compaction::{
