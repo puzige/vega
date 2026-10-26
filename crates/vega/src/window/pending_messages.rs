@@ -573,6 +573,10 @@ impl VegaWindow {
         let projection = stream.read(cx).pending_queue();
         if projection.paused
             || projection.busy
+            || self
+                .staged_model_pending
+                .as_ref()
+                .is_some_and(|(id, _)| id == thread_id)
             || self.agent_controller.active.contains_key(thread_id)
             || self
                 .agent_controller

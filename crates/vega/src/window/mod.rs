@@ -187,6 +187,7 @@ pub(crate) struct VegaWindow {
     /// The model-only result of a save that completed while Settings was
     /// visible. It is merged into the newest route projection after close.
     pub(crate) deferred_model_refresh: Option<ModelSelectionRefresh>,
+    pub(crate) staged_model_pending: Option<(String, TrustedActionToken)>,
 }
 
 impl VegaWindow {
@@ -358,6 +359,7 @@ impl VegaWindow {
             model_catalog_loading: false,
             model_catalog_generation: 0,
             deferred_model_refresh: None,
+            staged_model_pending: None,
         };
         if startup_services {
             window.start_pricing_load(cx);

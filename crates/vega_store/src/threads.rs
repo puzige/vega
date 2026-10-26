@@ -271,8 +271,52 @@ pub fn set_model(
         return Ok(0);
     }
     conn.execute(
-        "UPDATE threads SET model = ?1, updated_at = ?2 WHERE id = ?3",
+        "UPDATE threads SET model = ?1, pending_model = NULL, updated_at = ?2 WHERE id = ?3",
         params![model, now, id],
+    )
+}
+
+pub fn pending_model(conn: &Connection, id: &str) -> Result<Option<String>, rusqlite::Error> {
+    conn.query_row(
+        "SELECT pending_model FROM threads WHERE id = ?1",
+        [id],
+        |row| row.get(0),
+    )
+}
+
+pub fn stage_model(
+    conn: &Connection,
+    id: &str,
+    model: &str,
+    now: i64,
+) -> Result<usize, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Threads,
+    )?;
+    if model.is_empty() {
+        return Ok(0);
+    }
+    conn.execute(
+        "UPDATE threads SET pending_model = ?1, updated_at = ?2 WHERE id = ?3",
+        params![model, now, id],
+    )
+}
+
+pub fn promote_pending_model(
+    conn: &Connection,
+    id: &str,
+    expected: &str,
+    now: i64,
+) -> Result<usize, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Threads,
+    )?;
+    conn.execute(
+        "UPDATE threads SET model = pending_model, pending_model = NULL, updated_at = ?3
+         WHERE id = ?1 AND pending_model = ?2",
+        params![id, expected, now],
     )
 }
 

@@ -478,15 +478,6 @@ impl ConversationStream {
                     self.observe_tool_card(&card, cx);
                     self.tool_cards.insert(call_id.clone(), card.clone());
                     self.refresh_subagent_card(&card, cx);
-                    if card.read(cx).is_subagent_invocation() {
-                        hydrated.push(StreamEntry::Tool { card });
-                        hydrated_identities.push(self.tool_call_identity(
-                            &call_id,
-                            Some(&message_id),
-                            Some(seq),
-                        ));
-                        continue;
-                    }
                     let run_details =
                         self.run_activity_groups
                             .get(&message_id)
@@ -503,6 +494,18 @@ impl ConversationStream {
                                     )
                                 })
                             });
+                    if card.read(cx).is_subagent_invocation() {
+                        if let Some(group) = run_details {
+                            group.update(cx, |group, cx| group.attach_tool(card.clone(), cx));
+                        }
+                        hydrated.push(StreamEntry::Tool { card });
+                        hydrated_identities.push(self.tool_call_identity(
+                            &call_id,
+                            Some(&message_id),
+                            Some(seq),
+                        ));
+                        continue;
+                    }
                     if let Some(group) = run_details {
                         let segment = hydrated.last().and_then(|entry| match entry {
                             StreamEntry::RunActivitySegment {
@@ -898,6 +901,10 @@ impl ConversationStream {
         self.active_agent_message.is_some()
     }
 
+    pub fn run_active(&self) -> bool {
+        self.actions.running
+    }
+
     pub fn has_pending_permission(&self) -> bool {
         self.permission_queue.has_pending()
     }
@@ -1118,6 +1125,12 @@ impl ConversationStream {
                     }
                     StreamEntry::Assistant { copy, .. }
                         if group.read(cx).owns_process_copy(copy.id) =>
+                    {
+                        Some(index)
+                    }
+                    StreamEntry::Tool { card }
+                        if card.read(cx).is_subagent_invocation()
+                            && this.entry_owner_group(index) == Some(&group) =>
                     {
                         Some(index)
                     }
@@ -1973,7 +1986,15 @@ impl ConversationStream {
     pub(crate) fn tool_entry_index(&self, card: &Entity<ToolCard>, cx: &App) -> Option<usize> {
         self.entries
             .iter()
-            .position(|entry| Self::tool_entry_contains(entry, card, cx))
+            .position(|entry| {
+                matches!(entry, StreamEntry::RunActivity { .. })
+                    && Self::tool_entry_contains(entry, card, cx)
+            })
+            .or_else(|| {
+                self.entries
+                    .iter()
+                    .position(|entry| Self::tool_entry_contains(entry, card, cx))
+            })
     }
 
     fn observe_tool_card(&mut self, card: &Entity<ToolCard>, cx: &mut Context<Self>) {
@@ -2052,6 +2073,9 @@ impl ConversationStream {
 
     fn append_live_tool(&mut self, card: Entity<ToolCard>, proposed: bool, cx: &mut Context<Self>) {
         if card.read(cx).is_subagent_invocation() {
+            if let Some((_, group)) = self.active_run_activity.clone() {
+                group.update(cx, |group, cx| group.attach_tool(card.clone(), cx));
+            }
             self.active_run_activity_segment = None;
             let index = self.entries.len();
             self.entries.push(StreamEntry::Tool { card });
