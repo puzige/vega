@@ -149,9 +149,7 @@ pub(crate) struct VegaWindow {
     pub(crate) commit_controller: CommitController,
     pub(crate) trusted_actions: TrustedActionCoordinator,
     pub(crate) window_alive: Arc<AtomicBool>,
-    /// Configured model ids projected from the worker-side config read. The
-    /// selector intersects these with the in-memory Ready pricing authority.
-    pub(crate) configured_models: Option<Vec<String>>,
+    pub(crate) configured_models: Option<Vec<ModelOption>>,
     model_capability_authority: Option<ModelCapabilityAuthority>,
     model_capability_projection: ModelCapabilitySettingsProjection,
     model_capability_generation: u64,

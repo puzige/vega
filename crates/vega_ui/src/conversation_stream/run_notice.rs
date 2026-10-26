@@ -94,10 +94,9 @@ impl RunNotice {
                 .min_w_0()
                 .py_1()
                 .aria_label(self.text())
-                .child(render_rows::status_notice_with_icon(
+                .child(render_rows::inline_status_notice(
                     self.text(),
-                    colors.warning,
-                    colors,
+                    colors.text_secondary,
                     Icon::Wifi,
                 ))
                 .into_any_element();
@@ -167,13 +166,24 @@ impl RunNotice {
     }
 
     pub(crate) fn estimated_height(&self, width: f32) -> f32 {
-        let retrying = matches!(self.kind, RunNoticeKind::Retrying { .. });
-        let content_width = if retrying {
-            (width - 2. * Layout::STATUS_PADDING - 2. - Layout::ICON_SIZE - Layout::STATUS_GAP)
-                .max(1.)
-        } else {
-            width.max(1.)
-        };
+        if matches!(self.kind, RunNoticeKind::Retrying { .. }) {
+            let content_width =
+                (width - Layout::ICON_SIZE - Layout::CONVERSATION_INLINE_GAP).max(1.);
+            let chars_per_line =
+                (content_width / (Typography::CONVERSATION * 0.56)).max(1.) as usize;
+            let lines = self
+                .text()
+                .lines()
+                .map(|line| display_width(line).div_ceil(chars_per_line).max(1))
+                .sum::<usize>()
+                .max(1);
+            return (lines as f32
+                * Typography::CONVERSATION
+                * Typography::CONVERSATION_LINE_HEIGHT)
+                .max(Layout::CONVERSATION_TOOL_HEIGHT)
+                + 8.;
+        }
+        let content_width = width.max(1.);
         let chars_per_line = (content_width / (Typography::BODY * 0.56)).max(1.) as usize;
         let lines = self
             .text()
@@ -182,11 +192,7 @@ impl RunNotice {
             .sum::<usize>()
             .max(1);
         lines as f32 * Typography::BODY * Typography::BODY_LINE_HEIGHT
-            + if retrying {
-                2. * Layout::STATUS_PADDING + 10.
-            } else {
-                8.
-            }
+            + 8.
             + if self.can_resume_credentials() {
                 Typography::SIDEBAR_LINE_HEIGHT
             } else {
