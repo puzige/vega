@@ -11,5 +11,5 @@
 - [执行总纲](vega-exec-guide.md)
 - [Issue 与交付工作流](vega-issue-workflow.md)
 - [设计守则](vega-design-guidelines.md)
-- [Composer 入口精简规格（提案，未实施）](vega-composer-entry-simplification.md)
+- [Composer 入口精简规格（已确认，待实施）](vega-composer-entry-simplification.md)
 - [项目状态与规格索引](../README.md#状态)
