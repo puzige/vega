@@ -948,6 +948,7 @@ impl VegaWindow {
                 settings.apply_reasoning_projection(self.reasoning_settings_projection(), cx)
             });
         }
+        self.resume_catalog_composer_predictions(cx);
         cx.notify();
     }
 
