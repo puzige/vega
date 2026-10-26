@@ -412,9 +412,12 @@ pub fn shell_icon_button(
             cx.new(|_| IconTooltip(tooltip_label.clone(), shortcut.clone()))
                 .into()
         })
+        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+            gpui_kit::base::GlobalState::init(cx);
+            gpui_kit::base::GlobalState::suppress_text_selection(cx);
+        })
         .on_mouse_up(MouseButton::Left, move |_, window, cx| {
             if enabled {
-                cx.stop_propagation();
                 activate(&(), window, cx);
             }
         })
