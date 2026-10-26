@@ -2,11 +2,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use vega_store::{Store, config, messages, permission_contracts as contracts};
+use vega_store::{Store, config, messages, permission_contracts as contracts, tool_calls};
 
 use super::prepare_run_with_images_and_reasoning;
 use crate::agent::{PersistenceActorConfig, persistence::PreparedRun};
-use crate::types::{ConversationError, InterruptedAssistant, PermissionFence, PermissionMode};
+use crate::types::{
+    Approval, ApprovalAudit, ApprovalSource, ConversationError, InterruptedAssistant,
+    PermissionFence, PermissionMode,
+};
 
 struct Fixture {
     root: PathBuf,
@@ -87,6 +90,42 @@ impl Fixture {
         let user = run.user_message_id.clone();
         drop(run);
         (tail, fence, user)
+    }
+
+    fn running_bash(&self, assistant: &str) -> tool_calls::ToolCallState {
+        tool_calls::insert_pending(
+            self.store.conn(),
+            tool_calls::NewToolCall {
+                id: "unsettled",
+                thread_id: &self.thread,
+                message_id: assistant,
+                seq: 1,
+                tool: "bash",
+                input_json: r#"{"command":"printf synthetic","timeout":null}"#,
+                status: "pending_approval",
+                created_at: 1,
+            },
+        )
+        .expect("pending synthetic Bash call");
+        let approval = ApprovalAudit {
+            decision: Approval::Once,
+            note: None,
+            source: ApprovalSource::User,
+            danger: None,
+        }
+        .to_json()
+        .expect("strict user approval");
+        tool_calls::approve(self.store.conn(), "unsettled", &approval, None, 2)
+            .expect("approve synthetic call");
+        tool_calls::mark_running(self.store.conn(), "unsettled")
+            .expect("record synthetic running state without executing Bash");
+        let state = tool_calls::find_state(self.store.conn(), "unsettled")
+            .expect("tool state")
+            .expect("retained tool");
+        assert_eq!(state.status, "running");
+        assert_eq!(state.approval.as_deref(), Some(approval.as_str()));
+        assert!(state.output_text.is_none());
+        state
     }
 
     fn rows(&self) -> Vec<(String, i64, String, String, String)> {
@@ -327,10 +366,7 @@ fn reset_pause_blocks_preexisting_admission_before_history_recovery_or_credentia
     assert_eq!(reads.load(Ordering::SeqCst), 1);
     let assistant = run.assistant_message_id.clone();
     drop(run);
-    fixture.store.conn().execute(
-        "INSERT INTO tool_calls(id,thread_id,message_id,seq,tool,input_json,status,created_at) VALUES('unsettled',?1,?2,1,'bash','{}','running',1)",
-        (&fixture.thread, &assistant),
-    ).expect("unsettled tool evidence");
+    let tool_before = fixture.running_bash(&assistant);
     let owner = vega_store::thread_admission::try_acquire(
         fixture.store.database_identity(),
         &fixture.thread,
@@ -346,6 +382,10 @@ fn reset_pause_blocks_preexisting_admission_before_history_recovery_or_credentia
     ));
     assert_eq!(reads.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.rows(), before);
+    assert_eq!(
+        tool_calls::find_state(fixture.store.conn(), "unsettled").expect("unchanged tool"),
+        Some(tool_before.clone())
+    );
     let status: String = fixture
         .store
         .conn()
@@ -372,8 +412,33 @@ fn reset_pause_blocks_preexisting_admission_before_history_recovery_or_credentia
     drop(owner);
     assert!(pause.owners_released().expect("owner may drain"));
     drop(pause);
-    assert!(fixture.prepare_with_config(None, config).is_ok());
+    let fresh = fixture
+        .prepare_with_config(None, config)
+        .expect("preparation resumes after pause release with valid retained tool history");
     assert_eq!(reads.load(Ordering::SeqCst), 2);
+    assert_ne!(fresh.assistant_message_id, assistant);
+    assert_eq!(
+        messages::find(fixture.store.conn(), &assistant)
+            .expect("original assistant")
+            .expect("retained interrupted assistant")
+            .status,
+        "interrupted"
+    );
+    let retained = tool_calls::find_state(fixture.store.conn(), "unsettled")
+        .expect("recovered tool state")
+        .expect("retained cancelled call");
+    assert_eq!(retained.status, "cancelled");
+    assert_eq!(retained.approval, tool_before.approval);
+    assert_eq!(retained.input_json, tool_before.input_json);
+    assert_eq!(
+        retained.output_text.as_deref(),
+        Some(vega_store::recovery::RECOVERY_CANCELLED_OUTPUT)
+    );
+    let identity = tool_calls::find_identity(fixture.store.conn(), "unsettled")
+        .expect("retained identity")
+        .expect("same original tool call");
+    assert_eq!(identity.thread_id, fixture.thread);
+    assert_eq!(identity.message_id, assistant);
 }
 
 #[test]
@@ -382,10 +447,7 @@ fn pending_reset_blocks_generic_preparation_before_history_normalization() {
     let run = fixture.prepare(None).expect("original streaming run");
     let assistant = run.assistant_message_id.clone();
     drop(run);
-    fixture.store.conn().execute(
-        "INSERT INTO tool_calls(id,thread_id,message_id,seq,tool,input_json,status,created_at) VALUES('unsettled',?1,?2,1,'bash','{}','running',1)",
-        (&fixture.thread, &assistant),
-    ).expect("unsettled tool evidence");
+    let tool_before = fixture.running_bash(&assistant);
     let (_, record) = fixture.begin_reset();
     let before = fixture.rows();
     assert!(matches!(
@@ -410,6 +472,10 @@ fn pending_reset_blocks_generic_preparation_before_history_normalization() {
         )
         .expect("tool state");
     assert_eq!(status, "running");
+    assert_eq!(
+        tool_calls::find_state(fixture.store.conn(), "unsettled").expect("unchanged tool"),
+        Some(tool_before)
+    );
     assert_eq!(
         vega_store::permission_reset::load(fixture.store.conn()).expect("journal"),
         Some(record)
