@@ -4,6 +4,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use crate::types::{PredictionEvent, record_prediction_event};
 use futures::StreamExt;
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
@@ -57,93 +58,127 @@ impl ComposerPredictionRequest {
         cancel: CancellationToken,
         pricing: Option<vega_token::PricingCatalog>,
     ) -> Option<String> {
-        if cancel.is_cancelled() || !(self.authority)() {
-            return None;
-        }
-        let store = Store::open(&database).ok()?;
-        if !prediction_owner_matches(
-            &store,
-            &thread_id,
-            &completed_message_id,
-            &self.model,
-            self.mode,
-        ) {
-            return None;
-        }
-        let context = prediction_context(&store, &thread_id, &completed_message_id)?;
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .ok()?;
-        for attempt in 0..3 {
-            if attempt > 0
-                && runtime.block_on(async {
+        let store = match Store::open(&database) {
+            Ok(store) => store,
+            Err(_) => {
+                tracing::warn!("composer prediction store unavailable");
+                return None;
+            }
+        };
+        let diagnostic = |event, attempt| {
+            record_prediction_event(&database, &thread_id, &completed_message_id, event, attempt);
+        };
+        let result = (|| {
+            if cancel.is_cancelled() || !(self.authority)() {
+                diagnostic(PredictionEvent::Stale, 0);
+                return Some(None);
+            }
+            if !prediction_owner_matches(
+                &store,
+                &thread_id,
+                &completed_message_id,
+                &self.model,
+                self.mode,
+            ) {
+                diagnostic(PredictionEvent::Stale, 0);
+                return Some(None);
+            }
+            let context = prediction_context(&store, &thread_id, &completed_message_id)?;
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()?;
+            for attempt in 1..=3u8 {
+                if attempt > 1 && runtime.block_on(async {
                     tokio::select! {
                         biased;
                         _ = cancel.cancelled() => true,
-                        _ = tokio::time::sleep(Duration::from_millis(250 * attempt)) => false,
+                        _ = tokio::time::sleep(Duration::from_millis(250 * u64::from(attempt - 1))) => false,
                     }
-                })
-            {
-                return None;
-            }
-            if cancel.is_cancelled()
-                || !(self.authority)()
-                || !prediction_owner_matches(
-                    &store,
-                    &thread_id,
-                    &completed_message_id,
-                    &self.model,
-                    self.mode,
-                )
-            {
-                return None;
-            }
-            let started = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs() as i64);
-            let projection = crate::privacy::DisplayProjection::load(&store, &thread_id).ok()?;
-            let (outcome, usage, output) =
-                runtime.block_on(self.collect(context.clone(), &cancel, &projection));
-            if let Some(usage) = usage {
-                persist_usage(
-                    &store,
-                    &thread_id,
-                    &self.model,
-                    started,
-                    usage,
-                    pricing.as_ref(),
-                );
-            }
-            if cancel.is_cancelled()
-                || !(self.authority)()
-                || !prediction_owner_matches(
-                    &store,
-                    &thread_id,
-                    &completed_message_id,
-                    &self.model,
-                    self.mode,
-                )
-            {
-                return None;
-            }
-            let projection = crate::privacy::DisplayProjection::load(&store, &thread_id).ok()?;
-            if !prediction_output_safe(&output, &projection) {
-                return None;
-            }
-            match outcome {
-                PredictionOutcome::Suggestion(suggestion) => {
-                    let projected = projection.text(&suggestion);
-                    return (projected == suggestion
-                        && !projected
-                            .contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER))
-                    .then_some(suggestion);
+                }) {
+                    diagnostic(PredictionEvent::Cancelled, attempt - 1);
+                    return Some(None);
                 }
-                PredictionOutcome::Retry => {}
-                PredictionOutcome::Abstain | PredictionOutcome::Stop => return None,
+                if cancel.is_cancelled()
+                    || !(self.authority)()
+                    || !prediction_owner_matches(
+                        &store,
+                        &thread_id,
+                        &completed_message_id,
+                        &self.model,
+                        self.mode,
+                    )
+                {
+                    diagnostic(PredictionEvent::Stale, attempt - 1);
+                    return Some(None);
+                }
+                let started = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs() as i64);
+                let projection =
+                    crate::privacy::DisplayProjection::load(&store, &thread_id).ok()?;
+                diagnostic(PredictionEvent::AttemptStarted, attempt);
+                let (outcome, usage, output) =
+                    runtime.block_on(self.collect(context.clone(), &cancel, &projection));
+                if let Some(usage) = usage {
+                    persist_usage(
+                        &store,
+                        &thread_id,
+                        &self.model,
+                        started,
+                        usage,
+                        pricing.as_ref(),
+                    );
+                }
+                if cancel.is_cancelled()
+                    || !(self.authority)()
+                    || !prediction_owner_matches(
+                        &store,
+                        &thread_id,
+                        &completed_message_id,
+                        &self.model,
+                        self.mode,
+                    )
+                {
+                    diagnostic(PredictionEvent::Stale, attempt);
+                    return Some(None);
+                }
+                let projection =
+                    crate::privacy::DisplayProjection::load(&store, &thread_id).ok()?;
+                if !prediction_output_safe(&output, &projection) {
+                    diagnostic(PredictionEvent::SafetyStopped, attempt);
+                    return Some(None);
+                }
+                match outcome {
+                    PredictionOutcome::Suggestion(suggestion) => {
+                        if !prediction_output_safe(&suggestion, &projection) {
+                            diagnostic(PredictionEvent::SafetyStopped, attempt);
+                            return Some(None);
+                        }
+                        diagnostic(PredictionEvent::Suggestion, attempt);
+                        return Some(Some(suggestion));
+                    }
+                    PredictionOutcome::Retry(event) => diagnostic(event, attempt),
+                    PredictionOutcome::Stop(event) => {
+                        diagnostic(event, attempt);
+                        return Some(None);
+                    }
+                    PredictionOutcome::Abstain => {
+                        diagnostic(PredictionEvent::Abstained, attempt);
+                        return Some(None);
+                    }
+                }
+            }
+            diagnostic(PredictionEvent::Exhausted, 3);
+            Some(None)
+        })();
+        match result {
+            Some(suggestion) => suggestion,
+            None => {
+                diagnostic(PredictionEvent::LocalFailure, 0);
+                None
             }
         }
-        None
     }
 
     async fn collect(
@@ -170,7 +205,7 @@ impl ComposerPredictionRequest {
         let mut text = String::new();
         let operation = async {
             if !(self.authority)() {
-                return PredictionOutcome::Stop;
+                return PredictionOutcome::Stop(PredictionEvent::Stale);
             }
             let mut stream = match self
                 .provider
@@ -187,21 +222,21 @@ impl ComposerPredictionRequest {
                     Err(vega_runtime::VegaError::ProviderDiagnostic {
                         kind: vega_runtime::ProviderFailureKind::Protocol,
                         ..
-                    }) => return PredictionOutcome::Retry,
+                    }) => return PredictionOutcome::Retry(PredictionEvent::StreamInterrupted),
                     Err(error) => return PredictionOutcome::from_error(error),
                 };
                 match event {
                     ProviderEvent::TextDelta(delta) => {
                         if !prediction_output_safe(&delta, projection) {
-                            return PredictionOutcome::Stop;
+                            return PredictionOutcome::Stop(PredictionEvent::SafetyStopped);
                         }
                         let oversized = text.len().saturating_add(delta.len()) > 8192;
                         text.extend(delta.chars().take(8192));
                         if !prediction_output_safe(&text, projection) {
-                            return PredictionOutcome::Stop;
+                            return PredictionOutcome::Stop(PredictionEvent::SafetyStopped);
                         }
                         if done || oversized {
-                            return PredictionOutcome::Retry;
+                            return PredictionOutcome::Retry(PredictionEvent::InvalidOutput);
                         }
                     }
                     ProviderEvent::Usage {
@@ -228,29 +263,31 @@ impl ComposerPredictionRequest {
                     | ProviderEvent::ResponseReplay(_)
                     | ProviderEvent::ResponseMetadata(_) => {}
                     ProviderEvent::ToolUse { .. } | ProviderEvent::RetryScheduled { .. } => {
-                        return PredictionOutcome::Stop;
+                        return PredictionOutcome::Stop(PredictionEvent::UnexpectedEvent);
                     }
-                    ProviderEvent::Done { .. } => return PredictionOutcome::Retry,
+                    ProviderEvent::Done { .. } => {
+                        return PredictionOutcome::Retry(PredictionEvent::InvalidOutput);
+                    }
                 }
             }
             if done {
                 parse_suggestion(&text, projection)
             } else {
-                PredictionOutcome::Retry
+                PredictionOutcome::Retry(PredictionEvent::StreamInterrupted)
             }
         };
         let outcome = tokio::select! {
             biased;
-            _ = request_cancel.cancelled() => PredictionOutcome::Stop,
+            _ = request_cancel.cancelled() => PredictionOutcome::Stop(PredictionEvent::Cancelled),
             result = tokio::time::timeout(Duration::from_secs(15), operation) => {
-                result.unwrap_or(PredictionOutcome::Retry)
+                result.unwrap_or(PredictionOutcome::Retry(PredictionEvent::Timeout))
             }
         };
         request_cancel.cancel();
         let outcome = if prediction_output_safe(&text, projection) {
             outcome
         } else {
-            PredictionOutcome::Stop
+            PredictionOutcome::Stop(PredictionEvent::SafetyStopped)
         };
         (outcome, usage, text)
     }
@@ -361,8 +398,8 @@ enum SuggestionValue {
 enum PredictionOutcome {
     Suggestion(String),
     Abstain,
-    Retry,
-    Stop,
+    Retry(PredictionEvent),
+    Stop(PredictionEvent),
 }
 
 impl PredictionOutcome {
@@ -378,12 +415,14 @@ impl PredictionOutcome {
             | vega_runtime::VegaError::ProviderDiagnostic {
                 kind: vega_runtime::ProviderFailureKind::Transport,
                 ..
-            } => Self::Retry,
+            } => Self::Retry(PredictionEvent::ProviderRetryable),
             vega_runtime::VegaError::ProviderDiagnostic {
                 kind: vega_runtime::ProviderFailureKind::Http,
                 status: Some(status),
                 ..
-            } if status == 429 || (500..600).contains(&status) => Self::Retry,
+            } if status == 429 || (500..600).contains(&status) => {
+                Self::Retry(PredictionEvent::ProviderRetryable)
+            }
             vega_runtime::VegaError::Io(error)
                 if matches!(
                     error.kind(),
@@ -397,9 +436,9 @@ impl PredictionOutcome {
                         | std::io::ErrorKind::UnexpectedEof
                 ) =>
             {
-                Self::Retry
+                Self::Retry(PredictionEvent::ProviderRetryable)
             }
-            _ => Self::Stop,
+            _ => Self::Stop(PredictionEvent::ProviderStopped),
         }
     }
 }
@@ -409,13 +448,13 @@ fn parse_suggestion(
     projection: &crate::privacy::DisplayProjection,
 ) -> PredictionOutcome {
     let Ok(parsed) = serde_json::from_str::<PredictionOutput>(text) else {
-        return PredictionOutcome::Retry;
+        return PredictionOutcome::Retry(PredictionEvent::InvalidOutput);
     };
     let SuggestionValue::Text(suggestion) = parsed.suggestion else {
         return PredictionOutcome::Abstain;
     };
     if !prediction_output_safe(&suggestion, projection) {
-        return PredictionOutcome::Stop;
+        return PredictionOutcome::Stop(PredictionEvent::SafetyStopped);
     }
     if suggestion.trim().is_empty()
         || suggestion.chars().count() > 200
@@ -423,7 +462,7 @@ fn parse_suggestion(
             .chars()
             .any(|ch| ch.is_control() && ch != '\n' && ch != '\t')
     {
-        return PredictionOutcome::Retry;
+        return PredictionOutcome::Retry(PredictionEvent::InvalidOutput);
     }
     PredictionOutcome::Suggestion(suggestion)
 }

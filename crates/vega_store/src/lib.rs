@@ -1,5 +1,6 @@
 pub mod automation;
 pub mod codex_tasks;
+pub mod composer_prediction_events;
 pub mod computer_use_delivery;
 pub mod config;
 pub mod context_compaction;
@@ -82,6 +83,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0037_codex_display_metadata.sql"),
     include_str!("../migrations/0038_provider_failure_split.sql"),
     include_str!("../migrations/0039_pending_thread_model.sql"),
+    include_str!("../migrations/0040_composer_prediction_events.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
