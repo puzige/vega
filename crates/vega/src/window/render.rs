@@ -230,6 +230,18 @@ impl Render for VegaWindow {
                     let cached = self
                         .agent_controller
                         .active_stream_for_thread(&thread.id)
+                        .or_else(|| {
+                            self.agent_controller
+                                .preparation_stream
+                                .as_ref()
+                                .filter(|stream| {
+                                    self.agent_controller
+                                        .ordinary_preparing
+                                        .contains_key(&thread.id)
+                                        && stream.read(cx).thread_snapshot().id == thread.id
+                                })
+                                .cloned()
+                        })
                         .or_else(|| self.composer_prediction_stream(&thread.id))
                         .or_else(|| self.automation_controller.streams.get(&thread.id).cloned())
                         .or_else(|| match &self.stream_view {
