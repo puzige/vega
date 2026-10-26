@@ -1401,6 +1401,7 @@ impl ConversationStream {
                 self.active_agent_message = Some((message_id, usize::MAX));
                 self.active_segment_has_text = false;
                 self.active_segment_has_visible_text = false;
+                self.sync_retained_thinking_actions(cx);
                 cx.notify();
             }
             ConversationEvent::RunStarted {
@@ -1834,6 +1835,7 @@ impl ConversationStream {
         self.finish_artifact_turn(message_id, cx);
         self.timeout_permission(cx);
         self.cancel_user_questions(cx);
+        self.sync_retained_thinking_actions(cx);
         cx.notify();
     }
 

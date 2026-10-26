@@ -215,6 +215,7 @@ impl Render for VegaWindow {
                     let cached = self
                         .agent_controller
                         .active_stream_for_thread(&thread.id)
+                        .or_else(|| self.composer_prediction_stream(&thread.id))
                         .or_else(|| self.automation_controller.streams.get(&thread.id).cloned())
                         .or_else(|| match &self.stream_view {
                             Some((thread_id, view)) if *thread_id == thread.id => {
@@ -244,7 +245,10 @@ impl Render for VegaWindow {
                                     }
                                 }
                                 self.stream_view = Some((thread.id.clone(), view.clone()));
-                                if !draft_route {
+                                if !draft_route
+                                    && self.composer_prediction_stream(&thread.id).as_ref()
+                                        != Some(&view)
+                                {
                                     self.load_pending_queue(view.clone(), thread.id.clone(), cx);
                                 }
                                 self.load_running_message_default(cx);

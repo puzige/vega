@@ -10,6 +10,38 @@ pub enum ConversationStopReason {
     TurnLimit,
 }
 
+/// Provider-side facts known when a run failed: bounded allowlisted metadata
+/// only, never a provider response body.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProviderFailureFact {
+    /// HTTP status of the response that was already established, when known.
+    pub http_status: Option<u16>,
+    /// Retries already spent before this terminal failure.
+    pub retries: Option<u32>,
+}
+
+impl ProviderFailureFact {
+    /// Localized, verifiable facts joined by a separator; `None` when empty.
+    /// An unknown status and a zero retry count produce nothing rather than a
+    /// placeholder or a misleading `0`.
+    pub fn summary(self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(status) = self.http_status {
+            parts.push(vega_i18n::t_args(
+                "domain.failure.provider_fact_http",
+                &[("status", &status.to_string())],
+            ));
+        }
+        if let Some(retries) = self.retries.filter(|retries| *retries > 0) {
+            parts.push(vega_i18n::t_args(
+                "domain.failure.provider_fact_retries",
+                &[("retries", &retries.to_string())],
+            ));
+        }
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    }
+}
+
 /// Content-free explanation of a failed run. The provider's raw diagnostic
 /// may contain arbitrary response text, so only an allowlisted error code or
 /// HTTP metadata is allowed to cross into rendered conversation state.
@@ -27,8 +59,12 @@ pub enum RunFailureKind {
     ProviderRateLimited,
     /// Another HTTP response rejected the request.
     ProviderHttp(u16),
-    /// No HTTP response was received.
-    ProviderTransport,
+    /// No HTTP response was received: DNS, TCP/TLS or redirect failure.
+    ProviderTransport(ProviderFailureFact),
+    /// An established response stream ended before its terminal event.
+    ProviderStreamInterrupted(ProviderFailureFact),
+    /// An established response stream or request exceeded its deadline.
+    ProviderTimeout(ProviderFailureFact),
     /// An in-process runtime error rather than a provider HTTP failure.
     Runtime,
     RuntimeStorage,
@@ -114,7 +150,28 @@ impl RunFailureKind {
                 .http_status
                 .map(Self::ProviderHttp)
                 .unwrap_or(Self::ProviderRejected),
-            Some("transport") => Self::ProviderTransport,
+            // Rows written before the split merged connect failures and
+            // interrupted streams under one kind. A recorded HTTP status proves
+            // a response was established, so such a row is an interrupted
+            // stream rather than a connection failure.
+            Some("transport") => match metrics.http_status {
+                Some(_) => Self::ProviderStreamInterrupted(ProviderFailureFact {
+                    http_status: metrics.http_status,
+                    retries: metrics.retry_count,
+                }),
+                None => Self::ProviderTransport(ProviderFailureFact {
+                    http_status: None,
+                    retries: metrics.retry_count,
+                }),
+            },
+            Some("stream_interrupted") => Self::ProviderStreamInterrupted(ProviderFailureFact {
+                http_status: metrics.http_status,
+                retries: metrics.retry_count,
+            }),
+            Some("timeout") => Self::ProviderTimeout(ProviderFailureFact {
+                http_status: metrics.http_status,
+                retries: metrics.retry_count,
+            }),
             Some("protocol")
                 if metrics.failure_source.as_deref() == Some("runtime")
                     && metrics.failure_scope.as_deref() == Some("response") =>
@@ -181,6 +238,36 @@ impl RunFailureKind {
                 kind: vega_runtime::ProviderFailureKind::Protocol,
                 ..
             } => Self::ProviderProtocol,
+            // Dispatch on the structured kind before any status-based arm: an
+            // established response that broke mid-stream can carry a 2xx
+            // status and must not be reported as an HTTP rejection.
+            vega_runtime::VegaError::ProviderDiagnostic {
+                kind: vega_runtime::ProviderFailureKind::Transport,
+                status,
+                retry_count,
+                ..
+            } => Self::ProviderTransport(ProviderFailureFact {
+                http_status: *status,
+                retries: *retry_count,
+            }),
+            vega_runtime::VegaError::ProviderDiagnostic {
+                kind: vega_runtime::ProviderFailureKind::StreamInterrupted,
+                status,
+                retry_count,
+                ..
+            } => Self::ProviderStreamInterrupted(ProviderFailureFact {
+                http_status: *status,
+                retries: *retry_count,
+            }),
+            vega_runtime::VegaError::ProviderDiagnostic {
+                kind: vega_runtime::ProviderFailureKind::Timeout,
+                status,
+                retry_count,
+                ..
+            } => Self::ProviderTimeout(ProviderFailureFact {
+                http_status: *status,
+                retries: *retry_count,
+            }),
             vega_runtime::VegaError::Provider {
                 status: Some(400),
                 message,
@@ -214,10 +301,6 @@ impl RunFailureKind {
                 status: Some(status),
                 ..
             } => Self::ProviderHttp(*status),
-            vega_runtime::VegaError::ProviderDiagnostic {
-                kind: vega_runtime::ProviderFailureKind::Transport,
-                ..
-            } => Self::ProviderTransport,
             vega_runtime::VegaError::ProviderDiagnostic {
                 kind: vega_runtime::ProviderFailureKind::Rejected,
                 ..
@@ -304,7 +387,15 @@ impl RunFailureKind {
                 "domain.failure.provider_http",
                 &[("status", &status.to_string())],
             ),
-            Self::ProviderTransport => vega_i18n::t("domain.failure.provider_transport").into(),
+            Self::ProviderTransport(fact) => {
+                provider_failure_message("domain.failure.provider_transport", fact)
+            }
+            Self::ProviderStreamInterrupted(fact) => {
+                provider_failure_message("domain.failure.provider_stream_interrupted", fact)
+            }
+            Self::ProviderTimeout(fact) => {
+                provider_failure_message("domain.failure.provider_timeout", fact)
+            }
             Self::CredentialExposureBlocked => {
                 vega_i18n::t("domain.failure.credential_block").into()
             }
@@ -342,6 +433,17 @@ impl RunFailureKind {
             Self::RuntimePipeline => vega_i18n::t("domain.failure.pipeline").into(),
             Self::Persisted => vega_i18n::t("domain.failure.persisted").into(),
         }
+    }
+}
+
+/// Joins the localized failure advice with the facts that were actually
+/// recorded, so the user can check the claim against the run instead of being
+/// told to fix a network that never failed.
+fn provider_failure_message(key: &'static str, fact: ProviderFailureFact) -> String {
+    let advice = vega_i18n::t(key);
+    match fact.summary() {
+        Some(facts) => format!("{advice} ({facts})"),
+        None => advice.into(),
     }
 }
 

@@ -519,7 +519,15 @@ pub type EventStream = Pin<Box<dyn Stream<Item = Result<ProviderEvent, VegaError
 pub enum ProviderFailureKind {
     OutputLimit,
     Http,
+    /// No HTTP response was received: DNS, TCP/TLS or redirect failure while
+    /// establishing the request. Only this kind justifies network/address
+    /// advice.
     Transport,
+    /// An established response stream ended before its terminal event.
+    StreamInterrupted,
+    /// An established response stream or request exceeded its idle/request
+    /// deadline.
+    Timeout,
     Protocol,
     Rejected,
 }

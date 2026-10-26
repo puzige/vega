@@ -137,9 +137,11 @@ fn diagnostic_failure(error: &VegaError) -> RuntimeDiagnosticFailure {
         VegaError::ProviderPayloadTooLarge { .. } => RuntimeDiagnosticFailure::ProviderProtocol,
         VegaError::ProviderDiagnostic { kind, .. } => match kind {
             crate::ProviderFailureKind::Http => RuntimeDiagnosticFailure::ProviderHttp,
-            crate::ProviderFailureKind::Transport => {
-                RuntimeDiagnosticFailure::ProviderTransportOrStream
+            crate::ProviderFailureKind::Transport => RuntimeDiagnosticFailure::ProviderTransport,
+            crate::ProviderFailureKind::StreamInterrupted => {
+                RuntimeDiagnosticFailure::ProviderStreamInterrupted
             }
+            crate::ProviderFailureKind::Timeout => RuntimeDiagnosticFailure::ProviderTimeout,
             crate::ProviderFailureKind::Protocol => RuntimeDiagnosticFailure::ProviderProtocol,
             crate::ProviderFailureKind::Rejected | crate::ProviderFailureKind::OutputLimit => {
                 RuntimeDiagnosticFailure::ProviderRejected
@@ -1095,7 +1097,6 @@ where
     let mut final_text = String::new();
     let mut tool_call_count = 0usize;
     let mut executed_tool_call_count = 0usize;
-    let mut bounded_run_reasoning_bytes = 0usize;
     // Agentic turn counter: the outer `loop` below issues exactly one provider
     // request per iteration. `turn_limit == 0` means unlimited (Claude Code's
     // `--max-turns` default); a positive value soft-stops before issuing the
@@ -1833,7 +1834,6 @@ where
         let mut valid_primary_input = None;
         let mut anchor_protocol_valid = true;
         let mut reasoning_turn_bytes = 0usize;
-        let mut bounded_turn_reasoning_bytes = 0usize;
         let mut retained_reasoning_bytes = 0usize;
         if let Some(run) = &tool_config.computer_use
             && matches!(
@@ -2032,52 +2032,10 @@ where
                 next = stream.next() => next,
             };
             let Some(item) = next else { break };
-            let item = item.and_then(|event| {
-                let bytes = match &event {
-                    ProviderEvent::ThinkingDelta(text) | ProviderEvent::SummaryDelta(text) => {
-                        text.len()
-                    }
-                    ProviderEvent::ChatReasoningState(raw) => raw.detail_bytes(),
-                    ProviderEvent::ReasoningReplay(items) => {
-                        items.iter().map(|item| item.to_string().len()).sum()
-                    }
-                    _ => 0,
-                };
-                if matches!(
-                    event,
-                    ProviderEvent::ThinkingDelta(_) | ProviderEvent::SummaryDelta(_)
-                ) && bytes > REASONING_DELTA_MAX_BYTES
-                {
-                    return Err(VegaError::ReasoningBudgetExceeded {
-                        scope: crate::ReasoningBudgetScope::Delta,
-                        observed_bytes: bytes,
-                        limit_bytes: REASONING_DELTA_MAX_BYTES,
-                    });
-                }
-                bounded_turn_reasoning_bytes = bounded_turn_reasoning_bytes.saturating_add(bytes);
-                bounded_run_reasoning_bytes = bounded_run_reasoning_bytes.saturating_add(bytes);
-                for (scope, observed_bytes, limit_bytes) in [
-                    (
-                        crate::ReasoningBudgetScope::Turn,
-                        bounded_turn_reasoning_bytes,
-                        REASONING_TURN_MAX_BYTES,
-                    ),
-                    (
-                        crate::ReasoningBudgetScope::Run,
-                        bounded_run_reasoning_bytes,
-                        REASONING_RUN_MAX_BYTES,
-                    ),
-                ] {
-                    if observed_bytes > limit_bytes {
-                        return Err(VegaError::ReasoningBudgetExceeded {
-                            scope,
-                            observed_bytes,
-                            limit_bytes,
-                        });
-                    }
-                }
-                Ok(event)
-            });
+            // Thinking, summary and replay bytes never terminate a run. A long
+            // agentic task must not fail because of a fixed client-side byte
+            // count; memory stays bounded by the independent display retention
+            // below, which drops events instead of failing the run.
             if stop_reason.is_some() {
                 anchor_protocol_valid = false;
             }
@@ -2110,7 +2068,6 @@ where
                     valid_primary_input = None;
                     anchor_protocol_valid = true;
                     reasoning_turn_bytes = 0;
-                    bounded_turn_reasoning_bytes = 0;
                     retained_reasoning_bytes = 0;
                     diagnostic_metrics = RuntimeDiagnosticMetrics::default();
                     diagnostic_metrics.provider.retry_count = Some(attempt);

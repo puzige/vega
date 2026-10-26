@@ -92,6 +92,9 @@ impl RecoveryStream {
                 self.ended = true;
                 return Some(Err(error));
             }
+            // Metadata describes the response of the current attempt only; a
+            // previous attempt's status must not be reported as this one's.
+            self.metadata = ProviderResponseMetadata::default();
             let sent = tokio::select! {
                 biased;
                 _ = self.cancel.cancelled() => {
@@ -169,7 +172,10 @@ impl RecoveryStream {
         let retryable = matches!(
             &error,
             VegaError::ProviderDiagnostic {
-                kind: ProviderFailureKind::Transport | ProviderFailureKind::Http,
+                kind: ProviderFailureKind::Transport
+                    | ProviderFailureKind::StreamInterrupted
+                    | ProviderFailureKind::Timeout
+                    | ProviderFailureKind::Http,
                 retryable: true,
                 ..
             }
@@ -197,11 +203,14 @@ impl RecoveryStream {
                     ..
                 } => VegaError::ProviderDiagnostic {
                     kind,
-                    status,
+                    // An established response keeps its status so the failure
+                    // line can state the fact instead of implying the
+                    // connection never opened.
+                    status: status.or(self.metadata.http_status),
                     message,
                     retryable: false,
                     retry_count: Some(self.attempt),
-                    request_id,
+                    request_id: request_id.or_else(|| self.metadata.request_id.clone()),
                 },
                 other => other,
             }))
@@ -211,7 +220,7 @@ impl RecoveryStream {
 
 pub(super) fn incomplete_stream_error() -> VegaError {
     VegaError::ProviderDiagnostic {
-        kind: ProviderFailureKind::Transport,
+        kind: ProviderFailureKind::StreamInterrupted,
         status: None,
         message: "provider stream ended before completion".into(),
         retryable: true,
@@ -222,7 +231,7 @@ pub(super) fn incomplete_stream_error() -> VegaError {
 
 fn transport_timeout_error() -> VegaError {
     VegaError::ProviderDiagnostic {
-        kind: ProviderFailureKind::Transport,
+        kind: ProviderFailureKind::Timeout,
         status: None,
         message: "provider request timed out".into(),
         retryable: true,
