@@ -1319,7 +1319,13 @@ impl ConversationStream {
                         .when(!first_group, |group| {
                             group.mt(px(Layout::COMPOSER_PICKER_GROUP_GAP))
                         })
-                        .child(div().flex_1().min_w_0().truncate().child(option.provider.clone()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(option.provider.clone()),
+                        )
                         .into_any_element(),
                 );
             }
