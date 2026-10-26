@@ -81,13 +81,26 @@ impl ConversationStream {
         completed_message_id: &str,
         cx: &mut Context<Self>,
     ) -> Option<(ComposerPredictionFence, CancellationToken)> {
+        if !self.composer_prediction_eligible(cx) {
+            return None;
+        }
+        self.reserve_composer_prediction(completed_message_id, false, cx)
+    }
+
+    fn reserve_composer_prediction(
+        &mut self,
+        completed_message_id: &str,
+        waiting_for_queue: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<(ComposerPredictionFence, CancellationToken)> {
         if self.prediction_completed.as_deref() == Some(completed_message_id)
-            || !self.composer_prediction_eligible(cx)
+            || !self.prediction_environment_eligible(cx)
         {
             return None;
         }
         self.invalidate_composer_prediction(cx);
         self.prediction_completed = Some(completed_message_id.into());
+        self.prediction_waiting_for_queue = waiting_for_queue;
         let fence = ComposerPredictionFence {
             thread_id: self.thread.id.clone(),
             model: self.displayed_model().to_string(),
@@ -110,9 +123,7 @@ impl ConversationStream {
         completed_message_id: &str,
         cx: &mut Context<Self>,
     ) -> Option<(ComposerPredictionFence, CancellationToken)> {
-        let owner = self.begin_composer_prediction(completed_message_id, cx)?;
-        self.prediction_waiting_for_queue = true;
-        Some(owner)
+        self.reserve_composer_prediction(completed_message_id, true, cx)
     }
 
     pub fn ready_composer_prediction(

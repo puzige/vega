@@ -1,6 +1,6 @@
 # 下一轮输入预测可靠性
 
-Issue：[#628](https://github.com/puzige/vega/issues/628)。规格 v1.1，2026-10-26。基线 `410758d36e8fbe0802f816227948ece1486d8494`。
+Issue：[#628](https://github.com/puzige/vega/issues/628)。规格 v1.2，2026-10-26。原始基线 `410758d36e8fbe0802f816227948ece1486d8494`；独审修复同步基线 `3789bd8f3573f7aec55b233c35c57d873cfa5122`（#629 的行内重连提示，仅影响其他 UI 文件）。
 
 ## 目标与原行为修订
 
@@ -13,10 +13,10 @@ Issue：[#628](https://github.com/puzige/vega/issues/628)。规格 v1.1，2026-1
 | 场景 | 要求 |
 |---|---|
 | 前台正常完成 | 空输入且无阻塞时生成灰色建议；不写草稿、不发送、不改主轮状态 |
-| 后台正常完成 | 完成后立即独立申请，待队列恢复为空才发起；不等用户选中；返回会话能看到仍有效的建议 |
+| 后台正常完成 | 完成后立即独立申请，待队列恢复为空才发起；不等用户选中；返回会话能看到仍有效的建议。申请阶段允许仅队列加载 busy，保留请求及输入 fence；真正启动仍要求恢复成功、队列为空且 busy 已解除，输入/权限等阻塞仍拒绝并不复活 |
 | 多会话完成/切换 | 各自拥有 stream、completed message、model/mode/backend、generation/revision 和取消令牌；互不替换或串用建议；加载保留会话时不重复执行会破坏当前预测的队列初始化 |
-| 重试恢复 | 可重试的 provider/传输失败、超时、未正常结束、空/无效 JSON、超长或无效 suggestion 可再次尝试，总调用数不超过 3；成功即停止。现有 OpenAI 单次入口会因内部预算为零而将 Transport/HTTP 429、5xx 标记 `retryable: false`，预测独立预算按结构化 Transport/Http 类型识别这些临时失败，不重试 Rejected、鉴权/其他 4xx 或安全错误 |
-| 明确弃权/安全失败 | 合法 `suggestion: null` 直接结束；取消、权限撤销、不可重试错误、工具输出、凭据投影变化不重试；不为了显示建议捏造兜底文本 |
+| 重试恢复 | 可重试的 provider/传输失败、超时、未正常结束、空/无效 JSON、超长或无效 suggestion 可再次尝试，总调用数不超过 3；成功即停止。现有 OpenAI 单次入口会因内部预算为零而将 Transport/HTTP 429、5xx 标记 `retryable: false`，预测独立预算按结构化 Transport/Http 类型识别这些临时失败，不重试 Rejected、鉴权/其他 4xx 或安全错误。流内 Protocol（含 Chat Completions 无 finish_reason 的 EOF）归入无效/未正常结束输出重试，不改 provider，不将所有错误统一重试 |
+| 明确弃权/安全失败 | 合法 `suggestion: null` 直接结束；取消、权限撤销、不可重试错误、工具输出、凭据投影变化不重试；每次尝试按当前 DisplayProjection 检查收到的文本片段与累计输出，先于大小/JSON 解析/重试分类拒绝已脱敏凭据标记或投影变化，包括畸形/超长输出；保留已收到 usage；不为了显示建议捏造兜底文本 |
 | 重试中失效 | 每次请求前及退避后核对取消、provider authority、持久化线程和最新完成轮次；请求后再次核对。用户输入/IME、发送、附件、队列、权限、模型/模式/后端变更沿原 UI fence 取消；输入删回空也不恢复旧结果 |
 | 生命周期 | 删除线程只取消所属预测；打开/保存设置、关闭窗口取消所有所属预测；已取消的 stream 不保留为预测缓存；单纯切换会话不是取消条件 |
 | 用量和隐私 | 每次实际收到 usage 的尝试单独记辅助用量，包括失败/弃权；不写主消息，不记录提示词、建议或凭据；严格解析与现有投影保护不放宽 |
@@ -29,7 +29,7 @@ Issue：[#628](https://github.com/puzige/vega/issues/628)。规格 v1.1，2026-1
 1. `vega/src/window/composer_predictions.rs`：窗口 owner 改为按 thread 保存、强引用原 stream，局部取消并在失效时释放；准备/启动/回填不再依赖当前选中线程。
 2. `window/{mod,agent,render}.rs`：成功轮传入明确 thread ID；选中身份变化仅使该线程的旧身份失效；渲染优先复用所属预测 stream，不重复初始化其已恢复队列；设置/窗口销毁仍全量取消。
 3. `vega_conversation/src/composer_predictions.rs`：区分成功、合法弃权、可重试失败和终止失败；每次独立超时/取消、权限与轮次校验、usage 持久化。
-4. `vega_ui/src/conversation_stream/composer_predictions.rs`：预测开关 setter 对相同值幂等，避免路由返回时的配置重载误广播并取消所有会话预测；真实开关变化仍立即失效。
+4. `vega_ui/src/conversation_stream/composer_predictions.rs`：准备和实际启动区分暂时队列 busy，准备仍建立输入 fence，不恢复已取消申请；预测开关 setter 对相同值幂等，避免路由返回时的配置重载误广播并取消所有会话预测；真实开关变化仍立即失效。
 5. 不改输入框 UI、快捷键、提供方实现、数据库结构、依赖、CI 或真实运行配置。
 
 ## 验证与交付

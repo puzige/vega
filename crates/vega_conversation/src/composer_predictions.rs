@@ -102,7 +102,9 @@ impl ComposerPredictionRequest {
             let started = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs() as i64);
-            let (outcome, usage) = runtime.block_on(self.collect(context.clone(), &cancel));
+            let projection = crate::privacy::DisplayProjection::load(&store, &thread_id).ok()?;
+            let (outcome, usage, output) =
+                runtime.block_on(self.collect(context.clone(), &cancel, &projection));
             if let Some(usage) = usage {
                 persist_usage(
                     &store,
@@ -125,10 +127,12 @@ impl ComposerPredictionRequest {
             {
                 return None;
             }
+            let projection = crate::privacy::DisplayProjection::load(&store, &thread_id).ok()?;
+            if !prediction_output_safe(&output, &projection) {
+                return None;
+            }
             match outcome {
                 PredictionOutcome::Suggestion(suggestion) => {
-                    let projection =
-                        crate::privacy::DisplayProjection::load(&store, &thread_id).ok()?;
                     let projected = projection.text(&suggestion);
                     return (projected == suggestion
                         && !projected
@@ -146,7 +150,8 @@ impl ComposerPredictionRequest {
         &self,
         context: String,
         cancel: &CancellationToken,
-    ) -> (PredictionOutcome, Option<PredictionUsage>) {
+        projection: &crate::privacy::DisplayProjection,
+    ) -> (PredictionOutcome, Option<PredictionUsage>, String) {
         let request_cancel = cancel.child_token();
         let request = ChatRequest {
             model: self.model.clone(),
@@ -162,6 +167,7 @@ impl ComposerPredictionRequest {
             ..Default::default()
         };
         let mut usage = None;
+        let mut text = String::new();
         let operation = async {
             if !(self.authority)() {
                 return PredictionOutcome::Stop;
@@ -174,19 +180,29 @@ impl ComposerPredictionRequest {
                 Ok(stream) => stream,
                 Err(error) => return PredictionOutcome::from_error(error),
             };
-            let mut text = String::new();
             let mut done = false;
             while let Some(event) = stream.next().await {
                 let event = match event {
                     Ok(event) => event,
+                    Err(vega_runtime::VegaError::ProviderDiagnostic {
+                        kind: vega_runtime::ProviderFailureKind::Protocol,
+                        ..
+                    }) => return PredictionOutcome::Retry,
                     Err(error) => return PredictionOutcome::from_error(error),
                 };
                 match event {
                     ProviderEvent::TextDelta(delta) => {
-                        if done || text.len().saturating_add(delta.len()) > 8192 {
+                        if !prediction_output_safe(&delta, projection) {
+                            return PredictionOutcome::Stop;
+                        }
+                        let oversized = text.len().saturating_add(delta.len()) > 8192;
+                        text.extend(delta.chars().take(8192));
+                        if !prediction_output_safe(&text, projection) {
+                            return PredictionOutcome::Stop;
+                        }
+                        if done || oversized {
                             return PredictionOutcome::Retry;
                         }
-                        text.push_str(&delta);
                     }
                     ProviderEvent::Usage {
                         input,
@@ -218,7 +234,7 @@ impl ComposerPredictionRequest {
                 }
             }
             if done {
-                parse_suggestion(&text)
+                parse_suggestion(&text, projection)
             } else {
                 PredictionOutcome::Retry
             }
@@ -231,8 +247,18 @@ impl ComposerPredictionRequest {
             }
         };
         request_cancel.cancel();
-        (outcome, usage)
+        let outcome = if prediction_output_safe(&text, projection) {
+            outcome
+        } else {
+            PredictionOutcome::Stop
+        };
+        (outcome, usage, text)
     }
+}
+
+fn prediction_output_safe(text: &str, projection: &crate::privacy::DisplayProjection) -> bool {
+    !text.contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER)
+        && projection.text(text) == text
 }
 
 fn prediction_owner_matches(
@@ -378,13 +404,19 @@ impl PredictionOutcome {
     }
 }
 
-fn parse_suggestion(text: &str) -> PredictionOutcome {
+fn parse_suggestion(
+    text: &str,
+    projection: &crate::privacy::DisplayProjection,
+) -> PredictionOutcome {
     let Ok(parsed) = serde_json::from_str::<PredictionOutput>(text) else {
         return PredictionOutcome::Retry;
     };
     let SuggestionValue::Text(suggestion) = parsed.suggestion else {
         return PredictionOutcome::Abstain;
     };
+    if !prediction_output_safe(&suggestion, projection) {
+        return PredictionOutcome::Stop;
+    }
     if suggestion.trim().is_empty()
         || suggestion.chars().count() > 200
         || suggestion
