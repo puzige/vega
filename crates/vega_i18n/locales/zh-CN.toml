@@ -517,3 +517,7 @@
 "settings.usage.unpriced_calls" = "{cost} + {count}次未计价"
 "settings.usage.utc" = "应用用量 · 按 UTC 日期统计"
 "settings.usage.weekly" = "每周"
+
+"settings.mcp.test_rejected" = "工具定义全部被拒绝。请查看下方详情并检查兼容性。"
+"settings.mcp.show_rejected" = "已拒绝 {count} 个工具 · 展开详情"
+"settings.mcp.hide_rejected" = "已拒绝 {count} 个工具 · 收起详情"
