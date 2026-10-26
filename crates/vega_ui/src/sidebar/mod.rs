@@ -239,28 +239,6 @@ impl NewTaskDefaults {
 
 impl Global for NewTaskDefaults {}
 
-/// Loads the persisted Cmd+B collapse preference; `false` when the config
-/// cannot be read (error logged, sidebar stays visible — the safe default).
-pub fn load_collapsed() -> bool {
-    match config::load() {
-        Ok(config) => config.ui.sidebar_collapsed,
-        Err(error) => {
-            tracing::error!(%error, "failed to read sidebar_collapsed from config.toml");
-            false
-        }
-    }
-}
-
-pub fn load_width() -> f32 {
-    match config::load() {
-        Ok(config) => config::clamp_sidebar_width(config.ui.sidebar_width),
-        Err(error) => {
-            tracing::error!(%error, "failed to read sidebar_width from config.toml");
-            Layout::SIDEBAR_WIDTH
-        }
-    }
-}
-
 /// Cmd+B handler: flips the preference, persists it to `config.toml`, and
 /// refreshes windows. Persistence failures degrade to in-memory state
 /// (ui-spec §4.6: no modals); the next successful toggle rewrites the file.
@@ -275,83 +253,20 @@ pub fn toggle_persisted(cx: &mut App) {
     );
 }
 
-/// Opens + migrates the store at the platform data root
-/// ([`vega_store::paths::data_dir`](vega_store::paths)/`vega.db`, tech-spec
-/// §6) and seeds the sidebar globals.
-///
-/// The selected project is seeded from latest-project semantics so the first
-/// frame already shows the last-used project's sessions; block collapse
-/// preferences come from config.toml. Store failures degrade to inline error
-/// bars instead of aborting startup.
-pub fn init(cx: &mut App) {
-    let store = open_default_store();
-    let selected = match &store {
-        Ok(store) => conversation::current_project(store)
-            .ok()
-            .flatten()
-            .map(|project| project.id),
-        Err(_) => None,
-    };
-    let initialization_error = store.as_ref().err().cloned();
-    cx.set_global(StoreInitializationError(initialization_error));
+pub fn init(workspace: vega_conversation::types::StartupWorkspace, cx: &mut App) {
+    let (store, config, path, selected) = workspace.into_parts();
+    cx.set_global(StoreInitializationError(None));
     cx.set_global(SelectedProject(selected));
-    cx.set_global(VegaStore(store.map_err(|error| error.render())));
-    let (projects_collapsed, sessions_collapsed) = load_block_state();
-    cx.set_global(ProjectsCollapsed(projects_collapsed));
-    cx.set_global(SessionsCollapsed(sessions_collapsed));
+    cx.set_global(VegaStore(Ok(store)));
+    cx.set_global(SidebarCollapsed(config.ui.sidebar_collapsed));
+    cx.set_global(ProjectsCollapsed(config.ui.projects_collapsed));
+    cx.set_global(SessionsCollapsed(config.ui.sessions_collapsed));
     cx.set_global(OpenedThread(None));
     cx.set_global(PendingDeleteConfirm(None));
-    cx.set_global(SidebarWidth(load_width()));
-    cx.set_global(NewTaskDefaults::load());
-}
-
-/// Opens and migrates `vega.db` under the platform data root (tech-spec §6).
-///
-/// Failures come back as ready-to-render messages.
-fn open_default_store() -> Result<Store, crate::localized_copy::LocalizedCopy> {
-    let dir = vega_store::paths::data_dir().ok_or_else(|| {
-        crate::localized_copy::LocalizedCopy::new(
-            "ui.cannot_determine_the_home_directory_home_is_not",
-        )
-    })?;
-    std::fs::create_dir_all(&dir).map_err(|error| {
-        crate::localized_copy::LocalizedCopy::with_args(
-            "ui.cannot_create_path_error",
-            vec![
-                ("path", dir.display().to_string().into()),
-                ("error", error.to_string().into()),
-            ],
-        )
-    })?;
-    let path = dir.join("vega.db");
-    let store = Store::open(&path).map_err(|error| {
-        crate::localized_copy::LocalizedCopy::with_args(
-            "ui.cannot_open_path_error",
-            vec![
-                ("path", path.display().to_string().into()),
-                ("error", error.to_string().into()),
-            ],
-        )
-    })?;
-    store.migrate().map_err(|error| {
-        crate::localized_copy::LocalizedCopy::with_args(
-            "ui.database_migration_failed_error",
-            vec![("error", error.to_string().into())],
-        )
-    })?;
-    Ok(store)
-}
-
-/// Reads both block collapse preferences; failures default to expanded and
-/// are logged (same degradation as the sidebar collapse toggle).
-fn load_block_state() -> (bool, bool) {
-    match config::load() {
-        Ok(config) => (config.ui.projects_collapsed, config.ui.sessions_collapsed),
-        Err(error) => {
-            tracing::error!(%error, "failed to read block collapse state from config.toml");
-            (false, false)
-        }
-    }
+    cx.set_global(SidebarWidth(config::clamp_sidebar_width(
+        config.ui.sidebar_width,
+    )));
+    cx.set_global(NewTaskDefaults::from_config(Some(&path), &config.defaults));
 }
 
 fn persist_ui(mutate: impl FnOnce(&mut config::AppConfig), what: &'static str, cx: &mut App) {

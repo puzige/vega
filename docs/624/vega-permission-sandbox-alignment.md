@@ -306,8 +306,9 @@ owner 汇总按接纳的执行策略选择：P2 的可选 binding refs 用上述
 - GPUI 云端 [run 40374004186](https://github.com/puzige/vega/actions/runs/40374004186) 绑定 `f00194d215dc0cb867c7a062b51ecfa391ade799`：19 个测试实际执行，17 通过、2 个 GPUI 用例在退出时因 stream 句柄泄漏失败、0 跳过；Clippy 报多余 `gpui_kit::gpui` 导入。固定版本宏入口会重写 facade 路径，不能只根据内部宏模板推断别名必需。本批删除冗余导入，并在 fixture 销毁前关闭窗口、推进收尾及检查弱句柄释放；保留全部导航/权限断言和 leak 检查，修正后待云端复验。
 - GPUI 绘制生命周期修正 `b40dea7ae6495f40457eb1620b3c53641873a92e` 已通过 [run 40381304783](https://github.com/puzige/vega/actions/runs/40381304783)：21 发现/21 执行/21 通过/0 跳过，Clippy 和汇总均成功；非写入者增量审查无发现。两种导航/回执顺序都实际通过，完整失败链、原始源码和限制见 [GPUI 验证记录](gpui-navigation-validation.md)。不代表原生 UI 验收或整卡通过。
 - reset 持久层批次实现 `0043` journal、幂等 epoch/目标 revision、线程授权撤销、队列/凭据续跑失效和计划重放截止线；UI 恢复查询和实际启动事务都检查截止线，队列插入/认领/送达 SQL 保留 ready 门禁。保留原始输入、历史与未知效果，不用 delivered/finished 伪造失效或收尾。新增 5 个存储开发回归；`4514968e4a4d47fe66f773f47b89f6225ae3cf32` 的 [run 40383352630](https://github.com/puzige/vega/actions/runs/40383352630) 已成功，26 发现/26 执行/26 通过/0 跳过，增量独立审查无发现。
-- reset 恢复服务批次：只续接既有 pending journal，严格打开已有配置、复核来源/目标并读回；以类型化自动化任务核对身份/revision 后清权暂停，活动 owner/持久未收尾/未知效果阻止恢复。自动化启动清理和命令先拒绝 pending。新增 6 个隔离开发回归，当前待 Actions 与独立审查；详细边界见 [恢复验证记录](reset-recovery-validation.md)。尚未调用服务的全局启动接线、初始 reset/Stop/可信收尾与内存失效，以及用户入口均未完成，不能声称用户已能安全重置或降级。
-- 下一步完成全局启动门禁及可确认收尾，再推进入队快照与活动 run 的下一轮设置、Bash 和剩余 UI。已静态确认 Bash 的 `sandbox=None` 仍可创建 Broker/context 并在底层重新套 Seatbelt，必须在凭据创建前分支，不能只删除 bindings 拒绝条件；本批未改该路径。整卡未 READY，Issue 保持开放/In progress。
+- reset 恢复服务批次：只续接既有 pending journal，严格打开已有配置、复核来源/目标并读回；以类型化自动化任务核对身份/revision 后清权暂停，活动 owner/持久未收尾/未知效果阻止恢复。自动化启动清理和命令先拒绝 pending。新增 6 个隔离开发回归；`c33f6f1df5ae176af6a27840041f84406de0b259` 相对 `4514968e4a4d47fe66f773f47b89f6225ae3cf32` 的非写入者增量审查已完成、无发现，该 head 当时因上游冲突没有 Actions 结果。详细边界见 [恢复验证记录](reset-recovery-validation.md)。
+- 启动/续跑批次：已接入受限启动页及后台恢复服务，成功后才初始化正常工作区、同一个 Store 的侧栏及自动化 readiness；失败提供本地化重试/退出，配置缺失不被提前重建。上游中断续跑在历史入口和实际准备事务复核原始 fence 与重置截止线；普通准备在历史归一化前拒绝 pending。新增 5 个真实准备事务回归、5 个启动服务回归和 1 个实际绘制/键盘事件 GPUI 门禁回归，当前待 Actions 和本批独立审查，不等于测试已通过。初始 reset/Stop/可信收尾与内存失效、Bash 及剩余用户入口均未完成，不能声称用户已能安全重置或降级。
+- 下一步验证启动门禁和续跑批次、完成可确认收尾，再推进入队快照与活动 run 的下一轮设置、Bash 和剩余 UI。已静态确认 Bash 的 `sandbox=None` 仍可创建 Broker/context 并在底层重新套 Seatbelt，必须在凭据创建前分支，不能只删除 bindings 拒绝条件；本批未改该路径。整卡未 READY，Issue 保持开放/In progress。
 
 ### 版本变更
 

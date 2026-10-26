@@ -497,6 +497,34 @@ pub(crate) fn capture_fence(
     Ok(fence)
 }
 
+pub(crate) fn interrupted_authority_matches(
+    conn: &vega_store::Connection,
+    expected: &crate::types::InterruptedAssistant,
+    current: &crate::types::PermissionFence,
+) -> Result<bool, ConversationError> {
+    if !current.is_valid()
+        || current.delegation.is_some()
+        || !vega_store::permission_reset::replay_allowed(conn, &current.thread_id, expected.seq)
+            .map_err(storage_error)?
+    {
+        return Ok(false);
+    }
+    let Some(encoded) = vega_store::permission_contracts::load_interrupted_run_fence(
+        conn,
+        &expected.message_id,
+        &current.thread_id,
+        expected.seq,
+    )
+    .map_err(storage_error)?
+    else {
+        return Ok(false);
+    };
+    Ok(
+        serde_json::from_str::<crate::types::PermissionFence>(&encoded)
+            .is_ok_and(|saved| saved == *current),
+    )
+}
+
 pub(crate) fn capture_delegated_fence(
     store: &Store,
     thread: &vega_store::threads::ThreadRow,

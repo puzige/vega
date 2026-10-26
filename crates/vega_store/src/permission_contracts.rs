@@ -53,6 +53,19 @@ pub fn load_run_fence(
     ).optional()
 }
 
+pub fn load_interrupted_run_fence(
+    conn: &Connection,
+    message_id: &str,
+    thread_id: &str,
+    seq: i64,
+) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT f.permission_fence FROM run_permission_fences f JOIN messages m ON m.id=f.message_id WHERE f.message_id=?1 AND f.thread_id=?2 AND m.thread_id=?2 AND m.seq=?3 AND m.role='assistant' AND m.status='interrupted'",
+        params![message_id, thread_id, seq],
+        |row| row.get(0),
+    ).optional()
+}
+
 pub fn record_delegated_fence(
     conn: &rusqlite::Transaction<'_>,
     child: &str,

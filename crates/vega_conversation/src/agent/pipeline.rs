@@ -1,6 +1,9 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) fn valid_automation_call_projection(tool: &str, input_json: &str) -> bool {
     matches!(tool, "get_goal" | "update_goal" | "schedule_wakeup")
         && input_json.len() <= 32 * 1024
@@ -652,6 +655,13 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     let store = Store::open(&database_path).map_err(runtime_store_error)?;
     let admission =
         super::ordinary::verified_admission(&store, &thread_id, config.admission.as_ref())?;
+    let permission_coordination = crate::permission_contracts::coordinate()?;
+    if vega_store::permission_reset::load(store.conn())
+        .map_err(runtime_store_error)?
+        .is_some_and(|record| !record.completed)
+    {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
     if let Some(ordinary) = ordinary {
         ordinary.run.verify(&store, &thread_id)?;
         ordinary
@@ -710,7 +720,6 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         })?,
         None => Vec::new(),
     };
-    let permission_coordination = crate::permission_contracts::coordinate()?;
     let transaction = store.immediate_transaction().map_err(runtime_store_error)?;
     let preparation = (|| -> Result<_, ConversationError> {
         let thread = vega_store::threads::find(&transaction, &thread_id)
@@ -792,6 +801,13 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             .transpose()
             .map_err(|_| ConversationError::InvalidTaskIdentity)?;
         if let Some(expected) = &config.interrupted_assistant {
+            if !crate::permission_contracts::interrupted_authority_matches(
+                &transaction,
+                expected,
+                &permission_fence,
+            )? {
+                return Err(ConversationError::InvalidTaskIdentity);
+            }
             let tail = messages::interrupted_tail(&transaction, &thread_id)
                 .map_err(runtime_store_error)?;
             if ordinary.is_some()

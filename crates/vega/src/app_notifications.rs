@@ -28,7 +28,7 @@ pub(crate) fn init(cx: &mut App) {
     cx.global_mut::<NotificationTargets>().identity_initialized = true;
 }
 
-pub(crate) fn bind(window: WindowHandle<VegaWindow>, root: WeakEntity<VegaWindow>, cx: &mut App) {
+pub(crate) fn bind(window: AnyWindowHandle, root: WeakEntity<VegaWindow>, cx: &mut App) {
     init(cx);
     cx.on_system_notification_response(move |response, cx| {
         let Some(route) = cx
@@ -43,8 +43,10 @@ pub(crate) fn bind(window: WindowHandle<VegaWindow>, root: WeakEntity<VegaWindow
             if root.upgrade().is_none() {
                 return;
             }
-            let _ = window.update(cx, |owner, window, cx| {
-                owner.open_completion_notification(&response.tag, &route, window, cx);
+            let _ = window.update(cx, |_, window, cx| {
+                let _ = root.update(cx, |owner, cx| {
+                    owner.open_completion_notification(&response.tag, &route, window, cx);
+                });
             });
         });
     });

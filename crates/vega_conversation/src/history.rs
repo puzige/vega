@@ -959,11 +959,27 @@ pub fn interrupted_tail(
     store: &Store,
     thread_id: &str,
 ) -> Result<Option<crate::types::InterruptedAssistant>, ConversationError> {
-    messages::interrupted_tail(store.conn(), thread_id)
-        .map(|tail| {
-            tail.map(|(message_id, seq)| crate::types::InterruptedAssistant { message_id, seq })
-        })
-        .map_err(|error| ConversationError::Store(error.to_string()))
+    let _coordination = crate::permission_contracts::coordinate()?;
+    let Some((message_id, seq)) = messages::interrupted_tail(store.conn(), thread_id)
+        .map_err(|error| ConversationError::Store(error.to_string()))?
+    else {
+        return Ok(None);
+    };
+    let thread = vega_store::threads::find(store.conn(), thread_id)
+        .map_err(|error| ConversationError::Store(error.to_string()))?
+        .ok_or(ConversationError::InvalidTaskIdentity)?;
+    let current = match crate::permission_contracts::capture_fence(store, &thread) {
+        Ok(fence) => fence,
+        Err(ConversationError::InvalidTaskIdentity) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let expected = crate::types::InterruptedAssistant { message_id, seq };
+    Ok(crate::permission_contracts::interrupted_authority_matches(
+        store.conn(),
+        &expected,
+        &current,
+    )?
+    .then_some(expected))
 }
 
 fn guard_legacy_history(store: &Store, thread: &str) -> Result<(), ConversationError> {

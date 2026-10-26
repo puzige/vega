@@ -20,7 +20,7 @@ pub(crate) struct AutomationGlobal {
 impl Default for AutomationGlobal {
     fn default() -> Self {
         Self {
-            ready: true,
+            ready: false,
             mutation_lane: Arc::new(Mutex::new(())),
             revoked: HashSet::new(),
             owners: HashMap::new(),
@@ -243,19 +243,7 @@ pub(crate) fn ensure_global(cx: &mut App) {
     }
 }
 
-pub(crate) fn startup(cx: &mut App) {
+pub(crate) fn startup_ready(cx: &mut App) {
     ensure_global(cx);
-    let ready = cx
-        .global::<vega_ui::sidebar::VegaStore>()
-        .0
-        .as_ref()
-        .ok()
-        .is_some_and(|store| vega_conversation::automation::recover_startup(store).is_ok());
-    cx.update_global::<AutomationGlobal, _>(|global, _| global.ready = ready);
-    if !ready {
-        tracing::warn!(
-            operation = "automation_recovery",
-            "automatic task recovery failed"
-        );
-    }
+    cx.update_global::<AutomationGlobal, _>(|global, _| global.ready = true);
 }
