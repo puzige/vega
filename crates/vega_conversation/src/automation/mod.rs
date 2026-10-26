@@ -1,6 +1,8 @@
 mod parser;
+mod reset;
 mod runtime;
 pub use parser::parse_command;
+pub(crate) use reset::revoke_in_transaction;
 pub(crate) use runtime::AutomationBinding;
 
 use crate::types::*;
@@ -136,6 +138,12 @@ fn command_in_transaction(
     command: &AutomationCommand,
     now: i64,
 ) -> Result<Vec<AutomationTask>, String> {
+    if vega_store::permission_contracts::load_state(conn)
+        .map_err(storage)?
+        .reset_pending
+    {
+        return Err(vega_i18n::t("domain.automation.error.changed").into());
+    }
     let owner = vega_store::threads::find(conn, thread)
         .map_err(storage)?
         .ok_or(vega_i18n::t("domain.automation.error.deleted"))?;
@@ -317,6 +325,13 @@ pub fn pause_matching(
 }
 
 pub fn recover_startup(store: &Store) -> Result<(), String> {
+    let _coordination = crate::permission_contracts::coordinate().map_err(storage)?;
+    if vega_store::permission_reset::load(store.conn())
+        .map_err(storage)?
+        .is_some_and(|record| !record.completed)
+    {
+        return Err(vega_i18n::t("domain.automation.error.changed").into());
+    }
     for data in db::active_runs(store.conn()).map_err(storage)? {
         let run: AutomationRunClaim = decode(&data)?;
         finish(store, &run, false, false, 0, now_ms())?;

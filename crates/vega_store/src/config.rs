@@ -409,8 +409,18 @@ impl ConfigEdit {
     }
 }
 
-/// Read the current config under the common writer lock; a missing file starts
-/// with defaults and is not created until the caller explicitly saves.
+pub fn begin_existing_edit(path: &Path) -> Result<ConfigEdit, ConfigError> {
+    let guard = EDIT_LOCK
+        .lock()
+        .map_err(|_| io::Error::other("config edit lock unavailable"))?;
+    let config = read_from(path)?;
+    Ok(ConfigEdit {
+        config,
+        path: path.to_path_buf(),
+        _guard: guard,
+    })
+}
+
 pub fn begin_edit(path: &Path) -> Result<ConfigEdit, ConfigError> {
     let guard = EDIT_LOCK
         .lock()

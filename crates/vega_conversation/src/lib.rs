@@ -8,6 +8,7 @@ mod git_workspace;
 pub mod history;
 pub mod link_preview;
 pub mod permission_contracts;
+pub mod permission_reset;
 pub mod plans;
 mod pricing;
 pub mod summary;

@@ -39,6 +39,7 @@
 "domain.automation.reason.budget_exhausted" = "The token budget was reached. Further turns have stopped."
 "domain.automation.reason.loop_expired" = "The loop expired. Resuming starts a new 7-day period."
 "domain.automation.reason.no_progress" = "No verifiable progress for three turns. Check the task before resuming."
+"domain.automation.reason.permission_reset" = "Permissions were reset. Check the task before resuming manually."
 "domain.automation.reason.run_incomplete" = "This turn did not finish. Check conversation errors or pending items before resuming."
 "domain.automation.reason.start_failed" = "The automation could not start. Check the model and conversation state before resuming."
 "domain.automation.reason.stopped" = "Stopped. Resume the task to continue."

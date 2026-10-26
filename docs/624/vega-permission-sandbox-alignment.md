@@ -305,8 +305,9 @@ owner 汇总按接纳的执行策略选择：P2 的可选 binding refs 用上述
 - 已合入上游 `68704d46794d5fd221bdbc915354de58600a3a9d` 的文件尺寸显示修复。本批新增 `crates/vega/src/window/ordinary_send/tests.rs` 六个开发回归：提交后取消（Confirm/Full access）、真实技能 pin 失败、提交前取消、重试 owner 的迟到回执、改变来源/离开路由，以及通道关闭；检查持久行/权限、admission 生命周期和全新提交恢复。生产仅拆私有准备阶段与 owner 提取，不扩大公开 API；全部待 Actions，不能当作 GPUI 回调或用户手测通过。开发测试与专用模块接线仍须留痕后清理。
 - GPUI 云端 [run 40374004186](https://github.com/puzige/vega/actions/runs/40374004186) 绑定 `f00194d215dc0cb867c7a062b51ecfa391ade799`：19 个测试实际执行，17 通过、2 个 GPUI 用例在退出时因 stream 句柄泄漏失败、0 跳过；Clippy 报多余 `gpui_kit::gpui` 导入。固定版本宏入口会重写 facade 路径，不能只根据内部宏模板推断别名必需。本批删除冗余导入，并在 fixture 销毁前关闭窗口、推进收尾及检查弱句柄释放；保留全部导航/权限断言和 leak 检查，修正后待云端复验。
 - GPUI 绘制生命周期修正 `b40dea7ae6495f40457eb1620b3c53641873a92e` 已通过 [run 40381304783](https://github.com/puzige/vega/actions/runs/40381304783)：21 发现/21 执行/21 通过/0 跳过，Clippy 和汇总均成功；非写入者增量审查无发现。两种导航/回执顺序都实际通过，完整失败链、原始源码和限制见 [GPUI 验证记录](gpui-navigation-validation.md)。不代表原生 UI 验收或整卡通过。
-- reset 持久层批次实现 `0043` journal、幂等 epoch/目标 revision、线程授权撤销、队列/凭据续跑失效和计划重放截止线；UI 恢复查询和实际启动事务都检查截止线，队列插入/认领/送达 SQL 保留 ready 门禁。保留原始输入、历史与未知效果，不用 delivered/finished 伪造失效或收尾。新增 5 个存储开发回归，当前仅格式/差异静态检查通过，待 Actions 与增量独立审查。尚无调用 reset begin/finish 的应用服务，不能声称用户已能安全重置或降级。
-- 下一步完成重置服务/配置恢复、类型化自动化撤权、启动门禁及可确认收尾，再推进入队快照与活动 run 的下一轮设置、Bash 和剩余 UI。已静态确认 Bash 的 `sandbox=None` 仍可创建 Broker/context 并在底层重新套 Seatbelt，必须在凭据创建前分支，不能只删除 bindings 拒绝条件；本批未改该路径。整卡未 READY，Issue 保持开放/In progress。
+- reset 持久层批次实现 `0043` journal、幂等 epoch/目标 revision、线程授权撤销、队列/凭据续跑失效和计划重放截止线；UI 恢复查询和实际启动事务都检查截止线，队列插入/认领/送达 SQL 保留 ready 门禁。保留原始输入、历史与未知效果，不用 delivered/finished 伪造失效或收尾。新增 5 个存储开发回归；`4514968e4a4d47fe66f773f47b89f6225ae3cf32` 的 [run 40383352630](https://github.com/puzige/vega/actions/runs/40383352630) 已成功，26 发现/26 执行/26 通过/0 跳过，增量独立审查无发现。
+- reset 恢复服务批次：只续接既有 pending journal，严格打开已有配置、复核来源/目标并读回；以类型化自动化任务核对身份/revision 后清权暂停，活动 owner/持久未收尾/未知效果阻止恢复。自动化启动清理和命令先拒绝 pending。新增 6 个隔离开发回归，当前待 Actions 与独立审查；详细边界见 [恢复验证记录](reset-recovery-validation.md)。尚未调用服务的全局启动接线、初始 reset/Stop/可信收尾与内存失效，以及用户入口均未完成，不能声称用户已能安全重置或降级。
+- 下一步完成全局启动门禁及可确认收尾，再推进入队快照与活动 run 的下一轮设置、Bash 和剩余 UI。已静态确认 Bash 的 `sandbox=None` 仍可创建 Broker/context 并在底层重新套 Seatbelt，必须在凭据创建前分支，不能只删除 bindings 拒绝条件；本批未改该路径。整卡未 READY，Issue 保持开放/In progress。
 
 ### 版本变更
 
