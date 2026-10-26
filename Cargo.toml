@@ -23,6 +23,7 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
+jsonschema = { version = "=0.60.1", default-features = false }
 vega_credentials = { path = "crates/vega_credentials" }
 rustls = { version = "=0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring", "tls12"] }
