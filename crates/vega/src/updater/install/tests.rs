@@ -1,6 +1,10 @@
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 
-use super::{CandidateStatus, Manifest, finish_startup};
+use super::{
+    CandidateStatus, Manifest, exclude_legacy_rollback, finish_startup, retained_backup,
+    rollback_with_candidate_verifier,
+};
 use crate::updater::platform;
 
 struct Fixture {
@@ -27,14 +31,15 @@ impl Fixture {
             b"retained installation record",
         )
         .expect("installation evidence");
+        let previous_metadata = std::fs::symlink_metadata(&previous).expect("backup metadata");
         let manifest = Manifest {
             new_hash: platform::hash(&target.join("Contents/MacOS/vega")).expect("candidate hash"),
             old_hash: platform::hash(&previous.join("Contents/MacOS/vega")).expect("backup hash"),
             target,
             old_version: "1.0.0".into(),
             new_version: "1.0.1".into(),
-            device: 0,
-            inode: 0,
+            device: previous_metadata.dev(),
+            inode: previous_metadata.ino(),
             parent_pid: 0,
             delta: false,
         };
@@ -56,8 +61,12 @@ impl Fixture {
             b"candidate bytes"
         );
         assert_eq!(
-            std::fs::read(self.staging.join("previous.app/Contents/MacOS/vega"))
-                .expect("backup retained"),
+            std::fs::read(
+                retained_backup(&self.staging, &self.manifest)
+                    .expect("exact retained backup")
+                    .join("Contents/MacOS/vega"),
+            )
+            .expect("backup retained"),
             b"previous bytes"
         );
         assert_eq!(
@@ -132,15 +141,106 @@ fn workspace_receipt_requires_launch_receipt_and_matching_candidate_before_clean
     );
 
     for status in [CandidateStatus::Running, CandidateStatus::Exited] {
-        let ready = Fixture::new();
-        ready.receipt("startup-ok");
-        ready.receipt("workspace-ready");
-        assert!(finish_startup(&ready.staging, &ready.manifest, status).expect("ready cleanup"));
-        assert!(!ready.staging.exists());
-        assert_eq!(
-            std::fs::read(ready.manifest.target.join("Contents/MacOS/vega"))
-                .expect("ready candidate retained"),
-            b"candidate bytes"
-        );
+        for moved in [false, true] {
+            let ready = Fixture::new();
+            if moved {
+                exclude_legacy_rollback(&ready.staging, &ready.manifest).expect("backup handoff");
+            }
+            ready.receipt("startup-ok");
+            ready.receipt("workspace-ready");
+            assert!(
+                finish_startup(&ready.staging, &ready.manifest, status).expect("ready cleanup")
+            );
+            assert!(!ready.staging.exists());
+            assert_eq!(
+                std::fs::read(ready.manifest.target.join("Contents/MacOS/vega"))
+                    .expect("ready candidate retained"),
+                b"candidate bytes"
+            );
+        }
     }
+}
+
+#[test]
+fn legacy_absent_receipt_then_candidate_exit_cannot_rollback_after_backup_handoff() {
+    let control = Fixture::new();
+    rollback_with_candidate_verifier(&control.staging, &control.manifest, None, |path, _, _| {
+        platform::hash(&path.join("Contents/MacOS/vega")).map(|_| ())
+    })
+    .expect("prelaunch rollback remains possible");
+    assert_eq!(
+        std::fs::read(control.manifest.target.join("Contents/MacOS/vega"))
+            .expect("restored backup"),
+        b"previous bytes"
+    );
+    assert_eq!(
+        std::fs::read(control.staging.join("failed.app/Contents/MacOS/vega"))
+            .expect("retained candidate"),
+        b"candidate bytes"
+    );
+
+    let fixture = Fixture::new();
+    assert!(!fixture.staging.join("startup-ok").is_file());
+    exclude_legacy_rollback(&fixture.staging, &fixture.manifest).expect("atomic backup handoff");
+    fixture.receipt("startup-ok");
+    assert!(
+        rollback_with_candidate_verifier(
+            &fixture.staging,
+            &fixture.manifest,
+            None,
+            |path, _, _| platform::hash(&path.join("Contents/MacOS/vega")).map(|_| ()),
+        )
+        .is_err()
+    );
+    fixture.assert_retained();
+    assert!(!fixture.staging.join("previous.app").exists());
+    assert!(fixture.staging.join("recovery.app").is_dir());
+    assert!(finish_startup(&fixture.staging, &fixture.manifest, CandidateStatus::Exited).is_err());
+    fixture.assert_retained();
+}
+
+#[test]
+fn backup_handoff_is_idempotent_and_refuses_conflicting_or_changed_backup() {
+    let fixture = Fixture::new();
+    exclude_legacy_rollback(&fixture.staging, &fixture.manifest).expect("first handoff");
+    exclude_legacy_rollback(&fixture.staging, &fixture.manifest).expect("same backup retry");
+    fixture.assert_retained();
+
+    let conflicting = Fixture::new();
+    std::fs::create_dir(conflicting.staging.join("recovery.app")).expect("conflicting destination");
+    std::fs::write(
+        conflicting.staging.join("recovery.app/retained"),
+        b"do not overwrite",
+    )
+    .expect("destination evidence");
+    assert!(exclude_legacy_rollback(&conflicting.staging, &conflicting.manifest).is_err());
+    assert_eq!(
+        std::fs::read(conflicting.staging.join("recovery.app/retained"))
+            .expect("destination retained"),
+        b"do not overwrite"
+    );
+    assert_eq!(
+        std::fs::read(conflicting.staging.join("previous.app/Contents/MacOS/vega"))
+            .expect("source retained"),
+        b"previous bytes"
+    );
+
+    let changed = Fixture::new();
+    std::fs::write(
+        changed.staging.join("previous.app/Contents/MacOS/vega"),
+        b"changed backup",
+    )
+    .expect("changed backup fixture");
+    assert!(exclude_legacy_rollback(&changed.staging, &changed.manifest).is_err());
+    assert!(!changed.staging.join("recovery.app").exists());
+    assert_eq!(
+        std::fs::read(changed.staging.join("previous.app/Contents/MacOS/vega"))
+            .expect("changed source retained"),
+        b"changed backup"
+    );
+    assert_eq!(
+        std::fs::read(changed.manifest.target.join("Contents/MacOS/vega"))
+            .expect("candidate unchanged"),
+        b"candidate bytes"
+    );
 }

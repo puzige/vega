@@ -216,6 +216,7 @@ fn helper(staging: &Path) -> UpdateResult<()> {
     if previous.exists()
         || staging.join("startup-ok").exists()
         || staging.join("workspace-ready").exists()
+        || staging.join("recovery.app").exists()
     {
         return Err(failure("安装记录已被使用"));
     }
@@ -312,7 +313,8 @@ fn finish_startup(
         if platform::hash(&manifest.target.join("Contents/MacOS/vega"))? != manifest.new_hash {
             return Err(failure("新应用身份已变化，保留恢复记录"));
         }
-        if std::fs::remove_dir_all(staging.join("previous.app")).is_err() {
+        let backup = retained_backup(staging, manifest)?;
+        if std::fs::remove_dir_all(backup).is_err() {
             let _ = platform::write_new(&staging.join("cleanup-required.txt"), b"The new application confirmed workspace readiness. The previous application could not be removed with current user permissions. Keep or manually remove this backup when convenient; no rollback is required.");
             return Ok(true);
         }
@@ -322,7 +324,7 @@ fn finish_startup(
         return Ok(true);
     }
     if !matches!(status, CandidateStatus::Running) {
-        platform::write_new(&staging.join("recovery-required.txt"), b"The new application launched but workspace readiness was not confirmed. The candidate application, previous.app and recovery records are retained. Do not downgrade or restore the backup until data compatibility and permission-reset completion have been verified.")?;
+        platform::write_new(&staging.join("recovery-required.txt"), b"The new application launched but workspace readiness was not confirmed. The candidate application, recovery backup and installation records are retained. Do not downgrade or restore the backup until data compatibility and permission-reset completion have been verified.")?;
         return Err(failure(
             "工作区启动尚未确认；保留新版、原版备份与恢复记录，禁止自动降级",
         ));
@@ -432,7 +434,47 @@ fn write_startup_receipt(staging: &Path, name: &str) -> UpdateResult<()> {
     {
         return Err(failure("启动确认身份不匹配"));
     }
+    if name == "startup-ok" {
+        exclude_legacy_rollback(staging, &manifest)?;
+    }
     platform::write_new(&staging.join(name), b"ready")
+}
+
+fn verify_retained_backup(path: &Path, manifest: &Manifest) -> UpdateResult<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.is_dir()
+        || metadata.dev() != manifest.device
+        || metadata.ino() != manifest.inode
+        || platform::hash(&path.join("Contents/MacOS/vega"))? != manifest.old_hash
+    {
+        return Err(failure("恢复备份身份已变化，保留记录"));
+    }
+    Ok(())
+}
+
+fn retained_backup(staging: &Path, manifest: &Manifest) -> UpdateResult<PathBuf> {
+    let previous = staging.join("previous.app");
+    let recovery = staging.join("recovery.app");
+    let previous_exists = previous.try_exists()?;
+    let recovery_exists = recovery.try_exists()?;
+    let path = match (previous_exists, recovery_exists) {
+        (true, false) => previous,
+        (false, true) => recovery,
+        _ => return Err(failure("恢复备份缺失或冲突，保留记录")),
+    };
+    verify_retained_backup(&path, manifest)?;
+    Ok(path)
+}
+
+fn exclude_legacy_rollback(staging: &Path, manifest: &Manifest) -> UpdateResult<()> {
+    let backup = retained_backup(staging, manifest)?;
+    let recovery = staging.join("recovery.app");
+    if backup != recovery {
+        std::fs::rename(&backup, &recovery)?;
+    }
+    verify_retained_backup(&recovery, manifest)?;
+    File::open(staging)?.sync_all()?;
+    Ok(())
 }
 
 pub(crate) fn acknowledge_startup() -> UpdateResult<()> {

@@ -42,7 +42,7 @@ impl StartupView {
         }
         self.running = true;
         self.error = None;
-        window.focus(&self.quit_focus);
+        window.focus(&self.quit_focus, cx);
         cx.notify();
         let (sender, receiver) = mpsc::channel();
         #[cfg(test)]
@@ -108,15 +108,15 @@ impl StartupView {
     fn fail(&mut self, error: StartupError, window: &mut Window, cx: &mut Context<Self>) {
         self.running = false;
         self.error = Some(error);
-        window.focus(&self.retry_focus);
+        window.focus(&self.retry_focus, cx);
         cx.notify();
     }
 
     fn move_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.running && self.quit_focus.is_focused(window) {
-            window.focus(&self.retry_focus);
+            window.focus(&self.retry_focus, cx);
         } else {
-            window.focus(&self.quit_focus);
+            window.focus(&self.quit_focus, cx);
         }
         cx.notify();
     }
