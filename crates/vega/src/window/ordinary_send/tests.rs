@@ -1,6 +1,5 @@
 use super::{OrdinaryPreparationOutcome, OrdinaryPreparationRequest, take_preparation_owner};
 use crate::ordinary_submission::OrdinaryPreparationOwner;
-use gpui_kit::gpui;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -73,9 +72,10 @@ fn navigation_receipt_order(cx: &mut gpui_kit::TestAppContext, receipt_while_awa
         owner.draft = Some(source.clone());
         owner
     });
-    window
+    let released_streams = window
         .update(cx, |owner, window, cx| {
             let original = cx.new(|cx| ConversationStream::new(source.clone(), cx));
+            let mut released_streams = vec![original.downgrade()];
             owner.stream_view = Some((source.id.clone(), original.clone()));
             owner.agent_controller.preparation_stream = Some(original.clone());
             owner.agent_controller.ordinary_preparing.insert(
@@ -99,6 +99,14 @@ fn navigation_receipt_order(cx: &mut gpui_kit::TestAppContext, receipt_while_awa
             cx.set_global(OpenedThread(Some(other.clone())));
             drop(owner.render(window, cx));
             assert_ne!(owner.stream_view.as_ref().expect("other view").1, original);
+            released_streams.push(
+                owner
+                    .stream_view
+                    .as_ref()
+                    .expect("other view")
+                    .1
+                    .downgrade(),
+            );
             if !receipt_while_away {
                 cx.set_global(OpenedThread(Some(source.clone())));
                 drop(owner.render(window, cx));
@@ -128,15 +136,38 @@ fn navigation_receipt_order(cx: &mut gpui_kit::TestAppContext, receipt_while_awa
                 drop(owner.render(window, cx));
                 let visible = &owner.stream_view.as_ref().expect("durable view").1;
                 assert_eq!(visible.read(cx).thread_snapshot(), durable);
+                released_streams.push(visible.downgrade());
             }
             assert_eq!(cx.global::<OpenedThread>().0.as_ref(), Some(&durable));
             assert!(durable.full_access_grant.is_some());
+            released_streams
         })
         .expect("navigate real window");
     drop(outcome);
     let fresh = fixture.request(&durable, None).prepare();
     assert!(fresh.launch.is_ok());
     assert!(fresh.materialized.is_none());
+    drop(fresh);
+    window
+        .update(cx, |_, window, _| window.remove_window())
+        .expect("close fixture window");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        cx.run_until_parked();
+        if released_streams
+            .iter()
+            .all(|stream| stream.upgrade().is_none())
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "fixture streams must be released before temporary storage"
+        );
+        cx.background_executor
+            .advance_clock(std::time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 }
 
 struct Fixture {
