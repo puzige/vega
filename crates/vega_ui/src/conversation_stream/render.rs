@@ -2,6 +2,7 @@ use super::context_usage::ContextUsageDisplay;
 use super::*;
 use crate::interaction::InteractionExt;
 use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade, ScrollFadeTopGuards};
+use gpui_kit::component::Sizable as _;
 use gpui_kit::{Anchor, AnchoredPositionMode, PathBuilder, Role, anchored, canvas, point};
 // Re-exported so the permission picker's copy is testable from the suite the
 // same way `PICKER_EFFORT_LABEL`/`PICKER_LIST_HEADING` are.
@@ -338,39 +339,55 @@ impl ConversationStream {
                             )
                             .when(
                                 (self.actions.running || self.composer_submit_pending)
-                                    && !self.composer_resume_pending
-                                    && !self.shows_running_send(cx),
-                                |row| row.child(self.render_composer_stop(cx)),
-                            )
-                            .when(self.composer_resume_pending, |row| {
-                                row.child(
-                                    div()
-                                        .id("composer-resume-pending")
-                                        .role(Role::Button)
-                                        .aria_label("Resume")
-                                        .track_focus(&self.action_focus[1])
-                                        .tab_stop(true)
-                                        .focus_visible(move |style| {
-                                            style
-                                                .border_2()
-                                                .border_color(colors.brand_primary_strong)
-                                        })
-                                        .size(px(Layout::COMPOSER_SEND_SIZE))
-                                        .flex_shrink_0()
-                                        .rounded_full()
-                                        .bg(colors.bg_hover)
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .child(
+                                    && (self.composer_resume_pending
+                                        || !self.shows_running_send(cx)),
+                                |row| {
+                                    row.when(self.composer_resume_pending, |row| {
+                                        row.child(
                                             gpui_kit::component::spinner::Spinner::new()
                                                 .ease(gpui_kit::linear)
                                                 .with_size(px(Layout::ICON_SIZE))
                                                 .icon(gpui_kit::component::IconName::LoaderCircle)
                                                 .color(colors.text_secondary.into()),
-                                        ),
-                                )
-                            })
+                                        )
+                                    })
+                                    .child(self.render_composer_stop(cx))
+                                },
+                            )
+                            .when(
+                                self.composer_resume_pending && !self.actions.running,
+                                |row| {
+                                    row.child(
+                                        div()
+                                            .id("composer-resume-pending")
+                                            .role(Role::Button)
+                                            .aria_label("Resume")
+                                            .track_focus(&self.action_focus[1])
+                                            .tab_stop(true)
+                                            .focus_visible(move |style| {
+                                                style
+                                                    .border_2()
+                                                    .border_color(colors.brand_primary_strong)
+                                            })
+                                            .size(px(Layout::COMPOSER_SEND_SIZE))
+                                            .flex_shrink_0()
+                                            .rounded_full()
+                                            .bg(colors.bg_hover)
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(
+                                                gpui_kit::component::spinner::Spinner::new()
+                                                    .ease(gpui_kit::linear)
+                                                    .with_size(px(Layout::ICON_SIZE))
+                                                    .icon(
+                                                        gpui_kit::component::IconName::LoaderCircle,
+                                                    )
+                                                    .color(colors.text_secondary.into()),
+                                            ),
+                                    )
+                                },
+                            )
                             .when(
                                 !self.actions.running
                                     && !self.composer_submit_pending

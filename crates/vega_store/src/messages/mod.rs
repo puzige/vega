@@ -66,7 +66,9 @@ pub fn interrupted_tail(
          AND m.seq = (SELECT MAX(seq) FROM messages WHERE thread_id = ?1) \
          AND NOT EXISTS(SELECT 1 FROM messages WHERE thread_id = ?1 AND status = 'streaming') \
          AND NOT EXISTS(SELECT 1 FROM pending_messages WHERE thread_id = ?1 AND state != 'delivered') \
-         AND NOT EXISTS(SELECT 1 FROM credential_continuations WHERE thread_id = ?1 AND state != 'completed')",
+         AND NOT EXISTS(SELECT 1 FROM credential_continuations c WHERE c.thread_id = ?1 AND c.state != 'completed' \
+             AND (c.id = m.id OR c.continuation_message_id = m.id \
+                 OR c.user_message_id = (SELECT id FROM messages WHERE thread_id = ?1 AND role = 'user' AND seq < m.seq ORDER BY seq DESC LIMIT 1)))",
         [thread_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )
