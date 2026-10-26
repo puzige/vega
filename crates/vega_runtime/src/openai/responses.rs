@@ -388,7 +388,21 @@ impl Assembler {
                 return Err(response_error(kind));
             }
             "response.failed" | "error" => {
-                return Err(response_error(crate::ProviderFailureKind::Rejected));
+                // A capacity notice inside an established stream is an upstream
+                // condition, not malformed data. The Chat Completions path uses
+                // the same allowlisted markers, so both transports report the
+                // same failure for the same upstream condition.
+                let payload = if kind == "error" {
+                    &event
+                } else {
+                    event.pointer("/response/error").unwrap_or(&Value::Null)
+                };
+                if crate::chat_compat::is_overload_marker(payload) {
+                    return Err(crate::chat_compat::overloaded_error());
+                }
+                // The frame itself is a well-formed terminal notice: the
+                // provider refused to complete a response it had accepted.
+                return Err(crate::chat_compat::rejected_error());
             }
             "response.reasoning_summary_text.delta"
             | "response.reasoning_text.delta"
