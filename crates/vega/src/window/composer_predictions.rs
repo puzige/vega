@@ -1,10 +1,12 @@
 use super::*;
 use tokio_util::sync::CancellationToken;
-use vega_store::composer_prediction_events::{PredictionEvent, record};
+use vega_conversation::types::{PredictionEvent, record_prediction_event};
 
 fn record_prediction(cx: &App, thread_id: &str, message_id: &str, event: PredictionEvent) {
-    if let Ok(store) = &cx.global::<VegaStore>().0 {
-        record(store.conn(), thread_id, message_id, event, 0);
+    if let Ok(store) = &cx.global::<VegaStore>().0
+        && let Some(database) = store.database_path()
+    {
+        record_prediction_event(database, thread_id, message_id, event, 0);
     }
 }
 

@@ -4,12 +4,12 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use crate::types::{PredictionEvent, record_prediction_event};
 use futures::StreamExt;
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 use vega_runtime::{ChatMessage, ChatRequest, ChatRole, Provider, ProviderEvent, StopReason};
 use vega_store::Store;
-use vega_store::composer_prediction_events::{PredictionEvent, record};
 
 use crate::types::{TaskBackend, ThreadMode};
 
@@ -66,13 +66,7 @@ impl ComposerPredictionRequest {
             }
         };
         let diagnostic = |event, attempt| {
-            record(
-                store.conn(),
-                &thread_id,
-                &completed_message_id,
-                event,
-                attempt,
-            );
+            record_prediction_event(&database, &thread_id, &completed_message_id, event, attempt);
         };
         let result = (|| {
             if cancel.is_cancelled() || !(self.authority)() {
