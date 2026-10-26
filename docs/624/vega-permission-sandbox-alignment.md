@@ -239,6 +239,8 @@ owner 汇总按接纳的执行策略选择：P2 的可选 binding refs 用上述
 
 拟提供服务级“重置完全访问授权”动作，供用户准备降级时执行：先暂停新 admission/自动化及授权变更，要求活动 run 停止并完成可确认的收尾；未知效果保留恢复阻塞。进入上述协调门禁并取得 ConfigEdit 后，数据库事务设置 reset pending、轮换 epoch、清线程 grant/自动化授权并把 Full access 线程改为 Confirm，递增受影响 revision，失效未启动任务和所有单次许可；随后原子保存默认 Confirm、清默认 grant 并增加 revision；最后事务标 ready。它是跨 DB/config 的可恢复 fail-closed 协议，不声称跨两种存储原子提交。数据库级 admission 暂停须与 acquire 使用同一注册表锁，阻止同库所有线程的新 owner，其他数据库不受影响；暂停期间原 owner 仍可完成清理，释放数只证明应用内 owner 已结束，不证明外部进程退出。暂停 lease 精确归属，重复暂停不得接管，正常释放后才开放新 admission；持久 pending 的启动恢复另行维持阻塞。数据库 schema 高于当前程序支持版本时，在迁移快路径和取得迁移写许可后的复查均明确拒绝，不当作已升级成功。首个事务前失败则没有持久重置完成、不得提示可降级；pending 一经落库，后续失败就保持 pending，不恢复旧 grant。重启幂等继续同一重置，不反复轮换 epoch，期间不派发 P2，也不重新开放自动调度。
 
+持久恢复细化（增量迁移 `0043_permission_reset.sql`）：保存 reset id、新 epoch、规范配置路径、原始默认 mode/revision/grant、目标 revision 和完成状态；原始 grant 只保留授权元数据，不读取或复制凭据值。首事务同时保存 journal 与失效结果；续接只允许配置权限字段仍等于原始来源或已经等于 Confirm/目标 revision/无 grant，其他变化保持 pending 并报告冲突，绝不再递增或覆盖竞争权限编辑。无关偏好保留当前值。journal 与 contract pending/epoch 不一致、revision 溢出、缺失/损坏配置都 fail closed；完成回执保留，不能靠删除记录表示完成。队列新增持久失效标记，保留 payload 与可读/可取回入口，不能伪装 delivered；plan replay 使用每线程消息序号截止线，保留原计划及审批历史。凭据续跑以独立失效标记撤销可续跑性，不把未知结果改成完成；单次请求仅撤销 pending/approved，保留 consumed/unknown 审计。自动化暂停与清授权同时更新类型化 JSON 和索引 revision；已活动/不明执行不能通过改 finished 状态伪造收尾。
+
 只有读回线程/默认/自动化与 pending 均已完成重置，才提示可退出并安装兼容旧版；回滚代码保留新增列/表，不降 schema、不删凭据。之后升级不恢复已清 grant。若直接手动降级、用旧程序改 mode 再切回、还原含旧 grant 的整份备份，则不保证自动检测；必须先走上述重置或由用户明确接受未走流程的风险。此限制不能隐藏成“正常重启会自动重新确认”。
 
 ### 界面行为与必要提示
@@ -302,7 +304,9 @@ owner 汇总按接纳的执行策略选择：P2 的可选 binding refs 用上述
 - 云端 [run 40359370895](https://github.com/puzige/vega/actions/runs/40359370895) 绑定 `e5eb26ecd7d91f10f133cf49a3241812a46c5298`：Format 成功、release scripts 步骤成功；Nextest 在发现前编译失败，`xtask` 的 `NewThread` 漏 `permission_revision/full_access_grant`；Clippy 因 `AutomationEditorEvent::OpenLatest` 的大枚举载荷失败。不是上一轮 hosted runner 容量故障，也不是测试断言失败；未取得 Rust 发现/执行数。本批补齐 fixture 构造字段并将大载荷装箱，不关闭 lint 或改 CI。
 - 已合入上游 `68704d46794d5fd221bdbc915354de58600a3a9d` 的文件尺寸显示修复。本批新增 `crates/vega/src/window/ordinary_send/tests.rs` 六个开发回归：提交后取消（Confirm/Full access）、真实技能 pin 失败、提交前取消、重试 owner 的迟到回执、改变来源/离开路由，以及通道关闭；检查持久行/权限、admission 生命周期和全新提交恢复。生产仅拆私有准备阶段与 owner 提取，不扩大公开 API；全部待 Actions，不能当作 GPUI 回调或用户手测通过。开发测试与专用模块接线仍须留痕后清理。
 - GPUI 云端 [run 40374004186](https://github.com/puzige/vega/actions/runs/40374004186) 绑定 `f00194d215dc0cb867c7a062b51ecfa391ade799`：19 个测试实际执行，17 通过、2 个 GPUI 用例在退出时因 stream 句柄泄漏失败、0 跳过；Clippy 报多余 `gpui_kit::gpui` 导入。固定版本宏入口会重写 facade 路径，不能只根据内部宏模板推断别名必需。本批删除冗余导入，并在 fixture 销毁前关闭窗口、推进收尾及检查弱句柄释放；保留全部导航/权限断言和 leak 检查，修正后待云端复验。
-- 下一步完成上述回归的云端验证与恢复修正复审，再推进重置/启动恢复、入队快照与活动 run 的下一轮设置、Bash 和剩余 UI。已静态确认 Bash 的 `sandbox=None` 仍可创建 Broker/context 并在底层重新套 Seatbelt，必须在凭据创建前分支，不能只删除 bindings 拒绝条件；本批未改该路径。整卡未 READY，Issue 保持开放/In progress。
+- GPUI 绘制生命周期修正 `b40dea7ae6495f40457eb1620b3c53641873a92e` 已通过 [run 40381304783](https://github.com/puzige/vega/actions/runs/40381304783)：21 发现/21 执行/21 通过/0 跳过，Clippy 和汇总均成功；非写入者增量审查无发现。两种导航/回执顺序都实际通过，完整失败链、原始源码和限制见 [GPUI 验证记录](gpui-navigation-validation.md)。不代表原生 UI 验收或整卡通过。
+- reset 持久层批次实现 `0043` journal、幂等 epoch/目标 revision、线程授权撤销、队列/凭据续跑失效和计划重放截止线；UI 恢复查询和实际启动事务都检查截止线，队列插入/认领/送达 SQL 保留 ready 门禁。保留原始输入、历史与未知效果，不用 delivered/finished 伪造失效或收尾。新增 5 个存储开发回归，当前仅格式/差异静态检查通过，待 Actions 与增量独立审查。尚无调用 reset begin/finish 的应用服务，不能声称用户已能安全重置或降级。
+- 下一步完成重置服务/配置恢复、类型化自动化撤权、启动门禁及可确认收尾，再推进入队快照与活动 run 的下一轮设置、Bash 和剩余 UI。已静态确认 Bash 的 `sandbox=None` 仍可创建 Broker/context 并在底层重新套 Seatbelt，必须在凭据创建前分支，不能只删除 bindings 拒绝条件；本批未改该路径。整卡未 READY，Issue 保持开放/In progress。
 
 ### 版本变更
 

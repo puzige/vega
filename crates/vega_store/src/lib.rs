@@ -16,6 +16,7 @@ pub mod palette;
 pub mod paths;
 pub mod pending_messages;
 pub mod permission_contracts;
+pub mod permission_reset;
 pub mod permissions;
 pub mod projects;
 pub mod reasoning;
@@ -87,6 +88,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0040_composer_prediction_events.sql"),
     include_str!("../migrations/0041_provider_overloaded.sql"),
     include_str!("../migrations/0042_permission_contracts.sql"),
+    include_str!("../migrations/0043_permission_reset.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.

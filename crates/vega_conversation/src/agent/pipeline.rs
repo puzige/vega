@@ -950,13 +950,14 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                         vega_i18n::t("domain.pending.error.changed").into(),
                     ));
                 }
-                let row = vega_store::pending_messages::find(&transaction, &thread_id, id)
-                    .map_err(runtime_store_error)?
-                    .ok_or_else(|| {
-                        ConversationError::Store(
-                            vega_i18n::t("domain.pending.error.delivered").into(),
-                        )
-                    })?;
+                let row =
+                    vega_store::pending_messages::find_dispatchable(&transaction, &thread_id, id)
+                        .map_err(runtime_store_error)?
+                        .ok_or_else(|| {
+                            ConversationError::Store(
+                                vega_i18n::t("domain.pending.error.delivered").into(),
+                            )
+                        })?;
                 let pending = crate::pending_messages::decode(row)?;
                 if pending.images != images {
                     return Err(ConversationError::Store(
@@ -1055,6 +1056,12 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                 || existing.content != crate::plans::APPROVAL_INSTRUCTION
                 || user_content != crate::plans::APPROVAL_INSTRUCTION
                 || run_mode != ThreadMode::Execute
+                || !vega_store::permission_reset::replay_allowed(
+                    &transaction,
+                    &thread_id,
+                    existing.seq,
+                )
+                .map_err(runtime_store_error)?
             {
                 return Err(ConversationError::CorruptRow(
                     "approved instruction identity mismatch".to_string(),

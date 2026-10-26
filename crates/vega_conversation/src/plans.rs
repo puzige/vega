@@ -60,7 +60,9 @@ pub fn recoverable_approved_instruction(
     let Some(instruction) = recent.first() else {
         return Ok(None);
     };
-    if instruction.role != "user"
+    if !vega_store::permission_reset::replay_allowed(store.conn(), thread_id, instruction.seq)
+        .map_err(store_error)?
+        || instruction.role != "user"
         || instruction.kind != "text"
         || instruction.status != "done"
         || instruction.content != APPROVAL_INSTRUCTION

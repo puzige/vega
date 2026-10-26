@@ -118,7 +118,7 @@ pub fn claim(
         return Ok(false);
     }
     Ok(tx.execute(
-        "UPDATE credential_continuations SET state = 'claimed', operation_id = ?2 WHERE id = ?1 AND state = 'ready' AND source_version = ?3 AND source_fingerprint = ?4 AND permission_fence = ?5 AND thread_id = ?6 AND user_message_id = ?7 AND raw_user_fingerprint = ?8",
+        "UPDATE credential_continuations SET state = 'claimed', operation_id = ?2 WHERE id = ?1 AND state = 'ready' AND permission_invalidated=0 AND EXISTS(SELECT 1 FROM permission_contract_state WHERE singleton=1 AND reset_state='ready') AND source_version = ?3 AND source_fingerprint = ?4 AND permission_fence = ?5 AND thread_id = ?6 AND user_message_id = ?7 AND raw_user_fingerprint = ?8",
         params![receipt.id, operation_id, sql_source_version(receipt.source_version)?, receipt.source_fingerprint, permission_fence, receipt.thread_id, receipt.user_message_id, receipt.raw_user_fingerprint],
     )? == 1)
 }

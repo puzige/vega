@@ -12,4 +12,11 @@ The corrected harness retains both event orderings, original entity-identity ass
 
 The correction uses `TestAppContext::update_window` with the root entity unborrowed, followed by `Window::refresh` and `Window::draw(...).clear(...)`; assertions read the root after that draw completes. The fixture's own strong original-stream handle is explicitly dropped before checking weak-handle release. No production API or CI workflow was changed.
 
-Local static checks: `rustfmt --edition 2024 --check crates/vega/src/window/ordinary_send/tests.rs` and `git diff --check` both exited 0. This does not establish test success. The corrected source requires new cloud execution and scoped independent review. Development test source and exclusive GPUI support must be preserved as evidence and removed before the final merge head under repository policy.
+Local static checks: `rustfmt --edition 2024 --check crates/vega/src/window/ordinary_send/tests.rs` and `git diff --check` both exited 0. These are static checks, not test execution.
+
+## Corrected-version evidence
+
+- Exact version: `b40dea7ae6495f40457eb1620b3c53641873a92e`, relative to `17c5b6a43a02713189c3dcbe8ffe06d9d8dc9ed5`.
+- [Run 40381304783](https://github.com/puzige/vega/actions/runs/40381304783): Clippy job `121777943588`, Nextest job `121777943089`, aggregate `121780345366` all succeeded. Nextest reported **21 discovered, 21 executed, 21 passed, 0 skipped**. Both `navigation_receipt_while_away_preserves_route_and_reloads_authority` and `navigation_return_reuses_preparing_entity_and_committed_authority` explicitly passed. The summary was emitted at `2026-10-26T18:54:53Z`.
+- Non-writer scoped review of that exact two-file delta returned **no findings**. It verified the pinned draw API/borrow boundary and retained assertions; it performed no local execution or CI polling. It is not whole-card approval.
+- [Recoverable development source](https://github.com/puzige/vega/blob/b40dea7ae6495f40457eb1620b3c53641873a92e/crates/vega/src/window/ordinary_send/tests.rs). Tests and exclusive GPUI support must still be removed before the final merge head under repository policy; final-head CI remains separately required.
