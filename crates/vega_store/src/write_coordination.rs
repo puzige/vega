@@ -486,7 +486,12 @@ impl<'a> WriteTransaction<'a> {
             Ok(()) => Ok(()),
             Err(error) if !transaction.is_autocommit() => {
                 let rollback = transaction.execute_batch("ROLLBACK");
-                log_transaction(&permit, StorageOperation::Rollback, permit.acquired, &rollback);
+                log_transaction(
+                    &permit,
+                    StorageOperation::Rollback,
+                    permit.acquired,
+                    &rollback,
+                );
                 if rollback.is_ok() && transaction.is_autocommit() {
                     Err(CommitFailure::RolledBack(error))
                 } else {

@@ -430,7 +430,10 @@ pub fn prepare_submission_permission(
         Ok(()) => pending.publish(),
         Err(vega_store::write_coordination::CommitFailure::RolledBack(error)) => {
             if created.is_some()
-                && !matches!(vega_store::threads::find(store.conn(), &expected.id), Ok(None))
+                && !matches!(
+                    vega_store::threads::find(store.conn(), &expected.id),
+                    Ok(None)
+                )
             {
                 pending.mark_unknown();
             }

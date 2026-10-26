@@ -412,7 +412,8 @@ impl Drop for QueueDrainWait {
 
 #[derive(Default)]
 pub(crate) struct AppAgentController {
-    pub(crate) ordinary_preparing: HashMap<String, crate::ordinary_submission::OrdinaryPreparationOwner>,
+    pub(crate) ordinary_preparing:
+        HashMap<String, crate::ordinary_submission::OrdinaryPreparationOwner>,
     pub(crate) ordinary_requests: HashSet<u64>,
     pub(crate) delegated_unbound: HashSet<String>,
     pub(crate) queue_streams: HashMap<String, Entity<ConversationStream>>,

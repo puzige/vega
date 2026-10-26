@@ -377,3 +377,95 @@ fn materialization_derives_distinct_thread_grants_and_revocation_only_affects_fu
     assert_eq!(restricted.permission_mode, PermissionMode::ReadOnly);
     assert!(restricted.full_access_grant.is_none());
 }
+
+#[test]
+fn rolled_back_creation_retries_only_with_unchanged_default_source() {
+    use vega_conversation::permission_contracts::prepare_submission_permission;
+    use vega_conversation::types::{OrdinarySubmission, RawSubmission, SubmissionFailure};
+
+    for change_source in [false, true] {
+        let fixture = Fixture::new();
+        fixture.authorize();
+        let config = config::read_from(&fixture.config).expect("read source");
+        let draft = draft_thread_from_defaults(
+            None,
+            "model",
+            default_permission_snapshot(Some(&fixture.config), &config.defaults),
+        );
+        let store = fixture.store();
+        store.conn().execute_batch(
+            "CREATE TABLE commit_parent (id INTEGER PRIMARY KEY);
+             CREATE TABLE commit_child (parent INTEGER REFERENCES commit_parent(id) DEFERRABLE INITIALLY DEFERRED);
+             CREATE TRIGGER reject_thread_commit AFTER INSERT ON threads BEGIN
+                 INSERT INTO commit_child(parent) VALUES (1);
+             END;",
+        ).expect("install deferred commit failure");
+        let admission =
+            vega_store::thread_admission::try_acquire(store.database_identity(), &draft.id)
+                .expect("acquire admission")
+                .expect("available admission");
+        let (submission, worker) = OrdinarySubmission::begin(
+            store.database_identity(),
+            draft.id.clone(),
+            RawSubmission::new("hello".into(), Vec::new(), 0, "model".into(), None, None),
+            admission,
+        )
+        .expect("begin submission");
+        assert!(
+            prepare_submission_permission(&store, &submission, &worker, &draft, Some(&draft))
+                .is_err()
+        );
+        assert!(store.conn().is_autocommit());
+        assert!(
+            vega_store::threads::find(store.conn(), &draft.id)
+                .expect("read rolled back thread")
+                .is_none()
+        );
+        assert!(submission.permission_fence().is_err());
+        let attempt = worker.attempt_id();
+        worker
+            .complete(Err(SubmissionFailure::PreparationFailed))
+            .expect("finish failed preparation");
+        submission.seal(attempt).expect("seal failed attempt");
+        store
+            .conn()
+            .execute_batch("DROP TRIGGER reject_thread_commit;")
+            .expect("remove failure source");
+        if change_source {
+            fixture
+                .service()
+                .save(&fixture.prepare(PermissionMode::ReadOnly), false)
+                .expect("change defaults");
+        }
+        let worker = submission
+            .try_retry(attempt)
+            .expect("retry rolled back attempt");
+        let result =
+            prepare_submission_permission(&store, &submission, &worker, &draft, Some(&draft));
+        if change_source {
+            assert!(result.is_err());
+            assert!(submission.permission_fence().is_err());
+            assert!(
+                vega_store::threads::find(store.conn(), &draft.id)
+                    .expect("read rejected thread")
+                    .is_none()
+            );
+        } else {
+            let thread = result.expect("materialize on retry");
+            let fence = submission
+                .permission_fence()
+                .expect("publish committed authority");
+            assert_eq!(fence.full_access_grant, thread.full_access_grant);
+            assert!(thread.full_access_grant.is_some());
+            assert_eq!(
+                get_thread(&store, &draft.id).expect("read committed thread"),
+                thread
+            );
+        }
+        let attempt = worker.attempt_id();
+        worker
+            .complete(Err(SubmissionFailure::Cancelled))
+            .expect("finish retry");
+        submission.seal(attempt).expect("seal retry");
+    }
+}
