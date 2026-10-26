@@ -314,8 +314,19 @@ impl Render for VegaWindow {
                             });
 
                             let model_options = self.model_options_for_pricing();
+                            let pending_model = cx
+                                .global::<VegaStore>()
+                                .0
+                                .as_ref()
+                                .ok()
+                                .and_then(|store| {
+                                    vega_store::threads::pending_model(store.conn(), &thread.id)
+                                        .ok()
+                                })
+                                .flatten();
                             view.update(cx, |stream, cx| {
                                 stream.apply_thread(thread.clone(), cx);
+                                stream.restore_next_turn_model(pending_model, cx);
                                 stream.apply_model_options(model_options, cx);
                             });
                             self.apply_reasoning_profile_to_stream(&view, &thread.model, cx);

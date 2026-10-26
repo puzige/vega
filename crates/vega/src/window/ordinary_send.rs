@@ -90,7 +90,6 @@ impl VegaWindow {
         &mut self,
         stream: Entity<ConversationStream>,
         request: &ComposerSubmitted,
-        reasoning: Option<FrozenReasoning>,
         cx: &mut Context<Self>,
     ) {
         let cached = match &cx.global::<VegaStore>().0 {
@@ -120,6 +119,28 @@ impl VegaWindow {
                     return;
                 }
             };
+        let promoted =
+            match self.promote_model_before_run(&stream, &request.thread_id, &admission, cx) {
+                Ok(promoted) => promoted,
+                Err(()) => {
+                    stream.update(cx, ConversationStream::reject_composer_submission);
+                    stream.update(cx, ConversationStream::apply_controller_error);
+                    return;
+                }
+            };
+        let reasoning = if promoted {
+            stream.read(cx).frozen_reasoning_for_submit()
+        } else {
+            request.reasoning.clone()
+        };
+        let reasoning = match reasoning {
+            Ok(reasoning) if !stream.read(cx).reasoning_unavailable() => reasoning,
+            _ => {
+                stream.update(cx, ConversationStream::reject_composer_submission);
+                stream.update(cx, ConversationStream::apply_controller_error);
+                return;
+            }
+        };
         let snapshot = match stream.read(cx).model_snapshot_for_submit() {
             Ok(snapshot) => snapshot,
             Err(_) => {

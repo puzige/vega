@@ -1122,7 +1122,7 @@ impl ConversationStream {
             && !self.model_selection_save_busy()
             && self.model_selection_pending.is_none();
 
-        let model = &self.composer_defaults.model;
+        let model = self.selector_model();
         let current = model_trigger_label(
             model,
             self.model_picker_level,
@@ -1330,7 +1330,7 @@ impl ConversationStream {
                 );
             }
             let selected = index == self.model_selector_highlight;
-            let current_model = option.model == self.composer_defaults.model;
+            let current_model = option.model == self.selector_model();
             let model = option.model.clone();
             let label = option.model.clone();
             rows.push(
