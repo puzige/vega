@@ -119,13 +119,66 @@ impl ThreadAdmission {
     }
 }
 
-type Admissions = Mutex<HashMap<AdmissionKey, Weak<Admission>>>;
+#[derive(Default)]
+struct AdmissionRegistry {
+    owners: HashMap<AdmissionKey, Weak<Admission>>,
+    pauses: HashMap<DatabaseIdentity, Ulid>,
+}
+
+type Admissions = Mutex<AdmissionRegistry>;
+
+static ADMISSIONS: OnceLock<Admissions> = OnceLock::new();
+
+pub struct DatabaseAdmissionPause {
+    database: DatabaseIdentity,
+    token: Ulid,
+}
+
+impl DatabaseAdmissionPause {
+    pub fn owners_released(&self) -> Result<bool, AdmissionError> {
+        let registry = ADMISSIONS
+            .get_or_init(Default::default)
+            .lock()
+            .map_err(|_| AdmissionError::Unavailable)?;
+        if registry.pauses.get(&self.database) != Some(&self.token) {
+            return Err(AdmissionError::Unavailable);
+        }
+        Ok(!registry
+            .owners
+            .iter()
+            .any(|(key, owner)| key.database == self.database && owner.strong_count() > 0))
+    }
+}
+
+impl Drop for DatabaseAdmissionPause {
+    fn drop(&mut self) {
+        if let Ok(mut registry) = ADMISSIONS.get_or_init(Default::default).lock()
+            && registry.pauses.get(&self.database) == Some(&self.token)
+        {
+            registry.pauses.remove(&self.database);
+        }
+    }
+}
+
+pub fn try_pause_database(
+    database: DatabaseIdentity,
+) -> Result<Option<DatabaseAdmissionPause>, AdmissionError> {
+    let mut registry = ADMISSIONS
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|_| AdmissionError::Unavailable)?;
+    if registry.pauses.contains_key(&database) {
+        return Ok(None);
+    }
+    let token = Ulid::generate();
+    registry.pauses.insert(database, token);
+    Ok(Some(DatabaseAdmissionPause { database, token }))
+}
 
 pub fn try_acquire(
     database: DatabaseIdentity,
     thread: &str,
 ) -> Result<Option<ThreadAdmission>, AdmissionError> {
-    static ADMISSIONS: OnceLock<Admissions> = OnceLock::new();
     try_acquire_in(ADMISSIONS.get_or_init(Default::default), database, thread)
 }
 
@@ -142,8 +195,16 @@ fn try_acquire_in(
         thread: thread.to_owned(),
     };
     let mut admissions = admissions.lock().map_err(|_| AdmissionError::Unavailable)?;
-    admissions.retain(|_, admission| admission.strong_count() > 0);
-    if admissions.get(&key).and_then(Weak::upgrade).is_some() {
+    admissions
+        .owners
+        .retain(|_, admission| admission.strong_count() > 0);
+    if admissions.pauses.contains_key(&database)
+        || admissions
+            .owners
+            .get(&key)
+            .and_then(Weak::upgrade)
+            .is_some()
+    {
         return Ok(None);
     }
     let admission = Arc::new(Admission {
@@ -151,6 +212,6 @@ fn try_acquire_in(
         token: Ulid::generate(),
         title_started: AtomicBool::new(false),
     });
-    admissions.insert(key, Arc::downgrade(&admission));
+    admissions.owners.insert(key, Arc::downgrade(&admission));
     Ok(Some(ThreadAdmission(admission)))
 }

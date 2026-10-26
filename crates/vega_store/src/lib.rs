@@ -156,7 +156,10 @@ impl Store {
         let current: u32 = self
             .conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if current as usize >= MIGRATIONS.len() {
+        if current as usize > MIGRATIONS.len() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        if current as usize == MIGRATIONS.len() {
             permission_contracts::load_state(&self.conn)?;
             return Ok(());
         }
@@ -164,6 +167,9 @@ impl Store {
         let current: u32 = self
             .conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if current as usize > MIGRATIONS.len() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
         for (index, sql) in MIGRATIONS.iter().enumerate() {
             let target = (index + 1) as u32;
             if current >= target {
