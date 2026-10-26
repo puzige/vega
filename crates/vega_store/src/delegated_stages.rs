@@ -22,7 +22,27 @@ pub fn authority(conn: &Connection, child: &str) -> rusqlite::Result<String> {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(json!({"parent":row.parent_thread_id,"project":row.project_id,"workspace":workspace,"workspace_owner":row.workspace_owner_thread_id,"mode":row.mode,"permission":row.permission_mode,"model":row.model,"backend":row.backend,"status":row.status,"rules":rules}).to_string())
+    let state = crate::permission_contracts::load_state(conn)?;
+    if state.reset_pending {
+        return Err(invalid());
+    }
+    Ok(json!({
+        "parent": row.parent_thread_id,
+        "project": row.project_id,
+        "workspace": workspace,
+        "workspace_owner": row.workspace_owner_thread_id,
+        "mode": row.mode,
+        "permission": row.permission_mode,
+        "permission_contract": 1,
+        "permission_revision": row.permission_revision,
+        "full_access_grant": row.full_access_grant,
+        "authority_epoch": state.authority_epoch,
+        "model": row.model,
+        "backend": row.backend,
+        "status": row.status,
+        "rules": rules
+    })
+    .to_string())
 }
 
 pub fn register(
@@ -136,7 +156,15 @@ pub fn append(
     let source = crate::context_compaction::load_source_version_in_transaction(conn, child)?;
     let id = ulid::Ulid::generate().to_string();
     let previous = latest(conn, child, message)?.map(|value| value["id"].clone());
-    let value = json!({"id":id,"agent_id":child,"message_id":message,"origin":origin,"source_version":source.source_version,"source_fingerprint":source.fingerprint,"manifest":manifest,"unknown_effects":effects,"previous_checkpoint_id":previous});
+    let permission_fence: Option<String> = conn.query_row(
+        "SELECT permission_fence FROM delegated_permission_fences WHERE child_thread_id=?1 AND child_message_id=?2",
+        params![child, message],
+        |row| row.get(0),
+    ).optional()?;
+    let permission_fence = permission_fence
+        .map(|encoded| serde_json::from_str::<Value>(&encoded).map_err(|_| invalid()))
+        .transpose()?;
+    let value = json!({"id":id,"agent_id":child,"message_id":message,"origin":origin,"source_version":source.source_version,"source_fingerprint":source.fingerprint,"manifest":manifest,"unknown_effects":effects,"previous_checkpoint_id":previous,"permission_fence":permission_fence});
     conn.execute("INSERT INTO delegated_stage_checkpoints(id,child_thread_id,child_message_id,payload,authority,created_at) VALUES(?1,?2,?3,?4,?5,?6)",params![id,child,message,value.to_string(),execution_authority(conn,child,message)?,now])?;
     Ok(value)
 }

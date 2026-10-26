@@ -49,6 +49,45 @@ pub fn load(store: &Store, thread: &str) -> Result<Vec<AutomationTask>, String> 
     load_from(store.conn(), thread)
 }
 
+pub fn authorize_full_access(
+    store: &Store,
+    expected: &AutomationPermissionAuthorization,
+    confirmed: bool,
+    now: i64,
+) -> Result<AutomationTask, String> {
+    let _coordination = crate::permission_contracts::coordinate().map_err(storage)?;
+    if !confirmed || !expected.fence.is_valid() || expected.fence.permission_mode != "full_access" {
+        return Err(vega_i18n::t("domain.automation.error.changed").into());
+    }
+    let tx = store.immediate_transaction().map_err(storage)?;
+    let thread = &expected.fence.thread_id;
+    let owner = vega_store::threads::find(&tx, thread)
+        .map_err(storage)?
+        .ok_or(vega_i18n::t("domain.automation.error.deleted"))?;
+    if owner.status != "active"
+        || owner.backend != "native"
+        || crate::permission_contracts::capture_fence(store, &owner).map_err(storage)?
+            != expected.fence
+    {
+        return Err(vega_i18n::t("domain.automation.error.changed").into());
+    }
+    let mut tasks = load_from(&tx, thread)?;
+    let task = tasks
+        .iter_mut()
+        .find(|task| {
+            task.kind == expected.kind
+                && task.identity == expected.identity
+                && task.revision == expected.revision
+        })
+        .ok_or(vega_i18n::t("domain.automation.error.changed"))?;
+    task.permission_authorization = Some(expected.clone());
+    task.updated_at_ms = now;
+    save(&tx, task)?;
+    let result = task.clone();
+    tx.commit().map_err(storage)?;
+    Ok(result)
+}
+
 pub fn timing_snapshot(
     store: &Store,
     thread: &str,
@@ -126,6 +165,7 @@ fn command_in_transaction(
                     .checked_add(1)
                     .filter(|value| i64::try_from(*value).is_ok())
                     .ok_or(vega_i18n::t("domain.automation.error.revision"))?;
+                task.permission_authorization = None;
                 task.instruction = instruction.clone();
                 task.updated_at_ms = now;
                 save(conn, task)?;
@@ -155,6 +195,7 @@ fn command_in_transaction(
                 kind: *kind,
                 identity: ulid::Ulid::generate().to_string(),
                 revision: 1,
+                permission_authorization: None,
                 instruction: instruction.clone(),
                 status: AutomationStatus::Active,
                 token_budget: *token_budget,
@@ -335,6 +376,7 @@ pub fn claim(
     source: Option<AutomationKind>,
     now: i64,
 ) -> Result<Option<AutomationRunClaim>, String> {
+    let _coordination = crate::permission_contracts::coordinate().map_err(storage)?;
     let tx = store.immediate_transaction().map_err(storage)?;
     let owner = vega_store::threads::find(&tx, thread)
         .map_err(storage)?
@@ -377,12 +419,30 @@ pub fn claim(
     }) {
         return Err(vega_i18n::t("domain.automation.error.budget").into());
     }
+    let permission_fence =
+        crate::permission_contracts::capture_fence(store, &owner).map_err(storage)?;
+    if permission_fence.permission_mode == "full_access"
+        && tasks.iter().any(|task| {
+            !task
+                .permission_authorization
+                .as_ref()
+                .is_some_and(|authorization| {
+                    authorization.kind == task.kind
+                        && authorization.identity == task.identity
+                        && authorization.revision == task.revision
+                        && authorization.fence == permission_fence
+                })
+        })
+    {
+        return Err(vega_i18n::t("domain.automation.error.changed").into());
+    }
     let run = AutomationRunClaim {
         id: ulid::Ulid::generate().to_string(),
         thread_id: thread.into(),
         source,
         started: source.is_none(),
         tasks,
+        permission_fence: Some(permission_fence),
         usage_ids: Vec::new(),
         tokens: 0,
         goal_report: None,
@@ -397,6 +457,7 @@ pub fn activate_claim(
     store: &Store,
     claim: &AutomationRunClaim,
 ) -> Result<Option<AutomationRunClaim>, String> {
+    let _coordination = crate::permission_contracts::coordinate().map_err(storage)?;
     let tx = store.immediate_transaction().map_err(storage)?;
     if !current_claim(store, claim)? {
         return Ok(None);
@@ -440,12 +501,53 @@ pub fn finish_unsettled_claim(
 }
 
 pub fn current_claim(store: &Store, claim: &AutomationRunClaim) -> Result<bool, String> {
-    let Some((finished, _)) =
+    let Some((finished, data)) =
         db::run(store.conn(), &claim.thread_id, &claim.id).map_err(storage)?
     else {
         return Ok(false);
     };
     if finished {
+        return Ok(false);
+    }
+    let saved: AutomationRunClaim = decode(&data)?;
+    let Some(expected_fence) = &claim.permission_fence else {
+        return Ok(false);
+    };
+    if saved.permission_fence != claim.permission_fence
+        || saved.thread_id != claim.thread_id
+        || saved.source != claim.source
+        || saved.tasks != claim.tasks
+        || !expected_fence.is_valid()
+    {
+        return Ok(false);
+    }
+    let owner = vega_store::threads::find(store.conn(), &claim.thread_id).map_err(storage)?;
+    let Some(owner) = owner else {
+        return Ok(false);
+    };
+    let current_fence =
+        crate::permission_contracts::capture_fence(store, &owner).map_err(storage)?;
+    if &current_fence != expected_fence
+        || (current_fence.permission_mode == "full_access"
+            && claim.tasks.iter().any(|task| {
+                !task
+                    .permission_authorization
+                    .as_ref()
+                    .is_some_and(|authorization| {
+                        authorization.kind == task.kind
+                            && authorization.identity == task.identity
+                            && authorization.revision == task.revision
+                            && &authorization.fence == expected_fence
+                    })
+            }))
+    {
+        return Ok(false);
+    }
+    if claim.tasks.is_empty()
+        || claim
+            .source
+            .is_some_and(|kind| !claim.tasks.iter().any(|task| task.kind == kind))
+    {
         return Ok(false);
     }
     let tasks = load(store, &claim.thread_id)?;
@@ -455,8 +557,10 @@ pub fn current_claim(store: &Store, claim: &AutomationRunClaim) -> Result<bool, 
         .filter(|task| claim.source.is_none_or(|kind| kind == task.kind))
         .all(|expected| {
             tasks.iter().any(|task| {
-                task.identity == expected.identity
+                task.kind == expected.kind
+                    && task.identity == expected.identity
                     && task.revision == expected.revision
+                    && task.permission_authorization == expected.permission_authorization
                     && task.status == AutomationStatus::Active
             })
         }))

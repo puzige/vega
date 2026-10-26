@@ -191,6 +191,8 @@ fn assemble_thread(
         title: String::new(),
         mode: ThreadMode::Execute,
         permission_mode,
+        permission_revision: 0,
+        full_access_grant: None,
         model: model.to_string(),
         status: ThreadStatus::Active,
         pinned: false,
@@ -362,13 +364,15 @@ pub fn set_thread_permission_mode(
     thread_id: &str,
     mode: PermissionMode,
 ) -> Result<Thread, ConversationError> {
-    let _admission = crate::thread_access::acquire(store, thread_id)?;
-    let updated = store::set_permission_mode(store.conn(), thread_id, mode.as_str(), now_ms())
-        .map_err(store_error)?;
-    if updated == 0 {
-        return Err(ConversationError::NotFound(thread_id.to_string()));
-    }
-    get_thread(store, thread_id)
+    let thread = get_thread(store, thread_id)?;
+    crate::permission_contracts::change_thread_permission(
+        store,
+        thread_id,
+        thread.permission_revision,
+        mode,
+        false,
+        now_ms(),
+    )
 }
 
 pub fn set_thread_model(
@@ -605,6 +609,11 @@ pub(crate) fn thread_from_row(row: &store::ThreadRow) -> Result<Thread, Conversa
         title: row.title.clone(),
         mode,
         permission_mode,
+        permission_revision: row.permission_revision,
+        full_access_grant: row
+            .full_access_grant
+            .as_deref()
+            .and_then(|encoded| serde_json::from_str(encoded).ok()),
         model: row.model.clone(),
         status,
         pinned: row.pinned,

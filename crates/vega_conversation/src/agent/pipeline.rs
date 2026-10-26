@@ -709,11 +709,87 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         })?,
         None => Vec::new(),
     };
+    let permission_coordination = crate::permission_contracts::coordinate()?;
     let transaction = store.immediate_transaction().map_err(runtime_store_error)?;
     let preparation = (|| -> Result<_, ConversationError> {
         let thread = vega_store::threads::find(&transaction, &thread_id)
             .map_err(runtime_store_error)?
             .ok_or_else(|| ConversationError::NotFound(thread_id.clone()))?;
+        let current_fence = if config.delegated {
+            let authority = config
+                .delegated_authority
+                .as_ref()
+                .ok_or(ConversationError::InvalidTaskIdentity)?;
+            if !authority.matches_fence() {
+                return Err(ConversationError::InvalidTaskIdentity);
+            }
+            let (parent_thread, parent_message) = config
+                .delegated_parent
+                .as_ref()
+                .ok_or(ConversationError::InvalidTaskIdentity)?;
+            let fence = crate::permission_contracts::capture_delegated_fence(
+                &store,
+                &thread,
+                parent_thread,
+                parent_message,
+                &assistant_message_id,
+                &authority.permission_fence,
+            )?;
+            let encoded = vega_store::permission_contracts::load_delegated_fence(
+                &transaction,
+                &thread_id,
+                &assistant_message_id,
+            )
+            .map_err(runtime_store_error)?;
+            let admitted: crate::types::PermissionFence = serde_json::from_str(&encoded)
+                .map_err(|_| ConversationError::InvalidTaskIdentity)?;
+            if admitted != fence {
+                return Err(ConversationError::InvalidTaskIdentity);
+            }
+            admitted
+        } else {
+            if config.delegated_authority.is_some() {
+                return Err(ConversationError::InvalidTaskIdentity);
+            }
+            crate::permission_contracts::capture_fence(&store, &thread)?
+        };
+        let permission_fence = if let Some(ordinary) = ordinary {
+            let accepted = ordinary.run.submission.permission_fence();
+            match accepted {
+                Ok(accepted) if accepted == current_fence => accepted,
+                _ => {
+                    let _ = ordinary
+                        .run
+                        .submission
+                        .invalidate_recovery(ordinary.worker.attempt_id());
+                    return Err(ConversationError::InvalidTaskIdentity);
+                }
+            }
+        } else {
+            current_fence
+        };
+        let automation_fence = permission_fence
+            .delegation
+            .as_ref()
+            .map(|source| source.parent_fence.as_ref())
+            .unwrap_or(&permission_fence);
+        if let Some(claim) = &config.automation_claim
+            && (claim.thread_id != automation_fence.thread_id
+                || claim.permission_fence.as_ref() != Some(automation_fence)
+                || (!config.delegated
+                    && !crate::automation::current_claim(&store, claim)
+                        .map_err(|_| ConversationError::InvalidTaskIdentity)?))
+        {
+            return Err(ConversationError::InvalidTaskIdentity);
+        }
+        let permission_fence_json = serde_json::to_string(&permission_fence)
+            .map_err(|error| ConversationError::Store(error.to_string()))?;
+        let thread_grant = thread
+            .full_access_grant
+            .as_deref()
+            .map(serde_json::from_str::<crate::types::FullAccessGrant>)
+            .transpose()
+            .map_err(|_| ConversationError::InvalidTaskIdentity)?;
         if let Some(ordinary) = ordinary
             && (thread.model != ordinary.run.submission.raw().model()
                 || thread.backend != "native"
@@ -722,6 +798,8 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                     snapshot.project_id != thread.project_id
                         || snapshot.mode.as_str() != thread.mode
                         || snapshot.permission_mode.as_str() != thread.permission_mode
+                        || snapshot.permission_revision != thread.permission_revision
+                        || snapshot.full_access_grant != thread_grant
                 }))
         {
             let _ = ordinary
@@ -773,15 +851,21 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         } else {
             None
         };
-        let run_mode = ThreadMode::parse(&thread.mode)
+        let run_mode = ThreadMode::parse(&permission_fence.run_mode)
             .ok_or_else(|| ConversationError::CorruptRow(format!("run mode: {}", thread.mode)))?;
-        let permission_mode = crate::types::PermissionMode::parse(&thread.permission_mode)
-            .ok_or_else(|| {
-                ConversationError::CorruptRow(format!(
-                    "permission_mode: {}",
-                    thread.permission_mode
-                ))
-            })?;
+        let permission_mode = crate::types::PermissionMode::parse(
+            &permission_fence.permission_mode,
+        )
+        .ok_or_else(|| {
+            ConversationError::CorruptRow(format!("permission_mode: {}", thread.permission_mode))
+        })?;
+        if !config.delegated && permission_mode == crate::types::PermissionMode::FullAccess {
+            crate::permission_contracts::verify_thread_grant(
+                &transaction,
+                &thread_id,
+                thread_grant.as_ref(),
+            )?;
+        }
         if reasoning
             .as_ref()
             .is_some_and(|selection| selection.model != thread.model)
@@ -825,7 +909,9 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                 ))))
             })?;
         }
-        let exact_rules = if thread.project_id.is_empty() {
+        let exact_rules = if let Some(authority) = &config.delegated_authority {
+            authority.exact_rules.clone()
+        } else if thread.project_id.is_empty() {
             Vec::new()
         } else {
             permissions::list_exact(&transaction, &thread.project_id)
@@ -898,6 +984,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                         &transaction,
                         &receipt,
                         &assistant_message_id,
+                        &permission_fence_json,
                     )
                     .map_err(runtime_store_error)?
                 {
@@ -1084,6 +1171,14 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         )
         .map_err(runtime_store_error)?;
 
+        vega_store::permission_contracts::record_run_fence(
+            &transaction,
+            &assistant_message_id,
+            &thread_id,
+            &permission_fence_json,
+        )
+        .map_err(runtime_store_error)?;
+
         if let Some(receipt) = &continuation {
             vega_store::credential_continuation::attach(
                 &transaction,
@@ -1214,6 +1309,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             return Err(ConversationError::Runtime(Arc::new(VegaError::Cancelled)));
         }
         Ok((
+            permission_fence,
             thread,
             run_mode,
             permission_mode,
@@ -1234,6 +1330,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         ))
     })();
     let (
+        permission_fence,
         thread,
         run_mode,
         permission_mode,
@@ -1304,6 +1401,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         return Err(super::ordinary::fact_error(error));
     }
     transaction.commit().map_err(runtime_store_error)?;
+    drop(permission_coordination);
     if let (Some(ordinary), Some(receipt)) = (ordinary, receipt) {
         ordinary
             .worker
@@ -1329,6 +1427,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     );
 
     Ok(PreparedRun {
+        permission_fence,
         _admission: admission,
         _delegated_owner: delegated_owner,
         database_path,

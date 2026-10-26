@@ -14,6 +14,7 @@ pub mod model_capabilities;
 pub mod palette;
 pub mod paths;
 pub mod pending_messages;
+pub mod permission_contracts;
 pub mod permissions;
 pub mod projects;
 pub mod reasoning;
@@ -82,6 +83,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0037_codex_display_metadata.sql"),
     include_str!("../migrations/0038_provider_failure_split.sql"),
     include_str!("../migrations/0039_pending_thread_model.sql"),
+    include_str!("../migrations/0040_permission_contracts.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
@@ -152,6 +154,7 @@ impl Store {
             .conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if current as usize >= MIGRATIONS.len() {
+            permission_contracts::load_state(&self.conn)?;
             return Ok(());
         }
         let _permit = write_coordination::acquire(&self.conn, WriteCategory::Migration)?;
@@ -171,6 +174,9 @@ impl Store {
             let result = (|| -> Result<(), rusqlite::Error> {
                 let tx = WriteTransaction::new(&self.conn, WriteCategory::Migration)?;
                 tx.execute_batch(sql)?;
+                if target == 40 {
+                    permission_contracts::initialize(&tx)?;
+                }
                 tx.pragma_update(None, "user_version", target)?;
                 tx.commit()
             })();
@@ -179,6 +185,7 @@ impl Store {
             }
             result?;
         }
+        permission_contracts::load_state(&self.conn)?;
         Ok(())
     }
 

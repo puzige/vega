@@ -2,11 +2,11 @@
 
 ## 状态与授权
 
-- 版本：D4，2026-10-26；阶段：具体契约已保存 / 待实施确认，尚未实现。用户要求跳过本轮 D4 独立设计审查，在途审查已取消，未取得最终审查结论。D4 的产品细项均为待确认方案，不把跳过审查或文档更新当作放权批准。
+- 版本：D4，2026-10-26；阶段：实施中，尚未交付。用户在查看范围、风险与回滚限制后明确要求“按 D4 开始实现”，批准仓库代码修改及云端验证；不包含本机运行配置、真实凭据或 OS 权限修改。此前用户要求跳过 D4 独立设计审查，在途审查已取消，未取得最终结论；本次实施授权不取消最终独立实现审查、required CI 和用户手测。
 - 关联：[Issue #624](https://github.com/puzige/vega/issues/624)、[#58](https://github.com/puzige/vega/issues/58)、[#378](https://github.com/puzige/vega/issues/378)、[#619](https://github.com/puzige/vega/issues/619)。
 - 当前代码基线：`e481cd28d5de685dc79f39080a8c6cb79b9412b8`；任务分支：`feat/624-permission-alignment`。D3 基线为 `410758d36e8fbe0802f816227948ece1486d8494`；本轮先以 `580ae08acd43942875968cd8db3cac5ed0fbf1fe` 合入 `d87957c8b68a49a033bb5a8b81ee71fedd57c0ca`，再以 `2c8481710b89a749adcab0b5fec99642e0828091` 正常合入当前基线，未重写历史。新增的模型分组、预测、运行中消息操作、Provider 失败分类和 reasoning 修复均为既有上游内容，不是本卡生产实现。
-- 用户在“下一步沿哪条路线完善规格；这一步不修改运行权限”的问题中选择 **P2：更全面开放**，补充“全面对齐 ChatGPT”。这是规格方向裁决，不是执行放权、修改本机配置或合并生产实现的批准。P1/P3 不再作为本轮推荐；生产修改前另行明确确认本规格的范围、影响与回滚。
-- “全面对齐”覆盖 Full access、受限模式、审批、凭证、界面、迁移及恢复委派；以可验证的公开 Codex 契约作参照，不宣称复刻闭源 ChatGPT App，不把只完成 Full access 当作整卡完成。用户进一步选择 **正常重启保留授权**、**同卡完成受限模式对齐**；本版据此提出完整范围，仍待具体实施确认。
+- 用户先选择 **P2：更全面开放**，补充“全面对齐 ChatGPT”，随后明确批准按已发布 D4（`e76c7d6ee4baf932cffaa2dbadf3e1e9bf6af227`）开始实现。P1/P3 不再作为候选；本机配置和真实凭据操作仍不在授权内。
+- “全面对齐”覆盖 Full access、受限模式、审批、凭证、界面、迁移及恢复委派；以可验证的公开 Codex 契约作参照，不宣称复刻闭源 ChatGPT App，不把只完成 Full access 当作整卡完成。用户进一步选择 **正常重启保留授权**、**同卡完成受限模式对齐**；本版据此提出的完整范围现已获得上述实施确认。
 - 本轮用户明确允许 #624 超过通常的 3 个提交，以保留已发布 D1–D3 证据、正常同步基线并追加必要提交；不重写、不强推历史，最终 PR 仍 squash。该例外只适用于本卡提交记录，不是生产权限授权。
 - 仓库规则：本地不运行 Vega、不编译或测试；自动检查交现有 PR Actions，真实平台集成交用户手测。Rust 开发测试如使用，必须在合并前留痕并清除，不恢复历史测试集合。
 
@@ -149,7 +149,7 @@ Full access 下“绑定不自动用于 Bash 请求”与“凭据不可访问�
 
 - `FullAccessGrant`：`schema_version=1`、`contract_version=1`、不透明 `grant_id`（ULID）、`authority_epoch`、`scope`、`origin`、`issued_at`。线程 scope 为精确 thread id；默认 scope 为当前应用配置的“未来新线程”；origin 区分用户线程确认和默认授权派生（记录来源 grant id），不得伪造为逐线程点击确认。
 - `PermissionFence`：`schema_version`、执行策略版本、数据库/项目/工作区身份、thread 身份、任务模式、权限模式、`permission_revision`、有效 grant identity/version/epoch/scope，外加现有 source/version/fingerprint、exact rules 等上下文约束。入队时绑定已分配的 submission/attempt 身份；尚未存在的 run id 不伪造为已运行，在 admission 建立 execution binding 后只追加该身份、不重新取权，运行和范围许可必须同时匹配 fence 与 execution binding。记录中无 secret，时间戳不是授权依据；必需字段缺失、版本未知、scope 错误或不一致均 fail closed。
-- 拟增量 migration `0039_permission_contracts.sql`（当前上游已用 `0038_provider_failure_split.sql`；若实施前编号再被占用则顺延，不改已有 migration）：`threads.permission_revision INTEGER NOT NULL DEFAULT 0`、`threads.full_access_grant TEXT NULL`；单例 `permission_contract_state` 保存逻辑 `authority_epoch` 与 `reset_state`（ready/pending）；`credential_continuations.permission_fence TEXT NULL`；独立 `command_scope_audits` 记范围请求身份/规范化范围/来源/终态和时间。结构化 JSON 校验与 typed decode 必须共同检查；创建 epoch 不创建任何用户 grant。schema 只增不删，重置仅修改记录值。
+- 增量 migration `0040_permission_contracts.sql`（上游已用 `0039_pending_thread_model.sql`，本卡顺延，不改已有 migration）：`threads.permission_revision INTEGER NOT NULL DEFAULT 0`、`threads.full_access_grant TEXT NULL`；单例 `permission_contract_state` 保存逻辑 `authority_epoch` 与 `reset_state`（ready/pending）；`credential_continuations.permission_fence TEXT NULL`；`run_permission_fences` 按 assistant message id 保存原运行权限快照，供失败/崩溃恢复原样引用，不能在 suspend 时从当前线程补权；`delegated_permission_fences` 以 delegated execution 身份在子任务创建事务保存接纳快照，覆盖 assistant message 创建前中断，worker 和检查点原样核对；独立 `command_scope_audits` 记范围请求身份/规范化范围/来源/终态和时间。结构化 JSON 校验与 typed decode 必须共同检查；创建 epoch 不创建任何用户 grant。schema 只增不删，重置仅修改记录值。
 - `NewTaskDefaults` 拟增 `permission_revision`（缺失为 0）、`full_access_grant`（缺失为 None），同已有 `permission_mode` 一起原子保存到 config；不把一次默认授权再拆成 config+SQLite 两份必须同时成功的 grant 写入。默认 grant 绑定同一逻辑 epoch，数据库替换或配置复制不自动认作新批准。
 - 迁移保留旧 `full_access` 字符串用于显示“需重新授权”，新 grant 留空；旧默认值不能生成已授权 P2 线程。无效原始记录不强行转换成 Confirm 后继续执行；允许查看/修复，运行入口提供重新授权或用户明确改选受限。其他旧模式按 D4 受限策略使用，旧 Once/Always 精确规则仍只是普通审批。
 
@@ -272,15 +272,18 @@ owner 汇总按接纳的执行策略选择：P2 的可选 binding refs 用上述
 
 受限侧同时改变可用性：默认禁网、私有受控环境和更窄 IPC 可能让现有依赖联网、shell rc、全局缓存或 GUI 服务的命令失败。必要性是使“受限”有实际 OS 边界和可解释的单次授权，不是保证所有命令无感兼容；本版不是零风险或零行为变化的一行修复。
 
-回滚先执行上文受支持的授权重置，再退出并 revert/安装兼容旧版；schema 增量保留。切回 Confirm/Auto 只恢复后续新 run 的受限规则，不修复配置可信性，不撤销已执行命令、外部写入、网络外传或脱离的后台进程。用户须核查/恢复被改配置，真实泄露须轮换凭据。任意未走重置的降级/备份还原不保证检测。当前尚无生产实现，因此本轮无需撤销运行配置，也未执行任何重置。
+回滚先执行上文受支持的授权重置，再退出并 revert/安装兼容旧版；schema 增量保留。切回 Confirm/Auto 只恢复后续新 run 的受限规则，不修复配置可信性，不撤销已执行命令、外部写入、网络外传或脱离的后台进程。用户须核查/恢复被改配置，真实泄露须轮换凭据。任意未走重置的降级/备份还原不保证检测。当前已按用户明确批准进入仓库实现，尚未交付可运行版本；未更改本机运行配置，也未执行任何重置。
 
 ## 当前验证与下一步
 
 - 本轮已 fetch 并正常合入上述最新 master；已核对权限核心、工具/Broker、keystore、线程/恢复/审批链与 D3 基线无上游差异。新增 `0038_provider_failure_split.sql` 占用的编号已在设计中顺延；`RuntimeToolConfig` 的权限字段未改。续接时仅有本卡 D4 草稿，合入上游保留该草稿；未操作主仓用户原有未跟踪内容。本卡相对新基线仅 `docs/624/`，以最终 scope 检查为准。
 - D1 审查绑定 `528409bf50a5180bd27873a76fca5aa6f23e9829`；D2 `1f98926e6ed77aac1eebef138a0a227e7461f86b` 吸收其发现。D3 最终独立审查绑定 `aae1d34001f21c9756b28630f6343fbc4fd5fc26` / SHA256 `c26502a9499dc3c74069e97bbadcdc4ecf2bbfad9b9be8026891f8bde2e1197f`，结论为可作 P2 待授权设计，无该版文档阻塞，不是生产 READY。原版本与 Issue 评论保留。
 - D4 已提出具体 grant/schema/原子性/恢复、只读与单次扩围、严格凭据读取、受支持回滚及保留差异；新增字段/API 全部是待实现设计。初始冻结提交 `5c209da90543467d7c66746ae9ecce7dcca47903`（文档 SHA256 `8e1a54e9aef8ee2d3da575155038e7fe9fdc1911a364384a0dde060995de0e6e`）已推送并读回一致。其独立审查被用户中途取消，未形成最终结论；本版只同步跳过状态，最终静态检查绑定提交/hash 写回 Issue，不将部分阅读或旧 D3 审查算成 D4 通过。
-- 未运行 Vega、编译/构建/测试、CI、真实凭据读取、浏览器或 UI 集成；未改本机权限/配置/凭据，无 #624 生产实现、PR 或合并。文档静态检查不能证明 Seatbelt、网络或恢复行为。
-- 下一步：向用户集中展示 D4 实施范围、风险、保留差异与回滚限制，取得明确实施确认后才修改生产代码。Issue 保持开放/In progress；不再重问 P2，不把继续设计或跳过审查当生产放权。
+- 未运行 Vega、编译/构建/测试、CI、真实凭据读取、浏览器或 UI 集成；未改本机权限/配置/凭据。#624 已有未提交生产代码改动，尚无实现 PR 或交付合并。静态检查不能证明 Seatbelt、网络或恢复行为。
+- 实施授权更新：用户已明确要求“按 D4 开始实现”，并再次要求优先补齐授权与恢复接线，再推进 Bash 权限和 UI，完成后走云端 CI 与独立实现审查。此前待授权/仅文档状态属于历史阶段，不再作为实施阻塞；仍禁止本地编译测试、运行 Vega 或修改本机配置。
+- 当前实现进度（未提交基础，不是 READY）：增量迁移、grant/fence 类型、线程授权 CAS、运行快照落库及凭据续跑比对；快照包含连接数据库身份，普通准备保存不可替换快照并在运行准备复核 revision/grant/epoch/工作区，缺失不补权。默认权限增加 revision/grant 持久字段和独立保存服务；旧 grant 解析失败不阻止查看线程，执行入口仍严格拒绝。尚缺首次入队完整捕获、默认派生与 UI 接线、自动化/委派/重置完整协议，以及 Bash 沙箱和单次扩围实现。
+- 本次续接已正常合入上游 `60adaaff`，集成 HEAD `6aee1c86555d081c17283d2c94e5d23173d864f0`；实施改动仍未提交，恢复点 stash `07faa227412e223a8eff2b1e563c5a7a484f1895` 保留。迁移顺延至 0040。委派准备要求当前 running 执行记录与父/子线程及 message 身份精确匹配，缺失记录不再等同首次执行；前序快照缺失仍拒绝。父运行重启后的 resume 不要求旧/新父 message 相同，仍核对保存权限来源及既有恢复边界。模式/规则与父快照的一致性验证已前移到准备事务，移除提交后的权限覆盖与迟到拒绝。子任务创建提交前再次验证相同来源；resume 在产物读取前后核对中断执行保存的 fence、当前活动父 fence、epoch 和数据库身份，不以当前子线程设置代替授权来源。原 source/checkpoint/ownership/pending/unknown-effect 检查保留。检查点记录原执行 fence，resume 的事务外预检及最终创建事务均核对检查点与原持久 fence 一致；旧检查点缺字段拒绝。`delegated_permission_fences` 在创建事务内保存接纳快照，不依赖尚未创建的 assistant message；worker 准备与接纳快照精确比对，检查点及前序/中断恢复引用同一记录，覆盖接纳后启动前中断。旧数据缺记录不补造授权。创建/恢复预检使用协调门禁 → DB 事务，不跨用户等待或产物校验持锁；`DelegatedAuthority::matches_fence` 在接纳、worker 和恢复产物读取前统一核对模式及规则。该链仍待云端编译和行为验证。
+- 下一步继续默认授权/草稿派生、入队快照、活动 run 与下一轮设置、重置/启动恢复，然后 Bash 和 UI。已静态确认 Bash 的 `sandbox=None` 仍可创建 Broker/context 并在底层重新套 Seatbelt，后续必须在凭据创建前分支，不能只删除 bindings 拒绝条件；本轮未改该路径。最新已执行检查仅为修改文件 rustfmt 和 git diff --check，无冲突标记；未取得编译、自动行为验证、独立实现审查或合并结果。Issue 保持开放/In progress。
 
 ### 版本变更
 

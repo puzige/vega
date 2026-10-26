@@ -16,6 +16,13 @@ enum Identity {
 }
 
 impl DatabaseIdentity {
+    pub fn permission_fence_key(self) -> String {
+        match self.0 {
+            Identity::File { device, inode } => format!("file:{device}:{inode}"),
+            Identity::Memory(id) => format!("memory:{id}"),
+        }
+    }
+
     pub(crate) fn for_connection(conn: &Connection) -> rusqlite::Result<Self> {
         let identity = match conn.path().filter(|path| !path.is_empty()) {
             Some(path) => {

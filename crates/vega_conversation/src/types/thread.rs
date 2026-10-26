@@ -87,6 +87,8 @@ pub struct Thread {
     pub mode: ThreadMode,
     /// Permission mode (`readonly|confirm|auto|full_access`).
     pub permission_mode: PermissionMode,
+    pub permission_revision: i64,
+    pub full_access_grant: Option<FullAccessGrant>,
     pub model: String,
     /// Lifecycle status (`active|archived`).
     pub status: ThreadStatus,

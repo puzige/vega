@@ -126,6 +126,10 @@ pub struct Defaults {
     /// Default permission mode: `"readonly"` | `"confirm"` | `"auto"` | `"full_access"`.
     /// Defaults to `"confirm"` (phase1-plan E5 safe default).
     pub permission_mode: String,
+    #[serde(default)]
+    pub permission_revision: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_access_grant: Option<String>,
 }
 
 impl Default for Defaults {
@@ -133,6 +137,8 @@ impl Default for Defaults {
         Self {
             model: String::new(),
             permission_mode: "confirm".to_string(),
+            permission_revision: 0,
+            full_access_grant: None,
         }
     }
 }

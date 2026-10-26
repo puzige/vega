@@ -29,9 +29,36 @@ fn persistence_busy_handler(count: i32) -> bool {
 
 #[derive(Clone)]
 pub(crate) struct DelegatedAuthority {
+    pub permission_fence: crate::types::PermissionFence,
     pub run_mode: RuntimeRunMode,
     pub permission_mode: RuntimePermissionMode,
     pub exact_rules: Vec<RuntimeExactRule>,
+}
+
+impl DelegatedAuthority {
+    pub(crate) fn matches_fence(&self) -> bool {
+        let mut rules: Vec<_> = self
+            .exact_rules
+            .iter()
+            .map(|rule| (rule.tool.as_str().to_owned(), rule.pattern.clone()))
+            .collect();
+        rules.sort();
+        let run_mode = match self.run_mode {
+            RuntimeRunMode::Ask => "ask",
+            RuntimeRunMode::Plan => "plan",
+            RuntimeRunMode::Execute => "execute",
+        };
+        let permission_mode = match self.permission_mode {
+            RuntimePermissionMode::ReadOnly => "readonly",
+            RuntimePermissionMode::Confirm => "confirm",
+            RuntimePermissionMode::Auto => "auto",
+            RuntimePermissionMode::FullAccess => "full_access",
+        };
+        self.permission_fence.is_valid()
+            && self.permission_fence.run_mode == run_mode
+            && self.permission_fence.permission_mode == permission_mode
+            && self.permission_fence.exact_rules == rules
+    }
 }
 
 #[derive(Clone, Default)]
@@ -491,6 +518,7 @@ pub(crate) struct RuntimeEnvelope {
 }
 
 pub(crate) struct PreparedRun {
+    pub(crate) permission_fence: crate::types::PermissionFence,
     pub(crate) _admission: crate::types::ThreadAdmission,
     pub(crate) _delegated_owner: Option<Arc<vega_store::delegated_ownership::DelegatedOwnership>>,
     pub(crate) database_path: PathBuf,

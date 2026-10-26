@@ -428,6 +428,7 @@ impl AttemptState {
 struct SubmissionState {
     accepted: Option<Arc<AcceptedPayload>>,
     authority: Option<Arc<EffectiveAuthority>>,
+    permission_fence: Option<crate::types::PermissionFence>,
     attempts: Vec<AttemptState>,
     active: Option<ThreadAdmission>,
     retired: bool,
@@ -532,6 +533,7 @@ impl OrdinarySubmission {
             state: Mutex::new(SubmissionState {
                 accepted: None,
                 authority: None,
+                permission_fence: None,
                 attempts: vec![AttemptState::new(attempt, AttemptKind::Initial, worker)],
                 active: Some(admission.clone()),
                 retired: false,
@@ -546,6 +548,34 @@ impl OrdinarySubmission {
             completed: false,
         };
         Ok((submission, guard))
+    }
+
+    pub fn bind_permission_fence(
+        &self,
+        fence: crate::types::PermissionFence,
+    ) -> Result<(), SubmissionError> {
+        if !fence.is_valid()
+            || fence.thread_id != self.0.thread_id
+            || fence.database_identity != self.0.database.permission_fence_key()
+        {
+            return Err(SubmissionError::AdmissionMismatch);
+        }
+        let mut state = self.lock()?;
+        match &state.permission_fence {
+            Some(existing) if existing != &fence => Err(SubmissionError::AdmissionMismatch),
+            Some(_) => Ok(()),
+            None => {
+                state.permission_fence = Some(fence);
+                Ok(())
+            }
+        }
+    }
+
+    pub fn permission_fence(&self) -> Result<crate::types::PermissionFence, SubmissionError> {
+        self.lock()?
+            .permission_fence
+            .clone()
+            .ok_or(SubmissionError::AdmissionMismatch)
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, SubmissionState>, SubmissionError> {

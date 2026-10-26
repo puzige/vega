@@ -120,6 +120,8 @@ pub struct AutomationTask {
     pub kind: AutomationKind,
     pub identity: String,
     pub revision: u64,
+    #[serde(default)]
+    pub permission_authorization: Option<AutomationPermissionAuthorization>,
     pub instruction: String,
     pub status: AutomationStatus,
     pub token_budget: Option<u64>,
@@ -136,6 +138,15 @@ pub struct AutomationTask {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_reason: Option<AutomationReason>,
     pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AutomationPermissionAuthorization {
+    pub kind: AutomationKind,
+    pub identity: String,
+    pub revision: u64,
+    pub fence: super::PermissionFence,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -178,6 +189,8 @@ pub struct AutomationRunClaim {
     #[serde(default)]
     pub started: bool,
     pub tasks: Vec<AutomationTask>,
+    #[serde(default)]
+    pub permission_fence: Option<super::PermissionFence>,
     pub usage_ids: Vec<i64>,
     pub tokens: u64,
     pub goal_report: Option<GoalReport>,

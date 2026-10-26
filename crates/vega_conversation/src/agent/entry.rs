@@ -805,10 +805,7 @@ where
         }
     };
 
-    if let Some(authority) = &actor_config.delegated_authority {
-        prepared.request.tool_config.run_mode = authority.run_mode;
-        prepared.request.tool_config.permission_mode = authority.permission_mode;
-        prepared.request.tool_config.exact_rules = authority.exact_rules.clone();
+    if actor_config.delegated_authority.is_some() {
         prepared.request.context_budget = actor_config.delegated_context_budget;
     }
     if actor_config.delegated {
@@ -907,7 +904,11 @@ where
         database: prepared.database_path.clone(),
         parent_thread: thread_id.to_string(),
         parent_message: prepared.assistant_message_id.clone(),
-        settings: super::subagents::ChildSettings::new(&prepared.request, &actor_config),
+        settings: super::subagents::ChildSettings::new(
+            &prepared.request,
+            &actor_config,
+            &prepared.permission_fence,
+        ),
         mcp_servers: subagent_mcp,
         host,
         cancel: cancel.child_token(),
