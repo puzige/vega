@@ -901,6 +901,10 @@ impl ConversationStream {
         self.active_agent_message.is_some()
     }
 
+    pub fn run_active(&self) -> bool {
+        self.actions.running
+    }
+
     pub fn has_pending_permission(&self) -> bool {
         self.permission_queue.has_pending()
     }

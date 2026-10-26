@@ -35,6 +35,13 @@ fn finish_thread_model_selection(
     // The token is the app-level single-flight identity. If it was already
     // released (duplicate callback, close cleanup, or a newer owner), this
     // callback is fully stale and must not touch any UI/global projection.
+    let staged = window
+        .staged_model_pending
+        .as_ref()
+        .is_some_and(|(id, owner)| id == thread_id && *owner == lease);
+    if staged {
+        window.staged_model_pending = None;
+    }
     if !window.trusted_actions.release(lease) {
         return;
     }
@@ -46,6 +53,24 @@ fn finish_thread_model_selection(
         stream.update(cx, |stream, cx| {
             stream.clear_model_selection_owner(lease.request_sequence, cx)
         });
+        return;
+    }
+
+    if staged {
+        match outcome {
+            Ok(thread)
+                if stream
+                    .read(cx)
+                    .model_selection_ack_is_valid(request_id, &thread) =>
+            {
+                stream.update(cx, |stream, cx| {
+                    stream.apply_thread_model_staged(thread_id, request_id, &thread.model, cx);
+                });
+            }
+            _ => stream.update(cx, |stream, cx| {
+                stream.apply_thread_model_failed(thread_id, request_id, cx);
+            }),
+        }
         return;
     }
 
@@ -160,6 +185,113 @@ fn finish_thread_model_selection(
 }
 
 impl VegaWindow {
+    pub(super) fn promote_model_before_run(
+        &mut self,
+        stream: &Entity<ConversationStream>,
+        thread_id: &str,
+        admission: &ThreadAdmission,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, ()> {
+        if self.is_draft_route(thread_id) {
+            return Ok(false);
+        }
+        if self
+            .staged_model_pending
+            .as_ref()
+            .is_some_and(|(id, _)| id == thread_id)
+        {
+            return Err(());
+        }
+        let store = cx.global::<VegaStore>().0.as_ref().map_err(|_| ())?;
+        let pending =
+            vega_store::threads::pending_model(store.conn(), thread_id).map_err(|_| ())?;
+        let Some(model) = pending else {
+            return Ok(false);
+        };
+        let path = self.composer_config_path().ok_or(())?;
+        let config = vega_store::config::read_from(&path).map_err(|_| ())?;
+        if unique_provider_for_model(&config, &model).is_none() {
+            return Err(());
+        }
+        let thread =
+            vega_conversation::threads::promote_thread_model(store, thread_id, &model, admission)
+                .map_err(|_| ())?;
+        if let Some(sessions) = cx.try_global::<crate::app_agent::AppReplaySessions>() {
+            sessions.0.invalidate_thread(thread_id);
+        }
+        let refresh = ModelSelectionRefresh::from_thread(&thread);
+        if let Some(current) = cx
+            .global::<OpenedThread>()
+            .0
+            .as_ref()
+            .and_then(|current| refresh.merge_into(current))
+        {
+            cx.set_global(OpenedThread(Some(current)));
+        }
+        stream.update(cx, |stream, cx| {
+            stream.apply_authoritative_model(thread, &model, cx);
+        });
+        self.apply_reasoning_profile_to_stream(stream, &model, cx);
+        Ok(true)
+    }
+
+    pub(super) fn settle_next_turn_model(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        thread_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(50))
+                    .await;
+                let finished = this
+                    .update(cx, |this, cx| {
+                        if this.agent_controller.active.contains_key(&thread_id) {
+                            return true;
+                        }
+                        if this
+                            .staged_model_pending
+                            .as_ref()
+                            .is_some_and(|(id, _)| id == &thread_id)
+                        {
+                            return false;
+                        }
+                        let owner = cx.global::<VegaStore>().0.as_ref().ok().and_then(|store| {
+                            vega_store::thread_admission::try_acquire(
+                                store.database_identity(),
+                                &thread_id,
+                            )
+                            .ok()
+                            .flatten()
+                        });
+                        let Some(owner) = owner else {
+                            return false;
+                        };
+                        let current = this
+                            .current_cached_stream_for_thread(&thread_id, cx)
+                            .unwrap_or_else(|| stream.clone());
+                        let result =
+                            this.promote_model_before_run(&current, &thread_id, &owner, cx);
+                        drop(owner);
+                        if result.is_err() {
+                            current.update(cx, ConversationStream::apply_controller_error);
+                        } else {
+                            this.continue_pending_queue(&thread_id, &current, cx);
+                        }
+                        true
+                    })
+                    .unwrap_or(true);
+                if finished || std::time::Instant::now() >= deadline {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
     pub(crate) fn finish_thread_model_selection_from_async(
         &mut self,
         stream: Entity<ConversationStream>,
@@ -169,7 +301,14 @@ impl VegaWindow {
         outcome: Result<Thread, ()>,
         cx: &mut Context<Self>,
     ) {
+        let staged = self
+            .staged_model_pending
+            .as_ref()
+            .is_some_and(|(id, owner)| id == &thread_id && *owner == lease);
         finish_thread_model_selection(self, &stream, &thread_id, lease, request_id, outcome, cx);
+        if staged && !self.agent_controller.active.contains_key(&thread_id) {
+            self.settle_next_turn_model(stream, thread_id, cx);
+        }
     }
 
     pub(crate) fn mirror_draft(&mut self, thread: &Thread) {
@@ -304,12 +443,13 @@ impl VegaWindow {
             return;
         }
 
-        if cx.global::<SettingsOpen>().0
-            || stream.read(cx).model_selection_blocked(cx)
+        let running = stream.read(cx).run_active()
             || self
                 .agent_controller
                 .active
-                .contains_key(&request.thread_id)
+                .contains_key(&request.thread_id);
+        if cx.global::<SettingsOpen>().0
+            || (!running && stream.read(cx).model_selection_blocked(cx))
             || self.trusted_actions.is_busy()
         {
             stream.update(cx, |stream, cx| {
@@ -369,6 +509,24 @@ impl VegaWindow {
             );
             return;
         }
+        let occupied = cx
+            .global::<VegaStore>()
+            .0
+            .as_ref()
+            .ok()
+            .is_some_and(|store| {
+                matches!(
+                    vega_store::thread_admission::try_acquire(
+                        store.database_identity(),
+                        &request.thread_id
+                    ),
+                    Ok(None)
+                )
+            });
+        let staged = draft.is_none() && (running || occupied);
+        if staged {
+            self.staged_model_pending = Some((request.thread_id.clone(), lease));
+        }
         let worker_request = request.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
         let spawned = std::thread::Builder::new()
@@ -390,11 +548,19 @@ impl VegaWindow {
                         database_path.ok_or_else(|| "store unavailable".to_string())?;
                     let store = vega_store::Store::open(&database_path)
                         .map_err(|error| error.to_string())?;
-                    vega_conversation::threads::set_thread_model(
-                        &store,
-                        &worker_request.thread_id,
-                        &worker_request.model,
-                    )
+                    if staged {
+                        vega_conversation::threads::stage_thread_model(
+                            &store,
+                            &worker_request.thread_id,
+                            &worker_request.model,
+                        )
+                    } else {
+                        vega_conversation::threads::set_thread_model(
+                            &store,
+                            &worker_request.thread_id,
+                            &worker_request.model,
+                        )
+                    }
                     .map_err(|error| error.to_string())
                 })();
                 let _ = sender.send((worker_request.request_id, outcome));

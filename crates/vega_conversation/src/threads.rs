@@ -7,7 +7,7 @@ use vega_store::token_usage;
 
 use crate::types::{
     ConversationError, CurrentProject, Microcents, PermissionMode, RestoredUsage, TaskBackend,
-    Thread, ThreadMode, ThreadStatus, ThreadUpdate,
+    Thread, ThreadAdmission, ThreadMode, ThreadStatus, ThreadUpdate,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -384,6 +384,36 @@ pub fn set_thread_model(
         store::set_model(store.conn(), thread_id, model, now_ms()).map_err(store_error)?;
     if updated == 0 {
         return Err(ConversationError::NotFound(thread_id.to_string()));
+    }
+    get_thread(store, thread_id)
+}
+
+pub fn stage_thread_model(
+    store: &Store,
+    thread_id: &str,
+    model: &str,
+) -> Result<Thread, ConversationError> {
+    let updated =
+        store::stage_model(store.conn(), thread_id, model, now_ms()).map_err(store_error)?;
+    if updated == 0 {
+        return Err(ConversationError::NotFound(thread_id.to_string()));
+    }
+    let mut thread = get_thread(store, thread_id)?;
+    thread.model = model.to_owned();
+    Ok(thread)
+}
+
+pub fn promote_thread_model(
+    store: &Store,
+    thread_id: &str,
+    model: &str,
+    admission: &ThreadAdmission,
+) -> Result<Thread, ConversationError> {
+    crate::thread_access::verify(store, thread_id, admission)?;
+    let updated = store::promote_pending_model(store.conn(), thread_id, model, now_ms())
+        .map_err(store_error)?;
+    if updated == 0 {
+        return Err(ConversationError::InvalidTaskIdentity);
     }
     get_thread(store, thread_id)
 }
