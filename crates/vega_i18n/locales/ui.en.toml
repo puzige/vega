@@ -693,8 +693,6 @@
 "ui.codex.kind.think" = "think"
 "ui.codex.kind.fetch" = "fetch"
 "ui.codex.kind.other" = "other"
-"ui.ordinary_send.preparing_description" = "This message is being prepared. You can keep editing or cancel below the message."
-"ui.ordinary_send.pending" = "Pending"
 "ui.ordinary_send.unknown" = "The send result is unconfirmed. Check its status before retrying."
 "ui.ordinary_send.check_status" = "Check status"
 "ui.ordinary_send.preflight_failed" = "The model or API key is unavailable. Check settings and retry."

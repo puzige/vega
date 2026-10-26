@@ -1,6 +1,8 @@
 # #544 原生普通发送：即时待提交气泡
 
-版本：spec v4；保留 v3（2026-10-22）的 A1–A12。当前接口见[候选 v2](vega-issue-544-ordinary-interface-proposal-v2.md)及[精确未决调用点图](vega-issue-544-ordinary-unresolved-callsite-map.md)；app-global claim、密封证明、历史围栏与 #535 最终接口仍有 P1/P2 未决，状态为 READY-doc / NOT code-ready。按当前政策按风险验证，不强制 TDD/有效 RED；本轮仅文档，未编写/执行测试。
+版本：spec v5（2026-10-26 用户手测反馈修订）；保留 A1–A12 的提交、快照、取消与恢复不变量。PR #611 已合并，实际接口与开发验证见[实现契约](vega-issue-544-implementation-contract.md)和[云端证据](vega-issue-544-cloud-evidence.md)；下文早期基线和候选未决项是历史记录，不代表当前实现阶段。
+
+用户最新裁决：正常等待无需在消息下单独显示 `Pending / Cancel`，由 Composer 体现。消息正文/图片仍立即进入真实列表；后台准备期间 Composer 使用既有 Stop/Stopping 控件，保留输入下一稿且不允许重复普通发送。该控件按当前 submission/attempt 精确取消，包含鼠标、键盘与无障碍操作；终态清除等待/停止态，运行开始后沿用既有运行态及 Queue/Send-now。失败、取消后的恢复动作以及结果未确认时的核实提示保留；不增加常驻说明、成功提示或气泡下正常等待行。此展示修订取代旧候选中的局部待提交标志要求，不把即时显示当成持久化成功。
 
 ## 1. 验收矩阵（先于实现方案）
 
@@ -58,12 +60,12 @@
 | 状态 | 进入条件 | 展示、可用动作 | 退出与不变量 |
 |---|---|---|---|
 | Draft | Composer 当前 revision | 现有可编辑输入/附件 | 合法普通发送原子捕获快照；只清走归属于这次快照的 Composer 内容，马上得到新的草稿 revision |
-| LocalPending | 普通路由确认，尚无 durable receipt | 用户气泡展示本次真实内容，局部“待提交”语义及取消；Composer 可编辑 | 在后台预检/准备前建立；不得进入历史成功、计费、导航 durable owner 或持久化消息计数 |
+| LocalPending | 普通路由确认，尚无 durable receipt | 用户气泡只展示本次真实内容；Composer 使用既有 Stop/Stopping 表达等待和取消，可继续编辑下一稿 | 在后台预检/准备前建立；不得进入历史成功、计费、导航 durable owner 或持久化消息计数 |
 | Preparing | 后台处理该 attempt | 与 LocalPending 同一气泡；不加常驻“正在准备”栏、占位动画或 Composer 高度变化 | 有明确 owner 的取消 token；任何回执均需 key + attempt + thread/stream 校验 |
 | FailedUncommitted | 有明确证据事务未提交 | 保留原气泡/图片，真实错误及“重试”；新草稿独立 | 重试只用旧快照，原位换 attempt；不把当前 Composer 的文字/附件冒作重试内容 |
 | CancelledUncommitted | 取消已确认且未提交 | 保留可恢复内容和重试入口；不显示通用错误 | 迟到旧 attempt 不得再清草稿、重新启动或生成第二份气泡 |
 | Reconciling | 通道中断/取消竞态导致提交结果未知 | 内容保持；明确核实中/核实失败与可恢复入口；在结果不明时禁用重投，原因可见 | 通过 conversation 层查询冻结 user ID/receipt，不能以超时猜测未提交；可重试核实，不盲重试写入 |
-| Committed | 真实事务提交 receipt 匹配 | 同一对象转为正式用户消息；移除待提交标志，不叠加“发送成功”提示 | 保持稳定本地 key/MessageCopy/位置，补充 durable message ID/seq；重复 receipt 幂等；运行启动与否另行表达 |
+| Committed | 真实事务提交 receipt 匹配 | 同一对象转为正式用户消息；不添加气泡状态或“发送成功”提示，Composer 沿真实运行状态更新 | 保持稳定本地 key/MessageCopy/位置，补充 durable message ID/seq；重复 receipt 幂等；运行启动与否另行表达 |
 | CommittedStartFailed / Stopped | 已提交后启动失败/主动停止 | 真实历史保留；沿用运行失败/恢复或停止语义，不能标成未提交 | 若提供重试，必须复用已提交用户身份并验证其 thread/内容/附件一致，不再插用户消息；重启运行是新 attempt 而非重发文字 |
 
 正常窗口内切线程保留提交快照及其 owner；视图缓存被移除不能静默释放未提交内容，可由控制器持有并在重开同线程时恢复。不是新增崩溃恢复持久化 outbox：进程退出后未落库内容的恢复不在本卡承诺；普通关闭/切换不得假装 durable，现有未保存内容保护不得削弱。

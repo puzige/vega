@@ -693,8 +693,6 @@
 "ui.codex.kind.think" = "思考"
 "ui.codex.kind.fetch" = "获取"
 "ui.codex.kind.other" = "其他"
-"ui.ordinary_send.preparing_description" = "本次发送尚在准备；可继续编辑，或在消息下方取消"
-"ui.ordinary_send.pending" = "待提交"
 "ui.ordinary_send.unknown" = "发送结果尚未确认；核实前不能重试"
 "ui.ordinary_send.check_status" = "核实状态"
 "ui.ordinary_send.preflight_failed" = "模型或 API Key 不可用；请检查设置后重试"
