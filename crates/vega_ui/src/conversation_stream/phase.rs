@@ -260,6 +260,17 @@ impl ConversationStream {
             .map(|(_, source)| source)
     }
 
+    pub(crate) fn message_actions_enabled(&self) -> bool {
+        !self.actions.running && self.active_agent_message.is_none()
+    }
+
+    pub(crate) fn message_interaction(&self) -> render_rows::MessageInteraction<'_> {
+        render_rows::MessageInteraction {
+            focus: &self.selection_focus,
+            actions_enabled: self.message_actions_enabled(),
+        }
+    }
+
     pub(crate) fn copy_source_for_entry(&self, index: usize) -> Option<&MessageCopy> {
         if let Some(source) = self.final_copy_for_entry(index) {
             return Some(source);
@@ -546,7 +557,7 @@ impl ConversationStream {
                                 &self.entries[index],
                                 window,
                                 cx,
-                                &self.selection_focus,
+                                self.message_interaction(),
                             ))
                             .into_any_element()
                     }

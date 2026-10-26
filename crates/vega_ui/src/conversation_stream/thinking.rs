@@ -197,6 +197,7 @@ pub(crate) struct ThinkingBlock {
     ancestor_visible: bool,
     pub(crate) expanded: bool,
     pub(crate) truncated: bool,
+    message_actions_enabled: bool,
     focus: FocusHandle,
     scroll: ScrollHandle,
 }
@@ -299,8 +300,16 @@ impl ThinkingBlock {
             ancestor_visible: true,
             expanded: false,
             truncated: false,
+            message_actions_enabled: true,
             focus: cx.focus_handle().tab_stop(true),
             scroll: ScrollHandle::new(),
+        }
+    }
+
+    pub(crate) fn set_message_actions_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.message_actions_enabled != enabled {
+            self.message_actions_enabled = enabled;
+            cx.notify();
         }
     }
     pub(crate) fn set_ancestor_visible(&mut self, visible: bool) {
@@ -562,6 +571,17 @@ impl Render for ThinkingBlock {
 }
 
 impl ConversationStream {
+    pub(crate) fn sync_retained_thinking_actions(&mut self, cx: &mut Context<Self>) {
+        let enabled = self.message_actions_enabled();
+        for card in self
+            .retained_thinking
+            .iter()
+            .filter_map(|card| card.upgrade())
+        {
+            card.update(cx, |card, cx| card.set_message_actions_enabled(enabled, cx));
+        }
+    }
+
     pub(crate) fn append_thinking(
         &mut self,
         message_id: &str,
@@ -595,6 +615,10 @@ impl ConversationStream {
                 return;
             };
             let card = cx.new(ThinkingBlock::new);
+            let actions_enabled = self.message_actions_enabled();
+            card.update(cx, |card, cx| {
+                card.set_message_actions_enabled(actions_enabled, cx)
+            });
             group.update(cx, |group, cx| {
                 group.append_thinking(segment, card.clone(), cx)
             });

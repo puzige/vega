@@ -222,6 +222,7 @@ impl ConversationStream {
         self.actions.slash = None;
         self.controller_runtime_error = None;
         self.controller_error = None;
+        self.sync_retained_thinking_actions(cx);
         cx.notify();
     }
 
@@ -239,6 +240,7 @@ impl ConversationStream {
         self.actions.restore_focus = self.actions.stopping;
         self.actions.stopping = false;
         let stopped = self.actions.terminal_cancelled.unwrap_or(cancelled);
+        self.sync_retained_thinking_actions(cx);
         cx.notify();
         stopped
     }
