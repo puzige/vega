@@ -416,6 +416,30 @@ pub(super) fn status_notice(message: String, color: Rgba, colors: &ThemeColors) 
     status_notice_with_icon(message, color, colors, Icon::Warning)
 }
 
+pub(super) fn inline_status_notice(message: String, color: Rgba, icon_kind: Icon) -> AnyElement {
+    div()
+        .w_full()
+        .min_w_0()
+        .min_h(px(Layout::CONVERSATION_TOOL_HEIGHT))
+        .flex()
+        .items_center()
+        .gap(px(Layout::CONVERSATION_INLINE_GAP))
+        .text_size(px(Typography::CONVERSATION))
+        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
+        .text_color(color)
+        .child(
+            div()
+                .size(px(Layout::ICON_SIZE))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon(icon_kind, color)),
+        )
+        .child(div().min_w_0().flex_1().child(message))
+        .into_any_element()
+}
+
 pub(super) fn status_notice_with_icon(
     message: String,
     color: Rgba,
