@@ -532,7 +532,14 @@ impl VegaWindow {
         cx: &mut Context<Self>,
     ) {
         let thread_id = thread.id.clone();
+        let interrupted_tail = match &cx.global::<VegaStore>().0 {
+            Ok(store) => vega_conversation::history::interrupted_tail(store, &thread_id)
+                .ok()
+                .flatten(),
+            Err(_) => None,
+        };
         stream.update(cx, |stream, cx| {
+            stream.apply_interrupted_tail(interrupted_tail, cx);
             stream.apply_thread(thread, cx);
             for plan in plans {
                 stream.apply_plan(plan, cx);
@@ -611,6 +618,57 @@ impl VegaWindow {
                     .stream
                     .update(cx, ConversationStream::apply_controller_error);
             }
+        }
+    }
+
+    pub(crate) fn resume_composer(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: &ComposerResumeRequested,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.owns_stream_request(&stream, &request.thread_id, cx) {
+            stream.update(cx, ConversationStream::finish_composer_resume_request);
+            return;
+        }
+        let valid = stream.read(cx).owns_composer_resume_request(request, cx)
+            && !self
+                .agent_controller
+                .active
+                .contains_key(&request.thread_id)
+            && !self
+                .agent_controller
+                .queue_dispatches
+                .contains_key(&request.thread_id)
+            && !self
+                .agent_controller
+                .pending_review
+                .contains_key(&request.thread_id)
+            && !self.trusted_actions.is_busy()
+            && match &cx.global::<VegaStore>().0 {
+                Ok(store) => {
+                    vega_conversation::history::interrupted_tail(store, &request.thread_id)
+                        .is_ok_and(|tail| tail.as_ref() == Some(&request.expected))
+                }
+                Err(_) => false,
+            };
+        if valid {
+            self.start_agent_run(
+                stream.clone(),
+                &request.thread_id,
+                PendingAgentRun::InterruptedAssistant(request.expected.clone()),
+                cx,
+            );
+        } else {
+            stream.update(cx, ConversationStream::apply_agent_busy);
+        }
+        if !self
+            .agent_controller
+            .active
+            .get(&request.thread_id)
+            .is_some_and(|run| run.stream == stream)
+        {
+            stream.update(cx, ConversationStream::finish_composer_resume_request);
         }
     }
 
@@ -713,7 +771,8 @@ impl VegaWindow {
                     }
                     PendingAgentRun::Automation(_)
                     | PendingAgentRun::ApprovedPlan(_)
-                    | PendingAgentRun::CredentialContinuation(_) => {
+                    | PendingAgentRun::CredentialContinuation(_)
+                    | PendingAgentRun::InterruptedAssistant(_) => {
                         stream.update(cx, ConversationStream::apply_agent_error);
                     }
                 }
@@ -778,23 +837,48 @@ impl VegaWindow {
                 }
                 PendingAgentRun::Automation(_)
                 | PendingAgentRun::ApprovedPlan(_)
-                | PendingAgentRun::CredentialContinuation(_) => {
+                | PendingAgentRun::CredentialContinuation(_)
+                | PendingAgentRun::InterruptedAssistant(_) => {
                     stream.update(cx, ConversationStream::apply_agent_error);
                 }
             }
             return;
+        }
+        if let PendingAgentRun::InterruptedAssistant(expected) = &run {
+            let valid = stream.read(cx).owns_composer_resume_request(
+                &ComposerResumeRequested {
+                    thread_id: thread_id.to_owned(),
+                    expected: expected.clone(),
+                },
+                cx,
+            ) && !self
+                .agent_controller
+                .queue_dispatches
+                .contains_key(thread_id)
+                && match &cx.global::<VegaStore>().0 {
+                    Ok(store) => vega_conversation::history::interrupted_tail(store, thread_id)
+                        .is_ok_and(|tail| tail.as_ref() == Some(expected)),
+                    Err(_) => false,
+                };
+            if !valid {
+                stream.update(cx, ConversationStream::apply_agent_busy);
+                return;
+            }
         }
         let pending_user_content = match &run {
             PendingAgentRun::Automation(claim) => Some(automation_trigger(claim).into()),
             PendingAgentRun::UserMessage(content) => {
                 content.ordinary.is_none().then(|| content.content.clone())
             }
-            PendingAgentRun::ApprovedPlan(_) | PendingAgentRun::CredentialContinuation(_) => None,
+            PendingAgentRun::ApprovedPlan(_)
+            | PendingAgentRun::CredentialContinuation(_)
+            | PendingAgentRun::InterruptedAssistant(_) => None,
         };
         let pending_approved_instruction = match &run {
             PendingAgentRun::Automation(_)
             | PendingAgentRun::UserMessage(_)
-            | PendingAgentRun::CredentialContinuation(_) => None,
+            | PendingAgentRun::CredentialContinuation(_)
+            | PendingAgentRun::InterruptedAssistant(_) => None,
             PendingAgentRun::ApprovedPlan(instruction_id) => Some(instruction_id.clone()),
         };
         if stream.read(cx).has_pending_model_selection()
@@ -810,7 +894,8 @@ impl VegaWindow {
                 }
                 PendingAgentRun::Automation(_)
                 | PendingAgentRun::ApprovedPlan(_)
-                | PendingAgentRun::CredentialContinuation(_) => {
+                | PendingAgentRun::CredentialContinuation(_)
+                | PendingAgentRun::InterruptedAssistant(_) => {
                     stream.update(cx, ConversationStream::apply_agent_error);
                 }
             }

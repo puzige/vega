@@ -60,6 +60,26 @@ pub enum PlanTransitionError {
     CorruptState,
 }
 
+pub fn interrupted_tail(
+    conn: &Connection,
+    thread_id: &str,
+) -> rusqlite::Result<Option<(String, i64)>> {
+    conn.query_row(
+        "SELECT m.id, m.seq FROM messages m JOIN threads t ON t.id = m.thread_id \
+         WHERE m.thread_id = ?1 AND t.backend = 'native' AND t.status = 'active' \
+         AND m.role = 'assistant' AND m.kind = 'text' AND m.status = 'interrupted' \
+         AND m.seq = (SELECT MAX(seq) FROM messages WHERE thread_id = ?1) \
+         AND NOT EXISTS(SELECT 1 FROM messages WHERE thread_id = ?1 AND status = 'streaming') \
+         AND NOT EXISTS(SELECT 1 FROM pending_messages WHERE thread_id = ?1 AND state != 'delivered') \
+         AND NOT EXISTS(SELECT 1 FROM credential_continuations c WHERE c.thread_id = ?1 AND c.state != 'completed' \
+             AND (c.id = m.id OR c.continuation_message_id = m.id \
+                 OR c.user_message_id = (SELECT id FROM messages WHERE thread_id = ?1 AND role = 'user' AND seq < m.seq ORDER BY seq DESC LIMIT 1)))",
+        [thread_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+}
+
 pub fn next_seq(conn: &Connection, thread_id: &str) -> Result<i64, rusqlite::Error> {
     conn.query_row(
         "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE thread_id = ?1",

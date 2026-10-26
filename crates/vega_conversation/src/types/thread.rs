@@ -1,5 +1,11 @@
 use super::*;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterruptedAssistant {
+    pub message_id: String,
+    pub seq: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadMode {
     /// Ask mode: read-only question answering.

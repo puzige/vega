@@ -172,6 +172,7 @@
 "ui.computer_control_is_paused_resume_this_task_when" = "电脑操作已暂停。准备好后可继续本任务。"
 "ui.computer_use_setup" = "电脑操控准备"
 "ui.configured_input_limit_exceeded" = "已超过配置输入上限"
+"ui.composer_resume" = "继续"
 "ui.confirm" = "确认"
 "ui.confirm_permanent_cleanup" = "确认永久清理"
 "ui.confirm_that_this_task_may_access_this_browser" = "请确认本任务可以访问这个浏览器标签页："

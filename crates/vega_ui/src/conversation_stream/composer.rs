@@ -276,6 +276,7 @@ impl ConversationStream {
             && (!self.input.read(cx).text().is_empty() || !self.attachments.is_empty())
             && !self.attachment_import_pending
             && !self.composer_submit_pending
+            && !self.composer_resume_pending
             && !self.ordinary_pending_before_run()
             && !self.approved_not_started
             && !self.trusted_action_busy
@@ -381,6 +382,11 @@ impl ConversationStream {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.action_focus[1].is_focused(window) {
+            self.activate_composer_primary(cx);
+            cx.stop_propagation();
+            return;
+        }
         if !self.input.read(cx).focus_handle(cx).is_focused(window) {
             cx.propagate();
             return;
@@ -399,7 +405,7 @@ impl ConversationStream {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.submit_message(cx);
+        self.activate_composer_primary(cx);
     }
 
     /// Recalls older submitted drafts only from the first logical line; Up

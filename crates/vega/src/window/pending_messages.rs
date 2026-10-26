@@ -510,8 +510,17 @@ impl VegaWindow {
         let cached = stream.read(cx).pending_queue().messages.clone();
         let worker = cx.background_executor().spawn(async move {
             let store = vega_store::Store::open(database).map_err(|_| ())?;
-            vega_conversation::pending_messages::recover_cached(&store, &worker_thread, &cached)
-                .map_err(|_| ())
+            let messages = vega_conversation::pending_messages::recover_cached(
+                &store,
+                &worker_thread,
+                &cached,
+            )
+            .map_err(|_| ())?;
+            let interrupted_tail =
+                vega_conversation::history::interrupted_tail(&store, &worker_thread)
+                    .ok()
+                    .flatten();
+            Ok((messages, interrupted_tail))
         });
         cx.spawn(async move |this, cx| {
             let result = worker.await;
@@ -525,15 +534,31 @@ impl VegaWindow {
                 let released = result.is_ok();
                 let mut projection = stream.read(cx).pending_queue().clone();
                 projection.busy = false;
-                match result {
-                    Ok(messages) => projection.messages = messages,
+                let interrupted_tail = match result {
+                    Ok((messages, interrupted_tail)) => {
+                        projection.messages = messages;
+                        interrupted_tail
+                    }
                     Err(()) => {
                         projection.paused = true;
                         projection.error = Some(vega_i18n::t("app.pending.read_failed").into());
+                        None
                     }
-                }
+                };
                 this.project_pending_queue(&thread_id, &stream, projection, cx);
                 this.continue_pending_queue(&thread_id, &stream, cx);
+                if this.owns_stream_request(&stream, &thread_id, cx)
+                    && !this.agent_controller.active.contains_key(&thread_id)
+                    && !this
+                        .agent_controller
+                        .queue_operations
+                        .contains_key(&thread_id)
+                    && !stream.read(cx).pending_queue().busy
+                {
+                    stream.update(cx, |stream, cx| {
+                        stream.apply_interrupted_tail(interrupted_tail, cx)
+                    });
+                }
                 this.start_pending_composer_prediction(&thread_id, &stream, cx);
                 if !this
                     .agent_controller

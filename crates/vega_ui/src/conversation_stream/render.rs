@@ -2,7 +2,8 @@ use super::context_usage::ContextUsageDisplay;
 use super::*;
 use crate::interaction::InteractionExt;
 use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade, ScrollFadeTopGuards};
-use gpui_kit::{Anchor, AnchoredPositionMode, PathBuilder, anchored, canvas, point};
+use gpui_kit::component::Sizable as _;
+use gpui_kit::{Anchor, AnchoredPositionMode, PathBuilder, Role, anchored, canvas, point};
 // Re-exported so the permission picker's copy is testable from the suite the
 // same way `PICKER_EFFORT_LABEL`/`PICKER_LIST_HEADING` are.
 use super::composer_actions::{
@@ -203,7 +204,12 @@ impl ConversationStream {
         let file_retry_visible = self.file_selector_wanted && self.file_index_failure.is_some();
         let file_selector_active =
             self.file_selector.is_open() || self.file_selector_wanted || self.file_index_loading;
-        let can_send = self.can_submit_message(cx);
+        let resume = self.shows_composer_resume(cx);
+        let can_send = if resume {
+            self.can_resume_composer(cx)
+        } else {
+            self.can_submit_message(cx)
+        };
         div()
             .px(px(Layout::CONVERSATION_PADDING))
             .pt(px(Layout::COMPOSER_PADDING_TOP))
@@ -332,29 +338,110 @@ impl ConversationStream {
                             .when(self.thread.backend == TaskBackend::Native, |row| {
                                 row.child(self.render_model_controls(window, cx))
                             })
-                            .when(self.shows_running_send(cx), |row| {
-                                row.child(self.render_running_send(can_send, cx))
-                            })
+                            .when(
+                                !self.composer_resume_pending && self.shows_running_send(cx),
+                                |row| row.child(self.render_running_send(can_send, cx)),
+                            )
                             .when(
                                 (self.actions.running
                                     || self.composer_submit_pending
                                     || self.ordinary_pending_before_run()
                                     || self.has_cancellable_queue_wait())
-                                    && !self.shows_running_send(cx),
-                                |row| row.child(self.render_composer_stop(cx)),
+                                    && (self.composer_resume_pending
+                                        || !self.shows_running_send(cx)),
+                                |row| {
+                                    row.when(self.composer_resume_pending, |row| {
+                                        row.child(
+                                            gpui_kit::component::spinner::Spinner::new()
+                                                .ease(gpui_kit::linear)
+                                                .with_size(px(Layout::ICON_SIZE))
+                                                .icon(gpui_kit::component::IconName::LoaderCircle)
+                                                .color(colors.text_secondary.into()),
+                                        )
+                                    })
+                                    .child(self.render_composer_stop(cx))
+                                },
                             )
                             .when(
-                                !self.actions.running
+                                self.composer_resume_pending
+                                    && !self.actions.running
                                     && !self.composer_submit_pending
                                     && !self.ordinary_pending_before_run()
                                     && !self.has_cancellable_queue_wait(),
                                 |row| {
                                     row.child(
                                         div()
-                                            .id("composer-send")
-                                            .aria_label(vega_i18n::t("ui.send"))
+                                            .id("composer-resume-pending")
+                                            .role(Role::Button)
+                                            .aria_label(vega_i18n::t("ui.composer_resume"))
                                             .track_focus(&self.action_focus[1])
                                             .tab_stop(true)
+                                            .focus_visible(move |style| {
+                                                style
+                                                    .border_2()
+                                                    .border_color(colors.brand_primary_strong)
+                                            })
+                                            .size(px(Layout::COMPOSER_SEND_SIZE))
+                                            .flex_shrink_0()
+                                            .rounded_full()
+                                            .bg(colors.bg_hover)
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(
+                                                gpui_kit::component::spinner::Spinner::new()
+                                                    .ease(gpui_kit::linear)
+                                                    .with_size(px(Layout::ICON_SIZE))
+                                                    .icon(
+                                                        gpui_kit::component::IconName::LoaderCircle,
+                                                    )
+                                                    .color(colors.text_secondary.into()),
+                                            ),
+                                    )
+                                },
+                            )
+                            .when(
+                                !self.actions.running
+                                    && !self.composer_submit_pending
+                                    && !self.composer_resume_pending
+                                    && !self.ordinary_pending_before_run()
+                                    && !self.has_cancellable_queue_wait(),
+                                |row| {
+                                    row.child(
+                                        div()
+                                            .id("composer-send")
+                                            .role(Role::Button)
+                                            .aria_label(vega_i18n::t(if resume {
+                                                "ui.composer_resume"
+                                            } else {
+                                                "ui.send"
+                                            }))
+                                            .when(resume, |button| {
+                                                button.tooltip(|_, cx| {
+                                                    crate::icons::tooltip(
+                                                        vega_i18n::t("ui.composer_resume"),
+                                                        cx,
+                                                    )
+                                                })
+                                            })
+                                            .track_focus(&self.action_focus[1])
+                                            .tab_stop(true)
+                                            .focus_visible(move |style| {
+                                                style
+                                                    .border_2()
+                                                    .border_color(colors.brand_primary_strong)
+                                            })
+                                            .on_key_down(cx.listener(
+                                                |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                                                    if matches!(
+                                                        event.keystroke.key.as_str(),
+                                                        "enter" | "space" | " "
+                                                    ) {
+                                                        this.activate_composer_primary(cx);
+                                                        cx.stop_propagation();
+                                                    }
+                                                },
+                                            ))
                                             .flex_shrink_0()
                                             .size(px(Layout::COMPOSER_SEND_SIZE))
                                             .rounded_full()
@@ -387,7 +474,11 @@ impl ConversationStream {
                                                 can_send,
                                             )
                                             .child(crate::icons::icon(
-                                                crate::icons::Icon::ArrowUp,
+                                                if resume {
+                                                    crate::icons::Icon::Play
+                                                } else {
+                                                    crate::icons::Icon::ArrowUp
+                                                },
                                                 if can_send {
                                                     colors.brand_on_accent
                                                 } else {
