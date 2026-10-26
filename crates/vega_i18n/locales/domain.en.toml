@@ -145,6 +145,7 @@
 "domain.failure.provider_fact_retries" = "retried {retries} times"
 "domain.failure.provider_http" = "Provider request failed (HTTP {status}). Check provider status, model, and quota, then retry."
 "domain.failure.provider_output_limit" = "The model reached its output limit. Continue the task or adjust the output allowance."
+"domain.failure.provider_overloaded" = "The provider is temporarily overloaded. Retry in a moment; if it keeps happening, switch providers."
 "domain.failure.provider_protocol" = "The provider returned invalid data. Retry or switch models."
 "domain.failure.provider_quota" = "Provider quota exhausted. Add credit or switch providers in Settings → Providers, then retry."
 "domain.failure.provider_rate_limit" = "The provider rate-limited this request. Retry later or switch providers."
