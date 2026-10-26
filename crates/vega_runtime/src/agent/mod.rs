@@ -946,6 +946,9 @@ pub enum RuntimeDiagnosticFailure {
     ProviderStreamInterrupted,
     /// An established response stream or request exceeded its deadline.
     ProviderTimeout,
+    /// The provider reported inside an established response that it cannot
+    /// serve the request right now.
+    ProviderOverloaded,
     ProviderProtocol,
     ProviderRejected,
     UnknownSafeFailure,
