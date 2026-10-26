@@ -272,6 +272,30 @@ impl ConversationStream {
     }
 
     pub(crate) fn copy_source_for_entry(&self, index: usize) -> Option<&MessageCopy> {
+        let message_id = self.entry_identities.get(index)?.message_id.as_deref();
+        let artifact_index = message_id.and_then(|message_id| {
+            self.entries.iter().enumerate().find_map(|(index, entry)| {
+                (matches!(entry, StreamEntry::ArtifactGroup { .. })
+                    && self.entry_identities.get(index)?.message_id.as_deref() == Some(message_id))
+                .then_some(index)
+            })
+        });
+        let Some(artifact_index) = artifact_index else {
+            return self.reply_copy_source_for_entry(index);
+        };
+        let source = self.entries[..artifact_index]
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, _)| {
+                (self.entry_identities.get(index)?.message_id.as_deref() == message_id)
+                    .then(|| self.reply_copy_source_for_entry(index))
+                    .flatten()
+            });
+        (index == artifact_index).then_some(source).flatten()
+    }
+
+    fn reply_copy_source_for_entry(&self, index: usize) -> Option<&MessageCopy> {
         if let Some(source) = self.final_copy_for_entry(index) {
             return Some(source);
         }
@@ -309,6 +333,16 @@ impl ConversationStream {
                 |entry| matches!(entry, StreamEntry::Assistant { copy, .. } if copy.id == owner),
             );
             self.invalidate_item(index);
+            let artifact_index = index.and_then(|index| {
+                let message_id = self.entry_identities.get(index)?.message_id.as_deref()?;
+                self.entries.iter().enumerate().find_map(|(index, entry)| {
+                    (matches!(entry, StreamEntry::ArtifactGroup { .. })
+                        && self.entry_identities.get(index)?.message_id.as_deref()
+                            == Some(message_id))
+                    .then_some(index)
+                })
+            });
+            self.invalidate_item(artifact_index);
         }
     }
 

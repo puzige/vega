@@ -189,12 +189,23 @@ impl ConversationStream {
         let index = self.entries.iter().position(|entry| {
             matches!(entry, StreamEntry::Summary { card } if card.read(cx).summary().message_id == message_id)
         }).map_or(index, |summary_index| index.min(summary_index));
+        let previous_copy_indices = (0..index)
+            .filter(|&index| {
+                self.entry_identities
+                    .get(index)
+                    .is_some_and(|identity| identity.message_id.as_deref() == Some(message_id))
+                    && self.copy_source_for_entry(index).is_some()
+            })
+            .collect::<Vec<_>>();
         self.entries
             .insert(index, StreamEntry::ArtifactGroup { group });
         self.list_insert(index);
         self.grow_entry_indices(index, 1);
         let identity = self.durable_entry_identity(message_id, "artifacts", None);
         self.set_entry_identity(index, identity);
+        for previous_copy_index in previous_copy_indices {
+            self.invalidate_item(Some(previous_copy_index));
+        }
         cx.notify();
     }
 
