@@ -33,7 +33,7 @@ fn navigation_receipt_while_away_preserves_route_and_reloads_authority(
 
 fn navigation_receipt_order(cx: &mut gpui_kit::TestAppContext, receipt_while_away: bool) {
     use crate::window::VegaWindow;
-    use gpui_kit::{AppContext, Render};
+    use gpui_kit::AppContext;
     use vega_ui::conversation_stream::ConversationStream;
     use vega_ui::settings::SettingsOpen;
     use vega_ui::sidebar::{
@@ -72,10 +72,9 @@ fn navigation_receipt_order(cx: &mut gpui_kit::TestAppContext, receipt_while_awa
         owner.draft = Some(source.clone());
         owner
     });
-    let released_streams = window
-        .update(cx, |owner, window, cx| {
+    let original = window
+        .update(cx, |owner, _, cx| {
             let original = cx.new(|cx| ConversationStream::new(source.clone(), cx));
-            let mut released_streams = vec![original.downgrade()];
             owner.stream_view = Some((source.id.clone(), original.clone()));
             owner.agent_controller.preparation_stream = Some(original.clone());
             owner.agent_controller.ordinary_preparing.insert(
@@ -85,19 +84,32 @@ fn navigation_receipt_order(cx: &mut gpui_kit::TestAppContext, receipt_while_awa
                     cancel: CancellationToken::new(),
                 },
             );
-            let other_source = fixture.draft();
-            let other_outcome = fixture
-                .request(&other_source, Some(other_source.clone()))
-                .prepare();
-            let other = other_outcome
-                .materialized
-                .as_ref()
-                .expect("persisted destination")
-                .thread
-                .clone();
-            drop(other_outcome);
-            cx.set_global(OpenedThread(Some(other.clone())));
-            drop(owner.render(window, cx));
+            original
+        })
+        .expect("install preparing stream");
+    let mut released_streams = vec![original.downgrade()];
+    let other_source = fixture.draft();
+    let other_outcome = fixture
+        .request(&other_source, Some(other_source.clone()))
+        .prepare();
+    let other = other_outcome
+        .materialized
+        .as_ref()
+        .expect("persisted destination")
+        .thread
+        .clone();
+    drop(other_outcome);
+    let navigate = |thread: &Thread, cx: &mut gpui_kit::TestAppContext| {
+        cx.update_window(window.into(), |_, window, cx| {
+            cx.set_global(OpenedThread(Some(thread.clone())));
+            window.refresh();
+            window.draw(cx).clear(cx);
+        })
+        .expect("draw navigation through real window");
+    };
+    navigate(&other, cx);
+    window
+        .read_with(cx, |owner, _| {
             assert_ne!(owner.stream_view.as_ref().expect("other view").1, original);
             released_streams.push(
                 owner
@@ -107,15 +119,22 @@ fn navigation_receipt_order(cx: &mut gpui_kit::TestAppContext, receipt_while_awa
                     .1
                     .downgrade(),
             );
-            if !receipt_while_away {
-                cx.set_global(OpenedThread(Some(source.clone())));
-                drop(owner.render(window, cx));
+        })
+        .expect("read departed window");
+    if !receipt_while_away {
+        navigate(&source, cx);
+        window
+            .read_with(cx, |owner, cx| {
                 assert_eq!(
                     owner.stream_view.as_ref().expect("returned view").1,
                     original
                 );
                 assert!(owner.owns_stream_request(&original, &source.id, cx));
-            }
+            })
+            .expect("read returned window");
+    }
+    window
+        .update(cx, |owner, _, cx| {
             assert!(
                 take_preparation_owner(
                     &mut owner.agent_controller.ordinary_preparing,
@@ -130,19 +149,25 @@ fn navigation_receipt_order(cx: &mut gpui_kit::TestAppContext, receipt_while_awa
             assert_eq!(original.read(cx).thread_snapshot(), durable);
             if receipt_while_away {
                 assert_eq!(cx.global::<OpenedThread>().0.as_ref(), Some(&other));
-                let reopened =
-                    get_thread(&fixture.store(), &source.id).expect("resolve durable route");
-                cx.set_global(OpenedThread(Some(reopened)));
-                drop(owner.render(window, cx));
+            }
+        })
+        .expect("apply committed receipt");
+    if receipt_while_away {
+        let reopened = get_thread(&fixture.store(), &source.id).expect("resolve durable route");
+        navigate(&reopened, cx);
+        window
+            .read_with(cx, |owner, cx| {
                 let visible = &owner.stream_view.as_ref().expect("durable view").1;
                 assert_eq!(visible.read(cx).thread_snapshot(), durable);
                 released_streams.push(visible.downgrade());
-            }
-            assert_eq!(cx.global::<OpenedThread>().0.as_ref(), Some(&durable));
-            assert!(durable.full_access_grant.is_some());
-            released_streams
-        })
-        .expect("navigate real window");
+            })
+            .expect("read durable window");
+    }
+    cx.read(|cx| {
+        assert_eq!(cx.global::<OpenedThread>().0.as_ref(), Some(&durable));
+    });
+    assert!(durable.full_access_grant.is_some());
+    drop(original);
     drop(outcome);
     let fresh = fixture.request(&durable, None).prepare();
     assert!(fresh.launch.is_ok());
