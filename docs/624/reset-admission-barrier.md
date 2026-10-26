@@ -1,0 +1,29 @@
+# Reset — pre-journal admission barrier
+
+This is a further D4 implementation increment. A database-admission pause currently excludes new thread owners but does not by itself exclude default authorization edits, draft authorization derivation or automation claims. The barrier must cover the drain interval before durable `pending`, without holding authorization coordination while waiting for active work to finish. It is not a reset-completion or native-cleanup receipt.
+
+## Contract
+
+- Establish the exact-database pause through a conversation service while holding the same short authorization coordination lock used by permission edits, draft creation, automation admission and run preparation. Return the live pause lease to the future coordinator and release coordination immediately; existing owners may finish and release normally.
+- Expose a fail-closed store pause query using the existing admission registry, not a second flag or registry. Service admission/authorization decisions inspect it under coordination. Different databases remain independent. The pause is process-local and dropping it before durable pending cancels only this barrier; it neither rotates the epoch nor restores revoked authority. Durable pending remains an independent blocker after lease release.
+- Default permission capture/save reject a pause before producing or publishing new authority. Draft creation checks the supplied store's database identity and rejects pause before configuration work/derivation. Ordinary permission preparation and run preparation reject pause before generic recovery or credential reads, even when they hold a preexisting admission. Thread permission changes retain the same check in addition to their admission acquisition.
+- Automation authorization, create/edit/control commands, new claims, claim activation and ordinary startup normalization reject pause. Inspection and actual completion/release/pause-only cleanup APIs remain usable, so Stop/drain can converge. Claim status must not be mistaken for a new admission; immutable active-run authority is not rewritten.
+- Current-fence capture also rejects pause. Delegated admission/resume directly check pause under coordination before their transactions, and interrupted-resume eligibility uses the gated capture path. It does not revoke an already running process or certify cleanup. Generic preparation checks the barrier before any normalization even if later fence checks would also reject.
+- Startup rechecks the in-process pause before configuration work and at its final workspace-return decision under coordination. Ordinary startup recovery also checks pause under coordination. This is the service's readiness linearization point, not a guarantee against a new reset beginning after return; the future app coordinator must retain its UI/scheduler gate through that interval. No app-wide UI reset action is exposed in this increment.
+
+## Development checks
+
+Use real service decisions, isolated file-backed databases and temporary configuration. No real configuration, credential stores, subprocesses, network or local Vega execution.
+
+1. A prepared default change cannot save during a live pause; prepare/read and draft materialization are blocked without changing configuration bytes, grants, epoch or journal. Other-database positive controls remain usable, and releasing a pre-pending pause allows the original unchanged-source action again.
+2. Automation command/authorization/claim/activation cannot create or replace authority during pause. Existing active claim evidence remains unchanged; release/completion and existing owner drain remain possible. After pause release a new valid admission can succeed.
+3. Run preparation with an admission acquired before pause rejects before generic history recovery or credential-reader invocation. Existing streaming/tool facts are preserved. Keep the durable-pending regression and normal preparation/resume positive controls.
+4. All existing required CI, real GPUI navigation and startup-gate regressions remain enabled on the draft branch. Preserve actual full-SHA cloud evidence, then remove Rust development tests and exclusive support before merge; final CI must report no Rust tests (0 discovered / 0 executed).
+
+## Implementation evidence
+
+The service checks and shared-registry query are implemented with four new development cases: three reset-barrier service cases and one preparation case retaining a pre-pause admission. Fixtures are file-backed under temporary roots; the credential reader only counts calls and returns an empty synthetic list. Existing pending-reset, startup and navigation assertions remain unchanged. These are source counts, not execution results; this increment still requires exact-head Actions and non-writer delta review. Local checks are formatting, diff whitespace, call-site search and added-production-line audits only.
+
+## Remaining D4
+
+The reset coordinator still must retain this pause across Stop, trustworthy typed cleanup/unknown-effect aggregation, acknowledged in-memory invalidation and the recoverable DB/config protocol. This increment must not treat drained admission, terminal history or cancellation as external-process cleanup. Full Bash policy and remaining UI work are unchanged obligations.

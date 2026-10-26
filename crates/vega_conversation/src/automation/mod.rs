@@ -58,6 +58,7 @@ pub fn authorize_full_access(
     now: i64,
 ) -> Result<AutomationTask, String> {
     let _coordination = crate::permission_contracts::coordinate().map_err(storage)?;
+    crate::permission_contracts::require_admission_open(store).map_err(storage)?;
     if !confirmed || !expected.fence.is_valid() || expected.fence.permission_mode != "full_access" {
         return Err(vega_i18n::t("domain.automation.error.changed").into());
     }
@@ -111,6 +112,7 @@ pub fn command(
     now: i64,
 ) -> Result<Vec<AutomationTask>, String> {
     let _coordination = crate::permission_contracts::coordinate().map_err(storage)?;
+    crate::permission_contracts::require_admission_open(store).map_err(storage)?;
     let tx = store.immediate_transaction().map_err(storage)?;
     let tasks = command_in_transaction(&tx, thread, command, now)?;
     tx.commit().map_err(storage)?;
@@ -124,7 +126,7 @@ pub fn command_for_draft(
     now: i64,
 ) -> Result<(Vec<AutomationTask>, Thread), String> {
     let creation =
-        crate::permission_contracts::DraftCreationGuard::begin(draft).map_err(storage)?;
+        crate::permission_contracts::DraftCreationGuard::begin(store, draft).map_err(storage)?;
     let tx = store.immediate_transaction().map_err(storage)?;
     let thread = creation.materialize(&tx).map_err(storage)?;
     let tasks = command_in_transaction(&tx, &thread.id, command, now)?;
@@ -326,6 +328,7 @@ pub fn pause_matching(
 
 pub fn recover_startup(store: &Store) -> Result<(), String> {
     let _coordination = crate::permission_contracts::coordinate().map_err(storage)?;
+    crate::permission_contracts::require_admission_open(store).map_err(storage)?;
     if vega_store::permission_reset::load(store.conn())
         .map_err(storage)?
         .is_some_and(|record| !record.completed)
@@ -395,6 +398,7 @@ pub fn claim(
     now: i64,
 ) -> Result<Option<AutomationRunClaim>, String> {
     let _coordination = crate::permission_contracts::coordinate().map_err(storage)?;
+    crate::permission_contracts::require_admission_open(store).map_err(storage)?;
     let tx = store.immediate_transaction().map_err(storage)?;
     let owner = vega_store::threads::find(&tx, thread)
         .map_err(storage)?
@@ -476,6 +480,7 @@ pub fn activate_claim(
     claim: &AutomationRunClaim,
 ) -> Result<Option<AutomationRunClaim>, String> {
     let _coordination = crate::permission_contracts::coordinate().map_err(storage)?;
+    crate::permission_contracts::require_admission_open(store).map_err(storage)?;
     let tx = store.immediate_transaction().map_err(storage)?;
     if !current_claim(store, claim)? {
         return Ok(None);

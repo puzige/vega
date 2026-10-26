@@ -656,6 +656,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     let admission =
         super::ordinary::verified_admission(&store, &thread_id, config.admission.as_ref())?;
     let permission_coordination = crate::permission_contracts::coordinate()?;
+    crate::permission_contracts::require_admission_open(&store)?;
     if vega_store::permission_reset::load(store.conn())
         .map_err(runtime_store_error)?
         .is_some_and(|record| !record.completed)

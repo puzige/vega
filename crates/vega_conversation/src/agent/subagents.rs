@@ -1349,6 +1349,8 @@ async fn create_child(
         let store = Store::open(database).map_err(|_| failure("storage unavailable"))?;
         let _permission_coordination = crate::permission_contracts::coordinate()
             .map_err(|_| failure("permission coordination unavailable"))?;
+        crate::permission_contracts::require_admission_open(&store)
+            .map_err(|_| failure("permission admission unavailable"))?;
         if !settings.authority.matches_fence() {
             return Err(failure("delegated permission source changed"));
         }

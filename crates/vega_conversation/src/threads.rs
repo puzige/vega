@@ -252,7 +252,7 @@ pub fn draft_thread_from_defaults(
 }
 
 pub fn materialize_draft(store: &Store, thread: &Thread) -> Result<Thread, ConversationError> {
-    let creation = crate::permission_contracts::DraftCreationGuard::begin(thread)?;
+    let creation = crate::permission_contracts::DraftCreationGuard::begin(store, thread)?;
     let transaction = store.immediate_transaction().map_err(store_error)?;
     let thread = creation.materialize(&transaction)?;
     transaction.commit().map_err(store_error)?;

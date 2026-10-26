@@ -48,6 +48,8 @@ pub fn prepare_workspace(
         (config, selected_project)
     };
     crate::automation::recover_startup(&store).map_err(|_| StartupError::AutomationRecovery)?;
+    let _coordination =
+        crate::permission_contracts::coordinate().map_err(|_| StartupError::StorageUnavailable)?;
     require_ready(&store)?;
     Ok(StartupWorkspace {
         store,
@@ -58,6 +60,11 @@ pub fn prepare_workspace(
 }
 
 fn require_ready(store: &Store) -> Result<(), StartupError> {
+    if vega_store::thread_admission::is_database_paused(store.database_identity())
+        .map_err(|_| StartupError::StorageUnavailable)?
+    {
+        return Err(StartupError::PermissionReset(PermissionResetError::Busy));
+    }
     if vega_store::permission_reset::load(store.conn())
         .map_err(|_| StartupError::StorageUnavailable)?
         .is_some_and(|record| !record.completed)

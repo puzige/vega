@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use vega_store::{Store, config, messages, permission_contracts as contracts};
 
@@ -38,6 +40,14 @@ impl Fixture {
         &self,
         tail: Option<InterruptedAssistant>,
     ) -> Result<PreparedRun, ConversationError> {
+        self.prepare_with_config(tail, PersistenceActorConfig::default())
+    }
+
+    fn prepare_with_config(
+        &self,
+        tail: Option<InterruptedAssistant>,
+        config: PersistenceActorConfig,
+    ) -> Result<PreparedRun, ConversationError> {
         let content = if tail.is_some() {
             ""
         } else {
@@ -52,7 +62,7 @@ impl Fixture {
             ulid::Ulid::generate().to_string(),
             PersistenceActorConfig {
                 interrupted_assistant: tail,
-                ..Default::default()
+                ..config
             },
             false,
             None,
@@ -299,6 +309,71 @@ fn completed_reset_rejects_old_tails_but_allows_fresh_post_reset_work() {
         .expect("resume fresh post-reset work");
     assert_eq!(resumed.user_message_id, user);
     assert_eq!(resumed.permission_fence, fence);
+}
+
+#[test]
+fn reset_pause_blocks_preexisting_admission_before_history_recovery_or_credential_reads() {
+    let fixture = Fixture::new();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let reader = reads.clone();
+    let config =
+        PersistenceActorConfig::default().with_owner_credential_reader(Arc::new(move || {
+            reader.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        }));
+    let run = fixture
+        .prepare_with_config(None, config.clone())
+        .expect("normal preparation control");
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+    let assistant = run.assistant_message_id.clone();
+    drop(run);
+    fixture.store.conn().execute(
+        "INSERT INTO tool_calls(id,thread_id,message_id,seq,tool,input_json,status,created_at) VALUES('unsettled',?1,?2,1,'bash','{}','running',1)",
+        (&fixture.thread, &assistant),
+    ).expect("unsettled tool evidence");
+    let owner = vega_store::thread_admission::try_acquire(
+        fixture.store.database_identity(),
+        &fixture.thread,
+    )
+    .expect("admission registry")
+    .expect("preexisting owner");
+    let pause =
+        crate::permission_reset::pause_admission(&fixture.store).expect("pause before journal");
+    let before = fixture.rows();
+    assert!(matches!(
+        fixture.prepare_with_config(None, config.clone().with_thread_admission(owner.clone())),
+        Err(ConversationError::InvalidTaskIdentity)
+    ));
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.rows(), before);
+    let status: String = fixture
+        .store
+        .conn()
+        .query_row(
+            "SELECT status FROM tool_calls WHERE id='unsettled'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("retained tool status");
+    assert_eq!(status, "running");
+    assert_eq!(
+        messages::find(fixture.store.conn(), &assistant)
+            .expect("assistant row")
+            .expect("retained assistant")
+            .status,
+        "streaming"
+    );
+    assert!(
+        vega_store::permission_reset::load(fixture.store.conn())
+            .expect("no journal yet")
+            .is_none()
+    );
+    assert!(!pause.owners_released().expect("old owner still held"));
+    drop(owner);
+    assert!(pause.owners_released().expect("owner may drain"));
+    drop(pause);
+    assert!(fixture.prepare_with_config(None, config).is_ok());
+    assert_eq!(reads.load(Ordering::SeqCst), 2);
 }
 
 #[test]

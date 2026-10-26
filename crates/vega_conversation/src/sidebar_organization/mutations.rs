@@ -9,9 +9,10 @@ pub fn apply(
     action: SidebarOrganizationAction,
 ) -> Result<SidebarOrganizationOutcome, SidebarOrganizationError> {
     let creation = match &action {
-        SidebarOrganizationAction::CreateThreadInGroup { draft, .. } => {
-            Some(crate::permission_contracts::DraftCreationGuard::begin(draft).map_err(storage)?)
-        }
+        SidebarOrganizationAction::CreateThreadInGroup { draft, .. } => Some(
+            crate::permission_contracts::DraftCreationGuard::begin(store, draft)
+                .map_err(storage)?,
+        ),
         _ => None,
     };
     let tx = store.immediate_transaction().map_err(storage)?;

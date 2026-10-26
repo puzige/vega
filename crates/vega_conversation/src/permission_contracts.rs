@@ -16,6 +16,15 @@ pub(crate) fn coordinate() -> Result<MutexGuard<'static, ()>, ConversationError>
         .map_err(|_| ConversationError::InvalidTaskIdentity)
 }
 
+pub(crate) fn require_admission_open(store: &Store) -> Result<(), ConversationError> {
+    if vega_store::thread_admission::is_database_paused(store.database_identity())
+        .map_err(storage_error)?
+    {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
+    Ok(())
+}
+
 pub fn default_permission_snapshot(
     config_path: Option<&std::path::Path>,
     defaults: &vega_store::config::Defaults,
@@ -46,14 +55,16 @@ pub(crate) struct DraftCreationGuard {
 }
 
 impl DraftCreationGuard {
-    pub(crate) fn begin(draft: &Thread) -> Result<Self, ConversationError> {
-        Self::under_coordination(draft, coordinate()?)
+    pub(crate) fn begin(store: &Store, draft: &Thread) -> Result<Self, ConversationError> {
+        Self::under_coordination(store, draft, coordinate()?)
     }
 
     fn under_coordination(
+        store: &Store,
         draft: &Thread,
         coordination: MutexGuard<'static, ()>,
     ) -> Result<Self, ConversationError> {
+        require_admission_open(store)?;
         if draft.backend != TaskBackend::Native
             || draft.status != ThreadStatus::Active
             || draft.parent_thread_id.is_some()
@@ -148,6 +159,7 @@ pub fn change_thread_permission(
     issued_at: i64,
 ) -> Result<Thread, ConversationError> {
     let _coordination = coordinate()?;
+    require_admission_open(store)?;
     let _admission = crate::thread_access::acquire(store, thread_id)?;
     let transaction = store.immediate_transaction().map_err(storage_error)?;
     let state =
@@ -237,9 +249,14 @@ impl DefaultPermissionService {
         let identity = configuration_identity(&self.config_path)
             .map_err(|_| DefaultPermissionError::Unavailable)?;
         let path = std::path::Path::new(&identity);
-        let edit = vega_store::config::begin_edit(path)
-            .map_err(|_| DefaultPermissionError::Unavailable)?;
         let store = Store::open_read_only(&self.database_path)
+            .map_err(|_| DefaultPermissionError::Unavailable)?;
+        if vega_store::thread_admission::is_database_paused(store.database_identity())
+            .map_err(|_| DefaultPermissionError::Unavailable)?
+        {
+            return Err(DefaultPermissionError::ResetPending);
+        }
+        let edit = vega_store::config::begin_edit(path)
             .map_err(|_| DefaultPermissionError::Unavailable)?;
         let transaction = store
             .conn()
@@ -282,9 +299,14 @@ impl DefaultPermissionService {
         let identity = configuration_identity(&self.config_path)
             .map_err(|_| DefaultPermissionError::Unavailable)?;
         let path = std::path::Path::new(&identity);
-        let mut edit = vega_store::config::begin_edit(path)
-            .map_err(|_| DefaultPermissionError::Unavailable)?;
         let store = Store::open_read_only(&self.database_path)
+            .map_err(|_| DefaultPermissionError::Unavailable)?;
+        if vega_store::thread_admission::is_database_paused(store.database_identity())
+            .map_err(|_| DefaultPermissionError::Unavailable)?
+        {
+            return Err(DefaultPermissionError::ResetPending);
+        }
+        let mut edit = vega_store::config::begin_edit(path)
             .map_err(|_| DefaultPermissionError::Unavailable)?;
         let transaction = store
             .conn()
@@ -369,6 +391,7 @@ pub fn prepare_submission_permission(
     draft: Option<&Thread>,
 ) -> Result<Thread, ConversationError> {
     let coordination = coordinate()?;
+    require_admission_open(store)?;
     if worker.attempt_id().submission() != submission.id()
         || !worker
             .admission()
@@ -383,7 +406,11 @@ pub fn prepare_submission_permission(
         .map_err(|_| ConversationError::InvalidTaskIdentity)?;
     let (creation, _coordination) = match (draft, &accepted) {
         (Some(draft), None) => (
-            Some(DraftCreationGuard::under_coordination(draft, coordination)?),
+            Some(DraftCreationGuard::under_coordination(
+                store,
+                draft,
+                coordination,
+            )?),
             None,
         ),
         _ => (None, Some(coordination)),
@@ -451,6 +478,7 @@ pub(crate) fn capture_fence(
     store: &Store,
     thread: &vega_store::threads::ThreadRow,
 ) -> Result<crate::types::PermissionFence, ConversationError> {
+    require_admission_open(store)?;
     let state =
         vega_store::permission_contracts::load_state(store.conn()).map_err(storage_error)?;
     if state.reset_pending {
@@ -533,6 +561,7 @@ pub(crate) fn capture_delegated_fence(
     child_message: &str,
     accepted: &crate::types::PermissionFence,
 ) -> Result<crate::types::PermissionFence, ConversationError> {
+    require_admission_open(store)?;
     let state =
         vega_store::permission_contracts::load_state(store.conn()).map_err(storage_error)?;
     let encoded = vega_store::permission_contracts::load_run_fence(

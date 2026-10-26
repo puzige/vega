@@ -5,7 +5,18 @@ use vega_store::config::{self, AppConfig};
 use vega_store::permission_reset::{self as persistence, ResetConfigSource, ResetRecord};
 use vega_store::thread_admission::try_pause_database;
 
-use crate::types::{PermissionResetError, PermissionResetReceipt};
+use crate::types::{DatabaseAdmissionPause, PermissionResetError, PermissionResetReceipt};
+
+#[cfg(test)]
+mod tests;
+
+pub fn pause_admission(store: &Store) -> Result<DatabaseAdmissionPause, PermissionResetError> {
+    let _coordination =
+        crate::permission_contracts::coordinate().map_err(|_| PermissionResetError::Unavailable)?;
+    try_pause_database(store.database_identity())
+        .map_err(unavailable)?
+        .ok_or(PermissionResetError::Busy)
+}
 
 pub fn recover_pending(
     store: &Store,

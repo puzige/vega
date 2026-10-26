@@ -167,6 +167,14 @@ impl Drop for DatabaseAdmissionPause {
     }
 }
 
+pub fn is_database_paused(database: DatabaseIdentity) -> Result<bool, AdmissionError> {
+    let registry = ADMISSIONS
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|_| AdmissionError::Unavailable)?;
+    Ok(registry.pauses.contains_key(&database))
+}
+
 pub fn try_pause_database(
     database: DatabaseIdentity,
 ) -> Result<Option<DatabaseAdmissionPause>, AdmissionError> {

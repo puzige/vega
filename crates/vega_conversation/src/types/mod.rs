@@ -17,7 +17,9 @@ pub use vega_runtime::computer_use::{
     SUPERSEDED_CONTROL_OUTPUT, Target, preparation_from_check_permissions, unknown_preparation,
 };
 pub use vega_store::messages::RunContinuation;
-pub use vega_store::thread_admission::{AdmissionError, DatabaseIdentity, ThreadAdmission};
+pub use vega_store::thread_admission::{
+    AdmissionError, DatabaseAdmissionPause, DatabaseIdentity, ThreadAdmission,
+};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
