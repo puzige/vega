@@ -68,6 +68,14 @@ pub enum DiagnosticFailureCode {
     SummaryNoCompactablePrefix,
     SummaryAlreadyAttempted,
     ProviderHttp,
+    /// No HTTP response was received while establishing the request.
+    ProviderTransport,
+    /// An established response stream ended before its terminal event.
+    ProviderStreamInterrupted,
+    /// An established response stream or request exceeded its deadline.
+    ProviderTimeout,
+    /// Legacy merged code written before the transport split; still read back
+    /// and still produced by nothing new.
     ProviderTransportOrStream,
     ProviderProtocol,
     ProviderRejected,
@@ -95,6 +103,9 @@ impl DiagnosticFailureCode {
             Self::SummaryNoCompactablePrefix => "summary_no_compactable_prefix",
             Self::SummaryAlreadyAttempted => "summary_already_attempted",
             Self::ProviderHttp => "provider_http",
+            Self::ProviderTransport => "provider_transport",
+            Self::ProviderStreamInterrupted => "provider_stream_interrupted",
+            Self::ProviderTimeout => "provider_timeout",
             Self::ProviderTransportOrStream => "provider_transport_or_stream",
             Self::ProviderProtocol => "provider_protocol",
             Self::ProviderRejected => "provider_rejected",
@@ -483,6 +494,8 @@ fn validate(event: &NewDiagnosticEvent) -> Result<(), DiagnosticError> {
             "unknown"
                 | "http"
                 | "transport"
+                | "stream_interrupted"
+                | "timeout"
                 | "protocol"
                 | "rejected"
                 | "output_limit"
@@ -838,6 +851,9 @@ fn parse_failure(value: &str) -> Result<DiagnosticFailureCode, DiagnosticError> 
         "summary_no_compactable_prefix" => Ok(DiagnosticFailureCode::SummaryNoCompactablePrefix),
         "summary_already_attempted" => Ok(DiagnosticFailureCode::SummaryAlreadyAttempted),
         "provider_http" => Ok(DiagnosticFailureCode::ProviderHttp),
+        "provider_transport" => Ok(DiagnosticFailureCode::ProviderTransport),
+        "provider_stream_interrupted" => Ok(DiagnosticFailureCode::ProviderStreamInterrupted),
+        "provider_timeout" => Ok(DiagnosticFailureCode::ProviderTimeout),
         "provider_transport_or_stream" => Ok(DiagnosticFailureCode::ProviderTransportOrStream),
         "provider_protocol" => Ok(DiagnosticFailureCode::ProviderProtocol),
         "provider_rejected" => Ok(DiagnosticFailureCode::ProviderRejected),

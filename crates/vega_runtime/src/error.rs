@@ -393,6 +393,8 @@ impl VegaError {
                     match kind {
                         crate::ProviderFailureKind::Http => "http",
                         crate::ProviderFailureKind::Transport => "transport",
+                        crate::ProviderFailureKind::StreamInterrupted => "stream_interrupted",
+                        crate::ProviderFailureKind::Timeout => "timeout",
                         crate::ProviderFailureKind::Protocol => "protocol",
                         crate::ProviderFailureKind::Rejected => "rejected",
                         crate::ProviderFailureKind::OutputLimit => "output_limit",

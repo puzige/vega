@@ -609,7 +609,7 @@ pub(super) fn event_stream_with_recovery(
                         pending.push_back(Err(if recoverable {
                             recovery::incomplete_stream_error()
                         } else {
-                            response_error(crate::ProviderFailureKind::Transport)
+                            response_error(crate::ProviderFailureKind::StreamInterrupted)
                         }));
                     }
                     Some(Err(EventStreamError::Transport(ResponseBytesError::Limit {

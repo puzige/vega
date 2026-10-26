@@ -111,8 +111,10 @@ pub(super) fn event_stream_with_recovery(
 pub(crate) fn map_sse_error(err: EventStreamError<reqwest::Error>, recoverable: bool) -> VegaError {
     let transport = matches!(err, EventStreamError::Transport(_));
     VegaError::ProviderDiagnostic {
+        // The response was already established here, so a byte-stream
+        // failure is an interrupted body, not a failed connection.
         kind: if transport {
-            ProviderFailureKind::Transport
+            ProviderFailureKind::StreamInterrupted
         } else {
             ProviderFailureKind::Protocol
         },

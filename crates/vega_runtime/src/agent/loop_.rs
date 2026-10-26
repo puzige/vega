@@ -137,9 +137,11 @@ fn diagnostic_failure(error: &VegaError) -> RuntimeDiagnosticFailure {
         VegaError::ProviderPayloadTooLarge { .. } => RuntimeDiagnosticFailure::ProviderProtocol,
         VegaError::ProviderDiagnostic { kind, .. } => match kind {
             crate::ProviderFailureKind::Http => RuntimeDiagnosticFailure::ProviderHttp,
-            crate::ProviderFailureKind::Transport => {
-                RuntimeDiagnosticFailure::ProviderTransportOrStream
+            crate::ProviderFailureKind::Transport => RuntimeDiagnosticFailure::ProviderTransport,
+            crate::ProviderFailureKind::StreamInterrupted => {
+                RuntimeDiagnosticFailure::ProviderStreamInterrupted
             }
+            crate::ProviderFailureKind::Timeout => RuntimeDiagnosticFailure::ProviderTimeout,
             crate::ProviderFailureKind::Protocol => RuntimeDiagnosticFailure::ProviderProtocol,
             crate::ProviderFailureKind::Rejected | crate::ProviderFailureKind::OutputLimit => {
                 RuntimeDiagnosticFailure::ProviderRejected
