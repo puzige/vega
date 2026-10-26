@@ -76,7 +76,7 @@ impl VegaWindow {
                         }
                         AutomationEditorEvent::OpenLatest(task) => {
                             this.close_automation_workspace(&view.read(cx).key(), window, cx);
-                            this.open_automation_task(task.clone(), window, cx)
+                            this.open_automation_task(task.as_ref().clone(), window, cx)
                         }
                     }
                     cx.notify();

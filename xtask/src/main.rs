@@ -350,6 +350,8 @@ fn preseed_profile(home: &Path) -> Result<()> {
             title: "vega bench fixture",
             mode: "execute",
             permission_mode: "confirm",
+            permission_revision: 0,
+            full_access_grant: None,
             model: "vega-bench-mock",
             status: "active",
             pinned: false,

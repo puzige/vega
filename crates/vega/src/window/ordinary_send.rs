@@ -6,6 +6,20 @@ use vega_conversation::agent::OrdinaryRun;
 
 const ORDINARY_POLL: std::time::Duration = std::time::Duration::from_millis(4);
 
+#[cfg(test)]
+mod tests;
+
+fn take_preparation_owner(
+    owners: &mut std::collections::HashMap<String, OrdinaryPreparationOwner>,
+    thread_id: &str,
+    attempt: AttemptId,
+) -> Option<OrdinaryPreparationOwner> {
+    if owners.get(thread_id)?.attempt != attempt {
+        return None;
+    }
+    owners.remove(thread_id)
+}
+
 pub(super) struct OrdinaryPreparationRequest {
     pub(super) registered: OrdinaryWorker,
     pub(super) run: OrdinaryRun,
@@ -25,34 +39,46 @@ struct OrdinaryPreparationOutcome {
 
 impl OrdinaryPreparationRequest {
     fn prepare(self) -> OrdinaryPreparationOutcome {
+        let materialized = self.materialize();
+        self.finish_preparation(materialized)
+    }
+
+    fn materialize(&self) -> Result<(vega_store::Store, Thread), SubmissionFailure> {
+        if self.cancel.is_cancelled() {
+            return Err(SubmissionFailure::Cancelled);
+        }
+        preflight_provider(self.config.as_deref(), self.run.submission.raw().model())
+            .map_err(|_| SubmissionFailure::PreflightRejected)?;
+        if self.cancel.is_cancelled() {
+            return Err(SubmissionFailure::Cancelled);
+        }
+        let store = vega_store::Store::open(&self.database)
+            .map_err(|_| SubmissionFailure::PreparationFailed)?;
+        if !self.run.worker.admission().verifies(
+            store.database_identity(),
+            &self.run.submission.snapshot().thread_id,
+        ) {
+            return Err(SubmissionFailure::PreparationFailed);
+        }
+        let thread = vega_conversation::permission_contracts::prepare_submission_permission(
+            &store,
+            &self.run.submission,
+            &self.run.worker,
+            &self.expected,
+            self.draft.as_ref(),
+        )
+        .map_err(|_| SubmissionFailure::PreparationFailed)?;
+        Ok((store, thread))
+    }
+
+    fn finish_preparation(
+        self,
+        committed: Result<(vega_store::Store, Thread), SubmissionFailure>,
+    ) -> OrdinaryPreparationOutcome {
         let admission = self.run.worker.admission().clone();
         let mut materialized = None;
-        let result = (|| {
-            if self.cancel.is_cancelled() {
-                return Err(SubmissionFailure::Cancelled);
-            }
-            preflight_provider(self.config.as_deref(), self.run.submission.raw().model())
-                .map_err(|_| SubmissionFailure::PreflightRejected)?;
-            if self.cancel.is_cancelled() {
-                return Err(SubmissionFailure::Cancelled);
-            }
-            let store = vega_store::Store::open(&self.database)
-                .map_err(|_| SubmissionFailure::PreparationFailed)?;
-            if !self.run.worker.admission().verifies(
-                store.database_identity(),
-                &self.run.submission.snapshot().thread_id,
-            ) {
-                return Err(SubmissionFailure::PreparationFailed);
-            }
+        let result = committed.and_then(|(store, thread)| {
             let thread_id = self.run.submission.snapshot().thread_id;
-            let thread = vega_conversation::permission_contracts::prepare_submission_permission(
-                &store,
-                &self.run.submission,
-                &self.run.worker,
-                &self.expected,
-                self.draft.as_ref(),
-            )
-            .map_err(|_| SubmissionFailure::PreparationFailed)?;
             materialized = self.draft.as_ref().map(|source| {
                 OrdinaryMaterialization::new(
                     self.run.worker.attempt_id(),
@@ -71,7 +97,7 @@ impl OrdinaryPreparationRequest {
                 return Err(SubmissionFailure::Cancelled);
             }
             Ok((workspace, thread))
-        })();
+        });
         let _ = self
             .registered
             .complete(result.as_ref().map(|_| ()).map_err(|failure| *failure));
@@ -363,15 +389,15 @@ impl VegaWindow {
                     if waiting {
                         return;
                     }
-                    if !this
-                        .agent_controller
-                        .ordinary_preparing
-                        .get(&thread_id)
-                        .is_some_and(|owner| owner.attempt == attempt)
+                    if take_preparation_owner(
+                        &mut this.agent_controller.ordinary_preparing,
+                        &thread_id,
+                        attempt,
+                    )
+                    .is_none()
                     {
                         return;
                     }
-                    this.agent_controller.ordinary_preparing.remove(&thread_id);
                     let released = this.trusted_actions.release(lease);
                     if released
                         && this.agent_controller.preparation_stream.as_ref() == Some(&stream)

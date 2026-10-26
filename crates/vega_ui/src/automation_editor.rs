@@ -53,7 +53,7 @@ pub enum AutomationEditorEvent {
     Save(AutomationEditSubmission),
     Changed,
     Close,
-    OpenLatest(AutomationTask),
+    OpenLatest(Box<AutomationTask>),
 }
 
 pub struct AutomationEditor {
@@ -218,7 +218,7 @@ impl AutomationEditor {
         }
         if let Some(task) = self.latest.clone() {
             if task.identity != self.base.identity {
-                cx.emit(AutomationEditorEvent::OpenLatest(task));
+                cx.emit(AutomationEditorEvent::OpenLatest(Box::new(task)));
                 return;
             }
             self.input
