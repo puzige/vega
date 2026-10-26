@@ -1,8 +1,11 @@
-use super::*;
+use super::replay_persistence_config;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Mutex;
 use vega_conversation::agent::{PermissionQueue, resume_interrupted_assistant_with_mcp};
+use vega_conversation::types::{ConversationEvent, InterruptedAssistant};
 use vega_runtime::{ChatRequest, EventStream, Provider, VegaError};
+use vega_store::Store;
 
 #[derive(Default)]
 struct ObservedProvider(Mutex<Vec<ChatRequest>>);
