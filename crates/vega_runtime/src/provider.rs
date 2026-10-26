@@ -528,6 +528,11 @@ pub enum ProviderFailureKind {
     /// An established response stream or request exceeded its idle/request
     /// deadline.
     Timeout,
+    /// The provider reported, inside an established response, that it cannot
+    /// serve the request right now (overload, capacity or transient
+    /// service-unavailable). This is an upstream condition, not malformed
+    /// data, so it is reported and retried separately from `Protocol`.
+    Overloaded,
     Protocol,
     Rejected,
 }

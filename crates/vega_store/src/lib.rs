@@ -1,5 +1,6 @@
 pub mod automation;
 pub mod codex_tasks;
+pub mod composer_prediction_events;
 pub mod computer_use_delivery;
 pub mod config;
 pub mod context_compaction;
@@ -83,7 +84,9 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0037_codex_display_metadata.sql"),
     include_str!("../migrations/0038_provider_failure_split.sql"),
     include_str!("../migrations/0039_pending_thread_model.sql"),
-    include_str!("../migrations/0040_permission_contracts.sql"),
+    include_str!("../migrations/0040_composer_prediction_events.sql"),
+    include_str!("../migrations/0041_provider_overloaded.sql"),
+    include_str!("../migrations/0042_permission_contracts.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
@@ -174,7 +177,7 @@ impl Store {
             let result = (|| -> Result<(), rusqlite::Error> {
                 let tx = WriteTransaction::new(&self.conn, WriteCategory::Migration)?;
                 tx.execute_batch(sql)?;
-                if target == 40 {
+                if target == 42 {
                     permission_contracts::initialize(&tx)?;
                 }
                 tx.pragma_update(None, "user_version", target)?;

@@ -163,8 +163,15 @@ impl SseAssembler {
         if chunk.is_null() {
             return Ok(Vec::new());
         }
-        if !chunk.is_object() || chunk.get("error").is_some() {
+        if !chunk.is_object() {
             return Err(invalid_protocol());
+        }
+        // Only a non-null `error` payload is an error frame; several compatible
+        // gateways send `"error": null` on ordinary chunks. The frame is
+        // classified instead of being reported as malformed data, so an
+        // upstream capacity notice keeps its own failure kind.
+        if let Some(error) = chunk.get("error").filter(|error| !error.is_null()) {
+            return Err(crate::chat_compat::stream_error_frame(error));
         }
         let mut events = Vec::new();
         let choice = chunk.get("choices").and_then(|choices| choices.get(0));
@@ -177,11 +184,12 @@ impl SseAssembler {
         .flatten()
         .filter(|value| !value.is_null())
         {
-            let next = usage_counts(usage)?;
-            if counts.is_some_and(|counts| counts != next) {
-                return Err(invalid_protocol());
+            // Accounting is metadata, not content: an imprecise report must not
+            // discard an otherwise valid response. The last well-formed report
+            // wins, and an unusable one is simply not recorded.
+            if let Some(next) = usage_counts(usage) {
+                counts = Some(next);
             }
-            counts = Some(next);
         }
         if let Some(counts) = counts {
             self.usage = Some(counts);
@@ -252,11 +260,24 @@ impl SseAssembler {
                 .get("finish_reason")
                 .filter(|value| !value.is_null() && value.as_str() != Some(""))
             {
-                let reason = map_finish_reason(reason.as_str().ok_or_else(invalid_protocol)?);
-                if reason == StopReason::Unknown
-                    || self
-                        .finish_reason
-                        .is_some_and(|previous| previous != reason)
+                let mapped = map_finish_reason(reason.as_str().ok_or_else(invalid_protocol)?);
+                // A stop reason this client does not know is not malformed
+                // data: the stream is still well-formed. It degrades to the
+                // closest known terminal state so the turn still completes and
+                // its text is kept, instead of discarding the whole run. A
+                // genuinely contradictory repeat is still rejected.
+                let reason = if mapped == StopReason::Unknown {
+                    if self.tools.is_empty() {
+                        StopReason::End
+                    } else {
+                        StopReason::ToolUse
+                    }
+                } else {
+                    mapped
+                };
+                if self
+                    .finish_reason
+                    .is_some_and(|previous| previous != reason)
                 {
                     return Err(invalid_protocol());
                 }
@@ -525,31 +546,38 @@ impl UsageCounts {
     }
 }
 
-fn usage_counts(usage: &serde_json::Value) -> Result<UsageCounts, VegaError> {
+fn usage_counts(usage: &serde_json::Value) -> Option<UsageCounts> {
     let number = |value: Option<&serde_json::Value>| {
         value
             .filter(|value| !value.is_null())
-            .map(|value| value.as_u64().ok_or_else(invalid_protocol))
-            .transpose()
+            .and_then(serde_json::Value::as_u64)
     };
-    let input = number(usage.get("prompt_tokens"))?.ok_or_else(invalid_protocol)?;
-    let output = number(usage.get("completion_tokens"))?.ok_or_else(invalid_protocol)?;
-    let cache_read = number(usage.pointer("/prompt_tokens_details/cached_tokens"))?
-        .or(number(usage.get("prompt_cache_hit_tokens"))?)
-        .or(number(usage.get("cached_tokens"))?);
-    let cache_write = number(usage.pointer("/prompt_tokens_details/cache_write_tokens"))?
-        .or(number(usage.get("cache_write_tokens"))?);
-    let miss = number(usage.get("prompt_cache_miss_tokens"))?;
-    if cache_read.is_some_and(|count| count > input)
-        || cache_write.is_some_and(|count| count > input)
-        || miss.is_some_and(|count| count > input)
-        || cache_read
-            .zip(cache_write)
-            .is_some_and(|(read, write)| read.checked_add(write).is_none_or(|total| total > input))
-    {
-        return Err(invalid_protocol());
-    }
-    Ok(UsageCounts {
+    // Token totals are the only required figures; a report without them is
+    // dropped rather than failing the response that carried it.
+    let input = number(usage.get("prompt_tokens"))?;
+    let output = number(usage.get("completion_tokens"))?;
+    let cache_read = number(usage.pointer("/prompt_tokens_details/cached_tokens"))
+        .or(number(usage.get("prompt_cache_hit_tokens")))
+        .or(number(usage.get("cached_tokens")));
+    let cache_write = number(usage.pointer("/prompt_tokens_details/cache_write_tokens"))
+        .or(number(usage.get("cache_write_tokens")));
+    // Cache figures that exceed the prompt are a misreported breakdown, not
+    // unusable content: the token totals are still valid, so only the
+    // inconsistent optional breakdown is dropped.
+    let consistent = |count: Option<u64>| count.filter(|count| *count <= input);
+    let cache_read = consistent(cache_read);
+    let cache_write = consistent(cache_write);
+    let cache_read = cache_read.filter(|read| {
+        cache_write
+            .and_then(|write| read.checked_add(write))
+            .is_none_or(|total| total <= input)
+    });
+    let cache_write = cache_write.filter(|write| {
+        cache_read
+            .and_then(|read| read.checked_add(*write))
+            .is_none_or(|total| total <= input)
+    });
+    Some(UsageCounts {
         input,
         output,
         cache_read,

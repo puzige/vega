@@ -831,9 +831,10 @@ where
     let skill_launch = match skill_launch {
         Ok(launch) => launch,
         Err(error) => {
-            let cleanup = finish_prepared_failure(
+            let cleanup = finish_prepared_terminal(
                 prepared.database_path.clone(),
                 prepared.assistant_message_id.clone(),
+                "failed",
                 ordinary.clone(),
                 admission.clone(),
             )
@@ -937,9 +938,10 @@ where
         Ok(actor) => actor,
         Err(error) => {
             let error = Arc::new(error);
-            let cleanup = finish_prepared_failure(
+            let cleanup = finish_prepared_terminal(
                 prepared.database_path.clone(),
                 prepared.assistant_message_id.clone(),
+                "failed",
                 ordinary.clone(),
                 admission.clone(),
             )
@@ -955,15 +957,25 @@ where
     };
 
     if cancel.is_cancelled() {
-        let cleanup = finish_prepared_failure(
+        let cleanup = finish_prepared_terminal(
             prepared.database_path.clone(),
             prepared.assistant_message_id.clone(),
+            "interrupted",
             ordinary.clone(),
             admission.clone(),
         )
         .await;
         let closed = actor.close().await;
         super::ordinary::record_cleanup(ordinary.as_ref(), cleanup.is_ok() && closed.is_ok());
+        // The user stopped the turn before the runtime started: report the same
+        // terminal stop event a runtime interruption produces so the turn keeps
+        // its stop line instead of vanishing from the conversation flow.
+        forward_pipeline_error_with_duration(
+            &mut event_sink,
+            Some(prepared.assistant_message_id.clone()),
+            Arc::new(VegaError::Cancelled),
+            None,
+        );
         return Err(ConversationError::Runtime(Arc::new(VegaError::Cancelled)));
     }
     let runtime_started_at = std::time::Instant::now();
@@ -1085,7 +1097,8 @@ where
         .as_ref()
         .map(|hook| hook as &dyn vega_runtime::ContextCompactionHook);
     let runtime_request = prepared.request.clone();
-    if cancel.is_cancelled()
+    let cancelled = cancel.is_cancelled();
+    if cancelled
         || ordinary
             .as_ref()
             .is_some_and(|run| run.worker.mark_primary_started().is_err())
@@ -1095,15 +1108,30 @@ where
             let _ = watch.await;
         }
         diagnostics.close().await;
-        let cleanup = actor
-            .event(
-                RuntimeEvent::Error(Arc::new(VegaError::Cancelled)),
-                String::new(),
-                None,
-            )
-            .await;
+        let cleanup = if cancelled {
+            actor
+                .event(RuntimeEvent::Interrupted, String::new(), None)
+                .await
+        } else {
+            actor
+                .event(
+                    RuntimeEvent::Error(Arc::new(VegaError::Cancelled)),
+                    String::new(),
+                    None,
+                )
+                .await
+        };
         let closed = actor.close().await;
         super::ordinary::record_cleanup(ordinary.as_ref(), cleanup.is_ok() && closed.is_ok());
+        if cancelled {
+            // A user stop before the runtime starts must still reach the UI as a
+            // terminal stop, otherwise the turn has no visible stop state.
+            forward_pipeline_error(
+                &mut event_sink,
+                Some(prepared.assistant_message_id.clone()),
+                Arc::new(VegaError::Cancelled),
+            );
+        }
         return Err(ConversationError::Runtime(Arc::new(VegaError::Cancelled)));
     }
     let runtime_future = run_agent_with_permission_sink_and_context(

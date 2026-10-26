@@ -2503,9 +2503,13 @@ pub(crate) fn approval_source_matches(
     }
 }
 
-pub(crate) async fn finish_prepared_failure(
+/// Closes an assistant row that never reached the runtime. `status` must be
+/// `interrupted` for a user stop so the turn keeps its terminal stop state
+/// instead of being reloaded as a run failure.
+pub(crate) async fn finish_prepared_terminal(
     database_path: PathBuf,
     assistant_message_id: String,
+    status: &'static str,
     ordinary: Option<super::ordinary::OrdinaryRun>,
     admission: crate::types::ThreadAdmission,
 ) -> Result<(), VegaError> {
@@ -2515,7 +2519,7 @@ pub(crate) async fn finish_prepared_failure(
         let _admission = admission;
         let result = (|| {
             let store = Store::open(database_path).map_err(VegaError::Store)?;
-            messages::finish_streaming(store.conn(), &assistant_message_id, "", "failed", None)
+            messages::finish_streaming(store.conn(), &assistant_message_id, "", status, None)
                 .map_err(VegaError::Store)
                 .and_then(|updated| ensure_message_updated(updated, &assistant_message_id))
         })();
