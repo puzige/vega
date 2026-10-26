@@ -44,7 +44,11 @@ mod credential_guard;
 mod diagnostics;
 mod entry;
 mod events;
+mod ordinary;
 mod permission_queue;
+pub use ordinary::{
+    OrdinaryHistoryObservation, OrdinaryRun, finish_ordinary_worker, observe_ordinary_history,
+};
 mod stage_activity;
 mod subagents;
 mod user_question_queue;
@@ -52,6 +56,8 @@ pub use user_question_queue::*;
 mod persistence;
 mod pipeline;
 mod replay_sessions;
+#[cfg(test)]
+mod resume_tests;
 mod skills;
 
 pub use compaction::{

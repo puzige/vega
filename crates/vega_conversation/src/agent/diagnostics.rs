@@ -278,7 +278,11 @@ pub(crate) fn failure_code(error: &vega_runtime::VegaError) -> Option<Diagnostic
         }
         VegaError::ProviderDiagnostic { kind, .. } => Some(match kind {
             ProviderFailureKind::Http => DiagnosticFailureCode::ProviderHttp,
-            ProviderFailureKind::Transport => DiagnosticFailureCode::ProviderTransportOrStream,
+            ProviderFailureKind::Transport => DiagnosticFailureCode::ProviderTransport,
+            ProviderFailureKind::StreamInterrupted => {
+                DiagnosticFailureCode::ProviderStreamInterrupted
+            }
+            ProviderFailureKind::Timeout => DiagnosticFailureCode::ProviderTimeout,
             ProviderFailureKind::Protocol => DiagnosticFailureCode::ProviderProtocol,
             ProviderFailureKind::Rejected | ProviderFailureKind::OutputLimit => {
                 DiagnosticFailureCode::ProviderRejected
@@ -405,9 +409,11 @@ fn runtime_failure(value: RuntimeDiagnosticFailure) -> DiagnosticFailureCode {
         RuntimeDiagnosticFailure::ReasoningLimit => DiagnosticFailureCode::ReasoningLimit,
         RuntimeDiagnosticFailure::ReasoningReplay => DiagnosticFailureCode::ProviderProtocol,
         RuntimeDiagnosticFailure::ProviderHttp => DiagnosticFailureCode::ProviderHttp,
-        RuntimeDiagnosticFailure::ProviderTransportOrStream => {
-            DiagnosticFailureCode::ProviderTransportOrStream
+        RuntimeDiagnosticFailure::ProviderTransport => DiagnosticFailureCode::ProviderTransport,
+        RuntimeDiagnosticFailure::ProviderStreamInterrupted => {
+            DiagnosticFailureCode::ProviderStreamInterrupted
         }
+        RuntimeDiagnosticFailure::ProviderTimeout => DiagnosticFailureCode::ProviderTimeout,
         RuntimeDiagnosticFailure::ProviderProtocol => DiagnosticFailureCode::ProviderProtocol,
         RuntimeDiagnosticFailure::ProviderRejected => DiagnosticFailureCode::ProviderRejected,
         RuntimeDiagnosticFailure::UnknownSafeFailure => DiagnosticFailureCode::UnknownSafeFailure,

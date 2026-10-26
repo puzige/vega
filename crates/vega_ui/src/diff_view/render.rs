@@ -1,26 +1,32 @@
 use super::*;
-use crate::icons::{Icon, icon_button};
+use crate::icons::Icon;
 use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 
 impl Render for DiffView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.rendered_language != vega_i18n::language() {
+            self.rendered_language = vega_i18n::language();
+            self.rebuild_rows();
+        }
         let colors = theme(cx).colors;
         let row_count = self.rows.len();
         let view = cx.entity();
         let header = self.snapshot.as_ref().map(|snapshot| {
             (
                 head_label(&snapshot.head),
-                format!(
-                    "{} files  +{}  -{}",
-                    snapshot.stats.file_count,
-                    count_label(snapshot.stats.additions),
-                    count_label(snapshot.stats.deletions)
+                vega_i18n::t_args(
+                    "ui.diff_file_counts",
+                    &[
+                        ("count", &snapshot.stats.file_count.to_string()),
+                        ("additions", &count_label(snapshot.stats.additions)),
+                        ("deletions", &count_label(snapshot.stats.deletions)),
+                    ],
                 ),
             )
         });
         let layout_label = match self.layout {
-            DiffLayout::Unified => "Unified",
-            DiffLayout::SideBySide => "Side by side",
+            DiffLayout::Unified => vega_i18n::t("ui.unified"),
+            DiffLayout::SideBySide => vega_i18n::t("ui.side_by_side"),
         };
         let has_snapshot = self.snapshot.is_some();
         let show_initial_loading = self.refreshing && self.show_refresh_progress && !has_snapshot;
@@ -40,11 +46,11 @@ impl Render for DiffView {
                         body.child(
                             div()
                                 .text_color(colors.text_secondary)
-                                .child("Retrying workspace diff…"),
+                                .child(vega_i18n::t("ui.retrying_workspace_diff")),
                         )
                     })
                     .child(
-                        diff_button("Retry", colors.warning, colors)
+                        diff_button(vega_i18n::t("ui.retry"), colors.warning, colors)
                             .when(!self.refreshing, |button| button.cursor_pointer())
                             .on_mouse_up(MouseButton::Left, cx.listener(Self::retry_clicked)),
                     )
@@ -56,7 +62,7 @@ impl Render for DiffView {
                     .items_center()
                     .justify_center()
                     .text_color(colors.text_tertiary)
-                    .child("Loading workspace diff…")
+                    .child(vega_i18n::t("ui.loading_workspace_diff"))
                     .into_any_element()
             } else if row_count == 0 {
                 div()
@@ -68,11 +74,13 @@ impl Render for DiffView {
                     .flex_col()
                     .gap_3()
                     .child(crate::icons::icon(Icon::Document, colors.text_tertiary))
-                    .child("当前没有工作区变更")
+                    .child(vega_i18n::t("ui.no_workspace_changes"))
                     .child(
                         div()
                             .text_size(px(Typography::METADATA))
-                            .child("修改文件后，变更会显示在这里。"),
+                            .child(vega_i18n::t(
+                                "ui.changes_will_appear_here_after_you_modify_files",
+                            )),
                     )
                     .into_any_element()
             } else {
@@ -117,11 +125,13 @@ impl Render for DiffView {
                     .flex_col()
                     .gap_3()
                     .child(crate::icons::icon(Icon::Document, colors.text_tertiary))
-                    .child("当前没有工作区变更")
+                    .child(vega_i18n::t("ui.no_workspace_changes"))
                     .child(
                         div()
                             .text_size(px(Typography::METADATA))
-                            .child("修改文件后，变更会显示在这里。"),
+                            .child(vega_i18n::t(
+                                "ui.changes_will_appear_here_after_you_modify_files",
+                            )),
                     )
                     .into_any_element()
             } else {
@@ -179,7 +189,7 @@ impl Render for DiffView {
                                     .child(error_label(code)),
                             )
                             .child(
-                                diff_button("Retry", colors.warning, colors)
+                                diff_button(vega_i18n::t("ui.retry"), colors.warning, colors)
                                     .when(!self.refreshing, |button| button.cursor_pointer())
                                     .on_mouse_up(
                                         MouseButton::Left,
@@ -243,33 +253,34 @@ impl Render for DiffView {
                                     )
                             }),
                     )
-                    .child(icon_button(
+                    .child(crate::icons::localized_icon_button(
                         Icon::Refresh,
-                        "刷新工作区变更",
+                        "ui.refresh_workspace_changes",
                         colors,
                         cx.listener(|this, _, _, cx| {
                             this.retry(cx);
                         }),
                     ))
-                    .child(icon_button(
-                        Icon::Split,
+                    .child(crate::icons::icon_button_with_id(
+                        crate::icons::icon(Icon::Split, colors.text_secondary),
+                        "workspace-diff-layout",
                         layout_label,
                         colors,
                         cx.listener(|this, _, _, cx| {
                             this.toggle_layout(cx);
                         }),
                     ))
-                    .child(icon_button(
+                    .child(crate::icons::localized_icon_button(
                         Icon::ArrowUp,
-                        "上一个变更 [",
+                        "ui.previous_change",
                         colors,
                         cx.listener(|this, _, _, cx| {
                             this.previous_hunk(cx);
                         }),
                     ))
-                    .child(icon_button(
+                    .child(crate::icons::localized_icon_button(
                         Icon::ArrowDown,
-                        "下一个变更 ]",
+                        "ui.next_change",
                         colors,
                         cx.listener(|this, _, _, cx| {
                             this.next_hunk(cx);
@@ -359,7 +370,7 @@ pub(crate) fn render_prepared_row(
             .bg(colors.bg_elevated)
             .text_color(colors.text_secondary)
             .font_weight(Typography::HEADING_CARD_WEIGHT)
-            .child(label)
+            .child(vega_i18n::t(label))
             .into_any_element(),
         PreparedRow::Hunk { label } => base
             .px_3()
@@ -374,27 +385,33 @@ pub(crate) fn render_prepared_row(
             .child(render_diff_half(pair.left, colors, LineSide::Old))
             .child(render_diff_half(pair.right, colors, LineSide::New))
             .into_any_element(),
-        PreparedRow::ProjectionError { id, text } => base
+        PreparedRow::ProjectionError { id, code } => base
             .px_3()
             .gap_2()
             .text_color(colors.danger)
-            .child(div().min_w_0().flex_1().overflow_hidden().child(text))
             .child(
-                diff_button("Retry", colors.warning, *colors)
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .overflow_hidden()
+                    .child(error_label(code)),
+            )
+            .child(
+                diff_button(vega_i18n::t("ui.retry"), colors.warning, *colors)
                     .cursor_pointer()
                     .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                         view.update(cx, |this, cx| this.retry_projection(id, cx));
                     }),
             )
             .into_any_element(),
-        PreparedRow::Message { text, danger } => base
+        PreparedRow::Message { key, danger } => base
             .px_3()
             .text_color(if danger {
                 colors.danger
             } else {
                 colors.text_tertiary
             })
-            .child(text)
+            .child(vega_i18n::t(key))
             .into_any_element(),
     }
 }
@@ -582,7 +599,7 @@ pub(crate) fn layout_projection_rows(
             }
             if hunk.missing_trailing_newline {
                 rows.push(PreparedRow::Message {
-                    text: "No newline at end of file".to_owned(),
+                    key: "ui.no_newline_at_end_of_file",
                     danger: false,
                 });
             }
@@ -709,13 +726,19 @@ pub(crate) fn prepare_spans(text: &str, language: DiffLanguage) -> Vec<PreparedS
 pub(crate) fn file_summary(file: &WorkspaceFile) -> String {
     let mut statuses = Vec::with_capacity(2);
     if file.staged != WorkspaceChangeKind::Unchanged {
-        statuses.push(format!("staged {}", change_label(file.staged)));
+        statuses.push(vega_i18n::t_args(
+            "ui.diff_staged_status",
+            &[("status", change_label(file.staged))],
+        ));
     }
     if file.unstaged != WorkspaceChangeKind::Unchanged {
-        statuses.push(format!("worktree {}", change_label(file.unstaged)));
+        statuses.push(vega_i18n::t_args(
+            "ui.diff_worktree_status",
+            &[("status", change_label(file.unstaged))],
+        ));
     }
     if statuses.is_empty() {
-        statuses.push("unchanged".to_owned());
+        statuses.push(vega_i18n::t("ui.unchanged").to_owned());
     }
     let rename = file
         .previous_label
@@ -732,44 +755,56 @@ pub(crate) fn file_summary(file: &WorkspaceFile) -> String {
 
 pub(crate) fn change_label(kind: WorkspaceChangeKind) -> &'static str {
     match kind {
-        WorkspaceChangeKind::Unchanged => "unchanged",
-        WorkspaceChangeKind::Added => "added",
-        WorkspaceChangeKind::Modified => "modified",
-        WorkspaceChangeKind::Deleted => "deleted",
-        WorkspaceChangeKind::Renamed => "renamed",
-        WorkspaceChangeKind::Copied => "copied",
-        WorkspaceChangeKind::TypeChanged => "type changed",
-        WorkspaceChangeKind::Unmerged => "unmerged",
-        WorkspaceChangeKind::Untracked => "untracked",
+        WorkspaceChangeKind::Unchanged => vega_i18n::t("ui.unchanged"),
+        WorkspaceChangeKind::Added => vega_i18n::t("ui.added"),
+        WorkspaceChangeKind::Modified => vega_i18n::t("ui.modified"),
+        WorkspaceChangeKind::Deleted => vega_i18n::t("ui.deleted"),
+        WorkspaceChangeKind::Renamed => vega_i18n::t("ui.renamed"),
+        WorkspaceChangeKind::Copied => vega_i18n::t("ui.copied"),
+        WorkspaceChangeKind::TypeChanged => vega_i18n::t("ui.type_changed"),
+        WorkspaceChangeKind::Unmerged => vega_i18n::t("ui.unmerged"),
+        WorkspaceChangeKind::Untracked => vega_i18n::t("ui.untracked"),
     }
 }
 
 pub(crate) fn count_label(count: WorkspaceLineCount) -> String {
     match count {
         WorkspaceLineCount::Known(value) => value.to_string(),
-        WorkspaceLineCount::Binary => "binary".to_owned(),
+        WorkspaceLineCount::Binary => vega_i18n::t("ui.binary").to_owned(),
         WorkspaceLineCount::Unknown => "?".to_owned(),
     }
 }
 
 pub(crate) fn error_label(code: GitWorkspaceErrorCode) -> &'static str {
     match code {
-        GitWorkspaceErrorCode::InvalidRoot => "Project root is unavailable.",
-        GitWorkspaceErrorCode::NotRepository => "This project is not a Git repository.",
+        GitWorkspaceErrorCode::InvalidRoot => vega_i18n::t("ui.project_root_is_unavailable"),
+        GitWorkspaceErrorCode::NotRepository => {
+            vega_i18n::t("ui.this_project_is_not_a_git_repository")
+        }
         GitWorkspaceErrorCode::GitUnavailable => {
-            "Git 2.40+ was not found. Install Homebrew Git and retry."
+            vega_i18n::t("ui.git_2_40_was_not_found_install_homebrew")
         }
-        GitWorkspaceErrorCode::GitUnsupported => "Git 2.40+ is required. Upgrade Git and retry.",
+        GitWorkspaceErrorCode::GitUnsupported => {
+            vega_i18n::t("ui.git_2_40_is_required_upgrade_git_and")
+        }
         GitWorkspaceErrorCode::GitExecutableChanged => {
-            "Git changed while Vega was running. Restart Vega and retry."
+            vega_i18n::t("ui.git_changed_while_vega_was_running_restart_vega")
         }
-        GitWorkspaceErrorCode::TimedOut => "Git diff timed out. Retry when the repository is idle.",
-        GitWorkspaceErrorCode::Cancelled => "Git diff refresh was cancelled.",
-        GitWorkspaceErrorCode::OutputTooLarge => "Diff exceeds the safe display limit.",
-        GitWorkspaceErrorCode::MetadataOnly => "This file can only be shown as metadata.",
-        GitWorkspaceErrorCode::ChangedDuringRead => "The file changed while its diff was loading.",
+        GitWorkspaceErrorCode::TimedOut => {
+            vega_i18n::t("ui.git_diff_timed_out_retry_when_the_repository")
+        }
+        GitWorkspaceErrorCode::Cancelled => vega_i18n::t("ui.git_diff_refresh_was_cancelled"),
+        GitWorkspaceErrorCode::OutputTooLarge => {
+            vega_i18n::t("ui.diff_exceeds_the_safe_display_limit")
+        }
+        GitWorkspaceErrorCode::MetadataOnly => {
+            vega_i18n::t("ui.this_file_can_only_be_shown_as_metadata")
+        }
+        GitWorkspaceErrorCode::ChangedDuringRead => {
+            vega_i18n::t("ui.the_file_changed_while_its_diff_was_loading")
+        }
         GitWorkspaceErrorCode::StaleGeneration | GitWorkspaceErrorCode::UnknownFile => {
-            "This diff is stale. Refresh and try again."
+            vega_i18n::t("ui.this_diff_is_stale_refresh_and_try_again")
         }
         GitWorkspaceErrorCode::SpawnFailed
         | GitWorkspaceErrorCode::GitFailed
@@ -784,24 +819,28 @@ pub(crate) fn error_label(code: GitWorkspaceErrorCode) -> &'static str {
         | GitWorkspaceErrorCode::BranchUnsafeFilter
         | GitWorkspaceErrorCode::BranchAlreadyCurrent
         | GitWorkspaceErrorCode::BranchPathLimit
-        | GitWorkspaceErrorCode::BranchCountLimit => "Git diff could not be loaded safely.",
+        | GitWorkspaceErrorCode::BranchCountLimit => {
+            vega_i18n::t("ui.git_diff_could_not_be_loaded_safely")
+        }
     }
 }
 
 pub(crate) fn head_label(head: &WorkspaceHead) -> String {
     match head {
         WorkspaceHead::Branch { label } => label.clone(),
-        WorkspaceHead::Detached => "Detached HEAD".to_owned(),
-        WorkspaceHead::Unborn { label: Some(label) } => format!("{label} (unborn)"),
-        WorkspaceHead::Unborn { label: None } => "Unborn HEAD".to_owned(),
+        WorkspaceHead::Detached => vega_i18n::t("ui.detached_head").to_owned(),
+        WorkspaceHead::Unborn { label: Some(label) } => {
+            vega_i18n::t_args("ui.label_unborn", &[("label", label)])
+        }
+        WorkspaceHead::Unborn { label: None } => vega_i18n::t("ui.unborn_head").to_owned(),
     }
 }
 
 pub(crate) fn layer_label(layer: DiffLayer) -> &'static str {
     match layer {
-        DiffLayer::Staged => "Staged",
-        DiffLayer::Unstaged => "Unstaged",
-        DiffLayer::Untracked => "Untracked",
+        DiffLayer::Staged => "ui.staged",
+        DiffLayer::Unstaged => "ui.unstaged",
+        DiffLayer::Untracked => "ui.untracked_en",
     }
 }
 

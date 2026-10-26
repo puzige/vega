@@ -75,7 +75,7 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 | 正文字体 | 系统字体（SF Pro），13px/1.55 行高 |
 | 会话消息正文 | 15px/1.65 |
 | 代码字体 | SF Mono / JetBrains Mono，12.5px，等宽对齐 |
-| 侧边栏条目 | 主条目 13px；分组标题与辅助信息 12px；行高 32px，超出省略号 |
+| 侧边栏条目 | 主条目 13px；分组标题 14px/500；辅助信息 12px；行高 32px，超出省略号 |
 | 标题层级 | 仅三级：页面 16px 600 / 区块 14px 600 / 卡片 13px 500 |
 | 空态主标题 | 28px / 600 |
 | 说明 / 元数据 | 12px |
@@ -177,3 +177,4 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 - v0.21 (2026-09-21) Issue #70 Bash 耗时布局：超长命令标题单行省略，运行中与终态耗时固定保留在右侧，disclosure Chevron 继续可见；聚合与分类图标语义不变。
 
 - Issue #294 (2026-10-11)：Composer footer 移除分支入口与占位；保留新建任务独立 utility bar 的分支选择与安全语义，取代 #191 的底行入口要求。
+- v0.22 (2026-10-16) 侧栏分组标题对齐 ChatGPT：`Pinned / Projects / Recents` 标题由 12px 常规字重改为 `SIDEBAR_SECTION` 14px/500，仍弱于 13px 行标题的对比层级；英文 `sidebar.recents` 文案由 `Recent tasks` 收敛为 `Recents`。行高、内缩、顺序与辅助操作显隐不变。

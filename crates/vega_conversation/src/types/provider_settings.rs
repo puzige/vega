@@ -31,22 +31,18 @@ impl ProviderPreflightFailure {
     pub fn message(&self) -> String {
         match self {
             Self::ProviderUnavailable { model, providers } => {
-                let provider_hint = if providers.is_empty() {
-                    "没有可用的供应商"
+                if providers.is_empty() {
+                    vega_i18n::t_args("domain.provider.preflight_missing", &[("model", model)])
                 } else {
-                    "供应商配置不可用"
-                };
-                let names = if providers.is_empty() {
-                    String::new()
-                } else {
-                    format!("（{}）", providers.join("、"))
-                };
-                format!(
-                    "模型“{model}”{names}{provider_hint}，请前往设置 → Providers 启用并配置唯一匹配后重试"
-                )
+                    vega_i18n::t_args(
+                        "domain.provider.preflight_unavailable",
+                        &[("model", model), ("providers", &providers.join(", "))],
+                    )
+                }
             }
-            Self::CredentialUnavailable { model, provider } => format!(
-                "模型“{model}”的供应商“{provider}”本地凭据缺失或无法读取，请在设置 → Providers 中重新填写 API Key 后重试"
+            Self::CredentialUnavailable { model, provider } => vega_i18n::t_args(
+                "domain.provider.preflight_credential",
+                &[("model", model), ("provider", provider)],
             ),
         }
     }
@@ -107,26 +103,26 @@ pub struct ProviderPatchRequest {
 /// Stable errors never include URLs, credentials, or remote response text.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ProviderSettingsError {
-    #[error("配置读取或保存失败，请重试")]
+    #[error("{}", vega_i18n::t("domain.provider.config"))]
     Config,
-    #[error("供应商配置已更改，请重新读取")]
+    #[error("{}", vega_i18n::t("domain.provider.conflict"))]
     Conflict,
-    #[error("配置或模型 ID 无效")]
+    #[error("{}", vega_i18n::t("domain.provider.invalid"))]
     Invalid,
-    #[error("本地凭据不存在或无法安全读取，请重新保存 API Key")]
+    #[error("{}", vega_i18n::t("domain.provider.credential"))]
     Credential,
-    #[error("供应商已禁用")]
+    #[error("{}", vega_i18n::t("domain.provider.disabled"))]
     Disabled,
-    #[error("请求已取消")]
+    #[error("{}", vega_i18n::t("domain.provider.cancelled"))]
     Cancelled,
-    #[error("连接检查超时（15 秒）")]
+    #[error("{}", vega_i18n::t("domain.provider.timeout"))]
     Timeout,
-    #[error("无法连接供应商")]
+    #[error("{}", vega_i18n::t("domain.provider.network"))]
     Network,
-    #[error("供应商返回 HTTP {0}")]
+    #[error("{}", vega_i18n::t_args("domain.provider.http", &[("status", &.0.to_string())]))]
     Http(u16),
-    #[error("供应商返回内容格式无效或为空")]
+    #[error("{}", vega_i18n::t("domain.provider.malformed"))]
     Malformed,
-    #[error("供应商返回内容超过限制")]
+    #[error("{}", vega_i18n::t("domain.provider.limit"))]
     Limit,
 }

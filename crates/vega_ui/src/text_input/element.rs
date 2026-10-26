@@ -66,6 +66,8 @@ struct TextElement {
 
 struct PrepaintState {
     lines: Vec<LineLayout>,
+    navigation_lines: Vec<LineLayout>,
+    content_revision: u64,
     line_height: Pixels,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
@@ -137,7 +139,7 @@ impl Element for TextElement {
             (
                 input
                     .prediction_text()
-                    .map_or_else(|| input.placeholder.clone(), SharedString::from),
+                    .map_or_else(|| input.localized_placeholder(), SharedString::from),
                 theme(cx).colors.text_tertiary.into(),
             )
         } else {
@@ -331,6 +333,11 @@ impl Element for TextElement {
         if ghost {
             lines.truncate(input.rows);
         }
+        let navigation_lines = if input.multiline && !input.content.is_empty() {
+            lines.clone()
+        } else {
+            Vec::new()
+        };
         let total_visual_rows = lines.len().max(1);
         let manual_scroll = input
             .scroll_handle
@@ -463,6 +470,8 @@ impl Element for TextElement {
         }
 
         PrepaintState {
+            navigation_lines,
+            content_revision: input.content_revision,
             editor_scroll: manual_scroll
                 .map(|(selection, revision, _)| (selection, revision, first_visible_row)),
             total_visual_rows,
@@ -531,6 +540,8 @@ impl Element for TextElement {
                 || (input.total_visual_rows > input.rows)
                     != (prepaint.total_visual_rows > prepaint.visible_rows);
             input.last_lines = std::mem::take(&mut prepaint.lines);
+            input.navigation_lines = std::mem::take(&mut prepaint.navigation_lines);
+            input.navigation_revision = prepaint.content_revision;
             input.last_line_height = line_height;
             input.last_bounds = Some(bounds);
             input.rows = prepaint.visible_rows;
@@ -566,6 +577,10 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::delete))
             .on_action(cx.listener(Self::left))
             .on_action(cx.listener(Self::right))
+            .on_action(cx.listener(Self::up))
+            .on_action(cx.listener(Self::down))
+            .on_action(cx.listener(Self::select_up))
+            .on_action(cx.listener(Self::select_down))
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
             .on_action(cx.listener(Self::select_all))

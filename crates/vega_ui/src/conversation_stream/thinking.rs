@@ -197,6 +197,7 @@ pub(crate) struct ThinkingBlock {
     ancestor_visible: bool,
     pub(crate) expanded: bool,
     pub(crate) truncated: bool,
+    message_actions_enabled: bool,
     focus: FocusHandle,
     scroll: ScrollHandle,
 }
@@ -220,7 +221,7 @@ impl ThinkingBlock {
         } else if !self.thinking_preview.title.is_empty() {
             &self.thinking_preview.title
         } else {
-            "Thinking"
+            vega_i18n::t("ui.thinking")
         }
     }
 
@@ -299,8 +300,16 @@ impl ThinkingBlock {
             ancestor_visible: true,
             expanded: false,
             truncated: false,
+            message_actions_enabled: true,
             focus: cx.focus_handle().tab_stop(true),
             scroll: ScrollHandle::new(),
+        }
+    }
+
+    pub(crate) fn set_message_actions_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.message_actions_enabled != enabled {
+            self.message_actions_enabled = enabled;
+            cx.notify();
         }
     }
     pub(crate) fn set_ancestor_visible(&mut self, visible: bool) {
@@ -486,7 +495,7 @@ impl Render for ThinkingBlock {
                     .tab_stop(can_expand)
                     .focus_visible(move |row| row.bg(colors.bg_hover))
                     .aria_label(if can_expand {
-                        format!("{}, expand or collapse thinking", title)
+                        vega_i18n::t_args("ui.thinking_disclosure", &[("title", &title)])
                     } else {
                         title.clone()
                     })
@@ -555,13 +564,24 @@ impl Render for ThinkingBlock {
                     div()
                         .text_size(px(Typography::METADATA))
                         .text_color(colors.text_tertiary)
-                        .child("Earlier thinking omitted"),
+                        .child(vega_i18n::t("ui.earlier_thinking_omitted")),
                 )
             })
     }
 }
 
 impl ConversationStream {
+    pub(crate) fn sync_retained_thinking_actions(&mut self, cx: &mut Context<Self>) {
+        let enabled = self.message_actions_enabled();
+        for card in self
+            .retained_thinking
+            .iter()
+            .filter_map(|card| card.upgrade())
+        {
+            card.update(cx, |card, cx| card.set_message_actions_enabled(enabled, cx));
+        }
+    }
+
     pub(crate) fn append_thinking(
         &mut self,
         message_id: &str,
@@ -595,6 +615,10 @@ impl ConversationStream {
                 return;
             };
             let card = cx.new(ThinkingBlock::new);
+            let actions_enabled = self.message_actions_enabled();
+            card.update(cx, |card, cx| {
+                card.set_message_actions_enabled(actions_enabled, cx)
+            });
             group.update(cx, |group, cx| {
                 group.append_thinking(segment, card.clone(), cx)
             });

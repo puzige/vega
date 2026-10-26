@@ -2,7 +2,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 /// The `SELECT` column list shared by the row-loading queries.
 const COLUMNS: &str = "id, project_id, title, mode, permission_mode, model, backend, \
-                       status, pinned, unread, created_at, updated_at, parent_thread_id, workspace_owner_thread_id";
+                       status, pinned, unread, created_at, updated_at, parent_thread_id, workspace_owner_thread_id, forked_from_thread_id, forked_from_message_id";
 
 /// A raw `threads` row, field-for-field with the DDL.
 ///
@@ -12,6 +12,8 @@ const COLUMNS: &str = "id, project_id, title, mode, permission_mode, model, back
 pub struct ThreadRow {
     pub parent_thread_id: Option<String>,
     pub workspace_owner_thread_id: Option<String>,
+    pub forked_from_thread_id: Option<String>,
+    pub forked_from_message_id: Option<String>,
     /// Primary key (ulid).
     pub id: String,
     /// Owning project id (`projects.id`). An empty value represents a
@@ -269,8 +271,52 @@ pub fn set_model(
         return Ok(0);
     }
     conn.execute(
-        "UPDATE threads SET model = ?1, updated_at = ?2 WHERE id = ?3",
+        "UPDATE threads SET model = ?1, pending_model = NULL, updated_at = ?2 WHERE id = ?3",
         params![model, now, id],
+    )
+}
+
+pub fn pending_model(conn: &Connection, id: &str) -> Result<Option<String>, rusqlite::Error> {
+    conn.query_row(
+        "SELECT pending_model FROM threads WHERE id = ?1",
+        [id],
+        |row| row.get(0),
+    )
+}
+
+pub fn stage_model(
+    conn: &Connection,
+    id: &str,
+    model: &str,
+    now: i64,
+) -> Result<usize, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Threads,
+    )?;
+    if model.is_empty() {
+        return Ok(0);
+    }
+    conn.execute(
+        "UPDATE threads SET pending_model = ?1, updated_at = ?2 WHERE id = ?3",
+        params![model, now, id],
+    )
+}
+
+pub fn promote_pending_model(
+    conn: &Connection,
+    id: &str,
+    expected: &str,
+    now: i64,
+) -> Result<usize, rusqlite::Error> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Threads,
+    )?;
+    conn.execute(
+        "UPDATE threads SET model = pending_model, pending_model = NULL, updated_at = ?3
+         WHERE id = ?1 AND pending_model = ?2",
+        params![id, expected, now],
     )
 }
 
@@ -446,6 +492,8 @@ fn thread_from_row(row: &rusqlite::Row) -> rusqlite::Result<ThreadRow> {
     Ok(ThreadRow {
         parent_thread_id: row.get(12)?,
         workspace_owner_thread_id: row.get(13)?,
+        forked_from_thread_id: row.get(14)?,
+        forked_from_message_id: row.get(15)?,
         id: row.get(0)?,
         project_id: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
         title: row.get(2)?,

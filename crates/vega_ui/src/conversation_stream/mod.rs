@@ -1,11 +1,14 @@
 mod privacy;
 pub use privacy::{PrivacyAction, PrivacyRequested};
 mod attachments;
+mod ordinary_submissions;
 mod pending_messages;
+pub use ordinary_submissions::{OrdinaryAction, OrdinaryActionRequested};
 mod user_questions;
 pub use pending_messages::{PendingQueueAction, PendingQueueRequested, RunningMessageDefault};
 pub mod bench;
 mod computer_use;
+pub(crate) mod generated_notice;
 mod network_retry;
 mod screenshots;
 mod skills;
@@ -27,10 +30,11 @@ use vega_conversation::agent::{PendingPermission, PermissionQueue};
 use vega_conversation::history::{HistoryEntry, HistoryPage};
 use vega_conversation::types::{
     ComposerDefaults, ConversationEvent, ConversationMeter, FileIndexSnapshot, FrozenReasoning,
-    PendingMessageBehavior, PendingQueueProjection, PermissionMode, Plan, ProviderPreflightFailure,
-    ReasoningChoice, ReasoningProfileProjection, ReasoningSupport, RestoredUsage, RunFailureKind,
-    RunUsageEstimator, SkillComposerMutation, SkillComposerProjection, SkillSelectionIntent,
-    TaskBackend, TaskCostSummary, Thread, ThreadMode,
+    ModelOption, PendingMessageBehavior, PendingQueueProjection, PermissionMode, Plan,
+    ProviderPreflightFailure, ReasoningChoice, ReasoningProfileProjection, ReasoningSupport,
+    RestoredUsage, RunFailureKind, RunUsageEstimator, SkillComposerMutation,
+    SkillComposerProjection, SkillSelectionIntent, TaskBackend, TaskCostSummary, Thread,
+    ThreadMode,
 };
 use vega_markdown::{
     BlockView, HighlightKind, HighlightSpan, Inline, ListBlock, MarkdownStream, MockReplay,
@@ -126,8 +130,11 @@ pub struct TaskBackendSelectionRequested {
 }
 
 /// Composer submission routed to the application controller.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ComposerSubmitted {
+    pub request_id: u64,
+    pub draft_revision: u64,
+    pub attachment_ids: Vec<u64>,
     pub pending_behavior: Option<PendingMessageBehavior>,
     pub images: Vec<ImageAttachment>,
     pub thread_id: String,
@@ -140,6 +147,15 @@ pub struct ComposerSubmitted {
     /// provider-default fallback. The app controller can reject the submit
     /// while keeping the input draft intact.
     pub reasoning: Result<Option<FrozenReasoning>, ReasoningSubmitError>,
+}
+
+impl std::fmt::Debug for ComposerSubmitted {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ComposerSubmitted")
+            .field("request_id", &self.request_id)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Read-only, bounded Skills catalog request for this exact route.

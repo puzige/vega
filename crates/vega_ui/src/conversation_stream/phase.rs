@@ -48,6 +48,7 @@ impl RunResponses {
         let mut text = String::new();
         let mut owner = None;
         let mut failed = false;
+        let mut notices = Vec::new();
         for (entry, identity) in entries.iter().zip(identities) {
             if identity.message_id.as_deref() == Some(message_id)
                 && let StreamEntry::Assistant {
@@ -58,6 +59,11 @@ impl RunResponses {
                 } = entry
             {
                 failed |= failure.is_some();
+                notices.extend(
+                    copy.generated_notices()
+                        .into_iter()
+                        .map(|notice| notice.shifted(text.len())),
+                );
                 text.push_str(&copy.original_text());
                 if model.row_count() > 0 {
                     owner = Some((copy.id, text.len()));
@@ -77,17 +83,35 @@ impl RunResponses {
                 Some((
                     owner,
                     text.get(response.text_start_bytes..response.text_end_bytes)?,
+                    response.text_start_bytes..response.text_end_bytes,
                 ))
             });
-        self.final_copy = projection.map(|(owner, source)| {
+        self.final_copy = projection.map(|(owner, source, range)| {
             let copy = self
                 .final_copy
                 .as_ref()
                 .filter(|(previous, copy)| *previous == owner && copy.original_text() == source)
                 .map(|(_, copy)| copy.clone())
                 .unwrap_or_else(|| MessageCopy::new(source));
+            copy.set_generated_notices(
+                notices
+                    .iter()
+                    .filter_map(|notice| notice.within(range.clone()))
+                    .collect(),
+            );
             (owner, copy)
         });
+    }
+
+    pub(crate) fn refresh_generated_copy(
+        &mut self,
+        message_id: &str,
+        entries: &[StreamEntry],
+        identities: &[StreamEntryIdentity],
+    ) {
+        if self.final_copy.is_some() {
+            self.refresh_final_copy(message_id, entries, identities);
+        }
     }
 
     fn copy_owner(&self) -> Option<u64> {
@@ -236,6 +260,17 @@ impl ConversationStream {
             .map(|(_, source)| source)
     }
 
+    pub(crate) fn message_actions_enabled(&self) -> bool {
+        !self.actions.running && self.active_agent_message.is_none()
+    }
+
+    pub(crate) fn message_interaction(&self) -> render_rows::MessageInteraction<'_> {
+        render_rows::MessageInteraction {
+            focus: &self.selection_focus,
+            actions_enabled: self.message_actions_enabled(),
+        }
+    }
+
     pub(crate) fn copy_source_for_entry(&self, index: usize) -> Option<&MessageCopy> {
         if let Some(source) = self.final_copy_for_entry(index) {
             return Some(source);
@@ -317,7 +352,23 @@ impl ConversationStream {
                     && let Some(text) = text.get(response.text_start_bytes..response.text_end_bytes)
                     && !text.trim().is_empty()
                 {
-                    return Some(text.to_owned());
+                    let mut offset = 0;
+                    let notices = copies
+                        .iter()
+                        .flat_map(|copy| {
+                            let notices = copy
+                                .generated_notices()
+                                .into_iter()
+                                .map(|notice| notice.shifted(offset))
+                                .collect::<Vec<_>>();
+                            offset += copy.original_text().len();
+                            notices
+                        })
+                        .filter_map(|notice| {
+                            notice.within(response.text_start_bytes..response.text_end_bytes)
+                        })
+                        .collect::<Vec<_>>();
+                    return Some(generated_notice::project_text(text, &notices));
                 }
                 continue;
             }
@@ -329,7 +380,7 @@ impl ConversationStream {
                 {
                     continue;
                 }
-                let text = copy.original_text();
+                let text = copy.display_text();
                 if !text.trim().is_empty() {
                     return Some(text);
                 }
@@ -362,6 +413,15 @@ impl ConversationStream {
                 }
                 StreamEntry::Assistant { copy, .. } if group.read(cx).hides_copy(copy.id) => {
                     details.push((index, RunDetail::Assistant(index)));
+                }
+                StreamEntry::Tool { card }
+                    if card.read(cx).is_subagent_invocation()
+                        && self.entry_owner_group(index) == Some(group) =>
+                {
+                    details.push((
+                        index,
+                        RunDetail::Operation(RunActivityChild::Tool(card.clone())),
+                    ));
                 }
                 _ => {}
             }
@@ -479,9 +539,11 @@ impl ConversationStream {
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
+        let details = self.run_details(&group, cx);
+        let attached_details = !details.is_empty();
         let details = if group.read(cx).expanded() {
             let mut previous_assistant = false;
-            self.run_details(&group, cx)
+            details
                 .into_iter()
                 .enumerate()
                 .map(|(detail_index, (_, detail))| match detail {
@@ -506,7 +568,7 @@ impl ConversationStream {
                                 &self.entries[index],
                                 window,
                                 cx,
-                                &self.selection_focus,
+                                self.message_interaction(),
                             ))
                             .into_any_element()
                     }
@@ -515,7 +577,7 @@ impl ConversationStream {
         } else {
             Vec::new()
         };
-        RunActivityGroup::render_with_details(group, details, window, cx)
+        RunActivityGroup::render_with_details(group, details, attached_details, window, cx)
     }
 
     pub(crate) fn restore_process_anchor(
@@ -591,8 +653,13 @@ impl ConversationStream {
             && let Some((_, index)) = &self.active_agent_message
         {
             let index = *index;
-            if let Some(StreamEntry::Assistant { stream, model, .. }) = self.entries.get_mut(index)
-                && model.sync(&stream.snapshot(), &self.counters)
+            if let Some(StreamEntry::Assistant {
+                copy,
+                stream,
+                model,
+                ..
+            }) = self.entries.get_mut(index)
+                && copy.sync_model(stream, model, &self.counters)
             {
                 self.invalidate_item(Some(index));
             }
@@ -649,6 +716,13 @@ impl ConversationStream {
         }
     }
 
+    pub(crate) fn entry_owner_group(&self, index: usize) -> Option<&Entity<RunActivityGroup>> {
+        self.entry_identities
+            .get(index)
+            .and_then(|identity| identity.message_id.as_ref())
+            .and_then(|owner| self.run_activity_groups.get(owner))
+    }
+
     pub(crate) fn process_entry_hidden(&self, index: usize, cx: &App) -> bool {
         if self.compaction_failure_resolved(index) {
             return true;
@@ -656,10 +730,42 @@ impl ConversationStream {
         if let Some(StreamEntry::RunActivity { group }) = self.entries.get(index) {
             return group.read(cx).header_hidden();
         }
-        if matches!(self.entries.get(index), Some(StreamEntry::ContextCompaction { record, .. })
-            if matches!(record.status, vega_conversation::types::ContextCompactionStatus::Succeeded | vega_conversation::types::ContextCompactionStatus::Cancelled))
+        if let Some(StreamEntry::Tool { card }) = self.entries.get(index)
+            && card.read(cx).is_subagent_invocation()
+            && self.entry_owner_group(index).is_some_and(|owner| {
+                let owner = owner.read(cx);
+                owner.process_in_details() && !owner.header_hidden()
+            })
         {
             return true;
+        }
+        if let Some(StreamEntry::RunActivitySegment { group, segment }) = self.entries.get(index) {
+            return group.read(cx).segment_row_count(*segment, cx) == 0;
+        }
+        if let Some(StreamEntry::ContextCompaction { model, record, .. }) = self.entries.get(index)
+        {
+            use vega_conversation::types::ContextCompactionStatus as Status;
+            if matches!(record.status, Status::Succeeded | Status::Cancelled) {
+                return true;
+            }
+            if record.status == Status::Compacting {
+                return self
+                    .entry_identities
+                    .get(index)
+                    .and_then(|identity| identity.message_id.as_ref())
+                    .and_then(|owner| self.run_activity_groups.get(owner))
+                    .is_some_and(|group| {
+                        group
+                            .read(cx)
+                            .compaction_segment(model, record.generation)
+                            .is_some_and(|projected| {
+                                self.entries.iter().any(|entry| {
+                                    matches!(entry, StreamEntry::RunActivitySegment { group: owned, segment }
+                                        if owned == group && *segment == projected)
+                                })
+                            })
+                    });
+            }
         }
         let Some(StreamEntry::Assistant {
             copy,

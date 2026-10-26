@@ -16,8 +16,8 @@ impl AutomationKind {
     }
     pub fn label(self) -> &'static str {
         match self {
-            Self::Goal => "持续目标",
-            Self::Loop => "循环任务",
+            Self::Goal => vega_i18n::t("domain.automation.goal"),
+            Self::Loop => vega_i18n::t("domain.automation.loop"),
         }
     }
 }
@@ -37,17 +37,80 @@ pub enum AutomationStatus {
 impl AutomationStatus {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Active => "进行中",
-            Self::Paused => "已暂停",
-            Self::Blocked => "受阻",
-            Self::BudgetLimited => "预算已用完",
-            Self::Complete => "已完成",
-            Self::Stopped => "已停止",
-            Self::Expired => "已到期",
+            Self::Active => vega_i18n::t("domain.automation.active"),
+            Self::Paused => vega_i18n::t("domain.automation.paused"),
+            Self::Blocked => vega_i18n::t("domain.automation.blocked"),
+            Self::BudgetLimited => vega_i18n::t("domain.automation.budget_limited"),
+            Self::Complete => vega_i18n::t("domain.automation.complete"),
+            Self::Stopped => vega_i18n::t("domain.automation.stopped"),
+            Self::Expired => vega_i18n::t("domain.automation.expired"),
         }
     }
     pub fn replaceable(self) -> bool {
         matches!(self, Self::Complete | Self::Stopped)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationReason {
+    UserPaused,
+    ThreadArchived,
+    AppRestarted,
+    LoopExpired,
+    RunIncomplete,
+    UsageUnverified,
+    BudgetExhausted,
+    NoProgress,
+    Stopped,
+    StartFailed,
+}
+
+impl AutomationReason {
+    pub fn from_code(code: &str) -> Option<Self> {
+        match code {
+            "user_paused" => Some(Self::UserPaused),
+            "thread_archived" => Some(Self::ThreadArchived),
+            "app_restarted" => Some(Self::AppRestarted),
+            "loop_expired" => Some(Self::LoopExpired),
+            "run_incomplete" => Some(Self::RunIncomplete),
+            "usage_unverified" => Some(Self::UsageUnverified),
+            "budget_exhausted" => Some(Self::BudgetExhausted),
+            "no_progress" => Some(Self::NoProgress),
+            "stopped" => Some(Self::Stopped),
+            "start_failed" => Some(Self::StartFailed),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn protocol_reason(self) -> &'static str {
+        match self {
+            Self::UserPaused => "已由你暂停",
+            Self::ThreadArchived => "会话已归档",
+            Self::AppRestarted => "应用重启后已暂停",
+            Self::LoopExpired => "循环已到期，恢复后将重新计时 7 天",
+            Self::RunIncomplete => "本轮未完成，请检查会话中的错误或待处理事项后恢复",
+            Self::UsageUnverified => "无法核实本轮完整用量，请清除后重新设置预算",
+            Self::BudgetExhausted => "已达到 token 预算，后续回合已停止",
+            Self::NoProgress => "连续三轮没有可核实的进展，请检查任务后恢复",
+            Self::Stopped => "已停止，恢复任务后继续",
+            Self::StartFailed => "自动任务未能开始，请检查模型和会话状态后恢复",
+        }
+    }
+
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::UserPaused => vega_i18n::t("domain.automation.reason.user_paused"),
+            Self::ThreadArchived => vega_i18n::t("domain.automation.reason.thread_archived"),
+            Self::AppRestarted => vega_i18n::t("domain.automation.reason.app_restarted"),
+            Self::LoopExpired => vega_i18n::t("domain.automation.reason.loop_expired"),
+            Self::RunIncomplete => vega_i18n::t("domain.automation.reason.run_incomplete"),
+            Self::UsageUnverified => vega_i18n::t("domain.automation.reason.usage_unverified"),
+            Self::BudgetExhausted => vega_i18n::t("domain.automation.reason.budget_exhausted"),
+            Self::NoProgress => vega_i18n::t("domain.automation.reason.no_progress"),
+            Self::Stopped => vega_i18n::t("domain.automation.reason.stopped"),
+            Self::StartFailed => vega_i18n::t("domain.automation.reason.start_failed"),
+        }
     }
 }
 
@@ -70,6 +133,8 @@ pub struct AutomationTask {
     pub blocker_count: u8,
     pub blocker: Option<String>,
     pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_reason: Option<AutomationReason>,
     pub updated_at_ms: i64,
 }
 
@@ -144,6 +209,33 @@ pub struct WakeupReport {
 }
 
 impl AutomationTask {
+    pub fn reason_message(&self) -> Option<&str> {
+        match self.system_reason {
+            Some(reason) => Some(reason.message()),
+            None => self.reason.as_deref(),
+        }
+    }
+
+    pub fn is_user_paused(&self) -> bool {
+        self.system_reason == Some(AutomationReason::UserPaused)
+    }
+
+    pub(crate) fn set_system_reason(&mut self, reason: AutomationReason) {
+        self.reason = Some(reason.protocol_reason().into());
+        self.system_reason = Some(reason);
+    }
+
+    pub(crate) fn set_pause_reason(&mut self, reason: &str) {
+        self.system_reason = AutomationReason::from_code(reason);
+        self.reason = Some(
+            match self.system_reason {
+                Some(reason) => reason.protocol_reason(),
+                None => reason,
+            }
+            .into(),
+        );
+    }
+
     pub fn can_control(&self) -> bool {
         !self.status.replaceable()
             && self.status != AutomationStatus::BudgetLimited

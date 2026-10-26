@@ -17,6 +17,7 @@ impl DiffView {
             rows: Vec::new(),
             hunk_indexes: Vec::new(),
             current_hunk: None,
+            rendered_language: vega_i18n::language(),
             focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
         }
@@ -244,10 +245,8 @@ impl DiffView {
             if let Some((error_file, code)) = self.projection_error
                 && error_file == file.id
             {
-                self.rows.push(PreparedRow::ProjectionError {
-                    id: file.id,
-                    text: error_label(code).to_owned(),
-                });
+                self.rows
+                    .push(PreparedRow::ProjectionError { id: file.id, code });
                 continue;
             }
             let Some(projection) = self
@@ -256,7 +255,7 @@ impl DiffView {
                 .filter(|item| item.file_id == file.id)
             else {
                 self.rows.push(PreparedRow::Message {
-                    text: "Loading diff…".to_owned(),
+                    key: "ui.loading_diff",
                     danger: false,
                 });
                 continue;

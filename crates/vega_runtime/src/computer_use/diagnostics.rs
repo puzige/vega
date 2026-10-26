@@ -1,7 +1,9 @@
 use super::{Capability, ComputerUseError as Error};
+use serde::{Deserialize, Serialize};
 use vega_mcp::{ManagedResult, McpError};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(super) enum Stage {
     Initialize,
     Permissions,
@@ -13,9 +15,18 @@ pub(super) enum Stage {
     Screenshot,
     Action,
     ActionPreflight,
+    Progress,
 }
 
 impl Stage {
+    pub(super) fn for_tool(name: &str) -> Self {
+        match name {
+            "ComputerAct" | "BrowserAct" => Self::ActionPreflight,
+            "ComputerScreenshot" => Self::Screenshot,
+            _ => Self::Observe,
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             Self::Initialize => "initialize",
@@ -28,6 +39,7 @@ impl Stage {
             Self::Screenshot => "screenshot",
             Self::Action => "action",
             Self::ActionPreflight => "action_preflight",
+            Self::Progress => "progress",
         }
     }
 }
@@ -76,6 +88,52 @@ pub(super) enum Class {
 }
 
 impl Class {
+    pub(super) fn from_code(code: &str) -> Option<Self> {
+        [
+            Self::Unknown,
+            Self::Transport,
+            Self::Timeout,
+            Self::Cancelled,
+            Self::Protocol,
+            Self::LimitExceeded,
+            Self::RpcRejected,
+            Self::PermissionsMissing,
+            Self::AccessibilityPermissionMissing,
+            Self::ScreenRecordingPermissionMissing,
+            Self::PolicyDenied,
+            Self::ExtensionMissing,
+            Self::ExtensionConnection,
+            Self::BrowserMissing,
+            Self::AttachFailed,
+            Self::CdpCommandFailed,
+            Self::TargetUnavailable,
+            Self::TargetCount,
+            Self::TargetFormat,
+            Self::TargetNotCurrent,
+            Self::AxUnavailable,
+            Self::AxTimeout,
+            Self::ObservationIdentityMismatch,
+            Self::ScreenshotUnverified,
+            Self::CaptureUnavailable,
+            Self::CaptureFrameMismatch,
+            Self::CaptureBindingFailed,
+            Self::CapturePublicationFailed,
+            Self::AxAppLaunching,
+            Self::AxWindowUnresolved,
+            Self::DegradedUnknown,
+            Self::NoObservationContent,
+            Self::StaleObservation,
+            Self::BackgroundUnavailable,
+            Self::OffSpaceOrAxUnresolved,
+            Self::MinimizedOrHiddenWindow,
+            Self::SamePidKeyboardAmbiguity,
+            Self::InvalidCoordinates,
+            Self::InvalidImage,
+        ]
+        .into_iter()
+        .find(|class| class.code() == code)
+    }
+
     pub(super) fn code(self) -> &'static str {
         match self {
             Self::Unknown => "unknown",
@@ -120,7 +178,7 @@ impl Class {
         }
     }
 
-    fn guidance(self) -> &'static str {
+    fn protocol_guidance(self) -> &'static str {
         match self {
             Self::PermissionsMissing => {
                 "请在系统设置中开启 Vega 的辅助功能和屏幕录制权限，然后重试。"
@@ -197,6 +255,56 @@ impl Class {
             }
         }
     }
+
+    fn guidance(self) -> &'static str {
+        match self {
+            Self::PermissionsMissing => vega_i18n::t("domain.computer.guidance.permissions"),
+            Self::AccessibilityPermissionMissing => {
+                vega_i18n::t("domain.computer.guidance.accessibility")
+            }
+            Self::ScreenRecordingPermissionMissing => {
+                vega_i18n::t("domain.computer.guidance.screen_recording")
+            }
+            Self::ExtensionMissing => vega_i18n::t("domain.computer.guidance.extension_missing"),
+            Self::ExtensionConnection => {
+                vega_i18n::t("domain.computer.guidance.extension_connection")
+            }
+            Self::BrowserMissing => vega_i18n::t("domain.computer.guidance.browser_missing"),
+            Self::AttachFailed => vega_i18n::t("domain.computer.guidance.attach_failed"),
+            Self::CdpCommandFailed => vega_i18n::t("domain.computer.guidance.cdp_failed"),
+            Self::PolicyDenied => vega_i18n::t("domain.computer.guidance.policy"),
+            Self::TargetUnavailable => vega_i18n::t("domain.computer.guidance.target_unavailable"),
+            Self::TargetCount => vega_i18n::t("domain.computer.guidance.target_count"),
+            Self::TargetFormat => vega_i18n::t("domain.computer.guidance.target_format"),
+            Self::TargetNotCurrent => vega_i18n::t("domain.computer.guidance.target_current"),
+            Self::AxUnavailable | Self::AxTimeout => vega_i18n::t("domain.computer.guidance.ax"),
+            Self::CaptureUnavailable => vega_i18n::t("domain.computer.guidance.capture"),
+            Self::AxAppLaunching => vega_i18n::t("domain.computer.guidance.launching"),
+            Self::AxWindowUnresolved => vega_i18n::t("domain.computer.guidance.unresolved"),
+            Self::NoObservationContent => vega_i18n::t("domain.computer.guidance.no_content"),
+            Self::ObservationIdentityMismatch
+            | Self::ScreenshotUnverified
+            | Self::CaptureFrameMismatch
+            | Self::CaptureBindingFailed
+            | Self::CapturePublicationFailed
+            | Self::DegradedUnknown
+            | Self::InvalidImage => vega_i18n::t("domain.computer.guidance.unverified"),
+            Self::StaleObservation | Self::InvalidCoordinates => {
+                vega_i18n::t("domain.computer.guidance.stale")
+            }
+            Self::BackgroundUnavailable => vega_i18n::t("domain.computer.guidance.background"),
+            Self::OffSpaceOrAxUnresolved => vega_i18n::t("domain.computer.guidance.space"),
+            Self::MinimizedOrHiddenWindow => vega_i18n::t("domain.computer.guidance.visibility"),
+            Self::SamePidKeyboardAmbiguity => vega_i18n::t("domain.computer.guidance.keyboard"),
+            Self::Cancelled => vega_i18n::t("domain.computer.guidance.cancelled"),
+            Self::Protocol | Self::LimitExceeded => {
+                vega_i18n::t("domain.computer.guidance.protocol")
+            }
+            Self::Transport | Self::Timeout | Self::RpcRejected | Self::Unknown => {
+                vega_i18n::t("domain.computer.guidance.incomplete")
+            }
+        }
+    }
 }
 
 impl ExecutorFailure {
@@ -220,13 +328,39 @@ impl ExecutorFailure {
 
     pub(super) fn user_message(self) -> &'static str {
         if self.capability == Capability::Desktop && self.class == Class::PolicyDenied {
-            "执行器工具策略拒绝了请求，请检查组件安装与受管策略。"
+            vega_i18n::t("domain.computer.guidance.tool_policy")
         } else {
             self.class.guidance()
         }
     }
 
-    pub(super) fn feedback(self) -> String {
+    pub(super) fn capability(self) -> Capability {
+        self.capability
+    }
+
+    pub(super) fn stage(self) -> Stage {
+        self.stage
+    }
+
+    pub(super) fn protocol_diagnostic(self) -> String {
+        let executor = match self.capability {
+            Capability::Desktop => "cua",
+            Capability::Browser => "playwright",
+        };
+        let guidance =
+            if self.capability == Capability::Desktop && self.class == Class::PolicyDenied {
+                "执行器工具策略拒绝了请求，请检查组件安装与受管策略。"
+            } else {
+                self.class.protocol_guidance()
+            };
+        format!(
+            "executor={executor} stage={} error_class={}: {guidance}",
+            self.stage.label(),
+            self.class.code(),
+        )
+    }
+
+    pub(super) fn feedback_value(self) -> serde_json::Value {
         let retryable = recoverable_observe(Error::Executor(self));
         let next = if matches!(
             self.class,
@@ -240,7 +374,7 @@ impl ExecutorFailure {
         } else {
             "stop_and_report"
         };
-        serde_json::json!({"code":self.class.code(),"retryable":retryable,"next_step":next,"field":serde_json::Value::Null,"diagnostic":self.to_string()}).to_string()
+        serde_json::json!({"code":self.class.code(),"retryable":retryable,"next_step":next,"field":serde_json::Value::Null,"diagnostic":self.protocol_diagnostic()})
     }
 }
 

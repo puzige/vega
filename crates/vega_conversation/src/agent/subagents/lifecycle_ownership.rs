@@ -5,27 +5,25 @@ pub(super) struct LifecycleOwnership {
     snapshot: SubagentSnapshot,
     previous: Option<String>,
     owner: Option<Arc<DelegatedOwnership>>,
+    admission: vega_store::thread_admission::ThreadAdmission,
     registry: Registry,
     cancel: CancellationToken,
     armed: bool,
 }
 
 impl LifecycleOwnership {
-    pub(super) fn new(
-        database: PathBuf,
-        snapshot: SubagentSnapshot,
-        previous: Option<String>,
-        owner: Arc<DelegatedOwnership>,
-        registry: Registry,
-        cancel: CancellationToken,
-    ) -> Self {
+    pub(super) fn new(database: PathBuf, reserved: &ReservedExecution, registry: Registry) -> Self {
         Self {
             database,
-            snapshot,
-            previous,
-            owner: Some(owner),
+            snapshot: reserved.snapshot.clone(),
+            previous: reserved
+                .previous
+                .as_ref()
+                .map(|previous| previous.message_id.clone()),
+            owner: Some(reserved.owner.clone()),
+            admission: reserved.admission.clone(),
             registry,
-            cancel,
+            cancel: reserved.cancel.clone(),
             armed: false,
         }
     }
@@ -54,6 +52,14 @@ impl LifecycleOwnership {
     }
 
     pub(super) fn quarantine(&mut self, reason: &str) {
+        static QUARANTINED: std::sync::OnceLock<
+            Mutex<Vec<vega_store::thread_admission::ThreadAdmission>>,
+        > = std::sync::OnceLock::new();
+        let admission = self.admission.clone();
+        match QUARANTINED.get_or_init(Default::default).lock() {
+            Ok(mut admissions) => admissions.push(admission),
+            Err(_) => std::mem::forget(admission),
+        }
         self.cancel.cancel();
         if let Some(owner) = self.owner.take() {
             owner.quarantine();

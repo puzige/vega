@@ -75,45 +75,83 @@ impl ComposerPredictionRequest {
             .enable_all()
             .build()
             .ok()?;
-        let started = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs() as i64);
-        let (suggestion, usage) = runtime.block_on(self.collect(context, &cancel));
-        if let Some(usage) = usage {
-            persist_usage(
-                &store,
-                &thread_id,
-                &self.model,
-                started,
-                usage,
-                pricing.as_ref(),
-            );
+        for attempt in 0..3 {
+            if attempt > 0
+                && runtime.block_on(async {
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => true,
+                        _ = tokio::time::sleep(Duration::from_millis(250 * attempt)) => false,
+                    }
+                })
+            {
+                return None;
+            }
+            if cancel.is_cancelled()
+                || !(self.authority)()
+                || !prediction_owner_matches(
+                    &store,
+                    &thread_id,
+                    &completed_message_id,
+                    &self.model,
+                    self.mode,
+                )
+            {
+                return None;
+            }
+            let started = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs() as i64);
+            let projection = crate::privacy::DisplayProjection::load(&store, &thread_id).ok()?;
+            let (outcome, usage, output) =
+                runtime.block_on(self.collect(context.clone(), &cancel, &projection));
+            if let Some(usage) = usage {
+                persist_usage(
+                    &store,
+                    &thread_id,
+                    &self.model,
+                    started,
+                    usage,
+                    pricing.as_ref(),
+                );
+            }
+            if cancel.is_cancelled()
+                || !(self.authority)()
+                || !prediction_owner_matches(
+                    &store,
+                    &thread_id,
+                    &completed_message_id,
+                    &self.model,
+                    self.mode,
+                )
+            {
+                return None;
+            }
+            let projection = crate::privacy::DisplayProjection::load(&store, &thread_id).ok()?;
+            if !prediction_output_safe(&output, &projection) {
+                return None;
+            }
+            match outcome {
+                PredictionOutcome::Suggestion(suggestion) => {
+                    let projected = projection.text(&suggestion);
+                    return (projected == suggestion
+                        && !projected
+                            .contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER))
+                    .then_some(suggestion);
+                }
+                PredictionOutcome::Retry => {}
+                PredictionOutcome::Abstain | PredictionOutcome::Stop => return None,
+            }
         }
-        if cancel.is_cancelled()
-            || !(self.authority)()
-            || !prediction_owner_matches(
-                &store,
-                &thread_id,
-                &completed_message_id,
-                &self.model,
-                self.mode,
-            )
-        {
-            return None;
-        }
-        let suggestion = suggestion?;
-        let projection = crate::privacy::DisplayProjection::load(&store, &thread_id).ok()?;
-        let projected = projection.text(&suggestion);
-        (projected == suggestion
-            && !projected.contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER))
-        .then_some(suggestion)
+        None
     }
 
     async fn collect(
         &self,
         context: String,
         cancel: &CancellationToken,
-    ) -> (Option<String>, Option<PredictionUsage>) {
+        projection: &crate::privacy::DisplayProjection,
+    ) -> (PredictionOutcome, Option<PredictionUsage>, String) {
         let request_cancel = cancel.child_token();
         let request = ChatRequest {
             model: self.model.clone(),
@@ -129,24 +167,42 @@ impl ComposerPredictionRequest {
             ..Default::default()
         };
         let mut usage = None;
+        let mut text = String::new();
         let operation = async {
             if !(self.authority)() {
-                return None;
+                return PredictionOutcome::Stop;
             }
-            let mut stream = self
+            let mut stream = match self
                 .provider
                 .chat_stream_once(request, request_cancel.clone())
                 .await
-                .ok()?;
-            let mut text = String::new();
+            {
+                Ok(stream) => stream,
+                Err(error) => return PredictionOutcome::from_error(error),
+            };
             let mut done = false;
             while let Some(event) = stream.next().await {
-                match event.ok()? {
+                let event = match event {
+                    Ok(event) => event,
+                    Err(vega_runtime::VegaError::ProviderDiagnostic {
+                        kind: vega_runtime::ProviderFailureKind::Protocol,
+                        ..
+                    }) => return PredictionOutcome::Retry,
+                    Err(error) => return PredictionOutcome::from_error(error),
+                };
+                match event {
                     ProviderEvent::TextDelta(delta) => {
-                        if done || text.len().saturating_add(delta.len()) > 8192 {
-                            return None;
+                        if !prediction_output_safe(&delta, projection) {
+                            return PredictionOutcome::Stop;
                         }
-                        text.push_str(&delta);
+                        let oversized = text.len().saturating_add(delta.len()) > 8192;
+                        text.extend(delta.chars().take(8192));
+                        if !prediction_output_safe(&text, projection) {
+                            return PredictionOutcome::Stop;
+                        }
+                        if done || oversized {
+                            return PredictionOutcome::Retry;
+                        }
                     }
                     ProviderEvent::Usage {
                         input,
@@ -171,21 +227,38 @@ impl ComposerPredictionRequest {
                     | ProviderEvent::ChatReasoningContent(_)
                     | ProviderEvent::ResponseReplay(_)
                     | ProviderEvent::ResponseMetadata(_) => {}
-                    ProviderEvent::ToolUse { .. }
-                    | ProviderEvent::RetryScheduled { .. }
-                    | ProviderEvent::Done { .. } => return None,
+                    ProviderEvent::ToolUse { .. } | ProviderEvent::RetryScheduled { .. } => {
+                        return PredictionOutcome::Stop;
+                    }
+                    ProviderEvent::Done { .. } => return PredictionOutcome::Retry,
                 }
             }
-            done.then(|| parse_suggestion(&text)).flatten()
+            if done {
+                parse_suggestion(&text, projection)
+            } else {
+                PredictionOutcome::Retry
+            }
         };
-        let suggestion = tokio::select! {
+        let outcome = tokio::select! {
             biased;
-            _ = request_cancel.cancelled() => None,
-            result = tokio::time::timeout(Duration::from_secs(15), operation) => result.ok().flatten(),
+            _ = request_cancel.cancelled() => PredictionOutcome::Stop,
+            result = tokio::time::timeout(Duration::from_secs(15), operation) => {
+                result.unwrap_or(PredictionOutcome::Retry)
+            }
         };
         request_cancel.cancel();
-        (suggestion, usage)
+        let outcome = if prediction_output_safe(&text, projection) {
+            outcome
+        } else {
+            PredictionOutcome::Stop
+        };
+        (outcome, usage, text)
     }
+}
+
+fn prediction_output_safe(text: &str, projection: &crate::privacy::DisplayProjection) -> bool {
+    !text.contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER)
+        && projection.text(text) == text
 }
 
 fn prediction_owner_matches(
@@ -285,20 +358,74 @@ enum SuggestionValue {
     Empty(()),
 }
 
-fn parse_suggestion(text: &str) -> Option<String> {
-    let parsed: PredictionOutput = serde_json::from_str(text).ok()?;
-    let SuggestionValue::Text(suggestion) = parsed.suggestion else {
-        return None;
+enum PredictionOutcome {
+    Suggestion(String),
+    Abstain,
+    Retry,
+    Stop,
+}
+
+impl PredictionOutcome {
+    fn from_error(error: vega_runtime::VegaError) -> Self {
+        match error {
+            vega_runtime::VegaError::Provider {
+                retryable: true, ..
+            }
+            | vega_runtime::VegaError::ProviderDiagnostic {
+                retryable: true, ..
+            }
+            | vega_runtime::VegaError::ProviderPayloadTooLarge { .. }
+            | vega_runtime::VegaError::ProviderDiagnostic {
+                kind: vega_runtime::ProviderFailureKind::Transport,
+                ..
+            } => Self::Retry,
+            vega_runtime::VegaError::ProviderDiagnostic {
+                kind: vega_runtime::ProviderFailureKind::Http,
+                status: Some(status),
+                ..
+            } if status == 429 || (500..600).contains(&status) => Self::Retry,
+            vega_runtime::VegaError::Io(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionRefused
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::NotConnected
+                        | std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::Interrupted
+                        | std::io::ErrorKind::UnexpectedEof
+                ) =>
+            {
+                Self::Retry
+            }
+            _ => Self::Stop,
+        }
+    }
+}
+
+fn parse_suggestion(
+    text: &str,
+    projection: &crate::privacy::DisplayProjection,
+) -> PredictionOutcome {
+    let Ok(parsed) = serde_json::from_str::<PredictionOutput>(text) else {
+        return PredictionOutcome::Retry;
     };
+    let SuggestionValue::Text(suggestion) = parsed.suggestion else {
+        return PredictionOutcome::Abstain;
+    };
+    if !prediction_output_safe(&suggestion, projection) {
+        return PredictionOutcome::Stop;
+    }
     if suggestion.trim().is_empty()
         || suggestion.chars().count() > 200
         || suggestion
             .chars()
             .any(|ch| ch.is_control() && ch != '\n' && ch != '\t')
     {
-        return None;
+        return PredictionOutcome::Retry;
     }
-    Some(suggestion)
+    PredictionOutcome::Suggestion(suggestion)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

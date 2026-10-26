@@ -132,7 +132,7 @@ impl GuidanceCard {
         div()
             .id("preparation-diagnostics")
             .role(gpui_kit::Role::Button)
-            .aria_label("权限与检测")
+            .aria_label(vega_i18n::t("ui.permissions_and_checks"))
             .focusable()
             .tab_stop(true)
             .flex_shrink_0()
@@ -154,7 +154,7 @@ impl GuidanceCard {
                     cx.stop_propagation();
                 }
             }))
-            .child("权限与检测")
+            .child(vega_i18n::t("ui.permissions_and_checks"))
             .into_any_element()
     }
 
@@ -163,7 +163,7 @@ impl GuidanceCard {
         div()
             .id("preparation-back")
             .role(gpui_kit::Role::Button)
-            .aria_label("返回权限准备")
+            .aria_label(vega_i18n::t("ui.back_to_permission_setup"))
             .focusable()
             .tab_stop(true)
             .size(px(Layout::PREPARATION_GUIDE_CONTROL))
@@ -197,34 +197,34 @@ impl GuidanceCard {
         let (id, title, detail, symbol, state, action) = match pane {
             PermissionPane::Accessibility => (
                 "preparation-accessibility",
-                "辅助功能",
-                "允许 Vega 访问应用界面",
+                vega_i18n::t("ui.accessibility"),
+                vega_i18n::t("ui.allow_vega_to_access_app_interfaces"),
                 Icon::Hand,
                 preparation.view.accessibility,
                 CardAction::AccessibilitySettings,
             ),
             PermissionPane::ScreenRecording => (
                 "preparation-screen-recording",
-                "屏幕录制",
-                "使用截图识别界面和操作位置",
+                vega_i18n::t("ui.screen_recording"),
+                vega_i18n::t("ui.use_screenshots_to_identify_interfaces_and_interaction_targets"),
                 Icon::Camera,
                 preparation.view.screen_recording,
                 CardAction::ScreenRecordingSettings,
             ),
         };
         let status = if preparation.view.check_state == CheckState::Checking {
-            "检测中…"
+            vega_i18n::t("ui.checking_194")
         } else {
             match state {
-                PermissionState::Granted => "已开启",
-                PermissionState::Denied => "未授权",
+                PermissionState::Granted => vega_i18n::t("ui.enabled"),
+                PermissionState::Denied => vega_i18n::t("ui.not_authorized"),
                 PermissionState::Unknown
                     if preparation.view.check_state == CheckState::Idle
                         && !preparation.retained =>
                 {
-                    "未检测"
+                    vega_i18n::t("ui.not_checked")
                 }
-                PermissionState::Unknown => "状态未知",
+                PermissionState::Unknown => vega_i18n::t("ui.status_unknown"),
             }
         };
         div()
@@ -273,9 +273,9 @@ impl GuidanceCard {
             .child(self.action_button(
                 id,
                 if state == PermissionState::Granted {
-                    "打开设置"
+                    vega_i18n::t("ui.open_settings")
                 } else {
-                    "允许"
+                    vega_i18n::t("ui.allow")
                 },
                 action,
                 cx,
@@ -300,7 +300,9 @@ impl GuidanceCard {
                             div()
                                 .mb(px(Layout::IMAGE_PREVIEW_GAP))
                                 .text_color(colors.warning)
-                                .child("无法定位准备窗口。请关闭后重新打开引导。"),
+                                .child(vega_i18n::t(
+                                    "ui.cannot_locate_the_setup_window_close_and_reopen",
+                                )),
                         )
                     })
                     .child(
@@ -318,7 +320,7 @@ impl GuidanceCard {
                                     .line_height(px(Layout::PREPARATION_OVERVIEW_TITLE_LINE))
                                     .text_size(px(Typography::EMPTY_STATE_TITLE))
                                     .font_weight(Typography::EMPTY_STATE_TITLE_WEIGHT)
-                                    .child("启用 Vega 电脑操控"),
+                                    .child(vega_i18n::t("ui.enable_vega_computer_use")),
                             )
                             .child(
                                 div()
@@ -327,8 +329,12 @@ impl GuidanceCard {
                                     .line_height(px(Layout::PREPARATION_OVERVIEW_DESCRIPTION_LINE))
                                     .text_center()
                                     .text_color(colors.text_secondary)
-                                    .child(div().child("Vega 需要以下权限来操作 Mac 上的应用。"))
-                                    .child(div().child("仅在你请求电脑操控时使用。")),
+                                    .child(div().child(vega_i18n::t(
+                                        "ui.vega_needs_the_following_permissions_to_control_apps",
+                                    )))
+                                    .child(div().child(vega_i18n::t(
+                                        "ui.used_only_when_you_request_computer_control",
+                                    ))),
                             ),
                     )
                     .child(
@@ -358,9 +364,9 @@ impl GuidanceCard {
                             .child(self.action_button(
                                 "preparation-recheck",
                                 if preparation.view.can_recheck {
-                                    "重新检测"
+                                    vega_i18n::t("ui.check_again")
                                 } else {
-                                    "检测中…"
+                                    vega_i18n::t("ui.checking_194")
                                 },
                                 CardAction::Recheck,
                                 cx,
@@ -371,7 +377,7 @@ impl GuidanceCard {
                             .when(self.has_task, |row| {
                                 row.child(self.action_button(
                                     "preparation-return-task",
-                                    "返回任务",
+                                    vega_i18n::t("ui.back_to_task"),
                                     CardAction::ReturnToTask,
                                     cx,
                                 ))
@@ -392,7 +398,9 @@ impl GuidanceCard {
                             .mt(px(Layout::IMAGE_PREVIEW_GAP))
                             .text_size(px(Typography::METADATA))
                             .text_color(colors.text_secondary)
-                            .child("修改屏幕录制权限后，如系统提示重启，请退出并重新打开 Vega。"),
+                            .child(vega_i18n::t(
+                                "ui.after_changing_screen_recording_permissions_quit_and_reopen",
+                            )),
                     ),
             )
             .child(
@@ -402,7 +410,7 @@ impl GuidanceCard {
                     .right(px(Layout::CONTENT_PADDING))
                     .child(self.action_button(
                         "preparation-close",
-                        "关闭引导",
+                        vega_i18n::t("ui.close_setup"),
                         CardAction::Close,
                         cx,
                     )),
@@ -419,10 +427,12 @@ impl GuidanceCard {
                 .flex_col()
                 .gap(px(Layout::IMAGE_PREVIEW_GAP))
                 .text_color(colors.text_secondary)
-                .child("当前是开发可执行文件，不能拖入权限列表。")
+                .child(vega_i18n::t(
+                    "ui.this_is_a_development_executable_and_cannot_be",
+                ))
                 .child(self.action_button(
                     "preparation-finder",
-                    "在 Finder 中显示",
+                    vega_i18n::t("ui.show_in_finder"),
                     CardAction::RevealInFinder,
                     cx,
                 ))
@@ -438,7 +448,9 @@ impl GuidanceCard {
         div()
             .id("preparation-app")
             .role(gpui_kit::Role::Button)
-            .aria_label("Vega，可拖入权限列表；点击或按回车在 Finder 中显示")
+            .aria_label(vega_i18n::t(
+                "ui.vega_drag_into_the_permission_list_click_or",
+            ))
             .focusable()
             .tab_stop(true)
             .w_full()
@@ -482,8 +494,9 @@ impl GuidanceCard {
                             if path.exists() {
                                 true
                             } else {
-                                card.path_error =
-                                    Some("当前 Vega 的位置已不存在。请重新打开应用。".into());
+                                card.path_error = Some(crate::localized_copy::LocalizedCopy::new(
+                                    "ui.this_copy_of_vega_no_longer_exists_at",
+                                ));
                                 false
                             }
                         });
@@ -533,17 +546,24 @@ impl GuidanceCard {
         let waiting = matches!(self.tracking, Tracking::Waiting);
         let local_fault = self
             .path_error
-            .as_deref()
-            .or_else(|| self.panel_fault.map(|fault| fault.message()))
-            .or(waiting.then_some("未找到系统设置窗口。请打开对应权限设置。"));
-        let warning = local_fault.or(preparation.guide_warning);
+            .as_ref()
+            .map(|copy| copy.render())
+            .or_else(|| self.panel_fault.map(|fault| fault.message().to_owned()))
+            .or(waiting.then(|| {
+                vega_i18n::t("ui.system_settings_window_not_found_open_the_relevant").to_owned()
+            }));
+        let warning = local_fault.as_deref().or(preparation.guide_warning);
         let action = match self.permission_pane {
             PermissionPane::Accessibility => CardAction::AccessibilitySettings,
             PermissionPane::ScreenRecording => CardAction::ScreenRecordingSettings,
         };
         let instruction = match self.permission_pane {
-            PermissionPane::Accessibility => "将 Vega 拖入上方列表，以允许辅助功能",
-            PermissionPane::ScreenRecording => "将 Vega 拖入上方列表，以允许屏幕录制",
+            PermissionPane::Accessibility => {
+                vega_i18n::t("ui.drag_vega_into_the_list_above_to_allow")
+            }
+            PermissionPane::ScreenRecording => {
+                vega_i18n::t("ui.drag_vega_into_the_list_above_to_allow_214")
+            }
         };
         div()
             .size_full()
@@ -585,7 +605,7 @@ impl GuidanceCard {
                             )
                             .child(self.action_button(
                                 "preparation-close",
-                                "关闭引导",
+                                vega_i18n::t("ui.close_setup"),
                                 CardAction::Close,
                                 cx,
                             )),
@@ -612,7 +632,7 @@ impl GuidanceCard {
                                         .when(local_fault.is_some(), |row| {
                                             row.child(self.action_button(
                                                 "preparation-open-settings",
-                                                "打开权限设置",
+                                                vega_i18n::t("ui.open_permission_settings"),
                                                 action,
                                                 cx,
                                             ))
@@ -623,7 +643,7 @@ impl GuidanceCard {
                                             |row| {
                                                 row.child(self.action_button(
                                                     "preparation-finder",
-                                                    "在 Finder 中显示",
+                                                    vega_i18n::t("ui.show_in_finder"),
                                                     CardAction::RevealInFinder,
                                                     cx,
                                                 ))

@@ -1,6 +1,8 @@
 # Issue #75 — macOS Computer Use 与 Browser Use
 
 > 当前桌面行为以[全窗口访问用户覆盖裁决](vega-issue-75-desktop-access.md)为准：启用后模型可发现/切换所有窗口，无 Vega 逐窗口审批。本文旧逐窗授权段落保留为历史；浏览器合同未改，Playwright 调查暂停。
+>
+> 错误恢复以 [#404 CUA 错误交回模型](../404/vega-issue-404-cua-error-recovery.md) 为准：能力失败不再等同整轮取消，不展示专用 CUA 错误菜单，无进展不由 runtime 代写收尾。本文旧错误展示、失败取消条款仅作历史；用户明确 Stop、权限/身份/epoch 与授权/接管/暂停/恢复约束不变。
 
 状态：2026-10-12 用户授权自动选型与实装；本规格先于实现冻结。关联 [Issue #75](https://github.com/puzige/vega/issues/75)。
 

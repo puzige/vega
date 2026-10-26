@@ -111,8 +111,10 @@ pub(super) fn event_stream_with_recovery(
 pub(crate) fn map_sse_error(err: EventStreamError<reqwest::Error>, recoverable: bool) -> VegaError {
     let transport = matches!(err, EventStreamError::Transport(_));
     VegaError::ProviderDiagnostic {
+        // The response was already established here, so a byte-stream
+        // failure is an interrupted body, not a failed connection.
         kind: if transport {
-            ProviderFailureKind::Transport
+            ProviderFailureKind::StreamInterrupted
         } else {
             ProviderFailureKind::Protocol
         },
@@ -234,30 +236,6 @@ impl SseAssembler {
                         self.absorb_detail(detail)?;
                     }
                 }
-                let delta_bytes = aliases
-                    .first()
-                    .map_or(0, |(_, value)| value.len())
-                    .saturating_add(
-                        delta
-                            .get("reasoning_details")
-                            .filter(|value| !value.is_null())
-                            .map_or(0, |value| value.to_string().len()),
-                    );
-                check_reasoning_budget(
-                    crate::ReasoningBudgetScope::Delta,
-                    delta_bytes,
-                    crate::REASONING_DELTA_MAX_BYTES,
-                )?;
-                let turn_bytes = self.reasoning.len().saturating_add(
-                    self.details
-                        .as_ref()
-                        .map_or(0, |details| serde_json::json!(details).to_string().len()),
-                );
-                check_reasoning_budget(
-                    crate::ReasoningBudgetScope::Turn,
-                    turn_bytes,
-                    crate::REASONING_TURN_MAX_BYTES,
-                )?;
                 if let Some(value) = delta.get("content").filter(|value| !value.is_null()) {
                     let value = value.as_str().ok_or_else(invalid_protocol)?;
                     if !value.is_empty() {
@@ -518,21 +496,6 @@ impl SseAssembler {
             })
             .collect())
     }
-}
-
-fn check_reasoning_budget(
-    scope: crate::ReasoningBudgetScope,
-    observed_bytes: usize,
-    limit_bytes: usize,
-) -> Result<(), VegaError> {
-    if observed_bytes > limit_bytes {
-        return Err(VegaError::ReasoningBudgetExceeded {
-            scope,
-            observed_bytes,
-            limit_bytes,
-        });
-    }
-    Ok(())
 }
 
 pub(crate) fn map_finish_reason(reason: &str) -> StopReason {

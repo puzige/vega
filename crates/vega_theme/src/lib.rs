@@ -293,6 +293,11 @@ impl Typography {
     pub const CODE_LINE_HEIGHT: f32 = 1.6;
     /// Sidebar primary navigation and task/project title size: 13px.
     pub const SIDEBAR: f32 = 13.0;
+    /// Sidebar group heading size (`Pinned` / `Projects` / `Recents`): 14px,
+    /// one step above the 13px rows it introduces.
+    pub const SIDEBAR_SECTION: f32 = 14.0;
+    /// Sidebar group heading weight: medium, matching the 13px rows' optical weight.
+    pub const SIDEBAR_SECTION_WEIGHT: FontWeight = FontWeight::MEDIUM;
     pub const SIDEBAR_LINE_HEIGHT: f32 = 32.0;
     pub const METADATA: f32 = 12.0;
     pub const EMPTY_STATE_TITLE: f32 = 28.0;
@@ -397,6 +402,11 @@ impl Layout {
     pub const READING_NAVIGATION_PADDING: f32 = 4.0;
     pub const READING_NAVIGATION_PADDING_X: f32 = 12.0;
     pub const READING_NAVIGATION_GAP: f32 = 8.0;
+    pub const ARTIFACT_HEADER_HEIGHT: f32 = 44.0;
+    pub const ARTIFACT_ROW_HEIGHT: f32 = 36.0;
+    pub const ARTIFACT_ACTION_SIZE: f32 = 24.0;
+    pub const ARTIFACT_BORDER: f32 = 1.0;
+    pub const ARTIFACT_VISIBLE_FILES: usize = 3;
     pub const DISCLOSURE_HEADER_HEIGHT: f32 = 28.0;
     pub const DISCLOSURE_TRAILING_SLOT: f32 = 24.0;
     pub const DISCLOSURE_PADDING_X: f32 = 8.0;
@@ -477,6 +487,8 @@ impl Layout {
     pub const ATTACHMENT_THUMBNAIL: f32 = 72.0;
     pub const COMPOSER_PICKER_MAX_HEIGHT: f32 = 320.0;
     pub const COMPOSER_PICKER_TRIGGER_GAP: f32 = 8.0;
+    pub const COMPOSER_PICKER_GROUP_HEIGHT: f32 = 24.0;
+    pub const COMPOSER_PICKER_GROUP_GAP: f32 = 4.0;
     pub const COMPOSER_TEXT_TRIGGER_HEIGHT: f32 = 28.0;
     pub const COMPOSER_TEXT_TRIGGER_RADIUS: f32 = 14.0;
     pub const COMPOSER_TEXT_TRIGGER_PADDING_X: f32 = 12.0;

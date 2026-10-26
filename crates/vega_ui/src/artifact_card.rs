@@ -12,7 +12,7 @@ use vega_conversation::types::{
 };
 use vega_theme::{Layout, ThemeColors, Typography, theme};
 
-use crate::conversation_stream::{MONOFONT, ROW_HEIGHT};
+use crate::conversation_stream::{MONOFONT, OpenWorkspaceDiffRequested, ROW_HEIGHT};
 use crate::icons::{Icon, icon};
 use crate::interaction::InteractionExt;
 actions!(vega_artifact_card, [ArtifactActivate, ArtifactClear]);
@@ -75,13 +75,13 @@ impl EventEmitter<ArtifactCleared> for ArtifactCard {}
 
 impl Focusable for ArtifactCard {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus[0].clone()
+        self.compact_focus[0].clone()
     }
 }
 
 impl Render for ArtifactCard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.render_compact(window, cx)
+        self.render_compact(true, window, cx)
     }
 }
 
@@ -347,15 +347,17 @@ impl ArtifactCard {
         }
     }
 
-    fn render_compact(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_compact(
+        &mut self,
+        last: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         self.observe_compact_focus(window, cx);
         let card = cx.entity();
         let colors = theme(cx).colors;
         let projection = self.projection.clone();
         let focus = self.compact_focus.clone();
-        let show_actions = self.hovered
-            || self.menu_open
-            || focus.iter().any(|focus| focus.contains_focused(window, cx));
         let reading = self.reading_preview;
         let opening = self.opening.is_some();
         let menu_open =
@@ -363,24 +365,63 @@ impl ArtifactCard {
         let preview_enabled =
             projection.current_file_id.is_some() && projection.preview_available && !opening;
         let open_enabled = projection.current_file_id.is_some() && !opening;
+        if (!menu_open
+            && self
+                .focus
+                .iter()
+                .skip(1)
+                .any(|focus| focus.is_focused(window)))
+            || (reading && focus[1].is_focused(window))
+        {
+            focus[usize::from(!reading && open_enabled)].focus(window, cx);
+        }
+        let show_actions = self.hovered
+            || menu_open
+            || focus.iter().any(|focus| focus.contains_focused(window, cx));
         let hint = if opening {
-            "Opening file in progress"
+            vega_i18n::t("ui.opening_file_in_progress")
         } else {
-            "File unavailable"
+            vega_i18n::t("ui.file_unavailable")
         };
+        let details = match projection.size_bytes {
+            Some(size) => format!("{} · {}", projection.label, format_size(size)),
+            None => projection.label.clone(),
+        };
+        let details = if preview_enabled {
+            details
+        } else {
+            format!("{details} · {hint}")
+        };
+        let (directory, filename) = artifact_path(&projection.label);
         let hover_card = card.clone();
         let key_card = card.clone();
+        let preview_card = card.clone();
         let mut row = div()
             .id(("artifact-file", card.entity_id()))
-            .when(!reading && !show_actions, |row| {
-                row.track_focus(
-                    &focus[usize::from(!preview_enabled)]
-                        .clone()
-                        .tab_stop(preview_enabled || open_enabled),
-                )
+            .track_focus(
+                &focus[0]
+                    .clone()
+                    .tab_stop(preview_enabled || (!reading && open_enabled)),
+            )
+            .tab_stop(preview_enabled || (!reading && open_enabled))
+            .role(if preview_enabled {
+                gpui_kit::Role::Button
+            } else {
+                gpui_kit::Role::Group
             })
+            .aria_label(if preview_enabled {
+                vega_i18n::t_args("ui.preview_name", &[("name", &projection.label)])
+            } else {
+                projection.label.clone()
+            })
+            .aria_description(if preview_enabled {
+                vega_i18n::t("ui.preview_file")
+            } else {
+                hint
+            })
+            .tooltip(move |_, cx| crate::icons::tooltip(details.clone(), cx))
             .relative()
-            .h(px(ROW_HEIGHT))
+            .h(px(Layout::ARTIFACT_ROW_HEIGHT))
             .flex_shrink_0()
             .w_full()
             .min_w_0()
@@ -388,7 +429,26 @@ impl ArtifactCard {
             .items_center()
             .px_3()
             .gap_2()
-            .hover(move |style| style.bg(colors.bg_hover))
+            .border_t(px(Layout::ARTIFACT_BORDER))
+            .border_color(colors.border_subtle)
+            .when(last, |row| {
+                row.rounded_bl(px(Layout::TOOL_DETAIL_RADIUS))
+                    .rounded_br(px(Layout::TOOL_DETAIL_RADIUS))
+            })
+            .when(preview_enabled, |row| {
+                row.cursor_pointer()
+                    .hover(move |style| style.bg(colors.bg_hover))
+            })
+            .focus_visible(move |style| style.bg(colors.bg_hover))
+            .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+                cx.stop_propagation();
+                if preview_enabled {
+                    preview_card.update(cx, |card, cx| {
+                        card.compact_focus[0].focus(window, cx);
+                        card.preview(cx);
+                    });
+                }
+            })
             .on_hover(move |hovered, _, cx| {
                 hover_card.update(cx, |card, cx| {
                     card.hovered = *hovered;
@@ -403,12 +463,19 @@ impl ArtifactCard {
                         window.focus_next(cx);
                     }
                     cx.stop_propagation();
-                } else if event.keystroke.key == "escape" {
+                } else if event.keystroke.key == "escape" && key_card.read(cx).menu_open {
                     key_card.update(cx, |card, cx| {
                         card.close_menu(cx);
                         card.compact_focus[1].focus(window, cx);
                     });
                     cx.stop_propagation();
+                } else if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                    && key_card.read(cx).compact_focus[0].is_focused(window)
+                {
+                    cx.stop_propagation();
+                    if preview_enabled {
+                        key_card.update(cx, ArtifactCard::preview);
+                    }
                 }
             })
             .child(icon(Icon::Document, colors.text_secondary))
@@ -416,50 +483,35 @@ impl ArtifactCard {
                 div()
                     .min_w_0()
                     .flex_1()
-                    .truncate()
-                    .font_family(MONOFONT.to_string())
-                    .text_size(px(Typography::CODE))
-                    .text_color(colors.text_primary)
-                    .child(projection.label),
+                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .text_size(px(Typography::BODY))
+                    .when(!directory.is_empty(), |path| {
+                        path.child(
+                            div()
+                                .min_w_0()
+                                .flex_shrink_1()
+                                .truncate()
+                                .text_color(colors.text_secondary)
+                                .child(directory.to_owned()),
+                        )
+                    })
+                    .child(
+                        div()
+                            .min_w_0()
+                            .max_w_full()
+                            .flex_shrink_0()
+                            .truncate()
+                            .text_color(colors.text_primary)
+                            .child(filename.to_owned()),
+                    ),
             );
-        if let Some(size) = projection.size_bytes {
-            row = row.child(
-                div()
-                    .flex_shrink_0()
-                    .text_size(px(Typography::METADATA))
-                    .text_color(colors.text_tertiary)
-                    .child(format_size(size)),
-            );
-        }
         if !reading && show_actions {
-            let preview_card = card.clone();
-            let preview_key = card.clone();
-            let preview = compact_button(
-                "Preview file",
-                Icon::Document,
-                &focus[0],
-                preview_enabled,
-                hint,
-                colors,
-            )
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                cx.stop_propagation();
-                if preview_enabled {
-                    preview_card.update(cx, ArtifactCard::preview);
-                }
-            })
-            .on_key_down(move |event, _, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    cx.stop_propagation();
-                    if preview_enabled {
-                        preview_key.update(cx, ArtifactCard::preview);
-                    }
-                }
-            });
             let menu_card = card.clone();
             let menu_key = card.clone();
             let trigger = compact_button(
-                "Open file in",
+                "ui.open_file_in",
                 Icon::More,
                 &focus[1],
                 open_enabled,
@@ -474,7 +526,14 @@ impl ArtifactCard {
                 }
             })
             .on_key_down(move |event, window, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                if event.keystroke.key == "tab"
+                    && !event.keystroke.modifiers.shift
+                    && menu_key.read(cx).menu_open
+                {
+                    cx.stop_propagation();
+                    let menu_focus = menu_key.read(cx).focus[1].clone();
+                    menu_focus.focus(window, cx);
+                } else if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                     cx.stop_propagation();
                     menu_key.update(cx, |card, cx| card.toggle_menu(window, cx));
                 } else if event.keystroke.key == "down" && open_enabled {
@@ -486,7 +545,9 @@ impl ArtifactCard {
                     });
                 }
             });
-            row = row.child(preview).child(trigger);
+            row = row.child(trigger);
+        } else if !reading {
+            row = row.child(div().size(px(Layout::ARTIFACT_ACTION_SIZE)).flex_shrink_0());
         }
         if menu_open {
             let outside = card.clone();
@@ -503,8 +564,14 @@ impl ArtifactCard {
                 .rounded_lg()
                 .shadow_md()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_mouse_down_out(move |_, _, cx| outside.update(cx, ArtifactCard::close_menu));
             for (index, (target, label)) in OPEN_TARGETS.into_iter().enumerate() {
+                let label = match target {
+                    OpenInTarget::Terminal => vega_i18n::t("ui.terminal"),
+                    OpenInTarget::DefaultApplication => vega_i18n::t("ui.default"),
+                    _ => label,
+                };
                 let open_card = card.clone();
                 let key_card = card.clone();
                 let item_focus = self.focus[index + 1].clone();
@@ -520,16 +587,34 @@ impl ArtifactCard {
                 .aria_label(label)
                 .text_color(colors.text_primary)
                 .child(label)
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                .on_mouse_up(MouseButton::Left, move |_, window, cx| {
                     cx.stop_propagation();
                     open_card.update(cx, |card, cx| {
                         card.close_menu(cx);
+                        card.compact_focus[1].focus(window, cx);
                         card.open(target, cx);
                     });
                 })
                 .on_key_down(move |event, window, cx| {
                     let key = event.keystroke.key.as_str();
-                    if matches!(key, "enter" | "space" | "up" | "down") {
+                    if key == "tab" {
+                        cx.stop_propagation();
+                        key_card.update(cx, |card, cx| {
+                            if event.keystroke.modifiers.shift {
+                                if index == 0 {
+                                    card.compact_focus[1].focus(window, cx);
+                                } else {
+                                    card.focus[index].focus(window, cx);
+                                }
+                            } else if index + 1 < OPEN_TARGETS.len() {
+                                card.focus[index + 2].focus(window, cx);
+                            } else {
+                                card.close_menu(cx);
+                                card.compact_focus[1].focus(window, cx);
+                                window.focus_next(cx);
+                            }
+                        });
+                    } else if matches!(key, "enter" | "space" | "up" | "down") {
                         cx.stop_propagation();
                         key_card.update(cx, |card, cx| {
                             if matches!(key, "enter" | "space") {
@@ -554,7 +639,7 @@ impl ArtifactCard {
                     gpui_kit::anchored()
                         .anchor(gpui_kit::Anchor::TopRight)
                         .position_mode(gpui_kit::AnchoredPositionMode::Local)
-                        .position(gpui_kit::point(px(0.), px(ROW_HEIGHT)))
+                        .position(gpui_kit::point(px(0.), px(Layout::ARTIFACT_ROW_HEIGHT)))
                         .snap_to_window_with_margin(px(Layout::TOOLBAR_TRAILING_INSET))
                         .child(gpui_kit::deferred(popup).with_priority(2)),
                 ),
@@ -631,12 +716,22 @@ impl ArtifactCard {
                     clear_card.update(cx, ArtifactCard::clear);
                 })
                 .child(
-                    artifact_button("Preview", preview_enabled, focus[0].clone(), colors)
-                        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                            preview_card.update(cx, ArtifactCard::preview);
-                        }),
+                    artifact_button(
+                        vega_i18n::t("ui.preview"),
+                        preview_enabled,
+                        focus[0].clone(),
+                        colors,
+                    )
+                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                        preview_card.update(cx, ArtifactCard::preview);
+                    }),
                 );
             for (index, (target, label)) in OPEN_TARGETS.iter().copied().enumerate() {
+                let label = match target {
+                    OpenInTarget::Terminal => vega_i18n::t("ui.terminal"),
+                    OpenInTarget::DefaultApplication => vega_i18n::t("ui.default"),
+                    _ => label,
+                };
                 let open_card = card.clone();
                 actions = actions.child(
                     artifact_button(label, open_enabled, focus[index + 1].clone(), colors)
@@ -672,8 +767,6 @@ impl ArtifactCard {
     }
 }
 
-const MAX_VISIBLE_ARTIFACTS: usize = 6;
-
 struct ArtifactGroupFile {
     card: Entity<ArtifactCard>,
     capture_order: u64,
@@ -687,10 +780,19 @@ pub struct ArtifactGroup {
     expanded: bool,
     capture_errors: Vec<(String, GitWorkspaceErrorCode)>,
     file_errors: Vec<(Entity<ArtifactCard>, GitWorkspaceErrorCode)>,
+    review_request: OpenWorkspaceDiffRequested,
+    review_disabled_reason_key: Option<&'static str>,
 }
 
+impl EventEmitter<OpenWorkspaceDiffRequested> for ArtifactGroup {}
+
 impl ArtifactGroup {
-    pub(crate) fn new(message_id: String) -> Self {
+    pub(crate) fn new(
+        message_id: String,
+        review_request: OpenWorkspaceDiffRequested,
+        reading_preview: bool,
+        standalone: bool,
+    ) -> Self {
         Self {
             message_id,
             files: Vec::new(),
@@ -698,6 +800,8 @@ impl ArtifactGroup {
             expanded: false,
             capture_errors: Vec::new(),
             file_errors: Vec::new(),
+            review_request,
+            review_disabled_reason_key: review_disabled_reason_key(reading_preview, standalone),
         }
     }
 
@@ -709,16 +813,50 @@ impl ArtifactGroup {
         if self.expanded {
             self.files.len()
         } else {
-            self.files.len().min(MAX_VISIBLE_ARTIFACTS)
+            self.files.len().min(Layout::ARTIFACT_VISIBLE_FILES)
         }
     }
 
     pub fn row_count(&self) -> usize {
-        let visible = self.visible_files();
-        visible
-            + usize::from(visible < self.files.len())
+        self.visible_files()
+            + usize::from(self.files.len() > Layout::ARTIFACT_VISIBLE_FILES)
             + self.capture_errors.len()
             + self.file_errors.len()
+    }
+
+    pub(crate) fn estimated_height(&self) -> f32 {
+        let rows = self.row_count();
+        if rows == 0 {
+            0.
+        } else {
+            Layout::ARTIFACT_HEADER_HEIGHT
+                + rows as f32 * Layout::ARTIFACT_ROW_HEIGHT
+                + 2. * Layout::ARTIFACT_BORDER
+        }
+    }
+
+    pub(crate) fn set_review_availability(
+        &mut self,
+        reading_preview: bool,
+        standalone: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let reason = review_disabled_reason_key(reading_preview, standalone);
+        if self.review_disabled_reason_key != reason {
+            self.review_disabled_reason_key = reason;
+            cx.notify();
+        }
+    }
+
+    fn open_review(&mut self, cx: &mut Context<Self>) {
+        if self.review_disabled_reason_key.is_none() && !self.files.is_empty() {
+            cx.emit(self.review_request.clone());
+        }
+    }
+
+    fn toggle_expanded(&mut self, cx: &mut Context<Self>) {
+        self.expanded = !self.expanded;
+        cx.notify();
     }
 
     fn sync_file(&mut self, card: Entity<ArtifactCard>, cx: &mut Context<Self>) {
@@ -807,10 +945,28 @@ impl ArtifactGroup {
         cx.notify();
     }
 
-    pub(crate) fn render(group: Entity<Self>, _window: &mut Window, cx: &mut App) -> AnyElement {
+    pub(crate) fn render(group: Entity<Self>, window: &mut Window, cx: &mut App) -> AnyElement {
         let state = group.read(cx);
+        if state.row_count() == 0 {
+            return div().h_0().into_any_element();
+        }
         let visible = state.visible_files();
-        let overflow = state.files.len() - visible;
+        let total = state.files.len();
+        let expanded = state.expanded;
+        let has_toggle = total > Layout::ARTIFACT_VISIBLE_FILES;
+        let heading = if total == 1 {
+            let card = state.files[0].card.read(cx);
+            vega_i18n::t_args(
+                "ui.artifact.edited_file",
+                &[("name", artifact_path(&card.projection.label).1)],
+            )
+        } else {
+            vega_i18n::t_args("ui.artifact.edited_files", &[("count", &total.to_string())])
+        };
+        let review_reason = state
+            .review_disabled_reason_key
+            .or((total == 0).then_some("ui.artifact.review_empty"))
+            .map(vega_i18n::t);
         let files = state
             .files
             .iter()
@@ -824,114 +980,200 @@ impl ArtifactGroup {
             .chain(state.file_errors.iter().map(|(_, code)| *code))
             .collect::<Vec<_>>();
         let colors = theme(cx).colors;
+        let review_focus = crate::disclosure::focus(
+            format!("artifact-review-{}", group.entity_id()).into(),
+            window,
+            cx,
+        );
+        let review_click = group.clone();
+        let review_key = group.clone();
+        let review = div()
+            .id(("artifact-review", group.entity_id()))
+            .interactive(colors, review_reason.is_none(), false)
+            .track_focus(&review_focus)
+            .tab_stop(true)
+            .role(gpui_kit::Role::Button)
+            .aria_label(vega_i18n::t("ui.open_review"))
+            .aria_description(
+                review_reason.unwrap_or(vega_i18n::t("ui.artifact.open_workspace_changes")),
+            )
+            .tooltip(move |_, cx| {
+                crate::icons::tooltip(review_reason.unwrap_or(vega_i18n::t("ui.open_review")), cx)
+            })
+            .focus_visible(move |style| style.bg(colors.bg_hover))
+            .h(px(Layout::ARTIFACT_ACTION_SIZE))
+            .px_2()
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .rounded_md()
+            .text_size(px(Typography::BODY))
+            .text_color(if review_reason.is_none() {
+                colors.text_primary
+            } else {
+                colors.text_tertiary
+            })
+            .when(review_reason.is_none(), |button| button.cursor_pointer())
+            .child(vega_i18n::t("ui.open_review"))
+            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                cx.stop_propagation();
+                review_click.update(cx, ArtifactGroup::open_review);
+            })
+            .on_key_down(move |event, window, cx| {
+                if event.keystroke.key == "tab" {
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                    cx.stop_propagation();
+                } else if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    cx.stop_propagation();
+                    review_key.update(cx, ArtifactGroup::open_review);
+                }
+            });
+        let header = div()
+            .h(px(Layout::ARTIFACT_HEADER_HEIGHT))
+            .flex_shrink_0()
+            .min_w_0()
+            .px_3()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(icon(Icon::Document, colors.text_secondary))
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_size(px(Typography::HEADING_CARD))
+                    .font_weight(Typography::HEADING_CARD_WEIGHT)
+                    .text_color(colors.text_primary)
+                    .child(heading),
+            )
+            .child(review);
         let mut container = div()
             .w_full()
             .min_w_0()
             .flex()
             .flex_col()
             .bg(colors.bg_elevated)
-            .border_1()
+            .border(px(Layout::ARTIFACT_BORDER))
             .border_color(colors.border_subtle)
-            .rounded(px(Layout::TOOL_DETAIL_RADIUS));
-        for card in files {
-            container = container.child(card);
+            .rounded(px(Layout::TOOL_DETAIL_RADIUS))
+            .child(header);
+        for (index, card) in files.into_iter().enumerate() {
+            let last = index + 1 == visible && !has_toggle && errors.is_empty();
+            container =
+                container.child(card.update(cx, |card, cx| card.render_compact(last, window, cx)));
         }
-        if overflow > 0 {
-            let label = format!("Show {overflow} more");
+        if has_toggle {
+            let label = if expanded {
+                vega_i18n::t("ui.artifact.collapse_files").to_owned()
+            } else {
+                vega_i18n::t_args(
+                    "ui.artifact.show_more_files",
+                    &[("count", &(total - visible).to_string())],
+                )
+            };
+            let disclosure_id: gpui_kit::SharedString =
+                format!("artifact-disclosure-{}", group.entity_id()).into();
+            let focus = crate::disclosure::focus(disclosure_id.clone(), window, cx);
+            let click_focus = focus.clone();
             let click_group = group.clone();
             let key_group = group.clone();
-            let expand = div()
-                .id("artifact-show-more")
+            let toggle = div()
+                .id(("artifact-show-more", group.entity_id()))
+                .group(disclosure_id.clone())
                 .interactive(colors, true, false)
-                .focusable()
+                .track_focus(&focus)
                 .tab_stop(true)
                 .role(gpui_kit::Role::Button)
                 .aria_label(label.clone())
-                .h(px(ROW_HEIGHT))
+                .aria_expanded(expanded)
+                .focus_visible(move |style| style.bg(colors.bg_hover))
+                .h(px(Layout::ARTIFACT_ROW_HEIGHT))
+                .flex_shrink_0()
+                .border_t(px(Layout::ARTIFACT_BORDER))
+                .border_color(colors.border_subtle)
+                .when(errors.is_empty(), |row| {
+                    row.rounded_bl(px(Layout::TOOL_DETAIL_RADIUS))
+                        .rounded_br(px(Layout::TOOL_DETAIL_RADIUS))
+                })
                 .px_3()
                 .flex()
                 .items_center()
-                .text_size(px(Typography::SIDEBAR))
+                .gap_2()
+                .cursor_pointer()
+                .text_size(px(Typography::BODY))
                 .text_color(colors.text_secondary)
                 .child(label)
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                    click_group.update(cx, |group, cx| {
-                        group.expanded = true;
-                        cx.notify();
-                    })
+                .child(crate::disclosure::inline_chevron(
+                    disclosure_id,
+                    &focus,
+                    expanded,
+                    true,
+                    colors,
+                    window,
+                ))
+                .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+                    cx.stop_propagation();
+                    click_focus.focus(window, cx);
+                    click_group.update(cx, ArtifactGroup::toggle_expanded);
                 })
                 .on_key_down(move |event, window, cx| {
                     if event.keystroke.key == "tab" {
                         if event.keystroke.modifiers.shift {
-                            let group = key_group.read(cx);
-                            let focus = group
-                                .files
-                                .iter()
-                                .take(group.visible_files())
-                                .rev()
-                                .find_map(|file| {
-                                    let card = file.card.read(cx);
-                                    (!card.reading_preview
-                                        && card.opening.is_none()
-                                        && card.projection.current_file_id.is_some())
-                                    .then(|| card.compact_focus[1].clone())
-                                });
-                            if let Some(focus) = focus {
-                                focus.focus(window, cx);
-                            } else {
-                                window.focus_prev(cx);
-                            }
+                            window.focus_prev(cx);
                         } else {
                             window.focus_next(cx);
                         }
                         cx.stop_propagation();
                     } else if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                         cx.stop_propagation();
-                        key_group.update(cx, |group, cx| {
-                            let visible = group.visible_files();
-                            let focus = group
-                                .files
-                                .iter()
-                                .skip(visible)
-                                .chain(group.files.iter().take(visible))
-                                .find_map(|file| {
-                                    let card = file.card.read(cx);
-                                    (!card.reading_preview
-                                        && card.opening.is_none()
-                                        && card.projection.current_file_id.is_some())
-                                    .then(|| {
-                                        card.compact_focus
-                                            [usize::from(!card.projection.preview_available)]
-                                        .clone()
-                                    })
-                                });
-                            group.expanded = true;
-                            if let Some(focus) = focus {
-                                focus.focus(window, cx);
-                            } else {
-                                window.focus_next(cx);
-                            }
-                            cx.notify();
-                        });
+                        key_group.update(cx, ArtifactGroup::toggle_expanded);
                     }
                 });
-            container = container.child(expand);
+            container = container.child(toggle);
         }
-        for error in errors {
+        let error_count = errors.len();
+        for (index, error) in errors.into_iter().enumerate() {
             container = container.child(
                 div()
-                    .h(px(ROW_HEIGHT))
+                    .h(px(Layout::ARTIFACT_ROW_HEIGHT))
                     .flex_shrink_0()
+                    .border_t(px(Layout::ARTIFACT_BORDER))
+                    .border_color(colors.border_subtle)
+                    .when(index + 1 == error_count, |row| {
+                        row.rounded_bl(px(Layout::TOOL_DETAIL_RADIUS))
+                            .rounded_br(px(Layout::TOOL_DETAIL_RADIUS))
+                    })
                     .px_3()
                     .flex()
                     .items_center()
-                    .text_size(px(Typography::SIDEBAR))
+                    .text_size(px(Typography::BODY))
                     .text_color(colors.danger)
                     .child(error_label(Some(error))),
             );
         }
         container.into_any_element()
     }
+}
+
+fn review_disabled_reason_key(reading_preview: bool, standalone: bool) -> Option<&'static str> {
+    if reading_preview {
+        Some("ui.artifact.review_reading_preview")
+    } else if standalone {
+        Some("ui.artifact.review_project_required")
+    } else {
+        None
+    }
+}
+
+fn artifact_path(label: &str) -> (&str, &str) {
+    label
+        .rfind('/')
+        .map_or(("", label), |index| label.split_at(index + 1))
 }
 
 fn format_size(size: u64) -> String {
@@ -949,26 +1191,28 @@ fn format_size(size: u64) -> String {
 }
 
 fn compact_button(
-    label: &'static str,
+    label_key: &'static str,
     glyph: Icon,
     focus: &FocusHandle,
     enabled: bool,
     disabled_hint: &'static str,
     colors: ThemeColors,
 ) -> crate::interaction::Interaction {
+    let label = vega_i18n::t(label_key);
     div()
-        .id(label)
+        .id(label_key)
         .interactive(colors, enabled, false)
         .track_focus(&focus.clone().tab_stop(enabled))
         .tab_stop(enabled)
         .role(gpui_kit::Role::Button)
         .aria_label(label)
-        .size(px(ROW_HEIGHT))
+        .size(px(Layout::ARTIFACT_ACTION_SIZE))
         .flex_shrink_0()
         .flex()
         .items_center()
         .justify_center()
         .rounded_md()
+        .focus_visible(move |style| style.bg(colors.bg_hover))
         .tooltip(move |_, cx| {
             crate::icons::tooltip(if enabled { label } else { disabled_hint }, cx)
         })
@@ -1009,15 +1253,15 @@ fn artifact_button(
 fn error_label(code: Option<GitWorkspaceErrorCode>) -> String {
     code.map_or_else(String::new, |code| match code {
         GitWorkspaceErrorCode::GitUnavailable => {
-            "Git 2.40+ was not found. Install Homebrew Git and retry.".to_owned()
+            vega_i18n::t("ui.git_2_40_was_not_found_install_homebrew").to_owned()
         }
         GitWorkspaceErrorCode::GitUnsupported => {
-            "Git 2.40+ is required. Upgrade Git and retry.".to_owned()
+            vega_i18n::t("ui.git_2_40_is_required_upgrade_git_and").to_owned()
         }
         GitWorkspaceErrorCode::GitExecutableChanged => {
-            "Git changed while Vega was running. Restart Vega and retry.".to_owned()
+            vega_i18n::t("ui.git_changed_while_vega_was_running_restart_vega").to_owned()
         }
-        code => format!("Artifact unavailable ({})", code.as_str()),
+        code => vega_i18n::t_args("ui.artifact_unavailable_code", &[("code", code.as_str())]),
     })
 }
 

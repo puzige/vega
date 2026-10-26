@@ -13,27 +13,32 @@ use super::*;
 #[derive(Debug, thiserror::Error)]
 pub enum ConversationError {
     /// A store/IO failure, reported with the underlying error message.
-    #[error("store error: {0}")]
+    #[error("{}", vega_i18n::t_args("domain.conversation.store", &[("detail", .0)]))]
     Store(String),
-    #[error("invalid task identity")]
+    #[error("{}", vega_i18n::t("domain.conversation.invalid_task"))]
     InvalidTaskIdentity,
-    #[error("invalid Codex session creation transition")]
+    #[error(
+        "{}",
+        vega_i18n::t("domain.conversation.unsupported_historical_consumer")
+    )]
+    UnsupportedHistoricalConsumer,
+    #[error("{}", vega_i18n::t("domain.conversation.invalid_codex"))]
     InvalidCodexSessionTransition,
     /// The referenced thread does not exist.
-    #[error("thread not found: {0}")]
+    #[error("{}", vega_i18n::t_args("domain.conversation.not_found", &[("id", .0)]))]
     NotFound(String),
     /// No project row exists yet, so a thread cannot be created.
-    #[error("no project exists; register a project first")]
+    #[error("{}", vega_i18n::t("domain.conversation.no_project"))]
     NoProject,
     /// A row carries a value outside the DDL vocabulary (e.g. `mode`).
-    #[error("corrupt thread row: {0}")]
+    #[error("{}", vega_i18n::t_args("domain.conversation.corrupt", &[("detail", .0)]))]
     CorruptRow(String),
     /// Execute selection was blocked until the current Plan is reviewed.
-    #[error("pending plan must be reviewed before execute mode")]
+    #[error("{}", vega_i18n::t("domain.conversation.pending_plan"))]
     PendingPlan,
     /// Headless runtime/provider/persistence failure with its structured kind
     /// and fields preserved for callers.
-    #[error("runtime error: {0}")]
+    #[error("{}", vega_i18n::t_args("domain.conversation.runtime", &[("detail", &.0.to_string())]))]
     Runtime(Arc<vega_runtime::VegaError>),
 }
 

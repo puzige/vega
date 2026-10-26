@@ -26,11 +26,21 @@ pub struct UpdateProjection {
     pub phase: UpdatePhase,
 }
 
+impl UpdateProjection {
+    pub fn current_version_label(&self) -> &str {
+        if self.phase == UpdatePhase::Loading && self.current_version.is_empty() {
+            vega_i18n::t("domain.updater.loading_version")
+        } else {
+            &self.current_version
+        }
+    }
+}
+
 impl Default for UpdateProjection {
     fn default() -> Self {
         Self {
             automatic: true,
-            current_version: "正在读取版本…".into(),
+            current_version: String::new(),
             latest_version: None,
             last_checked: None,
             notes: String::new(),

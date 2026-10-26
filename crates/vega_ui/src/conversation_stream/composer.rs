@@ -1,6 +1,8 @@
 use super::*;
 use gpui_kit::Focusable;
 
+static NEXT_SUBMISSION_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 impl ConversationStream {
     pub fn register_artifact_call(&mut self, call_id: &str) -> bool {
         let Some((message_id, _)) = &self.active_agent_message else {
@@ -52,7 +54,21 @@ impl ConversationStream {
         if let Some(group) = self.artifact_groups.get(message_id) {
             return group.clone();
         }
-        let group = cx.new(|_| ArtifactGroup::new(message_id.to_owned()));
+        let group = cx.new(|_| {
+            ArtifactGroup::new(
+                message_id.to_owned(),
+                OpenWorkspaceDiffRequested {
+                    thread_id: self.thread.id.clone(),
+                    project_id: self.thread.project_id.clone(),
+                },
+                self.reading_preview,
+                self.thread.is_standalone(),
+            )
+        });
+        cx.subscribe(&group, |this, _, _: &OpenWorkspaceDiffRequested, cx| {
+            this.emit_open_diff(cx);
+        })
+        .detach();
         cx.observe(&group, |this, group, cx| {
             let index = this.entry_index_where(|entry| {
                 matches!(entry, StreamEntry::ArtifactGroup { group: owned } if owned == &group)
@@ -261,6 +277,7 @@ impl ConversationStream {
             && !self.attachment_import_pending
             && !self.composer_submit_pending
             && !self.composer_resume_pending
+            && !self.ordinary_pending_before_run()
             && !self.approved_not_started
             && !self.trusted_action_busy
             && !self.skill_mutation_pending
@@ -283,6 +300,9 @@ impl ConversationStream {
             .then(|| self.input.read(cx).content_revision());
         self.submitted_attachments = self.attachments.clone();
         cx.emit(ComposerSubmitted {
+            request_id: NEXT_SUBMISSION_REQUEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            draft_revision: self.input.read(cx).content_revision(),
+            attachment_ids: self.attachments.iter().map(|(id, _)| *id).collect(),
             pending_behavior: self
                 .actions
                 .running
@@ -310,9 +330,10 @@ impl ConversationStream {
         self.composer_submit_pending = false;
         self.pending_submission_revision = None;
         self.pending_behavior_override = None;
+        let copy = MessageCopy::from_live_text(content);
+        let projected = copy.original_text();
         if self.composer_history.last().map(String::as_str) != Some(content) {
-            self.composer_history
-                .push(vega_conversation::privacy::safe_live_text(content));
+            self.composer_history.push(projected.clone());
         }
         self.history_cursor = None;
         self.history_draft = None;
@@ -323,11 +344,8 @@ impl ConversationStream {
         self.user_block_seq += 1;
         let index = self.entries.len();
         self.entries.push(StreamEntry::User {
-            copy: MessageCopy::new(&vega_conversation::privacy::safe_live_text(content)),
-            lines: user_message_lines(
-                block_id,
-                &vega_conversation::privacy::safe_live_text(content),
-            ),
+            copy,
+            lines: user_message_lines(block_id, &projected),
         });
         self.list_append(index);
         let submitted = std::mem::take(&mut self.submitted_attachments);
@@ -395,15 +413,24 @@ impl ConversationStream {
     pub(crate) fn on_previous_message(
         &mut self,
         _: &PreviousMessage,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.composer_history.is_empty()
-            || (self.history_cursor.is_none() && !self.input.read(cx).cursor_allows_history())
-        {
+        if self.input.read(cx).is_composing() {
             return;
         }
         let current = self.input.read(cx).text().to_string();
+        let recalling_history = self
+            .history_cursor
+            .and_then(|index| self.composer_history.get(index))
+            == Some(&current);
+        if self.composer_history.is_empty()
+            || (!recalling_history && !self.input.read(cx).cursor_allows_history())
+        {
+            self.input
+                .update(cx, |input, cx| input.up(&crate::text_input::Up, window, cx));
+            return;
+        }
         if let Some(index) = self.history_cursor
             && self.composer_history.get(index) != Some(&current)
         {

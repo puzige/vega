@@ -17,6 +17,10 @@ actions!(
         Delete,
         Left,
         Right,
+        Up,
+        Down,
+        SelectUp,
+        SelectDown,
         SelectLeft,
         SelectRight,
         SelectAll,
@@ -38,6 +42,7 @@ const MASK_CHAR: char = '•';
 /// One laid-out display line: its start offset in the content, the segment
 /// length (excluding the separating `\n`), and the shaped line. Single-line
 /// inputs keep exactly one entry (start 0).
+#[derive(Clone)]
 pub(crate) struct LineLayout {
     start: usize,
     len: usize,
@@ -57,6 +62,7 @@ pub struct TextInput {
     content_revision: u64,
     prediction: Option<SharedString>,
     placeholder: SharedString,
+    placeholder_key: Option<&'static str>,
     masked: bool,
     multiline: bool,
     /// Visible row count, dynamically clamped to the configured row range.
@@ -72,6 +78,9 @@ pub struct TextInput {
     marked_range: Option<Range<usize>>,
     /// Layout cache from the last paint (one entry per display line).
     last_lines: Vec<LineLayout>,
+    navigation_lines: Vec<LineLayout>,
+    navigation_revision: u64,
+    vertical_goal: Option<(Range<usize>, bool, u64, Pixels)>,
     /// Line height used at the last paint (for y → line mapping).
     last_line_height: Pixels,
     last_bounds: Option<Bounds<Pixels>>,
@@ -94,6 +103,23 @@ pub struct ImagePaste(pub std::sync::Arc<ClipboardItem>);
 impl gpui_kit::EventEmitter<ImagePaste> for TextInput {}
 
 impl TextInput {
+    pub fn with_placeholder_key(mut self, key: &'static str) -> Self {
+        self.placeholder_key = Some(key);
+        self
+    }
+
+    pub fn set_placeholder_key(&mut self, key: &'static str, cx: &mut Context<Self>) {
+        if self.placeholder_key != Some(key) {
+            self.placeholder_key = Some(key);
+            cx.notify();
+        }
+    }
+
+    fn localized_placeholder(&self) -> SharedString {
+        self.placeholder_key
+            .map_or_else(|| self.placeholder.clone(), |key| vega_i18n::t(key).into())
+    }
+
     /// Enables attachment paste only for the conversation Composer.
     pub fn with_image_paste(mut self) -> Self {
         self.image_paste = true;

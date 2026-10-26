@@ -7758,6 +7758,7 @@ dependencies = [
  "vega_acp",
  "vega_conversation",
  "vega_credentials",
+ "vega_i18n",
  "vega_runtime",
  "vega_store",
  "vega_theme",
@@ -7776,6 +7777,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "vega_i18n",
 ]
 
 [[package]]
@@ -7798,6 +7800,7 @@ dependencies = [
  "tracing",
  "ulid",
  "vega_credentials",
+ "vega_i18n",
  "vega_mcp",
  "vega_runtime",
  "vega_store",
@@ -7825,6 +7828,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vega_i18n"
+version = "0.1.0"
+dependencies = [
+ "toml 1.1.4+spec-1.1.0",
+]
+
+[[package]]
 name = "vega_markdown"
 version = "0.1.0"
 dependencies = [
@@ -7836,6 +7846,7 @@ dependencies = [
  "tree-sitter-python",
  "tree-sitter-rust",
  "tree-sitter-typescript",
+ "vega_i18n",
 ]
 
 [[package]]
@@ -7851,6 +7862,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "vega_credentials",
+ "vega_i18n",
 ]
 
 [[package]]
@@ -7873,6 +7885,7 @@ dependencies = [
  "tokio-util",
  "ulid",
  "vega_credentials",
+ "vega_i18n",
  "vega_mcp",
  "vega_token",
  "vega_tools",
@@ -7892,6 +7905,7 @@ dependencies = [
  "tracing",
  "ulid",
  "vega_credentials",
+ "vega_i18n",
 ]
 
 [[package]]
@@ -7899,6 +7913,7 @@ name = "vega_theme"
 version = "0.1.0"
 dependencies = [
  "gpui-kit",
+ "vega_i18n",
 ]
 
 [[package]]
@@ -7923,6 +7938,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "vega_credentials",
+ "vega_i18n",
 ]
 
 [[package]]
@@ -7935,6 +7951,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "vega_conversation",
+ "vega_i18n",
  "vega_markdown",
  "vega_store",
  "vega_theme",

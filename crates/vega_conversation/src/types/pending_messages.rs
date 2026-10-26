@@ -8,8 +8,8 @@ pub enum PendingMessageBehavior {
 impl PendingMessageBehavior {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Queue => "排队",
-            Self::Steer => "插话",
+            Self::Queue => vega_i18n::t("domain.pending.queue"),
+            Self::Steer => vega_i18n::t("domain.pending.steer"),
         }
     }
 

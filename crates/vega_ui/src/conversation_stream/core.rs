@@ -1,5 +1,5 @@
 use super::*;
-use crate::cua_onboarding::lifecycle::{EntryLifecycle, TaskContext};
+use crate::cua_onboarding::lifecycle::TaskContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModelPickerLevel {
@@ -21,6 +21,7 @@ impl ModelPickerLevel {
 /// the virtualized message stream, and the fixed-bottom Composer. One entity
 /// per open thread; rebuilt by the window root when another thread opens.
 pub struct ConversationStream {
+    pub(crate) ordinary: Vec<super::ordinary_submissions::OrdinaryRow>,
     pub(crate) prediction_waiting_for_queue: bool,
     pub(crate) prediction_owner: Option<super::composer_predictions::ComposerPredictionOwner>,
     pub(crate) prediction_generation: u64,
@@ -34,11 +35,7 @@ pub struct ConversationStream {
     pub(crate) automation: super::automation::AutomationUi,
     pub(crate) privacy: super::privacy::PrivacyPanel,
     pub(crate) computer_use_control: Option<vega_conversation::types::ComputerUseControl>,
-    pub(crate) computer_use_entry: EntryLifecycle,
     pub(crate) computer_use_task: TaskContext,
-    pub(crate) computer_use_diagnostic: Option<(u64, String)>,
-    pub(crate) computer_use_notice_generation: u64,
-    pub(crate) computer_use_diagnostic_focus: FocusHandle,
     pub(crate) context_control: context_control::ContextControl,
     pub(crate) attachments: Vec<(u64, attachments::ImagePreview)>,
     pub(crate) attachment_generation: u64,
@@ -53,6 +50,7 @@ pub struct ConversationStream {
     pub(crate) foreground_height: Pixels,
     pub(crate) entry_identities: Vec<StreamEntryIdentity>,
     pub(crate) measured_entry_heights: HashMap<String, f32>,
+    pub(crate) rendered_language: &'static str,
     pub(super) text_cache: std::cell::RefCell<super::text_cache::TextCache>,
     pub(crate) message_anchor_layout: super::message_anchors::MessageAnchorLayout,
     pub(crate) message_anchor_hovered: Option<String>,
@@ -74,6 +72,7 @@ pub struct ConversationStream {
     /// Opaque provider call ids are retained only as non-rendered map keys.
     pub(crate) tool_cards: HashMap<String, Entity<ToolCard>>,
     pub(crate) run_responses: HashMap<String, phase::RunResponses>,
+    pub(crate) generated_notices: HashMap<String, Vec<generated_notice::GeneratedNoticeSpan>>,
     pub(crate) run_activity_groups: HashMap<String, Entity<RunActivityGroup>>,
     pub(crate) run_continuations: HashMap<String, vega_conversation::types::RunContinuation>,
     pub(crate) artifact_cards: HashMap<String, Entity<ArtifactCard>>,
@@ -152,13 +151,12 @@ pub struct ConversationStream {
     pub(crate) history_draft: Option<String>,
     pub(crate) approved_not_started: bool,
     pub(crate) trusted_action_busy: bool,
-    pub(crate) controller_error: Option<String>,
+    pub(crate) controller_error: Option<crate::localized_copy::LocalizedCopy>,
     pub(crate) controller_runtime_error: Option<(String, RunFailureKind)>,
     pub(crate) run_failures: HashMap<String, RunFailureKind>,
     pub(crate) run_notices: HashMap<usize, super::run_notice::RunNotice>,
-    /// Nonfatal run-start MCP omission. Kept separate so a provider failure
-    /// cannot overwrite it or be overwritten by it.
-    pub(crate) mcp_warning: Option<String>,
+    pub(crate) run_mcp_unavailable: HashMap<String, usize>,
+    pub(crate) mcp_notices: HashMap<usize, super::run_notice::RunNotice>,
     pub(crate) file_selector: FileSelectorModel,
     /// The latest bounded candidate projection for this thread's project.
     pub(crate) file_snapshot: FileIndexSnapshot,
@@ -179,7 +177,7 @@ pub struct ConversationStream {
     pub(crate) file_retry_focus: FocusHandle,
     pub(crate) composer_defaults: ComposerDefaults,
     pub(crate) thinking_slider: Entity<ThinkingSlider>,
-    pub(crate) model_options: Vec<String>,
+    pub(crate) model_options: Vec<ModelOption>,
     pub(crate) model_picker_level: ModelPickerLevel,
     pub(crate) model_menu_scroll: ScrollHandle,
     pub(crate) compact_workspace: bool,
@@ -208,6 +206,7 @@ pub struct ConversationStream {
     /// artifact operations.
     pub(crate) model_selection_save_owner: Option<u64>,
     pub(crate) next_model_request_id: u64,
+    pub(crate) next_turn_model: Option<String>,
     /// Keyboard-accessible return-to-tail action shown after the user scrolls
     /// away from the live bottom (P4).
     pub(crate) resume_tail_focus: FocusHandle,
@@ -220,6 +219,7 @@ impl EventEmitter<ImagePreviewRequested> for ConversationStream {}
 impl EventEmitter<PlanReviewRequested> for ConversationStream {}
 impl EventEmitter<ThreadSettingsRequested> for ConversationStream {}
 impl EventEmitter<ComposerSubmitted> for ConversationStream {}
+impl EventEmitter<super::ordinary_submissions::OrdinaryActionRequested> for ConversationStream {}
 impl EventEmitter<SkillComposerProjectionRequested> for ConversationStream {}
 impl EventEmitter<SkillComposerMutationRequested> for ConversationStream {}
 impl EventEmitter<ContextSettingsRequested> for ConversationStream {}
@@ -259,6 +259,11 @@ impl ConversationStream {
         self.reading_preview = reading;
         for card in self.artifact_cards.values() {
             card.update(cx, |card, cx| card.set_reading_preview(reading, cx));
+        }
+        for group in self.artifact_groups.values() {
+            group.update(cx, |group, cx| {
+                group.set_review_availability(reading, self.thread.is_standalone(), cx);
+            });
         }
         self.hydration.loading = false;
         self.hydration.paused = false;
@@ -324,7 +329,8 @@ impl ConversationStream {
         cx.observe_global::<RunningMessageDefault>(|_, cx| cx.notify())
             .detach();
         let input = cx.new(|cx| {
-            TextInput::new_multiline(cx, "描述任务，或用 @ 引用文件", COMPOSER_ROWS)
+            TextInput::new_multiline(cx, "", COMPOSER_ROWS)
+                .with_placeholder_key("ui.describe_a_task_or_use_to_reference_files")
                 .with_image_paste()
         });
         let branch_selector = cx.new(|cx| {
@@ -347,8 +353,11 @@ impl ConversationStream {
         let commit_panel =
             cx.new(|cx| CommitPanel::new(thread.id.clone(), thread.project_id.clone(), cx));
 
-        let utility_project_search =
-            cx.new(|cx| TextInput::new(cx, "搜索项目", false).with_bare_chrome());
+        let utility_project_search = cx.new(|cx| {
+            TextInput::new(cx, "", false)
+                .with_placeholder_key("ui.search_projects")
+                .with_bare_chrome()
+        });
         cx.observe(&utility_project_search, |this, input, cx| {
             this.sync_utility_project_query(&input, cx);
         })
@@ -459,8 +468,7 @@ impl ConversationStream {
             },
         )
         .detach();
-        let mut computer_use_entry = EntryLifecycle::default();
-        let computer_use_task = computer_use_entry.begin_task(&thread.id);
+        let computer_use_task = TaskContext::new(&thread.id);
         Self {
             prediction_waiting_for_queue: false,
             prediction_owner: None,
@@ -473,16 +481,13 @@ impl ConversationStream {
             delegated_run_active: false,
             context_control: context_control::ContextControl::new(cx),
             computer_use_control: None,
-            computer_use_entry,
             computer_use_task,
-            computer_use_diagnostic: None,
-            computer_use_notice_generation: 0,
-            computer_use_diagnostic_focus: cx.focus_handle(),
             attachments: Vec::new(),
             attachment_generation: 0,
             attachment_import_pending: false,
             attachment_error: None,
             submitted_attachments: Vec::new(),
+            ordinary: Vec::new(),
             thread,
             entries: Vec::new(),
             counters: Arc::new(StreamCounters::default()),
@@ -493,6 +498,7 @@ impl ConversationStream {
                 + Layout::COMPOSER_PADDING_BOTTOM),
             entry_identities: Vec::new(),
             measured_entry_heights: HashMap::new(),
+            rendered_language: vega_i18n::language(),
             text_cache: Default::default(),
             assistant_role_rows: Vec::new(),
             message_anchor_layout: super::message_anchors::MessageAnchorLayout::default(),
@@ -511,6 +517,7 @@ impl ConversationStream {
             user_block_seq: USER_BLOCK_BASE,
             tool_cards: HashMap::new(),
             run_responses: HashMap::new(),
+            generated_notices: HashMap::new(),
             run_activity_groups: HashMap::new(),
             run_continuations: HashMap::new(),
             artifact_cards: HashMap::new(),
@@ -580,7 +587,8 @@ impl ConversationStream {
             controller_runtime_error: None,
             run_notices: HashMap::new(),
             run_failures: HashMap::new(),
-            mcp_warning: None,
+            run_mcp_unavailable: HashMap::new(),
+            mcp_notices: HashMap::new(),
             file_selector: FileSelectorModel::default(),
             file_snapshot: FileIndexSnapshot::default(),
             file_index_loading: false,
@@ -622,6 +630,7 @@ impl ConversationStream {
             model_selection_pending: None,
             model_selection_save_owner: None,
             next_model_request_id: 0,
+            next_turn_model: None,
             resume_tail_focus: cx.focus_handle().tab_index(18).tab_stop(true),
             _permission_listener_task: permission_listener_task,
         }
@@ -638,7 +647,7 @@ impl ConversationStream {
         }
     }
 
-    fn refresh_assistant_roles(&mut self) {
+    pub(super) fn refresh_assistant_roles(&mut self) {
         let mut needs_role = true;
         self.assistant_role_rows = self
             .entries
@@ -798,7 +807,11 @@ impl ConversationStream {
         self.restore_scroll_anchor_at(anchor, item_ix)
     }
 
-    fn restore_scroll_anchor_at(&mut self, anchor: &ThreadScrollAnchor, item_ix: usize) -> bool {
+    pub(super) fn restore_scroll_anchor_at(
+        &mut self,
+        anchor: &ThreadScrollAnchor,
+        item_ix: usize,
+    ) -> bool {
         if anchor.following_tail {
             self.list.set_follow_mode(gpui_kit::FollowMode::Tail);
             return true;
@@ -900,6 +913,13 @@ impl ConversationStream {
             if !thread.model.is_empty() {
                 self.composer_defaults.model = thread.model.clone();
             }
+            if self
+                .next_turn_model
+                .as_deref()
+                .is_some_and(|model| model == thread.model)
+            {
+                self.next_turn_model = None;
+            }
             self.thread = thread;
             self.acknowledge_mode_action(cx);
             self.controller_runtime_error = None;
@@ -968,6 +988,10 @@ impl ConversationStream {
     /// Project identity of the route currently projected by this cached view.
     pub fn route_project_id(&self) -> &str {
         &self.thread.project_id
+    }
+
+    pub fn thread_snapshot(&self) -> Thread {
+        self.thread.clone()
     }
 
     pub fn task_backend(&self) -> TaskBackend {
@@ -1117,6 +1141,7 @@ impl ConversationStream {
             self.reset_context_control(cx);
         }
         self.thread = projected;
+        self.next_turn_model = None;
         self.composer_defaults.model = model.to_owned();
         self.controller_runtime_error = None;
         self.controller_error = None;
@@ -1139,7 +1164,10 @@ impl ConversationStream {
                 .entries
                 .iter()
                 .rposition(|entry| matches!(entry, StreamEntry::User { .. }))
-            && matches!(&self.entries[index], StreamEntry::User { copy, .. } if copy.original_text() == "[凭据检查不可用]")
+            && self.entry_identities.get(index).is_some_and(|identity| {
+                identity.message_id.is_none() && identity.pending_id.is_none()
+            })
+            && matches!(&self.entries[index], StreamEntry::User { copy, .. } if copy.live_projection_unavailable())
         {
             let block = self.user_block_seq;
             self.user_block_seq += 1;
@@ -1160,20 +1188,32 @@ impl ConversationStream {
     pub fn apply_controller_error(&mut self, cx: &mut Context<Self>) {
         self.actions.pending_mode = None;
         self.controller_runtime_error = None;
-        self.controller_error = Some("操作未保存，请重试".into());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(
+            "ui.changes_were_not_saved_try_again",
+        ));
         cx.notify();
     }
 
     pub fn apply_codex_route_error(&mut self, message: &'static str, cx: &mut Context<Self>) {
+        self.apply_codex_route_failure(message.into(), cx);
+    }
+
+    pub fn apply_codex_route_failure(
+        &mut self,
+        failure: crate::localized_copy::LocalizedCopy,
+        cx: &mut Context<Self>,
+    ) {
         self.controller_runtime_error = None;
-        self.controller_error = Some(message.into());
+        self.controller_error = Some(failure);
         cx.notify();
     }
 
     /// Keeps the exact in-flight submission intact when a duplicate send arrives.
     pub fn apply_agent_busy(&mut self, cx: &mut Context<Self>) {
         self.controller_runtime_error = None;
-        self.controller_error = Some("此对话正在执行，请等待完成或停止当前任务".into());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(
+            "ui.this_conversation_is_running_wait_for_it_to",
+        ));
         cx.notify();
     }
 
@@ -1181,8 +1221,9 @@ impl ConversationStream {
     pub fn apply_credential_error(&mut self, cx: &mut Context<Self>) {
         self.reject_composer_submission(cx);
         self.controller_runtime_error = None;
-        self.controller_error =
-            Some("本地凭据缺失或无法读取，请在设置中重新填写 API Key 后重试".into());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(
+            "ui.local_credentials_are_missing_or_unreadable_re_enter",
+        ));
         cx.notify();
     }
 
@@ -1196,7 +1237,7 @@ impl ConversationStream {
     ) {
         self.reject_composer_submission(cx);
         self.controller_runtime_error = None;
-        self.controller_error = Some(failure.message());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::Preflight(failure));
         cx.notify();
     }
 
@@ -1346,12 +1387,12 @@ impl ConversationStream {
         self.composer_defaults.reasoning_unavailable
     }
 
-    pub fn apply_model_options(&mut self, options: Vec<String>, cx: &mut Context<Self>) {
+    pub fn apply_model_options(&mut self, options: Vec<ModelOption>, cx: &mut Context<Self>) {
         self.model_options = options;
         self.model_selector_highlight = self
             .model_options
             .iter()
-            .position(|model| *model == self.composer_defaults.model)
+            .position(|option| option.model == self.selector_model())
             .unwrap_or(0);
         cx.notify();
     }
@@ -1413,6 +1454,7 @@ impl ConversationStream {
             self.reset_context_control(cx);
         }
         self.composer_defaults.model = model.to_owned();
+        self.next_turn_model = None;
         self.thread = projected;
         self.model_selection_pending = None;
         self.clear_model_selection_save_owner(request_id, cx);
@@ -1441,8 +1483,48 @@ impl ConversationStream {
         self.model_selection_pending = None;
         self.clear_model_selection_save_owner(request_id, cx);
         self.controller_runtime_error = None;
-        self.controller_error = Some("模型选择保存失败，请重试".into());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(
+            "ui.could_not_save_the_model_selection_try_again",
+        ));
         cx.notify();
+    }
+
+    pub fn apply_thread_model_staged(
+        &mut self,
+        thread_id: &str,
+        request_id: u64,
+        model: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if thread_id != self.thread.id {
+            return;
+        }
+        if !self.owns_model_selection_request(request_id) {
+            return;
+        }
+        if model.is_empty() {
+            return;
+        }
+        self.next_turn_model = Some(model.to_owned());
+        self.model_selection_pending = None;
+        self.clear_model_selection_save_owner(request_id, cx);
+        self.model_picker_level = ModelPickerLevel::Closed;
+        self.controller_runtime_error = None;
+        self.controller_error = None;
+        cx.notify();
+    }
+
+    pub fn restore_next_turn_model(&mut self, model: Option<String>, cx: &mut Context<Self>) {
+        if self.model_selection_pending.is_none() {
+            self.next_turn_model = model;
+            cx.notify();
+        }
+    }
+
+    pub fn selector_model(&self) -> &str {
+        self.next_turn_model
+            .as_deref()
+            .unwrap_or(&self.composer_defaults.model)
     }
 
     pub(crate) fn on_activate_model(
@@ -1460,7 +1542,9 @@ impl ConversationStream {
         }
         if !self.model_picker_level.is_open() {
             self.close_composer_popovers(cx);
-            if self.thinking_slider.read(cx).has_tiers() {
+            if self.selector_model() == self.displayed_model()
+                && self.thinking_slider.read(cx).has_tiers()
+            {
                 self.open_model_picker_slider(cx);
             } else {
                 self.open_model_picker_list(cx);
@@ -1474,25 +1558,32 @@ impl ConversationStream {
             cx.notify();
             return;
         }
-        if let Some(model) = self
+        if let Some(option) = self
             .model_options
             .get(self.model_selector_highlight)
             .cloned()
         {
-            self.select_model_option(&model, cx);
+            self.select_model_option(&option.model, cx);
         }
         cx.notify();
     }
 
     pub(crate) fn open_model_picker_slider(&mut self, cx: &mut Context<Self>) {
+        if self.selector_model() != self.displayed_model() {
+            self.open_model_picker_list(cx);
+            return;
+        }
         self.model_picker_level = ModelPickerLevel::Slider;
         self.model_selector_highlight = self
             .model_options
             .iter()
-            .position(|model| *model == self.thread.model)
+            .position(|option| option.model == self.selector_model())
             .unwrap_or(0);
         self.model_menu_scroll
-            .scroll_to_item(self.model_selector_highlight);
+            .scroll_to_item(model_picker_row_index(
+                &self.model_options,
+                self.model_selector_highlight,
+            ));
         cx.notify();
     }
 
@@ -1516,10 +1607,13 @@ impl ConversationStream {
         self.model_selector_highlight = self
             .model_options
             .iter()
-            .position(|model| *model == self.thread.model)
+            .position(|option| option.model == self.selector_model())
             .unwrap_or(0);
         self.model_menu_scroll
-            .scroll_to_item(self.model_selector_highlight);
+            .scroll_to_item(model_picker_row_index(
+                &self.model_options,
+                self.model_selector_highlight,
+            ));
         cx.notify();
     }
 
@@ -1537,7 +1631,10 @@ impl ConversationStream {
         }
         self.model_selector_highlight = self.model_selector_highlight.saturating_sub(1);
         self.model_menu_scroll
-            .scroll_to_item(self.model_selector_highlight);
+            .scroll_to_item(model_picker_row_index(
+                &self.model_options,
+                self.model_selector_highlight,
+            ));
         cx.notify();
     }
 
@@ -1549,7 +1646,10 @@ impl ConversationStream {
             self.model_selector_highlight += 1;
         }
         self.model_menu_scroll
-            .scroll_to_item(self.model_selector_highlight);
+            .scroll_to_item(model_picker_row_index(
+                &self.model_options,
+                self.model_selector_highlight,
+            ));
         cx.notify();
     }
 
@@ -1577,27 +1677,31 @@ impl ConversationStream {
     /// Displays a bounded provider/runner failure after durable preparation.
     pub fn apply_agent_error(&mut self, cx: &mut Context<Self>) {
         self.controller_runtime_error = None;
-        self.controller_error = Some("执行未完成，可安全重试".into());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(
+            "ui.the_run_did_not_finish_you_can_safely",
+        ));
 
         self.meter.end_run();
         cx.notify();
     }
 
-    /// An enabled-but-unavailable MCP server contributes no tools to this
-    /// run. The count is enough to disclose the omission; the Settings page
-    /// owns the per-server code and no remote error body enters Composer.
     pub fn apply_mcp_unavailable(
         &mut self,
+        message_id: &str,
         diagnostics: &[vega_conversation::types::McpServerDiagnostic],
         cx: &mut Context<Self>,
     ) {
-        if diagnostics.is_empty() {
+        let count = diagnostics
+            .iter()
+            .map(|diagnostic| &diagnostic.server_id)
+            .collect::<HashSet<_>>()
+            .len();
+        if count == 0 || self.run_mcp_unavailable.get(message_id) == Some(&count) {
             return;
         }
-        self.mcp_warning = Some(format!(
-            "{} 个已启用的 MCP 服务器不可用，本轮不提供其工具；请在设置 → MCP 查看详情",
-            diagnostics.len()
-        ));
+        self.run_mcp_unavailable
+            .insert(message_id.to_owned(), count);
+        self.refresh_run_notices(cx);
         cx.notify();
     }
 
@@ -1639,7 +1743,7 @@ impl ConversationStream {
             return;
         }
         self.controller_runtime_error = message_id.map(|id| (id.to_owned(), failure));
-        self.controller_error = Some(failure.message());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::Run(failure));
         self.meter.end_run();
         cx.notify();
     }
@@ -1653,7 +1757,7 @@ impl ConversationStream {
         cx: &mut Context<Self>,
     ) {
         self.controller_runtime_error = None;
-        self.controller_error = Some(code.message().into());
+        self.controller_error = Some(crate::localized_copy::LocalizedCopy::Reference(code));
         self.meter.end_run();
         cx.notify();
     }
@@ -1705,6 +1809,7 @@ impl ConversationStream {
             | ConversationEvent::RunContinued { .. }
             | ConversationEvent::AssistantResponseStarted { .. }
             | ConversationEvent::AssistantResponseCompleted { .. }
+            | ConversationEvent::GeneratedNotice { .. }
             | ConversationEvent::ReasoningCompleted { .. }
             | ConversationEvent::ThinkingDelta { .. }
             | ConversationEvent::SummaryDelta { .. }

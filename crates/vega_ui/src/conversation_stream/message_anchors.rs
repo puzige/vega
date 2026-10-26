@@ -19,11 +19,11 @@ pub(crate) enum MessageAnchorKind {
 impl MessageAnchorKind {
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::User => "用户消息",
-            Self::Assistant => "助手消息",
-            Self::Tool => "工具活动",
-            Self::Plan => "计划消息",
-            Self::Summary => "任务结果",
+            Self::User => vega_i18n::t("ui.user_message"),
+            Self::Assistant => vega_i18n::t("ui.assistant_message"),
+            Self::Tool => vega_i18n::t("ui.tool_activity"),
+            Self::Plan => vega_i18n::t("ui.plan_message"),
+            Self::Summary => vega_i18n::t("ui.task_result"),
         }
     }
 }
@@ -140,6 +140,9 @@ impl ConversationStream {
                 continue;
             };
             let (kind, preview) = match entry {
+                StreamEntry::User { lines, copy } if !user_message_is_visible(copy, lines) => {
+                    continue;
+                }
                 StreamEntry::User { .. } => (
                     MessageAnchorKind::User,
                     self.text_cache
@@ -147,7 +150,10 @@ impl ConversationStream {
                         .preview(entry_index, &identity.key, entry)
                         .unwrap_or_default(),
                 ),
-                StreamEntry::UserImages { .. } => (MessageAnchorKind::User, "图片消息".to_string()),
+                StreamEntry::UserImages { .. } => (
+                    MessageAnchorKind::User,
+                    vega_i18n::t("ui.image_message").to_string(),
+                ),
                 StreamEntry::Assistant { .. } => (
                     MessageAnchorKind::Assistant,
                     self.text_cache
@@ -157,11 +163,18 @@ impl ConversationStream {
                 ),
                 StreamEntry::Tool { .. }
                 | StreamEntry::ToolGroup { .. }
-                | StreamEntry::ArtifactGroup { .. } => {
-                    (MessageAnchorKind::Tool, "工具活动".to_string())
-                }
-                StreamEntry::Plan { .. } => (MessageAnchorKind::Plan, "计划消息".to_string()),
-                StreamEntry::Summary { .. } => (MessageAnchorKind::Summary, "任务结果".to_string()),
+                | StreamEntry::ArtifactGroup { .. } => (
+                    MessageAnchorKind::Tool,
+                    vega_i18n::t("ui.tool_activity").to_string(),
+                ),
+                StreamEntry::Plan { .. } => (
+                    MessageAnchorKind::Plan,
+                    vega_i18n::t("ui.plan_message").to_string(),
+                ),
+                StreamEntry::Summary { .. } => (
+                    MessageAnchorKind::Summary,
+                    vega_i18n::t("ui.task_result").to_string(),
+                ),
                 StreamEntry::Subagents { .. }
                 | StreamEntry::ContextCompaction { .. }
                 | StreamEntry::RunActivity { .. }
@@ -226,6 +239,7 @@ impl ConversationStream {
         cx: &App,
     ) -> MessageAnchorGeometry {
         let notices = &self.run_notices;
+        let mcp_notices = &self.mcp_notices;
         let notice_width = self
             .workspace_width
             .map(|width| width - 2. * Layout::CONVERSATION_PADDING)
@@ -241,7 +255,8 @@ impl ConversationStream {
                     return 0.;
                 }
                 if self.compaction_failure_is_represented(index) {
-                    return notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.);
+                    return notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.)
+                        + mcp_notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.);
                 }
                 self.measured_entry_heights
                     .get(&identity.key)
@@ -251,7 +266,8 @@ impl ConversationStream {
                         StreamEntry::RunActivitySegment { group, segment } => group.read(cx).estimated_segment_height_with_top(*segment, notice_width, stage_top_insets.get(&index).copied().unwrap_or(Layout::CONVERSATION_STAGE_TOP), cx),
                         StreamEntry::Tool { .. } | StreamEntry::ToolGroup { .. } | StreamEntry::ContextCompaction { .. } => self.estimated_entry_height(index, cx, identity.message_id.is_some()) + stage_top_insets.get(&index).copied().unwrap_or(0.),
                         _ => self.estimated_entry_height(index, cx, identity.message_id.is_some()) + if self.copy_source_for_entry(index).is_some() { Layout::MESSAGE_COPY_FOOTER } else { 0. },
-                    } + notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.))
+                    } + notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.)
+                        + mcp_notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.))
             })
             .collect::<Vec<_>>();
         let total_height = entry_heights.iter().sum::<f32>();
@@ -437,7 +453,9 @@ impl ConversationStream {
         let key_anchors = anchors.clone();
         let rail = div()
             .id("message-anchor-rail")
-            .aria_label("消息导航，使用上下键选择，Enter跳转，Esc关闭预览")
+            .aria_label(vega_i18n::t(
+                "ui.message_navigation_use_arrow_keys_to_select_enter",
+            ))
             .tab_stop(true)
             .track_focus(&self.message_anchor_focus)
             .absolute()
@@ -656,10 +674,10 @@ pub(crate) fn sanitize_anchor_preview(text: &str) -> String {
             .trim_matches(|ch: char| !ch.is_alphanumeric())
             .eq_ignore_ascii_case("bearer")
         {
-            safe.push("[凭据已隐藏]");
+            safe.push(vega_i18n::t("ui.credentials_hidden"));
             words.next();
         } else if looks_like_credential(word) {
-            safe.push("[凭据已隐藏]");
+            safe.push(vega_i18n::t("ui.credentials_hidden"));
         } else {
             safe.push(word);
         }
@@ -749,7 +767,8 @@ pub(super) fn estimate_entry_height(
         }
         StreamEntry::Tool { card } => card.read(cx).estimated_height(),
         StreamEntry::ToolGroup { group } => group.read(cx).estimated_height(cx),
-        StreamEntry::User { lines, .. } => estimate_user_height(lines, text_width),
+        StreamEntry::ArtifactGroup { group } => group.read(cx).estimated_height(),
+        StreamEntry::User { lines, copy } => estimate_user_height(copy, lines, text_width),
         StreamEntry::Assistant { model, failure, .. } => {
             estimate_markdown_height(model, text_width)
                 + Layout::CONVERSATION_BODY_TOP
@@ -773,21 +792,27 @@ pub(super) fn estimate_entry_height(
                 return 0.;
             }
             let label = context_compaction_label(record.status, record.failure, *restored);
-            let failed = record.status == vega_conversation::types::ContextCompactionStatus::Failed;
-            let width = if failed {
-                text_width
-            } else {
-                (text_width - Layout::ICON_SIZE - Layout::CONVERSATION_INLINE_GAP).max(1.)
-            };
-            let columns = (width / (Typography::BODY * 0.56)).max(1.) as usize;
-            (display_width(&label).div_ceil(columns).max(1) as f32
-                * Typography::BODY
-                * Typography::BODY_LINE_HEIGHT)
-                .max(Layout::DISCLOSURE_HEADER_HEIGHT)
+            if record.status == vega_conversation::types::ContextCompactionStatus::Failed {
+                let columns = (text_width / (Typography::BODY * 0.56)).max(1.) as usize;
+                return (display_width(&label).div_ceil(columns).max(1) as f32
+                    * Typography::BODY
+                    * Typography::BODY_LINE_HEIGHT)
+                    .max(Layout::DISCLOSURE_HEADER_HEIGHT);
+            }
+            estimate_compaction_activity_height(&label, text_width)
         }
         StreamEntry::SkillActivation { .. } => 30.0,
         _ => (entry.row_count(cx).max(1) as f32 * ROW_HEIGHT + 12.0).max(30.0),
     }
+}
+
+pub(super) fn estimate_compaction_activity_height(label: &str, width: f32) -> f32 {
+    let line_height = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
+    let width = (width - Layout::ICON_SIZE - Layout::CONVERSATION_INLINE_GAP).max(1.);
+    let columns = (width / (Typography::CONVERSATION * 0.56)).max(1.) as usize;
+    let vertical_padding = (Layout::CONVERSATION_TOOL_HEIGHT - line_height) / 2.;
+    (display_width(label).div_ceil(columns).max(1) as f32 * line_height + 2. * vertical_padding)
+        .max(Layout::CONVERSATION_TOOL_HEIGHT)
 }
 
 pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
@@ -885,7 +910,14 @@ pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
     content_height + gaps + code_headers
 }
 
-pub(super) fn estimate_user_height(lines: &[StreamLine], text_width: f32) -> f32 {
+pub(super) fn estimate_user_height(
+    copy: &MessageCopy,
+    lines: &[StreamLine],
+    text_width: f32,
+) -> f32 {
+    if !user_message_is_visible(copy, lines) {
+        return 0.;
+    }
     let bubble_width =
         text_width * Layout::CONVERSATION_USER_RATIO - 2. * Layout::CONVERSATION_USER_PADDING;
     let user_chars_per_line = (bubble_width / (Typography::CONVERSATION * 0.56)).max(12.0) as usize;

@@ -5,7 +5,7 @@ use vega_conversation::types::{
     ContextCompactionStatus as Status, ContextCompactionStatusRecord, ContextSettings, TokenUsage,
 };
 
-const LOAD_ERROR: &str = "上下文信息读取失败，请稍后重试";
+const LOAD_ERROR: &str = "ui.could_not_load_context_information_try_again_later";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ContextUsageProjection {
@@ -54,8 +54,16 @@ impl ContextControl {
     pub fn new(cx: &mut Context<ConversationStream>) -> Self {
         Self {
             open: false,
-            limit: cx.new(|cx| TextInput::new(cx, "未配置", false).with_tab_stop(true)),
-            reserve: cx.new(|cx| TextInput::new(cx, "输出预留", false).with_tab_stop(true)),
+            limit: cx.new(|cx| {
+                TextInput::new(cx, "", false)
+                    .with_placeholder_key("ui.not_configured")
+                    .with_tab_stop(true)
+            }),
+            reserve: cx.new(|cx| {
+                TextInput::new(cx, "", false)
+                    .with_placeholder_key("ui.output_reserve")
+                    .with_tab_stop(true)
+            }),
             automatic: false,
             settings: None,
             model_input_limit: None,
@@ -230,7 +238,7 @@ impl ConversationStream {
             }
             self.context_control.error = None;
         } else {
-            self.context_control.error = Some("设置保存失败，请重试");
+            self.context_control.error = Some("ui.could_not_save_settings_try_again");
         }
         cx.notify();
         true
@@ -266,10 +274,13 @@ impl ConversationStream {
         }
         self.context_control.next_request =
             self.context_control.next_request.max(record.generation);
-        if let Some((_, group)) = &self.active_run_activity {
-            group.update(cx, |group, cx| {
-                group.set_compacting(record.status == Status::Compacting, cx)
-            });
+        let through = if record.status == Status::Compacting {
+            record.generation.saturating_sub(1)
+        } else {
+            record.generation
+        };
+        for group in self.run_activity_groups.values() {
+            group.update(cx, |group, cx| group.remove_compactions(model, through, cx));
         }
 
         if self
@@ -325,6 +336,37 @@ impl ConversationStream {
                     self.set_entry_identity(index, identity);
                 }
             }
+        }
+        if record.status == Status::Compacting
+            && let Some(message_id) =
+                self.entries
+                    .iter()
+                    .zip(&self.entry_identities)
+                    .find_map(|(entry, identity)| match entry {
+                        StreamEntry::ContextCompaction {
+                            model: owner,
+                            record: owned,
+                            ..
+                        } if owner == model && owned.generation == record.generation => {
+                            identity.message_id.clone()
+                        }
+                        _ => None,
+                    })
+            && self
+                .active_run_activity
+                .as_ref()
+                .is_some_and(|(active, group)| {
+                    active == &message_id
+                        && group
+                            .read(cx)
+                            .compaction_segment(model, record.generation)
+                            .is_none()
+                })
+            && let Some((group, segment)) = self.ensure_live_run_activity_segment(&message_id, cx)
+        {
+            group.update(cx, |group, cx| {
+                group.append_compaction(segment, model, record.generation, cx)
+            });
         }
         // Keep only the newest transition for fencing/busy state. The list
         // owns every operation's single visible row, without a six-row cap.
@@ -647,11 +689,11 @@ impl ConversationStream {
 
 pub(super) fn status_label_for(status: Status, failure: Option<Failure>) -> &'static str {
     match status {
-        Status::Unknown => "Context capacity is not configured",
-        Status::Ready => "Context ready",
-        Status::Compacting => "Compacting context",
-        Status::Succeeded => "Context compacted",
-        Status::Cancelled => "Context compaction cancelled",
+        Status::Unknown => vega_i18n::t("ui.context_capacity_is_not_configured"),
+        Status::Ready => vega_i18n::t("ui.context_ready"),
+        Status::Compacting => vega_i18n::t("ui.compacting_context"),
+        Status::Succeeded => vega_i18n::t("ui.context_compacted"),
+        Status::Cancelled => vega_i18n::t("ui.context_compaction_cancelled"),
         Status::Failed => failure.unwrap_or(Failure::Unavailable).message(),
     }
 }

@@ -62,6 +62,25 @@ pub(crate) fn hydration_request(hydration: HistoryHydration, at_top: bool) -> Op
     hydration.older_cursor
 }
 
+pub(crate) fn model_picker_starts_group(options: &[ModelOption], index: usize) -> bool {
+    index == 0
+        || options
+            .get(index - 1)
+            .map(|previous| previous.provider.as_str())
+            != options.get(index).map(|option| option.provider.as_str())
+}
+
+pub(crate) fn model_picker_row_index(options: &[ModelOption], option_index: usize) -> usize {
+    if options.is_empty() {
+        return 0;
+    }
+    let last = option_index.min(options.len() - 1);
+    (0..=last)
+        .filter(|index| model_picker_starts_group(options, *index))
+        .count()
+        + last
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BlockOrigin {
     Committed,
@@ -843,6 +862,11 @@ impl StreamModel {
 pub(crate) struct MessageCopy {
     pub(super) id: u64,
     text: std::rc::Rc<std::cell::RefCell<String>>,
+    live_projection_unavailable: bool,
+    generated_notices:
+        std::rc::Rc<std::cell::RefCell<Vec<super::generated_notice::GeneratedNoticeFragment>>>,
+    display_model_text: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    stream_finished: std::rc::Rc<std::cell::Cell<bool>>,
     selection_scope: gpui_kit::base::TextSelectionScopeId,
     selection_handle: std::rc::Rc<std::cell::RefCell<Option<gpui_kit::base::TextSelectionHandle>>>,
     selection_generation: std::rc::Rc<std::cell::Cell<u64>>,
@@ -861,6 +885,10 @@ impl MessageCopy {
         Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             text: std::rc::Rc::new(std::cell::RefCell::new(text.to_owned())),
+            live_projection_unavailable: false,
+            generated_notices: Default::default(),
+            display_model_text: Default::default(),
+            stream_finished: Default::default(),
             selection_scope: gpui_kit::base::TextSelectionScopeId::new(),
             selection_handle: std::rc::Rc::new(std::cell::RefCell::new(None)),
             selection_generation: std::rc::Rc::new(std::cell::Cell::new(0)),
@@ -872,6 +900,33 @@ impl MessageCopy {
             projected_selection: Default::default(),
             selection_subscriptions: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
         }
+    }
+
+    pub(super) fn from_live_text(text: &str) -> Self {
+        let projected = vega_conversation::privacy::safe_live_text(text);
+        let unavailable = vega_i18n::t("domain.privacy.check_unavailable");
+        let live_projection_unavailable = projected != text
+            && projected == unavailable
+            && vega_conversation::privacy::safe_live_text("") == unavailable;
+        let mut copy = Self::new(&projected);
+        copy.live_projection_unavailable = live_projection_unavailable;
+        copy
+    }
+
+    pub(super) fn live_projection_unavailable(&self) -> bool {
+        self.live_projection_unavailable
+    }
+
+    pub(super) fn refresh_live_projection(&self) -> bool {
+        if !self.live_projection_unavailable {
+            return false;
+        }
+        let text = vega_i18n::t("domain.privacy.check_unavailable");
+        if self.original_text() == text {
+            return false;
+        }
+        self.replace_text(text);
+        true
     }
 
     pub(super) fn content_generation(&self) -> u64 {
@@ -887,6 +942,70 @@ impl MessageCopy {
 
     pub(crate) fn original_text(&self) -> String {
         self.text.borrow().clone()
+    }
+
+    pub(crate) fn display_text(&self) -> String {
+        super::generated_notice::project_text(&self.text.borrow(), &self.generated_notices.borrow())
+    }
+
+    pub(crate) fn generated_notices(
+        &self,
+    ) -> Vec<super::generated_notice::GeneratedNoticeFragment> {
+        self.generated_notices.borrow().clone()
+    }
+
+    pub(crate) fn set_generated_notices(
+        &self,
+        notices: Vec<super::generated_notice::GeneratedNoticeFragment>,
+    ) {
+        if *self.generated_notices.borrow() == notices {
+            return;
+        }
+        *self.generated_notices.borrow_mut() = notices;
+        *self.display_model_text.borrow_mut() = None;
+        self.invalidate_selection();
+    }
+
+    pub(crate) fn sync_model(
+        &self,
+        stream: &MarkdownStream,
+        model: &mut StreamModel,
+        counters: &StreamCounters,
+    ) -> bool {
+        if self.generated_notices.borrow().is_empty() {
+            return model.sync(&stream.snapshot(), counters);
+        }
+        let text = self.display_text();
+        if self.display_model_text.borrow().as_ref() == Some(&text) {
+            return false;
+        }
+        let mut projected = MarkdownStream::new();
+        projected.append(&text);
+        if self.stream_finished.get() {
+            projected.finish();
+        }
+        let revision = model.content_revision;
+        *model = StreamModel {
+            content_revision: revision,
+            ..StreamModel::default()
+        };
+        model.sync(&projected.snapshot(), counters);
+        model.content_revision = revision.wrapping_add(1);
+        *self.display_model_text.borrow_mut() = Some(text);
+        self.invalidate_selection();
+        true
+    }
+
+    pub(crate) fn finish_model(
+        &self,
+        stream: &mut MarkdownStream,
+        model: &mut StreamModel,
+        counters: &StreamCounters,
+    ) {
+        stream.finish();
+        self.stream_finished.set(true);
+        *self.display_model_text.borrow_mut() = None;
+        self.sync_model(stream, model, counters);
     }
 
     pub(crate) fn append(&self, delta: &str) {
@@ -1082,9 +1201,9 @@ impl MessageCopy {
     }
 
     pub(super) fn copy(&self, cx: &mut App) {
-        let text = self.text.borrow();
+        let text = self.display_text();
         if !text.is_empty() {
-            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text.clone()));
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
         }
     }
 }

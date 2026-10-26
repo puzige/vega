@@ -40,8 +40,10 @@ pub(crate) struct PendingQueueUi {
     pub(super) items: HashMap<String, PendingItemUi>,
     pub(super) menu: Option<String>,
     pub(super) recovered_edit: Option<PendingMessage>,
+    error: Option<crate::localized_copy::LocalizedCopy>,
     pub(super) resume_focus: FocusHandle,
     pub(super) recover_focus: FocusHandle,
+    wait: Option<(u64, tokio_util::sync::CancellationToken)>,
     menu_focus: [FocusHandle; 2],
     scroll: ScrollHandle,
     restore_focus: bool,
@@ -53,8 +55,10 @@ impl PendingQueueUi {
             items: HashMap::new(),
             menu: None,
             recovered_edit: None,
+            error: None,
             resume_focus: cx.focus_handle().tab_stop(true),
             recover_focus: cx.focus_handle().tab_stop(true),
+            wait: None,
             menu_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             scroll: ScrollHandle::new(),
             restore_focus: false,
@@ -105,11 +109,53 @@ fn echo_entry_identity(thread_id: &str, pending_id: &str, kind: &str) -> StreamE
 impl EventEmitter<PendingQueueRequested> for ConversationStream {}
 
 impl ConversationStream {
+    pub fn set_pending_queue_wait(
+        &mut self,
+        generation: u64,
+        cancel: tokio_util::sync::CancellationToken,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_ui.wait = Some((generation, cancel));
+        self.reset_composer_stopping_if_idle();
+        cx.notify();
+    }
+
+    pub fn clear_pending_queue_wait(&mut self, generation: u64, cx: &mut Context<Self>) {
+        if self
+            .pending_ui
+            .wait
+            .as_ref()
+            .is_some_and(|(current, _)| *current == generation)
+        {
+            self.pending_ui.wait = None;
+            self.reset_composer_stopping_if_idle();
+            cx.notify();
+        }
+    }
+
+    pub(super) fn has_cancellable_queue_wait(&self) -> bool {
+        self.pending_ui
+            .wait
+            .as_ref()
+            .is_some_and(|(_, cancel)| !cancel.is_cancelled())
+    }
+
     pub fn apply_pending_queue(
         &mut self,
         projection: PendingQueueProjection,
         cx: &mut Context<Self>,
     ) {
+        let error = projection.error.as_ref().map(|error| error.clone().into());
+        self.apply_pending_queue_localized(projection, error, cx);
+    }
+
+    pub fn apply_pending_queue_localized(
+        &mut self,
+        projection: PendingQueueProjection,
+        error: Option<crate::localized_copy::LocalizedCopy>,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_ui.error = error;
         let committed = projection.committed_message_ids();
         self.reconcile_pending_echoes(&projection, &committed, cx);
         let mut previous = std::mem::take(&mut self.pending_ui.items);
@@ -159,7 +205,7 @@ impl ConversationStream {
         message.behavior = PendingMessageBehavior::Steer;
         message.generation = generation.to_string();
         let projection = self.pending_queue.clone();
-        self.apply_pending_queue(projection, cx);
+        self.apply_pending_queue_localized(projection, self.pending_ui.error.clone(), cx);
     }
 
     pub(crate) fn visible_pending_messages(&self) -> Vec<&PendingMessage> {
@@ -223,10 +269,11 @@ impl ConversationStream {
         let mut indices = Vec::new();
         let block_id = self.user_block_seq;
         self.user_block_seq += 1;
-        let content = vega_conversation::privacy::safe_live_text(&message.content);
+        let copy = MessageCopy::from_live_text(&message.content);
+        let content = copy.original_text();
         let index = self.entries.len();
         self.entries.push(StreamEntry::User {
-            copy: MessageCopy::new(&content),
+            copy,
             lines: user_message_lines(block_id, &content),
         });
         self.list_append(index);
@@ -415,6 +462,7 @@ impl ConversationStream {
         self.close_pending_menu(window, cx);
         self.pending_queue.busy = true;
         self.pending_queue.error = None;
+        self.pending_ui.error = None;
         if matches!(
             action,
             PendingQueueAction::Edit(_) | PendingQueueAction::Remove(_)
@@ -541,8 +589,8 @@ impl ConversationStream {
         let colors = theme(cx).colors;
         let enabled = can_send && !self.input.read(cx).is_composing();
         let label = match self.running_message_behavior(cx) {
-            PendingMessageBehavior::Queue => "排队发送",
-            PendingMessageBehavior::Steer => "插话",
+            PendingMessageBehavior::Queue => vega_i18n::t("ui.queue_message"),
+            PendingMessageBehavior::Steer => vega_i18n::t("ui.steer"),
         };
         div()
             .id("composer-running-send")
@@ -550,7 +598,6 @@ impl ConversationStream {
             .aria_label(label)
             .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
             .key_context("PendingMessageControl")
-            .track_focus(&self.action_focus[1])
             .tab_stop(true)
             .size(px(Layout::COMPOSER_SEND_SIZE))
             .flex_shrink_0()
@@ -579,6 +626,7 @@ impl ConversationStream {
                 colors.accent,
                 enabled,
             )
+            .track_focus(&self.action_focus[1])
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
@@ -620,7 +668,7 @@ impl ConversationStream {
                 .pending_button(
                     PendingButton {
                         id: "pending-resume".into(),
-                        label: "继续队列",
+                        label: vega_i18n::t("ui.continue_queue"),
                         description: None,
                         glyph: Icon::Queue,
                         focus: self.pending_ui.resume_focus.clone(),
@@ -632,7 +680,7 @@ impl ConversationStream {
                 )
                 .w_auto()
                 .px_2()
-                .child("继续队列");
+                .child(vega_i18n::t("ui.continue_queue"));
             status = status.child(div().flex().justify_end().mb_1().child(resume));
         }
         if let Some(message) = &self.pending_ui.recovered_edit {
@@ -641,8 +689,9 @@ impl ConversationStream {
                 .pending_button(
                     PendingButton {
                         id: "pending-recover-edit".into(),
-                        label: "继续编辑",
-                        description: (!can_restore).then_some("请先发送或清空当前草稿"),
+                        label: vega_i18n::t("ui.continue_editing"),
+                        description: (!can_restore)
+                            .then_some(vega_i18n::t("ui.send_or_clear_the_current_draft_first")),
                         glyph: Icon::Pencil,
                         focus: self.pending_ui.recover_focus.clone(),
                         enabled: can_restore,
@@ -653,9 +702,9 @@ impl ConversationStream {
                 )
                 .w_auto()
                 .px_2()
-                .child("继续编辑");
+                .child(vega_i18n::t("ui.continue_editing"));
             let preview = if message.content.is_empty() {
-                "图片".to_string()
+                vega_i18n::t("ui.image").to_string()
             } else {
                 message.content.replace(['\r', '\n'], " ")
             };
@@ -687,14 +736,14 @@ impl ConversationStream {
                             div()
                                 .text_size(px(Typography::METADATA))
                                 .text_color(colors.text_secondary)
-                                .child("请先发送或清空当前草稿"),
+                                .child(vega_i18n::t("ui.send_or_clear_the_current_draft_first")),
                         )
                     }),
             );
         }
-        if let Some(error) = &self.pending_queue.error {
+        if let Some(error) = &self.pending_ui.error {
             status = status.child(div().mb_2().child(render_rows::status_notice(
-                error.clone(),
+                error.render(),
                 colors.danger,
                 &colors,
             )));
@@ -722,9 +771,11 @@ impl ConversationStream {
                     && self.actions.running
                     && message.behavior == PendingMessageBehavior::Queue;
                 let steer_description = if !self.actions.running {
-                    Some("当前没有运行中的任务，请继续队列")
+                    Some(vega_i18n::t("ui.no_task_is_running_continue_the_queue"))
                 } else if message.behavior == PendingMessageBehavior::Steer {
-                    Some("该消息已安排插话")
+                    Some(vega_i18n::t(
+                        "ui.this_message_is_already_scheduled_to_steer",
+                    ))
                 } else {
                     None
                 };
@@ -732,7 +783,7 @@ impl ConversationStream {
                     .pending_button(
                         PendingButton {
                             id: format!("pending-steer-{id}"),
-                            label: "插话",
+                            label: vega_i18n::t("ui.steer"),
                             description: steer_description,
                             glyph: Icon::Steer,
                             focus: item.focus[0].clone(),
@@ -746,11 +797,11 @@ impl ConversationStream {
                     )
                     .w_auto()
                     .px_1()
-                    .child("插话");
+                    .child(vega_i18n::t("ui.steer"));
                 let remove = self.pending_button(
                     PendingButton {
                         id: format!("pending-remove-{id}"),
-                        label: "删除消息",
+                        label: vega_i18n::t("ui.delete_message"),
                         description: None,
                         glyph: Icon::Trash,
                         focus: item.focus[1].clone(),
@@ -764,7 +815,7 @@ impl ConversationStream {
                     .pending_button(
                         PendingButton {
                             id: format!("pending-more-{id}"),
-                            label: "消息选项",
+                            label: vega_i18n::t("ui.message_options"),
                             description: None,
                             glyph: Icon::More,
                             focus: item.focus[2].clone(),
@@ -784,7 +835,7 @@ impl ConversationStream {
                         .inset_0(),
                     );
                 let preview = if message.content.is_empty() {
-                    "图片".into()
+                    vega_i18n::t("ui.image").into()
                 } else {
                     message.content.replace(['\r', '\n'], " ")
                 };
@@ -961,15 +1012,15 @@ impl ConversationStream {
         let enabled = self.pending_controls_enabled();
         let editable = self.pending_draft_is_empty(cx) && self.pending_ui.recovered_edit.is_none();
         let edit_reason = if self.pending_ui.recovered_edit.is_some() {
-            "请先处理已取回的消息"
+            vega_i18n::t("ui.handle_the_retrieved_message_first")
         } else {
-            "请先发送或清空当前草稿"
+            vega_i18n::t("ui.send_or_clear_the_current_draft_first")
         };
         let edit = self
             .pending_button(
                 PendingButton {
                     id: "pending-menu-edit".into(),
-                    label: "编辑消息",
+                    label: vega_i18n::t("ui.edit_message"),
                     description: (!editable).then_some(edit_reason),
                     glyph: Icon::Pencil,
                     focus: self.pending_ui.menu_focus[0].clone(),
@@ -986,22 +1037,26 @@ impl ConversationStream {
             .py_1()
             .justify_start()
             .tab_stop(true)
-            .child(div().flex().flex_col().min_w_0().child("编辑消息").when(
-                !editable,
-                |element| {
-                    element.child(
-                        div()
-                            .text_size(px(Typography::METADATA))
-                            .text_color(colors.text_tertiary)
-                            .child(edit_reason),
-                    )
-                },
-            ));
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_w_0()
+                    .child(vega_i18n::t("ui.edit_message"))
+                    .when(!editable, |element| {
+                        element.child(
+                            div()
+                                .text_size(px(Typography::METADATA))
+                                .text_color(colors.text_tertiary)
+                                .child(edit_reason),
+                        )
+                    }),
+            );
         let toggle_label =
             if Self::default_running_message_behavior(cx) == PendingMessageBehavior::Queue {
-                "关闭排队"
+                vega_i18n::t("ui.turn_queue_off")
             } else {
-                "开启排队"
+                vega_i18n::t("ui.turn_queue_on")
             };
         let toggle = self
             .pending_button(
@@ -1104,12 +1159,11 @@ impl ConversationStream {
         let block_id = self.user_block_seq;
         self.user_block_seq += 1;
         let index = self.entries.len();
+        let copy = MessageCopy::from_live_text(content);
+        let projected = copy.original_text();
         self.entries.push(StreamEntry::User {
-            copy: MessageCopy::new(&vega_conversation::privacy::safe_live_text(content)),
-            lines: user_message_lines(
-                block_id,
-                &vega_conversation::privacy::safe_live_text(content),
-            ),
+            copy,
+            lines: user_message_lines(block_id, &projected),
         });
         self.list_append(index);
         self.set_entry_identity(

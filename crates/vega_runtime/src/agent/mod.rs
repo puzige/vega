@@ -52,9 +52,8 @@ pub use credential_redaction::{
 };
 pub use mcp_registry::{McpReadyServer, McpRevocationLease};
 
-pub const REASONING_DELTA_MAX_BYTES: usize = 64 * 1024;
-pub const REASONING_TURN_MAX_BYTES: usize = 256 * 1024;
-pub const REASONING_RUN_MAX_BYTES: usize = 1024 * 1024;
+/// Upper bound on retained reasoning bytes rendered into the conversation.
+/// Reaching it drops further display events; it never fails the run.
 const REASONING_DISPLAY_MAX_BYTES: usize = 256 * 1024;
 /// Stable content-free result for a provider call id that conflicts with
 /// persisted owner, tool, or safe input identity.
@@ -941,7 +940,12 @@ pub enum RuntimeDiagnosticFailure {
     ReasoningLimit,
     ReasoningReplay,
     ProviderHttp,
-    ProviderTransportOrStream,
+    /// No HTTP response was received while establishing the request.
+    ProviderTransport,
+    /// An established response stream ended before its terminal event.
+    ProviderStreamInterrupted,
+    /// An established response stream or request exceeded its deadline.
+    ProviderTimeout,
     ProviderProtocol,
     ProviderRejected,
     UnknownSafeFailure,
@@ -1006,6 +1010,24 @@ pub enum RuntimeAssistantResponseKind {
     Final,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeGeneratedNoticeKind {
+    TurnLimit { limit: u32 },
+    ComputerStopped { delivered_images: bool },
+}
+
+impl RuntimeGeneratedNoticeKind {
+    pub fn canonical_text(self) -> String {
+        match self {
+            Self::TurnLimit { limit } => format!(
+                "Agent turn limit ({limit}) reached; stopping without issuing another request."
+            ),
+            Self::ComputerStopped { delivered_images: true } => "已有截图保留在对话中。后续电脑操作连续未取得进展，已停止重复操作。请根据最后一个工具结果处理尚未完成的工作。".to_string(),
+            Self::ComputerStopped { delivered_images: false } => "电脑操作连续未取得进展，已停止本轮自动操作。请根据对话中的错误修正目标或参数后重新发起；不会继续重复点击或换用脚本。".to_string(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum RuntimeEvent {
     AssistantResponseStarted {
@@ -1028,6 +1050,7 @@ pub enum RuntimeEvent {
         control: crate::computer_use::ComputerUseControl,
         epoch: u64,
         cancel: CancellationToken,
+        delivered: Arc<std::sync::atomic::AtomicBool>,
     },
     ToolRoundCompleted {
         response_id: String,
@@ -1038,6 +1061,11 @@ pub enum RuntimeEvent {
         text_start_bytes: usize,
         text_end_bytes: usize,
         kind: RuntimeAssistantResponseKind,
+    },
+    GeneratedNotice {
+        kind: RuntimeGeneratedNoticeKind,
+        text_start_bytes: usize,
+        text_end_bytes: usize,
     },
     DiagnosticAttempt(RuntimeDiagnosticAttempt),
     #[allow(missing_docs)]
@@ -1185,6 +1213,16 @@ impl fmt::Debug for RuntimeEvent {
                 .field("text_start_bytes", text_start_bytes)
                 .field("text_end_bytes", text_end_bytes)
                 .field("kind", kind)
+                .finish(),
+            Self::GeneratedNotice {
+                kind,
+                text_start_bytes,
+                text_end_bytes,
+            } => formatter
+                .debug_struct("GeneratedNotice")
+                .field("kind", kind)
+                .field("text_start_bytes", text_start_bytes)
+                .field("text_end_bytes", text_end_bytes)
                 .finish(),
             Self::DiagnosticAttempt(attempt) => formatter
                 .debug_tuple("DiagnosticAttempt")

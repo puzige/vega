@@ -12,6 +12,7 @@ pub mod file_selector;
 pub mod image_preview;
 pub mod interaction;
 pub mod link_preview;
+pub mod localized_copy;
 pub mod menu_list;
 pub mod permission_card;
 pub mod plan_card;
@@ -200,6 +201,18 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("delete", text_input::Delete, None),
         KeyBinding::new("left", text_input::Left, None),
         KeyBinding::new("right", text_input::Right, None),
+        KeyBinding::new(
+            "up",
+            text_input::Up,
+            Some("TextInput && !Composer && !FileSelect && !ComposerActions"),
+        ),
+        KeyBinding::new(
+            "down",
+            text_input::Down,
+            Some("TextInput && !FileSelect && !ComposerActions"),
+        ),
+        KeyBinding::new("shift-up", text_input::SelectUp, Some("TextInput")),
+        KeyBinding::new("shift-down", text_input::SelectDown, Some("TextInput")),
         KeyBinding::new("shift-left", text_input::SelectLeft, None),
         KeyBinding::new("shift-right", text_input::SelectRight, None),
         KeyBinding::new("cmd-a", text_input::SelectAll, None),
@@ -236,6 +249,7 @@ pub fn init(cx: &mut App) {
             settings::PreviousSkillsAction,
             Some("SkillsSettings"),
         ),
+        KeyBinding::new("enter", text_input::InsertNewline, Some("McpSettings")),
         KeyBinding::new("tab", settings::NextMcpAction, Some("McpSettings")),
         KeyBinding::new(
             "shift-tab",

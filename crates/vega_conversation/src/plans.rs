@@ -96,6 +96,7 @@ pub fn review_plan(
     plan_id: &str,
     action: PlanReviewAction,
 ) -> Result<PlanReviewOutcome, ConversationError> {
+    let _admission = crate::thread_access::acquire(store, thread_id)?;
     let (status, note, instruction_id) = match action {
         PlanReviewAction::Approve => (
             PlanStatus::Approved,

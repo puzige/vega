@@ -242,8 +242,8 @@ fn record_payload(key_capacity: usize, record: &TextRecord) -> usize {
 
 pub(super) fn raw_text_height(entry: &StreamEntry, width: f32) -> Option<f32> {
     match entry {
-        StreamEntry::User { lines, .. } => {
-            Some(message_anchors::estimate_user_height(lines, width))
+        StreamEntry::User { lines, copy } => {
+            Some(message_anchors::estimate_user_height(copy, lines, width))
         }
         StreamEntry::Assistant { model, .. } => {
             Some(message_anchors::estimate_markdown_height(model, width))

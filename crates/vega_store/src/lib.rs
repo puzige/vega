@@ -25,6 +25,8 @@ pub mod skills;
 pub mod delegated_ownership;
 pub mod delegated_stages;
 pub mod subagents;
+pub mod thread_admission;
+pub mod thread_fork;
 pub mod threads;
 pub mod token_usage;
 pub mod tool_calls;
@@ -33,6 +35,7 @@ pub mod write_coordination;
 use std::path::{Path, PathBuf};
 
 pub use rusqlite::{Connection, Transaction};
+pub use thread_admission::DatabaseIdentity;
 use write_coordination::{WriteCategory, WriteTransaction};
 
 /// Ordered, compile-time-embedded schema migrations.
@@ -74,12 +77,18 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0032_codex_project_history.sql"),
     include_str!("../migrations/0033_delegated_stage_recovery.sql"),
     include_str!("../migrations/0034_run_continuations.sql"),
+    include_str!("../migrations/0035_thread_fork.sql"),
+    include_str!("../migrations/0036_generated_notices.sql"),
+    include_str!("../migrations/0037_codex_display_metadata.sql"),
+    include_str!("../migrations/0038_provider_failure_split.sql"),
+    include_str!("../migrations/0039_pending_thread_model.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
 pub struct Store {
     conn: Connection,
     database_path: Option<PathBuf>,
+    database_identity: DatabaseIdentity,
 }
 
 impl Store {
@@ -90,9 +99,11 @@ impl Store {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         conn.busy_timeout(std::time::Duration::from_secs(2))?;
+        let database_identity = DatabaseIdentity::for_connection(&conn)?;
         Ok(Self {
             conn,
             database_path: Some(path.as_ref().to_path_buf()),
+            database_identity,
         })
     }
 
@@ -122,9 +133,11 @@ impl Store {
         }
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        let database_identity = DatabaseIdentity::for_connection(&conn)?;
         Ok(Self {
             conn,
             database_path,
+            database_identity,
         })
     }
 
@@ -190,5 +203,9 @@ impl Store {
     /// temporary databases that cannot be reopened by a dedicated DB actor.
     pub fn database_path(&self) -> Option<&Path> {
         self.database_path.as_deref()
+    }
+
+    pub fn database_identity(&self) -> DatabaseIdentity {
+        self.database_identity
     }
 }

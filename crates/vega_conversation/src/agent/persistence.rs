@@ -36,6 +36,8 @@ pub(crate) struct DelegatedAuthority {
 
 #[derive(Clone, Default)]
 pub struct PersistenceActorConfig {
+    pub(crate) ordinary: Option<super::ordinary::OrdinaryRun>,
+    pub(crate) admission: Option<crate::types::ThreadAdmission>,
     pub(crate) subagent_host: Option<Arc<dyn crate::types::SubagentHost>>,
     pub(crate) delegated: bool,
     pub(crate) delegated_owner: Option<Arc<vega_store::delegated_ownership::DelegatedOwnership>>,
@@ -63,6 +65,22 @@ pub struct PersistenceActorConfig {
 }
 
 impl PersistenceActorConfig {
+    pub fn with_ordinary_submission(
+        mut self,
+        ordinary: Option<super::ordinary::OrdinaryRun>,
+    ) -> Self {
+        if let Some(run) = &ordinary {
+            self.admission = Some(run.worker.admission().clone());
+        }
+        self.ordinary = ordinary;
+        self
+    }
+
+    pub fn with_thread_admission(mut self, admission: crate::types::ThreadAdmission) -> Self {
+        self.admission = Some(admission);
+        self
+    }
+
     pub fn with_subagent_host(mut self, host: Arc<dyn crate::types::SubagentHost>) -> Self {
         self.subagent_host = Some(host);
         self
@@ -195,6 +213,8 @@ impl PersistenceActor {
         } = start;
         let (sender, mut receiver) = mpsc::channel(PERSISTENCE_CHANNEL_CAPACITY);
         let (ready, opened) = oneshot::channel();
+        let ordinary_task = super::ordinary::OrdinaryTask::register(config.ordinary.as_ref())
+            .map_err(|_| persistence_actor_error("ordinary worker registration unavailable"))?;
         let task = tokio::task::spawn_blocking(move || {
             let store = match Store::open_with_busy_timeout(database_path, PERSISTENCE_BUSY_TIMEOUT)
                 .and_then(|store| {
@@ -203,11 +223,25 @@ impl PersistenceActor {
                 }) {
                 Ok(store) => store,
                 Err(error) => {
+                    if let Some(task) = ordinary_task {
+                        task.complete(Err(crate::types::SubmissionFailure::LaunchFailed));
+                    }
                     let _ = ready.send(Err(()));
                     return Err(VegaError::Store(error)
                         .at_runtime_stage(vega_runtime::RuntimeFailureStage::EventPipeline));
                 }
             };
+            if config
+                .admission
+                .as_ref()
+                .is_none_or(|admission| !admission.verifies(store.database_identity(), &thread_id))
+            {
+                if let Some(task) = ordinary_task {
+                    task.complete(Err(crate::types::SubmissionFailure::LaunchFailed));
+                }
+                let _ = ready.send(Err(()));
+                return Err(persistence_actor_error("thread admission changed"));
+            }
             let _ = ready.send(Ok(()));
             let mut next_tool_seq = next_tool_seq;
             let mut message_id = message_id;
@@ -372,6 +406,9 @@ impl PersistenceActor {
                     }
                 }
             }
+            if let Some(task) = ordinary_task {
+                task.complete(Ok(()));
+            }
             Ok(())
         });
         match opened.await {
@@ -455,6 +492,7 @@ pub(crate) struct RuntimeEnvelope {
 }
 
 pub(crate) struct PreparedRun {
+    pub(crate) _admission: crate::types::ThreadAdmission,
     pub(crate) _delegated_owner: Option<Arc<vega_store::delegated_ownership::DelegatedOwnership>>,
     pub(crate) database_path: PathBuf,
     pub(crate) project_id: String,
@@ -516,7 +554,9 @@ fn runtime_event_category(event: &RuntimeEvent) -> PersistenceCategory {
         RuntimeEvent::BuiltinSkillActivated(_) => Category::BuiltinSkill,
         RuntimeEvent::ScreenshotDelivered { .. } => Category::Screenshot,
         RuntimeEvent::ToolRoundCompleted { .. } => Category::ToolRound,
-        RuntimeEvent::AssistantResponseCompleted { .. } => Category::ResponseCompleted,
+        RuntimeEvent::AssistantResponseCompleted { .. } | RuntimeEvent::GeneratedNotice { .. } => {
+            Category::ResponseCompleted
+        }
         RuntimeEvent::DiagnosticAttempt(_) => Category::DiagnosticAttempt,
         RuntimeEvent::ReasoningRetentionReleased => Category::ReasoningReleased,
         RuntimeEvent::TextDelta(_) => Category::TextDelta,

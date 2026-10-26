@@ -50,16 +50,16 @@ pub struct PaletteFilePreview {
 /// Content-free failure vocabulary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PaletteError {
-    #[error("Search is unavailable")]
+    #[error("{}", vega_i18n::t("domain.palette.unavailable"))]
     Unavailable,
-    #[error("Project is unavailable")]
+    #[error("{}", vega_i18n::t("domain.palette.projectunavailable"))]
     ProjectUnavailable,
-    #[error("File is outside the project or changed")]
+    #[error("{}", vega_i18n::t("domain.palette.unsafepath"))]
     UnsafePath,
-    #[error("Binary files cannot be previewed")]
+    #[error("{}", vega_i18n::t("domain.palette.binary"))]
     Binary,
-    #[error("File exceeds the 128 KiB preview limit")]
+    #[error("{}", vega_i18n::t("domain.palette.toolarge"))]
     TooLarge,
-    #[error("Search was cancelled")]
+    #[error("{}", vega_i18n::t("domain.palette.cancelled"))]
     Cancelled,
 }

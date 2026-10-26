@@ -29,12 +29,14 @@ mod cua_onboarding;
 mod diff;
 mod file_index;
 mod image_preview;
+mod localization;
 mod model_capabilities;
 mod model_catalog;
 mod model_context;
 mod native_subagents;
 pub(crate) mod navigation;
 mod notifications;
+mod ordinary_send;
 mod pending_messages;
 mod pricing;
 mod privacy;
@@ -97,9 +99,11 @@ impl ModelSelectionRefresh {
 
 pub(crate) struct VegaWindow {
     pub(crate) composer_prediction_config_generation: u64,
-    pub(crate) composer_prediction: Option<composer_predictions::ComposerPredictionOwner>,
+    pub(crate) composer_predictions:
+        std::collections::HashMap<String, composer_predictions::ComposerPredictionOwner>,
     pub(crate) updater: crate::updater::Updater,
     update_notice_dismissed: bool,
+    language: &'static str,
     navigation: navigation::Navigation,
     completion_attention: notifications::CompletionAttention,
     pub(crate) palette: crate::app_palette::AppPalette,
@@ -146,9 +150,7 @@ pub(crate) struct VegaWindow {
     pub(crate) commit_controller: CommitController,
     pub(crate) trusted_actions: TrustedActionCoordinator,
     pub(crate) window_alive: Arc<AtomicBool>,
-    /// Configured model ids projected from the worker-side config read. The
-    /// selector intersects these with the in-memory Ready pricing authority.
-    pub(crate) configured_models: Option<Vec<String>>,
+    pub(crate) configured_models: Option<Vec<ModelOption>>,
     model_capability_authority: Option<ModelCapabilityAuthority>,
     model_capability_projection: ModelCapabilitySettingsProjection,
     model_capability_generation: u64,
@@ -185,11 +187,25 @@ pub(crate) struct VegaWindow {
     /// The model-only result of a save that completed while Settings was
     /// visible. It is merged into the newest route projection after close.
     pub(crate) deferred_model_refresh: Option<ModelSelectionRefresh>,
+    pub(crate) staged_model_pending: Option<(String, TrustedActionToken)>,
 }
 
 impl VegaWindow {
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
+        Self::new_with_services(cx, true)
+    }
+
+    fn new_with_services(cx: &mut Context<Self>, startup_services: bool) -> Self {
         cx.on_release(|this, cx| {
+            let waiting_threads: Vec<_> = this
+                .agent_controller
+                .queue_drain_waits
+                .keys()
+                .cloned()
+                .collect();
+            for thread_id in waiting_threads {
+                this.clear_pending_title_wait(&thread_id, cx);
+            }
             this.onboarding.close(cx);
             if cx
                 .try_global::<crate::automation_controller::AutomationGlobal>()
@@ -211,13 +227,17 @@ impl VegaWindow {
                 .0
                 .as_ref()
                 .map(|thread| thread.id.clone());
-            if this
-                .composer_prediction
-                .as_ref()
-                .is_some_and(|owner| !this.composer_prediction_route_matches(owner, cx))
-            {
-                this.cancel_composer_prediction(cx);
+            let stale_waits: Vec<_> = this
+                .agent_controller
+                .queue_drain_waits
+                .keys()
+                .filter(|thread_id| Some(thread_id.as_str()) != route_thread_id.as_deref())
+                .cloned()
+                .collect();
+            for thread_id in stale_waits {
+                this.clear_pending_title_wait(&thread_id, cx);
             }
+            this.reconcile_composer_prediction_route(cx);
             this.update_message_location_route(route_thread_id.as_deref());
             this.cancel_context_if_route_stale(cx);
             this.cancel_file_index_if_route_stale(cx);
@@ -283,9 +303,10 @@ impl VegaWindow {
         .detach();
         let mut window = Self {
             composer_prediction_config_generation: 0,
-            composer_prediction: None,
+            composer_predictions: std::collections::HashMap::new(),
             updater: crate::updater::Updater::default(),
             update_notice_dismissed: false,
+            language: vega_i18n::language(),
             navigation: navigation::Navigation::new(cx, None),
             completion_attention: notifications::CompletionAttention::default(),
             palette: crate::app_palette::AppPalette::default(),
@@ -338,17 +359,24 @@ impl VegaWindow {
             model_catalog_loading: false,
             model_catalog_generation: 0,
             deferred_model_refresh: None,
+            staged_model_pending: None,
         };
-        window.start_pricing_load(cx);
-        window.start_updater(cx);
+        if startup_services {
+            window.start_pricing_load(cx);
+            window.start_updater(cx);
+        }
         window
     }
 
     pub(crate) fn window_terminal_cleanup(&mut self) {
-        self.composer_prediction = None;
+        self.composer_predictions.clear();
         self.image_preview.retire();
         self.context_controller.cancel();
         self.window_alive.store(false, Ordering::SeqCst);
+        self.agent_controller.queue_drain_waits.clear();
+        for (_, cancel) in self.agent_controller.ordinary_preparing.drain() {
+            cancel.cancel();
+        }
         for (_, active) in self.agent_controller.active.drain() {
             if let Some(control) = &active.computer_use {
                 control.stop();

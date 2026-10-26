@@ -539,13 +539,25 @@ where
     F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
 {
     let mut actor_config = actor_config;
-    let binding = if let Some(path) = store.database_path() {
+    let admission =
+        super::ordinary::verified_admission(store, thread_id, actor_config.admission.as_ref())?;
+    actor_config.admission = Some(admission.clone());
+    let binding = if actor_config.ordinary.is_some() {
+        if actor_config.automation_claim.is_some() {
+            return Err(ConversationError::InvalidTaskIdentity);
+        }
+        None
+    } else if let Some(path) = store.database_path() {
         let path = path.to_path_buf();
         let worker_path = path.clone();
         let thread = thread_id.to_string();
         let existing = actor_config.automation_claim.clone();
+        let claim_admission = admission.clone();
         let claim = tokio::task::spawn_blocking(move || {
-            let store = Store::open(worker_path).map_err(|_| "自动任务存储不可用".to_string())?;
+            let _admission = claim_admission;
+            let store = Store::open(worker_path).map_err(|_| {
+                vega_i18n::t("domain.automation.error.store_unavailable").to_string()
+            })?;
             if let Some(claim) = existing {
                 if let Some(claim) = crate::automation::activate_claim(&store, &claim)? {
                     Ok(Some(claim))
@@ -555,14 +567,16 @@ where
                         &claim,
                         crate::automation::now_ms(),
                     )?;
-                    Err("自动任务已撤销".into())
+                    Err(vega_i18n::t("domain.automation.error.cancelled").into())
                 }
             } else {
                 crate::automation::claim(&store, &thread, None, crate::automation::now_ms())
             }
         })
         .await
-        .map_err(|_| ConversationError::CorruptRow("自动任务处理失败".into()))?
+        .map_err(|_| {
+            ConversationError::CorruptRow(vega_i18n::t("domain.automation.error.processing").into())
+        })?
         .map_err(ConversationError::CorruptRow)?;
         claim.map(|claim| Arc::new(crate::automation::AutomationBinding::new(path, claim)))
     } else {
@@ -605,7 +619,9 @@ where
         if let Some(path) = store.database_path() {
             let path = path.to_path_buf();
             tokio::task::spawn_blocking(move || {
-                let store = Store::open(path).map_err(|_| "自动任务存储不可用".to_string())?;
+                let store = Store::open(path).map_err(|_| {
+                    vega_i18n::t("domain.automation.error.store_unavailable").to_string()
+                })?;
                 crate::automation::finish(
                     &store,
                     &binding.claim,
@@ -616,7 +632,11 @@ where
                 )
             })
             .await
-            .map_err(|_| ConversationError::CorruptRow("自动任务记账失败".into()))?
+            .map_err(|_| {
+                ConversationError::CorruptRow(
+                    vega_i18n::t("domain.automation.error.accounting").into(),
+                )
+            })?
             .map_err(ConversationError::CorruptRow)?;
         }
     }
@@ -649,6 +669,38 @@ where
         .map(|path| crate::subagents::LiveDelegation::new(path, thread_id))
         .transpose()?;
     let mut actor_config = actor_config;
+    let ordinary = actor_config.ordinary.clone();
+    if let Some(ordinary) = &ordinary {
+        ordinary.verify(store, thread_id)?;
+        let accepted = ordinary
+            .submission
+            .snapshot()
+            .accepted
+            .ok_or(ConversationError::InvalidTaskIdentity)?;
+        if accepted.text() != user_content || accepted.images() != images.as_slice() {
+            return Err(ConversationError::InvalidTaskIdentity);
+        }
+        let model = provider
+            .model_snapshot()
+            .ok_or(ConversationError::InvalidTaskIdentity)?;
+        ordinary
+            .submission
+            .raw()
+            .validate_model(&model)
+            .map_err(super::ordinary::fact_error)?;
+        if persisted_user_message_id.is_some()
+            || actor_config.delegated
+            || actor_config.delegated_message_id.is_some()
+            || actor_config.credential_continuation_id.is_some()
+            || actor_config.pending_message_id.is_some()
+            || actor_config.automation_claim.is_some()
+        {
+            return Err(ConversationError::InvalidTaskIdentity);
+        }
+    }
+    let admission =
+        super::ordinary::verified_admission(store, thread_id, actor_config.admission.as_ref())?;
+    actor_config.admission = Some(admission.clone());
     actor_config.steering_cancel = Some(cancel.clone());
     crate::attachments::validate_images(&images)
         .map_err(|error| ConversationError::CorruptRow(error.to_string()))?;
@@ -665,16 +717,24 @@ where
         })
         .transpose()?
         .flatten();
-    let user_message_id = continuation
+    let user_message_id = ordinary
         .as_ref()
-        .map(|receipt| receipt.user_message_id.clone())
+        .map(|run| run.submission.user_message_id().to_owned())
+        .or_else(|| {
+            continuation
+                .as_ref()
+                .map(|receipt| receipt.user_message_id.clone())
+        })
         .or_else(|| persisted_user_message_id.clone())
         .or_else(|| actor_config.pending_message_id.clone())
         .unwrap_or_else(|| ulid::Ulid::generate().to_string());
-    let assistant_message_id = actor_config
-        .delegated_message_id
-        .clone()
-        .unwrap_or_else(|| ulid::Ulid::generate().to_string());
+    let assistant_message_id = match &ordinary {
+        Some(run) => run.assistant_id()?,
+        None => actor_config
+            .delegated_message_id
+            .clone()
+            .unwrap_or_else(|| ulid::Ulid::generate().to_string()),
+    };
     let database_path = match store.database_path() {
         Some(path) => path.to_path_buf(),
         None => {
@@ -697,8 +757,12 @@ where
     let preparation_uses_existing_user = persisted_user_message_id.is_some();
     let preparation_pricing = pricing_catalog;
     let preparation_reasoning = reasoning;
+    let ordinary_preparation = ordinary
+        .as_ref()
+        .map(super::ordinary::OrdinaryPreparation::register)
+        .transpose()?;
     let mut prepared = match tokio::task::spawn_blocking(move || {
-        prepare_run_with_images_and_reasoning(
+        let result = prepare_run_with_images_and_reasoning(
             preparation_path,
             preparation_thread_id,
             preparation_user_content,
@@ -710,7 +774,12 @@ where
             preparation_pricing,
             preparation_reasoning,
             images,
-        )
+            ordinary_preparation.as_ref(),
+        );
+        if let Some(preparation) = ordinary_preparation {
+            preparation.complete(result.is_ok());
+        }
+        result
     })
     .await
     {
@@ -767,11 +836,14 @@ where
     let skill_launch = match skill_launch {
         Ok(launch) => launch,
         Err(error) => {
-            let _ = finish_prepared_failure(
+            let cleanup = finish_prepared_failure(
                 prepared.database_path.clone(),
                 prepared.assistant_message_id.clone(),
+                ordinary.clone(),
+                admission.clone(),
             )
             .await;
+            super::ordinary::record_cleanup(ordinary.as_ref(), cleanup.is_ok());
             forward_pipeline_error(
                 &mut event_sink,
                 Some(prepared.assistant_message_id.clone()),
@@ -866,11 +938,14 @@ where
         Ok(actor) => actor,
         Err(error) => {
             let error = Arc::new(error);
-            let _ = finish_prepared_failure(
+            let cleanup = finish_prepared_failure(
                 prepared.database_path.clone(),
                 prepared.assistant_message_id.clone(),
+                ordinary.clone(),
+                admission.clone(),
             )
             .await;
+            super::ordinary::record_cleanup(ordinary.as_ref(), cleanup.is_ok());
             forward_pipeline_error(
                 &mut event_sink,
                 Some(prepared.assistant_message_id.clone()),
@@ -880,6 +955,18 @@ where
         }
     };
 
+    if cancel.is_cancelled() {
+        let cleanup = finish_prepared_failure(
+            prepared.database_path.clone(),
+            prepared.assistant_message_id.clone(),
+            ordinary.clone(),
+            admission.clone(),
+        )
+        .await;
+        let closed = actor.close().await;
+        super::ordinary::record_cleanup(ordinary.as_ref(), cleanup.is_ok() && closed.is_ok());
+        return Err(ConversationError::Runtime(Arc::new(VegaError::Cancelled)));
+    }
     let runtime_started_at = std::time::Instant::now();
     let work_clock = crate::types::WorkClock::new(work_time_source);
     prepared.request.tool_config =
@@ -898,7 +985,7 @@ where
     };
     if let Err(error) = event_sink(&started) {
         let error = Arc::new(error);
-        let _ = actor
+        let cleanup = actor
             .event(RuntimeEvent::Error(error.clone()), String::new(), None)
             .await;
         forward_pipeline_error(
@@ -906,7 +993,8 @@ where
             Some(prepared.assistant_message_id.clone()),
             error.clone(),
         );
-        let _ = actor.close().await;
+        let closed = actor.close().await;
+        super::ordinary::record_cleanup(ordinary.as_ref(), cleanup.is_ok() && closed.is_ok());
         return Err(ConversationError::Runtime(error));
     }
     let clock = ConversationEvent::RunStarted {
@@ -917,7 +1005,7 @@ where
     if let Err(error) = event_sink(&clock) {
         let error = Arc::new(error);
         let duration = u64::try_from(work_clock.finish().as_millis()).unwrap_or(u64::MAX);
-        let _ = actor
+        let cleanup = actor
             .event(
                 RuntimeEvent::Error(error.clone()),
                 String::new(),
@@ -930,7 +1018,8 @@ where
             error.clone(),
             Some(duration),
         );
-        let _ = actor.close().await;
+        let closed = actor.close().await;
+        super::ordinary::record_cleanup(ordinary.as_ref(), cleanup.is_ok() && closed.is_ok());
         return Err(ConversationError::Runtime(error));
     }
     let mut events = vec![started, clock];
@@ -939,12 +1028,23 @@ where
     let task_cancel = cancel.child_token();
     let processor_cancel = task_cancel.clone();
     let skill_watch_stop = CancellationToken::new();
+    let skill_task = if skill_authority.is_some() {
+        super::ordinary::OrdinaryTask::register(ordinary.as_ref())?
+    } else {
+        None
+    };
     let skill_watch = skill_authority.as_ref().map(|authority| {
-        tokio::spawn(super::skills::watch_authority(
-            Arc::clone(&authority.probe),
-            task_cancel.clone(),
-            skill_watch_stop.clone(),
-        ))
+        let probe = Arc::clone(&authority.probe);
+        let cancel = task_cancel.clone();
+        let stop = skill_watch_stop.clone();
+        let admission = admission.clone();
+        tokio::spawn(async move {
+            let _admission = admission;
+            super::skills::watch_authority(probe, cancel, stop).await;
+            if let Some(task) = skill_task {
+                task.complete(Ok(()));
+            }
+        })
     });
     let mut streamed_content = String::new();
     let permission_adapter = RuntimePermissionAdapter {
@@ -977,6 +1077,7 @@ where
             prepared.request.reasoning.clone(),
             prepared.request.pricing_catalog.clone(),
         )
+        .with_thread_admission(admission.clone())
         .with_credential_reader(prepared.request.tool_config.credential_reader())
         .with_credential_exceptions(prepared.request.tool_config.credential_exceptions())
         .with_diagnostics(diagnostics_context.clone())
@@ -985,6 +1086,27 @@ where
         .as_ref()
         .map(|hook| hook as &dyn vega_runtime::ContextCompactionHook);
     let runtime_request = prepared.request.clone();
+    if cancel.is_cancelled()
+        || ordinary
+            .as_ref()
+            .is_some_and(|run| run.worker.mark_primary_started().is_err())
+    {
+        skill_watch_stop.cancel();
+        if let Some(watch) = skill_watch {
+            let _ = watch.await;
+        }
+        diagnostics.close().await;
+        let cleanup = actor
+            .event(
+                RuntimeEvent::Error(Arc::new(VegaError::Cancelled)),
+                String::new(),
+                None,
+            )
+            .await;
+        let closed = actor.close().await;
+        super::ordinary::record_cleanup(ordinary.as_ref(), cleanup.is_ok() && closed.is_ok());
+        return Err(ConversationError::Runtime(Arc::new(VegaError::Cancelled)));
+    }
     let runtime_future = run_agent_with_permission_sink_and_context(
         provider,
         tools,
@@ -1124,7 +1246,9 @@ where
                 runtime_started_at,
             );
             diagnostics.close().await;
-            if let Err(error) = actor.close().await {
+            let closed = actor.close().await;
+            super::ordinary::record_cleanup(ordinary.as_ref(), closed.is_ok());
+            if let Err(error) = closed {
                 let error = Arc::new(error);
                 let duration = u64::try_from(work_clock.finish().as_millis()).unwrap_or(u64::MAX);
                 forward_pipeline_error_with_duration(
@@ -1175,6 +1299,10 @@ where
                 Some(execution_duration_ms),
             );
             let close_result = actor.close().await;
+            super::ordinary::record_cleanup(
+                ordinary.as_ref(),
+                persistence_result.is_ok() && close_result.is_ok(),
+            );
             if matches!(error.as_ref(), VegaError::Cancelled) {
                 if let Err(error) = persistence_result.and(close_result) {
                     let error = Arc::new(error);

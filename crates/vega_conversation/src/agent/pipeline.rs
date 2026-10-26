@@ -67,6 +67,7 @@ fn valid_mixed_skill_rejection_input(tool: &str, input_json: &str) -> bool {
                 id: "mixed-batch".to_string(),
                 tool: tool.to_string(),
                 input_json: input_json.to_string(),
+                codex_display: None,
             };
             crate::types::McpCallIdentity::from_tool_call(&call).is_some()
         }
@@ -629,15 +630,19 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     thread_id: String,
     user_content: String,
     system_prompt: String,
-    user_message_id: String,
+    mut user_message_id: String,
     assistant_message_id: String,
     config: PersistenceActorConfig,
     uses_existing_user: bool,
     pricing_catalog: Option<vega_token::PricingCatalog>,
     reasoning: Option<FrozenReasoning>,
     images: Vec<crate::types::ImageAttachment>,
+    ordinary: Option<&super::ordinary::OrdinaryPreparation>,
 ) -> Result<PreparedRun, ConversationError> {
-    let _ = &config;
+    let recovery = ordinary
+        .map(|preparation| preparation.run.recovery())
+        .transpose()?
+        .flatten();
     if config.delegated && (!uses_existing_user || config.credential_continuation_id.is_some()) {
         return Err(ConversationError::CorruptRow(
             "delegated instruction identity mismatch".into(),
@@ -645,6 +650,15 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     }
 
     let store = Store::open(&database_path).map_err(runtime_store_error)?;
+    let admission =
+        super::ordinary::verified_admission(&store, &thread_id, config.admission.as_ref())?;
+    if let Some(ordinary) = ordinary {
+        ordinary.run.verify(&store, &thread_id)?;
+        ordinary
+            .worker
+            .begin_preparing()
+            .map_err(super::ordinary::fact_error)?;
+    }
     let delegated_owner = match &config.delegated_owner {
         Some(owner) if owner.verifies(&database_path, &thread_id) => Some(owner.clone()),
         Some(_) => {
@@ -674,7 +688,8 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             ));
         }
     }
-    if !uses_existing_user
+    if recovery.is_none()
+        && !uses_existing_user
         && config.credential_continuation_id.is_none()
         && config.interrupted_assistant.is_none()
         && !config.delegated
@@ -696,304 +711,401 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         None => Vec::new(),
     };
     let transaction = store.immediate_transaction().map_err(runtime_store_error)?;
-    let thread = vega_store::threads::find(&transaction, &thread_id)
-        .map_err(runtime_store_error)?
-        .ok_or_else(|| ConversationError::NotFound(thread_id.clone()))?;
-    if let Some(expected) = &config.interrupted_assistant {
-        let tail =
-            messages::interrupted_tail(&transaction, &thread_id).map_err(runtime_store_error)?;
-        if uses_existing_user
-            || config.delegated
-            || config.credential_continuation_id.is_some()
-            || config.pending_message_id.is_some()
-            || config.automation_claim.is_some()
-            || !user_content.is_empty()
-            || !images.is_empty()
-            || tail
-                .as_ref()
-                .is_none_or(|(id, seq)| id != &expected.message_id || *seq != expected.seq)
-            || messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?
-                != expected.seq.checked_add(1).ok_or_else(|| {
-                    ConversationError::CorruptRow("interrupted sequence overflow".into())
-                })?
+    let preparation = (|| -> Result<_, ConversationError> {
+        let thread = vega_store::threads::find(&transaction, &thread_id)
+            .map_err(runtime_store_error)?
+            .ok_or_else(|| ConversationError::NotFound(thread_id.clone()))?;
+        if let Some(expected) = &config.interrupted_assistant {
+            let tail = messages::interrupted_tail(&transaction, &thread_id)
+                .map_err(runtime_store_error)?;
+            if ordinary.is_some()
+                || uses_existing_user
+                || config.delegated
+                || config.credential_continuation_id.is_some()
+                || config.pending_message_id.is_some()
+                || config.automation_claim.is_some()
+                || !user_content.is_empty()
+                || !images.is_empty()
+                || tail
+                    .as_ref()
+                    .is_none_or(|(id, seq)| id != &expected.message_id || *seq != expected.seq)
+                || messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?
+                    != expected.seq.checked_add(1).ok_or_else(|| {
+                        ConversationError::CorruptRow("interrupted sequence overflow".into())
+                    })?
+            {
+                return Err(ConversationError::CorruptRow(
+                    "interrupted task changed; reopen the task before resuming".into(),
+                ));
+            }
+            user_message_id = transaction.query_row(
+                "SELECT id FROM messages WHERE thread_id = ?1 AND role = 'user' AND seq < ?2 ORDER BY seq DESC LIMIT 1",
+                (&thread_id, expected.seq),
+                |row| row.get::<_, String>(0),
+            ).map_err(runtime_store_error)?;
+        }
+        if let Some(ordinary) = ordinary
+            && (thread.model != ordinary.run.submission.raw().model()
+                || thread.backend != "native"
+                || thread.status == "archived"
+                || ordinary.run.thread.as_ref().is_some_and(|snapshot| {
+                    snapshot.project_id != thread.project_id
+                        || snapshot.mode.as_str() != thread.mode
+                        || snapshot.permission_mode.as_str() != thread.permission_mode
+                }))
+        {
+            let _ = ordinary
+                .run
+                .submission
+                .invalidate_recovery(ordinary.worker.attempt_id());
+            return Err(ConversationError::InvalidTaskIdentity);
+        }
+        vega_store::delegated_stages::redact_payloads(&transaction, &thread_id, |text| {
+            vega_runtime::redact_sensitive_credential_text_with_policy(
+                text,
+                &credential_values,
+                config.credential_exceptions.as_ref(),
+            )
+        })
+        .map_err(runtime_store_error)?;
+        let preinsert_source =
+            vega_store::context_compaction::load_source_in_transaction(&transaction, &thread_id)
+                .map_err(runtime_store_error)?;
+        let preinsert_checkpoint =
+            vega_store::context_compaction::latest_checkpoint_in_transaction(
+                &transaction,
+                &thread_id,
+                &thread.model,
+            )
+            .map_err(runtime_store_error)?;
+        let preinsert_history = if config.delegated {
+            delegated_history(&transaction, &preinsert_source, &assistant_message_id)?
+        } else {
+            primary_history_from_context_source_with_checkpoint(
+                &preinsert_source,
+                preinsert_checkpoint.as_ref(),
+                &assistant_message_id,
+            )?
+        };
+        let cold_prefix_len = preinsert_history
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| ConversationError::CorruptRow("history length overflow".into()))?;
+        let replay_lease = if !uses_existing_user && config.credential_continuation_id.is_none() {
+            config.replay_registry.as_ref().map(|registry| {
+                registry.begin(
+                    &thread_id,
+                    preinsert_source.source_version,
+                    &preinsert_source.fingerprint,
+                    ReplayCheckpointFence::from_checkpoint(preinsert_checkpoint.as_ref()),
+                )
+            })
+        } else {
+            None
+        };
+        let run_mode = ThreadMode::parse(&thread.mode)
+            .ok_or_else(|| ConversationError::CorruptRow(format!("run mode: {}", thread.mode)))?;
+        let permission_mode = crate::types::PermissionMode::parse(&thread.permission_mode)
+            .ok_or_else(|| {
+                ConversationError::CorruptRow(format!(
+                    "permission_mode: {}",
+                    thread.permission_mode
+                ))
+            })?;
+        if reasoning
+            .as_ref()
+            .is_some_and(|selection| selection.model != thread.model)
         {
             return Err(ConversationError::CorruptRow(
-                "interrupted task changed; reopen the task before resuming".into(),
+                "frozen context model changed".into(),
             ));
         }
-    }
-    let user_message_id = if let Some(expected) = &config.interrupted_assistant {
-        transaction.query_row(
-            "SELECT id FROM messages WHERE thread_id = ?1 AND role = 'user' AND seq < ?2 ORDER BY seq DESC LIMIT 1",
-            (&thread_id, expected.seq),
-            |row| row.get::<_, String>(0),
-        ).map_err(runtime_store_error)?
-    } else {
-        user_message_id
-    };
-    vega_store::delegated_stages::redact_payloads(&transaction, &thread_id, |text| {
-        vega_runtime::redact_sensitive_credential_text_with_policy(
-            text,
-            &credential_values,
-            config.credential_exceptions.as_ref(),
-        )
-    })
-    .map_err(runtime_store_error)?;
-    let preinsert_source =
-        vega_store::context_compaction::load_source_in_transaction(&transaction, &thread_id)
-            .map_err(runtime_store_error)?;
-    let preinsert_checkpoint = vega_store::context_compaction::latest_checkpoint_in_transaction(
-        &transaction,
-        &thread_id,
-        &thread.model,
-    )
-    .map_err(runtime_store_error)?;
-    let preinsert_history = if config.delegated {
-        delegated_history(&transaction, &preinsert_source, &assistant_message_id)?
-    } else {
-        primary_history_from_context_source_with_checkpoint(
-            &preinsert_source,
-            preinsert_checkpoint.as_ref(),
-            &assistant_message_id,
-        )?
-    };
-    let cold_prefix_len = preinsert_history
-        .len()
-        .checked_add(1)
-        .ok_or_else(|| ConversationError::CorruptRow("history length overflow".into()))?;
-    let replay_lease = if !uses_existing_user && config.credential_continuation_id.is_none() {
-        config.replay_registry.as_ref().map(|registry| {
-            registry.begin(
-                &thread_id,
-                preinsert_source.source_version,
-                &preinsert_source.fingerprint,
-                ReplayCheckpointFence::from_checkpoint(preinsert_checkpoint.as_ref()),
-            )
-        })
-    } else {
-        None
-    };
-    let run_mode = ThreadMode::parse(&thread.mode)
-        .ok_or_else(|| ConversationError::CorruptRow(format!("run mode: {}", thread.mode)))?;
-    let permission_mode =
-        crate::types::PermissionMode::parse(&thread.permission_mode).ok_or_else(|| {
-            ConversationError::CorruptRow(format!("permission_mode: {}", thread.permission_mode))
-        })?;
-    if reasoning
-        .as_ref()
-        .is_some_and(|selection| selection.model != thread.model)
-    {
-        return Err(ConversationError::CorruptRow(
-            "frozen context model changed".into(),
-        ));
-    }
 
-    let context_policy = reasoning
-        .as_ref()
-        .map(|selection| {
-            super::compaction::load_current_model_context_policy(
-                &transaction,
-                &selection.provider,
-                &selection.model,
-            )
-        })
-        .transpose()
-        .map_err(|error| runtime_store_error(std::io::Error::other(error.to_string())))?;
-    let context_budget = context_policy
-        .as_ref()
-        .map(super::compaction::model_context_budget)
-        .transpose()?
-        .flatten();
-    let checkpoint_root = database_path
-        .parent()
-        .ok_or_else(|| ConversationError::CorruptRow("database path has no parent".to_string()))?
-        .join("checkpoints");
-    if checkpoint_root.as_os_str().is_empty() {
-        return Err(ConversationError::CorruptRow(
-            "database path has no parent".to_string(),
-        ));
-    }
-    if run_mode == ThreadMode::Execute {
-        fs::create_dir_all(&checkpoint_root).map_err(|_| {
-            ConversationError::Runtime(Arc::new(VegaError::Io(std::io::Error::other(
-                "checkpoint root unavailable",
-            ))))
-        })?;
-    }
-    let exact_rules = if thread.project_id.is_empty() {
-        // Standalone tasks have no project permission namespace. Their
-        // scratch root still participates in the normal runtime prompt, but
-        // remembered project rules must never be loaded by an empty sentinel.
-        Vec::new()
-    } else {
-        permissions::list_exact(&transaction, &thread.project_id)
-            .map_err(|error| runtime_store_error(std::io::Error::other(error.to_string())))?
-            .into_iter()
-            .map(|rule| {
-                if rule.pattern.is_empty() {
-                    return Err(ConversationError::CorruptRow(
-                        "permission rule has empty exact pattern".to_string(),
-                    ));
-                }
-                let tool = match rule.tool.as_str() {
-                    "bash" => RuntimeMutatingTool::Bash,
-                    "read" => RuntimeMutatingTool::Read,
-                    "write" => RuntimeMutatingTool::Write,
-                    "edit" => RuntimeMutatingTool::Edit,
-                    _ => {
+        let context_policy = reasoning
+            .as_ref()
+            .map(|selection| {
+                super::compaction::load_current_model_context_policy(
+                    &transaction,
+                    &selection.provider,
+                    &selection.model,
+                )
+            })
+            .transpose()
+            .map_err(|error| runtime_store_error(std::io::Error::other(error.to_string())))?;
+        let context_budget = context_policy
+            .as_ref()
+            .map(super::compaction::model_context_budget)
+            .transpose()?
+            .flatten();
+        let checkpoint_root = database_path
+            .parent()
+            .ok_or_else(|| {
+                ConversationError::CorruptRow("database path has no parent".to_string())
+            })?
+            .join("checkpoints");
+        if checkpoint_root.as_os_str().is_empty() {
+            return Err(ConversationError::CorruptRow(
+                "database path has no parent".to_string(),
+            ));
+        }
+        if run_mode == ThreadMode::Execute {
+            fs::create_dir_all(&checkpoint_root).map_err(|_| {
+                ConversationError::Runtime(Arc::new(VegaError::Io(std::io::Error::other(
+                    "checkpoint root unavailable",
+                ))))
+            })?;
+        }
+        let exact_rules = if thread.project_id.is_empty() {
+            Vec::new()
+        } else {
+            permissions::list_exact(&transaction, &thread.project_id)
+                .map_err(|error| runtime_store_error(std::io::Error::other(error.to_string())))?
+                .into_iter()
+                .map(|rule| {
+                    if rule.pattern.is_empty() {
                         return Err(ConversationError::CorruptRow(
-                            "permission rule has unsupported tool".to_string(),
+                            "permission rule has empty exact pattern".to_string(),
                         ));
                     }
-                };
-                Ok(RuntimeExactRule {
-                    tool,
-                    pattern: rule.pattern,
+                    let tool = match rule.tool.as_str() {
+                        "bash" => RuntimeMutatingTool::Bash,
+                        "read" => RuntimeMutatingTool::Read,
+                        "write" => RuntimeMutatingTool::Write,
+                        "edit" => RuntimeMutatingTool::Edit,
+                        _ => {
+                            return Err(ConversationError::CorruptRow(
+                                "permission rule has unsupported tool".to_string(),
+                            ));
+                        }
+                    };
+                    Ok(RuntimeExactRule {
+                        tool,
+                        pattern: rule.pattern,
+                    })
                 })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let pending_original = config
+            .pending_message_id
+            .as_ref()
+            .map(|id| {
+                if id != &user_message_id || uses_existing_user {
+                    return Err(ConversationError::Store(
+                        vega_i18n::t("domain.pending.error.changed").into(),
+                    ));
+                }
+                let row = vega_store::pending_messages::find(&transaction, &thread_id, id)
+                    .map_err(runtime_store_error)?
+                    .ok_or_else(|| {
+                        ConversationError::Store(
+                            vega_i18n::t("domain.pending.error.delivered").into(),
+                        )
+                    })?;
+                let pending = crate::pending_messages::decode(row)?;
+                if pending.images != images {
+                    return Err(ConversationError::Store(
+                        vega_i18n::t("domain.pending.error.attachments").into(),
+                    ));
+                }
+                Ok::<_, ConversationError>(pending.content)
             })
-            .collect::<Result<Vec<_>, _>>()?
-    };
-    let pending_original = config
-        .pending_message_id
-        .as_ref()
-        .map(|id| {
-            if id != &user_message_id || uses_existing_user {
-                return Err(ConversationError::Store("待处理消息状态已变化".into()));
-            }
-            let row = vega_store::pending_messages::find(&transaction, &thread_id, id)
-                .map_err(runtime_store_error)?
-                .ok_or_else(|| ConversationError::Store("待处理消息已经交付".into()))?;
-            let pending = crate::pending_messages::decode(row)?;
-            if pending.images != images {
-                return Err(ConversationError::Store("待处理消息附件已变化".into()));
-            }
-            Ok::<_, ConversationError>(pending.content)
-        })
-        .transpose()?;
-    let pending_model_content = pending_original.as_ref().map(|_| user_content.clone());
-    let continuation = config
-        .credential_continuation_id
-        .as_deref()
-        .map(|id| {
-            let receipt = vega_store::credential_continuation::find(&transaction, id)
-                .map_err(runtime_store_error)?
-                .ok_or_else(|| {
-                    ConversationError::Runtime(Arc::new(
+            .transpose()?;
+        let pending_model_content = pending_original.as_ref().map(|_| user_content.clone());
+        let continuation = config
+            .credential_continuation_id
+            .as_deref()
+            .map(|id| {
+                let receipt = vega_store::credential_continuation::find(&transaction, id)
+                    .map_err(runtime_store_error)?
+                    .ok_or_else(|| {
+                        ConversationError::Runtime(Arc::new(
+                            VegaError::CredentialContinuationUnavailable,
+                        ))
+                    })?;
+                if receipt.thread_id != thread_id
+                    || receipt.user_message_id != user_message_id
+                    || !vega_store::credential_continuation::claim(
+                        &transaction,
+                        &receipt,
+                        &assistant_message_id,
+                    )
+                    .map_err(runtime_store_error)?
+                {
+                    return Err(ConversationError::Runtime(Arc::new(
                         VegaError::CredentialContinuationUnavailable,
-                    ))
-                })?;
-            if receipt.thread_id != thread_id
-                || receipt.user_message_id != user_message_id
-                || !vega_store::credential_continuation::claim(
-                    &transaction,
-                    &receipt,
-                    &assistant_message_id,
-                )
-                .map_err(runtime_store_error)?
-            {
-                return Err(ConversationError::Runtime(Arc::new(
-                    VegaError::CredentialContinuationUnavailable,
-                )));
-            }
-            Ok::<_, ConversationError>(receipt)
-        })
-        .transpose()?;
-    let now = now_ms();
-    let title_eligible_payload = !user_content.trim().is_empty() || !images.is_empty();
-    if config.delegated {
-        let mismatch =
-            || ConversationError::CorruptRow("delegated instruction identity mismatch".into());
-        let execution =
-            vega_store::subagents::execution(&transaction, &thread_id, &assistant_message_id)
+                    )));
+                }
+                Ok::<_, ConversationError>(receipt)
+            })
+            .transpose()?;
+        let now = now_ms();
+        let title_eligible_payload = !user_content.trim().is_empty() || !images.is_empty();
+        if let (Some(ordinary), Some(receipt)) = (ordinary, &recovery) {
+            super::ordinary::verify_recovery(&transaction, &ordinary.run, &thread_id, receipt)?;
+        } else if config.delegated {
+            let mismatch =
+                || ConversationError::CorruptRow("delegated instruction identity mismatch".into());
+            let execution =
+                vega_store::subagents::execution(&transaction, &thread_id, &assistant_message_id)
+                    .map_err(runtime_store_error)?
+                    .ok_or_else(mismatch)?;
+            let delegation = execution.record;
+            let existing = messages::find(&transaction, &user_message_id)
                 .map_err(runtime_store_error)?
                 .ok_or_else(mismatch)?;
-        let delegation = execution.record;
-        let existing = messages::find(&transaction, &user_message_id)
-            .map_err(runtime_store_error)?
-            .ok_or_else(mismatch)?;
-        let parent = messages::find(&transaction, &delegation.parent_message_id)
-            .map_err(runtime_store_error)?
-            .ok_or_else(mismatch)?;
-        if delegation.child_thread_id != thread_id
-            || delegation.child_message_id != assistant_message_id
-            || config.delegated_message_id.as_deref() != Some(assistant_message_id.as_str())
-            || config
-                .delegated_parent
-                .as_ref()
-                .is_none_or(|(thread, message)| {
-                    thread != &delegation.parent_thread_id
-                        || message != &delegation.parent_message_id
+            let parent = messages::find(&transaction, &delegation.parent_message_id)
+                .map_err(runtime_store_error)?
+                .ok_or_else(mismatch)?;
+            if delegation.child_thread_id != thread_id
+                || delegation.child_message_id != assistant_message_id
+                || config.delegated_message_id.as_deref() != Some(assistant_message_id.as_str())
+                || config
+                    .delegated_parent
+                    .as_ref()
+                    .is_none_or(|(thread, message)| {
+                        thread != &delegation.parent_thread_id
+                            || message != &delegation.parent_message_id
+                    })
+                || thread.parent_thread_id.as_deref() != Some(delegation.parent_thread_id.as_str())
+                || parent.thread_id != delegation.parent_thread_id
+                || parent.role != "assistant"
+                || !matches!(delegation.state.as_str(), "running" | "cancelling")
+                || existing.thread_id != thread_id
+                || existing.role != "user"
+                || existing.kind != "text"
+                || existing.status != "done"
+                || execution.instruction_message_id.as_deref() != Some(user_message_id.as_str())
+                || existing.content != delegation.task
+                || user_content != delegation.task
+                || run_mode != ThreadMode::Execute
+            {
+                return Err(mismatch());
+            }
+            let next = messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
+            if existing.seq.checked_add(1) != Some(next) {
+                return Err(ConversationError::CorruptRow(
+                    "delegated instruction was already consumed".into(),
+                ));
+            }
+        } else if uses_existing_user {
+            let existing = messages::find(&transaction, &user_message_id)
+                .map_err(runtime_store_error)?
+                .ok_or_else(|| ConversationError::NotFound(user_message_id.clone()))?;
+            if existing.thread_id != thread_id
+                || existing.role != "user"
+                || existing.kind != "text"
+                || existing.status != "done"
+                || existing.content != crate::plans::APPROVAL_INSTRUCTION
+                || user_content != crate::plans::APPROVAL_INSTRUCTION
+                || run_mode != ThreadMode::Execute
+            {
+                return Err(ConversationError::CorruptRow(
+                    "approved instruction identity mismatch".to_string(),
+                ));
+            }
+            let next = messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
+            if next != existing.seq + 1 {
+                return Err(ConversationError::CorruptRow(
+                    "approved instruction was already consumed".to_string(),
+                ));
+            }
+            let plans = messages::plans_for_thread(&transaction, &thread_id)
+                .map_err(runtime_store_error)?;
+            let matching_approvals = plans
+                .iter()
+                .filter(|plan| plan.seq < existing.seq)
+                .filter(|plan| {
+                    plan.plan_status.as_deref() == Some("approved")
+                        && plan.plan_reviewed_at == Some(existing.created_at)
                 })
-            || thread.parent_thread_id.as_deref() != Some(delegation.parent_thread_id.as_str())
-            || parent.thread_id != delegation.parent_thread_id
-            || parent.role != "assistant"
-            || !matches!(delegation.state.as_str(), "running" | "cancelling")
-            || existing.thread_id != thread_id
-            || existing.role != "user"
-            || existing.kind != "text"
-            || existing.status != "done"
-            || execution.instruction_message_id.as_deref() != Some(user_message_id.as_str())
-            || existing.content != delegation.task
-            || user_content != delegation.task
-            || run_mode != ThreadMode::Execute
+                .count();
+            if matching_approvals != 1 {
+                return Err(ConversationError::CorruptRow(
+                    "approved instruction has no matching plan".to_string(),
+                ));
+            }
+        } else if continuation.is_none() && config.interrupted_assistant.is_none() {
+            let user_seq =
+                messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
+            messages::insert(
+                &transaction,
+                &messages::MessageRow {
+                    id: user_message_id.clone(),
+                    thread_id: thread_id.clone(),
+                    seq: user_seq,
+                    role: "user".to_string(),
+                    kind: "text".to_string(),
+                    content: pending_original.unwrap_or_else(|| user_content.clone()),
+                    status: "done".to_string(),
+                    created_at: now,
+                    plan_status: None,
+                    plan_review_note: None,
+                    plan_reviewed_at: None,
+                },
+            )
+            .map_err(runtime_store_error)?;
+        }
+        for (ordinal, image) in images.iter().enumerate().filter(|_| recovery.is_none()) {
+            vega_store::image_attachments::insert(
+                &transaction,
+                &user_message_id,
+                ordinal,
+                image.bytes(),
+            )
+            .map_err(runtime_store_error)?;
+        }
+
+        let title_request = if recovery.is_none()
+            && !uses_existing_user
+            && continuation.is_none()
+            && title_eligible_payload
         {
-            return Err(mismatch());
-        }
-        let next = messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
-        if existing.seq.checked_add(1) != Some(next) {
-            return Err(ConversationError::CorruptRow(
-                "delegated instruction was already consumed".into(),
-            ));
-        }
-    } else if uses_existing_user {
-        let existing = messages::find(&transaction, &user_message_id)
-            .map_err(runtime_store_error)?
-            .ok_or_else(|| ConversationError::NotFound(user_message_id.clone()))?;
-        if existing.thread_id != thread_id
-            || existing.role != "user"
-            || existing.kind != "text"
-            || existing.status != "done"
-            || existing.content != crate::plans::APPROVAL_INSTRUCTION
-            || user_content != crate::plans::APPROVAL_INSTRUCTION
-            || run_mode != ThreadMode::Execute
+            match config.automatic_title.clone() {
+                Some(request)
+                    if vega_store::threads::claim_auto_title(
+                        &transaction,
+                        &thread_id,
+                        &user_message_id,
+                        &request.fallback(),
+                    )
+                    .map_err(runtime_store_error)? =>
+                {
+                    Some(request)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some(id) = &config.pending_message_id
+            && !vega_store::pending_messages::mark_delivered(&transaction, &thread_id, id)
+                .map_err(runtime_store_error)?
         {
-            return Err(ConversationError::CorruptRow(
-                "approved instruction identity mismatch".to_string(),
+            return Err(ConversationError::Store(
+                vega_i18n::t("domain.pending.error.delivered").into(),
             ));
         }
-        let next = messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
-        if next != existing.seq + 1 {
-            return Err(ConversationError::CorruptRow(
-                "approved instruction was already consumed".to_string(),
-            ));
+        if let (Some(id), Some(content)) = (&config.pending_message_id, pending_model_content) {
+            vega_store::pending_messages::preserve_model_input(
+                &transaction,
+                &thread_id,
+                id,
+                &content,
+            )
+            .map_err(runtime_store_error)?;
         }
-        let plans =
-            messages::plans_for_thread(&transaction, &thread_id).map_err(runtime_store_error)?;
-        let matching_approvals = plans
-            .iter()
-            .filter(|plan| plan.seq < existing.seq)
-            .filter(|plan| {
-                plan.plan_status.as_deref() == Some("approved")
-                    && plan.plan_reviewed_at == Some(existing.created_at)
-            })
-            .count();
-        if matching_approvals != 1 {
-            return Err(ConversationError::CorruptRow(
-                "approved instruction has no matching plan".to_string(),
-            ));
-        }
-    } else if continuation.is_none() && config.interrupted_assistant.is_none() {
-        let user_seq = messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
+        let assistant_seq =
+            messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
         messages::insert(
             &transaction,
             &messages::MessageRow {
-                id: user_message_id.clone(),
+                id: assistant_message_id.clone(),
                 thread_id: thread_id.clone(),
-                seq: user_seq,
-                role: "user".to_string(),
+                seq: assistant_seq,
+                role: "assistant".to_string(),
                 kind: "text".to_string(),
-                content: pending_original.unwrap_or(user_content),
-                status: "done".to_string(),
+                content: String::new(),
+                status: "streaming".to_string(),
                 created_at: now,
                 plan_status: None,
                 plan_review_note: None,
@@ -1001,171 +1113,235 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             },
         )
         .map_err(runtime_store_error)?;
-    }
-    for (ordinal, image) in images.iter().enumerate() {
-        vega_store::image_attachments::insert(
-            &transaction,
-            &user_message_id,
-            ordinal,
-            image.bytes(),
-        )
-        .map_err(runtime_store_error)?;
-    }
 
-    let title_request = if !uses_existing_user && continuation.is_none() && title_eligible_payload {
-        match config.automatic_title.clone() {
-            Some(request)
-                if vega_store::threads::claim_auto_title(
-                    &transaction,
-                    &thread_id,
-                    &user_message_id,
-                    &request.fallback(),
-                )
-                .map_err(runtime_store_error)? =>
-            {
-                Some(request)
-            }
-            _ => None,
-        }
-    } else {
-        None
-    };
-    if let Some(id) = &config.pending_message_id
-        && !vega_store::pending_messages::mark_delivered(&transaction, &thread_id, id)
-            .map_err(runtime_store_error)?
-    {
-        return Err(ConversationError::Store("待处理消息已经交付".into()));
-    }
-    if let (Some(id), Some(content)) = (&config.pending_message_id, pending_model_content) {
-        vega_store::pending_messages::preserve_model_input(&transaction, &thread_id, id, &content)
+        if let Some(receipt) = &continuation {
+            vega_store::credential_continuation::attach(
+                &transaction,
+                &receipt.id,
+                &assistant_message_id,
+            )
             .map_err(runtime_store_error)?;
-    }
-    let assistant_seq =
-        messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
-    messages::insert(
-        &transaction,
-        &messages::MessageRow {
-            id: assistant_message_id.clone(),
-            thread_id: thread_id.clone(),
-            seq: assistant_seq,
-            role: "assistant".to_string(),
-            // A Plan is promoted atomically only on successful completion.
-            // Interrupted/failed streams remain ordinary text history rows.
-            kind: "text".to_string(),
-            content: String::new(),
-            status: "streaming".to_string(),
-            created_at: now,
-            plan_status: None,
-            plan_review_note: None,
-            plan_reviewed_at: None,
-        },
-    )
-    .map_err(runtime_store_error)?;
+        }
 
-    if let Some(receipt) = &continuation {
-        vega_store::credential_continuation::attach(
-            &transaction,
-            &receipt.id,
-            &assistant_message_id,
-        )
-        .map_err(runtime_store_error)?;
-    }
-
-    let legacy_credential_cleanup_detected =
-        vega_store::context_compaction::redact_legacy_thread_content(
+        let mut redact_legacy = |text: &str, offsets: &[usize]| {
+            vega_runtime::redact_sensitive_credential_text_with_offsets_and_policy(
+                text,
+                &credential_values,
+                offsets,
+                config.credential_exceptions.as_ref(),
+            )
+        };
+        messages::remap_generated_notices_in_transaction(
             &transaction,
             &thread_id,
-            |text, offsets| {
-                vega_runtime::redact_sensitive_credential_text_with_offsets_and_policy(
-                    text,
-                    &credential_values,
-                    offsets,
-                    config.credential_exceptions.as_ref(),
-                )
-            },
+            &mut redact_legacy,
         )
         .map_err(runtime_store_error)?;
-
-    // Validate and project the complete source while the accepted user and
-    // streaming assistant rows are still in this transaction.  Any bounded
-    // read, image, or tool-pairing failure therefore rolls back the turn
-    // instead of leaving an orphaned streaming row.
-    let source =
-        vega_store::context_compaction::load_source_in_transaction(&transaction, &thread_id)
-            .map_err(runtime_store_error)?;
-    let checkpoint = vega_store::context_compaction::latest_checkpoint_in_transaction(
-        &transaction,
-        &thread_id,
-        &thread.model,
-    )
-    .map_err(runtime_store_error)?;
-    let history = if config.delegated {
-        delegated_history(&transaction, &source, &assistant_message_id)?
-    } else {
-        primary_history_from_context_source_with_checkpoint(
-            &source,
-            checkpoint.as_ref(),
-            &assistant_message_id,
-        )?
-    };
-
-    let completed_tool_results = tool_calls::terminal_results(&transaction, &thread_id)
-        .map_err(|error| runtime_store_error(std::io::Error::other(error.to_string())))?
-        .into_iter()
-        .map(|(call_id, call)| -> Result<_, ConversationError> {
-            let approval = ApprovalAudit::from_json(&call.approval).map_err(|_| {
-                ConversationError::CorruptRow(format!(
-                    "terminal tool call {call_id} has invalid approval"
-                ))
-            })?;
-            let status = match call.status.as_str() {
-                "success" => RuntimeToolStatus::Success,
-                "failed" => RuntimeToolStatus::Failed,
-                "rejected" => RuntimeToolStatus::Rejected,
-                "cancelled" => RuntimeToolStatus::Cancelled,
-                other => {
-                    return Err(ConversationError::CorruptRow(format!(
-                        "terminal tool call {call_id} has status {other}"
-                    )));
-                }
-            };
-            let canonical_input = validate_recovered_projection(
-                &thread.project_id,
+        let legacy_credential_cleanup_detected =
+            vega_store::context_compaction::redact_legacy_thread_content(
+                &transaction,
                 &thread_id,
-                &call_id,
-                &call.tool,
-                &call.input_json,
-                &call.output,
-                status,
-                &approval,
-                call.exit_code,
-                call.duration_ms,
-            )?;
-            let completed = vega_runtime::CompletedToolCall {
-                tool: call.tool,
-                input_json: canonical_input,
-                result: vega_runtime::RuntimeToolResult {
-                    call_id: call_id.clone(),
-                    output: call.output,
+                &mut redact_legacy,
+            )
+            .map_err(runtime_store_error)?;
+
+        let source =
+            vega_store::context_compaction::load_source_in_transaction(&transaction, &thread_id)
+                .map_err(runtime_store_error)?;
+        let checkpoint = vega_store::context_compaction::latest_checkpoint_in_transaction(
+            &transaction,
+            &thread_id,
+            &thread.model,
+        )
+        .map_err(runtime_store_error)?;
+        let mut model_source = source.clone();
+        if let Some(ordinary) = ordinary {
+            let accepted = ordinary
+                .run
+                .submission
+                .snapshot()
+                .accepted
+                .ok_or(ConversationError::InvalidTaskIdentity)?;
+            let user = model_source
+                .messages
+                .iter_mut()
+                .find(|message| message.id == user_message_id)
+                .ok_or(ConversationError::InvalidTaskIdentity)?;
+            user.content = accepted.text().to_owned();
+        }
+        let history = if config.delegated {
+            delegated_history(&transaction, &model_source, &assistant_message_id)?
+        } else {
+            primary_history_from_context_source_with_checkpoint(
+                &model_source,
+                checkpoint.as_ref(),
+                &assistant_message_id,
+            )?
+        };
+
+        let completed_tool_results = tool_calls::terminal_results(&transaction, &thread_id)
+            .map_err(|error| runtime_store_error(std::io::Error::other(error.to_string())))?
+            .into_iter()
+            .map(|(call_id, call)| -> Result<_, ConversationError> {
+                let approval = ApprovalAudit::from_json(&call.approval).map_err(|_| {
+                    ConversationError::CorruptRow(format!(
+                        "terminal tool call {call_id} has invalid approval"
+                    ))
+                })?;
+                let status = match call.status.as_str() {
+                    "success" => RuntimeToolStatus::Success,
+                    "failed" => RuntimeToolStatus::Failed,
+                    "rejected" => RuntimeToolStatus::Rejected,
+                    "cancelled" => RuntimeToolStatus::Cancelled,
+                    other => {
+                        return Err(ConversationError::CorruptRow(format!(
+                            "terminal tool call {call_id} has status {other}"
+                        )));
+                    }
+                };
+                let canonical_input = validate_recovered_projection(
+                    &thread.project_id,
+                    &thread_id,
+                    &call_id,
+                    &call.tool,
+                    &call.input_json,
+                    &call.output,
                     status,
-                    reused: true,
-                    exit_code: call.exit_code,
-                    duration_ms: call.duration_ms,
-                    truncated: None,
-                    approval: Some(approval_audit_to_runtime(&approval)),
-                    remember_rule: None,
-                },
-            };
-            Ok((call_id, completed))
-        })
-        .collect::<Result<_, _>>()?;
-    let next_tool_seq =
-        tool_calls::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
-    let foreign_call_ids =
-        tool_calls::foreign_call_ids(&transaction, &thread_id).map_err(runtime_store_error)?;
+                    &approval,
+                    call.exit_code,
+                    call.duration_ms,
+                )?;
+                let completed = vega_runtime::CompletedToolCall {
+                    tool: call.tool,
+                    input_json: canonical_input,
+                    result: vega_runtime::RuntimeToolResult {
+                        call_id: call_id.clone(),
+                        output: call.output,
+                        status,
+                        reused: true,
+                        exit_code: call.exit_code,
+                        duration_ms: call.duration_ms,
+                        truncated: None,
+                        approval: Some(approval_audit_to_runtime(&approval)),
+                        remember_rule: None,
+                    },
+                };
+                Ok((call_id, completed))
+            })
+            .collect::<Result<_, _>>()?;
+        let next_tool_seq =
+            tool_calls::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
+        let foreign_call_ids =
+            tool_calls::foreign_call_ids(&transaction, &thread_id).map_err(runtime_store_error)?;
+        let receipt = ordinary
+            .map(|ordinary| ordinary.bind_persisted(&transaction))
+            .transpose()?;
+        if config
+            .steering_cancel
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            return Err(ConversationError::Runtime(Arc::new(VegaError::Cancelled)));
+        }
+        Ok((
+            thread,
+            run_mode,
+            permission_mode,
+            checkpoint_root,
+            exact_rules,
+            replay_lease,
+            cold_prefix_len,
+            context_budget,
+            legacy_credential_cleanup_detected,
+            source,
+            history,
+            completed_tool_results,
+            next_tool_seq,
+            foreign_call_ids,
+            title_request,
+            assistant_seq,
+            receipt,
+        ))
+    })();
+    let (
+        thread,
+        run_mode,
+        permission_mode,
+        checkpoint_root,
+        exact_rules,
+        replay_lease,
+        cold_prefix_len,
+        context_budget,
+        legacy_credential_cleanup_detected,
+        source,
+        history,
+        completed_tool_results,
+        next_tool_seq,
+        foreign_call_ids,
+        title_request,
+        assistant_seq,
+        receipt,
+    ) = match preparation {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            if let Some(ordinary) = ordinary
+                && ordinary
+                    .run
+                    .submission
+                    .snapshot()
+                    .attempts
+                    .last()
+                    .is_some_and(|attempt| attempt.persisted.is_none())
+            {
+                let payload = messages::find(&transaction, &user_message_id)
+                    .ok()
+                    .flatten()
+                    .map(|user| crate::types::PersistedPayload::new(user.content, images.clone()))
+                    .unwrap_or_else(|| {
+                        recovery.as_ref().map_or_else(
+                            || {
+                                crate::types::PersistedPayload::new(
+                                    user_content.clone(),
+                                    images.clone(),
+                                )
+                            },
+                            |receipt| {
+                                crate::types::PersistedPayload::new(
+                                    receipt.persisted_text.clone(),
+                                    receipt.persisted_images.clone(),
+                                )
+                            },
+                        )
+                    });
+                let _ = ordinary.worker.bind_persisted_payload(payload);
+            }
+            let rollback = transaction.rollback();
+            if let Some(ordinary) = ordinary {
+                let _ = ordinary.worker.record_not_committed(
+                    rollback.map_err(|_| crate::types::RollbackFailure::Failed),
+                );
+            }
+            return Err(error);
+        }
+    };
+    if let Some(ordinary) = ordinary
+        && let Err(error) = ordinary.worker.begin_commit()
+    {
+        let rollback = transaction.rollback();
+        let _ = ordinary
+            .worker
+            .record_not_committed(rollback.map_err(|_| crate::types::RollbackFailure::Failed));
+        return Err(super::ordinary::fact_error(error));
+    }
     transaction.commit().map_err(runtime_store_error)?;
+    if let (Some(ordinary), Some(receipt)) = (ordinary, receipt) {
+        ordinary
+            .worker
+            .record_committed(receipt)
+            .map_err(super::ordinary::fact_error)?;
+    }
     if let Some(request) = title_request {
-        request.launch(
+        request.with_thread_admission(admission.clone()).launch(
             database_path.clone(),
             thread_id.clone(),
             user_message_id.clone(),
@@ -1183,6 +1359,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     );
 
     Ok(PreparedRun {
+        _admission: admission,
         _delegated_owner: delegated_owner,
         database_path,
         project_id: thread.project_id.clone(),
@@ -1255,6 +1432,152 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         next_tool_seq,
         replay_lease,
     })
+}
+
+fn valid_computer_use_output(
+    tool: &str,
+    output: &str,
+    status: RuntimeToolStatus,
+    approval: &ApprovalAudit,
+) -> bool {
+    if output.len() > 2048 || approval.note.is_some() {
+        return false;
+    }
+    if output == vega_runtime::computer_use::SUPERSEDED_CONTROL_OUTPUT {
+        return status == RuntimeToolStatus::Cancelled
+            && approval.decision == Approval::Once
+            && approval.source == ApprovalSource::ComputerUse;
+    }
+    if approval.decision
+        != if status == RuntimeToolStatus::Rejected {
+            Approval::Deny
+        } else {
+            Approval::Once
+        }
+    {
+        return false;
+    }
+    let structured = serde_json::from_str::<serde_json::Value>(output).ok();
+    if structured
+        .as_ref()
+        .is_some_and(|value| value.get("code").is_some() && value.get("execution_state").is_some())
+    {
+        return matches!(
+            status,
+            RuntimeToolStatus::Rejected | RuntimeToolStatus::Failed | RuntimeToolStatus::Cancelled
+        ) && approval.source == ApprovalSource::ComputerUse
+            && vega_runtime::computer_use::valid_error_output(
+                tool,
+                output,
+                status == RuntimeToolStatus::Rejected,
+            );
+    }
+    if let Some(value) = structured {
+        let Some(object) = value.as_object() else {
+            return false;
+        };
+        if value["code"] == "observation_budget_exceeded" {
+            return approval.source == ApprovalSource::ComputerUse
+                && status == RuntimeToolStatus::Failed
+                && object.len() == 5
+                && value["executed"].is_boolean()
+                && value["deferred"] == true
+                && value["retryable"] == true
+                && value["next_step"] == "use_current_results_then_request_remaining_windows";
+        }
+        let model_projection = match object.get("model_projection") {
+            None => object.len() == 7,
+            Some(projection) => {
+                object.len() == 8
+                    && projection["code"] == "observation_budget_exceeded"
+                    && (vega_runtime::computer_use::valid_error_output(
+                        tool,
+                        &projection.to_string(),
+                        false,
+                    ) || (projection
+                        .as_object()
+                        .is_some_and(|object| object.len() == 5)
+                        && projection["executed"] == true
+                        && projection["deferred"] == true
+                        && projection["retryable"] == true
+                        && projection["next_step"]
+                            == "use_current_results_then_request_remaining_windows"))
+            }
+        };
+        return tool == "ComputerScreenshot"
+            && matches!(
+                status,
+                RuntimeToolStatus::Success | RuntimeToolStatus::Cancelled
+            )
+            && approval.source == ApprovalSource::ComputerUse
+            && model_projection
+            && value["status"] == "delivered"
+            && value["delivery"] == "conversation_image_attachment"
+            && value["saved_in_history"] == true
+            && value["read_only"] == true
+            && value["unchanged"].is_boolean()
+            && value["next_step"] == "continue_remaining_requested_work_or_finish"
+            && value["artifact_id"].as_str().is_some_and(|id| {
+                id.strip_prefix("screenshot:")
+                    .is_some_and(|suffix| !suffix.is_empty())
+            });
+    }
+    match status {
+        RuntimeToolStatus::Success => {
+            approval.source == ApprovalSource::ComputerUse && valid_computer_use_completion(output)
+        }
+        RuntimeToolStatus::Failed => {
+            approval.source == ApprovalSource::ComputerUse
+                && (output.starts_with("Tool error: computer use:")
+                    || output.starts_with("Tool error: computer use not_dispatched:")
+                    || output.starts_with("outcome_unknown:")
+                    || matches!(
+                        output,
+                        vega_runtime::CALL_ID_CONFLICT_OUTPUT
+                            | "Tool error: credential safety check unavailable"
+                    ))
+        }
+        RuntimeToolStatus::Rejected => match approval.source {
+            ApprovalSource::ComputerUse => {
+                output.starts_with("Tool error: computer use:")
+                    || output.starts_with("Tool error: computer use not_dispatched:")
+            }
+            ApprovalSource::RunMode => {
+                output == "Tool error: computer use denied by run mode"
+                    || output == "Tool error: denied: unavailable tool"
+                    || output == "Tool error: denied by run mode"
+            }
+            ApprovalSource::Recovery => output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT,
+            ApprovalSource::Validation => {
+                output == "Tool error: mixed Skill load batch rejected other tools"
+            }
+            _ => false,
+        },
+        RuntimeToolStatus::Cancelled => {
+            approval.source == ApprovalSource::ComputerUse
+                && (matches!(
+                    output,
+                    vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT
+                        | vega_store::recovery::RECOVERY_CANCELLED_OUTPUT
+                ) || output.starts_with("outcome_unknown:")
+                    || valid_computer_use_completion(output))
+        }
+    }
+}
+
+fn valid_computer_use_completion(output: &str) -> bool {
+    let Some(rest) = output.strip_prefix("completed; observation_id=") else {
+        return false;
+    };
+    let Some((id, suffix)) = rest.split_once(';') else {
+        return false;
+    };
+    !id.is_empty()
+        && matches!(
+            suffix,
+            " observation images and page data are ephemeral and are not retained in history."
+                | " window directory is ephemeral and is not retained in history."
+        )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1406,7 +1729,8 @@ pub(crate) fn validate_recovered_projection(
         {
             return Err(corrupt());
         }
-        if !vega_runtime::computer_use::ComputerUseAudit::valid(input_json)
+        if !vega_runtime::computer_use::ComputerUseAudit::valid_for_tool(tool, input_json)
+            || !valid_computer_use_output(tool, output, status, approval)
             || output.len() > 2048
             || exit_code.is_some()
             || duration_ms.is_some()
@@ -1499,6 +1823,7 @@ pub(crate) fn validate_recovered_projection(
                 id: call_id.to_string(),
                 tool: tool.to_string(),
                 input_json: input_json.to_string(),
+                codex_display: None,
             };
             if crate::types::McpCallIdentity::from_tool_call(&projected).is_none()
                 || exit_code.is_some()
@@ -2112,12 +2437,27 @@ pub(crate) fn approval_source_matches(
 pub(crate) async fn finish_prepared_failure(
     database_path: PathBuf,
     assistant_message_id: String,
+    ordinary: Option<super::ordinary::OrdinaryRun>,
+    admission: crate::types::ThreadAdmission,
 ) -> Result<(), VegaError> {
+    let task = super::ordinary::OrdinaryTask::register(ordinary.as_ref())
+        .map_err(|_| persistence_actor_error("cleanup worker registration unavailable"))?;
     tokio::task::spawn_blocking(move || {
-        let store = Store::open(database_path).map_err(VegaError::Store)?;
-        messages::finish_streaming(store.conn(), &assistant_message_id, "", "failed", None)
-            .map_err(VegaError::Store)
-            .and_then(|updated| ensure_message_updated(updated, &assistant_message_id))
+        let _admission = admission;
+        let result = (|| {
+            let store = Store::open(database_path).map_err(VegaError::Store)?;
+            messages::finish_streaming(store.conn(), &assistant_message_id, "", "failed", None)
+                .map_err(VegaError::Store)
+                .and_then(|updated| ensure_message_updated(updated, &assistant_message_id))
+        })();
+        if let Some(task) = task {
+            task.complete(if result.is_ok() {
+                Ok(())
+            } else {
+                Err(crate::types::SubmissionFailure::LaunchFailed)
+            });
+        }
+        result
     })
     .await
     .map_err(|error| persistence_actor_error(format!("failure cleanup join failed: {error}")))?

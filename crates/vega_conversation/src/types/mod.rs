@@ -1,5 +1,11 @@
 pub use crate::automatic_titles::AutomaticTitleRequest;
 pub use crate::composer_predictions::{ComposerPredictionFence, ComposerPredictionRequest};
+pub use crate::ordinary_submissions::{
+    AcceptedPayload, AttemptId, AttemptKind, AttemptSnapshot, CleanupFact, CleanupFailure,
+    CommitFact, CommittedReceipt, EffectiveAuthority, FactUpdate, OrdinarySubmission,
+    OrdinaryWorker, PersistedPayload, PrimaryFact, RawSubmission, RetryBlocker, RetryEligibility,
+    RollbackFailure, SubmissionError, SubmissionFailure, SubmissionId, SubmissionSnapshot,
+};
 use std::sync::Arc;
 pub use vega_runtime::ImageAttachment;
 pub use vega_runtime::computer_use::{
@@ -9,6 +15,7 @@ pub use vega_runtime::computer_use::{
     SUPERSEDED_CONTROL_OUTPUT, Target, preparation_from_check_permissions, unknown_preparation,
 };
 pub use vega_store::messages::RunContinuation;
+pub use vega_store::thread_admission::{AdmissionError, DatabaseIdentity, ThreadAdmission};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -17,8 +24,11 @@ mod artifact;
 mod codex_task;
 mod context;
 mod events;
+mod generated_notice;
+mod historical_history;
 mod mcp;
 mod message_location;
+pub use historical_history::*;
 mod meter;
 mod permission;
 mod pricing;
@@ -36,6 +46,7 @@ pub use artifact::*;
 pub use codex_task::*;
 pub use context::*;
 pub use events::*;
+pub use generated_notice::*;
 pub use mcp::*;
 pub use message_location::*;
 pub use meter::*;
@@ -81,6 +92,9 @@ pub use updater::*;
 
 mod model_catalog;
 pub use model_catalog::*;
+
+mod model_option;
+pub use model_option::*;
 
 mod pending_messages;
 pub use pending_messages::*;

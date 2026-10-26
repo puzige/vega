@@ -460,6 +460,13 @@ impl VegaWindow {
             this.submit_composer(stream.clone(), request, cx);
         })
         .detach();
+        cx.subscribe(
+            &view,
+            |this, stream, request: &OrdinaryActionRequested, cx| {
+                this.ordinary_action(stream.clone(), request, cx);
+            },
+        )
+        .detach();
         cx.subscribe_in(
             &view,
             window,

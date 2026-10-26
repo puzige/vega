@@ -10,6 +10,7 @@ use vega_conversation::types::{
     PricingSettingsErrorCode, PricingSettingsProjection, REASONING_EFFORTS, ReasoningChoice,
     ReasoningProfileProjection, ReasoningSupport,
 };
+use vega_i18n::{t, t_args};
 use vega_store::config::{self, AppConfig, ProviderConfig};
 use vega_store::context_compaction::ModelContextPolicy;
 use vega_store::keystore;
@@ -193,13 +194,17 @@ const PERMISSION_MODES: [&str; 4] = ["readonly", "confirm", "auto", "full_access
 
 /// Status placeholder shown only when the local store contains the reference;
 /// the key value itself is never rendered (safety red line).
-const KEY_STORED_PLACEHOLDER: &str = "•••••••已存储";
+fn key_stored_placeholder() -> &'static str {
+    t("settings.credentials.stored")
+}
 
 mod agents;
 /// The settings view: a plain page with the provider list, the add-provider
 /// form, and the default pickers. Holds its own form input buffers, so it
 /// must be cached by the parent across re-renders (it is rebuilt — reloading
 mod helpers;
+mod localization;
+use localization::{SettingsText, permission_mode_label};
 mod mcp;
 mod model_capabilities;
 mod model_catalog;

@@ -254,10 +254,8 @@ impl VegaWindow {
             .try_global::<vega_ui::navigation::TaskMutationState>()
             .is_some_and(|state| state.pending > 0)
         {
-            self.onboarding.failed = Some((
-                origin.clone(),
-                "任务操作尚未完成，请稍后重新打开准备卡片并返回。".into(),
-            ));
+            self.onboarding.failed =
+                Some((origin.clone(), vega_i18n::t("app.setup.pending").into()));
             cx.notify();
             return;
         }
@@ -279,7 +277,7 @@ impl VegaWindow {
             _ => {
                 self.onboarding.failed = Some((
                     origin.clone(),
-                    "原任务暂时无法打开。请重试；若任务已删除，请关闭此提示。".into(),
+                    vega_i18n::t("app.setup.task_unavailable").into(),
                 ));
                 cx.notify();
             }
@@ -288,11 +286,14 @@ impl VegaWindow {
 
     pub(super) fn render_preparation_error(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (origin, error) = self.onboarding.failed.clone()?;
+        let error = crate::app_localization::translated(&error)
+            .map(str::to_owned)
+            .unwrap_or(error);
         let colors = theme(cx).colors;
         let retry = div()
             .id("preparation-open-retry")
             .role(Role::Button)
-            .aria_label("重试电脑操控准备")
+            .aria_label(vega_i18n::t("app.setup.retry_label"))
             .focusable()
             .tab_stop(true)
             .px_2()
@@ -302,11 +303,11 @@ impl VegaWindow {
             .interaction_surface(colors.bg_elevated, colors.bg_hover, colors.bg_active, true)
             .focus_visible(move |style| style.border_1().border_color(colors.brand_primary))
             .on_click(cx.listener(move |owner, _, _, cx| owner.retry_preparation(cx)))
-            .child("重试");
+            .child(vega_i18n::t("app.setup.retry"));
         let dismiss = div()
             .id("preparation-open-dismiss")
             .role(Role::Button)
-            .aria_label("关闭准备错误提示")
+            .aria_label(vega_i18n::t("app.setup.dismiss_label"))
             .focusable()
             .tab_stop(true)
             .px_2()
@@ -319,7 +320,7 @@ impl VegaWindow {
                 owner.onboarding.failed = None;
                 cx.notify();
             }))
-            .child("关闭");
+            .child(vega_i18n::t("app.setup.dismiss"));
         if !origin.is_current(self, cx) {
             return None;
         }

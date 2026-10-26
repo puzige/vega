@@ -12,6 +12,7 @@ impl TextInput {
             content_revision: 0,
             prediction: None,
             placeholder: placeholder.into(),
+            placeholder_key: None,
             masked,
             multiline: false,
             rows: 1,
@@ -22,6 +23,9 @@ impl TextInput {
             selection_reversed: false,
             marked_range: None,
             last_lines: Vec::new(),
+            navigation_lines: Vec::new(),
+            navigation_revision: 0,
+            vertical_goal: None,
             last_line_height: px(0.),
             last_bounds: None,
             mouse_selection: None,
@@ -320,6 +324,95 @@ impl TextInput {
         }
     }
 
+    pub(crate) fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_vertical(false, false, cx);
+    }
+
+    pub(crate) fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_vertical(true, false, cx);
+    }
+
+    pub(crate) fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_vertical(false, true, cx);
+    }
+
+    pub(crate) fn select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_vertical(true, true, cx);
+    }
+
+    fn navigate_vertical(&mut self, down: bool, extend: bool, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
+        if !self.multiline {
+            cx.propagate();
+            return;
+        }
+        if self.navigation_revision != self.content_revision || self.navigation_lines.is_empty() {
+            cx.notify();
+            return;
+        }
+        let cursor = self.cursor_offset();
+        let row = self
+            .navigation_lines
+            .iter()
+            .rposition(|line| cursor >= line.start)
+            .unwrap_or_default();
+        let current = &self.navigation_lines[row];
+        let x = self
+            .vertical_goal
+            .as_ref()
+            .filter(|(selection, reversed, revision, _)| {
+                *selection == self.selected_range
+                    && *reversed == self.selection_reversed
+                    && *revision == self.content_revision
+            })
+            .map_or_else(
+                || {
+                    current
+                        .line
+                        .x_for_index((cursor - current.start).min(current.len))
+                },
+                |(_, _, _, x)| *x,
+            );
+        let target_row = if down {
+            (row + 1).min(self.navigation_lines.len() - 1)
+        } else {
+            row.saturating_sub(1)
+        };
+        let target = &self.navigation_lines[target_row];
+        let mut offset = target.start + target.line.closest_index_for_x(x).min(target.len);
+        if target_row != row
+            && offset == target.start + target.len
+            && self
+                .navigation_lines
+                .get(target_row + 1)
+                .is_some_and(|next| next.start == offset)
+        {
+            let last_cluster = target
+                .line
+                .runs
+                .iter()
+                .flat_map(|run| run.glyphs.iter())
+                .map(|glyph| glyph.index)
+                .filter(|index| *index < target.len)
+                .max()
+                .unwrap_or_default();
+            offset = target.start + last_cluster;
+        }
+        if extend {
+            self.select_to(offset, cx);
+        } else {
+            self.move_to(offset, cx);
+        }
+        self.vertical_goal = Some((
+            self.selected_range.clone(),
+            self.selection_reversed,
+            self.content_revision,
+            x,
+        ));
+    }
+
     pub(crate) fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
         self.select_to(self.previous_boundary(self.cursor_offset()), cx);
     }
@@ -537,6 +630,7 @@ impl TextInput {
     }
 
     pub(crate) fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.vertical_goal = None;
         self.selected_range = offset..offset;
         cx.notify();
     }
@@ -613,6 +707,7 @@ impl TextInput {
     }
 
     pub(crate) fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.vertical_goal = None;
         if self.selection_reversed {
             self.selected_range.start = offset;
         } else {

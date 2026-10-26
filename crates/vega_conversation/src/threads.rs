@@ -7,8 +7,46 @@ use vega_store::token_usage;
 
 use crate::types::{
     ConversationError, CurrentProject, Microcents, PermissionMode, RestoredUsage, TaskBackend,
-    Thread, ThreadMode, ThreadStatus, ThreadUpdate,
+    Thread, ThreadAdmission, ThreadMode, ThreadStatus, ThreadUpdate,
 };
+
+#[derive(Debug, thiserror::Error)]
+pub enum ForkThreadError {
+    #[error(transparent)]
+    Refused(#[from] vega_store::thread_fork::ForkError),
+    #[error("fork history validation failed: {0}")]
+    History(ConversationError),
+}
+
+pub fn fork_thread(
+    store: &Store,
+    source_thread_id: &str,
+    through_message_id: &str,
+) -> Result<Thread, ForkThreadError> {
+    use vega_store::thread_fork::ForkError;
+    let tx = store.immediate_transaction().map_err(ForkError::from)?;
+    let row =
+        vega_store::thread_fork::clone_prefix(&tx, source_thread_id, through_message_id, now_ms())?;
+    let source =
+        context_compaction::load_source_in_transaction(&tx, &row.id).map_err(ForkError::from)?;
+    crate::agent::history_from_context_source(&source, "", None)
+        .map_err(|error| ForkError::CorruptHistory(error.to_string()))?;
+    let images = vega_store::image_attachments::for_messages(&tx, &row.id, &source.messages)
+        .map_err(ForkError::from)?;
+    for message in &source.messages {
+        let attachments = images
+            .iter()
+            .filter(|image| image.message_id == message.id)
+            .map(|image| crate::types::ImageAttachment::from_bytes(image.encoded.clone()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| ForkError::CorruptHistory(error.to_string()))?;
+        crate::attachments::validate_images(&attachments)
+            .map_err(|error| ForkError::CorruptHistory(error.to_string()))?;
+    }
+    let thread = thread_from_row(&row).map_err(ForkThreadError::History)?;
+    tx.commit().map_err(ForkError::from)?;
+    Ok(thread)
+}
 
 pub fn new_thread_id() -> String {
     // ulid 3.x：构造函数为 generate()（自带当前时间戳 + 随机数）。
@@ -145,6 +183,8 @@ fn assemble_thread(
     let now = now_ms();
     Thread {
         parent_thread_id: None,
+        forked_from_thread_id: None,
+        forked_from_message_id: None,
         id: new_thread_id(),
         backend: TaskBackend::Native,
         project_id: project_id.unwrap_or_default().to_string(),
@@ -261,13 +301,14 @@ pub fn set_thread_status(
     thread_id: &str,
     status: ThreadStatus,
 ) -> Result<(), ConversationError> {
+    let _admission = crate::thread_access::acquire(store, thread_id)?;
     let tx = store.immediate_transaction().map_err(store_error)?;
     let updated = store::set_status(&tx, thread_id, status.as_str()).map_err(store_error)?;
     if updated == 0 {
         return Err(ConversationError::NotFound(thread_id.to_string()));
     }
     if status == ThreadStatus::Archived {
-        crate::automation::pause_in_transaction(&tx, thread_id, "会话已归档")
+        crate::automation::pause_in_transaction(&tx, thread_id, "thread_archived")
             .map_err(ConversationError::CorruptRow)?;
     }
     tx.commit().map_err(store_error)?;
@@ -293,6 +334,7 @@ pub fn set_thread_mode(
     thread_id: &str,
     mode: ThreadMode,
 ) -> Result<Thread, ConversationError> {
+    let _admission = crate::thread_access::acquire(store, thread_id)?;
     let updated =
         store::set_mode(store.conn(), thread_id, mode.as_str(), now_ms()).map_err(store_error)?;
     if updated == 0 {
@@ -320,6 +362,7 @@ pub fn set_thread_permission_mode(
     thread_id: &str,
     mode: PermissionMode,
 ) -> Result<Thread, ConversationError> {
+    let _admission = crate::thread_access::acquire(store, thread_id)?;
     let updated = store::set_permission_mode(store.conn(), thread_id, mode.as_str(), now_ms())
         .map_err(store_error)?;
     if updated == 0 {
@@ -333,6 +376,7 @@ pub fn set_thread_model(
     thread_id: &str,
     model: &str,
 ) -> Result<Thread, ConversationError> {
+    let _admission = crate::thread_access::acquire(store, thread_id)?;
     if model.is_empty() {
         return Err(ConversationError::NotFound(thread_id.to_string()));
     }
@@ -344,13 +388,49 @@ pub fn set_thread_model(
     get_thread(store, thread_id)
 }
 
+pub fn stage_thread_model(
+    store: &Store,
+    thread_id: &str,
+    model: &str,
+) -> Result<Thread, ConversationError> {
+    let updated =
+        store::stage_model(store.conn(), thread_id, model, now_ms()).map_err(store_error)?;
+    if updated == 0 {
+        return Err(ConversationError::NotFound(thread_id.to_string()));
+    }
+    let mut thread = get_thread(store, thread_id)?;
+    thread.model = model.to_owned();
+    Ok(thread)
+}
+
+pub fn promote_thread_model(
+    store: &Store,
+    thread_id: &str,
+    model: &str,
+    admission: &ThreadAdmission,
+) -> Result<Thread, ConversationError> {
+    crate::thread_access::verify(store, thread_id, admission)?;
+    let updated = store::promote_pending_model(store.conn(), thread_id, model, now_ms())
+        .map_err(store_error)?;
+    if updated == 0 {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
+    get_thread(store, thread_id)
+}
+
 pub fn delete_thread(store: &Store, thread_id: &str) -> Result<(), ConversationError> {
+    let _admission = crate::thread_access::acquire(store, thread_id)?;
     let is_child = store::find(store.conn(), thread_id)
         .map_err(store_error)?
         .is_some_and(|thread| thread.parent_thread_id.is_some());
+    let children =
+        vega_store::subagents::list(store.conn(), thread_id, None).map_err(store_error)?;
+    let _child_admissions = children
+        .iter()
+        .map(|child| crate::thread_access::acquire(store, &child.child_thread_id))
+        .collect::<Result<Vec<_>, _>>()?;
     if (is_child && crate::subagents::is_live(store, thread_id))
-        || vega_store::subagents::list(store.conn(), thread_id, None)
-            .map_err(store_error)?
+        || children
             .iter()
             .any(|child| crate::subagents::is_live(store, &child.child_thread_id))
     {
@@ -378,6 +458,10 @@ pub fn update_thread(
     if update.is_empty() {
         return Ok(());
     }
+    let _admission = update
+        .status
+        .map(|_| crate::thread_access::acquire(store, thread_id))
+        .transpose()?;
     let tx = store.immediate_transaction().map_err(store_error)?;
     let updated = store::update(
         &tx,
@@ -392,7 +476,7 @@ pub fn update_thread(
         return Err(ConversationError::NotFound(thread_id.to_string()));
     }
     if update.status == Some(ThreadStatus::Archived) {
-        crate::automation::pause_in_transaction(&tx, thread_id, "会话已归档")
+        crate::automation::pause_in_transaction(&tx, thread_id, "thread_archived")
             .map_err(ConversationError::CorruptRow)?;
     }
     tx.commit().map_err(store_error)?;
@@ -512,6 +596,8 @@ pub(crate) fn thread_from_row(row: &store::ThreadRow) -> Result<Thread, Conversa
     })?;
     Ok(Thread {
         parent_thread_id: row.parent_thread_id.clone(),
+        forked_from_thread_id: row.forked_from_thread_id.clone(),
+        forked_from_message_id: row.forked_from_message_id.clone(),
         id: row.id.clone(),
         backend: TaskBackend::parse(&row.backend)
             .ok_or_else(|| ConversationError::CorruptRow("backend".to_string()))?,

@@ -2,6 +2,7 @@ use super::{
     Capability, ComputerUseError as Error, ComputerUseRun, DesktopTarget, ManagedComponents,
     Observation, Target, ToolObservationSource,
     diagnostics::{self, Class, Stage, checked},
+    feedback::{ExecutionState, ToolFailure},
     media::decode_image,
 };
 use serde_json::{Value, json};
@@ -13,7 +14,7 @@ use std::{
 };
 use tokio::process::{Child, Command};
 use tokio_util::sync::CancellationToken;
-use vega_mcp::{LocalServer, ManagedClient};
+use vega_mcp::{LocalServer, ManagedClient, ManagedSendEvidence};
 
 #[derive(Default)]
 pub(super) struct Backends {
@@ -23,6 +24,7 @@ pub(super) struct Backends {
 struct Dispatch<'a> {
     cancel: &'a CancellationToken,
     started: bool,
+    input_send: ManagedSendEvidence,
 }
 
 enum CaptureMode {
@@ -137,12 +139,10 @@ fn action_unknown(
     capability: Capability,
     stage: Stage,
     error: Error,
-) -> String {
+) -> Error {
     let error = diagnostics::context(capability, stage, error);
-    run.control.fail(epoch, error);
-    format!(
-        "outcome_unknown: the action may have been dispatched. Do not retry. The user must inspect the target. {error}"
-    )
+    run.control.fail_dispatched_action(epoch, error);
+    error
 }
 
 impl Backends {
@@ -171,6 +171,27 @@ impl Backends {
             .await
     }
 
+    async fn action_call(
+        &mut self,
+        capability: Capability,
+        name: &str,
+        args: Value,
+        cancel: &CancellationToken,
+        send: &mut ManagedSendEvidence,
+    ) -> Result<vega_mcp::ManagedResult, vega_mcp::McpError> {
+        let client = match capability {
+            Capability::Desktop => self
+                .desktop
+                .as_mut()
+                .and_then(|desktop| desktop.client.as_mut()),
+            Capability::Browser => self.browser.as_mut().map(|browser| &mut browser.client),
+        }
+        .ok_or(vega_mcp::McpError::Transport)?;
+        client
+            .call_with_send_evidence(name, args, cancel, send)
+            .await
+    }
+
     pub(super) async fn execute(
         &mut self,
         run: &ComputerUseRun,
@@ -179,27 +200,56 @@ impl Backends {
         call_id: &str,
         arguments: Value,
         root_cancel: &CancellationToken,
-    ) -> Result<String, Error> {
-        run.check_request_epoch(epoch, root_cancel)?;
+    ) -> Result<String, ToolFailure> {
+        run.check_request_epoch(epoch, root_cancel)
+            .map_err(|error| ToolFailure::before_dispatch(name, error))?;
         let token = match run.control.action_token(epoch) {
             Ok(token) => token,
             Err(error) => {
-                run.check_request_epoch(epoch, root_cancel)?;
-                return Err(error);
+                run.check_request_epoch(epoch, root_cancel)
+                    .map_err(|error| ToolFailure::before_dispatch(name, error))?;
+                return Err(ToolFailure::before_dispatch(name, error));
             }
         };
         let mut dispatch = Dispatch {
             cancel: &token,
             started: false,
+            input_send: ManagedSendEvidence::NotStarted,
         };
         let result = tokio::select! { biased;
             _ = root_cancel.cancelled() => { run.control.stop(); Err(Error::Cancelled) },
             result = self.execute_inner(run,epoch,name,call_id,arguments,&mut dispatch) => result,
         };
-        if !dispatch.started && matches!(result, Err(Error::Cancelled | Error::NotReady)) {
-            run.check_request_epoch(epoch, root_cancel)?;
+        let input_started = dispatch.input_send == ManagedSendEvidence::WriteStarted;
+        if !dispatch.started
+            && !input_started
+            && matches!(result, Err(Error::Cancelled | Error::NotReady))
+        {
+            run.check_request_epoch(epoch, root_cancel)
+                .map_err(|error| ToolFailure::before_dispatch(name, error))?;
         }
-        result
+        result.map_err(|error| {
+            let capability = ComputerUseRun::tool_capability(name).unwrap_or(Capability::Desktop);
+            let error = if input_started {
+                let error = diagnostics::context(capability, Stage::Action, error);
+                run.control.fail_dispatched_action(epoch, error);
+                error
+            } else {
+                error
+            };
+            ToolFailure::new(
+                error,
+                capability,
+                Stage::for_tool(name),
+                if input_started {
+                    ExecutionState::OutcomeUnknown
+                } else if dispatch.started {
+                    ExecutionState::Failed
+                } else {
+                    ExecutionState::NotDispatched
+                },
+            )
+        })
     }
 
     async fn execute_inner(
@@ -230,27 +280,24 @@ impl Backends {
             }
             run.control.check_epoch(epoch)?;
             run.consume_observations();
-            dispatch.started = true;
-            let dispatched = match capability {
-                Capability::Desktop => self.desktop_call(tool, mapped, cancel).await,
-                Capability::Browser => {
-                    self.browser
-                        .as_mut()
-                        .ok_or(Error::NotReady)?
-                        .client
-                        .call(tool, mapped, cancel)
-                        .await
-                }
-            };
+            let dispatched = self
+                .action_call(capability, tool, mapped, cancel, &mut dispatch.input_send)
+                .await;
             let result = match checked(capability, Stage::Action, dispatched) {
                 Ok(result) => result,
                 Err(error) => {
-                    return Ok(action_unknown(run, epoch, capability, Stage::Action, error));
+                    return Err(
+                        if dispatch.input_send == ManagedSendEvidence::WriteStarted {
+                            action_unknown(run, epoch, capability, Stage::Action, error)
+                        } else {
+                            error
+                        },
+                    );
                 }
             };
             drop(result);
             if run.control.check_epoch(epoch).is_err() {
-                return Ok(action_unknown(
+                return Err(action_unknown(
                     run,
                     epoch,
                     capability,
@@ -261,7 +308,7 @@ impl Backends {
             if capability == Capability::Browser
                 && let Err(error) = self.refresh_browser_target(run, epoch, cancel, true).await
             {
-                return Ok(action_unknown(
+                return Err(action_unknown(
                     run,
                     epoch,
                     capability,
@@ -283,7 +330,7 @@ impl Backends {
                 Ok(id) => Ok(format!(
                     "completed; observation_id={id}; observation images and page data are ephemeral and are not retained in history."
                 )),
-                Err(error) => Ok(action_unknown(
+                Err(error) => Err(action_unknown(
                     run,
                     epoch,
                     capability,

@@ -126,12 +126,16 @@ impl SettingsView {
                 ModelCapabilitySettingsProjection::Saving { .. }
             );
         settings_section()
-            .child(settings_status("当前修改尚未保存", colors.warning, colors))
+            .child(settings_status(
+                t("settings.navigation.unsaved"),
+                colors.warning,
+                colors,
+            ))
             .child(
                 settings_actions()
                     .child(self.settings_route_button(
                         "settings-save-before-leave",
-                        "保存后继续",
+                        t("settings.navigation.save_continue"),
                         !saving,
                         cx.listener(|this, _, _, cx| {
                             if this.section == 3 {
@@ -175,7 +179,7 @@ impl SettingsView {
                     ))
                     .child(self.settings_route_button(
                         "settings-discard-before-leave",
-                        "放弃修改",
+                        t("settings.navigation.discard"),
                         !saving,
                         cx.listener(|this, _, window, cx| {
                             if let PricingSettingsProjection::Ready {
@@ -202,7 +206,7 @@ impl SettingsView {
                     ))
                     .child(self.settings_route_button(
                         "settings-stay",
-                        "留在本页",
+                        t("settings.navigation.stay"),
                         true,
                         cx.listener(|this, _, _, cx| {
                             this.pending_section = None;
@@ -361,7 +365,7 @@ impl SettingsView {
                     settings_actions()
                         .child(self.settings_route_button(
                             "model-settings-back",
-                            "返回提供方",
+                            t("settings.navigation.back_providers"),
                             true,
                             cx.listener(|this, _, _, cx| this.request_settings_section(0, cx)),
                             cx,
@@ -379,9 +383,9 @@ impl SettingsView {
                 .child(
                     settings_actions().children(
                         [
-                            (0, "基本信息", "model-settings-basic"),
-                            (2, "思考", "model-settings-reasoning"),
-                            (3, "定价", "model-settings-pricing"),
+                            (0, t("settings.model.basic"), "model-settings-basic"),
+                            (2, t("settings.model.reasoning"), "model-settings-reasoning"),
+                            (3, t("settings.model.pricing"), "model-settings-pricing"),
                         ]
                         .into_iter()
                         .map(|(section, label, id)| {
@@ -415,24 +419,24 @@ impl SettingsView {
                 settings_actions()
                     .child(self.settings_route_button(
                         "pricing-library-back",
-                        "返回提供方",
+                        t("settings.navigation.back_providers"),
                         true,
                         cx.listener(|this, _, _, cx| this.request_settings_section(0, cx)),
                         cx,
                     ))
-                    .child("模型价格库 · 所有提供方共享"),
+                    .child(t("settings.pricing.library")),
             );
         } else if self.section == 2 {
             navigation = navigation.child(
                 settings_actions()
                     .child(self.settings_route_button(
                         "reasoning-models-back",
-                        "返回提供方",
+                        t("settings.navigation.back_providers"),
                         true,
                         cx.listener(|this, _, _, cx| this.request_settings_section(0, cx)),
                         cx,
                     ))
-                    .child("选择模型配置思考能力"),
+                    .child(t("settings.reasoning.choose_model")),
             );
         }
         navigation.into_any_element()

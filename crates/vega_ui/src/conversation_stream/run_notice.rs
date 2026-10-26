@@ -9,6 +9,7 @@ pub(crate) enum RunNoticeKind {
         attempt: u32,
         max_retries: u32,
     },
+    McpUnavailable(usize),
     Failure(RunFailureKind),
     FailureWithCompaction(
         RunFailureKind,
@@ -30,7 +31,17 @@ impl RunNotice {
             RunNoticeKind::Retrying {
                 attempt,
                 max_retries,
-            } => format!("正在重新连接… {attempt}/{max_retries}"),
+            } => vega_i18n::t_args(
+                "ui.reconnecting_attempt_max_retries",
+                &[
+                    ("attempt", &attempt.to_string()),
+                    ("max_retries", &max_retries.to_string()),
+                ],
+            ),
+            RunNoticeKind::McpUnavailable(count) => vega_i18n::t_args(
+                "ui.count_enabled_mcp_servers_are_unavailable_their_tools",
+                &[("count", &count.to_string())],
+            ),
             RunNoticeKind::Failure(failure) => failure.message(),
             RunNoticeKind::FailureWithCompaction(failure, compaction) => format!(
                 "{}\n{}",
@@ -83,10 +94,9 @@ impl RunNotice {
                 .min_w_0()
                 .py_1()
                 .aria_label(self.text())
-                .child(render_rows::status_notice_with_icon(
+                .child(render_rows::inline_status_notice(
                     self.text(),
-                    colors.warning,
-                    colors,
+                    colors.text_secondary,
                     Icon::Wifi,
                 ))
                 .into_any_element();
@@ -95,7 +105,8 @@ impl RunNotice {
         let credential_failure = self.can_resume_credentials() && !reading_preview;
         let color = match self.kind {
             RunNoticeKind::Retrying { .. } => colors.text_secondary,
-            RunNoticeKind::Failure(_)
+            RunNoticeKind::McpUnavailable(_)
+            | RunNoticeKind::Failure(_)
             | RunNoticeKind::FailureWithCompaction(_, _)
             | RunNoticeKind::ContextFailure
             | RunNoticeKind::CompactionFailure(_) => colors.danger,
@@ -128,7 +139,7 @@ impl RunNotice {
                                 format!("credential-continue-{}", self.message_id),
                                 *colors,
                             )
-                            .label("Continue")
+                            .label(vega_i18n::t("ui.continue"))
                             .on_click(cx.listener(
                                 move |_, _, _, cx| {
                                     cx.emit(CredentialContinuationRequested {
@@ -143,7 +154,7 @@ impl RunNotice {
                                 format!("credential-settings-{}", self.message_id),
                                 *colors,
                             )
-                            .label("Check credential settings")
+                            .label(vega_i18n::t("ui.check_credential_settings"))
                             .on_click(|_, _, cx| {
                                 cx.set_global(crate::settings::SettingsOpen(true));
                                 cx.refresh_windows();
@@ -155,13 +166,24 @@ impl RunNotice {
     }
 
     pub(crate) fn estimated_height(&self, width: f32) -> f32 {
-        let retrying = matches!(self.kind, RunNoticeKind::Retrying { .. });
-        let content_width = if retrying {
-            (width - 2. * Layout::STATUS_PADDING - 2. - Layout::ICON_SIZE - Layout::STATUS_GAP)
-                .max(1.)
-        } else {
-            width.max(1.)
-        };
+        if matches!(self.kind, RunNoticeKind::Retrying { .. }) {
+            let content_width =
+                (width - Layout::ICON_SIZE - Layout::CONVERSATION_INLINE_GAP).max(1.);
+            let chars_per_line =
+                (content_width / (Typography::CONVERSATION * 0.56)).max(1.) as usize;
+            let lines = self
+                .text()
+                .lines()
+                .map(|line| display_width(line).div_ceil(chars_per_line).max(1))
+                .sum::<usize>()
+                .max(1);
+            return (lines as f32
+                * Typography::CONVERSATION
+                * Typography::CONVERSATION_LINE_HEIGHT)
+                .max(Layout::CONVERSATION_TOOL_HEIGHT)
+                + 8.;
+        }
+        let content_width = width.max(1.);
         let chars_per_line = (content_width / (Typography::BODY * 0.56)).max(1.) as usize;
         let lines = self
             .text()
@@ -170,11 +192,7 @@ impl RunNotice {
             .sum::<usize>()
             .max(1);
         lines as f32 * Typography::BODY * Typography::BODY_LINE_HEIGHT
-            + if retrying {
-                2. * Layout::STATUS_PADDING + 10.
-            } else {
-                8.
-            }
+            + 8.
             + if self.can_resume_credentials() {
                 Typography::SIDEBAR_LINE_HEIGHT
             } else {
@@ -289,7 +307,10 @@ impl ConversationStream {
             })
     }
 
-    pub(crate) fn run_notice_projection(&self, cx: &App) -> HashMap<usize, RunNotice> {
+    pub(crate) fn run_notice_projection(
+        &self,
+        cx: &App,
+    ) -> (HashMap<usize, RunNotice>, HashMap<usize, RunNotice>) {
         let mut ends = vec![self.entries.len(); self.entries.len()];
         let mut end = self.entries.len();
         for (index, entry) in self.entries.iter().enumerate().rev() {
@@ -371,7 +392,20 @@ impl ConversationStream {
                 source.failure = Some(merge_run_failure(source.failure, *failure));
             }
         }
-        sources
+        let mcp_notices = sources
+            .iter()
+            .filter_map(|(message_id, source)| {
+                let count = self.run_mcp_unavailable.get(message_id)?;
+                Some((
+                    source.tail?,
+                    RunNotice {
+                        message_id: message_id.clone(),
+                        kind: RunNoticeKind::McpUnavailable(*count),
+                    },
+                ))
+            })
+            .collect();
+        let notices = sources
             .into_iter()
             .filter_map(|(message_id, source)| {
                 let failure = source.failure.filter(|failure| match *failure {
@@ -430,7 +464,8 @@ impl ConversationStream {
                 }?;
                 Some((source.tail?, RunNotice { message_id, kind }))
             })
-            .collect()
+            .collect();
+        (notices, mcp_notices)
     }
 
     fn clear_resolved_compaction_controller_error(&mut self) {
@@ -443,7 +478,7 @@ impl ConversationStream {
         if self.compaction_failure_resolved_for_owner(&message_id, code) {
             self.controller_runtime_error = None;
             let error_message = failure.message();
-            if self.controller_error.as_deref() == Some(error_message.as_str()) {
+            if self.controller_error.as_ref().map(|copy| copy.render()) == Some(error_message) {
                 self.controller_error = None;
             }
         }
@@ -451,15 +486,23 @@ impl ConversationStream {
 
     pub(crate) fn refresh_run_notices(&mut self, cx: &App) {
         self.clear_resolved_compaction_controller_error();
-        let notices = self.run_notice_projection(cx);
+        let (notices, mcp_notices) = self.run_notice_projection(cx);
         let changed = self
             .run_notices
             .keys()
             .chain(notices.keys())
             .copied()
             .filter(|index| self.run_notices.get(index) != notices.get(index))
+            .chain(
+                self.mcp_notices
+                    .keys()
+                    .chain(mcp_notices.keys())
+                    .copied()
+                    .filter(|index| self.mcp_notices.get(index) != mcp_notices.get(index)),
+            )
             .collect::<HashSet<_>>();
         self.run_notices = notices;
+        self.mcp_notices = mcp_notices;
         for index in changed {
             self.invalidate_item(Some(index));
         }
@@ -469,7 +512,7 @@ impl ConversationStream {
         self.controller_runtime_error
             .as_ref()
             .is_some_and(|(message_id, failure)| {
-                self.controller_error.as_deref() == Some(failure.message().as_str())
+                self.controller_error.as_ref().map(|copy| copy.render()) == Some(failure.message())
                     && (self.compaction_reports_run_failure(message_id, *failure)
                         || self.run_notices.values().any(|notice| {
                             notice.message_id == *message_id
