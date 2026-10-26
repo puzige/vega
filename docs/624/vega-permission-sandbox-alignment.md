@@ -2,7 +2,7 @@
 
 ## 状态与授权
 
-- 版本：D4，2026-10-26；阶段：具体契约设计 / 待独立设计审查与实施确认，尚未实现。D4 的产品细项均为待确认方案，不把文档更新当作放权批准。
+- 版本：D4，2026-10-26；阶段：具体契约已保存 / 待实施确认，尚未实现。用户要求跳过本轮 D4 独立设计审查，在途审查已取消，未取得最终审查结论。D4 的产品细项均为待确认方案，不把跳过审查或文档更新当作放权批准。
 - 关联：[Issue #624](https://github.com/puzige/vega/issues/624)、[#58](https://github.com/puzige/vega/issues/58)、[#378](https://github.com/puzige/vega/issues/378)、[#619](https://github.com/puzige/vega/issues/619)。
 - 当前代码基线：`e481cd28d5de685dc79f39080a8c6cb79b9412b8`；任务分支：`feat/624-permission-alignment`。D3 基线为 `410758d36e8fbe0802f816227948ece1486d8494`；本轮先以 `580ae08acd43942875968cd8db3cac5ed0fbf1fe` 合入 `d87957c8b68a49a033bb5a8b81ee71fedd57c0ca`，再以 `2c8481710b89a749adcab0b5fec99642e0828091` 正常合入当前基线，未重写历史。新增的模型分组、预测、运行中消息操作、Provider 失败分类和 reasoning 修复均为既有上游内容，不是本卡生产实现。
 - 用户在“下一步沿哪条路线完善规格；这一步不修改运行权限”的问题中选择 **P2：更全面开放**，补充“全面对齐 ChatGPT”。这是规格方向裁决，不是执行放权、修改本机配置或合并生产实现的批准。P1/P3 不再作为本轮推荐；生产修改前另行明确确认本规格的范围、影响与回滚。
@@ -257,7 +257,7 @@ owner 汇总按接纳的执行策略选择：P2 的可选 binding refs 用上述
 
 ## 实现顺序（另获实施授权后执行）
 
-1. 本轮冻结 D4 精确版本，做文档静态检查与非写入者独立设计审查；将范围、必要性、风险、保留差异和回滚一次性提交用户确认。未获具体批准不改生产，审查不是权限批准。
+1. 本轮冻结并保存 D4 精确版本，完成文档静态检查；独立设计审查按用户要求跳过，不记录为通过。将范围、必要性、风险、保留差异和回滚一次性提交用户确认。未获具体批准不改生产；本次跳过不自动豁免后续独立实现审查或 required CI。
 2. 实施先完成 `vega_conversation::types::permission/thread/automation` 与 `vega_store` 的增量迁移、线程 CAS、默认 ConfigEdit、重置状态机；接 `conversation::threads/ordinary_submissions`、`agent::pipeline/persistence/subagents`、`delegated_stages`、`credential_continuation`、`automation`。构造及恢复原样携带 fence；旧授权 fail closed 后才可接无沙箱启动。
 3. 在 `vega_runtime::permission`、`agent::tools_exec`、`RuntimeToolConfig` 和工具定义中增加受限只读执行与范围请求；在 conversation permission_queue/codec/persistence 及 `vega_ui::permission_card` 分开三类请求；不覆盖 MCP/ACP/文件工具特例。对权限状态机、单次 token、CAS/恢复/旧记录等安全边界选择必要进程内开发回归，交现有 Actions；不以文本比较或 mock 代替真实决策。
 4. `vega_tools::bash` 用已批准执行策略替代松散 bool 分支；P2 在 Broker/CA/context 前分流并直接启动，保留 scope/cancel/timeout/output/TempRoot/清理。`sandbox.rs` 构造只读/项目写/网络/额外根的同一 final profile 供自检与 spawn；`credentials.rs` 仅在获批网络的受限路径创建 Broker，不把配置根检查从其他工具移除。
@@ -278,13 +278,13 @@ owner 汇总按接纳的执行策略选择：P2 的可选 binding refs 用上述
 
 - 本轮已 fetch 并正常合入上述最新 master；已核对权限核心、工具/Broker、keystore、线程/恢复/审批链与 D3 基线无上游差异。新增 `0038_provider_failure_split.sql` 占用的编号已在设计中顺延；`RuntimeToolConfig` 的权限字段未改。续接时仅有本卡 D4 草稿，合入上游保留该草稿；未操作主仓用户原有未跟踪内容。本卡相对新基线仅 `docs/624/`，以最终 scope 检查为准。
 - D1 审查绑定 `528409bf50a5180bd27873a76fca5aa6f23e9829`；D2 `1f98926e6ed77aac1eebef138a0a227e7461f86b` 吸收其发现。D3 最终独立审查绑定 `aae1d34001f21c9756b28630f6343fbc4fd5fc26` / SHA256 `c26502a9499dc3c74069e97bbadcdc4ecf2bbfad9b9be8026891f8bde2e1197f`，结论为可作 P2 待授权设计，无该版文档阻塞，不是生产 READY。原版本与 Issue 评论保留。
-- D4 已提出具体 grant/schema/原子性/恢复、只读与单次扩围、严格凭据读取、受支持回滚及保留差异；新增字段/API 全部是待实现设计。最终静态检查与独立设计审查结果另行绑定精确提交/hash 写回 Issue，不将旧 D3 审查算成 D4 通过。
+- D4 已提出具体 grant/schema/原子性/恢复、只读与单次扩围、严格凭据读取、受支持回滚及保留差异；新增字段/API 全部是待实现设计。初始冻结提交 `5c209da90543467d7c66746ae9ecce7dcca47903`（文档 SHA256 `8e1a54e9aef8ee2d3da575155038e7fe9fdc1911a364384a0dde060995de0e6e`）已推送并读回一致。其独立审查被用户中途取消，未形成最终结论；本版只同步跳过状态，最终静态检查绑定提交/hash 写回 Issue，不将部分阅读或旧 D3 审查算成 D4 通过。
 - 未运行 Vega、编译/构建/测试、CI、真实凭据读取、浏览器或 UI 集成；未改本机权限/配置/凭据，无 #624 生产实现、PR 或合并。文档静态检查不能证明 Seatbelt、网络或恢复行为。
-- 下一步：完成 D4 独立设计审查，保存可恢复版本，向用户集中展示实施范围与保留差异并取得明确实施确认。Issue 保持开放/In progress；不再重问 P2，不把继续设计当生产放权。
+- 下一步：向用户集中展示 D4 实施范围、风险、保留差异与回滚限制，取得明确实施确认后才修改生产代码。Issue 保持开放/In progress；不再重问 P2，不把继续设计或跳过审查当生产放权。
 
 ### 版本变更
 
 - D1：记录根因、P1/P2/P3 候选及最初验收；独立安全设计审查完成。
 - D2：补持久配置风险、零绑定含义、错误指引证据及具名工具/网络边界。
 - D3：记录用户选择 P2 规格方向；取消 P1 专属拒绝预期，明确无 Broker/无注入、新凭据与配置变动；增加固定 Codex 来源和过强结论更正、授权/迁移提案、整卡差异表与分阶段实施/验收。尚非实施授权。
-- D4：落实正常重启保留授权/同卡受限对齐的方向，给出持久 grant/fence、线程/default/自动化范围、只读 Bash、默认禁网/单次扩围、严格缺失读取、回滚重置协议；显式替换 D3 A2/A4/A12/A13 预期，扩至 A1–A21；记录提交数例外和新基线。保留差异、具体生产修改与手动降级限制仍待用户实施确认。
+- D4：落实正常重启保留授权/同卡受限对齐的方向，给出持久 grant/fence、线程/default/自动化范围、只读 Bash、默认禁网/单次扩围、严格缺失读取、回滚重置协议；显式替换 D3 A2/A4/A12/A13 预期，扩至 A1–A21；记录提交数例外和新基线。发布后按用户要求跳过本轮独立设计审查。保留差异、具体生产修改与手动降级限制仍待用户实施确认。
