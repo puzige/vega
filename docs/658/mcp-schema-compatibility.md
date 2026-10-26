@@ -18,3 +18,7 @@ Return bounded tool identifiers and schema paths with fixed failure categories, 
 Development-only Rust regression cases: default and explicit dialect, nested arrays/objects, nullable types, composition and local references, numeric boundaries, malformed schemas, unsupported dialects, unresolved HTTP/file references, resource limits, and header declarations outside extractable properties. Execute only via Actions; retain test commit and results before removing Rust tests for final delivery. Final required CI must run on the no-Rust-tests head. Independent review required before merge.
 
 Actual Chrome DevTools MCP 1.12.0 tools/list and installed application version remain user integration verification, not established by static source inspection or unit cases.
+
+## Review hardening
+
+HTTP schemas containing references receive a conservative whole-document header inventory after normal extraction. If any `x-mcp-header` marker was not extracted, reject the definition, including markers hidden in annotation data that could be reference targets. This intentionally rejects the ambiguous combination of references and header-shaped annotation data rather than silently treating it as safe. Reference-free annotation data is unaffected; stdio is unaffected. No references are followed by this bounded structural inventory, so cycles and encoded/noncanonical reference targets cannot bypass it.

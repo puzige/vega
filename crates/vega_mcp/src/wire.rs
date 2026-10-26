@@ -445,7 +445,33 @@ fn collect_header_params(schema: &Value) -> Result<Vec<HeaderParam>, ()> {
     let mut params = Vec::new();
     let mut seen = HashSet::new();
     inspect_schema(schema, true, &[], &mut params, &mut seen)?;
+    let (has_references, header_declarations) = reference_header_inventory(schema);
+    if has_references && header_declarations != params.len() {
+        return Err(());
+    }
     Ok(params)
+}
+
+fn reference_header_inventory(node: &Value) -> (bool, usize) {
+    match node {
+        Value::Object(object) => {
+            let mut references = object.contains_key("$ref") || object.contains_key("$dynamicRef");
+            let mut headers = usize::from(object.contains_key("x-mcp-header"));
+            for child in object.values() {
+                let (child_references, child_headers) = reference_header_inventory(child);
+                references |= child_references;
+                headers += child_headers;
+            }
+            (references, headers)
+        }
+        Value::Array(items) => items
+            .iter()
+            .fold((false, 0), |(references, headers), child| {
+                let (child_references, child_headers) = reference_header_inventory(child);
+                (references || child_references, headers + child_headers)
+            }),
+        _ => (false, 0),
+    }
 }
 
 fn inspect_schema(
@@ -658,6 +684,8 @@ mod schema_tests {
     #[test]
     fn headers_in_compositions_and_definitions_cannot_bypass_extraction() {
         for schema in [
+            json!({"type":"object","properties":{"token":{"$ref":"#/default/headerSchema"}},"default":{"headerSchema":{"type":"string","x-mcp-header":"token"}}}),
+            json!({"type":"object","properties":{"token":{"$ref":"#/default/headerSchema"}},"default":{"headerSchema":{"$dynamicRef":"#token","$dynamicAnchor":"token","type":"string","x-mcp-header":"token"}}}),
             json!({"type":"object","allOf":[{"properties":{"token":{"type":"string","x-mcp-header":"token"}}}]}),
             json!({"type":"object","$defs":{"token":{"type":"string","x-mcp-header":"token"}},"properties":{"token":{"$ref":"#/$defs/token"}}}),
         ] {
