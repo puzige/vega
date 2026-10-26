@@ -27,14 +27,16 @@ pub(crate) fn user_message_lines(block_id: u64, text: &str) -> Vec<StreamLine> {
     lines
 }
 
-/// Whether a user message carries any visible text. Image-only turns still
-/// materialize an empty text entry next to their attachments, and that entry
-/// must not render as an empty bubble.
-pub(crate) fn user_message_has_text(lines: &[StreamLine]) -> bool {
-    lines.iter().any(|line| {
-        matches!(line.kind, LineKind::UserLine { .. })
-            && line.spans.iter().any(|span| !span.text.is_empty())
-    })
+/// Whether a user message has anything to show. Image-only turns still
+/// materialize a text entry next to their attachments, and that entry must not
+/// render as an empty bubble. Judged on the message text first, so a turn that
+/// only carries blank lines keeps its previous (blank line) rendering.
+pub(crate) fn user_message_is_visible(copy: &MessageCopy, lines: &[StreamLine]) -> bool {
+    copy.has_text()
+        || lines.iter().any(|line| {
+            matches!(line.kind, LineKind::UserLine { .. })
+                && line.spans.iter().any(|span| !span.text.is_empty())
+        })
 }
 
 pub(crate) fn context_compaction_visual(
@@ -200,8 +202,8 @@ fn render_entry_internal(
             )
         }
         StreamEntry::User { lines, copy } => {
-            if !user_message_has_text(lines) {
-                // 仅图片（或只有空行）的轮次不应产生空气泡，也不挂复制入口。
+            if !user_message_is_visible(copy, lines) {
+                // 仅图片的轮次不应产生空气泡，也不挂复制入口。
                 return div().h_0().into_any_element();
             }
             let body = if let Some(interaction) = interaction {

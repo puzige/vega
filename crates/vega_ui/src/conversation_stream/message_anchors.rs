@@ -140,7 +140,9 @@ impl ConversationStream {
                 continue;
             };
             let (kind, preview) = match entry {
-                StreamEntry::User { lines, .. } if !user_message_has_text(lines) => continue,
+                StreamEntry::User { lines, copy } if !user_message_is_visible(copy, lines) => {
+                    continue;
+                }
                 StreamEntry::User { .. } => (
                     MessageAnchorKind::User,
                     self.text_cache
@@ -766,7 +768,7 @@ pub(super) fn estimate_entry_height(
         StreamEntry::Tool { card } => card.read(cx).estimated_height(),
         StreamEntry::ToolGroup { group } => group.read(cx).estimated_height(cx),
         StreamEntry::ArtifactGroup { group } => group.read(cx).estimated_height(),
-        StreamEntry::User { lines, .. } => estimate_user_height(lines, text_width),
+        StreamEntry::User { lines, copy } => estimate_user_height(copy, lines, text_width),
         StreamEntry::Assistant { model, failure, .. } => {
             estimate_markdown_height(model, text_width)
                 + Layout::CONVERSATION_BODY_TOP
@@ -908,8 +910,12 @@ pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
     content_height + gaps + code_headers
 }
 
-pub(super) fn estimate_user_height(lines: &[StreamLine], text_width: f32) -> f32 {
-    if !user_message_has_text(lines) {
+pub(super) fn estimate_user_height(
+    copy: &MessageCopy,
+    lines: &[StreamLine],
+    text_width: f32,
+) -> f32 {
+    if !user_message_is_visible(copy, lines) {
         return 0.;
     }
     let bubble_width =

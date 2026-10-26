@@ -29,15 +29,15 @@
 
 ## 最小实现
 
-1. `render_rows::user_message_has_text(lines)`：只看 `UserLine` 行的 span 是否有非空文本，作为「是否有可见正文」的单一判据。
-2. `render_entry_internal` 的 `StreamEntry::User` 分支：无可见正文时直接返回零高元素，不建立气泡、不挂复制入口。
-3. `message_anchors::estimate_user_height`：无可见正文返回 `0.`，避免列表为空气泡预留高度。
-4. `message_anchor_projections`：跳过无可见正文的 `User` 条目，锚点落到紧随其后的 `UserImages`（其预览已是既有 `ui.image_message`）。
+1. `render_rows::user_message_is_visible(copy, lines)`：先看消息文本 `copy.has_text()`，再回退到 `UserLine` span 是否有非空文本；作为「是否有可显示内容」的单一判据。
+2. `render_entry_internal` 的 `StreamEntry::User` 分支：不可显示时直接返回零高元素，不建立气泡、不挂复制入口。
+3. `message_anchors::estimate_user_height`（及 `text_cache::raw_text_height` 的传参）：不可显示返回 `0.`，避免列表为空气泡预留高度。
+4. `message_anchor_projections`：跳过不可显示的 `User` 条目，锚点落到紧随其后的 `UserImages`（其预览已是既有 `ui.image_message`）。
 
-判据放在唯一的入口分支，而不是分散到 `user_message_item` / `selectable_user_message`，避免同一判定重复三处。`User` 条目本身保留，因此历史水合、身份键、普通提交重试与复制来源链路都不需要分支改造；纯文本消息行为不变。
+判据以消息文本优先，因此「只有换行/空行」的轮次仍按原样渲染，不会把用户真实发送的内容整条隐藏；只有既无文本也无 span 文本的图片-only 轮次才零高。判据放在唯一入口分支，不分散到 `user_message_item` / `selectable_user_message`。`User` 条目本身保留，因此历史水合、身份键、普通提交重试与复制来源链路都不需要分支改造；纯文本消息行为不变。
 
 ## 验证与交付
 
 局部 UI 可见性变化：静态调用链/状态检查、`rustfmt --check`、差异检查、非实现者独立审查与最新 head required CI；不为流程临时造 Rust 测试。本地不运行 Vega、不编译/构建/打包/测试，行为与像素验收由用户手测。
 
-回滚本卡三处判据改动即可，不涉及用户数据。
+回滚本卡四处判据改动（含 `text_cache` 传参）即可，不涉及用户数据。
