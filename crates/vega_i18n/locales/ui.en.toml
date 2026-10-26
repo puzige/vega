@@ -172,6 +172,7 @@
 "ui.computer_control_is_paused_resume_this_task_when" = "Computer control is paused. Resume this task when you are ready."
 "ui.computer_use_setup" = "Computer use setup"
 "ui.configured_input_limit_exceeded" = "Configured input limit exceeded"
+"ui.composer_resume" = "Resume"
 "ui.confirm" = "Confirm"
 "ui.confirm_permanent_cleanup" = "Confirm permanent cleanup"
 "ui.confirm_that_this_task_may_access_this_browser" = "Confirm that this task may access this browser tab:"

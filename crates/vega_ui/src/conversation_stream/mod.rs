@@ -329,6 +329,11 @@ pub struct ComposerStopRequested {
     pub thread_id: String,
 }
 
+pub struct ComposerResumeRequested {
+    pub thread_id: String,
+    pub expected: vega_conversation::types::InterruptedAssistant,
+}
+
 pub struct CredentialContinuationRequested {
     pub thread_id: String,
     pub message_id: String,

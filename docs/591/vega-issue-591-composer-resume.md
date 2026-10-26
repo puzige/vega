@@ -87,6 +87,8 @@ function Jsr(e, t, n) {
 
 ### 目标
 
+本次用户范围裁决：仅支持 Native 任务，A01–A10 均按 Native 验收。Codex ACP 保持现状，不显示本卡 Resume；其已有会话续跑不在本卡范围。静态核对基线 `b03d0d5f2c7da0efab147a4fec0d26e2adefc4e3`：`submit_codex_composer` 仅支持新建任务，Codex worker 总是新建会话并插入 user 行，不能作为本卡续跑路径。
+
 1. `Interrupted` 后 composer 主按钮显示播放三角 + `Resume`（中文「继续」），点击续跑。
 2. 续跑不新增 user 消息行，复用既有历史末尾；`messages.seq` 连续；已终态工具不重复执行。
 3. 输入框有内容或附件时，主按钮优先显示发送；清空后回到 Resume。
@@ -129,7 +131,14 @@ running                                  → Stop
 - 展示态来源复用既有 `terminal_cancelled` 与持久化 `AssistantStatus::Interrupted`，不新造第二份真相。
 - 新增 `ComposerResumeRequested`（与 `ComposerStopRequested` 对称），由 `vega/src/window/agent.rs` 接管并走既有 run 启动链路。
 - `pipeline.rs:912` 的 `uses_existing_user` 当前仅接受 `plans::APPROVAL_INSTRUCTION`。续跑需要新增一条受控分支，复用 `credential_continuation` 的“不插入新 user 行”语义；保留既有身份、seq、CAS 校验，不得放宽为任意复用。
-- 图标用现有 `Icon::Play`。`aria_label` 本卡先写英文 `Resume`，随 #589 i18n 迁移到 key。
+- UI 与启动入口均限制 Native；不得将 Codex 任务路由到 Native 或新建替代 ACP 会话。
+- 中断候选必须对应持久化历史实际末尾，不得从旧分页中的任意 Interrupted 行推断。启动事务重新核对线程、候选身份、末尾序号与无活动 run，并在同一事务插入新 assistant；旧请求不得重复启动。
+- Resume 不接管 pending message，也不绕过 credential continuation 的身份、source fence 或未知效果保护。历史投影、工具终态结果映射与 call ID/输入一致性校验保持原有契约；不宣称跨不同 call ID 的外部副作用 exactly-once。
+- 图标用现有 `Icon::Play`。#589 已合入，主按钮、loading 态及 tooltip 使用 `ui.composer_resume` 国际化 key（Resume / 继续），不修改其他恢复动作的文案。
+- 2026-10-26 同步 master：保留 ordinary submission 的准备、取消、恢复与用户回显契约；Resume 不接管 ordinary pending/recovery，也不创建 ordinary user 行。历史末尾候选从 composer 使用的当前历史投影与队列恢复路径刷新，不能取分页内旧行；未接入 composer 的历史 fork 投影不在本卡扩展。
+- 2026-10-26 独立审查补充 A02/A05 边界：worker 必须沿用 controller 已持有的线程 admission，不能重新竞争自身占用。开发回归从应用实际配置入口携带已持有 admission 启动，观察一次 MessageStarted/模型请求、无新增 user 与旧请求拒绝。
+- A01/A02 准备期停止边界：新 assistant 已提交、尚未发送 MessageStarted 时停止 Resume，须落为 Interrupted 而非 Failed；不得调用 provider，旧行和工具不变，释放运行占用后实际尾行仍可继续。开发回归在此边界确定性取消。
+- 2026-10-26 同步 master `dee2009d8cbe93f3765ea8360a1239da9df2d972`（#632/#654）：上游已统一准备期停止为 `finish_prepared_terminal(..., "interrupted", ...)` 并发送 Interrupted 事件。沿用该共享实现与停止行投影，不另留 Resume 专属清理分支；保留本卡确定性回归，追加事件身份校验。ordinary/Plan/凭据路径遵循此新基线，不由本卡改写。
 
 ## 6. 验证与交付
 
