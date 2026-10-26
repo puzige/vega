@@ -1,7 +1,7 @@
 //! Small local composer commands; all durable changes still use thread settings.
 use super::*;
 use crate::interaction::InteractionExt;
-use gpui_kit::Focusable;
+use gpui_kit::{Focusable, Role};
 use vega_conversation::types::{ComputerUseControl, ControlPhase};
 
 /// Thread-mode `+`-menu rows, in the order the slash parser also accepts.
@@ -810,6 +810,7 @@ impl ConversationStream {
         let colors = theme(cx).colors;
         div()
             .id("composer-stop")
+            .role(Role::Button)
             .tab_stop(true)
             .aria_label(if self.actions.stopping {
                 vega_i18n::t("ui.stopping")
@@ -826,6 +827,9 @@ impl ConversationStream {
             .justify_center()
             .bg(colors.accent)
             .text_color(colors.brand_on_accent)
+            .border_1()
+            .border_color(gpui_kit::transparent_black())
+            .focus_visible(move |style| style.border_color(colors.brand_on_accent))
             .when(!self.actions.stopping, |button| button.cursor_pointer())
             .interaction_surface(
                 colors.accent,
@@ -834,10 +838,7 @@ impl ConversationStream {
                 !self.actions.stopping,
             )
             .track_focus(&self.action_focus[1])
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.request_composer_stop(cx)),
-            )
+            .on_click(cx.listener(|this, _, _, cx| this.request_composer_stop(cx)))
             .child(crate::icons::icon(
                 crate::icons::Icon::Close,
                 colors.brand_on_accent,
