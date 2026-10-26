@@ -293,6 +293,11 @@ impl Typography {
     pub const CODE_LINE_HEIGHT: f32 = 1.6;
     /// Sidebar primary navigation and task/project title size: 13px.
     pub const SIDEBAR: f32 = 13.0;
+    /// Sidebar group heading size (`Pinned` / `Projects` / `Recents`): 14px,
+    /// one step above the 13px rows it introduces.
+    pub const SIDEBAR_SECTION: f32 = 14.0;
+    /// Sidebar group heading weight: medium, matching the 13px rows' optical weight.
+    pub const SIDEBAR_SECTION_WEIGHT: FontWeight = FontWeight::MEDIUM;
     pub const SIDEBAR_LINE_HEIGHT: f32 = 32.0;
     pub const METADATA: f32 = 12.0;
     pub const EMPTY_STATE_TITLE: f32 = 28.0;

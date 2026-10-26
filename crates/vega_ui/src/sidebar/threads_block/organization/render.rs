@@ -507,7 +507,8 @@ impl ThreadsBlock {
                         .h(px(28.))
                         .flex()
                         .items_center()
-                        .text_size(px(Typography::METADATA))
+                        .text_size(px(Typography::SIDEBAR_SECTION))
+                        .font_weight(Typography::SIDEBAR_SECTION_WEIGHT)
                         .text_color(colors.text_tertiary)
                         .child(div().pl(px(Layout::SIDEBAR_LABEL_INSET)).child(label)),
                 )
@@ -568,7 +569,8 @@ impl ThreadsBlock {
             .h(px(28.))
             .child(
                 div()
-                    .text_size(px(Typography::METADATA))
+                    .text_size(px(Typography::SIDEBAR_SECTION))
+                    .font_weight(Typography::SIDEBAR_SECTION_WEIGHT)
                     .text_color(colors.text_tertiary)
                     .pl(px(Layout::SIDEBAR_LABEL_INSET))
                     .child(label),
@@ -660,7 +662,8 @@ impl ThreadsBlock {
             .h(px(28.))
             .child(
                 div()
-                    .text_size(px(Typography::METADATA))
+                    .text_size(px(Typography::SIDEBAR_SECTION))
+                    .font_weight(Typography::SIDEBAR_SECTION_WEIGHT)
                     .text_color(colors.text_tertiary)
                     .pl(px(Layout::SIDEBAR_LABEL_INSET))
                     .child(label),
