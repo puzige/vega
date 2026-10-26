@@ -8,9 +8,9 @@ use crate::types::PermissionFence;
 use vega_store::thread_admission::{self, DatabaseIdentity, try_pause_database};
 
 use super::{
-    AttemptId, CleanupFact, CommitFact, CommittedReceipt, OrdinarySubmission, OrdinaryWorker,
-    PersistedPayload, RawSubmission, RetryBlocker, RetryEligibility, SubmissionError,
-    SubmissionFailure, invalidate_database_recovery,
+    AttemptId, CleanupFact, CleanupFailure, CommitFact, CommittedReceipt, OrdinarySubmission,
+    OrdinaryWorker, PersistedPayload, RawSubmission, RetryBlocker, RetryEligibility,
+    SubmissionError, SubmissionFailure, invalidate_database_recovery, require_database_settled,
 };
 
 fn begin(database: DatabaseIdentity, thread: &str) -> (OrdinarySubmission, OrdinaryWorker) {
@@ -44,41 +44,7 @@ fn failed(
         .bind_accepted_payload("accepted input".into())
         .expect("accepted payload");
     if committed {
-        worker
-            .stage_permission_fence(PermissionFence {
-                schema_version: 1,
-                execution_policy_version: 1,
-                authority_epoch: Ulid::generate().to_string(),
-                database_identity: database.permission_fence_key(),
-                thread_id: thread.into(),
-                project_id: "synthetic-project".into(),
-                workspace: "/synthetic-workspace".into(),
-                run_mode: "execute".into(),
-                permission_mode: "confirm".into(),
-                permission_revision: 0,
-                exact_rules: Vec::new(),
-                full_access_grant: None,
-                delegation: None,
-            })
-            .expect("accepted permission fence")
-            .publish();
-        worker
-            .bind_persisted_payload(PersistedPayload::new("persisted input".into(), Vec::new()))
-            .expect("persisted payload");
-        worker.begin_commit().expect("commit transition");
-        worker
-            .record_committed(CommittedReceipt {
-                user_message_id: submission.user_message_id().into(),
-                user_seq: 1,
-                assistant_message_id: submission.snapshot().attempts[0]
-                    .assistant_message_id
-                    .clone(),
-                assistant_seq: 2,
-                next_seq: 3,
-                persisted_text: "persisted input".into(),
-                persisted_images: Vec::new(),
-            })
-            .expect("retained commit receipt");
+        commit(&submission, &worker);
         worker
             .record_cleanup(Ok(()))
             .expect("pipeline cleanup fact");
@@ -96,6 +62,110 @@ fn failed(
         }
     );
     (submission, attempt)
+}
+
+fn commit(submission: &OrdinarySubmission, worker: &OrdinaryWorker) {
+    worker
+        .stage_permission_fence(PermissionFence {
+            schema_version: 1,
+            execution_policy_version: 1,
+            authority_epoch: Ulid::generate().to_string(),
+            database_identity: submission.0.database.permission_fence_key(),
+            thread_id: submission.0.thread_id.clone(),
+            project_id: "synthetic-project".into(),
+            workspace: "/synthetic-workspace".into(),
+            run_mode: "execute".into(),
+            permission_mode: "confirm".into(),
+            permission_revision: 0,
+            exact_rules: Vec::new(),
+            full_access_grant: None,
+            delegation: None,
+        })
+        .expect("accepted permission fence")
+        .publish();
+    worker
+        .bind_persisted_payload(PersistedPayload::new("persisted input".into(), Vec::new()))
+        .expect("persisted payload");
+    worker.begin_commit().expect("commit transition");
+    worker
+        .record_committed(CommittedReceipt {
+            user_message_id: submission.user_message_id().into(),
+            user_seq: 1,
+            assistant_message_id: submission.snapshot().attempts[0]
+                .assistant_message_id
+                .clone(),
+            assistant_seq: 2,
+            next_seq: 3,
+            persisted_text: "persisted input".into(),
+            persisted_images: Vec::new(),
+        })
+        .expect("retained commit receipt");
+}
+
+#[test]
+fn history_handoff_retains_incomplete_cleanup_as_a_reset_blocker() {
+    for cleanup in [
+        None,
+        Some(Ok(())),
+        Some(Err(CleanupFailure::Failed)),
+        Some(Err(CleanupFailure::Unknown)),
+    ] {
+        let store = Store::open(":memory:").expect("isolated store");
+        let database = store.database_identity();
+        let (submission, worker) = begin(database, "thread");
+        let attempt = worker.attempt_id();
+        worker
+            .bind_accepted_payload("accepted input".into())
+            .expect("accepted payload");
+        commit(&submission, &worker);
+        worker
+            .mark_primary_started()
+            .expect("real primary transition");
+        if let Some(cleanup) = cleanup {
+            worker.record_cleanup(cleanup).expect("cleanup evidence");
+        }
+        worker.complete(Ok(())).expect("primary worker finished");
+        submission.seal(attempt).expect("owner release");
+        let before = submission.snapshot();
+        submission
+            .retire_after_history_handoff(attempt)
+            .expect("history handoff");
+        assert!(submission.snapshot().retired);
+        let pause = try_pause_database(database)
+            .expect("registry")
+            .expect("pause");
+        assert!(pause.owners_released().expect("owners released"));
+        if cleanup == Some(Ok(())) {
+            assert!(
+                super::for_thread(database, "thread")
+                    .expect("retired registry")
+                    .is_empty()
+            );
+            assert_eq!(require_database_settled(database, &pause), Ok(()));
+        } else {
+            assert_eq!(
+                super::for_thread(database, "thread")
+                    .expect("retained evidence")
+                    .len(),
+                1
+            );
+            assert_eq!(
+                require_database_settled(database, &pause),
+                Err(crate::types::PermissionResetError::UnsettledWork)
+            );
+            invalidate_database_recovery(database, &pause)
+                .expect("revoke retry without clearing evidence");
+            assert_eq!(
+                require_database_settled(database, &pause),
+                Err(crate::types::PermissionResetError::UnsettledWork)
+            );
+        }
+        let after = submission.snapshot();
+        assert_eq!(after.attempts[0].commit, before.attempts[0].commit);
+        assert_eq!(after.attempts[0].primary, before.attempts[0].primary);
+        assert_eq!(after.attempts[0].cleanup, before.attempts[0].cleanup);
+        assert_eq!(after.raw.text(), "original input");
+    }
 }
 
 #[test]

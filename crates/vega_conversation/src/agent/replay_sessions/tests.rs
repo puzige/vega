@@ -74,6 +74,73 @@ fn poisoned_replay_registry_cannot_acknowledge_invalidation_or_reuse_sessions() 
 }
 
 #[test]
+fn reset_keeps_pending_and_source_configuration_when_replay_invalidation_is_unavailable() {
+    use crate::permission_reset::{
+        pause_admission, prepare_reset, recover_pending_with_pause, reset_quiescent,
+    };
+    use vega_store::{Store, config, permission_reset};
+
+    let root = std::env::temp_dir().join(format!("vega-reset-replay-{}", ulid::Ulid::generate()));
+    std::fs::create_dir(&root).expect("isolated root");
+    let config_path = root.join("config.toml");
+    let mut value = config::AppConfig::default();
+    value.defaults.permission_mode = "full_access".into();
+    value.defaults.permission_revision = 7;
+    value.defaults.full_access_grant = Some("synthetic metadata to revoke".into());
+    value.save_to(&config_path).expect("isolated configuration");
+    let store = Store::open(":memory:").expect("isolated database");
+    store.migrate().expect("fixture migrations");
+    let intent = prepare_reset(&store, &config_path).expect("reset intent");
+    let before = std::fs::read(&config_path).expect("source bytes");
+    let registry = ReplaySessionRegistry::new();
+    assert!(seal(&registry, begin(&registry, "thread")));
+    assert!(
+        catch_unwind(AssertUnwindSafe(|| {
+            let _guard = registry.inner.lock().expect("isolated replay lock");
+            panic!("isolated replay poison");
+        }))
+        .is_err()
+    );
+    let pause = pause_admission(&store).expect("pause");
+    assert_eq!(
+        reset_quiescent(&store, &config_path, &intent, &pause, &registry),
+        Err(PermissionResetError::Unavailable)
+    );
+    let pending = permission_reset::load(store.conn())
+        .expect("pending journal")
+        .expect("journal retained");
+    assert!(!pending.completed);
+    assert_ne!(pending.authority_epoch, intent.authority_epoch);
+    assert!(
+        vega_store::permission_contracts::load_state(store.conn())
+            .expect("state")
+            .reset_pending
+    );
+    assert_eq!(
+        std::fs::read(&config_path).expect("source not published"),
+        before
+    );
+    assert_eq!(
+        recover_pending_with_pause(&store, &config_path, &pause, &registry),
+        Err(PermissionResetError::Unavailable)
+    );
+    assert_eq!(
+        permission_reset::load(store.conn()).expect("same pending journal"),
+        Some(pending)
+    );
+    assert_eq!(
+        std::fs::read(&config_path).expect("source retained on retry"),
+        before
+    );
+    assert!(
+        pause
+            .verifies(store.database_identity())
+            .expect("pause held")
+    );
+    std::fs::remove_dir_all(root).expect("remove isolated fixture");
+}
+
+#[test]
 fn exhausted_replay_generations_never_reuse_an_invalidated_lease_identity() {
     let registry = ReplaySessionRegistry::new();
     registry

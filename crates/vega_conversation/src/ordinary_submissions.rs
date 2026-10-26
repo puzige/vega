@@ -411,6 +411,29 @@ impl AttemptState {
         Ok(authority)
     }
 
+    fn reset_settled(&self) -> bool {
+        let facts = &self.facts;
+        self.workers.is_empty()
+            && facts.sealed
+            && !facts.abnormal
+            && !matches!(
+                facts.commit,
+                CommitFact::CommitInFlight | CommitFact::Unknown
+            )
+            && !matches!(
+                facts.primary,
+                PrimaryFact::NotYetDriven | PrimaryFact::Unknown
+            )
+            && matches!(
+                facts.cleanup,
+                CleanupFact::NotRequired | CleanupFact::Succeeded
+            )
+            && (!matches!(facts.commit, CommitFact::Committed(_))
+                || facts.cleanup == CleanupFact::Succeeded)
+            && (facts.primary != PrimaryFact::Started
+                || matches!(facts.commit, CommitFact::Committed(_)))
+    }
+
     fn make_unknown(&mut self) {
         self.facts.abnormal = true;
         if !matches!(
@@ -515,6 +538,50 @@ pub fn for_thread(
         })
         .cloned()
         .unwrap_or_default())
+}
+
+pub(crate) fn require_database_settled(
+    database: DatabaseIdentity,
+    pause: &DatabaseAdmissionPause,
+) -> Result<(), crate::types::PermissionResetError> {
+    use crate::types::PermissionResetError;
+
+    if !pause
+        .verifies(database)
+        .map_err(|_| PermissionResetError::Unavailable)?
+    {
+        return Err(PermissionResetError::Busy);
+    }
+    let registry = submissions()
+        .lock()
+        .map_err(|_| PermissionResetError::Unavailable)?;
+    for (key, submissions) in registry.iter().filter(|(key, _)| key.database == database) {
+        for submission in submissions {
+            if submission.0.database != database || submission.0.thread_id != key.thread_id {
+                return Err(PermissionResetError::Unavailable);
+            }
+            let state = submission
+                .lock()
+                .map_err(|_| PermissionResetError::Unavailable)?;
+            if state.active.is_some()
+                || state
+                    .attempts
+                    .iter()
+                    .any(|attempt| !attempt.workers.is_empty())
+            {
+                return Err(PermissionResetError::Busy);
+            }
+            if state.attempts.is_empty()
+                || state
+                    .attempts
+                    .iter()
+                    .any(|attempt| !attempt.reset_settled())
+            {
+                return Err(PermissionResetError::UnsettledWork);
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn invalidate_database_recovery(
@@ -807,6 +874,13 @@ impl OrdinarySubmission {
             return Err(SubmissionError::InvalidTransition);
         }
         state.retired = true;
+        if state
+            .attempts
+            .iter()
+            .any(|attempt| !attempt.reset_settled())
+        {
+            return Ok(FactUpdate::Applied);
+        }
         let key = SubmissionKey {
             database: self.0.database,
             thread_id: self.0.thread_id.clone(),
