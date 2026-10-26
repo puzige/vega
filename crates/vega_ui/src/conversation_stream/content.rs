@@ -1982,7 +1982,15 @@ impl ConversationStream {
     pub(crate) fn tool_entry_index(&self, card: &Entity<ToolCard>, cx: &App) -> Option<usize> {
         self.entries
             .iter()
-            .position(|entry| Self::tool_entry_contains(entry, card, cx))
+            .position(|entry| {
+                matches!(entry, StreamEntry::RunActivity { .. })
+                    && Self::tool_entry_contains(entry, card, cx)
+            })
+            .or_else(|| {
+                self.entries
+                    .iter()
+                    .position(|entry| Self::tool_entry_contains(entry, card, cx))
+            })
     }
 
     fn observe_tool_card(&mut self, card: &Entity<ToolCard>, cx: &mut Context<Self>) {
