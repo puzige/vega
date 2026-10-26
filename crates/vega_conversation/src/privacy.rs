@@ -114,29 +114,45 @@ fn key(root: &std::path::Path) -> Result<String, ConversationError> {
     }
 }
 
+pub(crate) fn invalidate_authority(root: &std::path::Path) {
+    if let Ok(mut epochs) = AUTHORITY.get_or_init(Default::default).lock() {
+        epochs.remove(root);
+    }
+    if let Ok(mut live) = LIVE.get_or_init(Default::default).lock() {
+        live.insert(root.to_path_buf(), None);
+    }
+}
+
 pub fn refresh_authority(
     database: &std::path::Path,
     root: &std::path::Path,
 ) -> Result<(), ConversationError> {
+    refresh_authority_values(database, root).map(|_| ())
+}
+
+pub(crate) fn refresh_authority_values(
+    database: &std::path::Path,
+    root: &std::path::Path,
+) -> Result<Vec<String>, ConversationError> {
     let result = (|| {
         let store = Store::open(database).map_err(|_| unavailable())?;
         let key = key(root)?;
         let mut owner = known(&store, Some(root))?;
         owner.sort();
-        let owner = serde_json::to_string(&owner).map_err(|_| unavailable())?;
-        let epoch = fingerprint(key.as_bytes(), "owner-epoch", &owner);
+        let encoded = serde_json::to_string(&owner).map_err(|_| unavailable())?;
+        let epoch = fingerprint(key.as_bytes(), "owner-epoch", &encoded);
         vega_store::credential_privacy::refresh_epoch(store.conn(), &epoch)
             .map_err(|_| unavailable())?;
-        Ok(epoch)
+        Ok((epoch, owner))
     })();
     let mut epochs = AUTHORITY
         .get_or_init(Default::default)
         .lock()
         .map_err(|_| unavailable())?;
     match result {
-        Ok(epoch) => {
+        Ok((epoch, owner)) => {
             epochs.insert(root.to_path_buf(), epoch);
-            Ok(())
+            Ok(owner)
         }
         Err(error) => {
             epochs.remove(root);

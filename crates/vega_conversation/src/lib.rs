@@ -52,6 +52,7 @@ pub mod ordinary_submissions;
 pub mod pending_messages;
 
 pub mod privacy;
+mod run_credentials;
 
 pub mod automation;
 

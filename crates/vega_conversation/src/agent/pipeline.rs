@@ -1,6 +1,8 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
+mod authority;
+
 #[cfg(test)]
 mod tests;
 
@@ -627,6 +629,53 @@ fn delegated_history(
     Ok(history)
 }
 
+fn rollback_preparation(
+    transaction: vega_store::write_coordination::WriteTransaction<'_>,
+    ordinary: Option<&super::ordinary::OrdinaryPreparation>,
+    recovery: Option<&crate::types::CommittedReceipt>,
+    user_message_id: &str,
+    user_content: &str,
+    images: &[crate::types::ImageAttachment],
+) {
+    if let Some(ordinary) = ordinary
+        && ordinary
+            .run
+            .submission
+            .snapshot()
+            .attempts
+            .last()
+            .is_some_and(|attempt| attempt.persisted.is_none())
+    {
+        let payload = messages::find(&transaction, user_message_id)
+            .ok()
+            .flatten()
+            .map(|user| crate::types::PersistedPayload::new(user.content, images.to_vec()))
+            .unwrap_or_else(|| {
+                recovery.map_or_else(
+                    || {
+                        crate::types::PersistedPayload::new(
+                            user_content.to_owned(),
+                            images.to_vec(),
+                        )
+                    },
+                    |receipt| {
+                        crate::types::PersistedPayload::new(
+                            receipt.persisted_text.clone(),
+                            receipt.persisted_images.to_vec(),
+                        )
+                    },
+                )
+            });
+        let _ = ordinary.worker.bind_persisted_payload(payload);
+    }
+    let rollback = transaction.rollback();
+    if let Some(ordinary) = ordinary {
+        let _ = ordinary
+            .worker
+            .record_not_committed(rollback.map_err(|_| crate::types::RollbackFailure::Failed));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_run_with_images_and_reasoning(
     database_path: PathBuf,
@@ -715,146 +764,81 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         .map_err(runtime_store_error)?;
         tx.commit().map_err(runtime_store_error)?;
     }
-    let credential_values = match &config.owner_credential_reader {
-        Some(reader) => reader().map_err(|_| {
-            ConversationError::Runtime(Arc::new(VegaError::CredentialCheckUnavailable))
-        })?,
-        None => Vec::new(),
+    let credential_authority = {
+        let transaction = store.immediate_transaction().map_err(runtime_store_error)?;
+        let authority = match authority::verified(
+            &store,
+            &config,
+            &thread_id,
+            &assistant_message_id,
+            uses_existing_user,
+            &user_content,
+            &images,
+            ordinary,
+        ) {
+            Ok(authority) => authority,
+            Err(error) => {
+                rollback_preparation(
+                    transaction,
+                    ordinary,
+                    recovery.as_ref(),
+                    &user_message_id,
+                    &user_content,
+                    &images,
+                );
+                return Err(error);
+            }
+        };
+        transaction.commit().map_err(runtime_store_error)?;
+        authority
+    };
+    let credential_values = if let Some(reader) = &config.run_credential_reader {
+        reader
+            .prepare(&credential_authority.fence, &assistant_message_id)
+            .map_err(|_| {
+                ConversationError::Runtime(Arc::new(VegaError::CredentialCheckUnavailable))
+            })?
+    } else {
+        match &config.owner_credential_reader {
+            Some(reader) => reader().map_err(|_| {
+                ConversationError::Runtime(Arc::new(VegaError::CredentialCheckUnavailable))
+            })?,
+            None => Vec::new(),
+        }
     };
     let transaction = store.immediate_transaction().map_err(runtime_store_error)?;
     let preparation = (|| -> Result<_, ConversationError> {
-        let thread = vega_store::threads::find(&transaction, &thread_id)
-            .map_err(runtime_store_error)?
-            .ok_or_else(|| ConversationError::NotFound(thread_id.clone()))?;
-        let current_fence = if config.delegated {
-            let authority = config
-                .delegated_authority
-                .as_ref()
-                .ok_or(ConversationError::InvalidTaskIdentity)?;
-            if !authority.matches_fence() {
-                return Err(ConversationError::InvalidTaskIdentity);
+        let current = authority::verified(
+            &store,
+            &config,
+            &thread_id,
+            &assistant_message_id,
+            uses_existing_user,
+            &user_content,
+            &images,
+            ordinary,
+        )?;
+        if !credential_authority.matches(&current) {
+            if let Some(ordinary) = ordinary {
+                let _ = ordinary
+                    .run
+                    .submission
+                    .invalidate_recovery(ordinary.worker.attempt_id());
             }
-            let (parent_thread, parent_message) = config
-                .delegated_parent
-                .as_ref()
-                .ok_or(ConversationError::InvalidTaskIdentity)?;
-            let fence = crate::permission_contracts::capture_delegated_fence(
-                &store,
-                &thread,
-                parent_thread,
-                parent_message,
-                &assistant_message_id,
-                &authority.permission_fence,
-            )?;
-            let encoded = vega_store::permission_contracts::load_delegated_fence(
-                &transaction,
-                &thread_id,
-                &assistant_message_id,
-            )
-            .map_err(runtime_store_error)?;
-            let admitted: crate::types::PermissionFence = serde_json::from_str(&encoded)
-                .map_err(|_| ConversationError::InvalidTaskIdentity)?;
-            if admitted != fence {
-                return Err(ConversationError::InvalidTaskIdentity);
-            }
-            admitted
-        } else {
-            if config.delegated_authority.is_some() {
-                return Err(ConversationError::InvalidTaskIdentity);
-            }
-            crate::permission_contracts::capture_fence(&store, &thread)?
-        };
-        let permission_fence = if let Some(ordinary) = ordinary {
-            let accepted = ordinary.run.submission.permission_fence();
-            match accepted {
-                Ok(accepted) if accepted == current_fence => accepted,
-                _ => {
-                    let _ = ordinary
-                        .run
-                        .submission
-                        .invalidate_recovery(ordinary.worker.attempt_id());
-                    return Err(ConversationError::InvalidTaskIdentity);
-                }
-            }
-        } else {
-            current_fence
-        };
-        let automation_fence = permission_fence
-            .delegation
-            .as_ref()
-            .map(|source| source.parent_fence.as_ref())
-            .unwrap_or(&permission_fence);
-        if let Some(claim) = &config.automation_claim
-            && (claim.thread_id != automation_fence.thread_id
-                || claim.permission_fence.as_ref() != Some(automation_fence)
-                || (!config.delegated
-                    && !crate::automation::current_claim(&store, claim)
-                        .map_err(|_| ConversationError::InvalidTaskIdentity)?))
-        {
             return Err(ConversationError::InvalidTaskIdentity);
+        }
+        let authority::RunAuthority {
+            fence: permission_fence,
+            thread,
+            run_mode,
+            permission_mode,
+            resumed_user,
+        } = current;
+        if let Some(resumed_user) = resumed_user {
+            user_message_id = resumed_user;
         }
         let permission_fence_json = serde_json::to_string(&permission_fence)
             .map_err(|error| ConversationError::Store(error.to_string()))?;
-        let thread_grant = thread
-            .full_access_grant
-            .as_deref()
-            .map(serde_json::from_str::<crate::types::FullAccessGrant>)
-            .transpose()
-            .map_err(|_| ConversationError::InvalidTaskIdentity)?;
-        if let Some(expected) = &config.interrupted_assistant {
-            if !crate::permission_contracts::interrupted_authority_matches(
-                &transaction,
-                expected,
-                &permission_fence,
-            )? {
-                return Err(ConversationError::InvalidTaskIdentity);
-            }
-            let tail = messages::interrupted_tail(&transaction, &thread_id)
-                .map_err(runtime_store_error)?;
-            if ordinary.is_some()
-                || uses_existing_user
-                || config.delegated
-                || config.credential_continuation_id.is_some()
-                || config.pending_message_id.is_some()
-                || config.automation_claim.is_some()
-                || !user_content.is_empty()
-                || !images.is_empty()
-                || tail
-                    .as_ref()
-                    .is_none_or(|(id, seq)| id != &expected.message_id || *seq != expected.seq)
-                || messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?
-                    != expected.seq.checked_add(1).ok_or_else(|| {
-                        ConversationError::CorruptRow("interrupted sequence overflow".into())
-                    })?
-            {
-                return Err(ConversationError::CorruptRow(
-                    "interrupted task changed; reopen the task before resuming".into(),
-                ));
-            }
-            user_message_id = transaction.query_row(
-                "SELECT id FROM messages WHERE thread_id = ?1 AND role = 'user' AND seq < ?2 ORDER BY seq DESC LIMIT 1",
-                (&thread_id, expected.seq),
-                |row| row.get::<_, String>(0),
-            ).map_err(runtime_store_error)?;
-        }
-        if let Some(ordinary) = ordinary
-            && (thread.model != ordinary.run.submission.raw().model()
-                || thread.backend != "native"
-                || thread.status == "archived"
-                || ordinary.run.thread.as_ref().is_some_and(|snapshot| {
-                    snapshot.project_id != thread.project_id
-                        || snapshot.mode.as_str() != thread.mode
-                        || snapshot.permission_mode.as_str() != thread.permission_mode
-                        || snapshot.permission_revision != thread.permission_revision
-                        || snapshot.full_access_grant != thread_grant
-                }))
-        {
-            let _ = ordinary
-                .run
-                .submission
-                .invalidate_recovery(ordinary.worker.attempt_id());
-            return Err(ConversationError::InvalidTaskIdentity);
-        }
         vega_store::delegated_stages::redact_payloads(&transaction, &thread_id, |text| {
             vega_runtime::redact_sensitive_credential_text_with_policy(
                 text,
@@ -898,21 +882,6 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         } else {
             None
         };
-        let run_mode = ThreadMode::parse(&permission_fence.run_mode)
-            .ok_or_else(|| ConversationError::CorruptRow(format!("run mode: {}", thread.mode)))?;
-        let permission_mode = crate::types::PermissionMode::parse(
-            &permission_fence.permission_mode,
-        )
-        .ok_or_else(|| {
-            ConversationError::CorruptRow(format!("permission_mode: {}", thread.permission_mode))
-        })?;
-        if !config.delegated && permission_mode == crate::types::PermissionMode::FullAccess {
-            crate::permission_contracts::verify_thread_grant(
-                &transaction,
-                &thread_id,
-                thread_grant.as_ref(),
-            )?;
-        }
         if reasoning
             .as_ref()
             .is_some_and(|selection| selection.model != thread.model)
@@ -1405,43 +1374,14 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     ) = match preparation {
         Ok(prepared) => prepared,
         Err(error) => {
-            if let Some(ordinary) = ordinary
-                && ordinary
-                    .run
-                    .submission
-                    .snapshot()
-                    .attempts
-                    .last()
-                    .is_some_and(|attempt| attempt.persisted.is_none())
-            {
-                let payload = messages::find(&transaction, &user_message_id)
-                    .ok()
-                    .flatten()
-                    .map(|user| crate::types::PersistedPayload::new(user.content, images.clone()))
-                    .unwrap_or_else(|| {
-                        recovery.as_ref().map_or_else(
-                            || {
-                                crate::types::PersistedPayload::new(
-                                    user_content.clone(),
-                                    images.clone(),
-                                )
-                            },
-                            |receipt| {
-                                crate::types::PersistedPayload::new(
-                                    receipt.persisted_text.clone(),
-                                    receipt.persisted_images.clone(),
-                                )
-                            },
-                        )
-                    });
-                let _ = ordinary.worker.bind_persisted_payload(payload);
-            }
-            let rollback = transaction.rollback();
-            if let Some(ordinary) = ordinary {
-                let _ = ordinary.worker.record_not_committed(
-                    rollback.map_err(|_| crate::types::RollbackFailure::Failed),
-                );
-            }
+            rollback_preparation(
+                transaction,
+                ordinary,
+                recovery.as_ref(),
+                &user_message_id,
+                &user_content,
+                &images,
+            );
             return Err(error);
         }
     };
@@ -1461,6 +1401,13 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             .worker
             .record_committed(receipt)
             .map_err(super::ordinary::fact_error)?;
+    }
+    if let Some(reader) = &config.run_credential_reader {
+        reader
+            .activate(&permission_fence, &assistant_message_id)
+            .map_err(|_| {
+                ConversationError::Runtime(Arc::new(VegaError::CredentialCheckUnavailable))
+            })?;
     }
     if let Some(request) = title_request {
         request.with_thread_admission(admission.clone()).launch(

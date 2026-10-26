@@ -518,6 +518,7 @@ pub(super) struct ChildSettings {
     pub automation_claim: Option<crate::types::AutomationRunClaim>,
     pub automation_hook: Option<Arc<dyn vega_runtime::RuntimeAutomationHook>>,
     pub owner_credential_reader: Option<vega_runtime::CredentialReader>,
+    pub run_credential_reader: Option<crate::types::RunCredentialReader>,
     pub turn_limit: u32,
     pub steering_source: Option<Arc<dyn vega_runtime::RuntimeSteeringSource>>,
 }
@@ -543,6 +544,7 @@ impl ChildSettings {
             automation_claim: config.automation_claim.clone(),
             automation_hook: config.automation_hook.clone(),
             owner_credential_reader: config.owner_credential_reader.clone(),
+            run_credential_reader: config.run_credential_reader.clone(),
             turn_limit: config.turn_limit,
             steering_source: config.steering_source.clone(),
         }
@@ -1189,6 +1191,7 @@ fn child_lifecycle_inner<'a>(
                         automation_claim: settings.automation_claim.clone(),
                         automation_hook: Some(usage_observer.clone()),
                         owner_credential_reader: settings.owner_credential_reader.clone(),
+                        run_credential_reader: settings.run_credential_reader.clone(),
                         turn_limit: settings.turn_limit,
                         user_questions: Some(Arc::new(questions.clone())),
                         ..Default::default()

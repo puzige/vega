@@ -1211,41 +1211,13 @@ pub(crate) fn run_agent_worker_with_mcp(
                         .map_err(|_| ())
                 }) as CredentialReader
             });
-        let broker_credential_reader: Option<CredentialReader> = config_path
-            .as_deref()
-            .and_then(std::path::Path::parent)
-            .map(|root| {
-                let root = root.to_path_buf();
-                let refs = config
-                    .as_ref()
-                    .map(|config| {
-                        config
-                            .credential_bindings
-                            .iter()
-                            .map(|binding| binding.key_ref.clone())
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                Arc::new(move || {
-                    refs.iter()
-                        .map(|reference| {
-                            vega_store::keystore::get_key(&root, reference).map_err(|_| ())
-                        })
-                        .collect()
-                }) as CredentialReader
-            });
+        let binding_refs = config.as_ref().map(|config| {
+            config.credential_bindings.iter().map(|binding| binding.key_ref.clone()).collect()
+        }).unwrap_or_default();
         let credential_root = config_path.as_deref().and_then(std::path::Path::parent).map(std::path::Path::to_path_buf);
-        let credential_exceptions: vega_runtime::CredentialExceptionFilter = credential_root.as_ref()
-            .and_then(|root| vega_conversation::privacy::exception_filter(database_path.clone(), thread.id.clone(), root.clone()).ok())
-            .unwrap_or_else(|| Arc::new(|_, _| false));
-        let authority_database = database_path.clone();
-        let authority_root = credential_root.clone();
         let owner = mcp_service.clone();
         let selected_provider_reader = provider_credential_reader.clone();
-        let owner_credential_reader: CredentialReader = Arc::new(move || {
-            if let Some(root) = &authority_root {
-                vega_conversation::privacy::refresh_authority(&authority_database, root).map_err(|_| ())?;
-            }
+        let required_credential_reader: CredentialReader = Arc::new(move || {
             let mut known = match &owner {
                 Some(service) => service.current_owner_credential_values().map_err(|_| ())?,
                 None => Vec::new(),
@@ -1253,11 +1225,13 @@ pub(crate) fn run_agent_worker_with_mcp(
             if let Some(reader) = &selected_provider_reader {
                 known.extend(reader()?);
             }
-            if let Some(reader) = &broker_credential_reader {
-                known.extend(reader()?);
-            }
             Ok(known)
         });
+        let run_credential_reader = vega_conversation::types::RunCredentialReader::new(
+            database_path.clone(), thread.id.clone(), credential_root, binding_refs, required_credential_reader,
+        );
+        let owner_credential_reader = run_credential_reader.reader();
+        let credential_exceptions = run_credential_reader.exception_filter();
         let mut make_provider = || -> Result<Arc<dyn vega_runtime::Provider>, ()> {
             let provider = configured_provider.clone().ok_or(())?;
             let root = config_path
@@ -1471,7 +1445,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                             .with_automatic_title(automatic_title)
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
-                            .with_owner_credential_reader(owner_credential_reader.clone())
+                            .with_run_credential_reader(run_credential_reader.clone())
                             .with_credential_exceptions(Some(credential_exceptions.clone()))
                             .with_user_questions(Arc::new(user_questions.clone()))
                             .with_pending_input(
@@ -1549,7 +1523,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                             .with_subagent_host(subagent_host.clone())
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
-                            .with_owner_credential_reader(owner_credential_reader.clone())
+                            .with_run_credential_reader(run_credential_reader.clone())
                             .with_credential_exceptions(Some(credential_exceptions.clone()))
                             .with_user_questions(Arc::new(user_questions.clone()))
                             .with_pending_input(
@@ -1617,7 +1591,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                             .with_subagent_host(subagent_host.clone())
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
-                            .with_owner_credential_reader(owner_credential_reader.clone())
+                            .with_run_credential_reader(run_credential_reader.clone())
                             .with_credential_exceptions(Some(credential_exceptions.clone()))
                             .with_user_questions(Arc::new(user_questions.clone()))
                             .with_pending_input(
@@ -1688,7 +1662,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                             .with_subagent_host(subagent_host.clone())
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
-                            .with_owner_credential_reader(owner_credential_reader.clone())
+                            .with_run_credential_reader(run_credential_reader.clone())
                             .with_credential_exceptions(Some(credential_exceptions.clone()))
                             .with_user_questions(Arc::new(user_questions.clone()))
                             .with_pending_input(None, steering_source.clone()),

@@ -7,6 +7,7 @@ pub use crate::ordinary_submissions::{
     OrdinaryWorker, PersistedPayload, PrimaryFact, RawSubmission, RetryBlocker, RetryEligibility,
     RollbackFailure, SubmissionError, SubmissionFailure, SubmissionId, SubmissionSnapshot,
 };
+pub use crate::run_credentials::RunCredentialReader;
 pub use prediction_diagnostics::{PredictionEvent, record_prediction_event};
 use std::sync::Arc;
 pub use vega_runtime::ImageAttachment;

@@ -87,6 +87,7 @@ pub struct PersistenceActorConfig {
     pub turn_limit: u32,
     pub(crate) credential_exceptions: Option<vega_runtime::CredentialExceptionFilter>,
     pub(crate) owner_credential_reader: Option<vega_runtime::CredentialReader>,
+    pub(crate) run_credential_reader: Option<crate::types::RunCredentialReader>,
     pub(crate) replay_registry: Option<super::ReplaySessionRegistry>,
     pub(crate) replay_route_fingerprint: Option<[u8; 32]>,
 }
@@ -162,6 +163,13 @@ impl PersistenceActorConfig {
     }
     pub fn with_owner_credential_reader(mut self, reader: vega_runtime::CredentialReader) -> Self {
         self.owner_credential_reader = Some(reader);
+        self.run_credential_reader = None;
+        self
+    }
+
+    pub fn with_run_credential_reader(mut self, reader: crate::types::RunCredentialReader) -> Self {
+        self.owner_credential_reader = Some(reader.reader());
+        self.run_credential_reader = Some(reader);
         self
     }
 

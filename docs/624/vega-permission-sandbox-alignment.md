@@ -225,9 +225,9 @@ final profile 必须一次构造并同时用于自检与 spawn，包含本次网
 - 写目录扩围仅 Execute+Confirm/Auto；本次 shell 及受约束后代可写明确的额外目录，不代表只允许一条文件 API。目录必须已存在、可 canonicalize，绑定设备/inode 并复核；不支持 root/home 等过宽根、不直接授权 Git 元数据、凭据根或覆盖这些强制保护的祖先。保留项目/额外写树 hardlink 检查和不可表示路径拒绝；强制 deny 排在允许规则之后，不因父目录 grant 被覆盖。
 - 目录 grant 不是对用户文件的所有权/删除批准，也不能覆盖危险硬门禁。symlink/hardlink、别名、目录替换的实际 OS 边界须用专用 fixture 正反验；若不能保证所声明路径边界，拒绝该扩围并报告，不把预检当作消除全部 TOCTOU 的证明。路径归属不明、需要修改真实用户数据时仍遵守任务授权。
 
-### 严格凭据读取与脱敏（D4 拟新增 API）
+### 严格凭据读取与脱敏（D4 运行级接线）
 
-新增只读 `lookup_existing_key(root, ref) -> Result<Option<SecretValue>, LookupError>` 或等价的内部 typed API：`None` **仅**表示已通过根/目录/文件身份、owner/mode/nlink、大小与格式检查的现存安全文档内没有这个 ref。根/目录/文件不存在分别返回 `StoreAbsent`，其他 Unsafe/IO/Malformed/Limit/Unsupported 保持错误；不在 lookup 中创建目录/空文件，也不复用会把文件缺失变空文档的 `platform::read` 而丢失原因。现有写入/初始化 API 可保留其行为，不改存储后端。
+复用已在 `decccd52a675de7dbe8ebba0ffbea8285eadd512` 实现的只读 `lookup_existing_key(root, ref) -> Result<Option<String>, LookupError>`：`None` **仅**表示已通过根/目录/文件身份、owner/mode/nlink、大小与格式检查的现存安全文档内没有这个 ref。根/目录/文件不存在分别返回 `StoreAbsent`，其他 Unsafe/IO/Malformed/Limit/Unsupported 保持错误；不在 lookup 中创建目录/空文件，也不复用会把文件缺失变空文档的 `platform::read` 而丢失原因。现有写入/初始化 API 可保留其行为，不改存储后端。
 
 owner 汇总按接纳的执行策略选择：P2 的可选 binding refs 用上述严格 lookup，Some 进入脱敏集合，None 可忽略；必需 Provider/MCP 和受限 Broker 仍要求存在。相同 ref 若也是必需凭据，必需条件优先；真实存储错误在 P2 也失败。没有可选 refs 时不凭空初始化或探测不存在的 store。身份/私有权限/格式验证保持严格，不能 catch-all 成空列表。
 
@@ -275,7 +275,7 @@ owner 汇总按接纳的执行策略选择：P2 的可选 binding refs 用上述
 2. 实施先完成 `vega_conversation::types::permission/thread/automation` 与 `vega_store` 的增量迁移、线程 CAS、默认 ConfigEdit、重置状态机；接 `conversation::threads/ordinary_submissions`、`agent::pipeline/persistence/subagents`、`delegated_stages`、`credential_continuation`、`automation`。构造及恢复原样携带 fence；旧授权 fail closed 后才可接无沙箱启动。
 3. 在 `vega_runtime::permission`、`agent::tools_exec`、`RuntimeToolConfig` 和工具定义中增加受限只读执行与范围请求；在 conversation permission_queue/codec/persistence 及 `vega_ui::permission_card` 分开三类请求；不覆盖 MCP/ACP/文件工具特例。对权限状态机、单次 token、CAS/恢复/旧记录等安全边界选择必要进程内开发回归，交现有 Actions；不以文本比较或 mock 代替真实决策。
 4. `vega_tools::bash` 用已批准执行策略替代松散 bool 分支；P2 在 Broker/CA/context 前分流并直接启动，保留 scope/cancel/timeout/output/TempRoot/清理。`sandbox.rs` 构造只读/项目写/网络/额外根的同一 final profile 供自检与 spawn；`credentials.rs` 仅在获批网络的受限路径创建 Broker，不把配置根检查从其他工具移除。
-5. `vega_store::keystore` 新增严格 existing lookup，`vega::app_agent` 与 pipeline/后续脱敏调用按可信执行策略处理可选 binding 缺失；保留必需 Provider/MCP/受限 key、privacy authority 与真实故障。同步模型工具说明、错误分类、本地化和 UI 服务事件，不能将只有错误码写作已实现可操作指引。
+5. 复用 `vega_store::keystore` 已有严格 existing lookup，`vega::app_agent` 与 pipeline/后续脱敏调用按可信执行策略处理可选 binding 缺失；保留必需 Provider/MCP/受限 key、privacy authority 与真实故障。同步模型工具说明、错误分类、本地化和 UI 服务事件，不能将只有错误码写作已实现可操作指引。
 6. `vega::window::session`、Composer 与 settings 完成同名重授权、保存失败、默认派生及当前/后续 run 状态；新增 UI 文案逐项审视用途、键盘/Esc/回焦与真实错误恢复。无新依赖；新增 libc/unsafe 若超出既有批准范围需先具体列出再确认，不能借此设计自动授权。
 7. 本地仅差异/格式/静态；开发 Rust 测试如使用，固定源码/patch、完整 SHA 和实际云端结果，再清理独占支持。最终无 Rust 测试 head 做独立实现审查与完整 required CI，空集写 `no Rust tests`（0 发现/0 执行），不是权限行为通过。真实 shell/network/IPC/浏览器/原生 UI 仅用户手测，不新增真实外部 E2E 门禁。
 8. 最新 head required CI 与独立审查通过才 squash 合并；整卡保留 In review 等用户对合成凭据/独立项目的 A1–A21 验收。受限平台不满足目标时报告原始证据并修责任层，不放宽断言、自动去沙箱或只交 P2 后关闭卡。
@@ -311,7 +311,8 @@ owner 汇总按接纳的执行策略选择：P2 的可选 binding refs 用上述
 - 启动/续跑及 updater 修正已在 `b64c32ec9efc5b5e1e5bd6bc832a08f890aa3f9c` 的 [run 40403608604](https://github.com/puzige/vega/actions/runs/40403608604) 通过：48 发现/48 执行/48 通过/0 跳过，Clippy/汇总成功；非写入者增量审查关闭已报告的旧 helper 回滚竞态、无新发现。通过迁移前验证并移动旧备份，阻止旧 helper 在错过启动回执后回滚候选；这不是原生升级或安全降级验收。完整失败链与限制见恢复验证记录。
 - 内存失效增量实现 exact-database pause/drain 校验、普通提交永久禁止旧重试但保留输入/权限围栏/提交及未知结果证据、replay 可确认失效和 generation 耗尽拒绝复用。失败提示区分授权失效与未知结果，旧核实回执不掩盖失效原因；新增 4+3+2 个开发回归；`98035ec94cf28a3b2ae664ef832e02465c4b3f8c` 的 [run 40406828641](https://github.com/puzige/vega/actions/runs/40406828641) 已实际发现/执行/通过 57 项、0 跳过，Clippy/汇总成功，非写入者增量审查无发现。详见 [内存失效契约](reset-in-memory-invalidation.md)。该 API 批次尚未接入初始 reset 协调器。
 - durable pending 前暂停增量：conversation 服务在短协调锁内创建 exact-database pause；默认授权、草稿派生、普通准备、自动化认领/激活/启动清理、委派创建/恢复及 startup 就绪决定检查同一 registry pause。预先取得 admission 的准备也在归一化/凭据读取前拒绝；既有完成、释放和 pause-only 收尾仍可进行。新增 3 个服务开发回归及 1 个真实准备回归。`12410c585d9f3aa29410e8ecebd8d12bfc2ef968` 增量审查无发现，但 CI 61 执行中 1 项夹具正向恢复失败；通过真实审批生命周期修正夹具后，`7782a545a56eee969a71a710be376db32fee6dee` 的 [run 40411553704](https://github.com/puzige/vega/actions/runs/40411553704) 已 61 发现/执行/通过、0 跳过，Clippy/汇总成功，修正增量非写入者审查无发现。见 [暂停门禁契约](reset-admission-barrier.md)。不持协调锁等待 drain，不把 owner 释放当 native cleanup，也尚未暴露全局 reset 动作。
-- 初始 reset 服务增量接入 opaque 来源意图、exact pause/drain、首事务 journal/epoch/自动化撤销、普通/replay 可确认失效及既有配置/读回协议；持有 pause 可续接同一 pending。全部普通尝试的未知/未收尾事实阻塞，历史交接不删除未完成清理证据；没有可信外部清理凭据的 successful Bash/MCP/未知工具也保守阻塞。新增 9 个开发回归，尚待本增量云端/独立审查；范围与限制见 [初始服务契约](reset-initial-service.md)。未开放全局 reset UI，不宣称 native cleanup 或安全降级。
+- 初始 reset 服务增量接入 opaque 来源意图、exact pause/drain、首事务 journal/epoch/自动化撤销、普通/replay 可确认失效及既有配置/读回协议；持有 pause 可续接同一 pending。全部普通尝试的未知/未收尾事实阻塞，历史交接不删除未完成清理证据；没有可信外部清理凭据的 successful Bash/MCP/未知工具也保守阻塞。新增 9 个开发回归；修正历史交接夹具身份后，`21342c5107ccabdcc8f0c5638d981127733cd1b7` 的 [run 40417632621](https://github.com/puzige/vega/actions/runs/40417632621) 已 70 项执行/通过、0 跳过，Clippy/汇总成功；生产增量与夹具修正的非写入者审查均无发现。范围与限制见 [初始服务契约](reset-initial-service.md)。未开放全局 reset UI，不宣称 native cleanup 或安全降级。
+- 运行级凭据增量将可选 binding 缺失处理绑定真实校验的 immutable fence；两次事务内复核之间读取凭据，提交后才启用共享 reader，Provider/steering/runtime/子任务复用同一策略，真实故障继续 fail closed。详见 [运行级凭据契约](run-credential-authority.md)；七项新增开发回归尚待云端/独立审查，未改 Bash 执行分支。
 - 下一步完成 app-wide reset 协调和可信收尾，再推进入队快照与活动 run 的下一轮设置、Bash 和剩余 UI。已静态确认 Bash 的 `sandbox=None` 仍可创建 Broker/context 并在底层重新套 Seatbelt，必须在凭据创建前分支，不能只删除 bindings 拒绝条件；本批未改该路径。整卡未 READY，Issue 保持开放/In progress。
 
 ### 版本变更
