@@ -4,7 +4,7 @@
 
 - Issue：<https://github.com/puzige/vega/issues/505>（`[Bug] 模型列表没有展示providers`）
 - 基线：`410758d3`（`origin/master`）
-- 分支 / worktree：`fix/505-model-providers` / `worktrees/vega-505-model-providers`
+- 分支 / worktree：`feat/505-model-providers` / `worktrees/vega-505-model-providers`
 
 ## 问题与根因
 
