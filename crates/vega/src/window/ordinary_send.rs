@@ -1,5 +1,7 @@
 use super::*;
-use crate::ordinary_submission::{OrdinaryLaunch, finish_root};
+use crate::ordinary_submission::{
+    OrdinaryLaunch, OrdinaryMaterialization, OrdinaryPreparationOwner, finish_root,
+};
 use vega_conversation::agent::OrdinaryRun;
 
 const ORDINARY_POLL: std::time::Duration = std::time::Duration::from_millis(4);
@@ -15,8 +17,14 @@ pub(super) struct OrdinaryPreparationRequest {
     cancel: tokio_util::sync::CancellationToken,
 }
 
+struct OrdinaryPreparationOutcome {
+    materialized: Option<OrdinaryMaterialization>,
+    launch: Result<OrdinaryLaunch, SubmissionFailure>,
+}
+
 impl OrdinaryPreparationRequest {
-    fn prepare(self) -> Result<OrdinaryLaunch, SubmissionFailure> {
+    fn prepare(self) -> OrdinaryPreparationOutcome {
+        let mut materialized = None;
         let result = (|| {
             if self.cancel.is_cancelled() {
                 return Err(SubmissionFailure::Cancelled);
@@ -43,6 +51,13 @@ impl OrdinaryPreparationRequest {
                 self.draft.as_ref(),
             )
             .map_err(|_| SubmissionFailure::PreparationFailed)?;
+            materialized = self.draft.as_ref().map(|source| {
+                OrdinaryMaterialization::new(
+                    self.run.worker.attempt_id(),
+                    source.clone(),
+                    thread.clone(),
+                )
+            });
             let workspace = vega_conversation::threads::task_workspace_root(&store, &thread_id)
                 .map_err(|_| SubmissionFailure::PreparationFailed)?;
             if let Some((service, intent)) = &self.skills {
@@ -58,7 +73,7 @@ impl OrdinaryPreparationRequest {
         let _ = self
             .registered
             .complete(result.as_ref().map(|_| ()).map_err(|failure| *failure));
-        match result {
+        let launch = match result {
             Ok((workspace, thread)) => Ok(OrdinaryLaunch::new(
                 self.run,
                 self.database,
@@ -70,7 +85,8 @@ impl OrdinaryPreparationRequest {
                 finish_root(self.run, Err(error));
                 Err(error)
             }
-        }
+        };
+        OrdinaryPreparationOutcome { materialized, launch }
     }
 }
 
@@ -97,6 +113,11 @@ impl VegaWindow {
             .ordinary_requests
             .contains(&request.request_id)
         {
+            return;
+        }
+        if self.agent_controller.ordinary_preparing.contains_key(&request.thread_id) {
+            stream.update(cx, ConversationStream::reject_composer_submission);
+            stream.update(cx, ConversationStream::apply_agent_busy);
             return;
         }
         let admission =
@@ -250,9 +271,6 @@ impl VegaWindow {
             stream.update(cx, ConversationStream::refresh_ordinary_submissions);
             return;
         }
-        self.agent_controller
-            .ordinary_preparing
-            .insert(thread_id.clone(), cancel.clone());
         let registered = match worker.register_worker() {
             Ok(registered) => registered,
             Err(_) => {
@@ -276,6 +294,11 @@ impl VegaWindow {
             stream.update(cx, ConversationStream::refresh_ordinary_submissions);
             return;
         };
+        let attempt = worker.attempt_id();
+        self.agent_controller.ordinary_preparing.insert(
+            thread_id.clone(),
+            OrdinaryPreparationOwner { attempt, cancel: cancel.clone() },
+        );
         self.agent_controller.preparation_stream = Some(stream.clone());
         stream.update(cx, |stream, cx| stream.set_trusted_action_busy(true, cx));
         let request = OrdinaryPreparationRequest {
@@ -327,25 +350,50 @@ impl VegaWindow {
                     if waiting {
                         return;
                     }
+                    if !this.agent_controller.ordinary_preparing.get(&thread_id)
+                        .is_some_and(|owner| owner.attempt == attempt)
+                    {
+                        return;
+                    }
                     this.agent_controller.ordinary_preparing.remove(&thread_id);
                     let released = this.trusted_actions.release(lease);
-                    if this.agent_controller.preparation_stream.as_ref() == Some(&stream) {
+                    if released && this.agent_controller.preparation_stream.as_ref() == Some(&stream) {
                         this.agent_controller.preparation_stream = None;
                         stream.update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
                     }
-                    if let Ok(Ok(launch)) = outcome {
-                        if !released {
-                            return;
+                    let Ok(outcome) = outcome else {
+                        return;
+                    };
+                    if let Some(materialized) = outcome.materialized {
+                        let current_route = this.owns_stream_request(&stream, &thread_id, cx);
+                        let opened = cx.global::<OpenedThread>().0.as_ref();
+                        let route = if current_route { opened } else { None };
+                        if let Some(projection) = materialized.reconcile(
+                            attempt,
+                            &mut this.draft,
+                            &stream.read(cx).thread_snapshot(),
+                            route,
+                        ) {
+                            if projection.stream {
+                                stream.update(cx, |stream, cx| {
+                                    stream.apply_thread(materialized.thread.clone(), cx);
+                                    stream.set_draft_route(false, cx);
+                                });
+                            }
+                            if projection.route {
+                                cx.set_global(OpenedThread(Some(materialized.thread)));
+                            }
+                            this.sidebar.update(cx, |sidebar, cx| sidebar.reload_sessions(cx));
                         }
-                        if !this.owns_stream_request(&stream, &thread_id, cx)
+                    }
+                    if let Ok(launch) = outcome.launch {
+                        if !released || launch.cancel.is_cancelled()
+                            || !this.owns_stream_request(&stream, &thread_id, cx)
+                            || this.is_draft_route(&thread_id)
                             || cx.global::<SettingsOpen>().0
                         {
                             return;
                         }
-                        if this.draft_for_route(&thread_id).is_some() {
-                            this.draft = None;
-                        }
-                        stream.update(cx, |stream, cx| stream.set_draft_route(false, cx));
                         let reasoning = observed.raw().reasoning().cloned();
                         this.start_agent_run_with_reasoning(
                             stream.clone(),
@@ -412,7 +460,8 @@ impl VegaWindow {
                 );
             }
             OrdinaryAction::Retry => {
-                if let Ok(worker) = submission.try_retry(request.attempt) {
+                if !self.agent_controller.ordinary_preparing.contains_key(&request.thread_id)
+                    && let Ok(worker) = submission.try_retry(request.attempt) {
                     self.prepare_ordinary(stream.clone(), submission, worker, cx);
                 }
             }

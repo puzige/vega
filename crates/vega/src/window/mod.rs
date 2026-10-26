@@ -374,8 +374,8 @@ impl VegaWindow {
         self.context_controller.cancel();
         self.window_alive.store(false, Ordering::SeqCst);
         self.agent_controller.queue_drain_waits.clear();
-        for (_, cancel) in self.agent_controller.ordinary_preparing.drain() {
-            cancel.cancel();
+        for (_, preparation) in self.agent_controller.ordinary_preparing.drain() {
+            preparation.cancel.cancel();
         }
         for (_, active) in self.agent_controller.active.drain() {
             if let Some(control) = &active.computer_use {

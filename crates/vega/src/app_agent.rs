@@ -412,7 +412,7 @@ impl Drop for QueueDrainWait {
 
 #[derive(Default)]
 pub(crate) struct AppAgentController {
-    pub(crate) ordinary_preparing: HashMap<String, tokio_util::sync::CancellationToken>,
+    pub(crate) ordinary_preparing: HashMap<String, crate::ordinary_submission::OrdinaryPreparationOwner>,
     pub(crate) ordinary_requests: HashSet<u64>,
     pub(crate) delegated_unbound: HashSet<String>,
     pub(crate) queue_streams: HashMap<String, Entity<ConversationStream>>,
@@ -491,8 +491,8 @@ impl AppAgentController {
         if let Some(wait) = self.queue_drain_waits.get(thread_id) {
             wait.cancel.cancel();
         }
-        if let Some(cancel) = self.ordinary_preparing.get(thread_id) {
-            cancel.cancel();
+        if let Some(preparation) = self.ordinary_preparing.get(thread_id) {
+            preparation.cancel.cancel();
         }
         if let Some(active) = self.active.get(thread_id) {
             if let Some(control) = &active.computer_use {

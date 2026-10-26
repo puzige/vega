@@ -423,10 +423,24 @@ pub fn prepare_submission_permission(
     {
         return Err(ConversationError::InvalidTaskIdentity);
     }
-    worker
-        .bind_permission_fence(fence)
+    let pending = worker
+        .stage_permission_fence(fence)
         .map_err(|_| ConversationError::InvalidTaskIdentity)?;
-    transaction.commit().map_err(storage_error)?;
+    match transaction.commit_with_rollback() {
+        Ok(()) => pending.publish(),
+        Err(vega_store::write_coordination::CommitFailure::RolledBack(error)) => {
+            if created.is_some()
+                && !matches!(vega_store::threads::find(store.conn(), &expected.id), Ok(None))
+            {
+                pending.mark_unknown();
+            }
+            return Err(storage_error(error));
+        }
+        Err(vega_store::write_coordination::CommitFailure::Unknown(error)) => {
+            pending.mark_unknown();
+            return Err(storage_error(error));
+        }
+    }
     Ok(thread)
 }
 

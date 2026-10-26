@@ -389,7 +389,8 @@ impl VegaWindow {
             .automation_controller
             .draft_creation
             .as_ref()
-            .is_some_and(|(thread, _)| thread == &draft.id);
+            .is_some_and(|(thread, _)| thread == &draft.id)
+            || self.agent_controller.ordinary_preparing.contains_key(&draft.id);
         let draft = if creating || draft.project_binding() == bound {
             draft
         } else {
@@ -920,6 +921,7 @@ impl VegaWindow {
             cx.set_global(defaults.clone());
             if let Some(draft) = self.draft.as_mut()
                 && default_model_changed
+                && !self.agent_controller.ordinary_preparing.contains_key(&draft.id)
                 && !self
                     .automation_controller
                     .draft_creation

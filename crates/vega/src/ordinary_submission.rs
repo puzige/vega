@@ -86,6 +86,55 @@ pub(crate) fn retire_context(id: SubmissionId) {
     }
 }
 
+pub(crate) struct OrdinaryPreparationOwner {
+    pub(crate) attempt: AttemptId,
+    pub(crate) cancel: CancellationToken,
+}
+
+pub(crate) struct OrdinaryMaterialization {
+    attempt: AttemptId,
+    source: Thread,
+    pub(crate) thread: Thread,
+}
+
+pub(crate) struct MaterializationProjection {
+    pub(crate) stream: bool,
+    pub(crate) route: bool,
+}
+
+impl OrdinaryMaterialization {
+    pub(crate) fn new(attempt: AttemptId, source: Thread, thread: Thread) -> Self {
+        Self {
+            attempt,
+            source,
+            thread,
+        }
+    }
+
+    pub(crate) fn reconcile(
+        &self,
+        owner: AttemptId,
+        draft: &mut Option<Thread>,
+        stream: &Thread,
+        route: Option<&Thread>,
+    ) -> Option<MaterializationProjection> {
+        if owner != self.attempt
+            || self.thread.id != self.source.id
+            || self.thread.project_id != self.source.project_id
+            || self.thread.default_permission.is_some()
+        {
+            return None;
+        }
+        if draft.as_ref() == Some(&self.source) {
+            *draft = None;
+        }
+        Some(MaterializationProjection {
+            stream: stream == &self.source,
+            route: route == Some(&self.source),
+        })
+    }
+}
+
 pub(crate) struct OrdinaryLaunch {
     run: Option<OrdinaryRun>,
     pub(crate) database: PathBuf,

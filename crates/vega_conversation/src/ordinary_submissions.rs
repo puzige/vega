@@ -434,6 +434,23 @@ struct SubmissionState {
     retired: bool,
 }
 
+pub(crate) struct PendingPermissionFence<'a> {
+    state: MutexGuard<'a, SubmissionState>,
+    fence: crate::types::PermissionFence,
+}
+
+impl PendingPermissionFence<'_> {
+    pub(crate) fn publish(mut self) {
+        self.state.permission_fence = Some(self.fence);
+    }
+
+    pub(crate) fn mark_unknown(mut self) {
+        if let Some(attempt) = self.state.attempts.last_mut() {
+            attempt.make_unknown();
+        }
+    }
+}
+
 struct SubmissionInner {
     id: SubmissionId,
     user_message_id: String,
@@ -814,10 +831,10 @@ fn retry_eligibility(state: &SubmissionState) -> RetryEligibility {
 }
 
 impl OrdinaryWorker {
-    pub(crate) fn bind_permission_fence(
+    pub(crate) fn stage_permission_fence(
         &self,
         fence: crate::types::PermissionFence,
-    ) -> Result<(), SubmissionError> {
+    ) -> Result<PendingPermissionFence<'_>, SubmissionError> {
         if !fence.is_valid()
             || fence.thread_id != self.submission.0.thread_id
             || fence.database_identity != self.submission.0.database.permission_fence_key()
@@ -825,15 +842,15 @@ impl OrdinaryWorker {
         {
             return Err(SubmissionError::AdmissionMismatch);
         }
-        let mut state = self.lock()?;
-        match &state.permission_fence {
-            Some(existing) if existing != &fence => Err(SubmissionError::AdmissionMismatch),
-            Some(_) => Ok(()),
-            None => {
-                state.permission_fence = Some(fence);
-                Ok(())
-            }
+        let state = self.lock()?;
+        if state
+            .permission_fence
+            .as_ref()
+            .is_some_and(|existing| existing != &fence)
+        {
+            return Err(SubmissionError::AdmissionMismatch);
         }
+        Ok(PendingPermissionFence { state, fence })
     }
 
     pub fn attempt_id(&self) -> AttemptId {
