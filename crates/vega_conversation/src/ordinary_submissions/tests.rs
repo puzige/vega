@@ -112,7 +112,8 @@ fn history_handoff_retains_incomplete_cleanup_as_a_reset_blocker() {
     ] {
         let store = Store::open(":memory:").expect("isolated store");
         let database = store.database_identity();
-        let (submission, worker) = begin(database, "thread");
+        let thread = Ulid::generate().to_string();
+        let (submission, worker) = begin(database, &thread);
         let attempt = worker.attempt_id();
         worker
             .bind_accepted_payload("accepted input".into())
@@ -137,14 +138,14 @@ fn history_handoff_retains_incomplete_cleanup_as_a_reset_blocker() {
         assert!(pause.owners_released().expect("owners released"));
         if cleanup == Some(Ok(())) {
             assert!(
-                super::for_thread(database, "thread")
+                super::for_thread(database, &thread)
                     .expect("retired registry")
                     .is_empty()
             );
             assert_eq!(require_database_settled(database, &pause), Ok(()));
         } else {
             assert_eq!(
-                super::for_thread(database, "thread")
+                super::for_thread(database, &thread)
                     .expect("retained evidence")
                     .len(),
                 1
