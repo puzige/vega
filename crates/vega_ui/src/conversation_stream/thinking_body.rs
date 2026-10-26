@@ -309,6 +309,7 @@ impl ThinkingBlock {
                 .into_any_element(),
             &self.source_copy,
             true,
+            self.message_actions_enabled,
         );
         VisibilityElement {
             content,

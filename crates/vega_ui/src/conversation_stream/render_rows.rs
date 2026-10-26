@@ -48,6 +48,12 @@ pub(crate) fn context_compaction_label(
     context_control::status_label_for(status, failure).to_owned()
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct MessageInteraction<'a> {
+    pub(crate) focus: &'a FocusHandle,
+    pub(crate) actions_enabled: bool,
+}
+
 pub(crate) fn render_entry(entry: &StreamEntry, window: &mut Window, cx: &mut App) -> AnyElement {
     render_entry_internal(entry, window, cx, None, false)
 }
@@ -56,9 +62,9 @@ pub(crate) fn render_entry_with_selection(
     entry: &StreamEntry,
     window: &mut Window,
     cx: &mut App,
-    focus: &FocusHandle,
+    interaction: MessageInteraction<'_>,
 ) -> AnyElement {
-    render_entry_internal(entry, window, cx, Some(focus), false)
+    render_entry_internal(entry, window, cx, Some(interaction), false)
 }
 
 pub(crate) fn render_stream_entry(
@@ -67,9 +73,9 @@ pub(crate) fn render_stream_entry(
     process_top: f32,
     window: &mut Window,
     cx: &mut App,
-    focus: &FocusHandle,
+    interaction: MessageInteraction<'_>,
 ) -> AnyElement {
-    let body = render_entry_internal(entry, window, cx, Some(focus), suppress_run_notices);
+    let body = render_entry_internal(entry, window, cx, Some(interaction), suppress_run_notices);
     if matches!(
         entry,
         StreamEntry::Tool { .. }
@@ -148,7 +154,7 @@ fn render_entry_internal(
     entry: &StreamEntry,
     window: &mut Window,
     cx: &mut App,
-    focus: Option<&FocusHandle>,
+    interaction: Option<MessageInteraction<'_>>,
     suppress_run_notices: bool,
 ) -> AnyElement {
     let colors = theme(cx).colors;
@@ -184,12 +190,19 @@ fn render_entry_internal(
             )
         }
         StreamEntry::User { lines, copy } => {
-            let body = if let Some(focus) = focus {
-                selectable_user_message(lines, copy, focus, &colors, window, cx)
+            let body = if let Some(interaction) = interaction {
+                selectable_user_message(lines, copy, interaction, &colors, window, cx)
             } else {
                 user_message_item(lines, &colors)
             };
-            message_with_copy(body, copy, copy.id, true, colors)
+            message_with_copy(
+                body,
+                copy,
+                copy.id,
+                true,
+                colors,
+                interaction.is_none_or(|interaction| interaction.actions_enabled),
+            )
         }
         StreamEntry::UserImages { images } => attachments::render_user_images(images, cx),
         StreamEntry::Screenshot { card } => card.clone().into_any_element(),
@@ -199,12 +212,12 @@ fn render_entry_internal(
             copy,
             ..
         } => {
-            if let Some(focus) = focus {
+            if let Some(interaction) = interaction {
                 selectable_markdown_message(
                     model,
                     failure.filter(|_| !suppress_run_notices),
                     copy,
-                    focus,
+                    interaction,
                     &colors,
                     window,
                     cx,
@@ -395,6 +408,7 @@ fn markdown_message_item(
             colors,
             code_owner,
             None,
+            true,
             |line, index| {
                 let id = format!("{id_prefix}-markdown-{message_id}-line-{index}");
                 let marker =
@@ -529,13 +543,14 @@ fn user_line_height() -> Pixels {
 fn selectable_user_message(
     lines: &[StreamLine],
     copy: &MessageCopy,
-    focus: &FocusHandle,
+    interaction: MessageInteraction<'_>,
     colors: &ThemeColors,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     let selection_color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
-    let mut document = SelectionDocumentBuilder::new(copy.clone(), focus.clone(), selection_color);
+    let mut document =
+        SelectionDocumentBuilder::new(copy.clone(), interaction.focus.clone(), selection_color);
     let mut body = div()
         .max_w(gpui_kit::relative(Layout::CONVERSATION_USER_RATIO))
         .bg(colors.conversation_bubble)
@@ -580,14 +595,19 @@ fn selectable_user_message(
         .items_end()
         .child(body)
         .into_any_element();
-    selection_context_menu(document.wrap(body, window, cx), copy, false)
+    selection_context_menu(
+        document.wrap(body, window, cx),
+        copy,
+        false,
+        interaction.actions_enabled,
+    )
 }
 
 fn selectable_markdown_message(
     model: &StreamModel,
     failure: Option<RunFailureKind>,
     copy: &MessageCopy,
-    focus: &FocusHandle,
+    interaction: MessageInteraction<'_>,
     colors: &ThemeColors,
     window: &mut Window,
     cx: &mut App,
@@ -599,7 +619,13 @@ fn selectable_markdown_message(
         .flex()
         .flex_col()
         .child(selectable_markdown_content(
-            model, copy, focus, colors, false, window, cx,
+            model,
+            copy,
+            interaction,
+            colors,
+            false,
+            window,
+            cx,
         ))
         .children(
             failure.map(|reason| div().child(plain_error_notice(reason.message(), colors.danger))),
@@ -610,14 +636,15 @@ fn selectable_markdown_message(
 pub(crate) fn selectable_markdown_content(
     model: &StreamModel,
     copy: &MessageCopy,
-    focus: &FocusHandle,
+    interaction: MessageInteraction<'_>,
     colors: &ThemeColors,
     copy_original: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     let selection_color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
-    let mut document = SelectionDocumentBuilder::new(copy.clone(), focus.clone(), selection_color);
+    let mut document =
+        SelectionDocumentBuilder::new(copy.clone(), interaction.focus.clone(), selection_color);
     let body = div().w_full().min_w_0().flex_shrink_0().flex().flex_col();
     let mut previous: Option<(u64, LineKind, Option<Arc<StreamCodeBlock>>)> = None;
     let selection = document.code_drag_selection(window, cx);
@@ -626,6 +653,7 @@ pub(crate) fn selectable_markdown_content(
         colors,
         Some(copy.id),
         Some(selection),
+        interaction.actions_enabled,
         |line, index| {
             if !matches!(line.kind, LineKind::Rule)
                 && let Some((previous_block, previous_kind, previous_code)) = &previous
@@ -662,6 +690,7 @@ pub(crate) fn selectable_markdown_content(
         document.wrap(body.children(blocks).into_any_element(), window, cx),
         copy,
         copy_original,
+        interaction.actions_enabled,
     )
 }
 
@@ -696,6 +725,7 @@ fn markdown_blocks(
     colors: &ThemeColors,
     code_owner: Option<u64>,
     selection: Option<CodeDragSelection>,
+    actions_enabled: bool,
     mut render: impl FnMut(&StreamLine, usize) -> (Option<AnyElement>, AnyElement),
 ) -> Vec<AnyElement> {
     let lines: Vec<_> = model
@@ -736,7 +766,7 @@ fn markdown_blocks(
             code_ordinal += 1;
             let header = code_owner
                 .zip(line.code_block.as_ref())
-                .map(|(owner, code)| code_header(code, owner, ordinal, colors));
+                .map(|(owner, code)| code_header(code, owner, ordinal, colors, actions_enabled));
             body.child(
                 div()
                     .w_full()
@@ -883,6 +913,7 @@ fn code_header(
     owner: u64,
     ordinal: usize,
     colors: &ThemeColors,
+    actions_enabled: bool,
 ) -> AnyElement {
     let selector = format!("markdown-code-copy-{owner}-{ordinal}");
     let receipt_id = format!(
@@ -906,19 +937,21 @@ fn code_header(
                 .text_color(colors.text_secondary)
                 .children(code.language.clone()),
         )
-        .child(CopyReceiptButton::new(
-            receipt_id.into(),
-            CopySource::Code(code.code.clone()),
-            vega_i18n::t("ui.copy_code"),
-            *colors,
-            |button| {
-                button
-                    .id(gpui_kit::SharedString::from(selector))
-                    .size(px(Layout::COPY_ACTION_SIZE))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .focus_visible(|style| style.bg(colors.bg_active))
-            },
-        ))
+        .when(actions_enabled, |header| {
+            header.child(CopyReceiptButton::new(
+                receipt_id.into(),
+                CopySource::Code(code.code.clone()),
+                vega_i18n::t("ui.copy_code"),
+                *colors,
+                |button| {
+                    button
+                        .id(gpui_kit::SharedString::from(selector))
+                        .size(px(Layout::COPY_ACTION_SIZE))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .focus_visible(|style| style.bg(colors.bg_active))
+                },
+            ))
+        })
         .into_any_element()
 }
 
@@ -968,6 +1001,7 @@ pub(super) fn selection_context_menu(
     body: AnyElement,
     copy: &MessageCopy,
     copy_original: bool,
+    enabled: bool,
 ) -> AnyElement {
     use gpui_kit::component::menu::PopupMenuItem;
 
@@ -987,6 +1021,7 @@ pub(super) fn selection_context_menu(
                 .on_click(move |_, _, cx| selected.copy_selected_text(cx)),
         )
     })
+    .enabled(enabled)
     .into_any_element()
 }
 
@@ -1545,6 +1580,7 @@ pub(super) fn message_with_copy(
     id: u64,
     user: bool,
     colors: ThemeColors,
+    actions_enabled: bool,
 ) -> AnyElement {
     if !copy.has_text() {
         return body;
@@ -1560,36 +1596,38 @@ pub(super) fn message_with_copy(
         .flex_col()
         .when(!user, |body| body.pb(px(Layout::MESSAGE_COPY_FOOTER)))
         .child(body)
-        .child(
-            div()
-                .absolute()
-                .when(user, |row| {
-                    row.right_0().bottom(px(
-                        Layout::CONVERSATION_USER_BOTTOM - Layout::MESSAGE_COPY_FOOTER
-                    ))
-                })
-                .when(!user, |row| row.left_0().bottom_0())
-                .flex()
-                .child(CopyReceiptButton::new(
-                    format!("message-copy-receipt-{}", copy.id).into(),
-                    CopySource::Message(copy.clone()),
-                    if user {
-                        vega_i18n::t("ui.copy_message")
-                    } else {
-                        vega_i18n::t("ui.copy_final_reply")
-                    },
-                    colors,
-                    |button| {
-                        button
-                            .id(("message-copy", id))
-                            .size(px(Layout::COPY_ACTION_SIZE))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .opacity(0.)
-                            .group_hover(group, |style| style.opacity(1.))
-                            .focus_visible(|style| style.opacity(1.).bg(colors.bg_active))
-                    },
-                )),
-        )
+        .when(actions_enabled, |body| {
+            body.child(
+                div()
+                    .absolute()
+                    .when(user, |row| {
+                        row.right_0().bottom(px(
+                            Layout::CONVERSATION_USER_BOTTOM - Layout::MESSAGE_COPY_FOOTER
+                        ))
+                    })
+                    .when(!user, |row| row.left_0().bottom_0())
+                    .flex()
+                    .child(CopyReceiptButton::new(
+                        format!("message-copy-receipt-{}", copy.id).into(),
+                        CopySource::Message(copy.clone()),
+                        if user {
+                            vega_i18n::t("ui.copy_message")
+                        } else {
+                            vega_i18n::t("ui.copy_final_reply")
+                        },
+                        colors,
+                        |button| {
+                            button
+                                .id(("message-copy", id))
+                                .size(px(Layout::COPY_ACTION_SIZE))
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .opacity(0.)
+                                .group_hover(group, |style| style.opacity(1.))
+                                .focus_visible(|style| style.opacity(1.).bg(colors.bg_active))
+                        },
+                    )),
+            )
+        })
         .into_any_element()
 }
 
