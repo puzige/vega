@@ -765,3 +765,13 @@
 "ui.permission_reset_failed_notice" = "权限重置未能启动。"
 "ui.permission_reset_open_settings" = "继续处理重置"
 "ui.permission_reset_queue" = "排队消息需要重新授权，请编辑后重新发送。"
+
+"ui.permission_automation_action" = "授权完全访问"
+"ui.permission_automation_resume_action" = "授权并恢复"
+"ui.permission_automation_title" = "允许此{kind}使用完全访问？"
+"ui.permission_automation_interval" = "每 {seconds} 秒重复执行，恢复后最长运行 7 天。"
+"ui.permission_automation_goal" = "可能自动继续执行，直至完成或暂停。"
+"ui.permission_automation_budget" = "Token 预算：{tokens}"
+"ui.permission_automation_scope" = "适用于此自动化的后续运行，包括你离开时的重复执行。会话本身也须持有有效的完全访问授权。修改任务或会话权限后需要重新确认。"
+"ui.permission_automation_enable" = "授权此自动化"
+"ui.permission_automation_enable_resume" = "授权并恢复此自动化"

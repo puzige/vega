@@ -245,6 +245,7 @@ impl ConversationStream {
             )
             .children(self.active_user_question.clone())
             .child(self.render_automation(cx))
+            .child(self.render_automation_permission(cx))
             .child(self.render_thread_permission_feedback(cx))
             .child(
                 div()
@@ -510,7 +511,7 @@ impl ConversationStream {
         } else {
             permission_label(mode).to_string()
         };
-        let enabled = !self.permission_editor.busy();
+        let enabled = !self.permission_change_pending();
 
         let glyph = permission_icon(mode);
 
@@ -555,7 +556,7 @@ impl ConversationStream {
                     .on_key_down(
                         cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
                             if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                && !this.permission_editor.busy()
+                                && !this.permission_change_pending()
                             {
                                 this.open_permission_picker(window, cx);
                                 cx.stop_propagation();
@@ -775,7 +776,7 @@ impl ConversationStream {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.permission_editor.busy() {
+        if self.permission_change_pending() {
             return;
         }
         let open = !self.permission_picker_open;
@@ -1600,6 +1601,7 @@ impl Render for ConversationStream {
         if !self.reading_preview {
             self.reconcile_pending_focus(window, cx);
             self.prepare_thread_permission_focus(window, cx);
+            self.prepare_automation_permission_focus(window, cx);
         }
         if !self.context_usage_focus.contains_focused(window, cx) {
             self.context_usage_dismissed = false;

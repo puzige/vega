@@ -111,6 +111,34 @@ impl VegaWindow {
         cx: &mut Context<Self>,
     ) {
         ensure_global(cx);
+        if stream.read(cx).permission_change_pending() {
+            self.automation_edit_error(
+                &stream,
+                editor.as_ref(),
+                vega_i18n::t("app.automation.saving").into(),
+                cx,
+            );
+            return;
+        }
+        if let AutomationCommand::Control(kind, AutomationControl::Resume) = &command
+            && stream.read(cx).thread_snapshot().permission_mode == PermissionMode::FullAccess
+            && stream.read(cx).task_backend() == TaskBackend::Native
+        {
+            let task = stream
+                .read(cx)
+                .automation_projection()
+                .tasks
+                .iter()
+                .find(|task| task.kind == *kind)
+                .cloned();
+            if let Some(task) = task {
+                stream.update(cx, |stream, cx| {
+                    stream.reject_composer_submission(cx);
+                    stream.request_automation_permission(task, true, original, cx);
+                });
+            }
+            return;
+        }
         if stream.read(cx).task_backend() != TaskBackend::Native {
             self.automation_edit_error(
                 &stream,

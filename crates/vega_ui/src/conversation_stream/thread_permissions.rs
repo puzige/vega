@@ -75,6 +75,7 @@ impl ConversationStream {
         self.interrupted_tail = None;
         self.composer_resume_pending = false;
         self.permissions_revoked = true;
+        self.invalidate_automation_permission(cx);
         self.timeout_permission(cx);
         self.cancel_user_questions(cx);
         self.invalidate_composer_prediction(cx);
@@ -90,7 +91,7 @@ impl ConversationStream {
         mode: PermissionMode,
         cx: &mut Context<Self>,
     ) -> Option<(u64, Thread)> {
-        if self.permission_editor.busy()
+        if self.permission_change_pending()
             || matches!(self.permission_editor.phase, Phase::Failed(_))
             || self.model_selection_pending.is_some()
             || self.trusted_action_busy

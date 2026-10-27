@@ -21,6 +21,7 @@ pub(super) struct ResetController {
     session: Option<Session>,
     lease: Option<TrustedActionToken>,
     scheduler_ready: Option<bool>,
+    notice_focus: Option<FocusHandle>,
 }
 
 impl VegaWindow {

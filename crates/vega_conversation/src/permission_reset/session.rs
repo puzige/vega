@@ -188,6 +188,9 @@ impl PermissionResetSession {
             "SELECT thread_id FROM messages WHERE status='streaming' LIMIT 1",
             "SELECT thread_id FROM automation_runs WHERE finished=0 LIMIT 1",
             "SELECT thread_id FROM credential_continuations WHERE state IN ('claimed','unknown') LIMIT 1",
+            "SELECT child_thread_id FROM delegated_executions WHERE state IN ('running','cancelling') LIMIT 1",
+            "SELECT child_thread_id FROM delegated_execution_recovery WHERE release_state IN ('held','quarantined') LIMIT 1",
+            "SELECT thread_id FROM command_scope_audits WHERE state IN ('consumed','unknown') LIMIT 1",
         ] {
             let mut statement = store.conn().prepare(sql).ok()?;
             let mut rows = statement

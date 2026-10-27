@@ -144,13 +144,18 @@ impl VegaWindow {
     }
 
     pub(in crate::window) fn render_permission_reset_notice(
-        &self,
+        &mut self,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         if !self.permission_reset.projection.authority_blocked() {
             return None;
         }
         let colors = theme(cx).colors;
+        let focus = self
+            .permission_reset
+            .notice_focus
+            .get_or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone();
         let key = if self.permission_reset.session.is_some() {
             "ui.permission_reset_paused_notice"
         } else {
@@ -171,7 +176,9 @@ impl VegaWindow {
                         .id("permission-reset-return-settings")
                         .role(gpui_kit::Role::Button)
                         .aria_label(vega_i18n::t("ui.permission_reset_open_settings"))
+                        .track_focus(&focus)
                         .tab_stop(true)
+                        .focus_visible(move |style| style.border_1().border_color(colors.accent))
                         .cursor_pointer()
                         .rounded(px(4.0))
                         .px_2()

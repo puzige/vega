@@ -495,6 +495,43 @@ impl VegaWindow {
         .detach();
         cx.subscribe(
             &view,
+            |this, stream, request: &AutomationPermissionRequested, cx| {
+                this.automation_permission_work(
+                    stream.clone(),
+                    super::automation_permission::PermissionWork::Prepare(Box::new(
+                        request.clone(),
+                    )),
+                    cx,
+                );
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &view,
+            |this, stream, request: &AutomationPermissionConfirmed, cx| {
+                this.automation_permission_work(
+                    stream.clone(),
+                    super::automation_permission::PermissionWork::Confirm(Box::new(
+                        request.clone(),
+                    )),
+                    cx,
+                );
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &view,
+            |this, stream, request: &AutomationPermissionReloadRequested, cx| {
+                this.automation_permission_work(
+                    stream.clone(),
+                    super::automation_permission::PermissionWork::Reload(request.clone()),
+                    cx,
+                );
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &view,
             |this, stream, request: &PendingQueueRequested, cx| {
                 this.pending_queue_requested(stream.clone(), request, cx)
             },

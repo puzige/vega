@@ -1,3 +1,4 @@
+mod automation_permission;
 mod privacy;
 mod thread_permissions;
 pub use privacy::{PrivacyAction, PrivacyRequested};

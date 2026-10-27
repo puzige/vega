@@ -153,6 +153,43 @@ pub struct AutomationPermissionAuthorization {
     pub fence: super::PermissionFence,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutomationPermissionChange {
+    pub(crate) database: super::DatabaseIdentity,
+    pub(crate) authorization: AutomationPermissionAuthorization,
+    pub(crate) task: AutomationTask,
+    pub(crate) resume: bool,
+}
+
+impl AutomationPermissionChange {
+    pub fn task(&self) -> &AutomationTask {
+        &self.task
+    }
+    pub fn resumes_task(&self) -> bool {
+        self.resume
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutomationPermissionConfirmed {
+    pub operation: u64,
+    pub change: AutomationPermissionChange,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutomationPermissionRequested {
+    pub operation: u64,
+    pub source: super::Thread,
+    pub task: AutomationTask,
+    pub resume: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutomationPermissionReloadRequested {
+    pub operation: u64,
+    pub thread_id: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AutomationProjection {
     pub tasks: Vec<AutomationTask>,

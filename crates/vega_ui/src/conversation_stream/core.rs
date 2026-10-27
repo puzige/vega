@@ -22,6 +22,7 @@ impl ModelPickerLevel {
 /// per open thread; rebuilt by the window root when another thread opens.
 pub struct ConversationStream {
     pub(crate) permission_editor: super::thread_permissions::PermissionEditor,
+    pub(crate) automation_permission: super::automation_permission::AutomationPermissionUi,
     pub(crate) permissions_revoked: bool,
     pub(crate) ordinary: Vec<super::ordinary_submissions::OrdinaryRow>,
     pub(crate) prediction_waiting_for_queue: bool,
@@ -429,6 +430,7 @@ impl ConversationStream {
                 cx.notify();
                 this.timeout_permission(cx);
                 this.cancel_thread_permission_change(cx);
+                this.cancel_automation_permission(cx);
             }
         })
         .detach();
@@ -445,6 +447,7 @@ impl ConversationStream {
                 this.cancel_image_import(cx);
                 this.timeout_permission(cx);
                 this.cancel_thread_permission_change(cx);
+                this.cancel_automation_permission(cx);
             }
         })
         .detach();
@@ -479,6 +482,7 @@ impl ConversationStream {
         let computer_use_task = TaskContext::new(&thread.id);
         Self {
             permission_editor: super::thread_permissions::PermissionEditor::new(cx),
+            automation_permission: super::automation_permission::AutomationPermissionUi::new(cx),
             permissions_revoked: false,
             prediction_waiting_for_queue: false,
             prediction_owner: None,

@@ -226,7 +226,7 @@ impl ConversationStream {
 
     fn composer_resume_available(&self, cx: &App) -> bool {
         self.thread.backend == TaskBackend::Native
-            && !self.permission_editor.busy()
+            && !self.permission_change_pending()
             && self.interrupted_tail.is_some()
             && !self.reading_preview
             && !self.actions.running
@@ -494,7 +494,7 @@ impl ConversationStream {
             self.input.read(cx).focus_handle(cx),
             self.action_focus[0].clone(),
         ];
-        if self.thread.backend == TaskBackend::Native && !self.permission_editor.busy() {
+        if self.thread.backend == TaskBackend::Native && !self.permission_change_pending() {
             controls.push(self.permission_editor.trigger.clone());
         }
         if self.thread.backend == TaskBackend::Native && !self.entries.is_empty() {

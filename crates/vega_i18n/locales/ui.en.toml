@@ -765,3 +765,13 @@
 "ui.permission_reset_failed_notice" = "Permission reset could not start."
 "ui.permission_reset_open_settings" = "Continue reset"
 "ui.permission_reset_queue" = "Queued messages need fresh authorization. Edit and submit them again."
+
+"ui.permission_automation_action" = "Authorize full access"
+"ui.permission_automation_resume_action" = "Authorize and resume"
+"ui.permission_automation_title" = "Allow full access for this {kind}?"
+"ui.permission_automation_interval" = "Repeats every {seconds} seconds, for up to 7 days when resumed."
+"ui.permission_automation_goal" = "May continue automatically until completed or paused."
+"ui.permission_automation_budget" = "Token budget: {tokens}"
+"ui.permission_automation_scope" = "Applies to future runs of this automation, including repeats while you are away. The conversation must also have a current full-access authorization. Task edits and conversation permission changes require a new confirmation."
+"ui.permission_automation_enable" = "Authorize this automation"
+"ui.permission_automation_enable_resume" = "Authorize and resume this automation"

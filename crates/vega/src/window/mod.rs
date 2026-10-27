@@ -20,6 +20,7 @@ mod agent;
 mod artifact;
 mod automation;
 mod automation_editor;
+mod automation_permission;
 mod branch;
 mod commit;
 mod commit_reconcile;
