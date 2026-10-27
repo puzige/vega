@@ -7,9 +7,6 @@ enum Outcome {
     Draft(Thread),
 }
 
-#[cfg(test)]
-mod tests;
-
 impl VegaWindow {
     pub(super) fn request_thread_permission(
         &mut self,

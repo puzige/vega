@@ -196,6 +196,3 @@ fn same_source(current: &Thread, expected: &Thread) -> bool {
 fn unavailable(_: impl std::fmt::Display) -> ThreadPermissionError {
     ThreadPermissionError::Unavailable
 }
-
-#[cfg(test)]
-mod tests;

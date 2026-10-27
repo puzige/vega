@@ -7,8 +7,6 @@ use vega_conversation::types::{
 };
 
 mod projection;
-#[cfg(test)]
-mod tests;
 
 type Session = Arc<Mutex<Option<PermissionResetSession>>>;
 

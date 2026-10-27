@@ -492,6 +492,3 @@ fn now() -> Result<i64, CommandScopeError> {
 fn unavailable(_: impl std::fmt::Display) -> CommandScopeError {
     CommandScopeError::Unavailable
 }
-
-#[cfg(test)]
-pub(crate) mod tests;

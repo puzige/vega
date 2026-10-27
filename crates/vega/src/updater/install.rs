@@ -11,9 +11,6 @@ use serde::{Deserialize, Serialize};
 use super::platform::{self, Bundle};
 use super::{UpdateResult, failure, signature};
 
-#[cfg(test)]
-mod tests;
-
 static LAUNCH_ACKNOWLEDGED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy)]

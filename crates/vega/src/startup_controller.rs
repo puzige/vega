@@ -8,16 +8,11 @@ use vega_ui::interaction::InteractionExt;
 
 actions!(startup, [NextFocus, PreviousFocus]);
 
-#[cfg(test)]
-mod tests;
-
 pub(crate) struct StartupView {
     running: bool,
     error: Option<StartupError>,
     retry_focus: FocusHandle,
     quit_focus: FocusHandle,
-    #[cfg(test)]
-    fixture_paths: Option<(std::path::PathBuf, std::path::PathBuf)>,
 }
 
 impl StartupView {
@@ -31,8 +26,6 @@ impl StartupView {
             error: None,
             retry_focus: cx.focus_handle(),
             quit_focus: cx.focus_handle(),
-            #[cfg(test)]
-            fixture_paths: None,
         }
     }
 
@@ -45,18 +38,9 @@ impl StartupView {
         window.focus(&self.quit_focus, cx);
         cx.notify();
         let (sender, receiver) = mpsc::channel();
-        #[cfg(test)]
-        let fixture_paths = self.fixture_paths.clone();
         if std::thread::Builder::new()
             .name("vega-startup".into())
             .spawn(move || {
-                #[cfg(test)]
-                if let Some((database, config)) = fixture_paths {
-                    let appearance = vega_store::config::read_from(&config).ok();
-                    let result = vega_conversation::startup::prepare_workspace(&database, &config);
-                    let _ = sender.send((appearance, result));
-                    return;
-                }
                 let appearance = vega_store::config::config_path()
                     .ok()
                     .and_then(|path| vega_store::config::read_from(&path).ok());

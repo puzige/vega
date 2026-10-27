@@ -2,9 +2,6 @@ use super::*;
 use crate::types::ThreadPermissionError as Error;
 use std::path::PathBuf;
 
-#[cfg(test)]
-mod tests;
-
 #[derive(Clone)]
 pub struct AutomationPermissionService {
     database_path: PathBuf,

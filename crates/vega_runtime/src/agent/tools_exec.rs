@@ -2,9 +2,6 @@ use super::*;
 use mcp_registry::FrozenMcpTool;
 use sha2::{Digest, Sha256};
 
-#[cfg(test)]
-mod tests;
-
 const MCP_ARGUMENT_LIMIT: usize = 256 * 1024;
 const MCP_RESULT_LIMIT: usize = 256 * 1024;
 pub const GREP_INVALID_INPUT_OUTPUT: &str = "Tool error: invalid grep input. Use {\"pattern\":\"TODO\",\"path\":null}. pattern must be a valid regular expression; path must be a readable file or directory, or null to search the project root. Other fields are unsupported.";

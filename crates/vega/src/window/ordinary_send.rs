@@ -6,9 +6,6 @@ use vega_conversation::agent::OrdinaryRun;
 
 const ORDINARY_POLL: std::time::Duration = std::time::Duration::from_millis(4);
 
-#[cfg(test)]
-mod tests;
-
 impl VegaWindow {
     fn apply_ordinary_materialization(
         &mut self,

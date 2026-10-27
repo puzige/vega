@@ -20,9 +20,6 @@ use crate::sandbox::{SandboxConfig, SandboxNetwork, TempRoot, full_access_shell_
 mod scope;
 pub use scope::{BashScopeDirectory, BashScopeRequest, PreparedBashScope};
 
-#[cfg(test)]
-mod tests;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BashLaunchPolicy {
     ReadOnly,

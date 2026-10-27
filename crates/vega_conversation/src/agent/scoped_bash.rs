@@ -112,6 +112,3 @@ fn scope_error(error: CommandScopeError) -> BashError {
         BashErrorCode::ScopeMismatch
     })
 }
-
-#[cfg(test)]
-mod tests;

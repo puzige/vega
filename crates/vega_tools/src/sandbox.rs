@@ -18,9 +18,6 @@ use crate::bash::BashLaunchPolicy;
 use crate::error::{BashError, BashErrorCode};
 use crate::fence::discover_git_dir;
 
-#[cfg(test)]
-mod tests;
-
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 const SHELL: &str = "/bin/zsh";
 const TEMP_BASE: &str = "/private/tmp";

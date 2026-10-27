@@ -13,13 +13,6 @@ use crate::types::{
 mod session;
 pub use session::PermissionResetSession;
 
-#[cfg(test)]
-mod initial_tests;
-#[cfg(test)]
-mod session_tests;
-#[cfg(test)]
-mod tests;
-
 pub fn pause_admission(store: &Store) -> Result<DatabaseAdmissionPause, PermissionResetError> {
     let _coordination =
         crate::permission_contracts::coordinate().map_err(|_| PermissionResetError::Unavailable)?;

@@ -1,0 +1,246 @@
+{
+  "head": "78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe",
+  "source_git_tree": "1d27c4103e7933ddaec4572695841eb968ed2756",
+  "definitions": 127,
+  "by_crate": {
+    "vega": 17,
+    "vega_conversation": 88,
+    "vega_runtime": 2,
+    "vega_store": 7,
+    "vega_tools": 11,
+    "vega_ui": 2
+  },
+  "sources": [
+    {
+      "path": "crates/vega/src/startup_controller/tests.rs",
+      "definitions": 1,
+      "sha256": "f4b5f12143509f29b862209f2f95a331c5a6c83eb5dd80f46129310dc42af2c8",
+      "git_blob": "cb8659114e977c6a94ff7d5dbbf224198ca8b51e",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega/src/startup_controller/tests.rs"
+    },
+    {
+      "path": "crates/vega/src/updater/install/tests.rs",
+      "definitions": 5,
+      "sha256": "4bd1c1197d67080435aa82845bac9672257c8ad155c80dcf0e8b19b0eb30f617",
+      "git_blob": "5a8fabfe5081c1676e8834f413bba4852a893716",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega/src/updater/install/tests.rs"
+    },
+    {
+      "path": "crates/vega/src/window/automation_permission/tests.rs",
+      "definitions": 1,
+      "sha256": "d94e6602af4271c36e89e45b6fb89cd4c4d2f7fab205cb04af650034a52a4c49",
+      "git_blob": "e68cb5243e6241f3f986966340eb51d17f4bb437",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega/src/window/automation_permission/tests.rs"
+    },
+    {
+      "path": "crates/vega/src/window/ordinary_send/tests.rs",
+      "definitions": 8,
+      "sha256": "b18a3df6ffff60a590ed868223b337903d2d4b606ddd7fab529e9c11c32d34ea",
+      "git_blob": "92f0d1ac5d16a38286b501a886d5c48f1219d71b",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega/src/window/ordinary_send/tests.rs"
+    },
+    {
+      "path": "crates/vega/src/window/permission_reset/tests.rs",
+      "definitions": 1,
+      "sha256": "5a0825fd921ef72f879e6e8f45023e3615c512bf0c16d0c5081e813a67ee3ae8",
+      "git_blob": "93fd6397bb8aec0d47261e6b43da899428d73001",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega/src/window/permission_reset/tests.rs"
+    },
+    {
+      "path": "crates/vega/src/window/thread_permissions/tests.rs",
+      "definitions": 1,
+      "sha256": "b1e49c5eb5b458dbd2d90ebfee5cf09b03a494ee95b8a1b085cdf0979a71bc38",
+      "git_blob": "4e9ec797fb70af6b048b35bb674d7ef088690098",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega/src/window/thread_permissions/tests.rs"
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/pipeline/tests.rs",
+      "definitions": 6,
+      "sha256": "0d6b00599ad557809aaa6dd3ebd85bf359f087f2822e2198cf151124d9eabe0a",
+      "git_blob": "19bf6632c8a30dee4872b1530847367e2785cd8d",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_conversation/src/agent/pipeline/tests.rs"
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/pipeline/tests/bash_output.rs",
+      "definitions": 2,
+      "sha256": "de3ab530ce220d31a40153665355b9f3dbe40820cb6e83366e90f46a864ecc4a",
+      "git_blob": "8cfab8a598e56658aeea2fe884799784a22f0bb3",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_conversation/src/agent/pipeline/tests/bash_output.rs"
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/pipeline/tests/bash_readonly.rs",
+      "definitions": 2,
+      "sha256": "02e2f1bd4281fbfff1852787e337a0b635a5b311cd39c1967f5f894c0e9b9e67",
+      "git_blob": "fd3764504c8fd17f8f9a769f982d3ba3c00c3017",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_conversation/src/agent/pipeline/tests/bash_readonly.rs"
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/pipeline/tests/credentials.rs",
+      "definitions": 7,
+      "sha256": "c9bc742346238ae39dca54772fbbc51bad2539ed9dee169a8c5fb1d70e7c2e6a",
+      "git_blob": "49ecf5794becb3e4fd896cfc1f5c3a9ab9e4fa18",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_conversation/src/agent/pipeline/tests/credentials.rs"
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/pipeline/tests/pending_authority.rs",
+      "definitions": 4,
+      "sha256": "a556e96c16ab8cd064cdc643c13dc4d17fbace25ab17520c023f0391240526c7",
+      "git_blob": "ededcbe5c2e36ac67c9c94b09c4601b0f4146ec7",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_conversation/src/agent/pipeline/tests/pending_authority.rs"
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/replay_sessions/tests.rs",
+      "definitions": 4,
+      "sha256": "fc9fcfd38ff5a966fbe9d087d9b2054750cf28d9149ad4ef76d642a45ae712ff",
+      "git_blob": "5fbeb9b2c12ff6e37346f7a0ec08546d582ccb79",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_conversation/src/agent/replay_sessions/tests.rs"
+    },
+    {
+      "path": "crates/vega_conversation/src/agent/scoped_bash/tests.rs",
+      "definitions": 1,
+      "sha256": "7e0960254b905e104af08d8fc83426168ab43eac92a30b1ed19d5678f2ddb193",
+      "git_blob": "0f0d0326eb3fd0e6e09b874e2f0f2474f78eac46",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_conversation/src/agent/scoped_bash/tests.rs"
+    },
+    {
+      "path": "crates/vega_conversation/src/automation/permission/tests.rs",
+      "definitions": 3,
+      "sha256": "f962ed591fbd2f4bcde21751bf1a6cb034900b282bf04eaedff8955dd4912c40",
+      "git_blob": "91bd8f6681305b439179171662cf29dc50a80ac3",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_conversation/src/automation/permission/tests.rs"
+    },
+    {
+      "path": "crates/vega_conversation/src/command_scope/tests.rs",
+      "definitions": 14,
+      "sha256": "33090c7c75f9cb603ed66715245e43919959f3d4e9a3ba6b3e411c1da9a1a290",
+      "git_blob": "1ad8522d887ce4cd8d3b645e445b02f0cb9aafac",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_conversation/src/command_scope/tests.rs"
+    },
+    {
+      "path": "crates/vega_conversation/src/ordinary_submissions/tests.rs",
+      "definitions": 5,
+      "sha256": "1e6930cc91c6fcfb6b277c03e229613a1ab5bff20154952735281a34f588575a",
+      "git_blob": "6fe0ad5d8258e45fd87cf93dda08a781368c7a55",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_conversation/src/ordinary_submissions/tests.rs"
+    },
+    {
+      "path": "crates/vega_conversation/src/permission_reset/initial_tests.rs",
+      "definitions": 8,
+      "sha256": "d3bdf4017ffc66e87754eba51343044c7a585dbedd8fceb953eba2ef3d0cd123",
+      "git_blob": "020d871a537dc932c3efa18373cca13cd936d7a3",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_conversation/src/permission_reset/initial_tests.rs"
+    },
+    {
+      "path": "crates/vega_conversation/src/permission_reset/session_tests.rs",
+      "definitions": 3,
+      "sha256": "27c4e279ef0e8a8fc1472344fb75cdf6ddc7839e2ab996ae2a4a34c7d80b83dc",
+      "git_blob": "a93526ff21ea6c5e27daa2d7c9ad60e23a976f10",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_conversation/src/permission_reset/session_tests.rs"
+    },
+    {
+      "path": "crates/vega_conversation/src/permission_reset/tests.rs",
+      "definitions": 3,
+      "sha256": "f316a1ae877cf286a6ad063f08fb28994024145e5cee55c742edad1ac911b795",
+      "git_blob": "ff903e222364956fcf547d30053ca756658576cd",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_conversation/src/permission_reset/tests.rs"
+    },
+    {
+      "path": "crates/vega_conversation/src/thread_permissions/tests.rs",
+      "definitions": 4,
+      "sha256": "7a0d2c81d5e9adcd674fce377b2e8f184c9e1676d525329d70ce6374640189dd",
+      "git_blob": "f1f2dcf244ef5125de2c8d2938f9010eec127194",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_conversation/src/thread_permissions/tests.rs"
+    },
+    {
+      "path": "crates/vega_conversation/tests/default_permission_authority.rs",
+      "definitions": 11,
+      "sha256": "5dd723248538c02701d13eef28367586ffb5e1fa0502201985567d831c295dbe",
+      "git_blob": "ba57e3b4e530fc6173232ab1811cfcce4fc316c9",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_conversation/tests/default_permission_authority.rs"
+    },
+    {
+      "path": "crates/vega_conversation/tests/permission_reset_recovery.rs",
+      "definitions": 6,
+      "sha256": "a7c971f50c13b038c33dedf76b8234e160ceb2b509f951206309380b8ec40f5d",
+      "git_blob": "97207b76a45a9f49af7ea84bc75b78ce0b8bb07a",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_conversation/tests/permission_reset_recovery.rs"
+    },
+    {
+      "path": "crates/vega_conversation/tests/startup_recovery.rs",
+      "definitions": 5,
+      "sha256": "b3235fa1e28fa44b1564967acf3381456ff47be17ee18f6a001c5c9d26c7e76f",
+      "git_blob": "5428522e3fd2d91c08d7b7acaf54a6cc13df8978",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_conversation/tests/startup_recovery.rs"
+    },
+    {
+      "path": "crates/vega_runtime/src/agent/tools_exec/tests.rs",
+      "definitions": 2,
+      "sha256": "f5aadf8e03f193a8e43caccdf2e9e768c7f743d9c0e53c3b29ca038a5f79e673",
+      "git_blob": "646c695e8e481ae329dd75a9494936bee5fbd049",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_runtime/src/agent/tools_exec/tests.rs"
+    },
+    {
+      "path": "crates/vega_store/tests/admission_reset.rs",
+      "definitions": 2,
+      "sha256": "999d7c8c4ae7df9174db688961ae62f2c51f4dbc4291a5126ef5ee9086982f62",
+      "git_blob": "c5461ac905f940c0d2c3d1b88c3b67a2ad4e25f9",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_store/tests/admission_reset.rs"
+    },
+    {
+      "path": "crates/vega_store/tests/permission_reset.rs",
+      "definitions": 5,
+      "sha256": "f5cf2fed92d2c5458ca91e1a75914ad12983f72718068e20654b101526d6860f",
+      "git_blob": "98e8be8f68a1e6f02ecaebdc31e41f7c65d41344",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_store/tests/permission_reset.rs"
+    },
+    {
+      "path": "crates/vega_tools/src/bash/tests.rs",
+      "definitions": 5,
+      "sha256": "e26b6a7be604a265cf3a97f36e1ac1edd8ba81aa2f36979d17e5ece92c58170e",
+      "git_blob": "4cecc34322c104264b62b2f6107f3a775cfd21c0",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_tools/src/bash/tests.rs"
+    },
+    {
+      "path": "crates/vega_tools/src/bash/tests/offline.rs",
+      "definitions": 1,
+      "sha256": "da8da4afae3a43f954208b7d46dc8537b0ce15444cc7fb026010bd7d9d987b7f",
+      "git_blob": "3dcf6c762de9e073de2ac973dea0da3e27c3fffe",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_tools/src/bash/tests/offline.rs"
+    },
+    {
+      "path": "crates/vega_tools/src/bash/tests/scope.rs",
+      "definitions": 3,
+      "sha256": "f5703c29f7d386a03364dd5d59bd2c5d9fc1041d1923810708ef104e166c3324",
+      "git_blob": "573994a8eaabbcfd6d01eb3dd3511b3e89c1a4ed",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_tools/src/bash/tests/scope.rs"
+    },
+    {
+      "path": "crates/vega_tools/src/sandbox/tests.rs",
+      "definitions": 2,
+      "sha256": "e0495492e5b767aeb0901aeef08ec7fde2dbd2943f83788f53a845121376a1ce",
+      "git_blob": "070ffcf50a80d35641ffe347bd896fa02c4b7ecc",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_tools/src/sandbox/tests.rs"
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/ordinary_submissions/tests.rs",
+      "definitions": 2,
+      "sha256": "2dc3d4c371ad9c0ad995d311ba1d563e4be4623581740145f91a95f2a6ff3921",
+      "git_blob": "b80b362d754b26e46e606098ef853bb73aacdaeb",
+      "url": "https://github.com/puzige/vega/blob/78ae9db5d101c9645f3ed9e8c2f852752d6a4ebe/crates/vega_ui/src/conversation_stream/ordinary_submissions/tests.rs"
+    }
+  ],
+  "validation": {
+    "run": "https://github.com/puzige/vega/actions/runs/40479328746",
+    "clippy_job": 122105381190,
+    "nextest_job": 122105381070,
+    "required_job": 122106571935,
+    "discovered": 127,
+    "executed": 127,
+    "passed": 127,
+    "failed": 0,
+    "skipped": 0,
+    "conclusion": "success"
+  },
+  "remote_tree_verified": true,
+  "patch_sha256": "9730404c5823f789ca4a9343918df354b508d2240ec1d13b11be682c19446375"
+}

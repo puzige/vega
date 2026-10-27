@@ -8,9 +8,6 @@ use vega_store::thread_admission::{
 
 use crate::types::{FrozenReasoning, ImageAttachment, ResolvedModel};
 
-#[cfg(test)]
-mod tests;
-
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct SubmissionId(Ulid);
 

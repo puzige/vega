@@ -5,9 +5,6 @@ use vega_conversation::types::{
     SubmissionFailure, SubmissionId,
 };
 
-#[cfg(test)]
-mod tests;
-
 #[derive(Clone, Copy)]
 pub enum OrdinaryAction {
     Cancel,

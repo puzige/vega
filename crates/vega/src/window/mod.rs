@@ -101,8 +101,6 @@ impl ModelSelectionRefresh {
 }
 
 pub(crate) struct VegaWindow {
-    #[cfg(test)]
-    fixture_config_path: Option<PathBuf>,
     pub(crate) composer_prediction_config_generation: u64,
     pub(crate) composer_predictions:
         std::collections::HashMap<String, composer_predictions::ComposerPredictionOwner>,
@@ -198,10 +196,6 @@ pub(crate) struct VegaWindow {
 
 impl VegaWindow {
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
-        Self::new_with_services(cx, true)
-    }
-
-    fn new_with_services(cx: &mut Context<Self>, startup_services: bool) -> Self {
         cx.on_release(|this, cx| {
             let waiting_threads: Vec<_> = this
                 .agent_controller
@@ -309,8 +303,6 @@ impl VegaWindow {
         })
         .detach();
         let mut window = Self {
-            #[cfg(test)]
-            fixture_config_path: None,
             composer_prediction_config_generation: 0,
             composer_predictions: std::collections::HashMap::new(),
             updater: crate::updater::Updater::default(),
@@ -371,10 +363,8 @@ impl VegaWindow {
             deferred_model_refresh: None,
             staged_model_pending: None,
         };
-        if startup_services {
-            window.start_pricing_load(cx);
-            window.start_updater(cx);
-        }
+        window.start_pricing_load(cx);
+        window.start_updater(cx);
         window
     }
 

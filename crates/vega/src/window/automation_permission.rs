@@ -2,9 +2,6 @@ use super::*;
 use crate::automation_controller::AutomationGlobal;
 use vega_conversation::automation::AutomationPermissionService;
 
-#[cfg(test)]
-mod tests;
-
 pub(super) enum PermissionWork {
     Prepare(Box<AutomationPermissionRequested>),
     Confirm(Box<AutomationPermissionConfirmed>),

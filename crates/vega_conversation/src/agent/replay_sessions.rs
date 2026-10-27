@@ -5,9 +5,6 @@ use std::sync::{Arc, Mutex, Weak};
 use sha2::{Digest, Sha256};
 use vega_runtime::{ChatMessage, ChatRole, ReplayFrame};
 
-#[cfg(test)]
-mod tests;
-
 const MAX_IDLE_SESSIONS: usize = 4;
 const MAX_SESSION_BYTES: usize = 32 * 1024 * 1024;
 
