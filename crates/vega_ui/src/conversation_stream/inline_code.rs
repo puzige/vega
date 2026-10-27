@@ -11,10 +11,6 @@ use vega_theme::Layout;
 
 use super::links::{LinkRange, fragment_link_ranges, link_element_id, register_link_interactions};
 
-#[cfg(test)]
-#[path = "inline_flow_tests.rs"]
-mod inline_flow_tests;
-
 pub(super) fn styled_text(content: String, runs: Vec<TextRun>) -> AnyElement {
     let text = StyledText::new(content.clone()).with_runs(runs.clone());
     if runs.iter().any(|run| run.background_color.is_some()) {
