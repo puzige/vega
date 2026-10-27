@@ -33,3 +33,5 @@
 `81d8c58d64eca52ce77e95e9c8d0ff0461d5e10b` 的 [Actions 40467388506](https://github.com/puzige/vega/actions/runs/40467388506) 在 Clippy 测试目标编译时发现 E0599：ConversationStream 不实现 Focusable。测试改用其已有公开 `focus_composer` 入口，不增加生产 API 或改变键盘/持久化断言；待新 head 验证。
 
 `6124eee0633c372d109a1a52cd16da44bd3ead00` 的 [Actions 40467827129](https://github.com/puzige/vega/actions/runs/40467827129) 继续报测试 E0308：该入口要求 stream 自身的 Context，不能传父 VegaWindow Context。改为在 stream.update 内调用，保留真实窗口绘制和全部断言；该轮仍未进入 Rust 测试执行。
+
+`e8c90d858070c27be2b5c9f67929ae8ae652beec` 的 [Actions 40468679366](https://github.com/puzige/vega/actions/runs/40468679366) Clippy 通过；115 项测试实际运行，114 通过、1 失败、0 跳过。新增窗口测试通过了取消、默认拒绝、显式确认、持久化和输入保留，在关闭窗口的实体释放断言失败。按既有导航窗口测试推进 GPUI 测试执行器时钟，让关闭后的定时任务退出；保留释放断言，待新 head 验证。

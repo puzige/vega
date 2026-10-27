@@ -167,6 +167,8 @@ fn full_access_picker_and_confirmation_use_real_keyboard_and_preserve_the_draft(
             if weak.upgrade().is_none() {
                 break;
             }
+            cx.background_executor
+                .advance_clock(std::time::Duration::from_millis(10));
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert!(
