@@ -33,3 +33,14 @@ owner 边界不能仅凭文本相同推断，必须同时保持源顺序和完�
 ## 开发验证记录
 
 首轮 `442034aedea4fcc5f30c787e72445d50583fb4b0`：[Actions 40461652610](https://github.com/puzige/vega/actions/runs/40461652610)，Clippy 成功，Nextest 10 执行、9 通过、1 失败、0 跳过。失败为自动 hook 安装用例的 `SourceChanged`。静态定位测试前提错误：部分 checkpoint fixture 已对当前完整 source 安装一次 checkpoint，随后没有任何来源进展便要求再次安装；存储层明确拒绝同 model/version/fingerprint 的重复压缩。修正 fixture 在旧 checkpoint 后记录 live assistant 新进展，再构造新请求；不修改生产 CAS、不改变成功/拒绝断言。失败记录保留，新版本结果待 Actions。
+
+修正版本 `824c3708105fc89ec9dfebb90ef6651c8215783e`：[Actions 40462268732](https://github.com/puzige/vega/actions/runs/40462268732)。`cargo nextest list --workspace --message-format json` 发现 10；`cargo nextest run --workspace` 执行 10、通过 10、失败 0、跳过 0（16 binaries）。三组 Python 检查分别 5、15、40 个通过；`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings` 与 required check `check (fmt, clippy, test)` 成功。
+
+- [开发测试原始源码](https://github.com/puzige/vega/blob/824c3708105fc89ec9dfebb90ef6651c8215783e/crates/vega_conversation/src/agent/compaction/development_tests.rs)，SHA-256 `0db0554c49ce3afed0061687d34af6dbbf297ec10b108cfa8dbb9b5f63dab719`，Git blob `40dcbfc871547a218bbf2abcdfbbbc17b2f689ae`；已通过 GitHub API 读回固定版本。
+- 原始开发提交补丁：[实现和测试](https://github.com/puzige/vega/commit/442034aedea4fcc5f30c787e72445d50583fb4b0.patch)、[fixture 修正](https://github.com/puzige/vega/commit/824c3708105fc89ec9dfebb90ef6651c8215783e.patch)。历史提交不随最终树删测而改写。
+- 非实现者对 `442034aedea4fcc5f30c787e72445d50583fb4b0` 独立只读审查无阻断发现，对 `824c3708105fc89ec9dfebb90ef6651c8215783e` 的 fixture/文档增量复核亦无阻断发现；生产文件两版本字节一致。范围含 owner、空记录、UTF-8 裁剪、工具身份/参数/位置/结果/配对及最终完整历史比较。
+- 本地仅 `git diff --check` 与直接 `rustfmt --edition 2024 --check`，未运行 Vega、编译或执行测试。
+
+## 最终交付门禁
+
+开发验证成功后，删除 `compaction/development_tests.rs` 与 `compaction.rs` 末尾独占的 `#[cfg(test)] mod development_tests` 接线；生产逻辑保持已验证版本。最终 head 还须完整 required CI 确认 `no Rust tests`（0 发现/0 执行），实际 head、run/job 和合并结果记录在 [PR #680](https://github.com/puzige/vega/pull/680)。此空集门禁不冒充功能回归；功能证据为上方带测试版本。合并后 #678 保持开放、In review，等待用户手测。
