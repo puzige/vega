@@ -28,4 +28,16 @@
 
 五项必要开发回归通过真实隔离数据库验证 controller 的持久化 worker：一次选择完成草稿/已有/legacy 会话授权，错误草稿无半成品，过期来源不覆盖新权限，受限草稿不落库，以及未知回执后按实际持久结果恢复且不重新授权。不建立新的生产公开测试 API、不恢复旧测试集合。UI 点击/键盘与像素效果通过静态调用链检查并待用户手测，不能把 worker 回归冒充原生界面验证。
 
-本地格式、差异及中英文 TOML/键/权限引用静态检查通过；开发云端行为结果与非写入者独立审查待取得。
+本地格式、差异及中英文 TOML/键/权限引用静态检查通过；没有本地运行、编译或测试 Vega。
+
+## 开发云端结果与最终清理
+
+完整开发版本 `b55909a5fe9ba5b527a1d66fb947cbf5cf4af404` 已获非写入者审查，无可行动发现。[Actions 40544391968](https://github.com/puzige/vega/actions/runs/40544391968) 对应本精确 head，Nextest `122330963427`、Clippy `122330963759`、required 汇总 `122333132171` 均成功。
+
+- Nextest 实际发现 5、执行 5、通过 5、失败 0、跳过 0；三组 Python 检查实际 5+15+40=60 项通过。
+- 原始 [selection_tests.rs](https://github.com/puzige/vega/blob/b55909a5fe9ba5b527a1d66fb947cbf5cf4af404/crates/vega/src/window/thread_permissions/selection_tests.rs) 的 SHA-256 为 `9627d68be65e87adb9fce7eb777b0337e7ea07200b972647b681ea001fa1adba`，Git blob `e2c1eae6741bc8443ecb367455e3e83de491c652`，已从远端读回核对。
+- [完整开发差异](https://github.com/puzige/vega/compare/99afa82c1c48df0a8ef428206c7ae07c93e316a9...b55909a5fe9ba5b527a1d66fb947cbf5cf4af404.diff) 保留测试与接线；原始源码仍在最终 PR head 的提交历史中可恢复。
+
+取得真实结果后，仅移除上述五项测试所在文件及专用模块声明，无独占依赖需要清理。生产持久化与恢复 worker 仍由 controller 使用，其行为不因清理改变。通用 CI、Python/fixture、迁移、benchmark、Cargo.lock 均未修改。
+
+最终 head 仍须完整 required CI 确认 `no Rust tests`（0 发现/0 执行），不能用开发 5/5 或静态清点替代。最终精确 head、清理增量复核及门禁记录固定于 [PR #692](https://github.com/puzige/vega/pull/692) 与 [Issue #624](https://github.com/puzige/vega/issues/624)，避免交付记录变更产生新的验证版本。真实 UI/键盘和系统集成待用户手测，CI/合并不代表应用已安装或用户已验收。

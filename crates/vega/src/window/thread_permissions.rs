@@ -1,9 +1,6 @@
 use super::*;
 use vega_conversation::thread_permissions::ThreadPermissionService;
 
-#[cfg(test)]
-mod selection_tests;
-
 enum Outcome {
     Saved(Thread),
     Draft(Thread),
