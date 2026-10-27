@@ -157,6 +157,62 @@ impl Element for TextElement {
         let font_size = style.font_size.to_pixels(window.rem_size());
         let line_height = window.line_height();
 
+        let accent = theme(cx).colors.accent;
+        let mention_spans: Vec<Range<usize>> = if input.masked {
+            Vec::new()
+        } else {
+            input
+                .mentions()
+                .iter()
+                .map(|mention| mention.range())
+                .collect()
+        };
+        let marked = input.marked_range.clone();
+        let base_run = run.clone();
+        let build_runs = move |global_start: usize, chunk_len: usize| -> Vec<TextRun> {
+            let chunk_end = global_start + chunk_len;
+            let mut bounds = vec![0usize, chunk_len];
+            for span in mention_spans.iter().chain(marked.iter()) {
+                if span.start > global_start && span.start < chunk_end {
+                    bounds.push(span.start - global_start);
+                }
+                if span.end > global_start && span.end < chunk_end {
+                    bounds.push(span.end - global_start);
+                }
+            }
+            bounds.sort_unstable();
+            bounds.dedup();
+            if bounds.len() < 2 {
+                return vec![TextRun {
+                    len: 0,
+                    ..base_run.clone()
+                }];
+            }
+            let mut runs = Vec::with_capacity(bounds.len() - 1);
+            for pair in bounds.windows(2) {
+                let (start, end) = (pair[0], pair[1]);
+                let absolute_start = global_start + start;
+                let absolute_end = global_start + end;
+                let in_mention = mention_spans
+                    .iter()
+                    .any(|span| span.start <= absolute_start && absolute_end <= span.end);
+                let in_marked = marked
+                    .as_ref()
+                    .is_some_and(|span| span.start <= absolute_start && absolute_end <= span.end);
+                runs.push(TextRun {
+                    len: end - start,
+                    color: if in_mention { accent } else { base_run.color },
+                    underline: in_marked.then_some(UnderlineStyle {
+                        color: Some(base_run.color),
+                        thickness: px(1.0),
+                        wavy: false,
+                    }),
+                    ..base_run.clone()
+                });
+            }
+            runs
+        };
+
         // Per-visual-line layout. Multi-line content is shaped and split at
         // the available pixel width, so Latin and CJK drafts both drive the
         // 1..8 row viewport from actual glyph advances.
@@ -170,51 +226,7 @@ impl Element for TextElement {
                     loop {
                         let remainder = &segment[local_start..];
                         let global_start = start + local_start;
-                        let make_runs = |chunk_len: usize| -> Vec<TextRun> {
-                            let runs = match input.marked_range.as_ref() {
-                                None => vec![TextRun {
-                                    len: chunk_len,
-                                    ..run.clone()
-                                }],
-                                Some(marked) => {
-                                    let marked_start =
-                                        marked.start.saturating_sub(global_start).min(chunk_len);
-                                    let marked_end =
-                                        marked.end.saturating_sub(global_start).min(chunk_len);
-                                    [
-                                        TextRun {
-                                            len: marked_start,
-                                            ..run.clone()
-                                        },
-                                        TextRun {
-                                            len: marked_end.saturating_sub(marked_start),
-                                            underline: Some(UnderlineStyle {
-                                                color: Some(run.color),
-                                                thickness: px(1.0),
-                                                wavy: false,
-                                            }),
-                                            ..run.clone()
-                                        },
-                                        TextRun {
-                                            len: chunk_len.saturating_sub(marked_end),
-                                            ..run.clone()
-                                        },
-                                    ]
-                                    .into_iter()
-                                    .filter(|run| run.len > 0)
-                                    .collect()
-                                }
-                            };
-                            if runs.is_empty() {
-                                vec![TextRun {
-                                    len: 0,
-                                    ..run.clone()
-                                }]
-                            } else {
-                                runs
-                            }
-                        };
-                        let initial_runs = make_runs(remainder.len());
+                        let initial_runs = build_runs(global_start, remainder.len());
                         let initial = window.text_system().shape_line(
                             SharedString::from(remainder),
                             font_size,
@@ -249,7 +261,7 @@ impl Element for TextElement {
                             window.text_system().shape_line(
                                 SharedString::from(chunk),
                                 font_size,
-                                &make_runs(chunk.len()),
+                                &build_runs(global_start, cut),
                                 None,
                             )
                         };
@@ -265,7 +277,7 @@ impl Element for TextElement {
                             shaped = window.text_system().shape_line(
                                 SharedString::from(&remainder[..cut]),
                                 font_size,
-                                &make_runs(cut),
+                                &build_runs(global_start, cut),
                                 None,
                             );
                         }

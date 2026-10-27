@@ -271,55 +271,26 @@ fn is_subsequence(query: &[char], candidate: &[char]) -> bool {
     true
 }
 
-/// Extracts the distinct `@path` tokens from a message in first-occurrence
-/// order. A token starts at an `@` that is preceded by the text start or
-/// whitespace and ends at the next whitespace/newline. Tokens after the cap
-/// are a fail-closed error at the [`resolve_bounded_references`] level, not
-/// silently dropped.
-fn reference_tokens(content: &str) -> Vec<String> {
-    let mut tokens: Vec<String> = Vec::new();
-    let bytes = content.as_bytes();
-    let mut index = 0usize;
-    while index < bytes.len() {
-        if bytes[index] == b'@' && (index == 0 || bytes[index - 1].is_ascii_whitespace()) {
-            let start = index + 1;
-            let mut end = start;
-            while end < bytes.len() && !bytes[end].is_ascii_whitespace() {
-                end += 1;
-            }
-            if end > start
-                && let Ok(path) = std::str::from_utf8(&bytes[start..end])
-                && !tokens.iter().any(|token| token == path)
-            {
-                tokens.push(path.to_string());
-            }
-            index = end;
-        } else {
-            index += 1;
-        }
-    }
-    tokens
-}
-
-/// Resolves every `@path` token in `content` against the canonical project
-/// root under the fail-closed bounds. Any escape, symlink, binary probe hit,
-/// oversize file, or cap violation fails the whole call; the caller must
-/// then refuse the run before any provider request is built.
-pub fn resolve_bounded_references(
+pub fn resolve_references(
     root: &Path,
-    content: &str,
+    paths: &[String],
     max_files: usize,
     max_file_bytes: u64,
     max_total_bytes: u64,
 ) -> Result<Vec<ResolvedReference>, ToolError> {
     let root = root.canonicalize().map_err(ToolError::Io)?;
-    let tokens = reference_tokens(content);
-    if tokens.len() > max_files {
+    let mut distinct: Vec<&String> = Vec::with_capacity(paths.len());
+    for path in paths {
+        if !distinct.iter().any(|seen| *seen == path) {
+            distinct.push(path);
+        }
+    }
+    if distinct.len() > max_files {
         return Err(ToolError::TooManyResults { limit: max_files });
     }
-    let mut resolved = Vec::with_capacity(tokens.len());
+    let mut resolved = Vec::with_capacity(distinct.len());
     let mut total: u64 = 0;
-    for token in &tokens {
+    for token in distinct {
         let canonical = resolve_in_root(&root, token)?;
         reject_symlink_target(&root, token, &canonical)?;
         if canonical.is_dir() {

@@ -1,3 +1,4 @@
+use super::ordinary_send::reference_failure_for;
 use super::*;
 
 impl VegaWindow {
@@ -167,6 +168,11 @@ impl VegaWindow {
         {
             return;
         }
+        if let Some(code) = reference_failure_for(&stream, request, cx) {
+            stream.update(cx, ConversationStream::reject_composer_submission);
+            stream.update(cx, |stream, cx| stream.apply_reference_error(code, cx));
+            return;
+        }
         let Some(database) = self.queue_database(cx) else {
             stream.update(cx, |stream, cx| {
                 stream.reject_composer_submission(cx);
@@ -204,6 +210,8 @@ impl VegaWindow {
             behavior,
             content: request.content.clone(),
             images: request.images.clone(),
+            references: request.references.clone(),
+            reference_mentions: request.reference_mentions.clone(),
         };
         let content = message.content.clone();
         let mut projection = stream.read(cx).pending_queue().clone();
@@ -657,6 +665,7 @@ impl VegaWindow {
             PendingAgentRun::UserMessage(UserSubmission {
                 content: message.content,
                 images: message.images,
+                references: message.references,
                 ordinary: None,
             }),
             Some(admission),

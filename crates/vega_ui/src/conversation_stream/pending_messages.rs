@@ -361,6 +361,7 @@ impl ConversationStream {
             return;
         }
         self.composer_submit_pending = false;
+        self.submitted_draft = None;
         self.pending_behavior_override = None;
         if self.pending_submission_revision.take() == Some(self.input.read(cx).content_revision())
             && self.input.read(cx).text() == content
@@ -386,8 +387,9 @@ impl ConversationStream {
     }
 
     fn restore_pending_draft(&mut self, message: PendingMessage, cx: &mut Context<Self>) {
-        self.input
-            .update(cx, |input, cx| input.set_text(&message.content, cx));
+        self.input.update(cx, |input, cx| {
+            input.set_text_with_references(&message.content, &message.reference_mentions, cx)
+        });
         for image in self.history_image_previews(message.images, cx) {
             self.attachment_generation = self.attachment_generation.saturating_add(1);
             self.attachments.push((self.attachment_generation, image));

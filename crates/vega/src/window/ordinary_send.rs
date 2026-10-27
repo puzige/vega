@@ -85,6 +85,44 @@ impl OrdinaryPreparationRequest {
     }
 }
 
+pub(super) fn reference_failure_for(
+    stream: &Entity<ConversationStream>,
+    request: &ComposerSubmitted,
+    cx: &App,
+) -> Option<FileReferenceFailureCode> {
+    if request.references.is_empty() {
+        return None;
+    }
+    let Ok(store) = &cx.global::<VegaStore>().0 else {
+        return Some(FileReferenceFailureCode::ProjectUnavailable);
+    };
+    let Some(root) = reference_root(store, &stream.read(cx).thread_snapshot()) else {
+        return Some(FileReferenceFailureCode::ProjectUnavailable);
+    };
+    vega_tools::reference::resolve_references(
+        &root,
+        &request.references,
+        vega_tools::reference::REFERENCE_MAX_FILES,
+        vega_tools::reference::REFERENCE_MAX_FILE_BYTES,
+        vega_tools::reference::REFERENCE_MAX_TOTAL_BYTES,
+    )
+    .err()
+    .map(|error| crate::app_agent::map_reference_failure(&error))
+}
+
+fn reference_root(store: &vega_store::Store, thread: &Thread) -> Option<PathBuf> {
+    if let Ok(root) = vega_conversation::threads::task_workspace_root(store, &thread.id) {
+        return Some(root);
+    }
+    let project_id = thread.project_binding()?;
+    let path = PathBuf::from(
+        vega_store::projects::find(store.conn(), project_id)
+            .ok()??
+            .path,
+    );
+    (path.is_absolute() && path.is_dir()).then_some(path)
+}
+
 impl VegaWindow {
     pub(crate) fn submit_ordinary(
         &mut self,
@@ -108,6 +146,11 @@ impl VegaWindow {
             .ordinary_requests
             .contains(&request.request_id)
         {
+            return;
+        }
+        if let Some(code) = reference_failure_for(&stream, request, cx) {
+            stream.update(cx, ConversationStream::reject_composer_submission);
+            stream.update(cx, |stream, cx| stream.apply_reference_error(code, cx));
             return;
         }
         let admission =
@@ -152,6 +195,7 @@ impl VegaWindow {
         let raw = RawSubmission::new(
             request.content.clone(),
             request.images.clone(),
+            request.references.clone(),
             request.draft_revision,
             stream.read(cx).displayed_model().to_owned(),
             snapshot,
@@ -364,6 +408,7 @@ impl VegaWindow {
                             PendingAgentRun::UserMessage(crate::app_agent::UserSubmission {
                                 content: observed.raw().text().to_owned(),
                                 images: observed.raw().images().to_vec(),
+                                references: observed.raw().references().to_vec(),
                                 ordinary: Some(Box::new(launch)),
                             }),
                             reasoning,

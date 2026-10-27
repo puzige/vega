@@ -1825,7 +1825,7 @@ impl VegaWindow {
                         }
                         if credential_failure {
                             display_stream.update(cx, ConversationStream::apply_credential_error);
-                        } else if !success && !cancelled {
+                        } else if !success && !cancelled && reference_failure.is_none() {
                             if let Some(failure) = finished_run.terminal_failure {
                                 display_stream.update(cx, |stream, cx| {
                                     stream.apply_agent_runtime_error_for(
@@ -1838,8 +1838,11 @@ impl VegaWindow {
                                 display_stream.update(cx, ConversationStream::apply_agent_error);
                             }
                         }
-                        if reference_failure.is_some() {
-                            display_stream.update(cx, ConversationStream::apply_agent_error);
+                        if let Some(code) = reference_failure.filter(|_| !credential_failure) {
+                            display_stream.update(cx, |stream, cx| {
+                                stream.apply_reference_error(code, cx);
+                                stream.refresh_ordinary_submissions(cx);
+                            });
                         }
                         this.finish_context_primary_owner(generation);
                         this.agent_controller.pending_review.remove(&thread_id);

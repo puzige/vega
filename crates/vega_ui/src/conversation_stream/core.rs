@@ -17,6 +17,12 @@ impl ModelPickerLevel {
     }
 }
 
+pub(crate) struct SubmittedDraft {
+    pub(crate) text: String,
+    pub(crate) reference_mentions: Vec<vega_conversation::types::FileReferenceMention>,
+    pub(crate) images: Vec<ImageAttachment>,
+}
+
 /// The opened-thread content view: thread header (title and trusted actions),
 /// the virtualized message stream, and the fixed-bottom Composer. One entity
 /// per open thread; rebuilt by the window root when another thread opens.
@@ -42,6 +48,7 @@ pub struct ConversationStream {
     pub(crate) attachment_import_pending: bool,
     pub(crate) attachment_error: Option<&'static str>,
     pub(crate) submitted_attachments: Vec<(u64, attachments::ImagePreview)>,
+    pub(crate) submitted_draft: Option<SubmittedDraft>,
     pub(crate) thread: Thread,
     pub(crate) entries: Vec<StreamEntry>,
     pub(crate) assistant_role_rows: Vec<bool>,
@@ -487,6 +494,7 @@ impl ConversationStream {
             attachment_import_pending: false,
             attachment_error: None,
             submitted_attachments: Vec::new(),
+            submitted_draft: None,
             ordinary: Vec::new(),
             thread,
             entries: Vec::new(),
@@ -1758,7 +1766,29 @@ impl ConversationStream {
     ) {
         self.controller_runtime_error = None;
         self.controller_error = Some(crate::localized_copy::LocalizedCopy::Reference(code));
+        self.restore_rejected_reference_draft(cx);
         self.meter.end_run();
+        cx.notify();
+    }
+
+    fn restore_rejected_reference_draft(&mut self, cx: &mut Context<Self>) {
+        if !self.pending_draft_is_empty(cx) {
+            return;
+        }
+        let Some(draft) = self.submitted_draft.take() else {
+            return;
+        };
+        if draft.text.is_empty() {
+            return;
+        }
+        self.mark_ordinary_reference_failed();
+        self.input.update(cx, |input, cx| {
+            input.set_text_with_references(&draft.text, &draft.reference_mentions, cx)
+        });
+        for image in self.history_image_previews(draft.images, cx) {
+            self.attachment_generation = self.attachment_generation.saturating_add(1);
+            self.attachments.push((self.attachment_generation, image));
+        }
         cx.notify();
     }
 

@@ -25,6 +25,7 @@ pub(crate) struct OrdinaryRow {
     state: OrdinaryStatus,
     focus: FocusHandle,
     checked: Option<&'static str>,
+    reference_failed: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -195,6 +196,7 @@ impl ConversationStream {
                 state: OrdinaryStatus::Pending,
                 focus: cx.focus_handle().tab_stop(true),
                 checked: None,
+                reference_failed: false,
             });
         }
         self.refresh_ordinary_submissions(cx);
@@ -342,6 +344,12 @@ impl ConversationStream {
         }
     }
 
+    pub(super) fn mark_ordinary_reference_failed(&mut self) {
+        if let Some(row) = self.ordinary.last_mut() {
+            row.reference_failed = true;
+        }
+    }
+
     pub fn refresh_ordinary_submissions(&mut self, cx: &mut Context<Self>) {
         let mut changed = false;
         for row in &mut self.ordinary {
@@ -445,7 +453,7 @@ impl ConversationStream {
             .ordinary
             .iter()
             .find(|row| identity.message_id.as_deref() == Some(row.submission.user_message_id()))?;
-        if self.attempt_shows_stop_line(row, cx) {
+        if row.reference_failed || self.attempt_shows_stop_line(row, cx) {
             return None;
         }
         let final_kind = if row.submission.raw().images().is_empty() {
