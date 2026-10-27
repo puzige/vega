@@ -1033,6 +1033,7 @@ impl ThreadsBlock {
             true,
             0.0,
             Layout::SIDEBAR_NAV_CONTENT_INSET,
+            0.0,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
         )
@@ -1057,6 +1058,7 @@ impl ThreadsBlock {
             false,
             0.0,
             Layout::SIDEBAR_ROW_INSET,
+            0.0,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
         )
@@ -1079,8 +1081,9 @@ impl ThreadsBlock {
             actions_enabled,
             true,
             false,
-            0.0,
-            0.0,
+            8.0,
+            8.0,
+            8.0,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
         )
@@ -1104,6 +1107,7 @@ impl ThreadsBlock {
             false,
             8.0,
             8.0,
+            0.0,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
         )
@@ -1121,6 +1125,7 @@ impl ThreadsBlock {
         show_timestamp_at_rest: bool,
         surface_leading_outset: f32,
         content_inset: f32,
+        rename_inset: f32,
         row_height: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1207,7 +1212,7 @@ impl ThreadsBlock {
                 !editing_this_row && !self.hover_suppressed_until_move,
             );
         if let Some(session) = editing_session {
-            row = row.child(self.render_rename_editor(session, cx));
+            row = row.child(self.render_rename_editor(session, rename_inset, cx));
         } else {
             row = row
                 // 可点击主体与右侧操作是兄弟节点：双击进入行内编辑，单击
@@ -1748,10 +1753,16 @@ impl ThreadsBlock {
     /// [`ConfirmRename`] (bound to this context in `vega_ui::init`); Esc is
     /// intercepted from the global [`CloseSettings`] action, which the
     /// editor consumes so settings never closes mid-rename.
-    fn render_rename_editor(&self, session: &RenameSession, cx: &mut Context<Self>) -> AnyElement {
+    fn render_rename_editor(
+        &self,
+        session: &RenameSession,
+        leading_inset: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         div()
             .flex_1()
             .min_w_0()
+            .pl(px(leading_inset))
             .pr_1()
             .key_context("ThreadRename")
             .track_focus(&session.input.read(cx).focus_handle(cx))
