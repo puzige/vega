@@ -2,7 +2,6 @@ use super::*;
 use vega_conversation::thread_permissions::ThreadPermissionService;
 
 enum Outcome {
-    Confirmation(ThreadPermissionChange),
     Saved(Thread),
     Draft(Thread),
 }
@@ -21,9 +20,9 @@ impl VegaWindow {
         {
             return;
         }
-        let Some((operation, source)) = stream.update(cx, |stream, cx| {
-            stream.begin_thread_permission_change(mode, cx)
-        }) else {
+        let Some((operation, source)) =
+            stream.update(cx, |stream, cx| stream.begin_thread_permission_change(cx))
+        else {
             return;
         };
         let Some(path) = self.context_database(cx) else {
@@ -51,25 +50,9 @@ impl VegaWindow {
         };
         let draft = self.draft_for_route(&source.id);
         let worker_source = source.clone();
-        let worker = cx.background_executor().spawn(async move {
-            let service = ThreadPermissionService::new(path);
-            let change = service.prepare(&worker_source, mode)?;
-            if mode == PermissionMode::FullAccess {
-                Ok(Outcome::Confirmation(change))
-            } else if change.is_draft() {
-                if draft.as_ref() != Some(&worker_source) {
-                    return Err(ThreadPermissionError::Conflict);
-                }
-                Ok(Outcome::Draft(Thread {
-                    permission_mode: mode,
-                    full_access_grant: None,
-                    default_permission: None,
-                    ..worker_source
-                }))
-            } else {
-                service.save(&change, false).map(Outcome::Saved)
-            }
-        });
+        let worker = cx
+            .background_executor()
+            .spawn(async move { persist_permission_selection(path, worker_source, draft, mode) });
         cx.spawn(async move |this, cx| {
             let result = worker.await;
             let _ = this.update(cx, |this, cx| {
@@ -79,94 +62,11 @@ impl VegaWindow {
                     return;
                 }
                 match result {
-                    Ok(Outcome::Confirmation(change)) => {
-                        if this.owns_stream_request(&stream, &source.id, cx)
-                            && !cx.global::<SettingsOpen>().0
-                        {
-                            stream.update(cx, |stream, cx| {
-                                stream.show_thread_permission_confirmation(operation, change, cx)
-                            });
-                        } else {
-                            stream.update(cx, |stream, cx| {
-                                stream.cancel_thread_permission_change(cx)
-                            });
-                        }
-                    }
                     Ok(Outcome::Saved(saved)) => this
                         .finish_permission_projection(&stream, operation, &source, saved, true, cx),
                     Ok(Outcome::Draft(saved)) => this.finish_permission_projection(
                         &stream, operation, &source, saved, false, cx,
                     ),
-                    Err(error) => {
-                        stream.update(cx, |stream, cx| {
-                            stream.finish_thread_permission_change(operation, Err(error), cx)
-                        });
-                    }
-                }
-            });
-        })
-        .detach();
-    }
-
-    pub(super) fn confirm_thread_permission(
-        &mut self,
-        stream: Entity<ConversationStream>,
-        request: &ThreadPermissionConfirmed,
-        cx: &mut Context<Self>,
-    ) {
-        let source = request.change.source().clone();
-        if !self.owns_stream_request(&stream, &source.id, cx)
-            || cx.global::<SettingsOpen>().0
-            || self.trusted_actions.is_busy()
-            || (request.change.is_draft()
-                && self.draft_for_route(&source.id).as_ref() != Some(&source))
-        {
-            stream.update(cx, |stream, cx| {
-                stream.finish_thread_permission_change(
-                    request.operation,
-                    Err(ThreadPermissionError::Conflict),
-                    cx,
-                )
-            });
-            return;
-        }
-        let Some(path) = self.context_database(cx) else {
-            stream.update(cx, |stream, cx| {
-                stream.finish_thread_permission_change(
-                    request.operation,
-                    Err(ThreadPermissionError::Unavailable),
-                    cx,
-                )
-            });
-            return;
-        };
-        let Some(lease) = self.trusted_actions.acquire(
-            TrustedActionKind::PermissionSelection,
-            0,
-            request.operation,
-        ) else {
-            return;
-        };
-        if !stream.update(cx, |stream, cx| {
-            stream.begin_thread_permission_save(request, cx)
-        }) {
-            self.trusted_actions.release(lease);
-            return;
-        }
-        let request = request.clone();
-        let operation = request.operation;
-        let worker = cx
-            .background_executor()
-            .spawn(async move { ThreadPermissionService::new(path).save(&request.change, true) });
-        cx.spawn(async move |this, cx| {
-            let result = worker.await;
-            let _ = this.update(cx, |this, cx| {
-                if !this.trusted_actions.release(lease) {
-                    return;
-                }
-                match result {
-                    Ok(saved) => this
-                        .finish_permission_projection(&stream, operation, &source, saved, true, cx),
                     Err(error) => {
                         stream.update(cx, |stream, cx| {
                             stream.finish_thread_permission_change(operation, Err(error), cx)
@@ -210,19 +110,16 @@ impl VegaWindow {
         let request = request.clone();
         let operation = request.operation;
         let source = request.source.clone();
-        let worker = cx.background_executor().spawn(async move {
-            let service = ThreadPermissionService::new(path);
-            if let Some(draft) = draft {
-                service.prepare(&draft, draft.permission_mode)?;
-                Ok(draft)
-            } else {
-                service.read(&request.source.id)
-            }
-        });
+        let worker = cx
+            .background_executor()
+            .spawn(async move { reload_permission_selection(path, request.source, draft) });
         cx.spawn(async move |this, cx| {
             let result = worker.await;
             let _ = this.update(cx, |this, cx| match result {
-                Ok(saved) => {
+                Ok(Outcome::Saved(saved)) => {
+                    this.finish_permission_projection(&stream, operation, &source, saved, true, cx)
+                }
+                Ok(Outcome::Draft(saved)) => {
                     this.finish_permission_projection(&stream, operation, &source, saved, false, cx)
                 }
                 Err(error) => {
@@ -272,5 +169,55 @@ impl VegaWindow {
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.reload_sessions(cx));
         cx.notify();
+    }
+}
+
+fn persist_permission_selection(
+    path: PathBuf,
+    source: Thread,
+    draft: Option<Thread>,
+    mode: PermissionMode,
+) -> Result<Outcome, ThreadPermissionError> {
+    let service = ThreadPermissionService::new(path);
+    let change = service.prepare(&source, mode)?;
+    if change.is_draft() && draft.as_ref() != Some(&source) {
+        return Err(ThreadPermissionError::Conflict);
+    }
+    if change.is_draft() && mode != PermissionMode::FullAccess {
+        Ok(Outcome::Draft(Thread {
+            permission_mode: mode,
+            full_access_grant: None,
+            default_permission: None,
+            ..source
+        }))
+    } else {
+        service
+            .save(&change, mode == PermissionMode::FullAccess)
+            .map(Outcome::Saved)
+    }
+}
+
+fn reload_permission_selection(
+    path: PathBuf,
+    source: Thread,
+    draft: Option<Thread>,
+) -> Result<Outcome, ThreadPermissionError> {
+    let service = ThreadPermissionService::new(path);
+    match service.read(&source.id) {
+        Ok(saved) => Ok(Outcome::Saved(saved)),
+        Err(error) => {
+            let Some(draft) = draft else {
+                return Err(error);
+            };
+            if draft != source {
+                return Err(ThreadPermissionError::Conflict);
+            }
+            let change = service.prepare(&draft, draft.permission_mode)?;
+            if change.is_draft() {
+                Ok(Outcome::Draft(draft))
+            } else {
+                service.read(&source.id).map(Outcome::Saved)
+            }
+        }
     }
 }

@@ -1,7 +1,7 @@
 use super::*;
 use crate::interaction::InteractionExt;
 use vega_conversation::types::{
-    FullAccessGrant, FullAccessScope, ThreadPermissionChange, ThreadPermissionError, ThreadStatus,
+    FullAccessGrant, FullAccessScope, ThreadPermissionError, ThreadStatus,
 };
 
 pub(crate) struct PermissionEditor {
@@ -11,26 +11,15 @@ pub(crate) struct PermissionEditor {
     pub(super) active_mode: Option<PermissionMode>,
     pub(super) trigger: FocusHandle,
     pub(super) options: [FocusHandle; 4],
-    cancel: FocusHandle,
-    confirm: FocusHandle,
     reload: FocusHandle,
     focus_pending: bool,
 }
 
 enum Phase {
     Idle,
-    Preparing(u64),
-    Confirming(u64, Box<ThreadPermissionChange>),
     Saving(u64),
     Reloading(u64),
     Failed(ThreadPermissionError),
-}
-
-#[derive(Clone, Copy)]
-enum Action {
-    Cancel,
-    Confirm,
-    Reload,
 }
 
 impl PermissionEditor {
@@ -42,8 +31,6 @@ impl PermissionEditor {
             active_mode: None,
             trigger: cx.focus_handle().tab_stop(true),
             options: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
-            cancel: cx.focus_handle().tab_stop(true),
-            confirm: cx.focus_handle().tab_stop(true),
             reload: cx.focus_handle().tab_stop(true),
             focus_pending: false,
         }
@@ -53,13 +40,21 @@ impl PermissionEditor {
         !matches!(self.phase, Phase::Idle)
     }
 
+    pub(super) fn progress_label(&self) -> Option<&'static str> {
+        match self.phase {
+            Phase::Saving(_) => Some(vega_i18n::t("ui.permission_saving")),
+            Phase::Reloading(_) => Some(vega_i18n::t("ui.permission_reading")),
+            _ => None,
+        }
+    }
+
     fn owns(&self, operation: u64) -> bool {
-        matches!(self.phase, Phase::Preparing(id) | Phase::Saving(id) | Phase::Reloading(id) | Phase::Confirming(id, _) if id == operation)
+        matches!(self.phase, Phase::Saving(id) | Phase::Reloading(id) if id == operation)
     }
 }
 
 impl ConversationStream {
-    pub(super) fn full_access_needs_confirmation(&self, cx: &App) -> bool {
+    pub(super) fn full_access_selection_needs_save(&self, cx: &App) -> bool {
         if self.thread.permission_mode != PermissionMode::FullAccess {
             return false;
         }
@@ -132,7 +127,6 @@ impl ConversationStream {
 
     pub fn begin_thread_permission_change(
         &mut self,
-        mode: PermissionMode,
         cx: &mut Context<Self>,
     ) -> Option<(u64, Thread)> {
         if self.permission_change_pending()
@@ -148,52 +142,11 @@ impl ConversationStream {
         let operation = self.permission_editor.operation.checked_add(1)?;
         self.permission_editor.operation = operation;
         self.permission_editor.source = Some(self.thread.clone());
-        self.permission_editor.phase = if mode == PermissionMode::FullAccess {
-            Phase::Preparing(operation)
-        } else {
-            Phase::Saving(operation)
-        };
-        self.permission_editor.focus_pending = mode == PermissionMode::FullAccess;
+        self.permission_editor.phase = Phase::Saving(operation);
+        self.permission_editor.focus_pending = false;
         self.permission_picker_open = false;
         cx.notify();
         Some((operation, self.thread.clone()))
-    }
-
-    pub fn show_thread_permission_confirmation(
-        &mut self,
-        operation: u64,
-        change: ThreadPermissionChange,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.permission_editor.owns(operation) {
-            return;
-        }
-        if !self.permission_source_matches(change.source()) {
-            self.finish_thread_permission_change(
-                operation,
-                Err(ThreadPermissionError::Conflict),
-                cx,
-            );
-            return;
-        }
-        self.permission_editor.phase = Phase::Confirming(operation, Box::new(change));
-        self.permission_editor.focus_pending = true;
-        cx.notify();
-    }
-
-    pub fn begin_thread_permission_save(
-        &mut self,
-        submitted: &ThreadPermissionConfirmed,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if !matches!(&self.permission_editor.phase, Phase::Confirming(id, change) if *id == submitted.operation && **change == submitted.change)
-            || !self.permission_source_matches(submitted.change.source())
-        {
-            return false;
-        }
-        self.permission_editor.phase = Phase::Saving(submitted.operation);
-        cx.notify();
-        true
     }
 
     pub fn finish_thread_permission_change(
@@ -230,7 +183,7 @@ impl ConversationStream {
                 self.apply_thread(next, cx);
                 self.permission_editor.phase = Phase::Idle;
                 self.permission_editor.source = None;
-                self.permission_editor.focus_pending = true;
+                self.permission_editor.focus_pending = false;
                 cx.notify();
                 true
             }
@@ -263,46 +216,23 @@ impl ConversationStream {
             && source.full_access_grant == self.thread.full_access_grant
     }
 
-    pub fn cancel_thread_permission_change(&mut self, cx: &mut Context<Self>) {
-        if matches!(
-            self.permission_editor.phase,
-            Phase::Preparing(_) | Phase::Confirming(_, _)
-        ) {
-            self.permission_editor.phase = Phase::Idle;
-            self.permission_editor.source = None;
-            self.permission_editor.focus_pending = true;
-            cx.notify();
+    fn reload_thread_permissions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.permission_editor.phase, Phase::Failed(_)) {
+            return;
         }
-    }
-
-    fn permission_action(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
-        match action {
-            Action::Cancel => self.cancel_thread_permission_change(cx),
-            Action::Confirm => {
-                if let Phase::Confirming(operation, change) = &self.permission_editor.phase {
-                    cx.emit(ThreadPermissionConfirmed {
-                        operation: *operation,
-                        change: (**change).clone(),
-                    });
-                }
-            }
-            Action::Reload => {
-                let Some(operation) = self.permission_editor.operation.checked_add(1) else {
-                    return;
-                };
-                self.permission_editor.operation = operation;
-                self.permission_editor.source = Some(self.thread.clone());
-                self.permission_editor.phase = Phase::Reloading(operation);
-                cx.emit(ThreadPermissionReloadRequested {
-                    operation,
-                    source: self.thread.clone(),
-                });
-                cx.notify();
-            }
-        }
-        if matches!(self.permission_editor.phase, Phase::Idle) {
-            window.focus(&self.permission_editor.trigger, cx);
-        }
+        let Some(operation) = self.permission_editor.operation.checked_add(1) else {
+            return;
+        };
+        self.permission_editor.operation = operation;
+        self.permission_editor.source = Some(self.thread.clone());
+        self.permission_editor.phase = Phase::Reloading(operation);
+        self.permission_editor.focus_pending = false;
+        window.focus(&self.permission_editor.trigger, cx);
+        cx.emit(ThreadPermissionReloadRequested {
+            operation,
+            source: self.thread.clone(),
+        });
+        cx.notify();
     }
 
     pub(crate) fn prepare_thread_permission_focus(
@@ -310,155 +240,73 @@ impl ConversationStream {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !std::mem::take(&mut self.permission_editor.focus_pending) {
-            return;
+        if std::mem::take(&mut self.permission_editor.focus_pending)
+            && matches!(self.permission_editor.phase, Phase::Failed(_))
+        {
+            window.focus(&self.permission_editor.reload, cx);
         }
-        let focus = match self.permission_editor.phase {
-            Phase::Preparing(_) | Phase::Confirming(_, _) => &self.permission_editor.cancel,
-            Phase::Failed(_) => &self.permission_editor.reload,
-            Phase::Idle => &self.permission_editor.trigger,
-            _ => return,
-        };
-        window.focus(focus, cx);
-    }
-
-    fn thread_permission_button(
-        &self,
-        action: Action,
-        label: &'static str,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = theme(cx).colors;
-        let (id, focus) = match action {
-            Action::Cancel => ("thread-permission-cancel", &self.permission_editor.cancel),
-            Action::Confirm => ("thread-permission-confirm", &self.permission_editor.confirm),
-            Action::Reload => ("thread-permission-reload", &self.permission_editor.reload),
-        };
-        div()
-            .id(id)
-            .role(gpui_kit::Role::Button)
-            .aria_label(label)
-            .track_focus(focus)
-            .tab_stop(true)
-            .px_3()
-            .py_1()
-            .rounded_md()
-            .border_1()
-            .border_color(colors.border_subtle)
-            .interaction_surface(colors.bg_base, colors.bg_hover, colors.bg_active, true)
-            .focus_visible(move |style| style.border_color(colors.accent))
-            .cursor_pointer()
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _, window, cx| this.permission_action(action, window, cx)),
-            )
-            .on_key_down(
-                cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        this.permission_action(action, window, cx);
-                        cx.stop_propagation();
-                    }
-                }),
-            )
-            .child(label)
-            .into_any_element()
     }
 
     pub(crate) fn render_thread_permission_feedback(&self, cx: &mut Context<Self>) -> AnyElement {
-        if matches!(self.permission_editor.phase, Phase::Idle) {
+        let Phase::Failed(error) = self.permission_editor.phase else {
             return div().into_any_element();
-        }
+        };
+        let key = match error {
+            ThreadPermissionError::Conflict => "ui.permission_error_conflict",
+            ThreadPermissionError::ResetPending => "ui.permission_error_reset",
+            ThreadPermissionError::OutcomeUnknown => "ui.permission_error_unknown",
+            ThreadPermissionError::ConfirmationRequired => "ui.permission_error_confirmation",
+            ThreadPermissionError::Unavailable => "ui.permission_error_unavailable",
+        };
         let colors = theme(cx).colors;
-        let panel = div()
+        let reload_label = vega_i18n::t("ui.permission_reload");
+        div()
             .id("thread-permission-feedback")
             .w_full()
             .max_w(px(Layout::COMPOSER_MAX_WIDTH))
             .mx_auto()
             .mb_2()
-            .p_3()
+            .px_2()
             .flex()
-            .flex_col()
+            .items_center()
             .gap_2()
-            .border_1()
-            .rounded(px(Layout::PANEL_RADIUS))
-            .border_color(colors.border_subtle)
-            .text_size(px(Typography::BODY))
-            .text_color(colors.text_primary)
-            .on_key_down(
-                cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "tab"
-                        && matches!(this.permission_editor.phase, Phase::Confirming(_, _))
-                    {
-                        let focus = if this.permission_editor.cancel.is_focused(window) {
-                            &this.permission_editor.confirm
-                        } else {
-                            &this.permission_editor.cancel
-                        };
-                        window.focus(focus, cx);
-                        cx.stop_propagation();
-                    } else if event.keystroke.key == "escape" {
-                        this.permission_action(Action::Cancel, window, cx);
-                        cx.stop_propagation();
-                    }
-                }),
-            );
-        match self.permission_editor.phase {
-            Phase::Confirming(_, _) => panel
-                .child(vega_i18n::t("ui.permission_confirm_thread"))
-                .child(vega_i18n::t("ui.permission_thread_scope"))
-                .child(
-                    div()
-                        .text_color(colors.warning)
-                        .child(vega_i18n::t("settings.permission.full_access_risk")),
-                )
-                .child(vega_i18n::t("settings.permission.persistent_effects"))
-                .child(
-                    div()
-                        .flex()
-                        .justify_end()
-                        .gap_2()
-                        .child(self.thread_permission_button(
-                            Action::Cancel,
-                            vega_i18n::t("ui.cancel"),
-                            cx,
-                        ))
-                        .child(self.thread_permission_button(
-                            Action::Confirm,
-                            vega_i18n::t("ui.permission_enable_thread"),
-                            cx,
-                        )),
-                )
-                .into_any_element(),
-            Phase::Preparing(_) => panel
-                .child(vega_i18n::t("ui.permission_reading"))
-                .child(self.thread_permission_button(Action::Cancel, vega_i18n::t("ui.cancel"), cx))
-                .into_any_element(),
-            Phase::Saving(_) => panel
-                .child(vega_i18n::t("ui.permission_saving"))
-                .into_any_element(),
-            Phase::Reloading(_) => panel
-                .child(vega_i18n::t("ui.permission_reading"))
-                .into_any_element(),
-            Phase::Failed(error) => {
-                let key = match error {
-                    ThreadPermissionError::Conflict => "ui.permission_error_conflict",
-                    ThreadPermissionError::ResetPending => "ui.permission_error_reset",
-                    ThreadPermissionError::OutcomeUnknown => "ui.permission_error_unknown",
-                    ThreadPermissionError::ConfirmationRequired => {
-                        "ui.permission_error_confirmation"
-                    }
-                    ThreadPermissionError::Unavailable => "ui.permission_error_unavailable",
-                };
-                panel
-                    .child(div().text_color(colors.danger).child(vega_i18n::t(key)))
-                    .child(self.thread_permission_button(
-                        Action::Reload,
-                        vega_i18n::t("ui.permission_reload"),
-                        cx,
-                    ))
-                    .into_any_element()
-            }
-            Phase::Idle => panel.into_any_element(),
-        }
+            .text_size(px(Typography::METADATA))
+            .child(
+                div()
+                    .flex_1()
+                    .text_color(colors.danger)
+                    .child(vega_i18n::t(key)),
+            )
+            .child(
+                div()
+                    .id("thread-permission-reload")
+                    .role(gpui_kit::Role::Button)
+                    .aria_label(reload_label)
+                    .track_focus(&self.permission_editor.reload)
+                    .tab_stop(true)
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .text_color(colors.text_primary)
+                    .interaction_surface(colors.bg_base, colors.bg_hover, colors.bg_active, true)
+                    .focus_visible(move |style| style.border_1().border_color(colors.accent))
+                    .cursor_pointer()
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            this.reload_thread_permissions(window, cx)
+                        }),
+                    )
+                    .on_key_down(
+                        cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                this.reload_thread_permissions(window, cx);
+                                cx.stop_propagation();
+                            }
+                        }),
+                    )
+                    .child(reload_label),
+            )
+            .into_any_element()
     }
 }

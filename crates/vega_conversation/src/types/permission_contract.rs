@@ -79,12 +79,6 @@ pub enum ThreadPermissionError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ThreadPermissionConfirmed {
-    pub operation: u64,
-    pub change: ThreadPermissionChange,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThreadPermissionReloadRequested {
     pub operation: u64,
     pub source: super::Thread,

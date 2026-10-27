@@ -490,24 +490,9 @@ impl ConversationStream {
     fn render_permission_status(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let mode = self.thread.permission_mode;
-        let needs_authorization = self.full_access_needs_confirmation(cx);
-        let changed = self
-            .permission_editor
-            .active_mode
-            .is_some_and(|active| active != mode);
-        let label = if needs_authorization {
-            vega_i18n::t_args(
-                "ui.permission_needs_authorization",
-                &[("mode", permission_label(mode))],
-            )
-        } else if changed {
-            vega_i18n::t_args(
-                "ui.permission_next_run",
-                &[("mode", permission_label(mode))],
-            )
-        } else {
-            permission_label(mode).to_string()
-        };
+        let progress_label = self.permission_editor.progress_label();
+        let saving = progress_label.is_some();
+        let label = permission_label(mode);
         let enabled = !self.permission_change_pending();
 
         let glyph = permission_icon(mode);
@@ -525,7 +510,7 @@ impl ConversationStream {
                 div()
                     .id("composer-permission-status")
                     .role(gpui_kit::Role::Button)
-                    .aria_label(vega_i18n::t("ui.change_permission_mode"))
+                    .aria_label(progress_label.unwrap_or(vega_i18n::t("ui.change_permission_mode")))
                     .track_focus(&self.permission_editor.trigger)
                     .tab_stop(enabled)
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -564,26 +549,18 @@ impl ConversationStream {
                         div()
                             .flex()
                             .flex_shrink_0()
-                            .child(crate::icons::icon(glyph, ink)),
+                            .when(saving, |slot| {
+                                slot.child(
+                                    gpui_kit::component::spinner::Spinner::new()
+                                        .ease(gpui_kit::linear)
+                                        .with_size(px(Layout::ICON_SIZE))
+                                        .icon(gpui_kit::component::IconName::LoaderCircle),
+                                )
+                            })
+                            .when(!saving, |slot| slot.child(crate::icons::icon(glyph, ink))),
                     )
                     .child(label),
             )
-            .when(changed, |chip| {
-                chip.child(
-                    div()
-                        .text_size(px(Typography::METADATA))
-                        .text_color(colors.text_secondary)
-                        .child(vega_i18n::t_args(
-                            "ui.permission_current_run",
-                            &[(
-                                "mode",
-                                permission_label(
-                                    self.permission_editor.active_mode.unwrap_or(mode),
-                                ),
-                            )],
-                        )),
-                )
-            })
             .when(self.permission_picker_open, |chip| {
                 chip.child(self.render_permission_picker(cx))
             })
@@ -616,6 +593,10 @@ impl ConversationStream {
     fn render_permission_picker(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let current = self.thread.permission_mode;
+        let active_mode = self
+            .permission_editor
+            .active_mode
+            .filter(|mode| *mode != current);
         let rows = PERMISSION_ORDER
             .into_iter()
             .enumerate()
@@ -750,6 +731,19 @@ impl ConversationStream {
                                 .child(vega_i18n::t(PERMISSION_PICKER_LEARN_MORE)),
                         ),
                 )
+                .when_some(active_mode, |menu, mode| {
+                    menu.child(
+                        div()
+                            .px_2()
+                            .pb_1()
+                            .text_size(px(Typography::METADATA))
+                            .text_color(colors.text_secondary)
+                            .child(vega_i18n::t_args(
+                                "ui.permission_current_run",
+                                &[("mode", permission_label(mode))],
+                            )),
+                    )
+                })
                 .child(
                     div()
                         .flex_shrink_0()

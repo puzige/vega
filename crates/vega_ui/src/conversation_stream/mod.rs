@@ -2,7 +2,7 @@ mod automation_permission;
 mod privacy;
 mod thread_permissions;
 pub use privacy::{PrivacyAction, PrivacyRequested};
-pub use vega_conversation::types::{ThreadPermissionConfirmed, ThreadPermissionReloadRequested};
+pub use vega_conversation::types::ThreadPermissionReloadRequested;
 mod attachments;
 mod ordinary_submissions;
 mod pending_messages;
