@@ -1,6 +1,13 @@
-use super::*;
+use crate::window::VegaWindow;
 use gpui_kit::{AppContext, Focusable, TestAppContext, WindowHandle};
+use vega_conversation::types::PermissionMode;
 use vega_store::{Store, config};
+use vega_ui::conversation_stream::ConversationStream;
+use vega_ui::settings::SettingsOpen;
+use vega_ui::sidebar::{
+    NewTaskDefaults, OpenedThread, PendingDeleteConfirm, ProjectsCollapsed, SelectedProject,
+    SessionsCollapsed, SidebarCollapsed, SidebarWidth, VegaStore,
+};
 
 #[gpui_kit::test]
 fn full_access_picker_and_confirmation_use_real_keyboard_and_preserve_the_draft(
