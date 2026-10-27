@@ -84,6 +84,7 @@ pub enum DiagnosticFailureCode {
     ProviderRejected,
     ToolFailed,
     ToolRejected,
+    RuntimeFailure,
     UnknownSafeFailure,
 }
 
@@ -115,6 +116,7 @@ impl DiagnosticFailureCode {
             Self::ProviderRejected => "provider_rejected",
             Self::ToolFailed => "tool_failed",
             Self::ToolRejected => "tool_rejected",
+            Self::RuntimeFailure => "runtime_failure",
             Self::UnknownSafeFailure => "unknown_safe_failure",
         }
     }
@@ -496,6 +498,7 @@ fn validate(event: &NewDiagnosticEvent) -> Result<(), DiagnosticError> {
         !matches!(
             value,
             "unknown"
+                | "runtime_failure"
                 | "http"
                 | "transport"
                 | "stream_interrupted"
@@ -601,6 +604,13 @@ fn validate_runtime_details(metrics: &DiagnosticMetrics) -> Result<(), Diagnosti
                 | "tool_running"
                 | "tool_terminal"
                 | "event_pipeline"
+                | "pending_read"
+                | "pending_admission"
+                | "pending_decode"
+                | "pending_references"
+                | "pending_claim"
+                | "pending_worker"
+                | "request_preparation"
         )
     ) {
         return Err(DiagnosticError::InvalidField {
@@ -609,7 +619,20 @@ fn validate_runtime_details(metrics: &DiagnosticMetrics) -> Result<(), Diagnosti
     }
     if !matches!(
         metrics.runtime_reason.as_deref(),
-        Some("database" | "approval_audit" | "state" | "io" | "pipeline")
+        Some(
+            "database"
+                | "approval_audit"
+                | "state"
+                | "io"
+                | "pipeline"
+                | "admission"
+                | "pending_decode"
+                | "references"
+                | "worker"
+                | "capability"
+                | "context_budget"
+                | "context_arithmetic"
+        )
     ) {
         return Err(DiagnosticError::InvalidField {
             field: "runtime_reason",
@@ -865,6 +888,7 @@ fn parse_failure(value: &str) -> Result<DiagnosticFailureCode, DiagnosticError> 
         "provider_rejected" => Ok(DiagnosticFailureCode::ProviderRejected),
         "tool_failed" => Ok(DiagnosticFailureCode::ToolFailed),
         "tool_rejected" => Ok(DiagnosticFailureCode::ToolRejected),
+        "runtime_failure" => Ok(DiagnosticFailureCode::RuntimeFailure),
         "unknown_safe_failure" => Ok(DiagnosticFailureCode::UnknownSafeFailure),
         _ => Err(DiagnosticError::InvalidField {
             field: "failure_code",

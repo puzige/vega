@@ -306,3 +306,8 @@
 "domain.ordinary_send.facts_unavailable" = "发送状态暂不可用；请先核实状态再重试"
 "domain.ordinary_send.history_changed" = "会话已变化；请打开历史后再发送"
 "domain.ordinary_send.submission_unavailable" = "本次发送已不可用；请先核实状态再重试"
+
+"domain.failure.references" = "无法准备待处理消息引用的文件。请检查这些文件后重新发送消息。"
+"domain.failure.capability" = "无法为下一次请求准备可用工具。请重新打开对话后重试。"
+"domain.failure.context_budget" = "上下文预算配置无效。请检查模型的上下文设置后重试。"
+"domain.failure.context_arithmetic" = "上下文计量超出安全算术范围。请新建对话；若持续出现，请报告此问题。"

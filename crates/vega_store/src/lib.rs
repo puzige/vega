@@ -88,8 +88,9 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0039_pending_thread_model.sql"),
     include_str!("../migrations/0040_composer_prediction_events.sql"),
     include_str!("../migrations/0041_provider_overloaded.sql"),
-    include_str!("../migrations/0042_permission_contracts.sql"),
-    include_str!("../migrations/0043_permission_reset.sql"),
+    include_str!("../migrations/0042_post_tool_runtime_diagnostics.sql"),
+    include_str!("../migrations/0043_permission_contracts.sql"),
+    include_str!("../migrations/0044_permission_reset.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.

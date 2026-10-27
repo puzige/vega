@@ -306,3 +306,8 @@
 "domain.ordinary_send.facts_unavailable" = "The send state is unavailable. Check its status before retrying."
 "domain.ordinary_send.history_changed" = "The conversation changed. Open its history before sending again."
 "domain.ordinary_send.submission_unavailable" = "This send is no longer available. Check its status before retrying."
+
+"domain.failure.references" = "Could not prepare the files referenced by your queued message. Check those files, then send the message again."
+"domain.failure.capability" = "Could not prepare the available tools for the next request. Reopen the conversation, then retry."
+"domain.failure.context_budget" = "The context budget is invalid. Check the model context settings, then retry."
+"domain.failure.context_arithmetic" = "Context accounting exceeded safe arithmetic bounds. Start a new conversation; if this persists, report the issue."

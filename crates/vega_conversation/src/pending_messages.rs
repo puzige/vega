@@ -4,7 +4,10 @@ use std::sync::Arc;
 use futures::{FutureExt, future::BoxFuture};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
-use vega_runtime::{ChatMessage, ChatRole, RuntimeSteeringInput, RuntimeSteeringSource, VegaError};
+use vega_runtime::{
+    ChatMessage, ChatRole, RuntimeFailureDetail, RuntimeFailureReason as Reason,
+    RuntimeFailureStage as Stage, RuntimeSteeringInput, RuntimeSteeringSource, VegaError,
+};
 use vega_store::{Store, pending_messages as rows};
 
 use crate::types::{ConversationError, ImageAttachment, PendingMessage, PendingMessageBehavior};
@@ -242,12 +245,13 @@ impl RuntimeSteeringSource for QueueSteeringSource {
                 return Ok(None);
             }
             tokio::task::spawn_blocking(move || {
-                let store = Store::open_read_only(database).map_err(|_| runtime_failure())?;
+                let store = Store::open_read_only(database)
+                    .map_err(|error| VegaError::from(error).at_runtime_stage(Stage::PendingRead))?;
                 rows::next_steer_metadata(store.conn(), &thread, &generation)
-                    .map_err(|_| runtime_failure())
+                    .map_err(|error| VegaError::from(error).at_runtime_stage(Stage::PendingRead))
             })
             .await
-            .map_err(|_| runtime_failure())?
+            .map_err(|_| pending_failure(Stage::PendingWorker, Reason::Worker))?
         }
         .boxed()
     }
@@ -266,22 +270,27 @@ impl RuntimeSteeringSource for QueueSteeringSource {
                 if cancel.is_cancelled() {
                     return Ok(None);
                 }
-                let store = Store::open(database)?;
+                let store = Store::open(database)
+                    .map_err(|error| VegaError::from(error).at_runtime_stage(Stage::PendingRead))?;
                 let _admission = match admission {
                     Some(admission)
                         if admission.verifies(store.database_identity(), &thread_id) =>
                     {
                         admission
                     }
-                    Some(_) => return Err(runtime_failure()),
+                    Some(_) => {
+                        return Err(pending_failure(Stage::PendingAdmission, Reason::Admission));
+                    }
                     None => crate::thread_access::acquire(&store, &thread_id)
-                        .map_err(|_| runtime_failure())?,
+                        .map_err(|_| pending_failure(Stage::PendingAdmission, Reason::Admission))?,
                 };
-                let row = rows::next_steer(store.conn(), &thread_id, &generation)?;
+                let row = rows::next_steer(store.conn(), &thread_id, &generation)
+                    .map_err(|error| VegaError::from(error).at_runtime_stage(Stage::PendingRead))?;
                 let Some(row) = row else {
                     return Ok(None);
                 };
-                let message = decode(row.clone()).map_err(|_| runtime_failure())?;
+                let message = decode(row.clone())
+                    .map_err(|_| pending_failure(Stage::PendingDecode, Reason::PendingDecode))?;
                 let refs = vega_tools::reference::resolve_bounded_references(
                     &workspace,
                     &message.content,
@@ -289,7 +298,12 @@ impl RuntimeSteeringSource for QueueSteeringSource {
                     vega_tools::reference::REFERENCE_MAX_FILE_BYTES,
                     vega_tools::reference::REFERENCE_MAX_TOTAL_BYTES,
                 )
-                .map_err(|_| runtime_failure())?;
+                .map_err(|error| match error {
+                    vega_tools::ToolError::Io(error) => {
+                        VegaError::Io(error).at_runtime_stage(Stage::PendingReferences)
+                    }
+                    _ => pending_failure(Stage::PendingReferences, Reason::References),
+                })?;
                 let original_content = message.content.clone();
                 let content = if refs.is_empty() {
                     message.content
@@ -331,16 +345,15 @@ impl RuntimeSteeringSource for QueueSteeringSource {
                 }))
             })
             .await
-            .map_err(|_| runtime_failure())?
+            .map_err(|_| pending_failure(Stage::PendingWorker, Reason::Worker))?
+            .map_err(|error: VegaError| error.at_runtime_stage(Stage::PendingClaim))
         }
         .boxed()
     }
 }
 
-fn runtime_failure() -> VegaError {
-    VegaError::Io(std::io::Error::other(vega_i18n::t(
-        "domain.pending.error.prepare",
-    )))
+fn pending_failure(stage: Stage, reason: Reason) -> VegaError {
+    VegaError::RuntimeFailure(RuntimeFailureDetail::new(reason)).at_runtime_stage(stage)
 }
 
 fn now_ms() -> i64 {
