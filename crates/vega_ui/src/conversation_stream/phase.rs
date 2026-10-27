@@ -501,7 +501,17 @@ impl ConversationStream {
                 continue;
             };
             match entry {
-                StreamEntry::RunActivity { .. } => {
+                StreamEntry::RunActivity { group } => {
+                    if self.thread.backend == TaskBackend::Native
+                        && previous_visible
+                            .and_then(|previous| self.entry_owner_group(previous))
+                            .is_some_and(|previous| {
+                                previous != group
+                                    && previous.read(cx).status() == RunActivityStatus::Interrupted
+                            })
+                    {
+                        insets.insert(index, Layout::CONVERSATION_STAGE_TOP);
+                    }
                     previous_clock.insert(owner, true);
                 }
                 StreamEntry::RunActivitySegment { group, segment } => {

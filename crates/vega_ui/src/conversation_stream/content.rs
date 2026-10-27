@@ -105,6 +105,7 @@ impl ConversationStream {
         let subagents = page.subagents.clone();
         let was_empty = self.entries.is_empty();
         self.ensure_entry_identities();
+        let previous_stage_top_insets = self.stage_top_insets(cx);
         let anchor = self.scroll_anchor_snapshot();
         let (mut hydrated, mut hydrated_identities) =
             self.hydrate_history_entries(page.entries, cx);
@@ -116,6 +117,22 @@ impl ConversationStream {
         self.list_prepend(prepended_entries);
         if prepended_entries > 0 {
             self.grow_entry_indices(0, prepended_entries);
+            let stage_top_insets = self.stage_top_insets(cx);
+            let changed_headers = self
+                .entries
+                .iter()
+                .enumerate()
+                .skip(prepended_entries)
+                .filter_map(|(index, entry)| {
+                    (matches!(entry, StreamEntry::RunActivity { .. })
+                        && stage_top_insets.get(&index)
+                            != previous_stage_top_insets.get(&(index - prepended_entries)))
+                    .then_some(index)
+                })
+                .collect::<Vec<_>>();
+            for index in changed_headers {
+                self.invalidate_item(Some(index));
+            }
             self.restore_scroll_anchor(&anchor);
         }
         self.hydration.older_cursor = page.older_cursor;

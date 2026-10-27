@@ -349,18 +349,7 @@ impl ConversationStream {
                                     || self.has_cancellable_queue_wait())
                                     && (self.composer_resume_pending
                                         || !self.shows_running_send(cx)),
-                                |row| {
-                                    row.when(self.composer_resume_pending, |row| {
-                                        row.child(
-                                            gpui_kit::component::spinner::Spinner::new()
-                                                .ease(gpui_kit::linear)
-                                                .with_size(px(Layout::ICON_SIZE))
-                                                .icon(gpui_kit::component::IconName::LoaderCircle)
-                                                .color(colors.text_secondary.into()),
-                                        )
-                                    })
-                                    .child(self.render_composer_stop(cx))
-                                },
+                                |row| row.child(self.render_composer_stop(cx)),
                             )
                             .when(
                                 self.composer_resume_pending
@@ -1684,7 +1673,13 @@ impl Render for ConversationStream {
                                                             group,
                                                         }) => {
                                                             pinned = group.read(cx).scroll_fade_pinned_indicator(None);
-                                                            this.render_run_details(group.clone(), window, cx)
+                                                            div()
+                                                                .w_full()
+                                                                .min_w_0()
+                                                                .flex_shrink_0()
+                                                                .pt(px(stage_top_insets.get(&index).copied().unwrap_or(0.)))
+                                                                .child(this.render_run_details(group.clone(), window, cx))
+                                                                .into_any_element()
                                                         },
                                                         Some(StreamEntry::RunActivitySegment { group, segment }) => {
                                                             pinned = group.read(cx).scroll_fade_pinned_indicator(Some(*segment));
