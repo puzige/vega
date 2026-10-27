@@ -1133,7 +1133,16 @@ fn render_line_selectable(
                 div()
                     .flex_shrink_0()
                     .w(px(Layout::MARKDOWN_LIST_INDENT))
-                    .text_color(colors.text_secondary)
+                    .text_color(if line.marker == "•" {
+                        colors.text_primary
+                    } else {
+                        colors.text_secondary
+                    })
+                    .font_weight(if line.marker == "•" {
+                        FontWeight::BOLD
+                    } else {
+                        FontWeight::NORMAL
+                    })
                     .child(marker_text),
             );
             if let Some(checked) = line.checked {
@@ -1450,7 +1459,16 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors, id_prefix: &s
                 div()
                     .flex_shrink_0()
                     .w(px(Layout::MARKDOWN_LIST_INDENT))
-                    .text_color(colors.text_secondary)
+                    .text_color(if line.marker == "•" {
+                        colors.text_primary
+                    } else {
+                        colors.text_secondary
+                    })
+                    .font_weight(if line.marker == "•" {
+                        FontWeight::BOLD
+                    } else {
+                        FontWeight::NORMAL
+                    })
                     .child(format!("{} ", line.marker).into_any_element()),
             );
             if let Some(checked) = line.checked {
