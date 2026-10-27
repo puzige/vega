@@ -1,5 +1,6 @@
 pub mod automation;
 pub mod codex_tasks;
+pub mod command_scope;
 pub mod composer_prediction_events;
 pub mod computer_use_delivery;
 pub mod config;

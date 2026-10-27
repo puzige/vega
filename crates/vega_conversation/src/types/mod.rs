@@ -27,6 +27,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 /// Stable, content-free pricing settings failure vocabulary.
 mod artifact;
 mod codex_task;
+mod command_scope;
 mod context;
 mod events;
 mod generated_notice;
@@ -52,6 +53,7 @@ mod workspace;
 
 pub use artifact::*;
 pub use codex_task::*;
+pub use command_scope::*;
 pub use context::*;
 pub use events::*;
 pub use generated_notice::*;

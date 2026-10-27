@@ -674,6 +674,62 @@ fn lost_ordinary_worker_blocks_initial_and_pending_reset_even_after_retry_invali
 }
 
 #[test]
+fn consumed_scope_is_unsettled_without_cleanup_evidence_even_without_active_tools() {
+    for state in [
+        "consumed",
+        "unknown",
+        "pending",
+        "approved",
+        "denied",
+        "timeout",
+        "cancelled",
+        "failed",
+    ] {
+        let fixture = Fixture::new();
+        fixture.store.conn().execute(
+            "INSERT INTO command_scope_audits(request_id,thread_id,run_id,call_id,request,state,created_at,updated_at) VALUES('scope',?1,'run','call','{}',?2,1,1)",
+            [fixture.thread.id.as_str(), state],
+        ).expect("isolated scope audit");
+        let intent = prepare_reset(&fixture.store, &fixture.config).expect("reset intent");
+        let pause = pause_admission(&fixture.store).expect("quiescent pause");
+        let result = reset_quiescent(
+            &fixture.store,
+            &fixture.config,
+            &intent,
+            &pause,
+            &ReplaySessionRegistry::new(),
+        );
+        if matches!(state, "consumed" | "unknown") {
+            assert_eq!(result, Err(PermissionResetError::UnsettledWork));
+            assert!(
+                persistence::load(fixture.store.conn())
+                    .expect("journal lookup")
+                    .is_none()
+            );
+        } else {
+            result.expect("unconsumed audit permits reset");
+        }
+        let retained: String = fixture
+            .store
+            .conn()
+            .query_row(
+                "SELECT state FROM command_scope_audits WHERE request_id='scope'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("scope retained");
+        assert_eq!(
+            retained,
+            if matches!(state, "pending" | "approved") {
+                "cancelled"
+            } else {
+                state
+            }
+        );
+    }
+}
+
+#[test]
 fn terminal_external_success_is_not_cleanup_but_local_success_and_rejection_remain_usable() {
     for (tool, rejected, blocked) in [
         ("bash", false, true),

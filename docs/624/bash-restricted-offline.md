@@ -38,4 +38,4 @@
 
 ## 状态
 
-生产修改及七项开发回归已完成，尚待精确 head Actions 与非写入者增量审查。新增回归覆盖实际 runtime prepare/authorize 的 3×4×危险/普通×有无旧规则矩阵、Write/Edit 保留门禁、最终命令/profile/环境产物、自检预取消/foreign temp 拒绝、离线严格 binding、真实 Store live/recovery 审计。未启动 shell/self-test/Broker/网络；环境是否实际继承及 OS deny 强度不能仅由 get_envs/生成文本推出，env_clear 接线按静态审查，native 行为仍待用户手测。未改 dependencies/workflows，未放宽原有 84 项断言，唯一扩充旧测试矩阵是加入新 ReadOnly 策略。
+生产修改及七项开发回归已提交 `4251682ba8c86dd82eb55f8f2e10fedfdae6f20b`；精确 head [Actions 40432406964](https://github.com/puzige/vega/actions/runs/40432406964) 成功：Clippy `121953008519`、Nextest `121953008826`、required 汇总 `121954619874` 均 success，实际 91 发现/91 执行/91 通过/0 跳过，七项新回归和两项真实 GPUI 导航回归均 PASS。非写入者对 `d1d0a90eb95416f7459672427f3082c0f53af1ec..4251682ba8c86dd82eb55f8f2e10fedfdae6f20b` 的冻结增量审查完成、无发现（执行 `01M5XFCZD7B4ASSGD2Z8HZAF94`）；其报告中的 CI pending 是派单时状态，后续云端结果由主 Agent 独立读回。新增回归覆盖实际 runtime prepare/authorize 的 3×4×危险/普通×有无旧规则矩阵、Write/Edit 保留门禁、最终命令/profile/环境产物、自检预取消/foreign temp 拒绝、离线严格 binding、真实 Store live/recovery 审计。未启动 shell/self-test/Broker/网络；环境是否实际继承及 OS deny 强度不能仅由 get_envs/生成文本推出，env_clear 接线按静态审查，native 行为仍待用户手测。未改 dependencies/workflows，未放宽原有 84 项断言，唯一扩充旧测试矩阵是加入新 ReadOnly 策略。

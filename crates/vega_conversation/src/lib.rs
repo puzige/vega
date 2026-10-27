@@ -3,6 +3,7 @@ mod artifact;
 pub mod attachments;
 mod automatic_titles;
 pub mod codex_tasks;
+pub mod command_scope;
 mod composer_predictions;
 mod git_workspace;
 pub mod history;

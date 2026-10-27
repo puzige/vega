@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::os::unix::process::ExitStatusExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, ExitStatus};
 use std::time::{Duration, Instant};
 
@@ -51,6 +51,14 @@ impl PreparedBash {
     /// Effective timeout in milliseconds.
     pub const fn timeout_ms(&self) -> u64 {
         self.timeout_ms
+    }
+
+    pub fn project_root(&self) -> &Path {
+        &self.project_root
+    }
+
+    pub const fn tool_instance_id(&self) -> u64 {
+        self.instance_id
     }
 }
 
