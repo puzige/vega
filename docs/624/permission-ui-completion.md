@@ -29,3 +29,5 @@
 已写入仅打开现有数据库的权限服务、精确 source/epoch/revision 核对、草稿与 grant 的原子提交、同名重新授权、活动运行与下一轮选择分离，以及确认/取消/错误重新读取的 UI 与键盘入口。权限保存使用既有 UI 单写者门禁，草稿创建期间冻结项目重绑；晚到回执仅更新仍匹配的 stream 和路由。四项服务开发回归及一项真实 GPUI 窗口键盘回归已写入，后者通过实际应用订阅、后台服务与持久数据库验证取消、默认拒绝、Enter/Space 确认和输入保留。本地仅固定工具链格式、差异与中英参数静态核对，实际编译/执行待云端。本批尚不包括全局 reset 控制器或自动化确认界面，统一独立 review 尚未开始。
 
 `17e0fd95f7a4a1885cb7da51a691cc304f8f860a` 的 [Actions 40466565201](https://github.com/puzige/vega/actions/runs/40466565201) 被测试宏递归展开阻断：新 GPUI 测试的 `super::*` 间接引入同名 test 宏。改为显式导入，不提高递归上限、不改产品行为或断言。该轮未取得 Rust 测试发现/执行计数。
+
+`81d8c58d64eca52ce77e95e9c8d0ff0461d5e10b` 的 [Actions 40467388506](https://github.com/puzige/vega/actions/runs/40467388506) 在 Clippy 测试目标编译时发现 E0599：ConversationStream 不实现 Focusable。测试改用其已有公开 `focus_composer` 入口，不增加生产 API 或改变键盘/持久化断言；待新 head 验证。

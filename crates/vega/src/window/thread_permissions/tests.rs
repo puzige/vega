@@ -1,5 +1,5 @@
 use crate::window::VegaWindow;
-use gpui_kit::{AppContext, Focusable, TestAppContext, WindowHandle};
+use gpui_kit::{AppContext, TestAppContext, WindowHandle};
 use vega_conversation::types::PermissionMode;
 use vega_store::{Store, config};
 use vega_ui::conversation_stream::ConversationStream;
@@ -64,7 +64,7 @@ fn full_access_picker_and_confirmation_use_real_keyboard_and_preserve_the_draft(
         let open = |operation, cx: &mut TestAppContext| {
             window
                 .update(cx, |_, window, cx| {
-                    stream.read(cx).focus_handle(cx).focus(window, cx)
+                    stream.read(cx).focus_composer(window, cx)
                 })
                 .expect("focus input");
             draw(window, cx);
