@@ -187,7 +187,7 @@ impl Store {
             let result = (|| -> Result<(), rusqlite::Error> {
                 let tx = WriteTransaction::new(&self.conn, WriteCategory::Migration)?;
                 tx.execute_batch(sql)?;
-                if target == 42 {
+                if target == 43 {
                     permission_contracts::initialize(&tx)?;
                 }
                 tx.pragma_update(None, "user_version", target)?;
