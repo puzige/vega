@@ -185,8 +185,8 @@ impl ConversationStream {
             && self.context_control.reserve.read(cx).text().is_empty();
         self.context_control.settings = settings;
         self.context_control.model_input_limit = usage.model_input_limit;
-        if let Some(total) = usage.last_call_total {
-            self.context_control.last_call_total = Some(total);
+        if self.context_control.last_call_total.is_none() {
+            self.context_control.last_call_total = usage.last_call_total;
         }
         if self.context_control.live_accounting.is_none() {
             self.context_control.next_request =

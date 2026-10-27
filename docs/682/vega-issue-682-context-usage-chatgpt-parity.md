@@ -33,7 +33,7 @@
 
 ### U4 — 重载恢复
 
-重新打开会话时，分子从持久化的最近一条主调用 usage 行恢复（`token_usage.message_id IS NOT NULL` 的最新一行）。摘要、自动标题、composer 预测等 `message_id IS NULL` 的行不得作为分子。
+重新打开会话时，分子从持久化的最近一条主调用 usage 行恢复（`token_usage.message_id IS NOT NULL` 的最新一行）。摘要、自动标题、composer 预测等 `message_id IS NULL` 的行不得作为分子。最新主调用行若 input 为零则不恢复，也不回退到更旧行。持久化投影只补充尚无真实值的控制器；一旦已有恢复值或实时 usage，不得由迟到投影覆盖，后续真实调用仍可降低总量。
 
 ### U5 — 分母不变
 

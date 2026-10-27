@@ -152,6 +152,9 @@ pub fn latest_primary_call_total(
             field: "output_tokens",
         });
     }
+    if input_tokens == 0 {
+        return Ok(None);
+    }
     let input_tokens = u64::try_from(input_tokens).unwrap_or(0);
     let output_tokens = u64::try_from(output_tokens).unwrap_or(0);
     input_tokens
