@@ -2245,20 +2245,20 @@ fn checkpoint_scope_id(project_id: &str, thread_id: &str) -> String {
 }
 
 pub(crate) fn is_safe_bash_failure(output: &str) -> bool {
-    const CODES: [&str; 9] = [
-        "scope_mismatch",
-        "hardlink_preflight",
-        "sandbox_unavailable",
-        "temp_unavailable",
-        "cleanup_failed",
-        "spawn_failed",
-        "process_control_failed",
-        "output_failed",
-        "timed_out",
+    use vega_tools::BashErrorCode;
+    const CODES: [BashErrorCode; 10] = [
+        BashErrorCode::ScopeMismatch,
+        BashErrorCode::HardlinkPreflight,
+        BashErrorCode::SandboxUnavailable,
+        BashErrorCode::TempUnavailable,
+        BashErrorCode::CleanupFailed,
+        BashErrorCode::SpawnFailed,
+        BashErrorCode::ProcessControlFailed,
+        BashErrorCode::OutputFailed,
+        BashErrorCode::OutputIncomplete,
+        BashErrorCode::TimedOut,
     ];
-    CODES
-        .iter()
-        .any(|code| output == format!("Tool error: bash failed ({code})"))
+    CODES.iter().any(|code| output == code.tool_output())
 }
 
 pub(crate) fn legacy_unavailable_output(tool: &str) -> String {

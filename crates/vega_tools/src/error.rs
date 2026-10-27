@@ -354,6 +354,10 @@ pub enum BashErrorCode {
 }
 
 impl BashErrorCode {
+    pub fn tool_output(self) -> String {
+        format!("Tool error: {}", BashError::new(self))
+    }
+
     /// Stable code for tool lifecycle and tests.
     pub const fn as_str(self) -> &'static str {
         match self {

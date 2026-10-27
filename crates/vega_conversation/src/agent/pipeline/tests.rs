@@ -1,3 +1,4 @@
+mod bash_output;
 mod credentials;
 
 use std::path::PathBuf;

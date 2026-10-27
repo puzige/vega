@@ -10,7 +10,7 @@
 2. 校验 PreparedBash 的工具实例/项目和取消后，创建宿主管理的私有 TempRoot。FullAccess 在任何 SandboxConfig、preflight/self-test、Broker/CA/lease/alias、ShellCredentialContext 构造前直接生成 `/bin/zsh` 启动命令。配置了 bindings（包括安全存储中可选 ref 不存在）不再触发 CredentialProtectionRequired，也不读取 binding 作为 Bash Broker 的前提。named tools 的 ToolCredentialPolicy 原样保留；Provider/MCP 必需读取、真实存储错误及 owner redaction 仍由已实现的运行级策略负责，不在 Bash 中关闭。
 3. FullAccess 保留本阶段已有的继承环境及 `zsh -lc` 行为，仅覆盖本次私有 TMPDIR/TMP/TEMP/TEMPDIR；不声称隔离用户 rc、宿主环境、文件或外部服务。这是显式 P2，不是受限命令失败后的 fallback。底层 direct command builder 不接收 credential context，不能再意外选择 sandbox-exec。受限分支保留旧 profile/环境和 Broker 行为，下一阶段再按主规格整体改动，不能把旧分支宣称为默认禁网。
 4. 将命令构造与进程 spawn 分离，构造产物持有本次 credential lease 至监督收尾完成；无需启动 shell 即可在开发回归观察真实产物。执行仍复核取消、TempRoot 身份，保留 process_group、kill_on_drop、超时、输出收集/截断/临时路径脱敏。启动失败不重试、不切换策略。
-5. 正常 `child.wait` 成功后只排空输出，不再携带 PGID，也不向缓存进程组发送 TERM/KILL。输出在既有 500ms 内没有 EOF，停止并收束本地 reader，返回独立 `output_incomplete` 错误并保留 TempRoot，不把强制中断读取的部分数据作为成功。反馈明确 shell 已退出但后台工作可能仍在运行，要求核实后再重试，不含路径/命令/密钥。I/O/reader 失败同样不允许临时目录清理。
+5. 正常 `child.wait` 成功后只排空输出，不再携带 PGID，也不向缓存进程组发送 TERM/KILL。输出在既有 500ms 内没有 EOF，停止并收束本地 reader，返回独立 `output_incomplete` 错误并保留 TempRoot，不把强制中断读取的部分数据作为成功。反馈明确 shell 已退出但后台工作可能仍在运行，要求核实后再重试，不含路径/命令/密钥。I/O/reader 失败同样不允许临时目录清理。runtime 输出与 conversation 终态/恢复验证共用错误码的 canonical 输出；必须精确匹配，不用 starts_with 或接受任意附加文本。保留旧失败文本兼容，output_incomplete 不被认作成功或取消。
 6. 取消/超时/缺少管道的终止路径只从仍持有的 Child 取得身份，完成 TERM、grace、KILL 后才 wait/reap；不接收调用者缓存的 PGID。身份缺失或 wait 报错不能作为已确认清理。leader/管道完成不证明全部 detached descendants 消失或外部副作用已撤回；本阶段不放宽 reset 对 successful Bash/未知外部效果的保守阻塞。
 
 ## 验证
@@ -22,4 +22,6 @@
 
 ## 状态
 
-按上述规格完成本阶段实现和五项开发回归；尚未运行。回归检查真实 launch preparation/StdCommand 产物及异步内存管道，不启动 native shell、Seatbelt、Broker 或网络。静态核对沿用既有输出收集器去掉末尾换行的契约，不改变生产输出格式。最新 head 的云端执行及非写入者审查待完成；限制和剩余 D4 工作不变。
+按上述规格完成本阶段实现和五项开发回归；尚未运行。回归检查真实 launch preparation/StdCommand 产物及异步内存管道，不启动 native shell、Seatbelt、Broker 或网络。静态核对沿用既有输出收集器去掉末尾换行的契约，不改变生产输出格式。`d8c180346ff75ccab5cac3d9df3479febab39a60` 的非写入者启动/收尾增量审查无发现。其 [run 40426890256](https://github.com/puzige/vega/actions/runs/40426890256) 在测试编译失败：Clippy `121934780675`、Nextest `121934781063`、汇总 `121936244479` 失败；`bash/tests.rs:198,228,236` 的 expect_err 要求 CollectedBashOutput: Debug，实际类型未实现。未发现/执行测试，不能记为通过或 no Rust tests。修正只改测试错误匹配，保留断言、不为测试扩展生产 Debug。
+
+主 Agent 后续沿失败结果消费者追踪，另发现 conversation 的精确失败白名单未接新提示。首轮审查未覆盖此遗漏；补丁将错误码输出与白名单绑定同一 canonical formatter，并用真实 Store 工具状态验证终态/恢复接受新错误且拒绝伪造后缀、错误状态/metadata。修正仍须新精确 head 的 Actions 和非写入者增量审查；限制和剩余 D4 工作不变。

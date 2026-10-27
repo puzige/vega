@@ -1851,7 +1851,7 @@ pub(crate) async fn execute_prepared_waiting(
                     (
                         terminal_result(
                             &call,
-                            format!("Tool error: {error}"),
+                            error.code().tool_output(),
                             if cancelled {
                                 RuntimeToolStatus::Cancelled
                             } else {

@@ -193,9 +193,10 @@ async fn reaped_shell_output_requires_eof_instead_of_treating_stopped_reads_as_s
     writer.write_all(b"partial output\n").await.expect("write");
     let stop = CancellationToken::new();
     let mut reader = tokio::spawn(read_output(output, tokio::io::empty(), stop.clone()));
-    let error = finish_reader(&mut reader, &stop)
-        .await
-        .expect_err("open pipe");
+    let error = match finish_reader(&mut reader, &stop).await {
+        Err(error) => error,
+        Ok(_) => panic!("open pipe reported complete output"),
+    };
     assert_eq!(error.code(), BashErrorCode::OutputIncomplete);
     assert!(
         error
@@ -223,17 +224,19 @@ impl AsyncRead for FailedRead {
 async fn output_io_failure_and_reader_abort_remain_failures() {
     let stop = CancellationToken::new();
     let mut reader = tokio::spawn(read_output(FailedRead, tokio::io::empty(), stop.clone()));
-    let error = finish_reader(&mut reader, &stop)
-        .await
-        .expect_err("read failure");
+    let error = match finish_reader(&mut reader, &stop).await {
+        Err(error) => error,
+        Ok(_) => panic!("I/O failure reported complete output"),
+    };
     assert_eq!(error.code(), BashErrorCode::OutputFailed);
     assert!(reader.is_finished());
 
     let mut reader = tokio::spawn(std::future::pending());
     reader.abort();
-    let error = finish_reader(&mut reader, &stop)
-        .await
-        .expect_err("reader abort");
+    let error = match finish_reader(&mut reader, &stop).await {
+        Err(error) => error,
+        Ok(_) => panic!("aborted reader reported complete output"),
+    };
     assert_eq!(error.code(), BashErrorCode::OutputFailed);
     assert!(reader.is_finished());
 }
