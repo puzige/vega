@@ -36,6 +36,7 @@ pub use subagents::*;
 
 mod user_questions;
 pub use user_questions::*;
+mod compaction_refill;
 mod progress;
 mod progress_recovery;
 

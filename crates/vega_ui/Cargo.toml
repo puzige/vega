@@ -3,6 +3,9 @@ name = "vega_ui"
 version.workspace = true
 edition.workspace = true
 
+[features]
+context-test-support = []
+
 [dependencies]
 vega_i18n.workspace = true
 gpui_kit.workspace = true

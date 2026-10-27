@@ -1020,20 +1020,26 @@ pub(super) fn selection_context_menu(
     use gpui_kit::component::menu::PopupMenuItem;
 
     let copy_for_menu = copy.clone();
-    super::selection_menu::SelectionMenu::new(copy.id, body, move |menu, _, _| {
+    super::selection_menu::SelectionMenu::new(copy.id, body, move |menu, window, cx| {
         let selected = copy_for_menu.clone();
         let original = copy_for_menu.clone();
-        menu.when(copy_original, |menu| {
-            menu.item(
-                PopupMenuItem::new(vega_i18n::t("ui.copy_original"))
-                    .on_click(move |_, _, cx| original.copy(cx)),
-            )
-        })
-        .item(
-            PopupMenuItem::new(vega_i18n::t("ui.copy"))
-                .disabled(!copy_for_menu.has_selected_text())
-                .on_click(move |_, _, cx| selected.copy_selected_text(cx)),
-        )
+        let menu = menu
+            .when(copy_original, |menu| {
+                menu.item(
+                    PopupMenuItem::new(vega_i18n::t("ui.copy_original"))
+                        .on_click(move |_, _, cx| original.copy(cx)),
+                )
+            })
+            .item(
+                PopupMenuItem::new(vega_i18n::t("ui.copy"))
+                    .disabled(!copy_for_menu.has_selected_text())
+                    .on_click(move |_, _, cx| selected.copy_selected_text(cx)),
+            );
+        if let Some(builder) = copy_for_menu.compaction_menu.borrow().as_ref() {
+            builder(menu, window, cx)
+        } else {
+            menu
+        }
     })
     .enabled(enabled)
     .into_any_element()

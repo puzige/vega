@@ -20,7 +20,11 @@ fn request_output_cap(
     max_tokens: Option<u32>,
     budget: Option<crate::ContextBudget>,
 ) -> Option<u32> {
-    max_tokens.map(|cap| budget.map_or(cap, |budget| cap.min(budget.output_reserve() as u32)))
+    match (max_tokens, budget) {
+        (Some(cap), Some(budget)) => Some(cap.min(budget.output_reserve() as u32)),
+        (None, Some(budget)) => Some(budget.output_reserve() as u32),
+        (cap, None) => cap,
+    }
 }
 
 fn is_initial_user_input(messages: &[ChatMessage]) -> bool {
@@ -31,42 +35,6 @@ fn is_initial_user_input(messages: &[ChatMessage]) -> bool {
             && system.tool_call_id.is_none()
             && user.tool_calls.is_empty()
             && user.tool_call_id.is_none())
-}
-
-fn replay_user_boundary_follows_complete_tool_groups(
-    messages: &[ChatMessage],
-    boundary: usize,
-) -> bool {
-    if boundary >= messages.len() || messages[boundary].role != ChatRole::User {
-        return false;
-    }
-    let mut pending = std::collections::HashSet::new();
-    for message in &messages[..boundary] {
-        match message.role {
-            ChatRole::Assistant => {
-                if !pending.is_empty() {
-                    return false;
-                }
-                for call in &message.tool_calls {
-                    if !pending.insert(call.id.as_str()) {
-                        return false;
-                    }
-                }
-            }
-            ChatRole::Tool => {
-                let Some(call_id) = message.tool_call_id.as_deref() else {
-                    return false;
-                };
-                if !pending.remove(call_id) {
-                    return false;
-                }
-            }
-            ChatRole::User if !pending.is_empty() => return false,
-            ChatRole::System => return false,
-            ChatRole::User => {}
-        }
-    }
-    pending.is_empty()
 }
 
 fn input_decision(
@@ -187,17 +155,10 @@ fn install_compacted_replay_frame(
     let invalid = || VegaError::Context(ContextRuntimeError::InvalidProjection);
     let history_len = messages.len().checked_sub(1).ok_or_else(invalid)?;
     let cold_prefix = cold_prefix.unwrap_or(history_len);
-    if cold_prefix == 0 || cold_prefix > history_len {
-        return Err(invalid());
-    }
-    if messages[0]
+    let interleaved = messages[0]
         .replay_frame()
-        .is_some_and(|frame| frame.policy() == crate::ReasoningReplayPolicy::GlmInterleaved)
-        && !user_boundary.is_some_and(|boundary| {
-            boundary >= cold_prefix
-                && replay_user_boundary_follows_complete_tool_groups(&messages[1..], boundary)
-        })
-    {
+        .is_some_and(|frame| frame.policy() == crate::ReasoningReplayPolicy::GlmInterleaved);
+    if !crate::validate_compaction_replay(&messages[1..], cold_prefix, user_boundary, interleaved) {
         return Err(invalid());
     }
     messages[0].update_replay_cold_prefix(cold_prefix + 1);
@@ -450,6 +411,7 @@ async fn compact_before_skill_rejection<F, Fut>(
     projection_revision: &mut u64,
     attempted_source: &mut Option<(u64, Option<String>, u64)>,
     automatic_failures: &mut u8,
+    refill: &mut super::compaction_refill::CompactionRefill,
     cancel: &CancellationToken,
     events: &mut Vec<RuntimeEvent>,
     sink: &mut F,
@@ -517,6 +479,12 @@ where
         VegaError::Context(error.into())
             .at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation)
     })?;
+    if !refill.admit() {
+        return Err(VegaError::Context(ContextRuntimeError::OverLimit {
+            estimated_tokens: estimate.input_tokens,
+            input_budget: budget.input_budget(),
+        }));
+    }
     let generation = projection_revision.saturating_add(1);
     let operation_key = format!(
         "{operation_id}:context-generation-{generation}:attempt-{}",
@@ -548,6 +516,7 @@ where
     let compacted = hook
         .compact(
             ContextCompactionRequest {
+                trigger: crate::ContextCompactionTrigger::Threshold,
                 system_prompt: system,
                 messages: projected.iter().skip(1).cloned().collect(),
                 tools: tools.to_vec(),
@@ -667,6 +636,7 @@ where
         return Ok(false);
     }
     *automatic_failures = 0;
+    refill.installed();
     // The candidate is not active yet; preserve the old system authority
     // until the same hash is rechecked and activation succeeds below.
     next_projected[0].content.clone_from(&messages[0].content);
@@ -1007,6 +977,16 @@ where
     if request.model_snapshot.is_none() {
         request.model_snapshot = provider.model_snapshot().map(Box::new);
     }
+    if let (Some(budget), Some(model)) = (request.context_budget, &request.model_snapshot) {
+        request.context_budget = Some(
+            budget
+                .with_model_limits(
+                    model.definition.context_window,
+                    model.definition.max_output_tokens,
+                )
+                .map_err(|error| VegaError::Context(error.into()))?,
+        );
+    }
     if request.reasoning.is_none()
         && let Some(model) = &request.model_snapshot
     {
@@ -1088,8 +1068,10 @@ where
     let mut live_projection_revision = 0_u64;
     let mut attempted_context_source = None::<(u64, Option<String>, u64)>;
     let mut automatic_compaction_failures = 0_u8;
+    let mut compaction_refill = super::compaction_refill::CompactionRefill::default();
     let mut provider_overflow_recovered = false;
     let mut force_provider_compaction = false;
+    let mut provider_overflow_gap = None;
     let mut completed = request.completed_tool_results;
     let tool_config = request.tool_config;
     let skill_config = tool_config.skills.clone();
@@ -1234,6 +1216,7 @@ where
                         &mut live_projection_revision,
                         &mut attempted_context_source,
                         &mut automatic_compaction_failures,
+                        &mut compaction_refill,
                         &cancel,
                         &mut events,
                         &mut sink,
@@ -1503,6 +1486,12 @@ where
                     VegaError::Context(error.into())
                         .at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation)
                 })?;
+                if !compaction_refill.admit() {
+                    return Err(VegaError::Context(ContextRuntimeError::OverLimit {
+                        estimated_tokens: estimate.input_tokens,
+                        input_budget: budget.input_budget(),
+                    }));
+                }
                 let generation = live_projection_revision.saturating_add(1);
                 // The source fence is deliberately not the operation
                 // identity: a retry can observe the same source fingerprint
@@ -1544,6 +1533,16 @@ where
                 let compacted = hook
                     .compact(
                         ContextCompactionRequest {
+                            trigger: if force_provider_compaction {
+                                crate::ContextCompactionTrigger::InputOverflow {
+                                    token_gap: provider_overflow_gap,
+                                    deeper: false,
+                                }
+                            } else if matches!(check, ContextCheck::OverLimit) {
+                                crate::ContextCompactionTrigger::HardLimit
+                            } else {
+                                crate::ContextCompactionTrigger::Threshold
+                            },
                             system_prompt: system_prompt.clone(),
                             messages: messages.iter().skip(1).cloned().collect(),
                             tools: tool_definitions.clone(),
@@ -1680,23 +1679,12 @@ where
                 let interleaved_policy = system.replay_frame().is_some_and(|frame| {
                     frame.policy() == crate::ReasoningReplayPolicy::GlmInterleaved
                 });
-                let replay_boundaries_valid = match replay_cold_prefix_messages {
-                    Some(cold_prefix) => cold_prefix > 0 && cold_prefix <= compacted.messages.len(),
-                    None => !interleaved_policy,
-                } && (!interleaved_policy
-                    || match (
-                        replay_cold_prefix_messages,
-                        replay_interleaved_user_boundary,
-                    ) {
-                        (Some(cold_prefix), Some(user_boundary)) => {
-                            user_boundary >= cold_prefix
-                                && replay_user_boundary_follows_complete_tool_groups(
-                                    &compacted.messages,
-                                    user_boundary,
-                                )
-                        }
-                        _ => false,
-                    });
+                let replay_boundaries_valid = crate::validate_compaction_replay(
+                    &compacted.messages,
+                    replay_cold_prefix_messages.unwrap_or(compacted.messages.len()),
+                    replay_interleaved_user_boundary,
+                    interleaved_policy,
+                );
                 if !replay_boundaries_valid {
                     emit!(
                         events,
@@ -1821,6 +1809,7 @@ where
                 }
                 force_provider_compaction = false;
                 automatic_compaction_failures = 0;
+                compaction_refill.installed();
                 messages = next_messages;
                 recovery = progress_recovery::ProgressRecovery::default();
                 discard_reasoning_events(&mut events, 0);
@@ -1972,6 +1961,7 @@ where
             if let Some(hook) = tool_config.usage_hook() {
                 hook.provider_started();
             }
+            compaction_refill.primary_started();
             provider
                 .chat_stream_recovering(chat_request, cancel.clone())
                 .await
@@ -2015,7 +2005,7 @@ where
                     )
                 );
                 if !provider_overflow_recovered
-                    && error.context_input_overflow().is_some()
+                    && let Some(token_gap) = error.context_input_overflow()
                     && !is_initial_user_input(&messages)
                     && context_budget.is_some_and(|budget| budget.automatic_compaction())
                     && external_context_hook
@@ -2024,6 +2014,7 @@ where
                 {
                     provider_overflow_recovered = true;
                     force_provider_compaction = true;
+                    provider_overflow_gap = token_gap;
                     attempted_context_source = None;
                     drop(input_anchor.take());
                     turn_index = turn_index.saturating_sub(1);
@@ -2486,7 +2477,7 @@ where
                         )
                     );
                     if !provider_overflow_recovered
-                        && error.context_input_overflow().is_some()
+                        && let Some(token_gap) = error.context_input_overflow()
                         && !is_initial_user_input(&messages)
                         && context_budget.is_some_and(|budget| budget.automatic_compaction())
                         && external_context_hook
@@ -2500,6 +2491,7 @@ where
                     {
                         provider_overflow_recovered = true;
                         force_provider_compaction = true;
+                        provider_overflow_gap = token_gap;
                         attempted_context_source = None;
                         drop(input_anchor.take());
                         turn_index = turn_index.saturating_sub(1);
@@ -3293,6 +3285,7 @@ where
                                         &mut live_projection_revision,
                                         &mut attempted_context_source,
                                         &mut automatic_compaction_failures,
+                                        &mut compaction_refill,
                                         &cancel,
                                         &mut events,
                                         &mut sink,

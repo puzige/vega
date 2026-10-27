@@ -1633,6 +1633,7 @@ impl Render for ConversationStream {
                                                             RunActivityGroup::render_segment_with_top(group.clone(), *segment, stage_top_insets.get(&index).copied().unwrap_or(Layout::CONVERSATION_STAGE_TOP), window, cx)
                                                         },
                                                         Some(entry) => {
+                                                            this.prepare_partial_compaction_menu(index, cx);
                                                             let body = render_stream_entry(
                                                                 entry,
                                                                 this.entry_identities

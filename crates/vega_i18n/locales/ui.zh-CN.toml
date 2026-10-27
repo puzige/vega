@@ -783,3 +783,6 @@
 
 "ui.pending_authority_changed" = "排队消息的权限已变化或缺失，请编辑后重新发送。"
 "ui.permission_automation_details" = "任务和权限详情"
+
+"ui.compact_before_message" = "压缩此消息之前的上下文"
+"ui.compact_from_message" = "从此消息开始压缩"

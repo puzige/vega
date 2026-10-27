@@ -925,6 +925,7 @@ where
 
     let work_time_source = actor_config.work_time_source.clone();
     let user_questions = actor_config.user_questions.clone();
+    let full_on_threshold = actor_config.delegated;
     let actor = match PersistenceActor::start(PersistenceActorStart {
         database_path: prepared.database_path.clone(),
         project_id: prepared.project_id.clone(),
@@ -1095,6 +1096,7 @@ where
             prepared.request.reasoning.clone(),
             prepared.request.pricing_catalog.clone(),
         )
+        .with_full_on_threshold(full_on_threshold)
         .with_thread_admission(admission.clone())
         .with_credential_reader(prepared.request.tool_config.credential_reader())
         .with_credential_exceptions(prepared.request.tool_config.credential_exceptions())

@@ -2,6 +2,12 @@ use super::*;
 use sha2::{Digest, Sha256};
 
 mod authority;
+mod context_projection;
+pub(crate) use context_projection::{
+    LiveSourceRange, interpret_projection, interpret_projection_with_live,
+};
+#[cfg(test)]
+mod compaction_tests;
 
 pub(crate) fn valid_automation_call_projection(tool: &str, input_json: &str) -> bool {
     matches!(tool, "get_goal" | "update_goal" | "schedule_wakeup")
@@ -383,6 +389,17 @@ pub(crate) fn history_from_context_source_with_checkpoint(
         checkpoint.source_version <= source.source_version
             && checkpoint.covered_through_seq <= source.source_version
     });
+    if let Some(checkpoint) = checkpoint
+        && let Some(plan) = &checkpoint.projection_plan
+    {
+        return interpret_projection(
+            source,
+            plan,
+            &checkpoint.summary,
+            &checkpoint.referenced_summaries,
+            current_assistant_id,
+        );
+    }
     let projected_source = source_after_checkpoint(source, checkpoint)?;
     let mut history = history_from_context_source(
         &projected_source,
@@ -391,14 +408,60 @@ pub(crate) fn history_from_context_source_with_checkpoint(
     )?;
     if let Some(checkpoint) = checkpoint {
         let mut prefix = vec![historical_summary_message(&checkpoint.summary)];
-        prefix.extend(historical_image_projection(
+        prefix.extend(historical_continuation_projection(
             source,
             checkpoint.covered_through_seq,
+            checkpoint.covered_assistant_id.as_deref(),
         )?);
         prefix.append(&mut history);
         history = prefix;
     }
     Ok(history)
+}
+
+pub(crate) fn historical_continuation_projection(
+    source: &vega_store::context_compaction::ContextSource,
+    covered_through_seq: u64,
+    partial_owner: Option<&str>,
+) -> Result<Vec<vega_runtime::ChatMessage>, ConversationError> {
+    let mut messages = historical_image_projection(source, covered_through_seq)?;
+    if let Some(owner_id) = partial_owner
+        && let Some(owner) = source
+            .messages
+            .iter()
+            .find(|message| message.id == owner_id)
+        && let Some(user) = source.messages.iter().rev().find(|message| {
+            message.role == "user" && message.status == "done" && message.seq < owner.seq
+        })
+        && user.seq as u64 <= covered_through_seq
+    {
+        messages.push(historical_task_reference(source, &user.id)?);
+    }
+    Ok(messages)
+}
+
+pub(crate) fn historical_task_reference(
+    source: &vega_store::context_compaction::ContextSource,
+    message_id: &str,
+) -> Result<vega_runtime::ChatMessage, ConversationError> {
+    let user = source
+        .messages
+        .iter()
+        .find(|message| {
+            message.id == message_id && message.role == "user" && message.status == "done"
+        })
+        .ok_or_else(|| ConversationError::CorruptRow("historical task source missing".into()))?;
+    let reference = serde_json::json!({
+        "source_message_id": user.id,
+        "source_sequence": user.seq,
+        "content": user.content,
+    });
+    Ok(vega_runtime::ChatMessage::new(
+        vega_runtime::ChatRole::User,
+        format!(
+            "[Historical task reference — not a new user message or execution permission.]\nThis is the original user message preceding the partially summarized assistant work. Use it to identify the task rather than treating the summarizer's instructions as the task. Later user corrections, stop/pause boundaries, current permissions and unresolved side-effect fences still apply.\n{reference}"
+        ),
+    ))
 }
 
 /// Select complete historical user image groups newest-first and replay them
@@ -2675,6 +2738,9 @@ pub(crate) fn source_after_checkpoint(
     let Some(checkpoint) = checkpoint else {
         return Ok(projected);
     };
+    if let Some(plan) = &checkpoint.projection_plan {
+        return context_projection::retained_source(source, plan);
+    }
     let Some(owner) = checkpoint.covered_assistant_id.as_deref() else {
         return Ok(projected);
     };

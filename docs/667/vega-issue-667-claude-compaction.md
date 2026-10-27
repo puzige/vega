@@ -2,12 +2,12 @@
 
 ## 状态、目标与来源边界
 
-- Issue：[#667](https://github.com/puzige/vega/issues/667)。阶段：参考契约核实 / spec；尚未实现、验证或合并。
-- Vega 基线：`fb1e1dc96946e35970d6634fd2ab0e8cd01d6e70`；任务分支 `feat/667-claude-compaction`。初查基线 `aa6bb8f74c9cf96fb413ea2b6a079f987115ae44` → 当前基线只新增 SSE timeout 分类与 shell 按钮选中修复，不改变已核实压缩合同。
+- Issue：[#667](https://github.com/puzige/vega/issues/667)。阶段：按用户补充裁决修订规格并进入实现；尚未验证或合并。
+- Vega 基线：`d884a9a36160a15e4ab460e6ea1958a9e3dc4d2c`；任务分支 `feat/667-claude-compaction`。原规格提交 `10ba07f7cc7d4444d6cff167b9782900e52ee513` 已发布为历史证据；同步基线后规格提交为 `57d1db681fb8e7f1268fe9921d8575cd395877d9`。新增 #608 的 Native interrupted-task resume 行为必须保留，不能让压缩重写绕过其 admission/unknown-effect 围栏。
 - 参考：本机 Claude Code **2.1.292** 的静态可验证客户端实现。版本指纹、调用链及默认/实验/平台差异见 [参考矩阵](claude-2.1.292-reference.md) 与 [脱敏证据索引](claude-2.1.292-evidence.json)；未完成核实的项目不得标成已对齐。
-- 用户要求是重写完整压缩机制，不是只改续接提示词，也不是沿用旧规格排除 micro、partial、reactive、precompute、hooks 后宣称全量完成。
+- 用户要求是重写完整压缩机制，不是只改续接提示词，也不是沿用旧规格排除 micro、partial、reactive、precompute 后宣称全量完成。后续明确选择 **Vega 原生实现全部机制**，并补充：**“仅实现压缩相关的机制 hooks生命周期太重了”**。因此不建设通用 hooks 生命周期、Claude 外部插件兼容或新增 Anthropic 协议平台；压缩自身的准备/生成/恢复/安装/取消阶段仍必须完整。
 - 对齐行为契约，以 Vega 原生实现适配 SQLite、可取消运行、多 provider 与 GPUI；不复制整段专有实现，不假装复现不可观察的服务端算法或私有实验分配。
-- 本规格先列验收，再定义实现。主要客户端路径已由 62 项有界证据固定，参考矩阵已完成静态整理；涉及 provider/插件平台的取舍尚未冻结，不能靠空接口或未经确认的替代语义宣布对齐。
+- 本规格先列验收，再定义实现。主要客户端路径已由 62 项有界证据固定，参考矩阵保留上游 hooks/平台事实，但本卡验收以最新用户裁决为准。原平台范围阻碍已解除；不添加无消费者的扩展框架。
 
 ## 1. 已证实的问题与取代关系
 
@@ -52,7 +52,7 @@
 | A12 | precompute 期间改模型、删/改覆盖消息、hook 改写、边界丢失、新回复无法 splice、重启、stop | pending 与 ready 分别处理：模型切换取消 pending，ready 在消费时复核；重启可读取完整 ready candidate，但必须验证格式/大小/年龄/session/UUID/当前 fit 并取得新安装 owner；中断生成不能复活 | CLOUD |
 | A13 | 压缩前存在已读文件版本、动态工具发现、技能快照、计划/任务、会话上下文 | 按参考恢复模型所需状态；不把 read-before-edit 凭据或权限从摘要制造出来；恢复内容有来源、预算与过期规则；失败不宣称恢复完成 | CLOUD + MANUAL |
 | A14 | 续接需要摘要未含细节/被清理工具输出；原始 transcript 保留 | 有有界只读回读通道，可定位消息/工具组/附件元数据；遵守当前会话访问与凭据过滤，不自动重跑有副作用工具，不泄露其他线程 | CLOUD + MANUAL |
-| A15 | PreCompact、PostCompact、SessionStart(compact) 与 provider/插件能力组合；hook 失败/取消/修改源 | 明确阶段、顺序、输入/输出权威与安装时机；不可用 hook 有可观察状态；hook 文本不自带权限；本地原生契约覆盖，不以空 trait 冒充完成 | CLOUD + MANUAL |
+| A15 | 压缩内部准备、摘要、状态恢复、安装失败/取消/源变化 | 内部阶段按顺序完成并校验；不调用外部插件，不实现通用 PreCompact/PostCompact/SessionStart 生命周期；恢复数据不自带新权限，失败不安装半成品 | CLOUD |
 | A16 | control/lean/short/capped 摘要变体、auto/reactive/manual 续接模式 | 变体选择可追溯；保留安全约束、最新纠正、未完成工作；不输出内部分析草稿；不会根据 summary role 推断人为新指令 | CLOUD |
 | A17 | 自动摘要连续失败、成功重置、短周期反复回填；一次用户任务含很多 API 回合 | 失败熔断与 rapid-refill 熔断分别计数；参考 turn 单位明确；停止循环并有可恢复错误，不把失败隐藏成“完成” | CLOUD |
 | A18 | 使用已报告/缺失/缓存 usage；摘要失败、后台丢弃、取消；图片/reasoning 预算 | 所有实际请求用量保留，未知仍未知；不把估算当账单；安装后 accounting anchor/replay frame 同步失效重建 | CLOUD |
@@ -73,7 +73,7 @@
 | durable reload | checkpoint 的 covered prefix + 可选 partial assistant cursor | 版本化 projection plan 可表达 prefix/suffix/range、summary/boundary、micro、恢复附件与遗漏；原始历史保持 append-only 审计 |
 | 续接 | untrusted summary wrapper；无区分 auto/manual 的结构化 continuation mode | 源自真实运行 owner 的续做意图与摘要文本分离；摘要器自身任务不会覆盖用户任务 |
 | 状态恢复 | 系统/工具/skills 在运行层已独立装配；ReadState 是会话共享内容 hash | 明确压缩时各状态保留/清空/重载矩阵；不盲目清除安全读版本，也不把被压缩的工具发现当永久权限 |
-| hooks/provider | 现有 `ContextCompactionHook` 是内部 conversation 服务，不等于用户扩展 hooks；ModelCompat 无 context edit 能力 | 参考扩展生命周期的真实实现和 capability gates；不得把 Anthropic-only 字段发给所有兼容 provider |
+| 内部服务/provider | 现有 `ContextCompactionHook` 是内部 conversation 服务；ModelCompat 无 context edit 能力 | 复用内部服务，不新增通用 hooks/插件框架；保持现有 provider 路由，专属服务以明确的客户端策略适配，不发送 Anthropic-only 字段 |
 | 熔断/usage | 三次自动失败、同 source/live revision 去重；阶段 usage、取消和 300s inactivity/600s operation deadline | 区分失败与快速回填熔断；每条新路径均带实际 usage 与 owner/cancel；deadline 适配需记录，不撤销已有超时保护 |
 
 ## 4. 设计约束
@@ -113,7 +113,15 @@
 - reference feature flags 不是 Vega 可调用服务。客户端分支可移植；远端 rollout 默认值无法静态证明时保留未知和验证条件，不用“默认启用”措辞。
 - 不新增白名单外依赖。新增跨层 UI/service 类型经 `vega_conversation::types`；runtime 保持 headless，复用既有 runtime→conversation hook 方向，禁止循环依赖。
 
-### 4.5 已核实的具体参考合同
+### 4.5 Vega 原生适配决策（用户裁决后实现合同）
+
+- 不复制上游实验分配系统。默认使用 control 摘要合同、客户端 keep-recent micro、阈值驱动压缩和 reactive 溢出恢复；预计算使用明确可计算的提前阈值。专属 provider hint/server edit 不发送，客户端清理独立标为估算，不宣称缓存账单收益。没有 cache expiry 的当前路由不运行伪造的 idle-cache 定时器。
+- 保持已保存模型 input limit 的含义作为硬输入上限，不重写数据库配置。运行时将预算分为硬输入容量、auto policy 输入容量、summary reserve 和主响应上限；参考的 20000-token reserve 只用于压缩预算，不把用户原来更大的主响应能力静默截成 20000。已知 model snapshot 进一步限制真实硬窗口；未知时沿用标为假设/显式设置的本地能力。
+- 通常 auto 阈值为 policy 可用输入减 13000，block 为硬输入减 3000，precompute 为 min(policy 输入的 80%, auto 阈值)，安装结果必须严格低于 auto 阈值。小窗口的 auto buffer=min(13000,floor(policy 输入/5))，block buffer=min(3000,floor(硬输入/20))，使阈值随容量单调且为正，避免在 13000/3000 边界骤降为 1 或每轮死循环；开发回归覆盖边界两侧。此小窗口规则是 Vega 多模型适配，不声称上游原式。
+- 本卡只做压缩内部生命周期；删除外部 hook 指令合并、消息替换和通用插件接口验收。当前 user 的自定义压缩要求仍支持，但只在摘要请求中作为约束，不变成工具执行权限。
+- 源覆盖/保留计划在存储中版本化保存，新增字段只存来源游标/ID/模式/遗漏标志，不复制凭据正文。原始消息仍由既有审计与凭据策略管理；即时重建和重启重建使用同一解释器。
+
+### 4.6 已核实的具体参考合同
 
 - **预算**：令 `R=min(maxOutputTokens,20000)`、`W=policyWindow-R`、`H=hardContextWindow-R`。通常 compact=`W-13000`，warn=`compact-20000`，block=`H-3000`；auto 关闭时 warning 基准为 W。合法 pct override 取其阈值与 `W-13000` 的较小值；block override 独立。precompute=`min(W-round(W*f),compact)`，f=0.2 只是 scalar fallback，可被窗口/REPL/SDK 表覆盖。例：policy=200000、hard=1000000、maxOutput=32000，则 R=20000、W=180000、H=980000、compact=167000、warn=147000、block=977000、fallback arm=144000。该例仅验算公式，不代表任一模型实际配置。小窗口在 Vega 必须有边界检查，不以整数下溢模拟参考 JS 负数。
 - **partial 选点**：`up_to` 摘要 `[0, selected)`，保留 selected 起的后缀，安装 summary→kept；`from` 摘要 selected 起、保留之前的前缀，安装 kept→summary。后者摘要请求可见前缀作为上下文，但不能把保留区重复标成 covered。选点不是工具组内部任意字节。
@@ -123,6 +131,50 @@
 - **空闲会话压缩**：独立 off/log/compact 状态，参考 fallback off；1h cache 活动到过期时间的 90% 处调度，fraction 限 0.5–0.95；默认至少 200000 token、配置下限 100000、迟到超过 60s 不执行。还要验证 prefix、活动、owner、额度与缓存仍 warm。没有可信 cache expiry 不得凭空调度；这不是 3900s idle micro。
 - **摘要变体**：control/lean/short/capped 的选择先 env 后 feature，非法值回 control；reactive 使用该选择器。capped 的 2000 words 是提示词而非确定性截断。Vega 不展示或持久化分析草稿，保留任务所需摘要；该安全适配与参考 control 的输出形状差别明确记录。
 
+### 摘要变体原生接线（2026-10-27）
+
+`compaction/summary_variant.rs` 将 control/lean/short/capped 解析与提示约束集中管理。Vega 使用 `VEGA_COMPACTION_SUMMARY_VARIANT`，不读取 Claude 私有实验配置；未设置、非 Unicode、空值和非法值回 control。hook 构造时冻结选择，所有预估与实际分阶段摘要请求使用同一变体，避免中途环境变化造成估算/请求不一致。各变体均保留原有任务来源、用户更正、停止/权限、未知副作用与附件真实性约束；lean 强调去重和操作性，short 强调紧凑交接，capped 请求不超过 2000 words，但不按字符或词数硬截断结果。control 不生成分析草稿是已声明的安全适配，不声称提示文本逐字复制 Claude。开发回归检查解析回退与实际请求构造；真实模型摘要质量仍待用户手测。
+
+### 版本化投影安装与重建（2026-10-28）
+
+新增可空 `context_checkpoints.projection_plan`；空值继续使用旧前缀游标合同，schema 1 保存压缩策略、调用方续接模式、owner/真实 task ID、覆盖/遗漏范围及有序投影片段。范围端点记录最后消息身份和可选完整 assistant response 末工具身份、response ID、UTF-8 游标；序号和字节偏移只是经过身份核验的坐标。片段表达原始来源范围、当前摘要、同线程旧摘要引用、历史任务引用和历史附件；不持久化 provider message、reasoning 或权限凭据。开放尾区间接纳之后正常追加的消息。摘要引用必须指向更早同线程 checkpoint，并由有界读取加载；未知 schema、缺失/跨线程引用和失效锚点拒绝，不能静默重放未校验区间。
+
+安装事务校验完整 covered/omitted 组、来源/模型/前驱/取消及计划自身；新请求身份包含计划与前驱，允许同源上先后安装不同范围，绝不移除最终整体 source CAS。即时安装前的预算/replay 检查与重启重建共用同一 plan interpreter；即时保留区间可叠加调用者现存的 live messages，但必须逐个对应同一稳定范围，并核对 durable role/content/images/tool ID/calls（仅合并相邻无工具 assistant 文本以适配持久化分段），不借叠加扩展覆盖或授权。reasoning、live bindings、response layout、tool context 等运行态仅留内存，重启按相同 durable 片段冷恢复；不能为“立即/重启一致”而抹除仍需发送的 live replay。原始 transcript 不变。旧摘要引用继续受既有凭据扫描和清理约束，元数据不存正文。先将现有前缀路线真正迁入该机制，再接两方向 partial/controller；结构可表达不等于产品入口已交付。
+
+### 派生附件区间边界（2026-10-28）
+
+当前 `context_compaction::load_source*` 只加载、指纹化真实用户图片；assistant 截图通过独立 artifact/audit 读取，不进入此来源，因此现有压缩入口不会触发“被裁掉截图调用但图片仍留在来源”的报错。通用 `SourceRange` 仍须保证带 `artifact_call_id` 的派生附件只随同消息内被选中的所属调用保留，普通用户附件继续按消息归属保留。不能为了消除孤立附件而写回原始 attachment/tool 行或把不明 assistant 图片默默当用户图片。开发回归从真实截图插入和有界附件读取取得 provenance，分别检查来源加载合同、两侧区间附件和审计不变；不把构造来源的能力误称为当前压缩加载行为。
+
+### 自定义摘要要求的请求边界
+
+自定义要求只作为本次摘要转换的偏好，最多 8192 UTF-8 bytes；超限在 provider 请求前拒绝。所有分阶段输入估算与实际摘要请求必须携带同一冻结值，使用 JSON 字符串编码明确数据边界；不得覆盖摘要系统安全规则、触发工具、改变原任务身份或产生执行权限。不写入投影计划；无要求时保持原请求行为。该请求构造能力不代表 `/compact` 参数或局部压缩 UI 已接通。
+
+### 两方向局部压缩接线合同
+
+消息入口使用 durable message ID 和当前 source fingerprint，不以 UI 行号或文本选区字节作为锚点。up_to 不含选中消息，from 包含选中消息，均保留完整消息内的 response 组。只允许当前活动投影中的完整终态消息选点；旧摘要覆盖区不可重新选作原始来源。请求沿现有手动 owner、trusted action、取消、usage 和整体 source CAS 传递。已有摘要位于保留侧时引用原 checkpoint，位于压缩侧时纳入新摘要输入；不得恢复已覆盖原文或将保留前缀重复标为 covered。安装后开放尾区间保留后续追加。连续局部压缩以当前有序投影片段中的选点位置切分，而不是把所有旧摘要统一前置：压缩侧的原文与旧摘要按原投影顺序组成摘要输入，保留侧的摘要保持原位引用。新摘要只替换选中侧，不能把晚发生的摘要移到较早事件之前；legacy 先转换为同一计划再执行此切分。开发回归使用不同原文／摘要标记同时断言模型输入和安装结果的先后顺序。
+
+### Full／reactive 原生入口与规划补充
+
+- 显式区分 ordinary full 与保尾式入口，不再从 `require_source_fence` 推断策略；该字段仅用于来源校验。主 query 的阈值／技能预检和手动服务走保尾式规划，delegated teammate 的普通阈值走 full；typed primary overflow 覆盖普通选择走 reactive，并把可选 token gap 传给规划器。局部选区独立且不扩大范围。
+- Full 对当前有序活动投影摘要，原位纳入旧摘要，不重新恢复已覆盖或遗漏的原文。安装后不保留捕获的普通消息原文，只保留来源标记的恢复内容与未来追加的开放 Source；task ID/continuation 保持，必要的原任务引用是显式恢复附件，不是假装保留普通原文，也不能授权。运行中的 assistant 只覆盖完整已落库 response；若存在不能安全覆盖的尾部，失败不安装，不将整条 streaming 行伪称终态。Source 在 assistant cursor 之后没有剩余正文／工具／附件时不生成空 assistant 片段；后续追加内容仍从同一游标正常回读。
+- 保尾式规划以完整 response/source 游标为界，初始留一组；summary PTL 的已分类 gap 决定向前移动分界，无 gap 至少移动一组，每次输入必须真正改变。完整请求最终 fit、较原输入缩小、取消、前驱与全源 CAS 均在安装前检查。既有 prior covered／omitted 与摘要顺序必须保留。
+- Last-resort 只在明确允许的 full／手动／typed PTL／本地硬阻塞路径使用；普通 API 错误、partial、precompute 和媒体错误不能获得丢弃资格。最多三次完整最旧组截断，记录精确 omitted，不把省略说成摘要覆盖；保留尚未处理的用户请求和至少一组。共享 32 次摘要请求、600 秒操作／300 秒空闲界限不放宽。一次相邻 deeper-pass 只由 fresh typed PTL 成功且重建至少三组授予；重试再 PTL 时消费，不能无限重置。deeper 使用更少的尾部组且最终必须更小，无法形成安全更深边界则失败。
+- 必要开发回归：full／manual 区别、partial→full 的摘要顺序、空保留后的追加／reload、同偏移不同 response、typed-gap/no-gap 输入前进、完整组遗漏与审计不变、取消/失败 usage，以及相邻 deeper 的一次性与部分输出禁止恢复。当前本节为待实现合同，不表示云端已通过。
+
+### 集成与终态回归补充
+
+Full 首批 `2a5fa2ad209aef326dad1e06444791a3f15acf9a` 独立审查发现 `PersistenceActorConfig` 移动后读取 delegated 标志的静态编译阻断；最小修正是在移动前冻结该布尔值，不克隆整份配置。该提交的 PR 因 master `29bea083a7d955da7c64d96101ae8f4b8f1e2b12` 的 UI 用量入口增量出现冲突，未产生 Actions run；整合保留 master 的无有效用量时隐藏入口规则及本卡 partial 菜单／状态清理，不撤销 #720/#722。修正与 rebase 必须在新 head 重新验证。
+
+同步 master 的协议诊断迁移后，本分支尚未交付的投影迁移顺延为 `0047_context_projection.sql`，保留 `0046_provider_protocol_reason.sql`，不修改既有正式迁移。开发期通过仅测试 feature 暴露 UI 终态快照，直接断言状态、失败码、usage、generation 和 busy，而非借一次状态写入间接判断。完成处理提取为同一生产方法，测试可重复提交已退出的旧完成；新任务的 owner／request／lease、取消令牌及可见状态必须保持不变。路由切换后的旧完成只释放其原租约，不应用业务结果；返回同一会话也不能恢复旧 epoch 的安装权。旧 worker 退出时按 thread／model／request 精确退役其临时 Compacting 行、活动组引用与对应 pending 状态，保留单调编号屏障，不能让缓存 stream 永久 busy，也不能改写新终态。即使模型切换已经重置控制状态，也必须清除原模型的临时行；新模型或较新请求的记录、pending、取消状态和活动组阶段不能被旧请求清理。开发回归覆盖切走后结束／返回后才结束两种时序，以及控制状态已重置的模型切换，返回后应可发起新请求。需要的持久化结果只通过当前 owner 的新读取恢复，不从旧回调跨路由应用。
+
+### Controller/UI 竞争请求补充
+
+同一 owner 的手动压缩尚未退出时，无论请求号相同或不同，后续请求都不得启动 worker、替换租约或向原 stream 写入较新失败状态；原任务必须保留 busy 并能应用自身终态。不同请求号的拒绝不能污染 UI 的单调 generation 屏障。
+
+### Controller/UI 进程内回归边界（本轮用户批准）
+
+优先覆盖真实窗口和 ConversationStream 的压缩请求接入、独占租约、取消、切换会话／模型、过期完成拒绝及终态应用，再推进 full/reactive。开发期允许启用现有 gpui-kit 的 test-support feature 及其传递测试依赖；仅 Actions 执行，合并前连同开发测试专用接线移除。测试窗口不启动 pricing/updater；可控 worker 仅替换配置／凭据／网络等外部执行，不替换 controller 的准入、归属、租约、取消和结果应用决策。拒绝请求不得启动 worker；旧结果不得释放新租约或更新另一会话／模型；有效结果应更新原请求终态并清除 busy，取消必须传递至该次 worker。原生菜单／焦点及真实服务联调仍由用户手测，不以进程内回归冒充。保留现有 service 的存储、usage、取消、CAS 回归，PR 保持草稿，本地不编译测试。
+
 ## 5. 分阶段实现与验证顺序
 
 所有阶段属于同一卡完整范围，任何单阶段完成都不能宣称全量对齐。
@@ -130,12 +182,20 @@
 1. **参考合同**：完成版本绑定矩阵、默认/gate/外部能力分类；补齐本规格的数值与方向语义，先消除会改变数据模型的未知。固定可恢复文档版本。
 2. **核心投影/预算/续接**：版本化 plan 与共用 reload、策略预算、任务来源、full/manual/partial、安全安装和摘要变体；用开发回归验证任务元污染、完整工具组、旧 checkpoint、取消/CAS。
 3. **轻量与恢复**：micro 各路径、只读历史回读、reactive/last-resort、状态恢复、独立熔断；复核 wire 与 usage。
-4. **后台与扩展**：precompute 的准备/生成/消费/失效/取消、hook 与 provider capability 适配；覆盖 append-vs-edit race、model/owner 变化、重启和停机。
+4. **后台与生命周期**：precompute 的准备/生成/消费/失效/取消与原生状态恢复；覆盖 append-vs-edit race、model/owner 变化、重启和停机。不建设外部 hooks 生命周期。
 5. **产品入口与交付**：只接压缩所需 `/compact`/partial/状态；独立审查绑定停写版本；现有 Actions 验证开发回归；固定源码/完整 SHA/原始结果后删除开发 Rust 测试及独占接线；最终 head required check 与 Rust 空集清点；然后合并，保持 Issue OPEN / In review 等用户手测。
 
 一次卡默认不超过三次提交：规格基线；实现与必要开发测试；留痕后的最终测试清理。实际验证失败必须修责任层，不因提交数量而放宽断言或忽略失败；若确需超出提交策略，先记录原因并按项目规则处理，不继承其他卡的特殊许可。
 
 ## 6. 当前证据、未知与下一步
+
+### 局部压缩开发云端记录（2026-10-28）
+
+用户手动推送后已核实 PR #690 为 OPEN / DRAFT，远端 head 为 `dae7260b28cb704d260724a4c30e5d4939225f77`。Actions [40616417701](https://github.com/puzige/vega/actions/runs/40616417701)：Clippy job `122579848836` 成功，Nextest job `122579848522` 失败，required job `122581448127` 失败。Nextest 原始汇总为 31 执行、20 通过、11 失败、0 跳过；失败均停在测试 fixture 的 `full_access_grant IS NULL OR json_valid(full_access_grant)` 约束。修正仅将不执行工具的压缩 fixture 设为只读／无 grant，不改生产约束，不重跑旧失败换绿。后续顺序修复及不同标记回归须验证新 head，不能继承此轮 Clippy 结果。该历史版本当时尚缺隔离 pricing/updater 和可注入 worker 的 controller 测试入口；后续记录如下，hook/service 回归仍不冒充原生手测。
+
+后续开发版本 `5e577ad68e607402c71193f501e023de93384d79` 的 Actions [40629705761](https://github.com/puzige/vega/actions/runs/40629705761) 全部成功；Nextest `122622976395` 原始汇总 36 执行、36 通过、0 跳过，Clippy `122622976617` 与 required `122624509587` 成功。其中四项 controller 进程内回归覆盖请求、取消、路由变更与错误模型拒绝。更早版本的 unused import／type complexity 已修正，不通过 lint suppression 规避。
+
+当前增量补充竞争请求、精确终态、过期回调不释放新租约、路由返回／模型切换退役临时行，以及新请求可恢复；重新同步到 master `ea68313dcd9686dfd24d3c7fcaaf8c16df7b5a7a`。本地仅 rustfmt、diff 与静态检查。该增量版本 `46111a53c2659e715e8b9917078d1fe36c5be88a` 已成功直接推送，独立静态审查无确认发现；Actions [40642209153](https://github.com/puzige/vega/actions/runs/40642209153) 格式通过，但 Nextest `122662698766` 和 Clippy `122662699251` 均因开发 fixture 缺少 master 新增的 `Thread.draft_authority_epoch` 编译失败，Rust 测试未执行。修复为与普通非草稿 Thread 一致的 `None`，不改生产权限边界或断言；同时同步 master `0d42e3ef43881f2db89cf759c1050e61e36c9490` 的窄栏消息导航修复。后续修正版本 `7bec38cc0ca833fb9c7d8fca313e0cec6cd758a6` 的 Actions [40643480294](https://github.com/puzige/vega/actions/runs/40643480294) 成功：Nextest `122666787435` 原始汇总 40 执行、40 通过、0 跳过，全部 8 项 controller 回归成功；Clippy `122666787036`、required `122668375725` 成功。fixture 增量独立审查无发现。该结果只覆盖此提交，不覆盖后续 full/reactive 开发修改。PR #690 仍 OPEN / DRAFT，Issue OPEN / In progress；整卡 full/reactive/precompute/micro/restoration/idle 等后续能力未交付。
 
 已完成静态核实：当前预算、partial-assistant 覆盖、summary 请求/包装、实时安装/reload、工具预览、manual owner、SQLite CAS、模型能力字段。参考取证共 62 项有界片段，原研究执行在报告整理阶段失败，已确认释放写入权并保存产物；后续只整理既有证据，不重复全量调查。未进行模型调用、本地 Vega 运行、编译或测试。
 
@@ -143,6 +203,20 @@
 
 真实实现前提：Vega 的 `ModelApi` 和 `ProviderApi` 目前只有 ChatCompletions / Responses，没有 Anthropic Messages、首方 beta/context-hint/server edits/缓存寿命来源；也没有可承载 `session.compact` 消息替换的外部插件平台。移植客户端选择/生成/恢复逻辑可以在现有路由实现，但不能证明 Anthropic 私有服务或远端实验分配同效。完整“功能行为对齐”与“原协议/插件兼容”必须明确区分，不能只加 capability=false 的空接口就声称后者完成。
 
-下一步需明确的产品边界：是以 Vega 原生能力实现所有客户端压缩路径、为专属服务保留真实 capability 和等价降级，还是同时扩建 Anthropic Messages provider 与 Claude 外部插件兼容平台。两者都不等于只修续接；后者也无法复制私有服务端算法或证明未公开 rollout。选择前不自行收缩“全量”的验收定义。
+产品边界已由用户明确：Vega 原生实现全部压缩机制，仅限压缩相关机制，hooks 生命周期太重而不做。不新增 Anthropic Messages provider/Claude 外部插件平台，也不复刻私有实验服务。保留完整客户端预算、micro、full/manual/partial、reactive、precompute、状态恢复、持久化、回读、续接、安全与计量路径。原 [BLOCKED] 平台选择已解除，下一步按此合同实现。
 
-当前交付仅为可恢复规格/证据基线；本地静态检查包括 Markdown 链接、21 项验收编号、62 项证据编号与 JSON 结构、脱敏路径和空白检查。无 Rust 改动、无运行测试、无 PR/CI/独立实现审查/合并结论。卡片保持 OPEN / In progress；不标 Ready、In review 或 Done。
+规格阶段静态检查包括 Markdown 链接、21 项验收编号、62 项证据编号与 JSON 结构、脱敏路径和空白检查。卡片保持 OPEN / In progress；不标 Ready、In review 或 Done。
+
+### 自动压缩快速回填实现合同
+
+对应 A17、参考 E01/E08/E09/E29/E37/E58。runtime 的一次运行内共享独立 rapid-refill 状态，普通自动压缩和技能预检压缩都在真正调用 hook 前检查。第一次成功压缩建立基准；此后距离上次成功压缩不足三个主 provider 请求时，每次再压缩累计一次，第三次拒绝并返回已有上下文超限错误。经过至少三个主请求再压缩则清除快速回填计数。只有成功安装才重置回合距离，失败不伪造成功；连续失败计数仍单独维护。回合在主 provider 请求派发前递增，不统计摘要请求、传输内部重试或用户消息数量。手动压缩和未来 precompute 独立，不共用该熔断。
+
+开发回归覆盖首次成功、连续第三次快速回填拒绝、三回合恢复、失败不重置距离；后续入口接线审查确认没有绕过状态的自动压缩调用。本地仅静态检查，执行交 Actions。
+
+### 基础实现开发检查点
+
+基线已更新到 `07a9b355`，保留 #680 的连续 assistant owner 修复。当前基础实现分离主响应/摘要输出上限，接入冻结模型能力和有界策略阈值；摘要任务直接引用捕获源中的最新用户行。轮内摘要覆盖原任务时，即时与重启共用来源标记的历史任务引用，不更改原始消息、不生成权限。GLM 无保留真实 user 后缀时全段冷恢复，末尾边界只允许完整冷历史；持久化前与运行时使用同一 replay 校验。
+
+非实现者对基础差异静态审查发现的两项阻断（未显式指定输出 cap 时预算不约束实际请求、GLM 边界指向 assistant）已修正，增量审查未发现剩余确认代码阻断。审查不代表整卡实现完成或行为验证通过。开发回归包括预算边界、实际 agent 出站 cap、replay 边界、任务引用及真实 hook 连续两次轮内压缩/持久化恢复；测试源码仅留开发分支，须取得 Actions 结果并固定可恢复版本后按仓库政策清理。本地仅格式与差异检查，没有执行 Vega、编译或测试。云端结果、PR 与最终审查另行记录。
+
+尚未完成：版本化通用 projection plan、完整 micro/full/manual/partial/reactive/precompute/idle 能力适配、恢复附件与历史回读、熔断和对应 UI；不能将此基础检查点称为全量对齐。

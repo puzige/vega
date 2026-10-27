@@ -40,9 +40,9 @@ pub use context::{
     CONTEXT_ESTIMATOR_VERSION, ContextBudget, ContextCheck, ContextCompactionFailure,
     ContextCompactionHook, ContextCompactionPhase, ContextCompactionRequest,
     ContextCompactionResult, ContextCompactionStatusFailure, ContextCompactionStatusUpdate,
-    ContextCompactionUsage, ContextCompactionUsageState, ContextEstimate, ContextEstimateError,
-    ContextRuntimeError, SharedContextCompactionHook, classify_context, estimate_chat_context,
-    estimate_wire_context,
+    ContextCompactionTrigger, ContextCompactionUsage, ContextCompactionUsageState, ContextEstimate,
+    ContextEstimateError, ContextRuntimeError, SharedContextCompactionHook, classify_context,
+    estimate_chat_context, estimate_wire_context, validate_compaction_replay,
 };
 pub use error::{
     ProviderProtocolReason, RuntimeFailureDetail, RuntimeFailureReason, RuntimeFailureStage,

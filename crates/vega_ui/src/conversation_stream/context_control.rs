@@ -45,6 +45,7 @@ pub(crate) struct ContextControl {
     live_call: Option<PrimaryContextCall>,
     live_accounting: Option<(String, ContextAccountingRecord)>,
     compactable: bool,
+    source_fingerprint: Option<String>,
     next_operation_id: u64,
     retired_through: u64,
     save_pending: Option<u64>,
@@ -77,6 +78,7 @@ impl ContextControl {
             live_call: None,
             live_accounting: None,
             compactable: false,
+            source_fingerprint: None,
             next_operation_id: 0,
             retired_through: 0,
             save_pending: None,
@@ -102,6 +104,80 @@ impl ConversationStream {
         !self.entries.is_empty() && self.context_control.last_call_total.is_some()
     }
 
+    pub fn set_compaction_source(&mut self, fingerprint: String) {
+        self.context_control.source_fingerprint = Some(fingerprint);
+    }
+
+    pub(crate) fn prepare_partial_compaction_menu(&self, index: usize, cx: &mut Context<Self>) {
+        use gpui_kit::component::menu::PopupMenuItem;
+        let Some(copy) = self.copy_source_for_entry(index) else {
+            return;
+        };
+        *copy.compaction_menu.borrow_mut() = None;
+        use vega_conversation::types::{PartialCompactionDirection, PartialCompactionSelection};
+        let Some(message_id) = self
+            .entry_identities
+            .get(index)
+            .and_then(|identity| identity.message_id.clone())
+        else {
+            return;
+        };
+        let Some(fingerprint) = self.context_control.source_fingerprint.clone() else {
+            return;
+        };
+        if !self.message_actions_enabled()
+            || self.context_control.busy()
+            || self.reading_preview
+            || self.permissions_revoked
+        {
+            return;
+        }
+        if !matches!(
+            self.entries.get(index),
+            Some(StreamEntry::User { .. } | StreamEntry::Assistant { .. })
+        ) {
+            return;
+        }
+        let weak = cx.entity().downgrade();
+        *copy.compaction_menu.borrow_mut() = Some(std::rc::Rc::new(move |mut menu, _, _| {
+            for (direction, label) in [
+                (
+                    PartialCompactionDirection::UpTo,
+                    "ui.compact_before_message",
+                ),
+                (PartialCompactionDirection::From, "ui.compact_from_message"),
+            ] {
+                let weak = weak.clone();
+                let selection = PartialCompactionSelection {
+                    message_id: message_id.clone(),
+                    source_fingerprint: fingerprint.clone(),
+                    direction,
+                };
+                menu = menu.item(PopupMenuItem::new(vega_i18n::t(label)).on_click(
+                    move |_, _, cx| {
+                        let _ = weak.update(cx, |stream, cx| {
+                            if !stream.message_actions_enabled() || stream.context_control.busy() {
+                                return;
+                            }
+                            let Some(request_id) = stream.reserve_context_operation_id(cx) else {
+                                return;
+                            };
+                            stream.context_control.compact_pending = Some(request_id);
+                            cx.emit(ContextCompactionRequested {
+                                thread_id: stream.thread.id.clone(),
+                                model: stream.thread.model.clone(),
+                                request_id,
+                                selection: Some(selection.clone()),
+                                summary_requirements: String::new(),
+                            });
+                        });
+                    },
+                ));
+            }
+            menu
+        }));
+    }
+
     pub(crate) fn context_usage_display(&self) -> context_usage::ContextUsageDisplay {
         context_usage::ContextUsageDisplay::new(
             self.context_control.last_call_total,
@@ -121,6 +197,73 @@ impl ConversationStream {
     /// Whether context preparation/save currently excludes a competing submit.
     pub fn context_operation_busy(&self) -> bool {
         self.context_control.busy()
+    }
+
+    pub fn retire_context_operation(
+        &mut self,
+        thread_id: &str,
+        model: &str,
+        request_id: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if thread_id != self.thread.id {
+            return;
+        }
+        let owns_record = model == self.thread.model
+            && self.context_control.records.last().is_some_and(|record| {
+                record.generation == request_id && record.status == Status::Compacting
+            });
+        let owns_pending =
+            model == self.thread.model && self.context_control.compact_pending == Some(request_id);
+        let index = self.entries.iter().position(|entry| {
+            matches!(entry, StreamEntry::ContextCompaction { model: owner, record, restored: false }
+                if owner == model && record.generation == request_id
+                    && record.status == Status::Compacting)
+        });
+        if !owns_record && !owns_pending && index.is_none() {
+            return;
+        }
+        if owns_record {
+            self.context_control.records.clear();
+        }
+        if owns_pending {
+            self.context_control.compact_pending = None;
+        }
+        if owns_pending || (owns_record && self.context_control.compact_pending.is_none()) {
+            self.context_control.cancel_pending = false;
+        }
+        self.context_control.retired_through = self.context_control.retired_through.max(request_id);
+        for group in self.run_activity_groups.values() {
+            group.update(cx, |group, cx| {
+                group.remove_compactions(model, request_id..=request_id, cx);
+            });
+        }
+        if let Some(index) = index {
+            self.entries.remove(index);
+            self.list_remove(index);
+            self.shift_entry_indices(index, 1);
+            self.invalidate_item(Some(index));
+        }
+        self.refresh_run_notices(cx);
+        cx.notify();
+    }
+
+    #[cfg(feature = "context-test-support")]
+    pub fn context_status_snapshot(&self) -> Option<ContextCompactionStatusRecord> {
+        self.context_control.records.last().cloned()
+    }
+
+    #[cfg(feature = "context-test-support")]
+    pub fn context_status_rows(&self) -> Vec<(String, ContextCompactionStatusRecord)> {
+        self.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                StreamEntry::ContextCompaction { model, record, .. } => {
+                    Some((model.clone(), record.clone()))
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// Restore durable uncertainty without re-adding tokens or clearing a latch.
@@ -288,7 +431,9 @@ impl ConversationStream {
             record.generation
         };
         for group in self.run_activity_groups.values() {
-            group.update(cx, |group, cx| group.remove_compactions(model, through, cx));
+            group.update(cx, |group, cx| {
+                group.remove_compactions(model, 0..=through, cx)
+            });
         }
 
         if self
