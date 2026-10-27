@@ -759,6 +759,14 @@ impl Render for Sidebar {
                             .gap_3()
                             .overflow_y_scroll()
                             .track_scroll(&self.sidebar_scroll)
+                            .on_scroll_wheel({
+                                let sessions = self.sessions_block.clone();
+                                move |_, _, cx| {
+                                    sessions.update(cx, |block, _| {
+                                        block.resume_project_scroll_growth();
+                                    });
+                                }
+                            })
                             .child(self.sessions_block.clone())
                             .tracked_scroll_edge_fade(
                                 self.sidebar_scroll.clone(),

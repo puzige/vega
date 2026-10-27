@@ -32,6 +32,7 @@ pub(super) struct Organization {
     generation: u64,
     project_threads_visible: HashMap<String, usize>,
     project_threads_total: HashMap<String, usize>,
+    project_growth_paused: HashSet<String>,
     editor: Option<GroupEditor>,
     menu: Option<OrganizationMenu>,
     menu_anchor: Option<(gpui_kit::Point<gpui_kit::Pixels>, Anchor)>,
@@ -51,6 +52,7 @@ impl Organization {
             .iter()
             .any(|(project_id, total)| {
                 visible_project_ids.contains(project_id)
+                    && !self.project_growth_paused.contains(project_id)
                     && !collapsed.contains(&SidebarCollapseTarget::Project(project_id.clone()))
                     && self
                         .project_threads_visible
@@ -69,6 +71,7 @@ impl Organization {
         let mut changed = false;
         for (project_id, total) in &self.project_threads_total {
             if !visible_project_ids.contains(project_id)
+                || self.project_growth_paused.contains(project_id)
                 || collapsed.contains(&SidebarCollapseTarget::Project(project_id.clone()))
             {
                 continue;
@@ -109,6 +112,7 @@ impl Organization {
             return false;
         }
         *visible = visible.saturating_add(PROJECT_TASKS_PAGE).min(total);
+        self.project_growth_paused.remove(project_id);
         true
     }
 
@@ -199,6 +203,7 @@ impl ThreadsBlock {
             generation: 0,
             project_threads_visible: HashMap::new(),
             project_threads_total: HashMap::new(),
+            project_growth_paused: HashSet::new(),
             editor: None,
             menu: None,
             menu_anchor: None,
@@ -281,6 +286,15 @@ impl ThreadsBlock {
             })
             .map(|project| project.id.clone())
             .collect()
+    }
+
+    pub(crate) fn resume_project_scroll_growth(&mut self) {
+        if let Some(org) = self.organization.as_mut()
+            && let Some(snapshot) = org.snapshot.as_ref()
+        {
+            let visible = Self::visible_project_ids(snapshot, self.projects_expanded);
+            org.project_growth_paused.retain(|id| !visible.contains(id));
+        }
     }
 
     pub(crate) fn has_lazy_list_growth(&self) -> bool {
@@ -508,6 +522,15 @@ impl ThreadsBlock {
                         })
                         .collect();
                     org.sync_project_task_totals(totals);
+                    org.project_growth_paused
+                        .retain(|id| org.project_threads_total.contains_key(id));
+                    for target in &snapshot.collapsed {
+                        if let SidebarCollapseTarget::Project(id) = target {
+                            org.project_threads_visible
+                                .insert(id.clone(), PROJECT_TASKS_PAGE);
+                            org.project_growth_paused.insert(id.clone());
+                        }
+                    }
                     if !metadata_stale {
                         self.threads = snapshot
                             .threads
