@@ -11,6 +11,10 @@ use vega_theme::Layout;
 
 use super::links::{LinkRange, fragment_link_ranges, link_element_id, register_link_interactions};
 
+#[cfg(test)]
+#[path = "inline_flow_tests.rs"]
+mod inline_flow_tests;
+
 pub(super) fn styled_text(content: String, runs: Vec<TextRun>) -> AnyElement {
     let text = StyledText::new(content.clone()).with_runs(runs.clone());
     if runs.iter().any(|run| run.background_color.is_some()) {
@@ -420,6 +424,56 @@ pub(super) struct FlowLayout {
     pub(super) size: gpui_kit::Size<Pixels>,
 }
 
+struct FlowMeasurement {
+    width: Option<Pixels>,
+    layout: FlowLayout,
+}
+
+#[derive(Default)]
+struct FlowMeasurements {
+    entries: Vec<FlowMeasurement>,
+}
+
+impl FlowMeasurements {
+    fn insert(&mut self, width: Option<Pixels>, layout: FlowLayout) -> gpui_kit::Size<Pixels> {
+        let size = layout.size;
+        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.width == width) {
+            entry.layout = layout;
+        } else {
+            self.entries.push(FlowMeasurement { width, layout });
+        }
+        size
+    }
+
+    fn for_bounds(&self, bounds: gpui_kit::Size<Pixels>, scale: f32) -> Option<&FlowLayout> {
+        let tolerance = px(1. / scale);
+        self.entries
+            .iter()
+            .filter(|entry| (entry.layout.size.height - bounds.height).abs() <= tolerance)
+            .filter_map(|entry| {
+                let distance = (entry.layout.size.width - bounds.width).abs();
+                let available_matches = entry
+                    .width
+                    .is_some_and(|width| (width - bounds.width).abs() <= tolerance);
+                if available_matches {
+                    Some((0u8, distance, entry))
+                } else if distance <= tolerance {
+                    Some((1u8, distance, entry))
+                } else {
+                    None
+                }
+            })
+            .min_by(|left, right| {
+                left.0.cmp(&right.0).then(
+                    left.1
+                        .partial_cmp(&right.1)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
+            })
+            .map(|(_, _, entry)| &entry.layout)
+    }
+}
+
 type FragmentRenderer = dyn Fn(Range<usize>, SharedString, Vec<TextRun>) -> AnyElement;
 
 struct InlineFlow {
@@ -436,7 +490,7 @@ impl IntoElement for InlineFlow {
 }
 
 impl Element for InlineFlow {
-    type RequestLayoutState = Rc<RefCell<FlowLayout>>;
+    type RequestLayoutState = Rc<RefCell<FlowMeasurements>>;
     type PrepaintState = Vec<AnyElement>;
 
     fn id(&self) -> Option<ElementId> {
@@ -454,7 +508,7 @@ impl Element for InlineFlow {
         window: &mut Window,
         _: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let state = Rc::new(RefCell::new(FlowLayout::default()));
+        let state = Rc::new(RefCell::new(FlowMeasurements::default()));
         let measured = state.clone();
         let content = self.content.clone();
         let runs = self.runs.clone();
@@ -471,9 +525,7 @@ impl Element for InlineFlow {
                     None
                 };
                 let layout = layout_flow(&content, &runs, &style, width, window);
-                let size = layout.size;
-                *measured.borrow_mut() = layout;
-                size
+                measured.borrow_mut().insert(width, layout)
             },
         );
         (id, state)
@@ -489,7 +541,21 @@ impl Element for InlineFlow {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let align = window.text_style().text_align;
-        let fragments = state.borrow().fragments.clone();
+        let matched = {
+            let measurements = state.borrow();
+            measurements
+                .for_bounds(bounds.size, window.scale_factor())
+                .map(|layout| layout.fragments.clone())
+        };
+        let fragments = matched.unwrap_or_else(|| {
+            let style = window.text_style();
+            let width = if style.white_space == WhiteSpace::Normal {
+                Some(bounds.size.width)
+            } else {
+                None
+            };
+            layout_flow(&self.content, &self.runs, &style, width, window).fragments
+        });
         let mut elements = Vec::with_capacity(fragments.len());
         window.with_text_style(
             Some(TextStyleRefinement {
@@ -688,7 +754,7 @@ pub(super) fn shape_flow(
                 );
             }
             result.fragments.extend(fragments);
-            result.size.width = result.size.width.max(actual_width.ceil());
+            result.size.width = result.size.width.max(actual_width);
             y += line_height;
             start_ix = indices.partition_point(|index| *index < end);
         }
