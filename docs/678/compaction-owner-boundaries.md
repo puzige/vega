@@ -29,3 +29,7 @@
 owner 边界不能仅凭文本相同推断，必须同时保持源顺序和完整调用身份。无工具空行必须消耗一条真实空消息；不能通过 blanket-ignore 空行弱化检查。最短完整候选的每个消息必须有合法角色，跨 owner 工具由既有精确校验拒绝。任意多余尾部仍拒绝。当前 live owner 围栏、摘要 provider、source fingerprint、checkpoint CAS 不变。
 
 2026-10-27 续接：基线快进到 `7281c4ad5d7ad2416c8e24d886aae2fd8d9c8199`，原未提交产物保留。静态核对发现候选扫描可吞并额外空 assistant，按原“多余消息拒绝”验收补充上述逐消息准入；未改变验收含义。warm 合成表示拆分非空正文与工具调用，验证既有归一化允许的表示，不声称录制了真实 warm 请求。
+
+## 开发验证记录
+
+首轮 `442034aedea4fcc5f30c787e72445d50583fb4b0`：[Actions 40461652610](https://github.com/puzige/vega/actions/runs/40461652610)，Clippy 成功，Nextest 10 执行、9 通过、1 失败、0 跳过。失败为自动 hook 安装用例的 `SourceChanged`。静态定位测试前提错误：部分 checkpoint fixture 已对当前完整 source 安装一次 checkpoint，随后没有任何来源进展便要求再次安装；存储层明确拒绝同 model/version/fingerprint 的重复压缩。修正 fixture 在旧 checkpoint 后记录 live assistant 新进展，再构造新请求；不修改生产 CAS、不改变成功/拒绝断言。失败记录保留，新版本结果待 Actions。

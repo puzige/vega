@@ -74,6 +74,10 @@ impl Fixture {
         )
         .unwrap();
         assert!(matches!(installed, ContextCheckpointInstall::Applied(_)));
+        self.store
+            .conn()
+            .execute_batch("UPDATE messages SET content='new streaming progress' WHERE id='live'")
+            .unwrap();
     }
 
     fn history(&self) -> Vec<ChatMessage> {
@@ -323,7 +327,7 @@ async fn automatic_compaction_installs_and_reloads_checkpoint_with_resumed_histo
             let result = hook
                 .compact(fixture.request(history), CancellationToken::new())
                 .await
-                .unwrap();
+                .unwrap_or_else(|error| panic!("partial={partial}, warm={warm}: {error:?}"));
             assert!(provider.calls.load(Ordering::SeqCst) > 0);
             assert!(fixture.checkpoint().is_some());
             assert_eq!(fixture.source().fingerprint, source_before.fingerprint);
