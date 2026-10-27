@@ -228,3 +228,27 @@ fn fingerprint(messages: &[ChatMessage], tools: &[ToolDefinition]) -> Option<[u8
     }
     Some(hasher.finalize().into())
 }
+
+#[cfg(test)]
+mod post_tool_diagnostics_tests {
+    use super::*;
+    #[test]
+    fn anchored_increment_overflow_is_rejected_without_mutating_messages() {
+        let messages = vec![ChatMessage::new(crate::ChatRole::User, "task")];
+        let raw = crate::estimate_wire_context(&messages, &[]).unwrap();
+        let anchor = InputAnchor {
+            prefix_digest: fingerprint(&messages, &[]).unwrap(),
+            covered_messages: messages.len(),
+            prefix_estimate: raw.input_tokens - 1,
+            input: u64::MAX,
+            model: "model".into(),
+            reasoning: None,
+            max_tokens: None,
+        };
+        assert!(matches!(
+            InputAnchor::decide(Some(&anchor), &messages, &[], "model", None, None, 0),
+            Err(ContextEstimateError::Overflow)
+        ));
+        assert_eq!(messages[0].content, "task");
+    }
+}

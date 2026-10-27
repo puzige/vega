@@ -81,7 +81,10 @@ fn input_decision(
     InputAnchor::decide(
         anchor, messages, tools, model, reasoning, max_tokens, revision,
     )
-    .map_err(|error| VegaError::Context(error.into()))
+    .map_err(|error| {
+        VegaError::Context(error.into())
+            .at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation)
+    })
 }
 
 fn accounting_event(
@@ -97,12 +100,14 @@ fn accounting_event(
             incremental_estimate: decision.incremental,
             predicted_input: decision.predicted,
             input_budget: budget.input_budget(),
-            trigger_tokens: budget
-                .trigger_tokens()
-                .map_err(|error| VegaError::Context(error.into()))?,
-            target_tokens: budget
-                .target_tokens()
-                .map_err(|error| VegaError::Context(error.into()))?,
+            trigger_tokens: budget.trigger_tokens().map_err(|error| {
+                VegaError::Context(error.into())
+                    .at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation)
+            })?,
+            target_tokens: budget.target_tokens().map_err(|error| {
+                VegaError::Context(error.into())
+                    .at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation)
+            })?,
             revision: decision.revision,
             covered_messages: decision.covered_messages,
         },
@@ -163,6 +168,12 @@ fn diagnostic_failure(error: &VegaError) -> RuntimeDiagnosticFailure {
             | ContextRuntimeError::SummaryInputOverLimit { .. }
             | ContextRuntimeError::ResultOverLimit { .. },
         ) => RuntimeDiagnosticFailure::ContextOverLimit,
+        VegaError::Context(ContextRuntimeError::Estimate(
+            crate::ContextEstimateError::InvalidBudget | crate::ContextEstimateError::Overflow,
+        )) => RuntimeDiagnosticFailure::RuntimeFailure,
+        VegaError::RuntimeFailure(_) | VegaError::Store(_) | VegaError::Io(_) => {
+            RuntimeDiagnosticFailure::RuntimeFailure
+        }
         VegaError::Cancelled => RuntimeDiagnosticFailure::UnknownSafeFailure,
         _ => RuntimeDiagnosticFailure::UnknownSafeFailure,
     }
@@ -270,6 +281,11 @@ fn primary_attempt_event(
     let mut metrics = metrics.clone();
     if let Some(error) = error {
         let detail = error.diagnostic_metrics();
+        metrics.runtime_stage = detail.runtime_stage;
+        metrics.runtime_reason = detail.runtime_reason;
+        metrics.sqlite_code = detail.sqlite_code;
+        metrics.sqlite_extended_code = detail.sqlite_extended_code;
+        metrics.io_kind = detail.io_kind;
         metrics.failure_tool_index = detail.failure_tool_index;
         metrics.failure_source = detail.failure_source;
         metrics.failure_kind = detail.failure_kind;
@@ -496,9 +512,10 @@ where
     let event = accounting_event(decision, budget, ContextAccountingStage::SkillProspect)?;
     sink(event.clone()).await?;
     events.push(event);
-    let target_tokens = budget
-        .target_tokens()
-        .map_err(|error| VegaError::Context(error.into()))?;
+    let target_tokens = budget.target_tokens().map_err(|error| {
+        VegaError::Context(error.into())
+            .at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation)
+    })?;
     let generation = projection_revision.saturating_add(1);
     let operation_key = format!(
         "{operation_id}:context-generation-{generation}:attempt-{}",
@@ -616,8 +633,11 @@ where
         compacted.replay_cold_prefix_messages,
         compacted.replay_interleaved_user_boundary,
     )?;
-    let compacted_estimate = crate::estimate_wire_context(&next_projected, tools)
-        .map_err(|error| VegaError::Context(error.into()))?;
+    let compacted_estimate =
+        crate::estimate_wire_context(&next_projected, tools).map_err(|error| {
+            VegaError::Context(error.into())
+                .at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation)
+        })?;
     let fits = compacted_estimate.input_tokens <= target_tokens
         && compacted_estimate.input_tokens <= budget.input_budget();
     let event = RuntimeEvent::ContextCompactionStatusUpdated {
@@ -1310,8 +1330,19 @@ where
             cancel.cancel();
         }
         let system_prompt = if let Some(config) = &skill_config {
-            let run = config.run.lock().map_err(|_| skill_runtime_error())?;
-            skill_system_prompt(&base_system_prompt, &run)?
+            let run = config.run.lock().map_err(|_| {
+                VegaError::RuntimeFailure(crate::RuntimeFailureDetail::new(
+                    crate::RuntimeFailureReason::Capability,
+                ))
+                .at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation)
+            })?;
+            skill_system_prompt(&base_system_prompt, &run).map_err(|error| match error {
+                VegaError::Tool { .. } => VegaError::RuntimeFailure(
+                    crate::RuntimeFailureDetail::new(crate::RuntimeFailureReason::Capability),
+                )
+                .at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation),
+                error => error,
+            })?
         } else {
             base_system_prompt.clone()
         };
@@ -1355,7 +1386,14 @@ where
                 &route_fingerprint,
                 &system_prompt,
                 &tool_definitions,
-            )?;
+            )
+            .map_err(|error| match error {
+                VegaError::Tool { .. } => VegaError::RuntimeFailure(
+                    crate::RuntimeFailureDetail::new(crate::RuntimeFailureReason::Capability),
+                )
+                .at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation),
+                error => error.at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation),
+            })?;
             match replay_environment {
                 Some(previous) if previous != current_environment => {
                     messages[0].mark_replay_unsealable();
@@ -1429,9 +1467,10 @@ where
                     false,
                 ));
             }
-            let check = budget
-                .check(estimate)
-                .map_err(|error| VegaError::Context(error.into()))?;
+            let check = budget.check(estimate).map_err(|error| {
+                VegaError::Context(error.into())
+                    .at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation)
+            })?;
             let should_compact = budget.automatic_compaction()
                 && (force_provider_compaction
                     || (matches!(check, ContextCheck::Triggered | ContextCheck::OverLimit)
@@ -1459,9 +1498,10 @@ where
                 let Some(hook) = hook else {
                     return Err(VegaError::Context(ContextRuntimeError::MissingHook));
                 };
-                let target_tokens = budget
-                    .target_tokens()
-                    .map_err(|error| VegaError::Context(error.into()))?;
+                let target_tokens = budget.target_tokens().map_err(|error| {
+                    VegaError::Context(error.into())
+                        .at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation)
+                })?;
                 let generation = live_projection_revision.saturating_add(1);
                 // The source fence is deliberately not the operation
                 // identity: a retry can observe the same source fingerprint
@@ -1687,8 +1727,12 @@ where
                     replay_interleaved_user_boundary,
                 )?;
                 let compacted_estimate =
-                    crate::estimate_wire_context(&next_messages, &tool_definitions)
-                        .map_err(|error| VegaError::Context(error.into()))?;
+                    crate::estimate_wire_context(&next_messages, &tool_definitions).map_err(
+                        |error| {
+                            VegaError::Context(error.into())
+                                .at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation)
+                        },
+                    )?;
                 let post_decision = InputDecision {
                     estimate: compacted_estimate,
                     source: ContextAccountingSource::Estimated,
@@ -1707,9 +1751,10 @@ where
                         ContextAccountingStage::PostSummaryTarget
                     )?
                 );
-                let target_tokens = budget
-                    .target_tokens()
-                    .map_err(|error| VegaError::Context(error.into()))?;
+                let target_tokens = budget.target_tokens().map_err(|error| {
+                    VegaError::Context(error.into())
+                        .at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation)
+                })?;
                 if (force_provider_compaction
                     && compacted_estimate.input_tokens >= estimate.input_tokens)
                     || compacted_estimate.input_tokens > target_tokens
@@ -1910,8 +1955,10 @@ where
             ContextRuntimeError::Estimate(crate::ContextEstimateError::Overflow),
         ))?;
         let pending_anchor = if context_budget.is_some() {
-            PendingInputAnchor::from_request(&chat_request)
-                .map_err(|error| VegaError::Context(error.into()))?
+            PendingInputAnchor::from_request(&chat_request).map_err(|error| {
+                VegaError::Context(error.into())
+                    .at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation)
+            })?
         } else {
             None
         };
@@ -2675,7 +2722,9 @@ where
             if finish == RuntimeFinishReason::End
                 && (tool_config.turn_limit == 0 || turn_index < tool_config.turn_limit)
                 && let Some(source) = &tool_config.steering_source
-                && let Some(input) = source.take().await?
+                && let Some(input) = source.take().await.map_err(|error| {
+                    error.at_runtime_stage(crate::RuntimeFailureStage::PendingRead)
+                })?
             {
                 if cancel.is_cancelled() {
                     emit!(events, sink, RuntimeEvent::Interrupted);
@@ -3468,7 +3517,10 @@ where
         if !cancel.is_cancelled()
             && (tool_config.turn_limit == 0 || turn_index < tool_config.turn_limit)
             && let Some(source) = &tool_config.steering_source
-            && let Some(input) = source.take().await?
+            && let Some(input) = source
+                .take()
+                .await
+                .map_err(|error| error.at_runtime_stage(crate::RuntimeFailureStage::PendingRead))?
         {
             if cancel.is_cancelled() {
                 emit!(events, sink, RuntimeEvent::Interrupted);
@@ -3508,3 +3560,7 @@ where
         live_projection_revision = live_projection_revision.saturating_add(1);
     }
 }
+
+#[cfg(test)]
+#[path = "post_tool_diagnostics_tests.rs"]
+mod post_tool_diagnostics_tests;

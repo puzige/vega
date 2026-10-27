@@ -76,6 +76,10 @@ pub enum RunFailureKind {
     RuntimeState,
     RuntimeIo,
     RuntimePipeline,
+    RuntimeReferences,
+    RuntimeCapability,
+    RuntimeContextBudget,
+    RuntimeContextArithmetic,
     #[allow(missing_docs)]
     CredentialExposureBlocked,
     CredentialCheckUnavailable,
@@ -139,9 +143,13 @@ impl RunFailureKind {
                 }
                 "database" => Self::RuntimeStorage,
                 "approval_audit" => Self::RuntimeApprovalAudit,
-                "state" => Self::RuntimeState,
+                "state" | "admission" | "pending_decode" => Self::RuntimeState,
+                "references" => Self::RuntimeReferences,
+                "capability" => Self::RuntimeCapability,
+                "context_budget" => Self::RuntimeContextBudget,
+                "context_arithmetic" => Self::RuntimeContextArithmetic,
                 "io" => Self::RuntimeIo,
-                "pipeline" => Self::RuntimePipeline,
+                "pipeline" | "worker" => Self::RuntimePipeline,
                 _ => Self::Runtime,
             };
         }
@@ -232,10 +240,37 @@ impl RunFailureKind {
                 }
                 vega_runtime::RuntimeFailureReason::Database => Self::RuntimeStorage,
                 vega_runtime::RuntimeFailureReason::ApprovalAudit => Self::RuntimeApprovalAudit,
-                vega_runtime::RuntimeFailureReason::State => Self::RuntimeState,
+                vega_runtime::RuntimeFailureReason::State
+                | vega_runtime::RuntimeFailureReason::Admission
+                | vega_runtime::RuntimeFailureReason::PendingDecode => Self::RuntimeState,
+                vega_runtime::RuntimeFailureReason::References => Self::RuntimeReferences,
+                vega_runtime::RuntimeFailureReason::Capability => Self::RuntimeCapability,
+                vega_runtime::RuntimeFailureReason::ContextBudget => Self::RuntimeContextBudget,
+                vega_runtime::RuntimeFailureReason::ContextArithmetic => {
+                    Self::RuntimeContextArithmetic
+                }
                 vega_runtime::RuntimeFailureReason::Io => Self::RuntimeIo,
-                vega_runtime::RuntimeFailureReason::Pipeline => Self::RuntimePipeline,
+                vega_runtime::RuntimeFailureReason::Pipeline
+                | vega_runtime::RuntimeFailureReason::Worker => Self::RuntimePipeline,
             },
+            vega_runtime::VegaError::Store(_) | vega_runtime::VegaError::Io(_) => {
+                let detail = error.diagnostic_metrics();
+                if detail.runtime_reason == Some("database") {
+                    if matches!(detail.sqlite_code, Some(5 | 6)) {
+                        Self::RuntimeStorageBusy
+                    } else {
+                        Self::RuntimeStorage
+                    }
+                } else {
+                    Self::RuntimeIo
+                }
+            }
+            vega_runtime::VegaError::Context(vega_runtime::ContextRuntimeError::Estimate(
+                vega_runtime::ContextEstimateError::InvalidBudget,
+            )) => Self::RuntimeContextBudget,
+            vega_runtime::VegaError::Context(vega_runtime::ContextRuntimeError::Estimate(
+                vega_runtime::ContextEstimateError::Overflow,
+            )) => Self::RuntimeContextArithmetic,
             vega_runtime::VegaError::ProviderPayloadTooLarge { .. } => Self::ProviderProtocol,
             vega_runtime::VegaError::ProviderDiagnostic {
                 kind: vega_runtime::ProviderFailureKind::OutputLimit,
@@ -450,6 +485,12 @@ impl RunFailureKind {
             Self::RuntimeState => vega_i18n::t("domain.failure.state").into(),
             Self::RuntimeIo => vega_i18n::t("domain.failure.io").into(),
             Self::RuntimePipeline => vega_i18n::t("domain.failure.pipeline").into(),
+            Self::RuntimeReferences => vega_i18n::t("domain.failure.references").into(),
+            Self::RuntimeCapability => vega_i18n::t("domain.failure.capability").into(),
+            Self::RuntimeContextBudget => vega_i18n::t("domain.failure.context_budget").into(),
+            Self::RuntimeContextArithmetic => {
+                vega_i18n::t("domain.failure.context_arithmetic").into()
+            }
             Self::Persisted => vega_i18n::t("domain.failure.persisted").into(),
         }
     }
