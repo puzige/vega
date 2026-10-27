@@ -1,5 +1,6 @@
 use super::*;
 use crate::command_scope::tests::Fixture;
+use crate::types::CommandScopeRequest;
 
 #[tokio::test]
 async fn scoped_runtime_requires_durable_consumption_before_any_launch_attempt() {

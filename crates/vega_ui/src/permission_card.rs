@@ -208,7 +208,7 @@ impl PermissionCard {
             } else {
                 "ui.command_scope_network_broker"
             };
-            rows.extend(wrap_command_rows(&vega_i18n::t(key)));
+            rows.extend(wrap_command_rows(vega_i18n::t(key)));
             let mut origins = request
                 .bindings()
                 .iter()
@@ -221,13 +221,13 @@ impl PermissionCard {
             }
         }
         if !request.directories().is_empty() {
-            rows.extend(wrap_command_rows(&vega_i18n::t(
+            rows.extend(wrap_command_rows(vega_i18n::t(
                 "ui.command_scope_directories",
             )));
             for directory in request.directories() {
                 rows.extend(wrap_command_rows(&directory.path().to_string_lossy()));
             }
-            rows.extend(wrap_command_rows(&vega_i18n::t(
+            rows.extend(wrap_command_rows(vega_i18n::t(
                 "ui.command_scope_directory_risk",
             )));
         }
