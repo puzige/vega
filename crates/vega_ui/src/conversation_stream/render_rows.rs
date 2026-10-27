@@ -515,8 +515,7 @@ pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> A
         .px(px(Layout::CONVERSATION_USER_PADDING))
         .py_2()
         .text_color(colors.conversation_user)
-        .flex()
-        .flex_col();
+        .block();
     for (index, line) in lines.iter().enumerate() {
         if !matches!(line.kind, LineKind::UserLine { .. }) {
             continue;
@@ -576,8 +575,7 @@ fn selectable_user_message(
         .px(px(Layout::CONVERSATION_USER_PADDING))
         .py_2()
         .text_color(colors.conversation_user)
-        .flex()
-        .flex_col();
+        .block();
     let mut visible_line = false;
     for line in lines {
         if !matches!(line.kind, LineKind::UserLine { .. }) {
