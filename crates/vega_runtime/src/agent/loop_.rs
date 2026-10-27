@@ -3560,7 +3560,3 @@ where
         live_projection_revision = live_projection_revision.saturating_add(1);
     }
 }
-
-#[cfg(test)]
-#[path = "post_tool_diagnostics_tests.rs"]
-mod post_tool_diagnostics_tests;

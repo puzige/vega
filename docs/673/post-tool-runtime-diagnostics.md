@@ -23,3 +23,14 @@
 ## 验证
 
 开发回归覆盖具体失败分类、阶段保留、取消和安全格式化、SQLite 错误码、待处理消息无数据与错误路径、诊断落盘/读回/导出。仅 Actions 执行自动测试；本地仅格式、差异和静态检查。开发 Rust 测试须在分支留存原始版本和实际云端结果后清理，最终 head 无 Rust 测试且 required CI 成功、非实现者独立审查后才合并。真实系统集成由用户手测。旧失败根因仍不可还原，诊断增强不等于原故障已修复。
+
+
+## 开发验证与留痕
+
+- 开发版本：`361b120978ac317f7a1a1d0df85eed835058961f`，base `f75bd0f634063ff63327f6b8d50f64734769d398`。
+- 永久测试源码：[evidence/673-runtime-diagnostics-tests-361b1209](https://github.com/puzige/vega/tree/evidence/673-runtime-diagnostics-tests-361b1209)；完整 [原始 patch](https://github.com/puzige/vega/commit/361b120978ac317f7a1a1d0df85eed835058961f.patch)。已读回远端 tag peeled SHA 与开发版本一致。
+- Actions [40437116038](https://github.com/puzige/vega/actions/runs/40437116038)：Clippy、Nextest、required 汇总成功；发现 11、执行 11、通过 11、跳过 0。覆盖队列/SQLite 故障、准入、解码/引用、正常消费、分类/导出、脱敏与阶段、真实 checked arithmetic 溢出边界。
+- 独立非写入者审查绑定上述 SHA 和 diff SHA256 `e1f7ebd02bdd78af904aa3f231043c2dfecf095dc5955e06215a970e2fbf4bd0`，无阻塞发现。
+- 回归不等于旧失败复现或真实系统集成；未覆盖完整主运行故障注入、带数据的旧库升级、worker/capability 端到端故障。本轮不声称修复旧故障根因。
+- 按仓库政策清理两个开发测试文件、三个模块入口/内联测试块；生产断言与实现不变。最终无 Rust 测试的 head required CI 仍待验证。清理不覆盖上述已通过回归的原始源码和结果。
+- 本地只执行 `cargo fmt --all -- --check`、`git diff --check`、i18n 静态检查；未执行 Vega、编译、构建、打包或自动测试。

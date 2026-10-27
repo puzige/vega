@@ -75,7 +75,3 @@ pub use replay_sessions::ReplaySessionRegistry;
 pub(crate) use replay_sessions::{ReplayCheckpointFence, ReplaySessionLease};
 pub(crate) use skills::validate_frozen_snapshot;
 pub use skills::{SkillAssistantStatus, SkillRunRecovery, recover_skill_run};
-
-#[cfg(test)]
-#[path = "../post_tool_diagnostics_tests.rs"]
-mod post_tool_diagnostics_tests;
