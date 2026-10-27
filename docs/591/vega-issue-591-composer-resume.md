@@ -92,7 +92,7 @@ function Jsr(e, t, n) {
 1. `Interrupted` 后 composer 主按钮显示播放三角 + `Resume`（中文「继续」），点击续跑。
 2. 续跑不新增 user 消息行，复用既有历史末尾；`messages.seq` 连续；已终态工具不重复执行。
 3. 输入框有内容或附件时，主按钮优先显示发送；清空后回到 Resume。
-4. 续跑进行中显示 loading，重复点击不产生并发 run；运行中仍显示停止按钮。
+4. 续跑请求尚未被 controller 接管时，在原主按钮槽位显示 loading，重复点击不产生并发 run；接管后只显示停止按钮，不在旁边再放独立 loading。
 5. 依据持久化 `interrupted` 终态判定，重启应用后仍显示 Resume。
 
 ### 非目标
@@ -116,6 +116,8 @@ function Jsr(e, t, n) {
 | A08 失败不误判 | 因配额/鉴权等不可重试错误失败 | 不显示 Resume；现有错误提示与恢复入口不变 |
 | A09 键盘与读屏 | A01 状态 Tab 到主按钮 | 焦点环可见；Enter/Space 触发续跑；读屏播报「继续」 |
 | A10 草稿不残留 | A01 状态输入后清空 | 重新显示 Resume；草稿不残留、不自动发送 |
+| A11 准备态不重复 | 点击 Resume，包含准备较慢及快速停止 | controller 接管前 loading 只在主按钮内；Stop 出现后旁边无额外灰圈、不挤动模型控件；上下文用量环保留；禁止重复启动及准备期取消行为不变 |
+| A12 续跑轮次留白 | Native 停止后直接继续，包含零输出、有正文/工具、连续停止继续与重开/加载更早历史 | 旧停止记录和当前运行计时均保留；两轮之间使用既有 24px 阶段留白；新 user 消息、同轮阶段、隐藏行和 Codex 原布局不变；锚点估算与实际列表高度包含同一留白 |
 
 ## 5. 实现方向
 
@@ -139,6 +141,22 @@ running                                  → Stop
 - 2026-10-26 独立审查补充 A02/A05 边界：worker 必须沿用 controller 已持有的线程 admission，不能重新竞争自身占用。开发回归从应用实际配置入口携带已持有 admission 启动，观察一次 MessageStarted/模型请求、无新增 user 与旧请求拒绝。
 - A01/A02 准备期停止边界：新 assistant 已提交、尚未发送 MessageStarted 时停止 Resume，须落为 Interrupted 而非 Failed；不得调用 provider，旧行和工具不变，释放运行占用后实际尾行仍可继续。开发回归在此边界确定性取消。
 - 2026-10-26 同步 master `dee2009d8cbe93f3765ea8360a1239da9df2d972`（#632/#654）：上游已统一准备期停止为 `finish_prepared_terminal(..., "interrupted", ...)` 并发送 Interrupted 事件。沿用该共享实现与停止行投影，不另留 Resume 专属清理分支；保留本卡确定性回归，追加事件身份校验。ordinary/Plan/凭据路径遵循此新基线，不由本卡改写。
+
+### 2026-10-26 手测反馈修订：重复 loading 与无 user 续跑间距
+
+基线：`f75bd0f634063ff63327f6b8d50f64734769d398`。用户提供的两张截图显示 Stop 旁独立灰圈，以及 `Stopped after` 与下一轮 `Working for` 紧邻。截图只能确认外观，未读取生产数据库，也未确认安装版本。
+
+根因静态证据：`render.rs` 在 `composer_resume_pending` 与运行所有权重叠时，向 Stop 前额外插入 Spinner，直到 `MessageStarted` 才清 pending；`phase.rs::stage_top_insets` 只给正文/阶段计算上留白，RunActivity 头不消费上留白，普通轮次之间原有 user 行下边距不能覆盖不插入 user 的 Resume。
+
+最小实现：
+- `conversation_stream/render.rs` 仅删除 Stop 分支的独立 Spinner，不清除 pending 状态，不改 controller、单飞、焦点、取消、发送优先级和按钮内准备态。
+- `phase.rs::stage_top_insets` 仅在 Native 的可见运行头之前，上一可见条目属于另一个 Interrupted run 时增加 `CONVERSATION_STAGE_TOP`；user 行不属于旧 run，隐藏/空行不制造间距，同轮及 Codex 不增加。
+- `render.rs` 运行头容器与 `message_anchors.rs` 未测量高度共同使用该 inset；实测高度已含内距，不再次累加。`content.rs` 加载更早历史后，仅失效旧有运行头中 inset 真正变化的项，避免分页后沿用旧测量。
+- 不删旧停止/工具记录，不合并两轮计时，不更改业务状态、历史身份、权限或数据库，不新增界面说明文字、依赖、迁移和 workflow。
+
+几何核算（逻辑像素）：既有计时头 `23` + 线前间距 `4.5` + 分隔线 `1` = `28.5`；原两头直接相邻。修订后下一头额外上内距 `24`，相邻头起点差为 `28.5 + 24 = 52.5`，旧分隔线到新头顶部留白 `24`；展开详情高度另按既有规则计算。正常 user 行原有下留白 `48` 不叠加本次 `24`；同轮阶段原有 `16/24` 不变。
+
+本轮仅 UI 展示和配套几何估算调整，不为源码字符串制造临时测试，不恢复旧 Rust 测试。验证为静态状态/布局分支核对、格式和差异检查、非实现者增量审查、最终 head 完整 Actions（明确 Rust 空集）及 A11/A12 用户手测；历史七项业务回归证据仍只适用于原开发提交，不声称本轮重跑。回滚仅撤销本轮展示与估算改动，无数据迁移。
 
 ## 6. 验证与交付
 
