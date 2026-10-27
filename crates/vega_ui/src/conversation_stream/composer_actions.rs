@@ -508,7 +508,7 @@ impl ConversationStream {
         {
             controls.push(self.pending_ui.resume_focus.clone());
         }
-        if self.pending_ui.recovered_edit.is_some() && self.pending_draft_is_empty(cx) {
+        if !self.pending_ui.recovered_edit.is_empty() && self.pending_draft_is_empty(cx) {
             controls.push(self.pending_ui.recover_focus.clone());
         }
         if self.pending_controls_enabled() {

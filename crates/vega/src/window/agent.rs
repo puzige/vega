@@ -1384,6 +1384,10 @@ impl VegaWindow {
         if self.intercept_automation(stream.clone(), request, cx) {
             return;
         }
+        if stream.read(cx).task_backend() == TaskBackend::Native && !request.references.is_empty() {
+            self.preflight_file_references(stream, request.clone(), cx);
+            return;
+        }
         if stream.read(cx).task_backend() == TaskBackend::Native
             && request.pending_behavior.is_some()
         {
@@ -1421,7 +1425,7 @@ impl VegaWindow {
         request: &ComposerSubmitted,
         cx: &mut Context<Self>,
     ) {
-        if !request.images.is_empty() {
+        if !request.images.is_empty() || !request.references.is_empty() {
             stream.update(cx, |stream, cx| {
                 stream.reject_composer_submission(cx);
                 stream.apply_codex_route_failure(LocalizedCopy::new("app.codex.text_only"), cx);
@@ -1825,7 +1829,7 @@ impl VegaWindow {
                         }
                         if credential_failure {
                             display_stream.update(cx, ConversationStream::apply_credential_error);
-                        } else if !success && !cancelled {
+                        } else if !success && !cancelled && reference_failure.is_none() {
                             if let Some(failure) = finished_run.terminal_failure {
                                 display_stream.update(cx, |stream, cx| {
                                     stream.apply_agent_runtime_error_for(
@@ -1838,8 +1842,11 @@ impl VegaWindow {
                                 display_stream.update(cx, ConversationStream::apply_agent_error);
                             }
                         }
-                        if reference_failure.is_some() {
-                            display_stream.update(cx, ConversationStream::apply_agent_error);
+                        if let Some(code) = reference_failure.filter(|_| !credential_failure) {
+                            display_stream.update(cx, |stream, cx| {
+                                stream.apply_reference_error(code, cx);
+                                stream.refresh_ordinary_submissions(cx);
+                            });
                         }
                         this.finish_context_primary_owner(generation);
                         this.agent_controller.pending_review.remove(&thread_id);

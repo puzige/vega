@@ -22,6 +22,7 @@ impl TextInput {
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
+            mentions: Vec::new(),
             last_lines: Vec::new(),
             navigation_lines: Vec::new(),
             navigation_revision: 0,
@@ -100,6 +101,7 @@ impl TextInput {
         self.prediction = None;
         self.content_revision = self.content_revision.wrapping_add(1);
         self.content = "".into();
+        self.mentions.clear();
         self.selected_range = 0..0;
         self.selection_reversed = false;
         self.marked_range = None;
@@ -115,6 +117,7 @@ impl TextInput {
         self.prediction = None;
         self.content_revision = self.content_revision.wrapping_add(1);
         self.content = text.to_string().into();
+        self.mentions.clear();
         self.selected_range = self.content.len()..self.content.len();
         self.selection_reversed = false;
         self.marked_range = None;
@@ -122,6 +125,92 @@ impl TextInput {
         self.scroll_handle.reset();
         self.update_logical_viewport();
         cx.notify();
+    }
+
+    pub fn mentions(&self) -> &[Mention] {
+        &self.mentions
+    }
+
+    pub fn reference_paths(&self) -> Vec<String> {
+        self.mentions
+            .iter()
+            .map(|mention| mention.path().to_owned())
+            .collect()
+    }
+
+    pub fn reference_mentions(&self) -> Vec<vega_conversation::types::FileReferenceMention> {
+        self.mentions
+            .iter()
+            .map(|mention| vega_conversation::types::FileReferenceMention {
+                range: mention.range(),
+                path: mention.path().to_owned(),
+            })
+            .collect()
+    }
+
+    pub fn set_text_with_references(
+        &mut self,
+        text: &str,
+        mentions: &[vega_conversation::types::FileReferenceMention],
+        cx: &mut Context<Self>,
+    ) {
+        self.set_text(text, cx);
+        let mut cursor = 0;
+        for mention in mentions {
+            if mention.range.start < cursor
+                || mention.range.start >= mention.range.end
+                || text.get(mention.range.clone()) != Some(format!("@{}", mention.path).as_str())
+            {
+                continue;
+            }
+            cursor = mention.range.end;
+            self.mentions
+                .push(Mention::new(mention.range.clone(), mention.path.clone()));
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn push_mention(&mut self, range: Range<usize>, path: &str) {
+        self.mentions
+            .retain(|mention| mention.range.end <= range.start || mention.range.start >= range.end);
+        let mention = Mention::new(range.clone(), path);
+        let position = self
+            .mentions
+            .iter()
+            .position(|existing| existing.range.start > range.start)
+            .unwrap_or(self.mentions.len());
+        self.mentions.insert(position, mention);
+    }
+
+    pub(crate) fn remap_mentions(&mut self, edited: Range<usize>, inserted: usize) {
+        if self.mentions.is_empty() {
+            return;
+        }
+        let removed = edited.end.saturating_sub(edited.start);
+        let delta = inserted as isize - removed as isize;
+        let insertion = edited.start == edited.end;
+        self.mentions.retain_mut(|mention| {
+            let start = mention.range.start;
+            let end = mention.range.end;
+            let dropped = if insertion {
+                start < edited.start && edited.start < end
+            } else {
+                edited.start < end && edited.end > start
+            };
+            if dropped {
+                return false;
+            }
+            let shift = if insertion {
+                edited.start <= start
+            } else {
+                edited.end <= start
+            };
+            if shift {
+                mention.range.start = (start as isize + delta).max(0) as usize;
+                mention.range.end = (end as isize + delta).max(0) as usize;
+            }
+            true
+        });
     }
 
     pub fn prediction_text(&self) -> Option<&str> {
@@ -169,7 +258,7 @@ impl TextInput {
         }
     }
 
-    pub(crate) fn content_revision(&self) -> u64 {
+    pub fn content_revision(&self) -> u64 {
         self.content_revision
     }
 
@@ -225,6 +314,9 @@ impl TextInput {
             (self.content[..range.start].to_owned() + &replacement + &self.content[range.end..])
                 .into();
         let end = range.start + replacement.len();
+        self.remap_mentions(range.clone(), replacement.len());
+        let token_start = range.start.saturating_sub(1);
+        self.push_mention(token_start..token_start + 1 + path.len(), path);
         self.selected_range = end..end;
         self.selection_reversed = false;
         self.update_logical_viewport();

@@ -33,6 +33,7 @@ impl AttemptId {
 pub struct RawSubmission {
     text: String,
     images: Arc<[ImageAttachment]>,
+    references: Arc<[String]>,
     draft_revision: u64,
     model: String,
     model_snapshot: Option<Box<ResolvedModel>>,
@@ -43,6 +44,7 @@ impl RawSubmission {
     pub fn new(
         text: String,
         images: Vec<ImageAttachment>,
+        references: Vec<String>,
         draft_revision: u64,
         model: String,
         model_snapshot: Option<Box<ResolvedModel>>,
@@ -51,6 +53,7 @@ impl RawSubmission {
         Self {
             text,
             images: images.into(),
+            references: references.into(),
             draft_revision,
             model,
             model_snapshot,
@@ -64,6 +67,10 @@ impl RawSubmission {
 
     pub fn images(&self) -> &[ImageAttachment] {
         &self.images
+    }
+
+    pub fn references(&self) -> &[String] {
+        &self.references
     }
 
     pub fn draft_revision(&self) -> u64 {

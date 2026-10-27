@@ -39,7 +39,7 @@ pub(super) struct PendingItemUi {
 pub(crate) struct PendingQueueUi {
     pub(super) items: HashMap<String, PendingItemUi>,
     pub(super) menu: Option<String>,
-    pub(super) recovered_edit: Option<PendingMessage>,
+    pub(super) recovered_edit: std::collections::VecDeque<PendingMessage>,
     error: Option<crate::localized_copy::LocalizedCopy>,
     pub(super) resume_focus: FocusHandle,
     pub(super) recover_focus: FocusHandle,
@@ -54,7 +54,7 @@ impl PendingQueueUi {
         Self {
             items: HashMap::new(),
             menu: None,
-            recovered_edit: None,
+            recovered_edit: std::collections::VecDeque::new(),
             error: None,
             resume_focus: cx.focus_handle().tab_stop(true),
             recover_focus: cx.focus_handle().tab_stop(true),
@@ -361,6 +361,7 @@ impl ConversationStream {
             return;
         }
         self.composer_submit_pending = false;
+        self.submitted_draft = None;
         self.pending_behavior_override = None;
         if self.pending_submission_revision.take() == Some(self.input.read(cx).content_revision())
             && self.input.read(cx).text() == content
@@ -380,14 +381,15 @@ impl ConversationStream {
         if self.pending_draft_is_empty(cx) {
             self.restore_pending_draft(message, cx);
         } else {
-            self.pending_ui.recovered_edit = Some(message);
+            self.pending_ui.recovered_edit.push_back(message);
         }
         cx.notify();
     }
 
     fn restore_pending_draft(&mut self, message: PendingMessage, cx: &mut Context<Self>) {
-        self.input
-            .update(cx, |input, cx| input.set_text(&message.content, cx));
+        self.input.update(cx, |input, cx| {
+            input.set_text_with_references(&message.content, &message.reference_mentions, cx)
+        });
         for image in self.history_image_previews(message.images, cx) {
             self.attachment_generation = self.attachment_generation.saturating_add(1);
             self.attachments.push((self.attachment_generation, image));
@@ -432,7 +434,7 @@ impl ConversationStream {
         match &action {
             PendingQueueAction::Edit(id) => {
                 if !self.pending_draft_is_empty(cx)
-                    || self.pending_ui.recovered_edit.is_some()
+                    || !self.pending_ui.recovered_edit.is_empty()
                     || !self.pending_ui.items.contains_key(id)
                 {
                     return;
@@ -502,7 +504,7 @@ impl ConversationStream {
             }
             PendingControlAction::RecoverEdit => {
                 if self.pending_draft_is_empty(cx)
-                    && let Some(message) = self.pending_ui.recovered_edit.take()
+                    && let Some(message) = self.pending_ui.recovered_edit.pop_front()
                 {
                     self.restore_pending_draft(message, cx);
                     self.input.read(cx).focus_handle(cx).focus(window, cx);
@@ -683,7 +685,7 @@ impl ConversationStream {
                 .child(vega_i18n::t("ui.continue_queue"));
             status = status.child(div().flex().justify_end().mb_1().child(resume));
         }
-        if let Some(message) = &self.pending_ui.recovered_edit {
+        if let Some(message) = self.pending_ui.recovered_edit.front() {
             let can_restore = self.pending_draft_is_empty(cx);
             let recover = self
                 .pending_button(
@@ -1010,8 +1012,8 @@ impl ConversationStream {
         let bounds = item.bounds.get()?;
         let colors = theme(cx).colors;
         let enabled = self.pending_controls_enabled();
-        let editable = self.pending_draft_is_empty(cx) && self.pending_ui.recovered_edit.is_none();
-        let edit_reason = if self.pending_ui.recovered_edit.is_some() {
+        let editable = self.pending_draft_is_empty(cx) && self.pending_ui.recovered_edit.is_empty();
+        let edit_reason = if !self.pending_ui.recovered_edit.is_empty() {
             vega_i18n::t("ui.handle_the_retrieved_message_first")
         } else {
             vega_i18n::t("ui.send_or_clear_the_current_draft_first")

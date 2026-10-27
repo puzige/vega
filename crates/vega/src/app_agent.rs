@@ -41,6 +41,7 @@ pub(crate) enum PendingAgentRun {
 pub(crate) struct UserSubmission {
     pub content: String,
     pub images: Vec<vega_conversation::types::ImageAttachment>,
+    pub references: Vec<String>,
     pub ordinary: Option<Box<crate::ordinary_submission::OrdinaryLaunch>>,
 }
 
@@ -49,6 +50,7 @@ impl From<String> for UserSubmission {
         Self {
             content,
             images: Vec::new(),
+            references: Vec::new(),
             ordinary: None,
         }
     }
@@ -1111,7 +1113,7 @@ pub(crate) fn run_agent_worker_with_mcp(
         let pending_authority = queue_context.as_ref().and_then(|context| context.message_id.as_deref()).map(|id| {
             let PendingAgentRun::UserMessage(submission) = &run else { return Err(()); };
             let store = Store::open_existing(&database_path).map_err(|_| ())?;
-            vega_conversation::pending_messages::prepare_dispatch(&store, &thread.id, id, &submission.content, &submission.images).map_err(|_| {
+            vega_conversation::pending_messages::prepare_dispatch(&store, &thread.id, id, &submission.content, &submission.images, &submission.references).map_err(|_| {
                 let _ = sender.send(AgentUpdate::Event(ConversationEvent::Error {
                     message_id: None,
                     error: Arc::new(vega_runtime::VegaError::Tool { tool: "pending_message".into(), message: vega_i18n::t("ui.pending_authority_changed").into() }),
@@ -1335,6 +1337,7 @@ pub(crate) fn run_agent_worker_with_mcp(
             PendingAgentRun::Automation(_) => return Err(()),
             PendingAgentRun::UserMessage(submission) => {
                 let content = submission.content;
+                let references = submission.references;
 
                 let title_source = content.clone();
 
@@ -1342,9 +1345,9 @@ pub(crate) fn run_agent_worker_with_mcp(
                 let content = if let Some(accepted) = accepted {
                     accepted.text().to_owned()
                 } else {
-                let refs = match vega_tools::reference::resolve_bounded_references(
+                let refs = match vega_tools::reference::resolve_references(
                     &project_path,
-                    &content,
+                    &references,
                     vega_tools::reference::REFERENCE_MAX_FILES,
                     vega_tools::reference::REFERENCE_MAX_FILE_BYTES,
                     vega_tools::reference::REFERENCE_MAX_TOTAL_BYTES,

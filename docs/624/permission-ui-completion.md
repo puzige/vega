@@ -63,3 +63,7 @@ Reset 批次 `b6d2ce03` 的 [Actions 40470412070](https://github.com/puzige/vega
 修正已实现：队列 payload 保存原 fence；应用在慢速准备前取得绑定原始输入的不可变 dispatch authority，pipeline 在历史恢复/凭据读取前及准备事务再次核对，禁止按当前线程补权。Steering 由已接纳 run 绑定一次权限槽，引用/凭据读取和 claim 前两次核对。增量迁移 `0045_plan_instruction_authority.sql` 保存在同一批准事务内的 Execute fence，legacy/过期批准不恢复。旧输入/计划保留，队列提供编辑重发提示。确认卡暂时替代输入区域，详情随视口有界滚动，标题及取消/确认固定在滚动区外；Tab/Shift-Tab 可访问详情，方向/Page/Home/End/Space 键可滚动，保留全部原指令。
 
 四项新增开发回归覆盖：活动 run 期间提升未来权限后，旧队列在历史恢复/凭据读取前拒绝；正常和 legacy 队列的执行/取回边界；旧 steering 不读取凭据、不 claim；计划批准原子性及旧批准不取得后来权限。实际应用自动化窗口回归改用长多行指令并走键盘详情/确认路径。该增量本地只做静态检查，READY 交原审查者增量复核及当前云端验证。
+
+两位原审查者已对 `f78b75f225be6d6dcc52aa064f70b0d0d07dbcab` 完成只读增量复核，确认原 P1/P2 解决，未发现新增可行动问题。该提交同步事件未生成新的 Actions run，尚无其云端行为结果；不引用先前 123/123 冒充修正验证。
+
+同步 master `d84dfc536777fd5bc571a2576ca64bc0cdff23e9`（#677/#688 结构化文件引用）时，队列三处冲突采用两方语义并存：保存引用列表/mention 及原 fence，steering 先检查原权限再读取结构化引用，dispatch proof 也比较原引用列表。回归增加拒绝未接纳引用列表的断言。该集成仍保留全部开发测试，等待同一 required CI，不变更工作流。

@@ -1494,6 +1494,7 @@ impl ConversationStream {
                 self.append_pending_user(&pending_id, &message_id, seq, &content, images, cx);
             }
             ConversationEvent::MessageStarted { message_id, seq } => {
+                self.submitted_draft = None;
                 self.composer_resume_pending = false;
                 self.interrupted_tail = None;
                 if self.finished_artifact_turns.contains(&message_id) {

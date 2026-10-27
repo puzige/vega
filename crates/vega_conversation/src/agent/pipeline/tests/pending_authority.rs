@@ -14,6 +14,8 @@ fn queued(fixture: &Fixture, behavior: PendingMessageBehavior) -> PendingMessage
         behavior,
         content: "retained queued input".into(),
         images: Vec::new(),
+        references: Vec::new(),
+        reference_mentions: Vec::new(),
         permission_fence: Some(
             crate::pending_messages::capture_authority(&fixture.store, &source)
                 .expect("enqueue source"),
@@ -69,6 +71,7 @@ fn queued_input_cannot_acquire_future_full_access_or_normalize_history_before_re
         &message.id,
         &message.content,
         &message.images,
+        &message.references,
     )
     .expect("original dispatch proof");
     fixture.store.conn().execute("INSERT INTO messages(id,thread_id,seq,role,kind,content,status,created_at) VALUES('unfinished',?1,1,'assistant','text','retained partial','streaming',1)", [&fixture.thread]).expect("unsettled history");
@@ -111,7 +114,8 @@ fn queued_input_cannot_acquire_future_full_access_or_normalize_history_before_re
             &fixture.thread,
             &message.id,
             &message.content,
-            &message.images
+            &message.images,
+            &message.references,
         )
         .is_err()
     );
@@ -126,6 +130,17 @@ fn valid_queue_uses_its_saved_authority_and_legacy_payload_is_recoverable_but_no
     for legacy in [false, true] {
         let fixture = Fixture::new();
         let message = queued(&fixture, PendingMessageBehavior::Queue);
+        assert!(
+            crate::pending_messages::prepare_dispatch(
+                &fixture.store,
+                &fixture.thread,
+                &message.id,
+                &message.content,
+                &message.images,
+                &["unaccepted-reference.txt".into()]
+            )
+            .is_err()
+        );
         if legacy {
             fixture.store.conn().execute("UPDATE pending_messages SET payload=json_remove(payload,'$.permission_fence') WHERE id=?1", [&message.id]).expect("pre-contract payload");
             assert!(
@@ -134,7 +149,8 @@ fn valid_queue_uses_its_saved_authority_and_legacy_payload_is_recoverable_but_no
                     &fixture.thread,
                     &message.id,
                     &message.content,
-                    &message.images
+                    &message.images,
+                    &message.references,
                 )
                 .is_err()
             );
@@ -154,6 +170,7 @@ fn valid_queue_uses_its_saved_authority_and_legacy_payload_is_recoverable_but_no
                 &message.id,
                 &message.content,
                 &message.images,
+                &message.references,
             )
             .expect("valid dispatch");
             let run = prepare_pending(

@@ -18,6 +18,10 @@ struct StoredSubmission {
     images: Vec<Vec<u8>>,
     #[serde(default)]
     permission_fence: Option<crate::types::PermissionFence>,
+    #[serde(default)]
+    references: Vec<String>,
+    #[serde(default)]
+    reference_mentions: Vec<crate::types::FileReferenceMention>,
 }
 
 fn failure() -> ConversationError {
@@ -48,6 +52,8 @@ pub fn enqueue_cached(
             .map(|image| image.bytes().to_vec())
             .collect(),
         permission_fence: message.permission_fence.clone(),
+        references: message.references.clone(),
+        reference_mentions: message.reference_mentions.clone(),
     })
     .map_err(|_| failure())?;
     if message.content.is_empty() && message.images.is_empty() {
@@ -193,6 +199,8 @@ pub(crate) fn decode(row: rows::PendingMessageRow) -> Result<PendingMessage, Con
         content: payload.content,
         images,
         permission_fence: payload.permission_fence,
+        references: payload.references,
+        reference_mentions: payload.reference_mentions,
     })
 }
 
@@ -255,13 +263,14 @@ pub fn prepare_dispatch(
     id: &str,
     content: &str,
     images: &[ImageAttachment],
+    references: &[String],
 ) -> Result<crate::types::PendingInputAuthority, ConversationError> {
     let _coordination = crate::permission_contracts::coordinate()?;
     let row = rows::find_dispatchable(store.conn(), thread, id)
         .map_err(|_| failure())?
         .ok_or(ConversationError::InvalidTaskIdentity)?;
     let message = decode(row)?;
-    if message.content != content || message.images != images {
+    if message.content != content || message.images != images || message.references != references {
         return Err(ConversationError::InvalidTaskIdentity);
     }
     require_authority(store, &message)?;
@@ -412,9 +421,9 @@ impl RuntimeSteeringSource for QueueSteeringSource {
                         return Err(pending_failure(Stage::PendingAdmission, Reason::Admission));
                     }
                 }
-                let refs = vega_tools::reference::resolve_bounded_references(
+                let refs = vega_tools::reference::resolve_references(
                     &workspace,
-                    &message.content,
+                    &message.references,
                     vega_tools::reference::REFERENCE_MAX_FILES,
                     vega_tools::reference::REFERENCE_MAX_FILE_BYTES,
                     vega_tools::reference::REFERENCE_MAX_TOTAL_BYTES,

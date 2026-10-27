@@ -237,6 +237,8 @@ impl VegaWindow {
             content: request.content.clone(),
             images: request.images.clone(),
             permission_fence: Some(permission_fence),
+            references: request.references.clone(),
+            reference_mentions: request.reference_mentions.clone(),
         };
         let content = message.content.clone();
         let mut projection = stream.read(cx).pending_queue().clone();
@@ -694,6 +696,7 @@ impl VegaWindow {
             PendingAgentRun::UserMessage(UserSubmission {
                 content: message.content,
                 images: message.images,
+                references: message.references,
                 ordinary: None,
             }),
             Some(admission),

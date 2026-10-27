@@ -21,6 +21,12 @@ impl PendingMessageBehavior {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FileReferenceMention {
+    pub range: std::ops::Range<usize>,
+    pub path: String,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct PendingMessage {
     pub id: String,
@@ -29,6 +35,8 @@ pub struct PendingMessage {
     pub behavior: PendingMessageBehavior,
     pub content: String,
     pub images: Vec<super::ImageAttachment>,
+    pub references: Vec<String>,
+    pub reference_mentions: Vec<FileReferenceMention>,
     pub permission_fence: Option<super::PermissionFence>,
 }
 
