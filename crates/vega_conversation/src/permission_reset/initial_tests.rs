@@ -74,6 +74,7 @@ impl Fixture {
             RawSubmission::new(
                 "retained input".into(),
                 Vec::new(),
+                Vec::new(),
                 1,
                 "synthetic".into(),
                 None,

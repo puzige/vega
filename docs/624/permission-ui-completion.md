@@ -67,3 +67,5 @@ Reset 批次 `b6d2ce03` 的 [Actions 40470412070](https://github.com/puzige/vega
 两位原审查者已对 `f78b75f225be6d6dcc52aa064f70b0d0d07dbcab` 完成只读增量复核，确认原 P1/P2 解决，未发现新增可行动问题。该提交同步事件未生成新的 Actions run，尚无其云端行为结果；不引用先前 123/123 冒充修正验证。
 
 同步 master `d84dfc536777fd5bc571a2576ca64bc0cdff23e9`（#677/#688 结构化文件引用）时，队列三处冲突采用两方语义并存：保存引用列表/mention 及原 fence，steering 先检查原权限再读取结构化引用，dispatch proof 也比较原引用列表。回归增加拒绝未接纳引用列表的断言。该集成仍保留全部开发测试，等待同一 required CI，不变更工作流。
+
+核心原审查者已复核 `1ca814444233ea96eba0341ccbddca87a5c535a9` 的集成增量，无新发现，P1 修复继续成立。该 head 的 [Actions 40477420029](https://github.com/puzige/vega/actions/runs/40477420029) 在编译阶段报 E0505（子代理用借来的 reader 同时消费 config）及旧 fixture 的 RawSubmission 新引用参数缺失。修正为先克隆 reader 再构造配置，并逐一更新四处测试 fixture 的空引用列表；生产普通发送入口已使用真实引用列表。没有改变测试含义，本轮未执行测试。

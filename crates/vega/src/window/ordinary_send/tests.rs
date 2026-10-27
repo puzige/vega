@@ -268,7 +268,15 @@ impl Fixture {
         let (submission, worker) = OrdinarySubmission::begin(
             store.database_identity(),
             expected.id.clone(),
-            RawSubmission::new("hello".into(), Vec::new(), 0, "model".into(), None, None),
+            RawSubmission::new(
+                "hello".into(),
+                Vec::new(),
+                Vec::new(),
+                0,
+                "model".into(),
+                None,
+                None,
+            ),
             admission,
         )
         .expect("begin fixture submission");

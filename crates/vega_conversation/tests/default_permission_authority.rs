@@ -407,7 +407,15 @@ fn rolled_back_creation_retries_only_with_unchanged_default_source() {
         let (submission, worker) = OrdinarySubmission::begin(
             store.database_identity(),
             draft.id.clone(),
-            RawSubmission::new("hello".into(), Vec::new(), 0, "model".into(), None, None),
+            RawSubmission::new(
+                "hello".into(),
+                Vec::new(),
+                Vec::new(),
+                0,
+                "model".into(),
+                None,
+                None,
+            ),
             admission,
         )
         .expect("begin submission");

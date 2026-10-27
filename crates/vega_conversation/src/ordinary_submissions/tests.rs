@@ -23,6 +23,7 @@ fn begin(database: DatabaseIdentity, thread: &str) -> (OrdinarySubmission, Ordin
         RawSubmission::new(
             "original input".into(),
             Vec::new(),
+            Vec::new(),
             1,
             "synthetic".into(),
             None,

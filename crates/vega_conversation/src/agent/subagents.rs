@@ -1204,7 +1204,7 @@ fn child_lifecycle_inner<'a>(
                         Ok(store) => async {
                             crate::thread_access::verify(&store, &snapshot.agent_id, &admission)?;
                             config.admission = Some(admission.clone());
-                            if let Some(reader) = &config.owner_credential_reader {
+                            if let Some(reader) = config.owner_credential_reader.clone() {
                                 config = config.with_pending_input(None, Some(Arc::new(crate::pending_messages::QueueSteeringSource::new(
                                     database.clone(), tools.root().to_path_buf(), snapshot.agent_id.clone(), queue_generation,
                                     reader.clone(), cancel.clone(),
