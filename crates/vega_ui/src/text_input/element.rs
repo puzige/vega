@@ -201,7 +201,11 @@ impl Element for TextElement {
                     .is_some_and(|span| span.start <= absolute_start && absolute_end <= span.end);
                 runs.push(TextRun {
                     len: end - start,
-                    color: if in_mention { accent } else { base_run.color },
+                    color: if in_mention {
+                        accent.into()
+                    } else {
+                        base_run.color
+                    },
                     underline: in_marked.then_some(UnderlineStyle {
                         color: Some(base_run.color),
                         thickness: px(1.0),

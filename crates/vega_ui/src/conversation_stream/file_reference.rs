@@ -96,7 +96,7 @@ impl ConversationStream {
     }
 
     pub(crate) fn sync_at_query(&mut self, input: &Entity<TextInput>, cx: &mut Context<Self>) {
-        if self.thread.is_standalone() {
+        if self.thread.is_standalone() || self.thread.backend == TaskBackend::Codex {
             self.file_selector_wanted = false;
             self.file_selector.close();
             self.file_index_loading = false;

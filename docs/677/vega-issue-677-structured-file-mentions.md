@@ -98,7 +98,7 @@ pub fn resolve_references(
 
 ### 3.6 失败与恢复
 
-- 引用在**创建提交之前**校验（`submit_ordinary` / `enqueue_composer` 入口）。失败时
+- 引用在**创建提交之前**由后台线程校验；UI 线程不打开或读取引用文件。校验结束后重新核对路由与草稿版本，再进入 ordinary/queue 提交。失败时
   只调用 `reject_composer_submission` + `apply_reference_error`：草稿、mention、
   附件都还在输入框，没有清空、没有用户回声、没有失败提交行，也就没有那条永远
   不会成功的 `Retry`。
@@ -107,7 +107,8 @@ pub fn resolve_references(
 - 提交前校验通过但 worker 侧读取仍失败（提交与读取之间文件被删，或队列消息过期）：
   worker 仍是权威读取并 fail-closed，同时把提交时的草稿快照（文本 + references +
   图片）回填输入框，避免用户重打整段正文。该快照在提交被接受时立即丢弃，
-  所以已提交消息不会被重新当作草稿。
+  所以已提交消息不会被重新当作草稿。输入框已有新稿时，沿用「继续编辑」恢复入口保留失败草稿，不覆盖新稿；失败行标记与是否立即恢复无关。
+- Codex ACP 当前只支持文本载荷，不支持本卡受限文件注入：显式引用在发送前明确拒绝并保留草稿，不静默丢弃；选择器在 Codex 路由禁用。
 - 引用错误与「模型/权限/工作目录」通用提示**互斥**：`reference_failure` 存在时
   不再叠加 `preparation_failed`。
 - 正文里的 `@word` 不再产生任何错误。

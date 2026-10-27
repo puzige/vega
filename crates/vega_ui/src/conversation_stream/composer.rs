@@ -313,6 +313,7 @@ impl ConversationStream {
             .then(|| self.input.read(cx).content_revision());
         self.submitted_attachments = self.attachments.clone();
         self.submitted_draft = Some(SubmittedDraft {
+            submission: None,
             text: text.clone(),
             reference_mentions: reference_mentions.clone(),
             images: self

@@ -258,7 +258,7 @@ impl TextInput {
         }
     }
 
-    pub(crate) fn content_revision(&self) -> u64 {
+    pub fn content_revision(&self) -> u64 {
         self.content_revision
     }
 

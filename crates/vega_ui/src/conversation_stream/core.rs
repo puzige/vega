@@ -18,6 +18,7 @@ impl ModelPickerLevel {
 }
 
 pub(crate) struct SubmittedDraft {
+    pub(crate) submission: Option<vega_conversation::types::SubmissionId>,
     pub(crate) text: String,
     pub(crate) reference_mentions: Vec<vega_conversation::types::FileReferenceMention>,
     pub(crate) images: Vec<ImageAttachment>,
@@ -1772,24 +1773,30 @@ impl ConversationStream {
     }
 
     fn restore_rejected_reference_draft(&mut self, cx: &mut Context<Self>) {
-        if !self.pending_draft_is_empty(cx) {
-            return;
-        }
         let Some(draft) = self.submitted_draft.take() else {
             return;
         };
-        if draft.text.is_empty() {
-            return;
+        if let Some(submission) = draft.submission {
+            self.mark_ordinary_reference_failed(submission);
         }
-        self.mark_ordinary_reference_failed();
-        self.input.update(cx, |input, cx| {
-            input.set_text_with_references(&draft.text, &draft.reference_mentions, cx)
-        });
-        for image in self.history_image_previews(draft.images, cx) {
-            self.attachment_generation = self.attachment_generation.saturating_add(1);
-            self.attachments.push((self.attachment_generation, image));
-        }
-        cx.notify();
+        let references = draft
+            .reference_mentions
+            .iter()
+            .map(|mention| mention.path.clone())
+            .collect();
+        self.accept_pending_edit(
+            vega_conversation::types::PendingMessage {
+                id: String::new(),
+                thread_id: self.thread.id.clone(),
+                generation: String::new(),
+                behavior: PendingMessageBehavior::Queue,
+                content: draft.text,
+                images: draft.images,
+                references,
+                reference_mentions: draft.reference_mentions,
+            },
+            cx,
+        );
     }
 
     pub fn install_meter_estimator(

@@ -85,31 +85,6 @@ impl OrdinaryPreparationRequest {
     }
 }
 
-pub(super) fn reference_failure_for(
-    stream: &Entity<ConversationStream>,
-    request: &ComposerSubmitted,
-    cx: &App,
-) -> Option<FileReferenceFailureCode> {
-    if request.references.is_empty() {
-        return None;
-    }
-    let Ok(store) = &cx.global::<VegaStore>().0 else {
-        return Some(FileReferenceFailureCode::ProjectUnavailable);
-    };
-    let Some(root) = reference_root(store, &stream.read(cx).thread_snapshot()) else {
-        return Some(FileReferenceFailureCode::ProjectUnavailable);
-    };
-    vega_tools::reference::resolve_references(
-        &root,
-        &request.references,
-        vega_tools::reference::REFERENCE_MAX_FILES,
-        vega_tools::reference::REFERENCE_MAX_FILE_BYTES,
-        vega_tools::reference::REFERENCE_MAX_TOTAL_BYTES,
-    )
-    .err()
-    .map(|error| crate::app_agent::map_reference_failure(&error))
-}
-
 fn reference_root(store: &vega_store::Store, thread: &Thread) -> Option<PathBuf> {
     if let Ok(root) = vega_conversation::threads::task_workspace_root(store, &thread.id) {
         return Some(root);
@@ -124,6 +99,75 @@ fn reference_root(store: &vega_store::Store, thread: &Thread) -> Option<PathBuf>
 }
 
 impl VegaWindow {
+    pub(super) fn preflight_file_references(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: ComposerSubmitted,
+        cx: &mut Context<Self>,
+    ) {
+        let database = self.file_backed_store_path(cx);
+        let thread = stream.read(cx).thread_snapshot();
+        let paths = request.references.clone();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let worker = std::thread::Builder::new()
+            .name("vega-reference-preflight".into())
+            .spawn(move || {
+                let result = database
+                    .and_then(|database| vega_store::Store::open(&database).ok())
+                    .and_then(|store| reference_root(&store, &thread))
+                    .ok_or(FileReferenceFailureCode::ProjectUnavailable)
+                    .and_then(|root| {
+                        vega_tools::reference::resolve_references(
+                            &root,
+                            &paths,
+                            vega_tools::reference::REFERENCE_MAX_FILES,
+                            vega_tools::reference::REFERENCE_MAX_FILE_BYTES,
+                            vega_tools::reference::REFERENCE_MAX_TOTAL_BYTES,
+                        )
+                        .map(|_| ())
+                        .map_err(|error| crate::app_agent::map_reference_failure(&error))
+                    });
+                let _ = sender.send(result);
+            });
+        if worker.is_err() {
+            stream.update(cx, ConversationStream::reject_composer_submission);
+            stream.update(cx, ConversationStream::apply_controller_error);
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(AGENT_PREFLIGHT_POLL).await;
+                let result = match receiver.try_recv() {
+                    Ok(result) => result,
+                    Err(mpsc::TryRecvError::Empty) => continue,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        Err(FileReferenceFailureCode::ReadFailed)
+                    }
+                };
+                let _ = this.update(cx, |this, cx| {
+                    let input = stream.read(cx).composer_input();
+                    if !this.owns_stream_request(&stream, &request.thread_id, cx)
+                        || input.read(cx).content_revision() != request.draft_revision
+                    {
+                        stream.update(cx, ConversationStream::reject_composer_submission);
+                        return;
+                    }
+                    match result {
+                        Err(code) => stream.update(cx, |stream, cx| {
+                            stream.reject_composer_submission(cx);
+                            stream.apply_reference_error(code, cx);
+                        }),
+                        Ok(()) if request.pending_behavior.is_some() => {
+                            this.enqueue_composer(stream.clone(), &request, cx)
+                        }
+                        Ok(()) => this.submit_ordinary(stream.clone(), &request, cx),
+                    }
+                });
+                break;
+            }
+        })
+        .detach();
+    }
     pub(crate) fn submit_ordinary(
         &mut self,
         stream: Entity<ConversationStream>,
@@ -146,11 +190,6 @@ impl VegaWindow {
             .ordinary_requests
             .contains(&request.request_id)
         {
-            return;
-        }
-        if let Some(code) = reference_failure_for(&stream, request, cx) {
-            stream.update(cx, ConversationStream::reject_composer_submission);
-            stream.update(cx, |stream, cx| stream.apply_reference_error(code, cx));
             return;
         }
         let admission =

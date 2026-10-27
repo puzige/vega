@@ -99,6 +99,9 @@ impl ConversationStream {
         {
             return false;
         }
+        if let Some(draft) = self.submitted_draft.as_mut() {
+            draft.submission = Some(submission.id());
+        }
         let original_images = self
             .submitted_attachments
             .iter()
@@ -344,8 +347,13 @@ impl ConversationStream {
         }
     }
 
-    pub(super) fn mark_ordinary_reference_failed(&mut self) {
-        if let Some(row) = self.ordinary.last_mut() {
+    pub(super) fn mark_ordinary_reference_failed(&mut self, submission: SubmissionId) {
+        if let Some(row) = self
+            .ordinary
+            .iter_mut()
+            .rev()
+            .find(|row| row.submission.id() == submission)
+        {
             row.reference_failed = true;
         }
     }

@@ -281,7 +281,7 @@ pub fn resolve_references(
     let root = root.canonicalize().map_err(ToolError::Io)?;
     let mut distinct: Vec<&String> = Vec::with_capacity(paths.len());
     for path in paths {
-        if !distinct.iter().any(|seen| *seen == path) {
+        if !distinct.contains(&path) {
             distinct.push(path);
         }
     }

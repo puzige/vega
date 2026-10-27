@@ -1,4 +1,3 @@
-use super::ordinary_send::reference_failure_for;
 use super::*;
 
 impl VegaWindow {
@@ -166,11 +165,6 @@ impl VegaWindow {
         if !self.owns_stream_request(&stream, &request.thread_id, cx)
             || stream.read(cx).task_backend() != TaskBackend::Native
         {
-            return;
-        }
-        if let Some(code) = reference_failure_for(&stream, request, cx) {
-            stream.update(cx, ConversationStream::reject_composer_submission);
-            stream.update(cx, |stream, cx| stream.apply_reference_error(code, cx));
             return;
         }
         let Some(database) = self.queue_database(cx) else {

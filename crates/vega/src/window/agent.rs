@@ -1384,6 +1384,10 @@ impl VegaWindow {
         if self.intercept_automation(stream.clone(), request, cx) {
             return;
         }
+        if stream.read(cx).task_backend() == TaskBackend::Native && !request.references.is_empty() {
+            self.preflight_file_references(stream, request.clone(), cx);
+            return;
+        }
         if stream.read(cx).task_backend() == TaskBackend::Native
             && request.pending_behavior.is_some()
         {
@@ -1421,7 +1425,7 @@ impl VegaWindow {
         request: &ComposerSubmitted,
         cx: &mut Context<Self>,
     ) {
-        if !request.images.is_empty() {
+        if !request.images.is_empty() || !request.references.is_empty() {
             stream.update(cx, |stream, cx| {
                 stream.reject_composer_submission(cx);
                 stream.apply_codex_route_failure(LocalizedCopy::new("app.codex.text_only"), cx);
