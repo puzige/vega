@@ -62,7 +62,7 @@ impl PermissionEditor {
 }
 
 impl ConversationStream {
-    pub(super) fn full_access_needs_confirmation(&self) -> bool {
+    pub(super) fn full_access_needs_confirmation(&self, cx: &App) -> bool {
         if self.thread.permission_mode != PermissionMode::FullAccess {
             return false;
         }
@@ -84,6 +84,9 @@ impl ConversationStream {
             || snapshot.config_path.is_none()
             || snapshot.permission_revision < 0
             || snapshot.permission_mode != self.thread.permission_mode.as_str()
+            || cx
+                .try_global::<crate::sidebar::NewTaskDefaults>()
+                .is_none_or(|defaults| &defaults.permission != snapshot)
         {
             return true;
         }

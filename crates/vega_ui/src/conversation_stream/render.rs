@@ -490,7 +490,7 @@ impl ConversationStream {
     fn render_permission_status(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let mode = self.thread.permission_mode;
-        let needs_authorization = self.full_access_needs_confirmation();
+        let needs_authorization = self.full_access_needs_confirmation(cx);
         let changed = self
             .permission_editor
             .active_mode

@@ -7,6 +7,7 @@ use vega_conversation::types::{
 };
 
 use crate::conversation_stream::{ConversationStream, ThreadSettingsRequested};
+use crate::sidebar::NewTaskDefaults;
 
 const EPOCH: &str = "01M5STGCTHCT3S8Q1BPZA2HCYG";
 
@@ -83,6 +84,14 @@ fn selecting_current_full_access_only_requests_missing_authorization(cx: &mut Te
         ("fork cannot inherit defaults", fork, true),
         ("changed draft revision", changed_revision, true),
     ] {
+        cx.update(|cx| {
+            if let Some(permission) = thread.default_permission.clone() {
+                cx.set_global(NewTaskDefaults {
+                    model: "fixture".to_owned(),
+                    permission,
+                });
+            }
+        });
         let stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
         let requests = Rc::new(RefCell::new(Vec::new()));
         let received = requests.clone();
@@ -93,7 +102,7 @@ fn selecting_current_full_access_only_requests_missing_authorization(cx: &mut Te
         });
         stream.update(cx, |stream, cx| {
             assert_eq!(
-                stream.full_access_needs_confirmation(),
+                stream.full_access_needs_confirmation(cx),
                 needs_authorization,
                 "{name}"
             );
@@ -120,6 +129,34 @@ fn selecting_current_full_access_only_requests_missing_authorization(cx: &mut Te
             &[Some(PermissionMode::Confirm)],
             "{name}"
         );
+        if !needs_authorization && let Some(snapshot) = &thread.default_permission {
+            for change_mode in [true, false] {
+                let mut permission = snapshot.clone();
+                if change_mode {
+                    permission.permission_mode = "confirm".to_owned();
+                    permission.full_access_grant = None;
+                } else {
+                    permission.permission_revision += 1;
+                }
+                cx.update(|cx| {
+                    cx.set_global(NewTaskDefaults {
+                        model: "fixture".to_owned(),
+                        permission,
+                    })
+                });
+                requests.borrow_mut().clear();
+                stream.update(cx, |stream, cx| {
+                    assert!(stream.full_access_needs_confirmation(cx));
+                    stream.request_permission_mode(PermissionMode::FullAccess, cx);
+                });
+                cx.run_until_parked();
+                assert_eq!(
+                    requests.borrow().as_slice(),
+                    &[Some(PermissionMode::FullAccess)]
+                );
+                stream.read_with(cx, |stream, _| assert_eq!(stream.thread, thread));
+            }
+        }
     }
 }
 
