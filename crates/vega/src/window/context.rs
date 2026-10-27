@@ -443,6 +443,7 @@ impl VegaWindow {
                                 ContextUsageProjection::new(
                                     projection.model_input_limit,
                                     projection.estimated_tokens,
+                                    projection.last_call_total,
                                 ),
                                 projection.compactable,
                                 cx,

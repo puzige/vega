@@ -174,6 +174,7 @@ pub struct ContextProjection {
     /// Deterministic wire estimate including the system message and real tool
     /// definitions for the thread's run mode.
     pub estimated_tokens: Option<u64>,
+    pub last_call_total: Option<u64>,
     /// Whether a complete older prefix exists and a configured budget could
     /// drive a safe manual compaction.
     pub compactable: bool,

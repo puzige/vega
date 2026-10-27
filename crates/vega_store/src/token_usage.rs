@@ -128,6 +128,40 @@ pub fn aggregate_by_thread(
     aggregate_rows(statement.query_map([thread_id], map_aggregate_row)?)
 }
 
+pub fn latest_primary_call_total(
+    conn: &Connection,
+    thread_id: &str,
+) -> Result<Option<u64>, UsageAggregateError> {
+    let mut statement = conn.prepare(
+        "SELECT input_tokens, output_tokens FROM token_usage \
+         WHERE thread_id = ?1 AND message_id IS NOT NULL ORDER BY id DESC LIMIT 1",
+    )?;
+    let mut rows = statement.query([thread_id])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let input_tokens: i64 = row.get(0)?;
+    let output_tokens: i64 = row.get(1)?;
+    if input_tokens < 0 {
+        return Err(UsageAggregateError::CorruptRow {
+            field: "input_tokens",
+        });
+    }
+    if output_tokens < 0 {
+        return Err(UsageAggregateError::CorruptRow {
+            field: "output_tokens",
+        });
+    }
+    let input_tokens = u64::try_from(input_tokens).unwrap_or(0);
+    let output_tokens = u64::try_from(output_tokens).unwrap_or(0);
+    input_tokens
+        .checked_add(output_tokens)
+        .map(Some)
+        .ok_or(UsageAggregateError::Overflow {
+            field: "input_tokens",
+        })
+}
+
 pub fn aggregate_task_by_thread(
     conn: &Connection,
     thread_id: &str,
