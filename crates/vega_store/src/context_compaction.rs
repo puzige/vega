@@ -11,6 +11,7 @@ use std::fmt;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
+use crate::context_projection::{ProjectionFragment, ProjectionPlan};
 use crate::image_attachments::ImageRow;
 use crate::messages::MessageRow;
 
@@ -607,6 +608,7 @@ pub struct NewContextCheckpoint {
     /// Expected latest checkpoint id, or `None` when no prior projection is
     /// expected.  This is the append-only compare-and-swap fence.
     pub expected_previous_id: Option<i64>,
+    pub projection_plan: Option<ProjectionPlan>,
     /// Unix-millisecond creation time.
     pub created_at: i64,
 }
@@ -671,6 +673,8 @@ pub struct ContextCheckpoint {
     pub estimator_version: String,
     /// Predecessor fence captured with this request for idempotent retries.
     pub expected_previous_id: Option<i64>,
+    pub projection_plan: Option<ProjectionPlan>,
+    pub referenced_summaries: std::collections::BTreeMap<i64, String>,
     /// Unix-millisecond creation time.
     pub created_at: i64,
 }
@@ -1016,15 +1020,19 @@ pub fn latest_checkpoint(
             "empty checkpoint identity".to_string(),
         ));
     }
-    conn.query_row(
+    let mut checkpoint = conn.query_row(
         "SELECT id, thread_id, model, source_version, covered_through_seq, \
-                source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq \
+                source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq, projection_plan \
          FROM context_checkpoints \
          WHERE thread_id = ?1 ORDER BY id DESC LIMIT 1",
         params![thread_id],
         checkpoint_from_row,
     )
-    .optional()
+    .optional()?;
+    if let Some(checkpoint) = &mut checkpoint {
+        load_referenced_summaries(conn, checkpoint)?;
+    }
+    Ok(checkpoint)
 }
 
 /// Loads the latest checkpoint using a caller-owned transaction snapshot.
@@ -1038,16 +1046,20 @@ pub fn latest_checkpoint_in_transaction(
             "empty checkpoint identity".to_string(),
         ));
     }
-    transaction
+    let mut checkpoint = transaction
         .query_row(
             "SELECT id, thread_id, model, source_version, covered_through_seq, \
-                    source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq \
+                    source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq, projection_plan \
              FROM context_checkpoints \
              WHERE thread_id = ?1 ORDER BY id DESC LIMIT 1",
             params![thread_id],
             checkpoint_from_row,
         )
-        .optional()
+        .optional()?;
+    if let Some(checkpoint) = &mut checkpoint {
+        load_referenced_summaries(transaction, checkpoint)?;
+    }
+    Ok(checkpoint)
 }
 
 /// Alias used when restoring the durable projection after restart.
@@ -1086,6 +1098,11 @@ where
     F: Fn() -> bool,
 {
     checkpoint.validate()?;
+    let projection_plan = checkpoint
+        .projection_plan
+        .as_ref()
+        .map(ProjectionPlan::encode)
+        .transpose()?;
     let transaction = crate::write_coordination::WriteTransaction::new_with_cancel(
         conn,
         crate::write_coordination::WriteCategory::ContextCompaction,
@@ -1112,58 +1129,64 @@ where
         return Ok(ContextCheckpointInstall::Stale);
     }
 
-    if let Some(owner) = checkpoint.covered_assistant_id.as_deref() {
-        let message = current
-            .messages
-            .iter()
-            .find(|message| message.id == owner)
-            .ok_or(ContextCheckpointError::IncompleteCoverage)?;
-        let cursor = usize::try_from(checkpoint.covered_assistant_text_bytes)
-            .map_err(|_| ContextCheckpointError::Invalid)?;
-        if message.role != "assistant"
-            || message.seq as u64 != checkpoint.covered_through_seq.saturating_add(1)
-            || !message.content.is_char_boundary(cursor)
+    if let Some(plan) = &checkpoint.projection_plan {
+        plan.validate_install(&current)?;
+        validate_summary_references(&transaction, &checkpoint.thread_id, plan)?;
+    } else {
+        if let Some(owner) = checkpoint.covered_assistant_id.as_deref() {
+            let message = current
+                .messages
+                .iter()
+                .find(|message| message.id == owner)
+                .ok_or(ContextCheckpointError::IncompleteCoverage)?;
+            let cursor = usize::try_from(checkpoint.covered_assistant_text_bytes)
+                .map_err(|_| ContextCheckpointError::Invalid)?;
+            if message.role != "assistant"
+                || message.seq as u64 != checkpoint.covered_through_seq.saturating_add(1)
+                || !message.content.is_char_boundary(cursor)
+            {
+                return Err(ContextCheckpointError::IncompleteCoverage);
+            }
+            let calls = current
+                .tool_calls
+                .iter()
+                .filter(|call| {
+                    call.message_id == owner
+                        && call.seq as u64 <= checkpoint.covered_assistant_tool_seq
+                })
+                .collect::<Vec<_>>();
+            if calls.is_empty()
+                || calls.iter().any(|call| {
+                    !matches!(
+                        call.status.as_str(),
+                        "success" | "failed" | "cancelled" | "rejected"
+                    ) || call.output_text.is_none()
+                })
+            {
+                return Err(ContextCheckpointError::IncompleteCoverage);
+            }
+            let last = calls
+                .iter()
+                .max_by_key(|call| call.seq)
+                .ok_or(ContextCheckpointError::IncompleteCoverage)?;
+            if last.seq as u64 != checkpoint.covered_assistant_tool_seq
+                || last.text_offset_bytes != Some(cursor as i64)
+                || current.tool_calls.iter().any(|call| {
+                    call.message_id == owner
+                        && call.seq > last.seq
+                        && match (&call.response_id, &last.response_id) {
+                            (Some(left), Some(right)) => left == right,
+                            _ => call.text_offset_bytes == last.text_offset_bytes,
+                        }
+                })
+            {
+                return Err(ContextCheckpointError::IncompleteCoverage);
+            }
+        } else if checkpoint.covered_assistant_text_bytes != 0
+            || checkpoint.covered_assistant_tool_seq != 0
         {
-            return Err(ContextCheckpointError::IncompleteCoverage);
+            return Err(ContextCheckpointError::Invalid);
         }
-        let calls = current
-            .tool_calls
-            .iter()
-            .filter(|call| {
-                call.message_id == owner && call.seq as u64 <= checkpoint.covered_assistant_tool_seq
-            })
-            .collect::<Vec<_>>();
-        if calls.is_empty()
-            || calls.iter().any(|call| {
-                !matches!(
-                    call.status.as_str(),
-                    "success" | "failed" | "cancelled" | "rejected"
-                ) || call.output_text.is_none()
-            })
-        {
-            return Err(ContextCheckpointError::IncompleteCoverage);
-        }
-        let last = calls
-            .iter()
-            .max_by_key(|call| call.seq)
-            .ok_or(ContextCheckpointError::IncompleteCoverage)?;
-        if last.seq as u64 != checkpoint.covered_assistant_tool_seq
-            || last.text_offset_bytes != Some(cursor as i64)
-            || current.tool_calls.iter().any(|call| {
-                call.message_id == owner
-                    && call.seq > last.seq
-                    && match (&call.response_id, &last.response_id) {
-                        (Some(left), Some(right)) => left == right,
-                        _ => call.text_offset_bytes == last.text_offset_bytes,
-                    }
-            })
-        {
-            return Err(ContextCheckpointError::IncompleteCoverage);
-        }
-    } else if checkpoint.covered_assistant_text_bytes != 0
-        || checkpoint.covered_assistant_tool_seq != 0
-    {
-        return Err(ContextCheckpointError::Invalid);
     }
 
     let thread_model: Option<String> = transaction
@@ -1177,8 +1200,9 @@ where
         transaction.rollback()?;
         return Ok(ContextCheckpointInstall::Stale);
     }
-    let incomplete: i64 = transaction.query_row(
-        "SELECT CASE WHEN EXISTS (\
+    if checkpoint.projection_plan.is_none() {
+        let incomplete: i64 = transaction.query_row(
+            "SELECT CASE WHEN EXISTS (\
             SELECT 1 FROM messages WHERE thread_id = ?1 AND seq <= ?2 \
               AND status NOT IN ('done', 'failed', 'interrupted')\
           ) OR EXISTS (\
@@ -1186,12 +1210,13 @@ where
              WHERE c.thread_id = ?1 AND m.thread_id = ?1 AND m.seq <= ?2 \
                AND c.status NOT IN ('success', 'failed', 'cancelled', 'rejected')\
           ) THEN 1 ELSE 0 END",
-        params![checkpoint.thread_id, checkpoint.covered_through_seq as i64],
-        |row| row.get(0),
-    )?;
-    if incomplete != 0 {
-        transaction.rollback()?;
-        return Err(ContextCheckpointError::IncompleteCoverage);
+            params![checkpoint.thread_id, checkpoint.covered_through_seq as i64],
+            |row| row.get(0),
+        )?;
+        if incomplete != 0 {
+            transaction.rollback()?;
+            return Err(ContextCheckpointError::IncompleteCoverage);
+        }
     }
 
     // Request identity includes the captured predecessor but is independent
@@ -1200,12 +1225,12 @@ where
     let committed_same_request = transaction
         .query_row(
             "SELECT id, thread_id, model, source_version, covered_through_seq, \
-                    source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq \
+                    source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq, projection_plan \
              FROM context_checkpoints \
              WHERE thread_id = ?1 AND model = ?2 AND source_version = ?3 \
                AND covered_through_seq = ?4 AND source_fingerprint = ?5 \
                AND summary = ?6 AND estimator_version = ?7 \
-               AND expected_previous_id IS ?8 AND created_at = ?9 AND covered_assistant_id IS ?10 AND covered_assistant_text_bytes = ?11 AND covered_assistant_tool_seq = ?12 \
+               AND expected_previous_id IS ?8 AND created_at = ?9 AND covered_assistant_id IS ?10 AND covered_assistant_text_bytes = ?11 AND covered_assistant_tool_seq = ?12 AND projection_plan IS ?13 \
              ORDER BY id DESC LIMIT 1",
             params![
                 checkpoint.thread_id,
@@ -1220,11 +1245,13 @@ where
             checkpoint.covered_assistant_id,
             checkpoint.covered_assistant_text_bytes as i64,
             checkpoint.covered_assistant_tool_seq as i64,
+            projection_plan,
             ],
             checkpoint_from_row,
         )
         .optional()?;
-    if let Some(existing) = committed_same_request {
+    if let Some(mut existing) = committed_same_request {
+        load_referenced_summaries(&transaction, &mut existing)?;
         transaction.rollback()?;
         return Ok(ContextCheckpointInstall::AlreadyCommitted(existing));
     }
@@ -1232,7 +1259,7 @@ where
     let previous = transaction
         .query_row(
             "SELECT id, thread_id, model, source_version, covered_through_seq, \
-                    source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq \
+                    source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq, projection_plan \
              FROM context_checkpoints WHERE thread_id = ?1 \
              ORDER BY id DESC LIMIT 1",
             params![checkpoint.thread_id],
@@ -1243,6 +1270,7 @@ where
         if previous.model == checkpoint.model
             && previous.source_version == checkpoint.source_version
             && previous.source_fingerprint == checkpoint.source_fingerprint
+            && checkpoint.projection_plan.is_none()
         {
             transaction.rollback()?;
             return Ok(ContextCheckpointInstall::Stale);
@@ -1267,8 +1295,8 @@ where
     transaction.execute(
         "INSERT INTO context_checkpoints \
             (thread_id, model, source_version, covered_through_seq, source_fingerprint, \
-             summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq, projection_plan) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             checkpoint.thread_id,
             checkpoint.model,
@@ -1282,6 +1310,7 @@ where
             checkpoint.covered_assistant_id,
             checkpoint.covered_assistant_text_bytes as i64,
             checkpoint.covered_assistant_tool_seq as i64,
+            projection_plan,
         ],
     )?;
     if should_cancel() {
@@ -1302,10 +1331,68 @@ where
         summary: checkpoint.summary.clone(),
         estimator_version: checkpoint.estimator_version.clone(),
         expected_previous_id: checkpoint.expected_previous_id,
+        projection_plan: checkpoint.projection_plan.clone(),
+        referenced_summaries: std::collections::BTreeMap::new(),
         created_at: checkpoint.created_at,
     };
+    let mut committed = committed;
+    load_referenced_summaries(&transaction, &mut committed)?;
     transaction.commit()?;
     Ok(ContextCheckpointInstall::Applied(committed))
+}
+
+fn validate_summary_references(
+    conn: &Connection,
+    thread_id: &str,
+    plan: &ProjectionPlan,
+) -> Result<(), ContextCheckpointError> {
+    for fragment in &plan.fragments {
+        if let ProjectionFragment::PreviousSummary { checkpoint_id } = fragment {
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM context_checkpoints WHERE id = ?1 AND thread_id = ?2)",
+                params![checkpoint_id, thread_id],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                return Err(ContextCheckpointError::Invalid);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn load_referenced_summaries(
+    conn: &Connection,
+    checkpoint: &mut ContextCheckpoint,
+) -> rusqlite::Result<()> {
+    let Some(plan) = &checkpoint.projection_plan else {
+        return Ok(());
+    };
+    let mut total = 0usize;
+    for fragment in &plan.fragments {
+        if let ProjectionFragment::PreviousSummary { checkpoint_id } = fragment {
+            if *checkpoint_id >= checkpoint.id {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "invalid summary reference".into(),
+                ));
+            }
+            let summary: String = conn.query_row(
+                "SELECT summary FROM context_checkpoints WHERE id = ?1 AND thread_id = ?2 AND length(CAST(summary AS BLOB)) <= 131072",
+                params![checkpoint_id, checkpoint.thread_id],
+                |row| row.get(0),
+            )?;
+            total = total.saturating_add(summary.len());
+            if total > 1024 * 1024 {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "summary references exceed bounded read".into(),
+                ));
+            }
+            checkpoint
+                .referenced_summaries
+                .insert(*checkpoint_id, summary);
+        }
+    }
+    Ok(())
 }
 
 fn context_settings_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContextSettings> {
@@ -1507,6 +1594,19 @@ fn checkpoint_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContextCheck
         summary: row.get(6)?,
         estimator_version: row.get(7)?,
         expected_previous_id: row.get(8)?,
+        projection_plan: row
+            .get::<_, Option<String>>(13)?
+            .as_deref()
+            .map(ProjectionPlan::decode)
+            .transpose()
+            .map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    13,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?,
+        referenced_summaries: std::collections::BTreeMap::new(),
         created_at: row.get(9)?,
     })
 }

@@ -783,3 +783,6 @@
 
 "ui.pending_authority_changed" = "Queued permissions changed or are missing. Edit and submit the message again."
 "ui.permission_automation_details" = "Task and permission details"
+
+"ui.compact_before_message" = "Compact before this message"
+"ui.compact_from_message" = "Compact from this message"

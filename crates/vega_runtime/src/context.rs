@@ -37,6 +37,7 @@ pub struct ContextBudget {
     output_reserve: u64,
     /// Whether automatic compaction may run before a primary request.
     automatic_compaction: bool,
+    policy_input_limit: u64,
 }
 
 impl ContextBudget {
@@ -57,7 +58,49 @@ impl ContextBudget {
             total_limit,
             output_reserve,
             automatic_compaction,
+            policy_input_limit: total_limit - output_reserve,
         })
+    }
+
+    pub fn with_model_limits(
+        mut self,
+        context_window: Option<u64>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<Self, ContextEstimateError> {
+        if let Some(max_output) = max_output_tokens.filter(|value| *value > 0) {
+            let input_limit = self.input_budget();
+            self.output_reserve = self.output_reserve.min(u64::from(max_output));
+            self.total_limit = input_limit
+                .checked_add(self.output_reserve)
+                .ok_or(ContextEstimateError::Overflow)?;
+        }
+        if let Some(window) = context_window.filter(|value| *value > 0) {
+            self.total_limit = self.total_limit.min(window);
+            if self.output_reserve >= self.total_limit {
+                return Err(ContextEstimateError::InvalidBudget);
+            }
+        }
+        self.policy_input_limit = self.policy_input_limit.min(self.input_budget());
+        Ok(self)
+    }
+
+    pub fn with_policy_input_limit(
+        mut self,
+        input_limit: u64,
+    ) -> Result<Self, ContextEstimateError> {
+        if input_limit == 0 || input_limit > self.input_budget() {
+            return Err(ContextEstimateError::InvalidBudget);
+        }
+        self.policy_input_limit = input_limit;
+        Ok(self)
+    }
+
+    pub fn policy_input_limit(self) -> u64 {
+        self.policy_input_limit
+    }
+
+    pub fn summary_output_reserve(self) -> u64 {
+        self.output_reserve.min(20_000)
     }
 
     /// Total configured context capacity.
@@ -85,20 +128,39 @@ impl ContextBudget {
         self.total_limit - self.output_reserve
     }
 
-    /// Automatic-compaction trigger: `ceil(0.8 * input_budget)`.
     pub fn trigger_tokens(self) -> Result<u64, ContextEstimateError> {
-        ceil_ratio(self.input_budget(), 4, 5)
+        let buffer = floor_ratio(self.policy_input_limit, 1, 5)?.min(13_000);
+        Ok(self.policy_input_limit - buffer)
     }
 
-    /// Target after compaction: `floor(0.6 * input_budget)`.
+    pub fn precompute_tokens(self) -> Result<u64, ContextEstimateError> {
+        Ok(floor_ratio(self.policy_input_limit, 4, 5)?.min(self.trigger_tokens()?))
+    }
+
+    pub fn warning_tokens(self) -> Result<u64, ContextEstimateError> {
+        let threshold = if self.automatic_compaction {
+            self.trigger_tokens()?
+        } else {
+            self.policy_input_limit
+        };
+        Ok(threshold.saturating_sub(20_000))
+    }
+
+    pub fn blocking_tokens(self) -> Result<u64, ContextEstimateError> {
+        let buffer = floor_ratio(self.input_budget(), 1, 20)?.min(3_000);
+        Ok(self.input_budget() - buffer)
+    }
+
     pub fn target_tokens(self) -> Result<u64, ContextEstimateError> {
-        floor_ratio(self.input_budget(), 3, 5)
+        Ok(self
+            .trigger_tokens()?
+            .min(self.blocking_tokens()?)
+            .saturating_sub(1))
     }
 
     /// Classifies one estimate against this budget before a primary request.
     pub fn check(self, estimate: ContextEstimate) -> Result<ContextCheck, ContextEstimateError> {
-        let input_budget = self.input_budget();
-        if estimate.input_tokens > input_budget {
+        if estimate.input_tokens >= self.blocking_tokens()? {
             return Ok(ContextCheck::OverLimit);
         }
         if self.automatic_compaction && estimate.input_tokens >= self.trigger_tokens()? {
@@ -248,9 +310,21 @@ impl fmt::Display for ContextEstimate {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextCompactionTrigger {
+    Threshold,
+    Manual,
+    HardLimit,
+    InputOverflow {
+        token_gap: Option<u64>,
+        deeper: bool,
+    },
+}
+
 /// Request handed to a conversation-owned compaction implementation.
 #[derive(Clone)]
 pub struct ContextCompactionRequest {
+    pub trigger: ContextCompactionTrigger,
     /// System prompt is supplied for bounded summary planning; the hook must
     /// never install it as historical data.
     pub system_prompt: String,
@@ -288,6 +362,7 @@ impl fmt::Debug for ContextCompactionRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ContextCompactionRequest")
+            .field("trigger", &self.trigger)
             .field("message_count", &self.messages.len())
             .field("estimate", &self.estimate)
             .field("budget", &self.budget)
@@ -304,6 +379,59 @@ impl fmt::Debug for ContextCompactionRequest {
             )
             .finish()
     }
+}
+
+pub fn validate_compaction_replay(
+    messages: &[ChatMessage],
+    cold_prefix: usize,
+    user_boundary: Option<usize>,
+    interleaved: bool,
+) -> bool {
+    if cold_prefix == 0 || cold_prefix > messages.len() {
+        return false;
+    }
+    if !interleaved {
+        return true;
+    }
+    let Some(boundary) = user_boundary else {
+        return false;
+    };
+    if boundary < cold_prefix
+        || boundary > messages.len()
+        || (boundary == messages.len() && cold_prefix != messages.len())
+        || messages
+            .get(boundary)
+            .is_some_and(|message| message.role != crate::ChatRole::User)
+    {
+        return false;
+    }
+    let mut pending = std::collections::HashSet::new();
+    for message in &messages[..boundary] {
+        match message.role {
+            crate::ChatRole::Assistant => {
+                if !pending.is_empty() {
+                    return false;
+                }
+                for call in &message.tool_calls {
+                    if !pending.insert(call.id.as_str()) {
+                        return false;
+                    }
+                }
+            }
+            crate::ChatRole::Tool => {
+                let Some(call_id) = message.tool_call_id.as_deref() else {
+                    return false;
+                };
+                if !pending.remove(call_id) {
+                    return false;
+                }
+            }
+            crate::ChatRole::User if !pending.is_empty() => return false,
+            crate::ChatRole::System => return false,
+            crate::ChatRole::User => {}
+        }
+    }
+    pending.is_empty()
 }
 
 /// A validated provider projection returned by a compaction hook.

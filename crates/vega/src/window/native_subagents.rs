@@ -445,20 +445,7 @@ impl VegaWindow {
             },
         )
         .detach();
-        cx.subscribe(
-            &view,
-            |this, stream, request: &ContextCompactionRequested, cx| {
-                this.start_context_compaction(stream.clone(), request, cx);
-            },
-        )
-        .detach();
-        cx.subscribe(
-            &view,
-            |this, stream, request: &ContextCompactionCancelRequested, cx| {
-                this.cancel_context_operation(stream.clone(), request, cx);
-            },
-        )
-        .detach();
+        self.bind_context_compaction(&view, cx);
         cx.subscribe(&view, |this, stream, request, cx| {
             this.review_plan(stream.clone(), request, cx);
         })

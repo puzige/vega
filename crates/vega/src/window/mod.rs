@@ -198,6 +198,10 @@ pub(crate) struct VegaWindow {
 
 impl VegaWindow {
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
+        Self::with_background_services(true, cx)
+    }
+
+    fn with_background_services(start_services: bool, cx: &mut Context<Self>) -> Self {
         cx.on_release(|this, cx| {
             let waiting_threads: Vec<_> = this
                 .agent_controller
@@ -369,8 +373,10 @@ impl VegaWindow {
             deferred_model_refresh: None,
             staged_model_pending: None,
         };
-        window.start_pricing_load(cx);
-        window.start_updater(cx);
+        if start_services {
+            window.start_pricing_load(cx);
+            window.start_updater(cx);
+        }
         window
     }
 
