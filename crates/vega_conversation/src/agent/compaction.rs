@@ -1590,6 +1590,9 @@ impl ConversationCompactionHook<'_> {
                 remove_owned_live_group(&request.messages, &owned_call_ids);
             let request_without_owned_group = normalize_terminal_history_groups(
                 &projected_source,
+                checkpoint
+                    .as_ref()
+                    .map(|checkpoint| checkpoint.covered_through_seq),
                 owner_id,
                 &request_without_owned_group,
             )?;
@@ -2089,10 +2092,17 @@ fn classify_summary_input_overflow(error: &VegaError) -> Option<SummaryInputOver
 
 fn normalize_terminal_history_groups(
     source: &vega_store::context_compaction::ContextSource,
+    minimum_seq: Option<u64>,
     current_owner: &str,
     messages: &[ChatMessage],
 ) -> Result<Vec<ChatMessage>, ContextCompactionFailure> {
     let invalid = || failure(context_error(ContextRuntimeError::SourceChanged), None);
+    let mut owners = source.messages.iter().filter(|message| {
+        message.role == "assistant"
+            && message.id != current_owner
+            && message.status != "streaming"
+            && minimum_seq.is_none_or(|minimum| message.seq as u64 > minimum)
+    });
     let mut projected = Vec::with_capacity(messages.len());
     let mut cursor = 0;
     while cursor < messages.len() {
@@ -2101,33 +2111,11 @@ fn normalize_terminal_history_groups(
             cursor += 1;
             continue;
         }
-        let end = messages[cursor..]
-            .iter()
-            .position(|message| matches!(message.role, ChatRole::User | ChatRole::System))
-            .map_or(messages.len(), |offset| cursor + offset);
-        let group = &messages[cursor..end];
-        cursor = end;
-        let Some(first_call) = group.iter().flat_map(|message| &message.tool_calls).next() else {
-            projected.extend(group.iter().cloned());
-            continue;
-        };
-        let owner = source
-            .tool_calls
-            .iter()
-            .find(|call| call.id == first_call.id)
-            .map(|call| call.message_id.as_str())
-            .ok_or_else(invalid)?;
-        let owner_row = source
-            .messages
-            .iter()
-            .find(|message| {
-                message.id == owner
-                    && message.id != current_owner
-                    && message.role == "assistant"
-                    && matches!(message.status.as_str(), "done" | "interrupted" | "failed")
-            })
-            .ok_or_else(invalid)?;
-        validate_complete_projection(group)?;
+        let owner_row = owners.next().ok_or_else(invalid)?;
+        if !matches!(owner_row.status.as_str(), "done" | "interrupted" | "failed") {
+            return Err(invalid());
+        }
+        let owner = owner_row.id.as_str();
         let mut owned_source = source.clone();
         owned_source.messages.retain(|message| message.id == owner);
         owned_source
@@ -2140,12 +2128,33 @@ fn normalize_terminal_history_groups(
             super::pipeline::history_from_context_source(&owned_source, current_owner, None)
                 .map_err(|_| invalid())?;
         vega_runtime::computer_use::redact_ephemeral_messages(&mut canonical);
+        let mut stored_calls = owned_source.tool_calls.iter().collect::<Vec<_>>();
+        stored_calls.sort_by(|left, right| {
+            left.text_offset_bytes
+                .cmp(&right.text_offset_bytes)
+                .then_with(|| left.seq.cmp(&right.seq))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        if stored_calls.is_empty() {
+            if !durable_messages_equal(&canonical.iter().collect::<Vec<_>>(), &[&messages[cursor]])
+            {
+                return Err(invalid());
+            }
+            projected.extend(canonical);
+            cursor += 1;
+            continue;
+        }
         let mut content = String::new();
         let mut observed_calls = Vec::new();
-        for message in group {
+        let mut observed_results = 0;
+        let mut end = None;
+        for (offset, message) in messages[cursor..].iter().enumerate() {
             match message.role {
                 ChatRole::Assistant => {
-                    if !message.images.is_empty() || message.tool_call_id.is_some() {
+                    if !message.images.is_empty()
+                        || message.tool_call_id.is_some()
+                        || (message.content.is_empty() && message.tool_calls.is_empty())
+                    {
                         return Err(invalid());
                     }
                     content.push_str(&message.content);
@@ -2187,21 +2196,27 @@ fn normalize_terminal_history_groups(
                     if message.without_runtime_metadata() != *expected {
                         return Err(invalid());
                     }
+                    observed_results += 1;
                 }
                 _ => return Err(invalid()),
             }
+            if content.len() > owner_row.content.len()
+                || observed_calls.len() > stored_calls.len()
+                || observed_results > stored_calls.len()
+            {
+                return Err(invalid());
+            }
+            if content.len() == owner_row.content.len()
+                && observed_calls.len() == stored_calls.len()
+                && observed_results == stored_calls.len()
+            {
+                end = Some(cursor + offset + 1);
+                break;
+            }
         }
-        let mut stored_calls = source
-            .tool_calls
-            .iter()
-            .filter(|call| call.message_id == owner)
-            .collect::<Vec<_>>();
-        stored_calls.sort_by(|left, right| {
-            left.text_offset_bytes
-                .cmp(&right.text_offset_bytes)
-                .then_with(|| left.seq.cmp(&right.seq))
-                .then_with(|| left.id.cmp(&right.id))
-        });
+        let end = end.ok_or_else(invalid)?;
+        validate_complete_projection(&messages[cursor..end])?;
+        cursor = end;
         if content != owner_row.content
             || observed_calls
                 != stored_calls
@@ -2219,6 +2234,9 @@ fn normalize_terminal_history_groups(
             )
             .map_err(|_| invalid())?,
         );
+    }
+    if owners.next().is_some() {
+        return Err(invalid());
     }
     Ok(projected)
 }
