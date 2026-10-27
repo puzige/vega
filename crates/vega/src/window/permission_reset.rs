@@ -193,7 +193,6 @@ impl VegaWindow {
                             stream.update(cx, |stream, cx| {
                                 stream.timeout_permission(cx);
                                 stream.cancel_user_questions(cx);
-                                stream.cancel_thread_permission_change(cx);
                             });
                         }
                         this.run_permission_reset(cx);

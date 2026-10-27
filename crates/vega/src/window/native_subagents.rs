@@ -433,13 +433,6 @@ impl VegaWindow {
         .detach();
         cx.subscribe(
             &view,
-            |this, stream, request: &ThreadPermissionConfirmed, cx| {
-                this.confirm_thread_permission(stream.clone(), request, cx);
-            },
-        )
-        .detach();
-        cx.subscribe(
-            &view,
             |this, stream, request: &ThreadPermissionReloadRequested, cx| {
                 this.reload_thread_permission(stream.clone(), request, cx);
             },

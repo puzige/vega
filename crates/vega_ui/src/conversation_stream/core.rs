@@ -230,7 +230,6 @@ impl EventEmitter<crate::cua_onboarding::PreparationRequested> for ConversationS
 impl EventEmitter<ImagePreviewRequested> for ConversationStream {}
 impl EventEmitter<PlanReviewRequested> for ConversationStream {}
 impl EventEmitter<ThreadSettingsRequested> for ConversationStream {}
-impl EventEmitter<ThreadPermissionConfirmed> for ConversationStream {}
 impl EventEmitter<ThreadPermissionReloadRequested> for ConversationStream {}
 impl EventEmitter<ComposerSubmitted> for ConversationStream {}
 impl EventEmitter<super::ordinary_submissions::OrdinaryActionRequested> for ConversationStream {}
@@ -437,7 +436,6 @@ impl ConversationStream {
                 this.context_usage_dismissed = true;
                 cx.notify();
                 this.timeout_permission(cx);
-                this.cancel_thread_permission_change(cx);
                 this.cancel_automation_permission(cx);
             }
         })
@@ -454,7 +452,6 @@ impl ConversationStream {
             {
                 this.cancel_image_import(cx);
                 this.timeout_permission(cx);
-                this.cancel_thread_permission_change(cx);
                 this.cancel_automation_permission(cx);
             }
         })
