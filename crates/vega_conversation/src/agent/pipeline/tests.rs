@@ -1,4 +1,5 @@
 mod bash_output;
+mod bash_readonly;
 mod credentials;
 
 use std::path::PathBuf;

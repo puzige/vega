@@ -1,9 +1,8 @@
 use crate::{BashError, BashErrorCode, ToolError, Tools};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
-use vega_credentials::{CredentialBinding, CredentialBroker, ProxyLease, SecretReader};
+use vega_credentials::{CredentialBinding, SecretReader};
 
 pub struct ToolCredentialPolicy {
     pub(crate) protected_root: PathBuf,
@@ -35,25 +34,20 @@ impl ToolCredentialPolicy {
         })
     }
 
-    pub(crate) async fn start(
-        &self,
-        ca_path: &Path,
-        cancel: CancellationToken,
-    ) -> Result<Option<(ProxyLease, BTreeMap<String, String>)>, BashError> {
-        if self.bindings.is_empty() {
-            return Ok(None);
-        }
+    pub(crate) fn validate_bindings(&self) -> Result<(), BashError> {
         let fail = || BashError::new(BashErrorCode::SandboxUnavailable);
-        let broker =
-            CredentialBroker::new(&self.bindings, self.reader.clone()).map_err(|_| fail())?;
-        let lease = ProxyLease::start(broker, cancel)
-            .await
-            .map_err(|_| fail())?;
-        std::fs::write(ca_path, &lease.ca_pem).map_err(|_| fail())?;
-        let environment = lease
-            .environment(ca_path.to_str().ok_or_else(fail)?)
-            .map_err(|_| fail())?;
-        Ok(Some((lease, environment)))
+        let mut aliases = BTreeSet::new();
+        for binding in &self.bindings {
+            binding.validate().map_err(|_| fail())?;
+            if !aliases.insert(&binding.env) {
+                return Err(fail());
+            }
+            let value = (self.reader)(&binding.key_ref).map_err(|_| fail())?;
+            if value.is_empty() || value.contains(['\r', '\n']) {
+                return Err(fail());
+            }
+        }
+        Ok(())
     }
 }
 

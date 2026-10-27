@@ -22,6 +22,6 @@
 
 ## 状态
 
-按上述规格完成本阶段实现和五项开发回归；尚未运行。回归检查真实 launch preparation/StdCommand 产物及异步内存管道，不启动 native shell、Seatbelt、Broker 或网络。静态核对沿用既有输出收集器去掉末尾换行的契约，不改变生产输出格式。`d8c180346ff75ccab5cac3d9df3479febab39a60` 的非写入者启动/收尾增量审查无发现。其 [run 40426890256](https://github.com/puzige/vega/actions/runs/40426890256) 在测试编译失败：Clippy `121934780675`、Nextest `121934781063`、汇总 `121936244479` 失败；`bash/tests.rs:198,228,236` 的 expect_err 要求 CollectedBashOutput: Debug，实际类型未实现。未发现/执行测试，不能记为通过或 no Rust tests。修正只改测试错误匹配，保留断言、不为测试扩展生产 Debug。
+按上述规格完成本阶段实现和五项开发回归。回归检查真实 launch preparation/StdCommand 产物及异步内存管道，不启动 native shell、Seatbelt、Broker 或网络。静态核对沿用既有输出收集器去掉末尾换行的契约，不改变生产输出格式。`d8c180346ff75ccab5cac3d9df3479febab39a60` 的非写入者启动/收尾增量审查无发现。其 [run 40426890256](https://github.com/puzige/vega/actions/runs/40426890256) 在测试编译失败：Clippy `121934780675`、Nextest `121934781063`、汇总 `121936244479` 失败；`bash/tests.rs:198,228,236` 的 expect_err 要求 CollectedBashOutput: Debug，实际类型未实现。未发现/执行测试，不能记为通过或 no Rust tests。修正只改测试错误匹配，保留断言、不为测试扩展生产 Debug。
 
-主 Agent 后续沿失败结果消费者追踪，另发现 conversation 的精确失败白名单未接新提示。首轮审查未覆盖此遗漏；补丁将错误码输出与白名单绑定同一 canonical formatter，并用真实 Store 工具状态验证终态/恢复接受新错误且拒绝伪造后缀、错误状态/metadata。修正仍须新精确 head 的 Actions 和非写入者增量审查；限制和剩余 D4 工作不变。
+主 Agent 后续沿失败结果消费者追踪，另发现 conversation 的精确失败白名单未接新提示。首轮审查未覆盖此遗漏；补丁将错误码输出与白名单绑定同一 canonical formatter，并用真实 Store 工具状态验证终态/恢复接受新错误且拒绝伪造后缀、错误状态/metadata。修正提交 `d1d0a90eb95416f7459672427f3082c0f53af1ec` 的非写入者增量审查无发现；[run 40428264624](https://github.com/puzige/vega/actions/runs/40428264624) 成功，Clippy `121939370229`、Nextest `121939369847`、汇总 `121940761101` 均成功。实际 84 tests across 21 binaries，84 执行/通过、0 跳过；五项 Bash、两项终态/恢复及两项真实 GPUI 导航均明确通过。该 SHA 保存本阶段原始开发源码；不是最终 no Rust tests head。限制和剩余 D4 工作不变。

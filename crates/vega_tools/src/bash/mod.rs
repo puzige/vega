@@ -22,6 +22,7 @@ mod tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BashLaunchPolicy {
+    ReadOnly,
     WorkspaceWrite,
     FullAccess,
 }
@@ -171,9 +172,25 @@ impl Tools {
                 credential_lease: None,
             });
         }
-        let sandbox = SandboxConfig::new(&self.root)?;
-        sandbox.preflight(temp_root)?;
-        let self_test = sandbox.self_test(temp_root).await;
+        if let Some(credentials) = &self.credential_policy {
+            credentials.validate_bindings()?;
+        }
+        let sandbox = SandboxConfig::new(
+            &self.root,
+            policy,
+            temp_root,
+            self.credential_policy
+                .as_ref()
+                .map(|policy| policy.protected_root.as_path()),
+        )?;
+        self.validate_bash_launch(prepared, cancel)?;
+        let self_test = sandbox
+            .self_test(
+                temp_root,
+                cancel,
+                Duration::from_millis(prepared.timeout_ms),
+            )
+            .await;
         if let Err(error) = self_test.result {
             return Err(BashLaunchFailure {
                 error,
@@ -181,33 +198,9 @@ impl Tools {
             });
         }
         self.validate_bash_launch(prepared, cancel)?;
-        let credential_lease = match &self.credential_policy {
-            Some(policy) => {
-                policy
-                    .start(&temp_root.path().join("credential-ca.pem"), cancel.clone())
-                    .await?
-            }
-            None => None,
-        };
-        let credential_context = self.credential_policy.as_ref().map(|policy| {
-            let mut environment = crate::credentials::controlled_environment(temp_root.path());
-            if let Some((_, values)) = &credential_lease {
-                environment.extend(values.clone());
-            }
-            crate::sandbox::ShellCredentialContext {
-                protected_root: policy.protected_root.clone(),
-                proxy_port: credential_lease.as_ref().map(|(lease, _)| lease.port),
-                environment,
-            }
-        });
-        self.validate_bash_launch(prepared, cancel)?;
         Ok(BashLaunch {
-            command: sandbox.shell_command(
-                &prepared.command,
-                temp_root,
-                credential_context.as_ref(),
-            )?,
-            credential_lease: credential_lease.map(|(lease, _)| lease),
+            command: sandbox.shell_command(&prepared.command, temp_root)?,
+            credential_lease: None,
         })
     }
 

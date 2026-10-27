@@ -1,3 +1,5 @@
+mod offline;
+
 use super::*;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -120,6 +122,7 @@ async fn launch_preparation_rejects_wrong_instances_roots_and_cancellation_befor
         .prepare_bash_json(r#"{"command":"pwd","timeout":null}"#)
         .expect("prepared");
     for policy in [
+        BashLaunchPolicy::ReadOnly,
         BashLaunchPolicy::WorkspaceWrite,
         BashLaunchPolicy::FullAccess,
     ] {

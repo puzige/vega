@@ -2,6 +2,9 @@ use super::*;
 use mcp_registry::FrozenMcpTool;
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
+mod tests;
+
 const MCP_ARGUMENT_LIMIT: usize = 256 * 1024;
 const MCP_RESULT_LIMIT: usize = 256 * 1024;
 pub const GREP_INVALID_INPUT_OUTPUT: &str = "Tool error: invalid grep input. Use {\"pattern\":\"TODO\",\"path\":null}. pattern must be a valid regular expression; path must be a readable file or directory, or null to search the project root. Other fields are unsupported.";
@@ -539,18 +542,15 @@ pub(crate) fn prepare_runtime_call(
                 }
             }
         }
-        "bash" if config.run_mode != RuntimeRunMode::Execute => {
-            Ok(PreparedRuntimeCall::RunModeMutation(raw_call))
-        }
         "bash" => match base_tools.prepare_bash_json(&raw_call.input_json) {
             Ok(prepared) => Ok(PreparedRuntimeCall::Bash {
                 call: raw_call,
                 tools: base_tools.clone(),
                 prepared,
-                policy: match config.permission_mode {
-                    RuntimePermissionMode::FullAccess => vega_tools::BashLaunchPolicy::FullAccess,
-                    _ => vega_tools::BashLaunchPolicy::WorkspaceWrite,
-                },
+                policy: crate::permission::bash_launch_policy(
+                    config.run_mode,
+                    config.permission_mode,
+                ),
             }),
             Err(_) => {
                 let safe_json = InvalidBashAudit::from_raw(&raw_call.input_json)
@@ -1155,6 +1155,32 @@ pub(crate) async fn authorize_call(
                 }
                 RuntimeCapabilityOutcome::ExecuteEligible(_) => Err(safe_permission_error()),
             }
+        }
+        PreparedRuntimeCall::Bash {
+            prepared: bash,
+            policy: vega_tools::BashLaunchPolicy::ReadOnly,
+            ..
+        } => {
+            if crate::permission::bash_launch_policy(config.run_mode, config.permission_mode)
+                != vega_tools::BashLaunchPolicy::ReadOnly
+            {
+                return Err(safe_permission_error());
+            }
+            let target = prepared
+                .permission_target()
+                .ok_or_else(safe_permission_error)?;
+            let danger = vega_tools::danger::detect_danger(bash.command())
+                .map_err(|_| safe_permission_error())?
+                .map(|danger| RuntimeDangerFacts {
+                    rule_id: danger.rule_id.to_string(),
+                    reason: danger.reason.to_string(),
+                });
+            if cancel.is_cancelled() && danger.is_none() {
+                return Ok(cancelled_permission(prepared.call()));
+            }
+            let outcome = crate::permission::decide_readonly_bash(target.clone(), danger)
+                .map_err(|_| safe_permission_error())?;
+            permission_outcome(target, outcome)
         }
         PreparedRuntimeCall::Write { .. }
         | PreparedRuntimeCall::Edit { .. }
@@ -2259,14 +2285,14 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
                 input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string"},"edits":{"type":"array","minItems":1,"items":{"type":"object","properties":{"oldText":{"type":"string","minLength":1},"newText":{"type":"string"}},"required":["oldText","newText"],"additionalProperties":false}}},"required":["path","edits"],"additionalProperties":false}),
                 strict: true,
             },
-            ToolDefinition {
-                name: "bash".into(),
-                description: "Run a non-empty command at the project root after approval, sandboxed unless Full access. timeout is a positive integer in seconds; null uses 120 seconds. A cd affects only this command. Filter large output and combine independent queries when useful; inspect omitted detail without automatically replaying commands with side effects. Example: {\"command\":\"pwd\",\"timeout\":null}.".into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"command":{"type":"string","minLength":1},"timeout":{"type":["integer","null"],"minimum":1,"maximum":18446744073709551u64}},"required":["command","timeout"],"additionalProperties":false}),
-                strict: true,
-            },
         ]);
     }
+    definitions.push(ToolDefinition {
+        name: "bash".into(),
+        description: "Run a non-empty command at the project root. Ask/Plan and ReadOnly use a read-only sandbox; Confirm/Auto permit workspace writes after approval. Sandboxed commands cannot use the network or user shell startup files. Full access uses current-user permissions without sandbox restrictions. timeout is positive seconds; null uses 120 seconds. A cd affects only this command. Filter large output; do not automatically retry side effects. Example: {\"command\":\"pwd\",\"timeout\":null}.".into(),
+        input_schema: serde_json::json!({"type":"object","properties":{"command":{"type":"string","minLength":1},"timeout":{"type":["integer","null"],"minimum":1,"maximum":18446744073709551u64}},"required":["command","timeout"],"additionalProperties":false}),
+        strict: true,
+    });
     definitions
 }
 

@@ -1,5 +1,6 @@
 //! macOS Seatbelt launch boundary and pre-spawn hardlink scan.
 
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Read;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
@@ -7,50 +8,84 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Stdio};
 
-use tokio::process::Command;
+use std::time::Duration;
+
+use tokio::process::{Child, Command};
+use tokio_util::sync::CancellationToken;
+
+use crate::bash::BashLaunchPolicy;
 
 use crate::error::{BashError, BashErrorCode};
 use crate::fence::discover_git_dir;
 
+#[cfg(test)]
+mod tests;
+
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 const SHELL: &str = "/bin/zsh";
 const TEMP_BASE: &str = "/private/tmp";
-const PROFILE: &str = r#"(version 1)
-(allow default)
-(deny file-write*)
-(allow file-write* (literal "/dev/null"))
-(allow file-write* (subpath (param "PROJECT_ROOT")))
-(allow file-write* (subpath (param "TEMP_ROOT")))
-(deny file-write* (subpath (param "GIT_ENTRY")))
-(deny file-write* (subpath (param "GIT_DIR")))
-(allow network*)"#;
+const SELF_TEST_LIMIT: Duration = Duration::from_secs(2);
+const BASE_PROFILE: &str = r#"(version 1)
+(deny default)
+(allow process-exec)
+(allow process-fork)
+(allow signal (target same-sandbox))
+(allow file-read*)
+(allow process-info-pidinfo (target self))
+(allow process-info-setcontrol (target self))
+(allow file-write-data (require-all (path "/dev/null") (vnode-type CHARACTER-DEVICE)))
+(allow sysctl-read
+  (sysctl-name "hw.activecpu")
+  (sysctl-name "hw.byteorder")
+  (sysctl-name "hw.cachelinesize_compat")
+  (sysctl-name "hw.cpufamily")
+  (sysctl-name "hw.cputype")
+  (sysctl-name "hw.logicalcpu")
+  (sysctl-name "hw.logicalcpu_max")
+  (sysctl-name "hw.machine")
+  (sysctl-name "hw.model")
+  (sysctl-name "hw.memsize")
+  (sysctl-name "hw.ncpu")
+  (sysctl-name "hw.pagesize")
+  (sysctl-name "hw.pagesize_compat")
+  (sysctl-name "hw.physicalcpu")
+  (sysctl-name "hw.physicalcpu_max")
+  (sysctl-name "kern.argmax")
+  (sysctl-name "kern.hostname")
+  (sysctl-name "kern.maxfilesperproc")
+  (sysctl-name "kern.osproductversion")
+  (sysctl-name "kern.osrelease")
+  (sysctl-name "kern.ostype")
+  (sysctl-name "kern.osvariant_status")
+  (sysctl-name "kern.osversion")
+  (sysctl-name "kern.usrstack64")
+  (sysctl-name "kern.version")
+  (sysctl-name "sysctl.proc_cputype"))
+(allow sysctl-write (sysctl-name "kern.grade_cputype"))
+(allow mach-lookup (global-name "com.apple.system.opendirectoryd.libinfo"))"#;
 
-pub(crate) struct ShellCredentialContext {
-    pub(crate) protected_root: PathBuf,
-    pub(crate) proxy_port: Option<u16>,
-    pub(crate) environment: std::collections::BTreeMap<String, String>,
-}
-
-fn protected_profile(
-    base: &str,
-    credentials: Option<&ShellCredentialContext>,
+fn restricted_profile(
+    policy: BashLaunchPolicy,
+    protected_root: Option<&Path>,
 ) -> Result<String, BashError> {
-    let Some(credentials) = credentials else {
-        return Ok(base.into());
-    };
-    let root = credentials
-        .protected_root
-        .to_str()
-        .ok_or_else(|| BashError::new(BashErrorCode::SandboxUnavailable))?;
-    if root.contains(['"', '\\', '\n', '\r']) {
-        return Err(BashError::new(BashErrorCode::SandboxUnavailable));
+    let mut profile = BASE_PROFILE.to_owned();
+    match policy {
+        BashLaunchPolicy::ReadOnly => {},
+        BashLaunchPolicy::WorkspaceWrite => profile.push_str(
+            "\n(allow file-write* (subpath (param \"PROJECT_ROOT\")))\n(allow file-write* (subpath (param \"TEMP_ROOT\")))",
+        ),
+        BashLaunchPolicy::FullAccess => return Err(BashError::new(BashErrorCode::SandboxUnavailable)),
     }
-    let mut profile = format!(
-        "{base}\n(deny file-read* file-write* (subpath \"{root}\"))\n(deny process-info*)\n(allow process-info-pidinfo (target self))\n(allow process-info-setcontrol (target self))\n(deny mach-lookup (global-name \"com.apple.taskgated\"))"
+    profile.push_str(
+        "\n(deny file-write* (subpath (param \"GIT_ENTRY\")))\n(deny file-write* (subpath (param \"GIT_DIR\")))\n(deny mach-lookup (global-name \"com.apple.taskgated\"))",
     );
-    if let Some(port) = credentials.proxy_port {
+    if let Some(root) = protected_root {
+        let root = utf8_param(root)?;
+        if root.contains(['"', '\\', '\n', '\r', '\0']) {
+            return Err(BashError::new(BashErrorCode::SandboxUnavailable));
+        }
         profile.push_str(&format!(
-            "\n(deny network*)\n(allow network-outbound (remote tcp \"127.0.0.1:{port}\"))"
+            "\n(deny file-read* file-write* (subpath \"{root}\"))"
         ));
     }
     Ok(profile)
@@ -68,10 +103,20 @@ pub(crate) struct SandboxConfig {
     git_entry_param: String,
     git_dir: PathBuf,
     git_dir_param: String,
+    profile: String,
+    temporary_path: PathBuf,
+    environment: BTreeMap<String, String>,
 }
 
 impl SandboxConfig {
-    pub(crate) fn new(project_root: &Path) -> Result<Self, BashError> {
+    pub(crate) fn new(
+        project_root: &Path,
+        policy: BashLaunchPolicy,
+        temp_root: &TempRoot,
+        protected_root: Option<&Path>,
+    ) -> Result<Self, BashError> {
+        let profile = restricted_profile(policy, protected_root)?;
+        temp_root.validate_identity()?;
         let metadata = fs::symlink_metadata(SANDBOX_EXEC)
             .map_err(|_| BashError::new(BashErrorCode::SandboxUnavailable))?;
         if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
@@ -91,26 +136,51 @@ impl SandboxConfig {
             git_entry_param,
             git_dir,
             git_dir_param,
+            profile,
+            temporary_path: temp_root.path().to_path_buf(),
+            environment: crate::credentials::controlled_environment(temp_root.path()),
         })
     }
 
     pub(crate) fn preflight(&self, temp_root: &TempRoot) -> Result<(), BashError> {
+        if temp_root.path() != self.temporary_path {
+            return Err(BashError::new(BashErrorCode::ScopeMismatch));
+        }
         scan_hardlinks(&self.project_root, Some((&self.git_entry, &self.git_dir)))?;
         temp_root.validate_identity()?;
         scan_hardlinks(temp_root.path(), None)?;
         temp_root.validate_identity()
     }
 
-    pub(crate) async fn self_test(&self, temp_root: &TempRoot) -> SandboxSelfTest {
-        let mut command = self.command(PROFILE, temp_root);
-        command.arg("--").arg("/usr/bin/true");
-        command.stdin(Stdio::null());
-        command.stdout(Stdio::null());
-        command.stderr(Stdio::null());
-        command.current_dir(&self.project_root);
-        command.process_group(0);
-
+    pub(crate) async fn self_test(
+        &self,
+        temp_root: &TempRoot,
+        cancel: &CancellationToken,
+        command_timeout: Duration,
+    ) -> SandboxSelfTest {
+        if cancel.is_cancelled() {
+            return SandboxSelfTest {
+                result: Err(BashError::new(BashErrorCode::Cancelled)),
+                cleanup_safe: true,
+            };
+        }
+        let command = match self.self_test_command(temp_root) {
+            Ok(command) => command,
+            Err(error) => {
+                return SandboxSelfTest {
+                    result: Err(error),
+                    cleanup_safe: true,
+                };
+            }
+        };
+        if cancel.is_cancelled() {
+            return SandboxSelfTest {
+                result: Err(BashError::new(BashErrorCode::Cancelled)),
+                cleanup_safe: true,
+            };
+        }
         let mut command = Command::from(command);
+        command.kill_on_drop(true);
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(_) => {
@@ -120,41 +190,55 @@ impl SandboxConfig {
                 };
             }
         };
-        match child.wait().await {
-            Ok(status) if status.success() => SandboxSelfTest {
-                result: Ok(()),
-                cleanup_safe: true,
+        tokio::select! {
+            status = child.wait() => match status {
+                Ok(status) => SandboxSelfTest {
+                    result: if status.success() { Ok(()) } else { Err(BashError::new(BashErrorCode::SandboxUnavailable)) },
+                    cleanup_safe: true,
+                },
+                Err(_) => {
+                    let _ = stop_self_test(&mut child).await;
+                    SandboxSelfTest {
+                        result: Err(BashError::new(BashErrorCode::ProcessControlFailed)),
+                        cleanup_safe: false,
+                    }
+                },
             },
-            Ok(_) => SandboxSelfTest {
-                result: Err(BashError::new(BashErrorCode::SandboxUnavailable)),
-                cleanup_safe: true,
+            _ = cancel.cancelled() => SandboxSelfTest {
+                result: Err(BashError::new(BashErrorCode::Cancelled)),
+                cleanup_safe: stop_self_test(&mut child).await,
             },
-            Err(_) => SandboxSelfTest {
+            _ = tokio::time::sleep(command_timeout.min(SELF_TEST_LIMIT)) => SandboxSelfTest {
                 result: Err(BashError::new(BashErrorCode::SandboxUnavailable)),
-                cleanup_safe: false,
+                cleanup_safe: stop_self_test(&mut child).await,
             },
         }
+    }
+
+    fn self_test_command(&self, temp_root: &TempRoot) -> Result<StdCommand, BashError> {
+        self.preflight(temp_root)?;
+        let mut command = self.command(temp_root);
+        command.arg("--").arg("/usr/bin/true");
+        command.stdin(Stdio::null());
+        command.stdout(Stdio::null());
+        command.stderr(Stdio::null());
+        command.current_dir(&self.project_root);
+        command.process_group(0);
+        Ok(command)
     }
 
     pub(crate) fn shell_command(
         &self,
         command_text: &str,
         temp_root: &TempRoot,
-        credentials: Option<&ShellCredentialContext>,
     ) -> Result<StdCommand, BashError> {
-        let profile = protected_profile(PROFILE, credentials)?;
-        let mut command = self.command(&profile, temp_root);
+        self.preflight(temp_root)?;
+        let mut command = self.command(temp_root);
         command.arg("--").arg(SHELL);
-        shell_command(
-            command,
-            &self.project_root,
-            command_text,
-            temp_root,
-            credentials,
-        )
+        shell_command(command, &self.project_root, command_text, temp_root, "-fc")
     }
 
-    fn command(&self, profile: &str, temp_root: &TempRoot) -> StdCommand {
+    fn command(&self, temp_root: &TempRoot) -> StdCommand {
         let mut command = StdCommand::new(SANDBOX_EXEC);
         command
             .arg("-D")
@@ -166,13 +250,20 @@ impl SandboxConfig {
             .arg("-D")
             .arg(format!("GIT_DIR={}", self.git_dir_param))
             .arg("-p")
-            .arg(profile)
-            .env("TMPDIR", temp_root.param())
-            .env("TMP", temp_root.param())
-            .env("TEMP", temp_root.param())
-            .env("TEMPDIR", temp_root.param());
+            .arg(&self.profile)
+            .env_clear()
+            .envs(&self.environment);
         command
     }
+}
+
+async fn stop_self_test(child: &mut Child) -> bool {
+    let killed = child.start_kill().is_ok();
+    let reaped = matches!(
+        tokio::time::timeout(SELF_TEST_LIMIT, child.wait()).await,
+        Ok(Ok(_))
+    );
+    killed && reaped
 }
 
 pub(crate) fn full_access_shell_command(
@@ -185,7 +276,7 @@ pub(crate) fn full_access_shell_command(
         project_root,
         command_text,
         temp_root,
-        None,
+        "-lc",
     )
 }
 
@@ -194,20 +285,11 @@ fn shell_command(
     project_root: &Path,
     command_text: &str,
     temp_root: &TempRoot,
-    credentials: Option<&ShellCredentialContext>,
+    shell_flag: &str,
 ) -> Result<StdCommand, BashError> {
     temp_root.validate_identity()?;
-    if let Some(credentials) = credentials.filter(|context| context.proxy_port.is_some()) {
-        command.env_clear().envs(&credentials.environment);
-    }
     command
-        .arg(
-            if credentials.is_some_and(|context| context.proxy_port.is_some()) {
-                "-fc"
-            } else {
-                "-lc"
-            },
-        )
+        .arg(shell_flag)
         .arg(format!("exec 2>&1\n{command_text}"))
         .current_dir(project_root)
         .env("TMPDIR", temp_root.param())

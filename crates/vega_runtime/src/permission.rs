@@ -112,6 +112,7 @@ pub enum RuntimeApprovalDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeApprovalSource {
     ComputerUse,
+    SandboxReadOnly,
     /// Explicit dangerous-command decision.
     Danger,
     /// Read-only permission policy.
@@ -345,6 +346,58 @@ pub fn decide_execute_permission(
         RuntimePermissionMode::ReadOnly => {
             Ok(rejected(RuntimeApprovalSource::ReadOnly, None, None, false))
         }
+    }
+}
+
+pub(crate) fn bash_launch_policy(
+    run_mode: RuntimeRunMode,
+    permission_mode: RuntimePermissionMode,
+) -> vega_tools::BashLaunchPolicy {
+    match (run_mode, permission_mode) {
+        (RuntimeRunMode::Execute, RuntimePermissionMode::FullAccess) => {
+            vega_tools::BashLaunchPolicy::FullAccess
+        }
+        (RuntimeRunMode::Execute, RuntimePermissionMode::Confirm | RuntimePermissionMode::Auto) => {
+            vega_tools::BashLaunchPolicy::WorkspaceWrite
+        }
+        _ => vega_tools::BashLaunchPolicy::ReadOnly,
+    }
+}
+
+pub(crate) fn decide_readonly_bash(
+    target: RuntimePermissionTarget,
+    danger: Option<RuntimeDangerFacts>,
+) -> Result<RuntimePermissionOutcome, RuntimePermissionError> {
+    let facts = RuntimeExecutePermission {
+        permission_mode: RuntimePermissionMode::ReadOnly,
+        target,
+        danger,
+        exact_rule_matches: false,
+        danger_response: None,
+        ordinary_response: None,
+    };
+    validate_facts(&facts)?;
+    if facts.target.tool != RuntimeMutatingTool::Bash {
+        return Err(RuntimePermissionError::InvalidTarget);
+    }
+    match facts.danger {
+        Some(danger) => Ok(rejected(
+            RuntimeApprovalSource::SandboxReadOnly,
+            None,
+            Some(RuntimeDangerAudit {
+                rule_id: danger.rule_id,
+                decision: RuntimeApprovalDecision::Deny,
+                note: None,
+            }),
+            false,
+        )),
+        None => Ok(approved(
+            RuntimeApprovalDecision::Once,
+            RuntimeApprovalSource::SandboxReadOnly,
+            None,
+            None,
+            false,
+        )),
     }
 }
 

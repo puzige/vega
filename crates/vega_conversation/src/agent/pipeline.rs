@@ -2300,6 +2300,12 @@ pub(crate) fn bash_danger_audit_matches(input_json: &str, approval: &ApprovalAud
         ApprovalSource::Danger => {
             approval.decision == audit.decision && approval.note == audit.note
         }
+        ApprovalSource::SandboxReadOnly => {
+            approval.decision == Approval::Deny
+                && approval.note.is_none()
+                && audit.decision == Approval::Deny
+                && audit.note.is_none()
+        }
         ApprovalSource::ReadOnly => {
             approval.decision == Approval::Deny
                 && approval.note.is_none()
@@ -2479,7 +2485,8 @@ pub(crate) fn approval_source_matches(
         "bash" => match status {
             RuntimeToolStatus::Rejected => matches!(
                 source,
-                ApprovalSource::RunMode
+                ApprovalSource::SandboxReadOnly
+                    | ApprovalSource::RunMode
                     | ApprovalSource::Validation
                     | ApprovalSource::Danger
                     | ApprovalSource::ReadOnly
@@ -2497,6 +2504,7 @@ pub(crate) fn approval_source_matches(
                     | ApprovalSource::Auto
                     | ApprovalSource::FullAccess
                     | ApprovalSource::Danger
+                    | ApprovalSource::SandboxReadOnly
                     | ApprovalSource::Legacy
             ),
         },
