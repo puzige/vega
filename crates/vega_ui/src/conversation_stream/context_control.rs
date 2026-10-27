@@ -1,4 +1,4 @@
-use super::context_usage::ContextUsageSource;
+use super::context_usage::{NextRequestEstimate, NextRequestSource};
 use super::*;
 use vega_conversation::types::{
     ContextAccountingRecord, ContextAccountingStage, ContextCompactionFailureCode as Failure,
@@ -11,13 +11,19 @@ const LOAD_ERROR: &str = "ui.could_not_load_context_information_try_again_later"
 pub struct ContextUsageProjection {
     model_input_limit: Option<u64>,
     estimated_tokens: Option<u64>,
+    last_call_total: Option<u64>,
 }
 
 impl ContextUsageProjection {
-    pub fn new(model_input_limit: Option<u64>, estimated_tokens: Option<u64>) -> Self {
+    pub fn new(
+        model_input_limit: Option<u64>,
+        estimated_tokens: Option<u64>,
+        last_call_total: Option<u64>,
+    ) -> Self {
         Self {
             model_input_limit,
             estimated_tokens,
+            last_call_total,
         }
     }
 }
@@ -34,13 +40,12 @@ pub(crate) struct ContextControl {
     automatic: bool,
     settings: Option<ContextSettings>,
     model_input_limit: Option<u64>,
-    estimate: Option<u64>,
-    usage_source: ContextUsageSource,
-    latest_call_total: Option<u64>,
+    last_call_total: Option<u64>,
+    next_request: Option<NextRequestEstimate>,
     live_call: Option<PrimaryContextCall>,
     live_accounting: Option<(String, ContextAccountingRecord)>,
     compactable: bool,
-    next_request: u64,
+    next_operation_id: u64,
     retired_through: u64,
     save_pending: Option<u64>,
     saving_values: Option<(String, String, bool)>,
@@ -67,13 +72,12 @@ impl ContextControl {
             automatic: false,
             settings: None,
             model_input_limit: None,
-            estimate: None,
-            usage_source: ContextUsageSource::EstimatedInput,
-            latest_call_total: None,
+            last_call_total: None,
+            next_request: None,
             live_call: None,
             live_accounting: None,
             compactable: false,
-            next_request: 0,
+            next_operation_id: 0,
             retired_through: 0,
             save_pending: None,
             saving_values: None,
@@ -94,22 +98,18 @@ impl ContextControl {
 }
 
 impl ConversationStream {
-    pub(crate) fn context_usage_source(&self) -> (Option<u64>, Option<u64>) {
-        (
-            self.context_control.estimate,
+    pub(crate) fn context_usage_display(&self) -> context_usage::ContextUsageDisplay {
+        context_usage::ContextUsageDisplay::new(
+            self.context_control.last_call_total,
             self.context_control.model_input_limit,
+            self.context_control.next_request,
         )
     }
 
-    pub(crate) fn context_usage_display(&self) -> context_usage::ContextUsageDisplay {
-        let (tokens, limit) = self.context_usage_source();
-        context_usage::ContextUsageDisplay::new(tokens, limit, self.context_control.usage_source)
-    }
-
     pub(crate) fn reset_context_control(&mut self, cx: &mut Context<Self>) {
-        let next = self.context_control.next_request;
+        let next = self.context_control.next_operation_id;
         self.context_control = ContextControl::new(cx);
-        self.context_control.next_request = next;
+        self.context_control.next_operation_id = next;
         self.context_control.retired_through = next;
         self.context_usage_trigger_hovered = false;
         self.context_usage_tooltip_hovered = false;
@@ -156,8 +156,8 @@ impl ConversationStream {
     }
 
     pub fn reserve_context_operation_id(&mut self, _cx: &mut Context<Self>) -> Option<u64> {
-        let id = self.context_control.next_request.checked_add(1)?;
-        self.context_control.next_request = id;
+        let id = self.context_control.next_operation_id.checked_add(1)?;
+        self.context_control.next_operation_id = id;
         Some(id)
     }
 
@@ -185,10 +185,15 @@ impl ConversationStream {
             && self.context_control.reserve.read(cx).text().is_empty();
         self.context_control.settings = settings;
         self.context_control.model_input_limit = usage.model_input_limit;
-        if self.context_control.live_accounting.is_none()
-            && self.context_control.usage_source == ContextUsageSource::EstimatedInput
-        {
-            self.context_control.estimate = usage.estimated_tokens;
+        if self.context_control.last_call_total.is_none() {
+            self.context_control.last_call_total = usage.last_call_total;
+        }
+        if self.context_control.live_accounting.is_none() {
+            self.context_control.next_request =
+                usage.estimated_tokens.map(|tokens| NextRequestEstimate {
+                    tokens,
+                    source: NextRequestSource::Estimated,
+                });
         }
         self.context_control.compactable = compactable;
         if self.context_control.error == Some(LOAD_ERROR) {
@@ -272,8 +277,10 @@ impl ConversationStream {
         {
             return false;
         }
-        self.context_control.next_request =
-            self.context_control.next_request.max(record.generation);
+        self.context_control.next_operation_id = self
+            .context_control
+            .next_operation_id
+            .max(record.generation);
         let through = if record.status == Status::Compacting {
             record.generation.saturating_sub(1)
         } else {
@@ -292,10 +299,12 @@ impl ConversationStream {
             cx.notify();
         }
         if self.context_control.live_accounting.is_none()
-            && self.context_control.usage_source == ContextUsageSource::EstimatedInput
+            && let Some(estimated) = record.estimated_tokens
         {
-            self.context_control.estimate =
-                record.estimated_tokens.or(self.context_control.estimate);
+            self.context_control.next_request = Some(NextRequestEstimate {
+                tokens: estimated,
+                source: NextRequestSource::Estimated,
+            });
         }
         if record.status != Status::Compacting {
             self.context_control.compact_pending = None;
@@ -430,14 +439,18 @@ impl ConversationStream {
             });
         if new_boundary {
             self.context_control.live_call = None;
-            if record.stage == ContextAccountingStage::PostSummaryTarget {
-                self.context_control.latest_call_total = None;
-            }
         }
-        if new_boundary || self.context_control.usage_source == ContextUsageSource::EstimatedInput {
-            self.context_control.estimate = Some(record.predicted_input);
-            self.context_control.usage_source = ContextUsageSource::EstimatedInput;
-        }
+        self.context_control.next_request = Some(NextRequestEstimate {
+            tokens: record.predicted_input,
+            source: match record.source {
+                vega_conversation::types::ContextAccountingSource::UsageAnchored => {
+                    NextRequestSource::UsageAnchored
+                }
+                vega_conversation::types::ContextAccountingSource::Estimated => {
+                    NextRequestSource::Estimated
+                }
+            },
+        });
         // The record carries the runtime's own per-run input budget, so the
         // ring has a real denominator during the run instead of only after the
         // post-run projection refresh.
@@ -495,31 +508,20 @@ impl ConversationStream {
         }
         let total = call.total.map_or(total, |old| old.max(total));
         call.total = Some(total);
-        self.context_control.latest_call_total = Some(total);
-        self.context_control.estimate = Some(total);
-        self.context_control.usage_source = ContextUsageSource::LastCallTotal;
+        self.context_control.last_call_total = Some(total);
         cx.notify();
         true
     }
 
     pub(crate) fn reset_live_context_usage(&mut self) {
-        let had_usage = self.context_control.latest_call_total.take().is_some();
-        self.clear_live_context_accounting();
-        if had_usage {
-            self.context_control.estimate = None;
-            self.context_control.usage_source = ContextUsageSource::EstimatedInput;
-        }
+        self.context_control.live_call = None;
     }
 
     pub(crate) fn clear_live_context_accounting(&mut self) {
         self.context_control.live_call = None;
-        let had_accounting = self.context_control.live_accounting.take().is_some();
-        if let Some(total) = self.context_control.latest_call_total {
-            self.context_control.estimate = Some(total);
-            self.context_control.usage_source = ContextUsageSource::LastCallTotal;
-        } else if had_accounting {
-            self.context_control.estimate = None;
-            self.context_control.usage_source = ContextUsageSource::EstimatedInput;
+        if self.context_control.live_accounting.take().is_some()
+            && self.context_control.last_call_total.is_none()
+        {
             self.context_usage_trigger_hovered = false;
             self.context_usage_tooltip_hovered = false;
         }

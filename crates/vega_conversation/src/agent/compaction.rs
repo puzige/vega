@@ -397,6 +397,9 @@ pub fn read_context_projection_with_provider(
     });
     let unknown_usage = has_unknown_usage_for_thread(&transaction, thread_id)
         .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
+    let last_call_total =
+        vega_store::token_usage::latest_primary_call_total(&transaction, thread_id)
+            .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
     transaction
         .commit()
         .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
@@ -404,6 +407,7 @@ pub fn read_context_projection_with_provider(
         settings,
         model_input_limit,
         estimated_tokens: Some(estimate.input_tokens),
+        last_call_total,
         compactable,
         last_status: status,
         last_status_message_id,
