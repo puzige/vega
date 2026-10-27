@@ -497,7 +497,7 @@ impl ConversationStream {
         if self.model_selection_pending.is_some() || self.permission_change_pending() {
             return;
         }
-        if mode != self.thread.permission_mode || mode == PermissionMode::FullAccess {
+        if mode != self.thread.permission_mode || self.full_access_needs_confirmation() {
             cx.emit(ThreadSettingsRequested {
                 thread_id: self.thread.id.clone(),
                 mode: None,

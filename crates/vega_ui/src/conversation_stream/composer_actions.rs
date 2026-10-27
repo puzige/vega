@@ -28,8 +28,8 @@ fn mode_command(mode: ThreadMode) -> &'static str {
 pub(crate) fn permission_label(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::ReadOnly => vega_i18n::t("ui.read_only"),
-        PermissionMode::Confirm => vega_i18n::t("ui.confirm"),
-        PermissionMode::Auto => vega_i18n::t("ui.auto"),
+        PermissionMode::Confirm => vega_i18n::t("ui.permission_ask_for_approval"),
+        PermissionMode::Auto => vega_i18n::t("ui.permission_approve_for_me"),
         PermissionMode::FullAccess => vega_i18n::t("ui.full_access"),
     }
 }
@@ -39,9 +39,7 @@ pub(crate) fn permission_description(mode: PermissionMode) -> &'static str {
         PermissionMode::ReadOnly => vega_i18n::t("ui.permission_description_readonly"),
         PermissionMode::Confirm => vega_i18n::t("ui.permission_description_confirm"),
         PermissionMode::Auto => vega_i18n::t("ui.permission_description_auto"),
-        PermissionMode::FullAccess => {
-            vega_i18n::t("ui.no_sandbox_dangerous_actions_still_require_confirmation")
-        }
+        PermissionMode::FullAccess => vega_i18n::t("ui.permission_description_full_access"),
     }
 }
 

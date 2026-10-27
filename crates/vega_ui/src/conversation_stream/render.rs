@@ -490,12 +490,7 @@ impl ConversationStream {
     fn render_permission_status(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let mode = self.thread.permission_mode;
-        let needs_authorization = mode == PermissionMode::FullAccess
-            && self
-                .thread
-                .full_access_grant
-                .as_ref()
-                .is_none_or(|grant| !grant.is_valid());
+        let needs_authorization = self.full_access_needs_confirmation();
         let changed = self
             .permission_editor
             .active_mode
@@ -682,11 +677,7 @@ impl ConversationStream {
                                 div()
                                     .text_size(px(Typography::SIDEBAR))
                                     .text_color(ink)
-                                    .child(if selected && mode == PermissionMode::FullAccess {
-                                        vega_i18n::t("ui.permission_reauthorize_full_access")
-                                    } else {
-                                        permission_label(mode)
-                                    }),
+                                    .child(permission_label(mode)),
                             )
                             .child(
                                 div()
