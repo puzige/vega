@@ -89,10 +89,30 @@ impl Render for VegaWindow {
                     .map(|(database, config_root)| {
                         SkillSettingsService::new(database, config_root, self.shell_project_id(cx))
                     });
+                let permission_service =
+                    self.context_database(cx)
+                        .zip(config_path.clone())
+                        .map(|(database, config)| {
+                            vega_conversation::permission_contracts::DefaultPermissionService::new(
+                                database, config,
+                            )
+                        });
                 let settings = cx.new(|cx| SettingsView::from_path(config_path, cx));
                 settings.update(cx, |view, cx| {
-                    view.install_mcp_service(self.mcp_settings.clone(), cx)
+                    view.install_mcp_service(self.mcp_settings.clone(), cx);
+                    view.install_default_permission_service(permission_service, cx);
+                    view.apply_permission_reset_projection(
+                        self.permission_reset.projection.clone(),
+                        cx,
+                    );
                 });
+                cx.subscribe(
+                    &settings,
+                    |this, view, request: &PermissionResetRequested, cx| {
+                        this.permission_reset_requested(view.clone(), request.0, cx);
+                    },
+                )
+                .detach();
                 crate::app_usage::bind(&settings, cx);
                 settings.update(cx, |view, cx| {
                     view.apply_update_projection(self.localized_update_projection(), cx)
@@ -205,7 +225,13 @@ impl Render for VegaWindow {
             }
         } else {
             // 设置已关闭：丢弃缓存，下次打开时重新构造并载入最新配置。
-            let returning_from_settings = self.settings_view.take().is_some();
+            let departing_settings = self.settings_view.take();
+            let returning_from_settings = departing_settings.is_some();
+            if let Some(settings) = departing_settings {
+                settings.update(cx, |settings, _| {
+                    settings.close_default_permission_session()
+                });
+            }
 
             let thread = self.resolve_route_thread(cx);
             self.update_message_location_route(Some(&thread.id));
@@ -215,6 +241,18 @@ impl Render for VegaWindow {
                     let cached = self
                         .agent_controller
                         .active_stream_for_thread(&thread.id)
+                        .or_else(|| {
+                            self.agent_controller
+                                .preparation_stream
+                                .as_ref()
+                                .filter(|stream| {
+                                    self.agent_controller
+                                        .ordinary_preparing
+                                        .contains_key(&thread.id)
+                                        && stream.read(cx).thread_snapshot().id == thread.id
+                                })
+                                .cloned()
+                        })
                         .or_else(|| self.composer_prediction_stream(&thread.id))
                         .or_else(|| self.automation_controller.streams.get(&thread.id).cloned())
                         .or_else(|| match &self.stream_view {
@@ -466,6 +504,7 @@ impl Render for VegaWindow {
                 .flex()
                 .flex_col()
                 .child(self.render_main_header(sidebar_visible, cx))
+                .children(self.render_permission_reset_notice(cx))
                 .children(navigation_error.map(|error| {
                     div()
                         .px_3()

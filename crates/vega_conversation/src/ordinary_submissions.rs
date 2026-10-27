@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use ulid::Ulid;
-use vega_store::thread_admission::{self, AdmissionError, DatabaseIdentity, ThreadAdmission};
+use vega_store::thread_admission::{
+    self, AdmissionError, DatabaseAdmissionPause, DatabaseIdentity, ThreadAdmission,
+};
 
 use crate::types::{FrozenReasoning, ImageAttachment, ResolvedModel};
 
@@ -290,6 +292,7 @@ pub enum RetryBlocker {
     CleanupIncomplete,
     NoFailure,
     HistoryChanged,
+    PermissionInvalidated,
     Retired,
 }
 
@@ -412,6 +415,29 @@ impl AttemptState {
         Ok(authority)
     }
 
+    fn reset_settled(&self) -> bool {
+        let facts = &self.facts;
+        self.workers.is_empty()
+            && facts.sealed
+            && !facts.abnormal
+            && !matches!(
+                facts.commit,
+                CommitFact::CommitInFlight | CommitFact::Unknown
+            )
+            && !matches!(
+                facts.primary,
+                PrimaryFact::NotYetDriven | PrimaryFact::Unknown
+            )
+            && matches!(
+                facts.cleanup,
+                CleanupFact::NotRequired | CleanupFact::Succeeded
+            )
+            && (!matches!(facts.commit, CommitFact::Committed(_))
+                || facts.cleanup == CleanupFact::Succeeded)
+            && (facts.primary != PrimaryFact::Started
+                || matches!(facts.commit, CommitFact::Committed(_)))
+    }
+
     fn make_unknown(&mut self) {
         self.facts.abnormal = true;
         if !matches!(
@@ -435,9 +461,28 @@ impl AttemptState {
 struct SubmissionState {
     accepted: Option<Arc<AcceptedPayload>>,
     authority: Option<Arc<EffectiveAuthority>>,
+    permission_fence: Option<crate::types::PermissionFence>,
+    permission_invalidated: bool,
     attempts: Vec<AttemptState>,
     active: Option<ThreadAdmission>,
     retired: bool,
+}
+
+pub(crate) struct PendingPermissionFence<'a> {
+    state: MutexGuard<'a, SubmissionState>,
+    fence: crate::types::PermissionFence,
+}
+
+impl PendingPermissionFence<'_> {
+    pub(crate) fn publish(mut self) {
+        self.state.permission_fence = Some(self.fence);
+    }
+
+    pub(crate) fn mark_unknown(mut self) {
+        if let Some(attempt) = self.state.attempts.last_mut() {
+            attempt.make_unknown();
+        }
+    }
 }
 
 struct SubmissionInner {
@@ -499,6 +544,84 @@ pub fn for_thread(
         .unwrap_or_default())
 }
 
+pub(crate) fn require_database_settled(
+    database: DatabaseIdentity,
+    pause: &DatabaseAdmissionPause,
+) -> Result<(), crate::types::PermissionResetError> {
+    use crate::types::PermissionResetError;
+
+    if !pause
+        .verifies(database)
+        .map_err(|_| PermissionResetError::Unavailable)?
+    {
+        return Err(PermissionResetError::Busy);
+    }
+    let registry = submissions()
+        .lock()
+        .map_err(|_| PermissionResetError::Unavailable)?;
+    for (key, submissions) in registry.iter().filter(|(key, _)| key.database == database) {
+        for submission in submissions {
+            if submission.0.database != database || submission.0.thread_id != key.thread_id {
+                return Err(PermissionResetError::Unavailable);
+            }
+            let state = submission
+                .lock()
+                .map_err(|_| PermissionResetError::Unavailable)?;
+            if state.active.is_some()
+                || state
+                    .attempts
+                    .iter()
+                    .any(|attempt| !attempt.workers.is_empty())
+            {
+                return Err(PermissionResetError::Busy);
+            }
+            if state.attempts.is_empty()
+                || state
+                    .attempts
+                    .iter()
+                    .any(|attempt| !attempt.reset_settled())
+            {
+                return Err(PermissionResetError::UnsettledWork);
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn invalidate_database_recovery(
+    database: DatabaseIdentity,
+    pause: &DatabaseAdmissionPause,
+) -> Result<(), SubmissionError> {
+    if !pause.verifies(database)? {
+        return Err(SubmissionError::Busy);
+    }
+    let registry = submissions()
+        .lock()
+        .map_err(|_| SubmissionError::Unavailable)?;
+    let mut states = Vec::new();
+    for (key, submissions) in registry.iter().filter(|(key, _)| key.database == database) {
+        for submission in submissions {
+            if submission.0.database != database || submission.0.thread_id != key.thread_id {
+                return Err(SubmissionError::AdmissionMismatch);
+            }
+            let state = submission.lock()?;
+            if state.active.is_some()
+                || state
+                    .attempts
+                    .iter()
+                    .any(|attempt| !attempt.workers.is_empty())
+            {
+                return Err(SubmissionError::WorkersActive);
+            }
+            states.push(state);
+        }
+    }
+    for mut state in states {
+        state.permission_invalidated = true;
+    }
+    Ok(())
+}
+
 impl OrdinarySubmission {
     pub fn begin(
         database: DatabaseIdentity,
@@ -539,6 +662,8 @@ impl OrdinarySubmission {
             state: Mutex::new(SubmissionState {
                 accepted: None,
                 authority: None,
+                permission_fence: None,
+                permission_invalidated: false,
                 attempts: vec![AttemptState::new(attempt, AttemptKind::Initial, worker)],
                 active: Some(admission.clone()),
                 retired: false,
@@ -553,6 +678,17 @@ impl OrdinarySubmission {
             completed: false,
         };
         Ok((submission, guard))
+    }
+
+    pub fn permission_fence(&self) -> Result<crate::types::PermissionFence, SubmissionError> {
+        self.accepted_permission_fence()?
+            .ok_or(SubmissionError::AdmissionMismatch)
+    }
+
+    pub(crate) fn accepted_permission_fence(
+        &self,
+    ) -> Result<Option<crate::types::PermissionFence>, SubmissionError> {
+        Ok(self.lock()?.permission_fence.clone())
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, SubmissionState>, SubmissionError> {
@@ -742,6 +878,13 @@ impl OrdinarySubmission {
             return Err(SubmissionError::InvalidTransition);
         }
         state.retired = true;
+        if state
+            .attempts
+            .iter()
+            .any(|attempt| !attempt.reset_settled())
+        {
+            return Ok(FactUpdate::Applied);
+        }
         let key = SubmissionKey {
             database: self.0.database,
             thread_id: self.0.thread_id.clone(),
@@ -760,6 +903,9 @@ fn retry_eligibility(state: &SubmissionState) -> RetryEligibility {
     let blocked = |reason| RetryEligibility::Blocked(reason);
     if state.retired {
         return blocked(RetryBlocker::Retired);
+    }
+    if state.permission_invalidated {
+        return blocked(RetryBlocker::PermissionInvalidated);
     }
     let Some(attempt) = state.attempts.last() else {
         return blocked(RetryBlocker::Unknown);
@@ -808,6 +954,28 @@ fn retry_eligibility(state: &SubmissionState) -> RetryEligibility {
 }
 
 impl OrdinaryWorker {
+    pub(crate) fn stage_permission_fence(
+        &self,
+        fence: crate::types::PermissionFence,
+    ) -> Result<PendingPermissionFence<'_>, SubmissionError> {
+        if !fence.is_valid()
+            || fence.thread_id != self.submission.0.thread_id
+            || fence.database_identity != self.submission.0.database.permission_fence_key()
+            || fence.delegation.is_some()
+        {
+            return Err(SubmissionError::AdmissionMismatch);
+        }
+        let state = self.lock()?;
+        if state
+            .permission_fence
+            .as_ref()
+            .is_some_and(|existing| existing != &fence)
+        {
+            return Err(SubmissionError::AdmissionMismatch);
+        }
+        Ok(PendingPermissionFence { state, fence })
+    }
+
     pub fn attempt_id(&self) -> AttemptId {
         self.attempt
     }

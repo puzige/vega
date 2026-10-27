@@ -36,9 +36,9 @@ pub(crate) fn permission_label(mode: PermissionMode) -> &'static str {
 
 pub(crate) fn permission_description(mode: PermissionMode) -> &'static str {
     match mode {
-        PermissionMode::ReadOnly => vega_i18n::t("ui.ask_every_time"),
-        PermissionMode::Confirm => vega_i18n::t("ui.ask_only_for_potentially_unsafe_actions"),
-        PermissionMode::Auto => vega_i18n::t("ui.approve_automatically_using_the_sandbox"),
+        PermissionMode::ReadOnly => vega_i18n::t("ui.permission_description_readonly"),
+        PermissionMode::Confirm => vega_i18n::t("ui.permission_description_confirm"),
+        PermissionMode::Auto => vega_i18n::t("ui.permission_description_auto"),
         PermissionMode::FullAccess => {
             vega_i18n::t("ui.no_sandbox_dangerous_actions_still_require_confirmation")
         }
@@ -226,6 +226,7 @@ impl ConversationStream {
 
     fn composer_resume_available(&self, cx: &App) -> bool {
         self.thread.backend == TaskBackend::Native
+            && !self.permission_change_pending()
             && self.interrupted_tail.is_some()
             && !self.reading_preview
             && !self.actions.running
@@ -297,6 +298,12 @@ impl ConversationStream {
 
     /// Projects worker ownership, including preparation before a durable message exists.
     pub fn begin_composer_run(&mut self, cx: &mut Context<Self>) {
+        self.permissions_revoked = false;
+        self.permission_editor.active_mode = Some(if self.thread.mode != ThreadMode::Execute {
+            PermissionMode::ReadOnly
+        } else {
+            self.thread.permission_mode
+        });
         self.invalidate_composer_prediction(cx);
         self.reset_live_context_usage();
         self.actions.running = true;
@@ -321,6 +328,7 @@ impl ConversationStream {
         self.timeout_permission(cx);
         self.cancel_user_questions(cx);
         self.actions.running = false;
+        self.permission_editor.active_mode = None;
         self.composer_resume_pending = false;
         self.actions.restore_focus = self.actions.stopping;
         self.actions.stopping = false;
@@ -486,6 +494,9 @@ impl ConversationStream {
             self.input.read(cx).focus_handle(cx),
             self.action_focus[0].clone(),
         ];
+        if self.thread.backend == TaskBackend::Native && !self.permission_change_pending() {
+            controls.push(self.permission_editor.trigger.clone());
+        }
         if self.thread.backend == TaskBackend::Native && !self.entries.is_empty() {
             controls.push(self.context_usage_focus.clone());
         }

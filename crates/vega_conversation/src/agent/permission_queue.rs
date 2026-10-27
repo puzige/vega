@@ -250,6 +250,7 @@ impl Drop for PermissionQueueListener {
                 .is_some_and(|(generation, _)| *generation == self.generation)
             {
                 state.notifier = None;
+                state.timeout_scope();
                 let responder = state.active.take();
                 let queued = state.queued.drain(..).collect::<Vec<_>>();
                 Some((responder, queued))
@@ -273,6 +274,19 @@ pub(crate) struct PermissionQueueState {
     pub(crate) notifier: Option<(u64, watch::Sender<u64>)>,
     pub(crate) next_generation: u64,
     pub(crate) notification_version: u64,
+    pub(super) active_scope: Option<super::scope_permission::ScopeResponder>,
+    pub(super) queued_scope: Option<PendingScopePermission>,
+}
+
+impl PermissionQueueState {
+    fn timeout_scope(&mut self) -> bool {
+        let resolved = self
+            .active_scope
+            .take()
+            .is_some_and(|scope| scope.respond(crate::types::CommandScopeDecision::Timeout));
+        self.queued_scope = None;
+        resolved
+    }
 }
 
 /// Concrete conversation-to-GPUI request/response handoff.
@@ -282,7 +296,7 @@ pub(crate) struct PermissionQueueState {
 /// human decision and resolves every disappearance as Timeout.
 #[derive(Clone, Default)]
 pub struct PermissionQueue {
-    activity: Option<super::stage_activity::StageActivity>,
+    pub(super) activity: Option<super::stage_activity::StageActivity>,
     pub(crate) state: Arc<Mutex<PermissionQueueState>>,
 }
 
@@ -307,6 +321,10 @@ impl PermissionQueue {
                 .active
                 .as_ref()
                 .is_some_and(|responder| !responder.is_resolved())
+                || state
+                    .active_scope
+                    .as_ref()
+                    .is_some_and(|scope| !scope.is_resolved())
                 || state.queued.iter().any(|pending| {
                     pending
                         .responder
@@ -323,6 +341,9 @@ impl PermissionQueue {
         let (generation, replaced_active, replaced_queued) = match self.state.lock() {
             Ok(mut state) => {
                 let replacing = state.notifier.is_some();
+                if replacing {
+                    state.timeout_scope();
+                }
                 let replaced_active = replacing.then(|| state.active.take()).flatten();
                 let replaced_queued = if replacing {
                     state.queued.drain(..).collect::<Vec<_>>()
@@ -373,12 +394,15 @@ impl PermissionQueue {
 
     /// Fails the current prompt closed, used when the owning view disappears.
     pub fn timeout_active(&self) -> bool {
-        let responder = self
-            .state
-            .lock()
-            .ok()
-            .and_then(|state| state.active.clone());
-        responder.is_some_and(|responder| responder.respond(PermissionDecision::Timeout))
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        let scope = state.timeout_scope();
+        let ordinary = state
+            .active
+            .as_ref()
+            .is_some_and(|responder| responder.respond(PermissionDecision::Timeout));
+        scope || ordinary
     }
 }
 
@@ -402,6 +426,14 @@ impl PermissionHook for PermissionQueue {
         cancel: CancellationToken,
     ) -> BoxFuture<'static, Result<PermissionDecision, VegaError>> {
         self.enqueue(request, cancel, PermissionOrigin::Tool)
+    }
+
+    fn request_scope(
+        &self,
+        request: crate::types::CommandScopeRequest,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<crate::types::CommandScopeDecision, VegaError>> {
+        self.enqueue_scope(request, cancel)
     }
 }
 
@@ -447,6 +479,7 @@ impl PermissionQueue {
         };
         let old = match self.state.lock() {
             Ok(mut state) => {
+                state.timeout_scope();
                 let old_active = state.active.replace(responder.clone());
                 let old_queued = state.queued.drain(..).collect::<Vec<_>>();
                 state.queued.push_back(pending);
@@ -583,9 +616,23 @@ impl PermissionHook for RejectPermissionHook {
 
 pub(crate) struct RuntimePermissionAdapter<'a> {
     pub(crate) shared: &'a dyn PermissionHook,
+    pub(super) scope: super::scoped_bash::ScopedBashAuthority,
 }
 
 impl RuntimePermissionHook for RuntimePermissionAdapter<'_> {
+    fn execute_scoped_bash<'a>(
+        &'a self,
+        call_id: String,
+        tools: vega_tools::Tools,
+        prepared: vega_tools::PreparedBash,
+        policy: vega_tools::BashLaunchPolicy,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<vega_tools::BashOutput, vega_tools::BashError>> {
+        self.scope
+            .execute(self.shared, call_id, tools, prepared, policy, cancel)
+            .boxed()
+    }
+
     fn request(
         &self,
         prompt: vega_runtime::RuntimePermissionPrompt,

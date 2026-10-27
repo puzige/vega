@@ -280,6 +280,7 @@ impl ConversationStream {
 
     pub(crate) fn can_submit_message(&self, cx: &App) -> bool {
         !self.reading_preview
+            && !self.permission_change_pending()
             && (!self.actions.running || self.thread.backend == TaskBackend::Native)
             && !self.pending_queue.busy
             && !self.context_operation_busy()
@@ -480,7 +481,7 @@ impl ConversationStream {
     }
 
     pub(crate) fn request_mode(&mut self, mode: ThreadMode, cx: &mut Context<Self>) {
-        if self.model_selection_pending.is_some() {
+        if self.model_selection_pending.is_some() || self.permission_change_pending() {
             return;
         }
         if mode != self.thread.mode {
@@ -493,10 +494,10 @@ impl ConversationStream {
     }
 
     pub(crate) fn request_permission_mode(&mut self, mode: PermissionMode, cx: &mut Context<Self>) {
-        if self.model_selection_pending.is_some() {
+        if self.model_selection_pending.is_some() || self.permission_change_pending() {
             return;
         }
-        if mode != self.thread.permission_mode {
+        if mode != self.thread.permission_mode || mode == PermissionMode::FullAccess {
             cx.emit(ThreadSettingsRequested {
                 thread_id: self.thread.id.clone(),
                 mode: None,

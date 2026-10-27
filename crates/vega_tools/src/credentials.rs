@@ -1,21 +1,21 @@
 use crate::{BashError, BashErrorCode, ToolError, Tools};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
-use vega_credentials::{CredentialBinding, CredentialBroker, ProxyLease, SecretReader};
+use vega_credentials::{CredentialBinding, SecretReader};
+
+type BindingSnapshotReader =
+    Arc<dyn Fn() -> Result<Vec<CredentialBinding>, BashError> + Send + Sync>;
 
 pub struct ToolCredentialPolicy {
     pub(crate) protected_root: PathBuf,
     pub(crate) protected_identity: (u64, u64),
-    bindings: Vec<CredentialBinding>,
-    reader: SecretReader,
+    pub(crate) bindings: Vec<CredentialBinding>,
+    pub(crate) reader: SecretReader,
+    bindings_reader: Option<BindingSnapshotReader>,
 }
 
 impl ToolCredentialPolicy {
-    pub(crate) fn has_bindings(&self) -> bool {
-        !self.bindings.is_empty()
-    }
     pub fn new(
         root: PathBuf,
         bindings: Vec<CredentialBinding>,
@@ -35,28 +35,40 @@ impl ToolCredentialPolicy {
             protected_identity,
             bindings,
             reader,
+            bindings_reader: None,
         })
     }
 
-    pub(crate) async fn start(
-        &self,
-        ca_path: &Path,
-        cancel: CancellationToken,
-    ) -> Result<Option<(ProxyLease, BTreeMap<String, String>)>, BashError> {
-        if self.bindings.is_empty() {
-            return Ok(None);
+    pub fn with_bindings_reader(mut self, reader: BindingSnapshotReader) -> Self {
+        self.bindings_reader = Some(reader);
+        self
+    }
+
+    fn binding_snapshot(&self) -> Result<Vec<CredentialBinding>, BashError> {
+        let current = self
+            .bindings_reader
+            .as_ref()
+            .ok_or_else(|| BashError::new(BashErrorCode::ScopeMismatch))?()?;
+        if current != self.bindings {
+            return Err(BashError::new(BashErrorCode::ScopeMismatch));
         }
+        Ok(current)
+    }
+
+    pub(crate) fn validate_bindings(&self) -> Result<(), BashError> {
         let fail = || BashError::new(BashErrorCode::SandboxUnavailable);
-        let broker =
-            CredentialBroker::new(&self.bindings, self.reader.clone()).map_err(|_| fail())?;
-        let lease = ProxyLease::start(broker, cancel)
-            .await
-            .map_err(|_| fail())?;
-        std::fs::write(ca_path, &lease.ca_pem).map_err(|_| fail())?;
-        let environment = lease
-            .environment(ca_path.to_str().ok_or_else(fail)?)
-            .map_err(|_| fail())?;
-        Ok(Some((lease, environment)))
+        let mut aliases = BTreeSet::new();
+        for binding in &self.bindings {
+            binding.validate().map_err(|_| fail())?;
+            if !aliases.insert(&binding.env) {
+                return Err(fail());
+            }
+            let value = (self.reader)(&binding.key_ref).map_err(|_| fail())?;
+            if value.is_empty() || value.contains(['\r', '\n']) {
+                return Err(fail());
+            }
+        }
+        Ok(())
     }
 }
 
@@ -64,6 +76,13 @@ impl Tools {
     pub fn with_credential_policy(mut self, policy: ToolCredentialPolicy) -> Self {
         self.credential_policy = Some(Arc::new(policy));
         self
+    }
+
+    pub fn bash_binding_snapshot(&self) -> Result<Vec<CredentialBinding>, BashError> {
+        self.credential_policy
+            .as_ref()
+            .ok_or_else(|| BashError::new(BashErrorCode::ScopeMismatch))?
+            .binding_snapshot()
     }
 
     pub(crate) fn check_credential_path(&self, path: &Path) -> Result<(), ToolError> {

@@ -354,6 +354,9 @@ pub fn materialize_codex_draft(
     let materialized = Thread {
         created_at: now,
         updated_at: now,
+        permission_revision: 0,
+        full_access_grant: None,
+        default_permission: None,
         ..draft.clone()
     };
     let values = store::NewThread {
@@ -362,6 +365,8 @@ pub fn materialize_codex_draft(
         title: &materialized.title,
         mode: materialized.mode.as_str(),
         permission_mode: materialized.permission_mode.as_str(),
+        permission_revision: materialized.permission_revision,
+        full_access_grant: None,
         model: &materialized.model,
         status: materialized.status.as_str(),
         pinned: materialized.pinned,

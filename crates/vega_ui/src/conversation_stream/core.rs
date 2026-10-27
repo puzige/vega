@@ -28,6 +28,9 @@ pub(crate) struct SubmittedDraft {
 /// the virtualized message stream, and the fixed-bottom Composer. One entity
 /// per open thread; rebuilt by the window root when another thread opens.
 pub struct ConversationStream {
+    pub(crate) permission_editor: super::thread_permissions::PermissionEditor,
+    pub(crate) automation_permission: super::automation_permission::AutomationPermissionUi,
+    pub(crate) permissions_revoked: bool,
     pub(crate) ordinary: Vec<super::ordinary_submissions::OrdinaryRow>,
     pub(crate) prediction_waiting_for_queue: bool,
     pub(crate) prediction_owner: Option<super::composer_predictions::ComposerPredictionOwner>,
@@ -103,6 +106,7 @@ pub struct ConversationStream {
     /// Request retained after the queue listener wakes before its durable
     /// ToolCallProposed event reaches this stream.
     pub(crate) deferred_permission: Option<PendingPermission>,
+    pub(crate) deferred_scope_permission: Option<vega_conversation::agent::PendingScopePermission>,
     /// The sole visible prompt; the opaque call id is only a map association.
     pub(crate) active_permission: Option<Entity<PermissionCard>>,
     /// Opaque call id paired with `active_permission` for exact terminal
@@ -226,6 +230,8 @@ impl EventEmitter<crate::cua_onboarding::PreparationRequested> for ConversationS
 impl EventEmitter<ImagePreviewRequested> for ConversationStream {}
 impl EventEmitter<PlanReviewRequested> for ConversationStream {}
 impl EventEmitter<ThreadSettingsRequested> for ConversationStream {}
+impl EventEmitter<ThreadPermissionConfirmed> for ConversationStream {}
+impl EventEmitter<ThreadPermissionReloadRequested> for ConversationStream {}
 impl EventEmitter<ComposerSubmitted> for ConversationStream {}
 impl EventEmitter<super::ordinary_submissions::OrdinaryActionRequested> for ConversationStream {}
 impl EventEmitter<SkillComposerProjectionRequested> for ConversationStream {}
@@ -431,6 +437,8 @@ impl ConversationStream {
                 this.context_usage_dismissed = true;
                 cx.notify();
                 this.timeout_permission(cx);
+                this.cancel_thread_permission_change(cx);
+                this.cancel_automation_permission(cx);
             }
         })
         .detach();
@@ -445,6 +453,9 @@ impl ConversationStream {
                 })
             {
                 this.cancel_image_import(cx);
+                this.timeout_permission(cx);
+                this.cancel_thread_permission_change(cx);
+                this.cancel_automation_permission(cx);
             }
         })
         .detach();
@@ -478,6 +489,9 @@ impl ConversationStream {
         .detach();
         let computer_use_task = TaskContext::new(&thread.id);
         Self {
+            permission_editor: super::thread_permissions::PermissionEditor::new(cx),
+            automation_permission: super::automation_permission::AutomationPermissionUi::new(cx),
+            permissions_revoked: false,
             prediction_waiting_for_queue: false,
             prediction_owner: None,
             prediction_generation: 0,
@@ -544,6 +558,7 @@ impl ConversationStream {
             user_question_attention: None,
             _user_question_listener_task: user_question_listener_task,
             deferred_permission: None,
+            deferred_scope_permission: None,
             active_permission: None,
             active_permission_call_id: None,
             plan_cards: HashMap::new(),
@@ -1794,6 +1809,7 @@ impl ConversationStream {
                 images: draft.images,
                 references,
                 reference_mentions: draft.reference_mentions,
+                permission_fence: None,
             },
             cx,
         );

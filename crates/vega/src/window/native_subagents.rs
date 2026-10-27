@@ -433,6 +433,20 @@ impl VegaWindow {
         .detach();
         cx.subscribe(
             &view,
+            |this, stream, request: &ThreadPermissionConfirmed, cx| {
+                this.confirm_thread_permission(stream.clone(), request, cx);
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &view,
+            |this, stream, request: &ThreadPermissionReloadRequested, cx| {
+                this.reload_thread_permission(stream.clone(), request, cx);
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &view,
             |this, stream, request: &ContextSettingsRequested, cx| {
                 this.persist_context_settings(stream.clone(), request, cx);
             },
@@ -478,6 +492,43 @@ impl VegaWindow {
         cx.subscribe(&view, |this, stream, request: &AutomationRequested, cx| {
             this.automation_requested(stream.clone(), request, cx)
         })
+        .detach();
+        cx.subscribe(
+            &view,
+            |this, stream, request: &AutomationPermissionRequested, cx| {
+                this.automation_permission_work(
+                    stream.clone(),
+                    super::automation_permission::PermissionWork::Prepare(Box::new(
+                        request.clone(),
+                    )),
+                    cx,
+                );
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &view,
+            |this, stream, request: &AutomationPermissionConfirmed, cx| {
+                this.automation_permission_work(
+                    stream.clone(),
+                    super::automation_permission::PermissionWork::Confirm(Box::new(
+                        request.clone(),
+                    )),
+                    cx,
+                );
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &view,
+            |this, stream, request: &AutomationPermissionReloadRequested, cx| {
+                this.automation_permission_work(
+                    stream.clone(),
+                    super::automation_permission::PermissionWork::Reload(request.clone()),
+                    cx,
+                );
+            },
+        )
         .detach();
         cx.subscribe(
             &view,

@@ -36,6 +36,83 @@ enum OrdinaryStatus {
     Unknown,
 }
 
+struct OrdinaryControls {
+    message: &'static str,
+    detail: Option<&'static str>,
+    action: Option<(&'static str, OrdinaryAction)>,
+}
+
+impl OrdinaryStatus {
+    fn controls(
+        self,
+        retry: RetryEligibility,
+        checked: Option<&'static str>,
+    ) -> Option<OrdinaryControls> {
+        if matches!(self, Self::Pending | Self::Committed) {
+            return None;
+        }
+        if retry == RetryEligibility::Blocked(RetryBlocker::PermissionInvalidated) {
+            let unknown = self == Self::Unknown;
+            return Some(OrdinaryControls {
+                message: if unknown {
+                    "ui.ordinary_send.permission_invalidated_unknown"
+                } else {
+                    "ui.ordinary_send.permission_invalidated"
+                },
+                detail: unknown.then_some(checked).flatten(),
+                action: unknown
+                    .then_some(("ui.ordinary_send.check_status", OrdinaryAction::CheckStatus)),
+            });
+        }
+        let (message, label, action) = match self {
+            Self::Pending | Self::Committed => return None,
+            Self::Unknown => (
+                "ui.ordinary_send.unknown",
+                "ui.ordinary_send.check_status",
+                OrdinaryAction::CheckStatus,
+            ),
+            Self::Failed(
+                failure,
+                RetryEligibility::Uncommitted | RetryEligibility::CommittedNotStarted,
+            ) => (
+                if failure == SubmissionFailure::Cancelled {
+                    "ui.cancelled"
+                } else {
+                    match failure {
+                        SubmissionFailure::PreflightRejected => "ui.ordinary_send.preflight_failed",
+                        SubmissionFailure::SpawnFailed => "ui.ordinary_send.spawn_failed",
+                        SubmissionFailure::PreparationFailed => {
+                            "ui.ordinary_send.preparation_failed"
+                        }
+                        SubmissionFailure::CommitFailed => "ui.ordinary_send.commit_failed",
+                        SubmissionFailure::LaunchFailed => "ui.ordinary_send.launch_failed",
+                        _ => "ui.ordinary_send.incomplete",
+                    }
+                },
+                "ui.retry",
+                OrdinaryAction::Retry,
+            ),
+            Self::Failed(_, RetryEligibility::Blocked(blocker)) => (
+                match blocker {
+                    RetryBlocker::CleanupIncomplete => "ui.ordinary_send.cleanup_incomplete",
+                    RetryBlocker::HistoryChanged => "ui.ordinary_send.history_changed",
+                    RetryBlocker::WorkersActive | RetryBlocker::Unsealed => {
+                        "ui.ordinary_send.finishing"
+                    }
+                    _ => "ui.ordinary_send.retry_unconfirmed",
+                },
+                "ui.ordinary_send.check_status",
+                OrdinaryAction::CheckStatus,
+            ),
+        };
+        Some(OrdinaryControls {
+            message: checked.unwrap_or(message),
+            detail: None,
+            action: Some((label, action)),
+        })
+    }
+}
+
 pub(super) fn update_user_history_text(
     entry: &mut StreamEntry,
     text: &str,
@@ -476,49 +553,9 @@ impl ConversationStream {
         {
             return None;
         }
-        let (message, label, action) = match row.state {
-            OrdinaryStatus::Pending | OrdinaryStatus::Committed => return None,
-            OrdinaryStatus::Unknown => (
-                "ui.ordinary_send.unknown",
-                "ui.ordinary_send.check_status",
-                OrdinaryAction::CheckStatus,
-            ),
-            OrdinaryStatus::Failed(
-                failure,
-                RetryEligibility::Uncommitted | RetryEligibility::CommittedNotStarted,
-            ) => (
-                if failure == SubmissionFailure::Cancelled {
-                    "ui.cancelled"
-                } else {
-                    match failure {
-                        SubmissionFailure::PreflightRejected => "ui.ordinary_send.preflight_failed",
-                        SubmissionFailure::SpawnFailed => "ui.ordinary_send.spawn_failed",
-                        SubmissionFailure::PreparationFailed => {
-                            "ui.ordinary_send.preparation_failed"
-                        }
-                        SubmissionFailure::CommitFailed => "ui.ordinary_send.commit_failed",
-                        SubmissionFailure::LaunchFailed => "ui.ordinary_send.launch_failed",
-                        _ => "ui.ordinary_send.incomplete",
-                    }
-                },
-                "ui.retry",
-                OrdinaryAction::Retry,
-            ),
-            OrdinaryStatus::Failed(_, RetryEligibility::Blocked(blocker)) => (
-                match blocker {
-                    RetryBlocker::CleanupIncomplete => "ui.ordinary_send.cleanup_incomplete",
-                    RetryBlocker::HistoryChanged => "ui.ordinary_send.history_changed",
-                    RetryBlocker::WorkersActive | RetryBlocker::Unsealed => {
-                        "ui.ordinary_send.finishing"
-                    }
-                    _ => "ui.ordinary_send.retry_unconfirmed",
-                },
-                "ui.ordinary_send.check_status",
-                OrdinaryAction::CheckStatus,
-            ),
-        };
-        let message = vega_i18n::t(row.checked.unwrap_or(message));
-        let label = vega_i18n::t(label);
+        let controls = row
+            .state
+            .controls(row.submission.snapshot().retry, row.checked)?;
         let submission = row.submission.id();
         let attempt = row.attempt;
         let thread = self.thread.id.clone();
@@ -531,8 +568,15 @@ impl ConversationStream {
                 .gap_2()
                 .text_size(px(Typography::BODY))
                 .text_color(colors.text_secondary)
-                .child(message)
                 .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(vega_i18n::t(controls.message))
+                        .children(controls.detail.map(vega_i18n::t)),
+                )
+                .children(controls.action.map(|(label, action)| {
+                    let label = vega_i18n::t(label);
                     div()
                         .id(format!(
                             "ordinary-action-{}",
@@ -571,8 +615,8 @@ impl ConversationStream {
                                 });
                             },
                         ))
-                        .child(label),
-                )
+                        .child(label)
+                }))
                 .into_any_element(),
         )
     }

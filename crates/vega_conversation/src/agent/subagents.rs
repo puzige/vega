@@ -518,16 +518,22 @@ pub(super) struct ChildSettings {
     pub automation_claim: Option<crate::types::AutomationRunClaim>,
     pub automation_hook: Option<Arc<dyn vega_runtime::RuntimeAutomationHook>>,
     pub owner_credential_reader: Option<vega_runtime::CredentialReader>,
+    pub run_credential_reader: Option<crate::types::RunCredentialReader>,
     pub turn_limit: u32,
     pub steering_source: Option<Arc<dyn vega_runtime::RuntimeSteeringSource>>,
 }
 
 impl ChildSettings {
-    pub(super) fn new(request: &AgentRequest, config: &PersistenceActorConfig) -> Self {
+    pub(super) fn new(
+        request: &AgentRequest,
+        config: &PersistenceActorConfig,
+        permission_fence: &crate::types::PermissionFence,
+    ) -> Self {
         Self {
             model: request.model.clone(),
             system_prompt: request.system_prompt.clone(),
             authority: DelegatedAuthority {
+                permission_fence: permission_fence.clone(),
                 run_mode: request.tool_config.run_mode,
                 permission_mode: request.tool_config.permission_mode,
                 exact_rules: request.tool_config.exact_rules.clone(),
@@ -538,6 +544,7 @@ impl ChildSettings {
             automation_claim: config.automation_claim.clone(),
             automation_hook: config.automation_hook.clone(),
             owner_credential_reader: config.owner_credential_reader.clone(),
+            run_credential_reader: config.run_credential_reader.clone(),
             turn_limit: config.turn_limit,
             steering_source: config.steering_source.clone(),
         }
@@ -742,7 +749,13 @@ impl Supervisor {
             .map_err(|_| failure("child admission unavailable"))?;
         let resume = (tool == "resume_agent").then(|| input.clone());
         if let (Some(input), Some(previous)) = (&resume, &previous) {
-            stage_recovery::verify_resume(&store, &snapshot, previous, input)?;
+            stage_recovery::verify_resume(
+                &store,
+                &snapshot,
+                previous,
+                input,
+                &launch.settings.authority,
+            )?;
         }
         let cancel = launch.cancel.child_token();
         let activity = super::stage_activity::StageActivity::new(self.registry.changed.clone());
@@ -1047,7 +1060,7 @@ fn child_lifecycle_inner<'a>(
         if let (Some(input), Some(previous)) = (&resume,&previous) {
             let validation = async {
                 let store = Store::open(&database)?;
-                let checkpoint = stage_recovery::verify_resume(&store,&snapshot,previous,input)?;
+                let checkpoint = stage_recovery::verify_resume(&store,&snapshot,previous,input,&settings.authority)?;
                 let row = vega_store::threads::find(store.conn(),&snapshot.agent_id)?.ok_or_else(|| failure("unknown_agent"))?;
                 let config = stage_recovery::tool_config(&database,&snapshot,&settings,row.project_id.clone());
                 let thread = crate::threads::thread_from_row(&row).map_err(|_| failure("child identity unavailable"))?;
@@ -1060,7 +1073,7 @@ fn child_lifecycle_inner<'a>(
                 }
                 if cancel.is_cancelled() { return Err(VegaError::Cancelled); }
                 stage_recovery::validate_artifacts(&tools,&config,&permissions,&checkpoint,&cancel).await?;
-                stage_recovery::verify_resume(&store,&snapshot,previous,input)?;
+                stage_recovery::verify_resume(&store,&snapshot,previous,input,&settings.authority)?;
                 if cancel.is_cancelled() { return Err(VegaError::Cancelled); }
                 Ok::<(),VegaError>(())
             }.await;
@@ -1178,6 +1191,7 @@ fn child_lifecycle_inner<'a>(
                         automation_claim: settings.automation_claim.clone(),
                         automation_hook: Some(usage_observer.clone()),
                         owner_credential_reader: settings.owner_credential_reader.clone(),
+                        run_credential_reader: settings.run_credential_reader.clone(),
                         turn_limit: settings.turn_limit,
                         user_questions: Some(Arc::new(questions.clone())),
                         ..Default::default()
@@ -1190,11 +1204,11 @@ fn child_lifecycle_inner<'a>(
                         Ok(store) => async {
                             crate::thread_access::verify(&store, &snapshot.agent_id, &admission)?;
                             config.admission = Some(admission.clone());
-                            if let Some(reader) = &config.owner_credential_reader {
-                                config.steering_source = Some(Arc::new(crate::pending_messages::QueueSteeringSource::new(
+                            if let Some(reader) = config.owner_credential_reader.clone() {
+                                config = config.with_pending_input(None, Some(Arc::new(crate::pending_messages::QueueSteeringSource::new(
                                     database.clone(), tools.root().to_path_buf(), snapshot.agent_id.clone(), queue_generation,
                                     reader.clone(), cancel.clone(),
-                                ).with_thread_admission(admission.clone())));
+                                ).with_thread_admission(admission.clone()))));
                             }
                             let child_host = host.clone();
                             let id = snapshot.agent_id.clone();
@@ -1336,6 +1350,13 @@ async fn create_child(
             return Err(failure("native writer identity changed"));
         }
         let store = Store::open(database).map_err(|_| failure("storage unavailable"))?;
+        let _permission_coordination = crate::permission_contracts::coordinate()
+            .map_err(|_| failure("permission coordination unavailable"))?;
+        crate::permission_contracts::require_admission_open(&store)
+            .map_err(|_| failure("permission admission unavailable"))?;
+        if !settings.authority.matches_fence() {
+            return Err(failure("delegated permission source changed"));
+        }
         crate::thread_access::verify(&store, &snapshot.agent_id, &admission)
             .map_err(|_| failure("child admission identity changed"))?;
         let tx = store
@@ -1407,7 +1428,7 @@ async fn create_child(
                 permission_mode,
             );
             draft.id = snapshot.agent_id.clone();
-            crate::threads::materialize_draft(&store, &draft)
+            crate::threads::materialize_draft_in_transaction(&tx, &draft)
                 .map_err(|_| failure("admission_failed"))?;
             if vega_store::threads::rename(&tx, &snapshot.agent_id, &snapshot.name, now_ms())
                 .map_err(|_| failure("admission_failed"))?
@@ -1474,6 +1495,23 @@ async fn create_child(
         let row = vega_store::threads::find(&tx, &snapshot.agent_id)
             .map_err(|_| failure("admission_failed"))?
             .ok_or_else(|| failure("admission_failed"))?;
+        let permission_fence = crate::permission_contracts::capture_delegated_fence(
+            &store,
+            &row,
+            &record.parent_thread_id,
+            &record.parent_message_id,
+            &record.child_message_id,
+            &settings.authority.permission_fence,
+        )
+        .map_err(|_| failure("delegated permission source changed"))?;
+        let encoded = serde_json::to_string(&permission_fence)
+            .map_err(|_| failure("delegated permission snapshot unavailable"))?;
+        vega_store::permission_contracts::record_delegated_fence(
+            &tx,
+            &record.child_thread_id,
+            &record.child_message_id,
+            &encoded,
+        )?;
         let child =
             crate::threads::thread_from_row(&row).map_err(|_| failure("admission_failed"))?;
         if cancel.is_cancelled() {

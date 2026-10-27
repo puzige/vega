@@ -344,6 +344,7 @@ impl VegaWindow {
     ) {
         if !self.is_draft_route(&request.thread_id)
             || !self.owns_stream_request(&stream, &request.thread_id, cx)
+            || self.trusted_actions.is_busy()
         {
             return;
         }
@@ -377,14 +378,26 @@ impl VegaWindow {
                     .try_global::<NewTaskDefaults>()
                     .cloned()
                     .unwrap_or_default();
-                vega_conversation::threads::draft_thread(
+                vega_conversation::threads::draft_thread_from_defaults(
                     bound,
                     &defaults.model,
-                    &defaults.permission_mode,
+                    defaults.permission,
                 )
             }
         };
-        let draft = if draft.project_binding() == bound {
+        let creating = self
+            .automation_controller
+            .draft_creation
+            .as_ref()
+            .is_some_and(|(thread, _)| thread == &draft.id)
+            || self
+                .agent_controller
+                .ordinary_preparing
+                .contains_key(&draft.id)
+            || self
+                .trusted_actions
+                .is_kind_active(TrustedActionKind::PermissionSelection);
+        let draft = if creating || draft.project_binding() == bound {
             draft
         } else {
             Thread {
@@ -828,10 +841,7 @@ impl VegaWindow {
                             reasoning_profiles,
                             reasoning_error,
                             reasoning_authority,
-                            NewTaskDefaults {
-                                model: config.defaults.model.clone(),
-                                permission_mode: config.defaults.permission_mode.clone(),
-                            },
+                            NewTaskDefaults::from_config(Some(&config_path), &config.defaults),
                             Some(config),
                         )
                     })
@@ -910,13 +920,24 @@ impl VegaWindow {
         self.configured_models = Some(models);
 
         let defaults_changed = cx.try_global::<NewTaskDefaults>() != Some(&defaults);
+        let default_model_changed = cx
+            .try_global::<NewTaskDefaults>()
+            .is_none_or(|previous| previous.model != defaults.model);
         if defaults_changed {
             cx.set_global(defaults.clone());
-            if let Some(draft) = self.draft.as_mut() {
+            if let Some(draft) = self.draft.as_mut()
+                && default_model_changed
+                && !self
+                    .agent_controller
+                    .ordinary_preparing
+                    .contains_key(&draft.id)
+                && !self
+                    .automation_controller
+                    .draft_creation
+                    .as_ref()
+                    .is_some_and(|(thread, _)| thread == &draft.id)
+            {
                 draft.model = defaults.model;
-                draft.permission_mode =
-                    vega_conversation::types::PermissionMode::parse(&defaults.permission_mode)
-                        .unwrap_or(vega_conversation::types::PermissionMode::Confirm);
                 let draft = draft.clone();
                 cx.set_global(OpenedThread(Some(draft.clone())));
                 if let Some((_, stream)) = &self.stream_view {
@@ -961,6 +982,10 @@ impl VegaWindow {
         if !self.owns_stream_request(&stream, &request.thread_id, cx) {
             return;
         }
+        if let Some(mode) = request.permission_mode {
+            self.request_thread_permission(stream, mode, cx);
+            return;
+        }
         // A model save owns the same thread configuration boundary until its
         // authoritative ack. Reject mode/permission changes at both layers
         // so a late model ack cannot overwrite a newer settings projection.
@@ -983,6 +1008,8 @@ impl VegaWindow {
             }
             if let Some(permission_mode) = request.permission_mode {
                 next.permission_mode = permission_mode;
+                next.full_access_grant = None;
+                next.default_permission = None;
             }
             cx.set_global(OpenedThread(Some(next.clone())));
             self.mirror_draft(&next);

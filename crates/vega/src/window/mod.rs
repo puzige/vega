@@ -20,6 +20,7 @@ mod agent;
 mod artifact;
 mod automation;
 mod automation_editor;
+mod automation_permission;
 mod branch;
 mod commit;
 mod commit_reconcile;
@@ -38,6 +39,7 @@ pub(crate) mod navigation;
 mod notifications;
 mod ordinary_send;
 mod pending_messages;
+mod permission_reset;
 mod pricing;
 mod privacy;
 mod reasoning;
@@ -46,6 +48,7 @@ mod scroll_state;
 mod session;
 mod skills;
 mod subagent_panel;
+mod thread_permissions;
 mod updater;
 mod workspace;
 
@@ -149,6 +152,7 @@ pub(crate) struct VegaWindow {
     pub(crate) branch_controller: BranchController,
     pub(crate) commit_controller: CommitController,
     pub(crate) trusted_actions: TrustedActionCoordinator,
+    permission_reset: permission_reset::ResetController,
     pub(crate) window_alive: Arc<AtomicBool>,
     pub(crate) configured_models: Option<Vec<ModelOption>>,
     model_capability_authority: Option<ModelCapabilityAuthority>,
@@ -192,10 +196,6 @@ pub(crate) struct VegaWindow {
 
 impl VegaWindow {
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
-        Self::new_with_services(cx, true)
-    }
-
-    fn new_with_services(cx: &mut Context<Self>, startup_services: bool) -> Self {
         cx.on_release(|this, cx| {
             let waiting_threads: Vec<_> = this
                 .agent_controller
@@ -264,6 +264,7 @@ impl VegaWindow {
         })
         .detach();
         cx.observe_global::<SettingsOpen>(|this, cx| {
+            this.cancel_unconfirmed_permission_reset(cx);
             this.cancel_composer_prediction(cx);
             this.cancel_context_if_route_stale(cx);
             this.cancel_file_index_if_route_stale(cx);
@@ -341,6 +342,7 @@ impl VegaWindow {
             branch_controller: BranchController::default(),
             commit_controller: CommitController::default(),
             trusted_actions: TrustedActionCoordinator::default(),
+            permission_reset: permission_reset::ResetController::default(),
             window_alive: Arc::new(AtomicBool::new(true)),
             configured_models: None,
             model_capability_authority: None,
@@ -361,10 +363,8 @@ impl VegaWindow {
             deferred_model_refresh: None,
             staged_model_pending: None,
         };
-        if startup_services {
-            window.start_pricing_load(cx);
-            window.start_updater(cx);
-        }
+        window.start_pricing_load(cx);
+        window.start_updater(cx);
         window
     }
 
@@ -374,8 +374,8 @@ impl VegaWindow {
         self.context_controller.cancel();
         self.window_alive.store(false, Ordering::SeqCst);
         self.agent_controller.queue_drain_waits.clear();
-        for (_, cancel) in self.agent_controller.ordinary_preparing.drain() {
-            cancel.cancel();
+        for (_, preparation) in self.agent_controller.ordinary_preparing.drain() {
+            preparation.cancel.cancel();
         }
         for (_, active) in self.agent_controller.active.drain() {
             if let Some(control) = &active.computer_use {

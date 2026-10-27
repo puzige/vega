@@ -37,6 +37,14 @@ pub trait PermissionHook: Send + Sync {
         request: PermissionRequest,
         cancel: CancellationToken,
     ) -> BoxFuture<'static, Result<PermissionDecision, VegaError>>;
+
+    fn request_scope(
+        &self,
+        _request: crate::types::CommandScopeRequest,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<crate::types::CommandScopeDecision, VegaError>> {
+        async { Ok(crate::types::CommandScopeDecision::Timeout) }.boxed()
+    }
 }
 
 mod compaction;
@@ -46,9 +54,12 @@ mod entry;
 mod events;
 mod ordinary;
 mod permission_queue;
+mod scope_permission;
+mod scoped_bash;
 pub use ordinary::{
     OrdinaryHistoryObservation, OrdinaryRun, finish_ordinary_worker, observe_ordinary_history,
 };
+pub use scope_permission::{CommandScopeLease, PendingScopePermission};
 mod stage_activity;
 mod subagents;
 mod user_question_queue;

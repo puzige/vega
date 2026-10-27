@@ -21,6 +21,7 @@ pub struct ProxyLease {
     pub ca_pem: String,
     broker: Arc<CredentialBroker>,
     cancel: CancellationToken,
+    worker: Option<tokio::task::JoinHandle<Result<(), CredentialError>>>,
 }
 
 impl ProxyLease {
@@ -47,11 +48,18 @@ impl ProxyLease {
         let cancel = parent.child_token();
         let listener_cancel = cancel.clone();
         let listener_broker = broker.clone();
-        tokio::spawn(async move {
+        let worker = tokio::spawn(async move {
             let permits = Arc::new(tokio::sync::Semaphore::new(16));
+            let mut connections = tokio::task::JoinSet::new();
+            let mut settled = true;
             loop {
                 let accepted = tokio::select! {
+                    biased;
                     _ = listener_cancel.cancelled() => break,
+                    result = connections.join_next(), if !connections.is_empty() => {
+                        settled &= result.is_some_and(|result| result.is_ok());
+                        continue;
+                    }
                     result = listener.accept() => result,
                 };
                 let Ok((stream, _)) = accepted else {
@@ -63,13 +71,24 @@ impl ProxyLease {
                 let broker = listener_broker.clone();
                 let issuer = issuer.clone();
                 let stop = listener_cancel.clone();
-                tokio::spawn(async move {
+                connections.spawn(async move {
                     let _permit = permit;
                     tokio::select! {
+                        biased;
                         _ = stop.cancelled() => {},
                         _ = tokio::time::timeout(Duration::from_secs(120), serve(stream, broker, issuer)) => {},
                     }
                 });
+            }
+            listener_cancel.cancel();
+            drop(listener);
+            while let Some(result) = connections.join_next().await {
+                settled &= result.is_ok();
+            }
+            if settled {
+                Ok(())
+            } else {
+                Err(CredentialError::ProxyUnavailable)
             }
         });
         Ok(Self {
@@ -77,7 +96,20 @@ impl ProxyLease {
             ca_pem,
             broker,
             cancel,
+            worker: Some(worker),
         })
+    }
+
+    pub async fn shutdown(mut self) -> Result<(), CredentialError> {
+        self.cancel();
+        let mut worker = self
+            .worker
+            .take()
+            .ok_or(CredentialError::ProxyUnavailable)?;
+        tokio::time::timeout(Duration::from_secs(2), &mut worker)
+            .await
+            .map_err(|_| CredentialError::ProxyUnavailable)?
+            .map_err(|_| CredentialError::ProxyUnavailable)?
     }
 
     pub fn cancel(&self) {

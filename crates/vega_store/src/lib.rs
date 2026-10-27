@@ -1,5 +1,6 @@
 pub mod automation;
 pub mod codex_tasks;
+pub mod command_scope;
 pub mod composer_prediction_events;
 pub mod computer_use_delivery;
 pub mod config;
@@ -15,6 +16,8 @@ pub mod model_capabilities;
 pub mod palette;
 pub mod paths;
 pub mod pending_messages;
+pub mod permission_contracts;
+pub mod permission_reset;
 pub mod permissions;
 pub mod projects;
 pub mod reasoning;
@@ -86,6 +89,9 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0040_composer_prediction_events.sql"),
     include_str!("../migrations/0041_provider_overloaded.sql"),
     include_str!("../migrations/0042_post_tool_runtime_diagnostics.sql"),
+    include_str!("../migrations/0043_permission_contracts.sql"),
+    include_str!("../migrations/0044_permission_reset.sql"),
+    include_str!("../migrations/0045_plan_instruction_authority.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
@@ -118,6 +124,18 @@ impl Store {
         Self::open_with_busy_timeout(path, std::time::Duration::from_secs(2))
     }
 
+    pub fn open_existing(path: impl AsRef<Path>) -> Result<Self, rusqlite::Error> {
+        let conn = Connection::open_with_flags(
+            path.as_ref(),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        Self::configure_connection(
+            conn,
+            Some(path.as_ref().to_path_buf()),
+            std::time::Duration::from_secs(2),
+        )
+    }
+
     pub fn open_with_busy_timeout(
         path: impl AsRef<Path>,
         busy_timeout: std::time::Duration,
@@ -129,6 +147,14 @@ impl Store {
             Some(path.to_path_buf())
         };
         let conn = Connection::open(path)?;
+        Self::configure_connection(conn, database_path, busy_timeout)
+    }
+
+    fn configure_connection(
+        conn: Connection,
+        database_path: Option<PathBuf>,
+        busy_timeout: std::time::Duration,
+    ) -> Result<Self, rusqlite::Error> {
         conn.busy_timeout(busy_timeout)?;
         let mode: String = conn.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
         if !mode.eq_ignore_ascii_case("wal") {
@@ -155,13 +181,20 @@ impl Store {
         let current: u32 = self
             .conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if current as usize >= MIGRATIONS.len() {
+        if current as usize > MIGRATIONS.len() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        if current as usize == MIGRATIONS.len() {
+            permission_contracts::load_state(&self.conn)?;
             return Ok(());
         }
         let _permit = write_coordination::acquire(&self.conn, WriteCategory::Migration)?;
         let current: u32 = self
             .conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if current as usize > MIGRATIONS.len() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
         for (index, sql) in MIGRATIONS.iter().enumerate() {
             let target = (index + 1) as u32;
             if current >= target {
@@ -175,6 +208,9 @@ impl Store {
             let result = (|| -> Result<(), rusqlite::Error> {
                 let tx = WriteTransaction::new(&self.conn, WriteCategory::Migration)?;
                 tx.execute_batch(sql)?;
+                if target == 43 {
+                    permission_contracts::initialize(&tx)?;
+                }
                 tx.pragma_update(None, "user_version", target)?;
                 tx.commit()
             })();
@@ -183,6 +219,7 @@ impl Store {
             }
             result?;
         }
+        permission_contracts::load_state(&self.conn)?;
         Ok(())
     }
 

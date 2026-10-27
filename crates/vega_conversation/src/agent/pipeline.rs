@@ -1,6 +1,8 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
+mod authority;
+
 pub(crate) fn valid_automation_call_projection(tool: &str, input_json: &str) -> bool {
     matches!(tool, "get_goal" | "update_goal" | "schedule_wakeup")
         && input_json.len() <= 32 * 1024
@@ -624,6 +626,53 @@ fn delegated_history(
     Ok(history)
 }
 
+fn rollback_preparation(
+    transaction: vega_store::write_coordination::WriteTransaction<'_>,
+    ordinary: Option<&super::ordinary::OrdinaryPreparation>,
+    recovery: Option<&crate::types::CommittedReceipt>,
+    user_message_id: &str,
+    user_content: &str,
+    images: &[crate::types::ImageAttachment],
+) {
+    if let Some(ordinary) = ordinary
+        && ordinary
+            .run
+            .submission
+            .snapshot()
+            .attempts
+            .last()
+            .is_some_and(|attempt| attempt.persisted.is_none())
+    {
+        let payload = messages::find(&transaction, user_message_id)
+            .ok()
+            .flatten()
+            .map(|user| crate::types::PersistedPayload::new(user.content, images.to_vec()))
+            .unwrap_or_else(|| {
+                recovery.map_or_else(
+                    || {
+                        crate::types::PersistedPayload::new(
+                            user_content.to_owned(),
+                            images.to_vec(),
+                        )
+                    },
+                    |receipt| {
+                        crate::types::PersistedPayload::new(
+                            receipt.persisted_text.clone(),
+                            receipt.persisted_images.to_vec(),
+                        )
+                    },
+                )
+            });
+        let _ = ordinary.worker.bind_persisted_payload(payload);
+    }
+    let rollback = transaction.rollback();
+    if let Some(ordinary) = ordinary {
+        let _ = ordinary
+            .worker
+            .record_not_committed(rollback.map_err(|_| crate::types::RollbackFailure::Failed));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_run_with_images_and_reasoning(
     database_path: PathBuf,
@@ -652,6 +701,23 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     let store = Store::open(&database_path).map_err(runtime_store_error)?;
     let admission =
         super::ordinary::verified_admission(&store, &thread_id, config.admission.as_ref())?;
+    let permission_coordination = crate::permission_contracts::coordinate()?;
+    crate::permission_contracts::require_admission_open(&store)?;
+    let _ = authority::verify_pending_sources(
+        &store,
+        &config,
+        &thread_id,
+        &user_message_id,
+        &user_content,
+        &images,
+        uses_existing_user,
+    )?;
+    if vega_store::permission_reset::load(store.conn())
+        .map_err(runtime_store_error)?
+        .is_some_and(|record| !record.completed)
+    {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
     if let Some(ordinary) = ordinary {
         ordinary.run.verify(&store, &thread_id)?;
         ordinary
@@ -704,62 +770,88 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         .map_err(runtime_store_error)?;
         tx.commit().map_err(runtime_store_error)?;
     }
-    let credential_values = match &config.owner_credential_reader {
-        Some(reader) => reader().map_err(|_| {
-            ConversationError::Runtime(Arc::new(VegaError::CredentialCheckUnavailable))
-        })?,
-        None => Vec::new(),
+    let credential_authority = {
+        let transaction = store.immediate_transaction().map_err(runtime_store_error)?;
+        let authority = match authority::verified(
+            &store,
+            &config,
+            &thread_id,
+            &assistant_message_id,
+            &user_message_id,
+            uses_existing_user,
+            &user_content,
+            &images,
+            ordinary,
+        ) {
+            Ok(authority) => authority,
+            Err(error) => {
+                rollback_preparation(
+                    transaction,
+                    ordinary,
+                    recovery.as_deref(),
+                    &user_message_id,
+                    &user_content,
+                    &images,
+                );
+                return Err(error);
+            }
+        };
+        transaction.commit().map_err(runtime_store_error)?;
+        authority
+    };
+    if let Some(slot) = &config.steering_authority
+        && slot.get_or_init(|| credential_authority.fence.clone()) != &credential_authority.fence
+    {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
+    let credential_values = if let Some(reader) = &config.run_credential_reader {
+        reader
+            .prepare(&credential_authority.fence, &assistant_message_id)
+            .map_err(|_| {
+                ConversationError::Runtime(Arc::new(VegaError::CredentialCheckUnavailable))
+            })?
+    } else {
+        match &config.owner_credential_reader {
+            Some(reader) => reader().map_err(|_| {
+                ConversationError::Runtime(Arc::new(VegaError::CredentialCheckUnavailable))
+            })?,
+            None => Vec::new(),
+        }
     };
     let transaction = store.immediate_transaction().map_err(runtime_store_error)?;
     let preparation = (|| -> Result<_, ConversationError> {
-        let thread = vega_store::threads::find(&transaction, &thread_id)
-            .map_err(runtime_store_error)?
-            .ok_or_else(|| ConversationError::NotFound(thread_id.clone()))?;
-        if let Some(expected) = &config.interrupted_assistant {
-            let tail = messages::interrupted_tail(&transaction, &thread_id)
-                .map_err(runtime_store_error)?;
-            if ordinary.is_some()
-                || uses_existing_user
-                || config.delegated
-                || config.credential_continuation_id.is_some()
-                || config.pending_message_id.is_some()
-                || config.automation_claim.is_some()
-                || !user_content.is_empty()
-                || !images.is_empty()
-                || tail
-                    .as_ref()
-                    .is_none_or(|(id, seq)| id != &expected.message_id || *seq != expected.seq)
-                || messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?
-                    != expected.seq.checked_add(1).ok_or_else(|| {
-                        ConversationError::CorruptRow("interrupted sequence overflow".into())
-                    })?
-            {
-                return Err(ConversationError::CorruptRow(
-                    "interrupted task changed; reopen the task before resuming".into(),
-                ));
+        let current = authority::verified(
+            &store,
+            &config,
+            &thread_id,
+            &assistant_message_id,
+            &user_message_id,
+            uses_existing_user,
+            &user_content,
+            &images,
+            ordinary,
+        )?;
+        if !credential_authority.matches(&current) {
+            if let Some(ordinary) = ordinary {
+                let _ = ordinary
+                    .run
+                    .submission
+                    .invalidate_recovery(ordinary.worker.attempt_id());
             }
-            user_message_id = transaction.query_row(
-                "SELECT id FROM messages WHERE thread_id = ?1 AND role = 'user' AND seq < ?2 ORDER BY seq DESC LIMIT 1",
-                (&thread_id, expected.seq),
-                |row| row.get::<_, String>(0),
-            ).map_err(runtime_store_error)?;
-        }
-        if let Some(ordinary) = ordinary
-            && (thread.model != ordinary.run.submission.raw().model()
-                || thread.backend != "native"
-                || thread.status == "archived"
-                || ordinary.run.thread.as_ref().is_some_and(|snapshot| {
-                    snapshot.project_id != thread.project_id
-                        || snapshot.mode.as_str() != thread.mode
-                        || snapshot.permission_mode.as_str() != thread.permission_mode
-                }))
-        {
-            let _ = ordinary
-                .run
-                .submission
-                .invalidate_recovery(ordinary.worker.attempt_id());
             return Err(ConversationError::InvalidTaskIdentity);
         }
+        let authority::RunAuthority {
+            fence: permission_fence,
+            thread,
+            run_mode,
+            permission_mode,
+            resumed_user,
+        } = current;
+        if let Some(resumed_user) = resumed_user {
+            user_message_id = resumed_user;
+        }
+        let permission_fence_json = serde_json::to_string(&permission_fence)
+            .map_err(|error| ConversationError::Store(error.to_string()))?;
         vega_store::delegated_stages::redact_payloads(&transaction, &thread_id, |text| {
             vega_runtime::redact_sensitive_credential_text_with_policy(
                 text,
@@ -803,15 +895,6 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         } else {
             None
         };
-        let run_mode = ThreadMode::parse(&thread.mode)
-            .ok_or_else(|| ConversationError::CorruptRow(format!("run mode: {}", thread.mode)))?;
-        let permission_mode = crate::types::PermissionMode::parse(&thread.permission_mode)
-            .ok_or_else(|| {
-                ConversationError::CorruptRow(format!(
-                    "permission_mode: {}",
-                    thread.permission_mode
-                ))
-            })?;
         if reasoning
             .as_ref()
             .is_some_and(|selection| selection.model != thread.model)
@@ -855,7 +938,9 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                 ))))
             })?;
         }
-        let exact_rules = if thread.project_id.is_empty() {
+        let exact_rules = if let Some(authority) = &config.delegated_authority {
+            authority.exact_rules.clone()
+        } else if thread.project_id.is_empty() {
             Vec::new()
         } else {
             permissions::list_exact(&transaction, &thread.project_id)
@@ -894,13 +979,14 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                         vega_i18n::t("domain.pending.error.changed").into(),
                     ));
                 }
-                let row = vega_store::pending_messages::find(&transaction, &thread_id, id)
-                    .map_err(runtime_store_error)?
-                    .ok_or_else(|| {
-                        ConversationError::Store(
-                            vega_i18n::t("domain.pending.error.delivered").into(),
-                        )
-                    })?;
+                let row =
+                    vega_store::pending_messages::find_dispatchable(&transaction, &thread_id, id)
+                        .map_err(runtime_store_error)?
+                        .ok_or_else(|| {
+                            ConversationError::Store(
+                                vega_i18n::t("domain.pending.error.delivered").into(),
+                            )
+                        })?;
                 let pending = crate::pending_messages::decode(row)?;
                 if pending.images != images {
                     return Err(ConversationError::Store(
@@ -928,6 +1014,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                         &transaction,
                         &receipt,
                         &assistant_message_id,
+                        &permission_fence_json,
                     )
                     .map_err(runtime_store_error)?
                 {
@@ -998,6 +1085,12 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                 || existing.content != crate::plans::APPROVAL_INSTRUCTION
                 || user_content != crate::plans::APPROVAL_INSTRUCTION
                 || run_mode != ThreadMode::Execute
+                || !vega_store::permission_reset::replay_allowed(
+                    &transaction,
+                    &thread_id,
+                    existing.seq,
+                )
+                .map_err(runtime_store_error)?
             {
                 return Err(ConversationError::CorruptRow(
                     "approved instruction identity mismatch".to_string(),
@@ -1111,6 +1204,14 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                 plan_review_note: None,
                 plan_reviewed_at: None,
             },
+        )
+        .map_err(runtime_store_error)?;
+
+        vega_store::permission_contracts::record_run_fence(
+            &transaction,
+            &assistant_message_id,
+            &thread_id,
+            &permission_fence_json,
         )
         .map_err(runtime_store_error)?;
 
@@ -1244,6 +1345,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             return Err(ConversationError::Runtime(Arc::new(VegaError::Cancelled)));
         }
         Ok((
+            permission_fence,
             thread,
             run_mode,
             permission_mode,
@@ -1264,6 +1366,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         ))
     })();
     let (
+        permission_fence,
         thread,
         run_mode,
         permission_mode,
@@ -1284,43 +1387,14 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     ) = match preparation {
         Ok(prepared) => prepared,
         Err(error) => {
-            if let Some(ordinary) = ordinary
-                && ordinary
-                    .run
-                    .submission
-                    .snapshot()
-                    .attempts
-                    .last()
-                    .is_some_and(|attempt| attempt.persisted.is_none())
-            {
-                let payload = messages::find(&transaction, &user_message_id)
-                    .ok()
-                    .flatten()
-                    .map(|user| crate::types::PersistedPayload::new(user.content, images.clone()))
-                    .unwrap_or_else(|| {
-                        recovery.as_ref().map_or_else(
-                            || {
-                                crate::types::PersistedPayload::new(
-                                    user_content.clone(),
-                                    images.clone(),
-                                )
-                            },
-                            |receipt| {
-                                crate::types::PersistedPayload::new(
-                                    receipt.persisted_text.clone(),
-                                    receipt.persisted_images.clone(),
-                                )
-                            },
-                        )
-                    });
-                let _ = ordinary.worker.bind_persisted_payload(payload);
-            }
-            let rollback = transaction.rollback();
-            if let Some(ordinary) = ordinary {
-                let _ = ordinary.worker.record_not_committed(
-                    rollback.map_err(|_| crate::types::RollbackFailure::Failed),
-                );
-            }
+            rollback_preparation(
+                transaction,
+                ordinary,
+                recovery.as_deref(),
+                &user_message_id,
+                &user_content,
+                &images,
+            );
             return Err(error);
         }
     };
@@ -1334,11 +1408,19 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         return Err(super::ordinary::fact_error(error));
     }
     transaction.commit().map_err(runtime_store_error)?;
+    drop(permission_coordination);
     if let (Some(ordinary), Some(receipt)) = (ordinary, receipt) {
         ordinary
             .worker
             .record_committed(receipt)
             .map_err(super::ordinary::fact_error)?;
+    }
+    if let Some(reader) = &config.run_credential_reader {
+        reader
+            .activate(&permission_fence, &assistant_message_id)
+            .map_err(|_| {
+                ConversationError::Runtime(Arc::new(VegaError::CredentialCheckUnavailable))
+            })?;
     }
     if let Some(request) = title_request {
         request.with_thread_admission(admission.clone()).launch(
@@ -1359,6 +1441,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     );
 
     Ok(PreparedRun {
+        permission_fence,
         _admission: admission,
         _delegated_owner: delegated_owner,
         database_path,
@@ -2175,20 +2258,21 @@ fn checkpoint_scope_id(project_id: &str, thread_id: &str) -> String {
 }
 
 pub(crate) fn is_safe_bash_failure(output: &str) -> bool {
-    const CODES: [&str; 9] = [
-        "scope_mismatch",
-        "hardlink_preflight",
-        "sandbox_unavailable",
-        "temp_unavailable",
-        "cleanup_failed",
-        "spawn_failed",
-        "process_control_failed",
-        "output_failed",
-        "timed_out",
+    use vega_tools::BashErrorCode;
+    const CODES: [BashErrorCode; 11] = [
+        BashErrorCode::ScopeMismatch,
+        BashErrorCode::ScopeDenied,
+        BashErrorCode::HardlinkPreflight,
+        BashErrorCode::SandboxUnavailable,
+        BashErrorCode::TempUnavailable,
+        BashErrorCode::CleanupFailed,
+        BashErrorCode::SpawnFailed,
+        BashErrorCode::ProcessControlFailed,
+        BashErrorCode::OutputFailed,
+        BashErrorCode::OutputIncomplete,
+        BashErrorCode::TimedOut,
     ];
-    CODES
-        .iter()
-        .any(|code| output == format!("Tool error: bash failed ({code})"))
+    CODES.iter().any(|code| output == code.tool_output())
 }
 
 pub(crate) fn legacy_unavailable_output(tool: &str) -> String {
@@ -2229,6 +2313,12 @@ pub(crate) fn bash_danger_audit_matches(input_json: &str, approval: &ApprovalAud
     match approval.source {
         ApprovalSource::Danger => {
             approval.decision == audit.decision && approval.note == audit.note
+        }
+        ApprovalSource::SandboxReadOnly => {
+            approval.decision == Approval::Deny
+                && approval.note.is_none()
+                && audit.decision == Approval::Deny
+                && audit.note.is_none()
         }
         ApprovalSource::ReadOnly => {
             approval.decision == Approval::Deny
@@ -2409,7 +2499,8 @@ pub(crate) fn approval_source_matches(
         "bash" => match status {
             RuntimeToolStatus::Rejected => matches!(
                 source,
-                ApprovalSource::RunMode
+                ApprovalSource::SandboxReadOnly
+                    | ApprovalSource::RunMode
                     | ApprovalSource::Validation
                     | ApprovalSource::Danger
                     | ApprovalSource::ReadOnly
@@ -2427,6 +2518,7 @@ pub(crate) fn approval_source_matches(
                     | ApprovalSource::Auto
                     | ApprovalSource::FullAccess
                     | ApprovalSource::Danger
+                    | ApprovalSource::SandboxReadOnly
                     | ApprovalSource::Legacy
             ),
         },

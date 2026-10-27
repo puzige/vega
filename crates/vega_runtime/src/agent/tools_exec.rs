@@ -86,7 +86,7 @@ pub(crate) enum PreparedRuntimeCall {
         call: RuntimeToolCall,
         tools: vega_tools::Tools,
         prepared: vega_tools::PreparedBash,
-        full_access: bool,
+        policy: vega_tools::BashLaunchPolicy,
     },
     InvalidWriteEdit {
         call: RuntimeToolCall,
@@ -172,10 +172,13 @@ impl PreparedRuntimeCall {
         let call = self.call();
         let input_json = match self {
             Self::UserQuestion { input, .. } => input.to_json().ok()?,
-            Self::Subagent { arguments, .. } | Self::Automation { arguments, .. } | Self::ComputerUse { arguments, .. } | Self::Mcp { arguments, .. } => arguments.to_string(),
+            Self::Subagent { arguments, .. }
+            | Self::Automation { arguments, .. }
+            | Self::ComputerUse { arguments, .. }
+            | Self::Mcp { arguments, .. } => arguments.to_string(),
             Self::Write { prepared, .. } => prepared.model_input_json(),
             Self::Edit { prepared, .. } => prepared.model_input_json()?,
-            Self::Bash { prepared, .. } if prepared.timeout_ms() % 1000 == 0 => serde_json::json!({"command":prepared.command(),"timeout":prepared.timeout_ms()/1000}).to_string(),
+            Self::Bash { prepared, .. } => prepared.input_json(),
             Self::PinnedRead { execution, .. } => canonical_read_input(&execution.input_json)?,
             Self::ExternalRead { call, .. } => canonical_read_input(&call.input_json)?,
             Self::Grep { model_input, .. } => model_input.clone(),
@@ -188,8 +191,14 @@ impl PreparedRuntimeCall {
                 required_str(&input, "pattern").ok()?;
                 input.to_string()
             }
-            Self::Skill { action: SkillToolAction::Load { name }, .. } => serde_json::json!({"name":name}).to_string(),
-            Self::Skill { action: SkillToolAction::Read { name, path }, .. } => serde_json::json!({"name":name,"path":path}).to_string(),
+            Self::Skill {
+                action: SkillToolAction::Load { name },
+                ..
+            } => serde_json::json!({"name":name}).to_string(),
+            Self::Skill {
+                action: SkillToolAction::Read { name, path },
+                ..
+            } => serde_json::json!({"name":name,"path":path}).to_string(),
             _ => return None,
         };
         Some(ChatToolCall {
@@ -539,15 +548,15 @@ pub(crate) fn prepare_runtime_call(
                 }
             }
         }
-        "bash" if config.run_mode != RuntimeRunMode::Execute => {
-            Ok(PreparedRuntimeCall::RunModeMutation(raw_call))
-        }
         "bash" => match base_tools.prepare_bash_json(&raw_call.input_json) {
             Ok(prepared) => Ok(PreparedRuntimeCall::Bash {
                 call: raw_call,
                 tools: base_tools.clone(),
                 prepared,
-                full_access: config.permission_mode == RuntimePermissionMode::FullAccess,
+                policy: crate::permission::bash_launch_policy(
+                    config.run_mode,
+                    config.permission_mode,
+                ),
             }),
             Err(_) => {
                 let safe_json = InvalidBashAudit::from_raw(&raw_call.input_json)
@@ -1153,6 +1162,32 @@ pub(crate) async fn authorize_call(
                 RuntimeCapabilityOutcome::ExecuteEligible(_) => Err(safe_permission_error()),
             }
         }
+        PreparedRuntimeCall::Bash {
+            prepared: bash,
+            policy: vega_tools::BashLaunchPolicy::ReadOnly,
+            ..
+        } => {
+            if crate::permission::bash_launch_policy(config.run_mode, config.permission_mode)
+                != vega_tools::BashLaunchPolicy::ReadOnly
+            {
+                return Err(safe_permission_error());
+            }
+            let target = prepared
+                .permission_target()
+                .ok_or_else(safe_permission_error)?;
+            let danger = vega_tools::danger::detect_danger(bash.command())
+                .map_err(|_| safe_permission_error())?
+                .map(|danger| RuntimeDangerFacts {
+                    rule_id: danger.rule_id.to_string(),
+                    reason: danger.reason.to_string(),
+                });
+            if cancel.is_cancelled() && danger.is_none() {
+                return Ok(cancelled_permission(prepared.call()));
+            }
+            let outcome = crate::permission::decide_readonly_bash(target.clone(), danger)
+                .map_err(|_| safe_permission_error())?;
+            permission_outcome(target, outcome)
+        }
         PreparedRuntimeCall::Write { .. }
         | PreparedRuntimeCall::Edit { .. }
         | PreparedRuntimeCall::Bash { .. } => {
@@ -1449,6 +1484,7 @@ pub(crate) fn runtime_inputs_semantically_equal(tool: &str, left: &str, right: &
 pub(crate) async fn execute_prepared_waiting(
     prepared: PreparedRuntimeCall,
     base_tools: &vega_tools::Tools,
+    permission_hook: &dyn RuntimePermissionHook,
     cancel: &CancellationToken,
 ) -> (RuntimeToolResult, bool) {
     match prepared {
@@ -1823,14 +1859,24 @@ pub(crate) async fn execute_prepared_waiting(
             call,
             tools,
             prepared,
-            full_access,
+            policy,
         } => {
-            let result = if full_access {
-                tools
-                    .execute_bash_full_access(prepared, cancel.child_token())
+            let result = if prepared.requested_scope().is_some()
+                && policy != vega_tools::BashLaunchPolicy::FullAccess
+            {
+                permission_hook
+                    .execute_scoped_bash(
+                        call.id.clone(),
+                        tools,
+                        prepared,
+                        policy,
+                        cancel.child_token(),
+                    )
                     .await
             } else {
-                tools.execute_bash(prepared, cancel.child_token()).await
+                tools
+                    .execute_bash(prepared, policy, cancel.child_token())
+                    .await
             };
             match result {
                 Ok(output) => (
@@ -1852,7 +1898,7 @@ pub(crate) async fn execute_prepared_waiting(
                     (
                         terminal_result(
                             &call,
-                            format!("Tool error: bash failed ({})", error.code().as_str()),
+                            error.code().tool_output(),
                             if cancelled {
                                 RuntimeToolStatus::Cancelled
                             } else {
@@ -2260,14 +2306,14 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
                 input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string"},"edits":{"type":"array","minItems":1,"items":{"type":"object","properties":{"oldText":{"type":"string","minLength":1},"newText":{"type":"string"}},"required":["oldText","newText"],"additionalProperties":false}}},"required":["path","edits"],"additionalProperties":false}),
                 strict: true,
             },
-            ToolDefinition {
-                name: "bash".into(),
-                description: "Run a non-empty command at the project root after approval, sandboxed unless Full access. timeout is a positive integer in seconds; null uses 120 seconds. A cd affects only this command. Filter large output and combine independent queries when useful; inspect omitted detail without automatically replaying commands with side effects. Example: {\"command\":\"pwd\",\"timeout\":null}.".into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"command":{"type":"string","minLength":1},"timeout":{"type":["integer","null"],"minimum":1,"maximum":18446744073709551u64}},"required":["command","timeout"],"additionalProperties":false}),
-                strict: true,
-            },
         ]);
     }
+    definitions.push(ToolDefinition {
+        name: "bash".into(),
+        description: "Run a non-empty command at the project root. Ask/Plan and ReadOnly use a read-only sandbox; Confirm/Auto permit workspace writes after approval. Sandboxed commands are offline and ignore user shell startup files by default. Optional requested_scope asks for one-command network access and/or extra writable directories with a reason; it requires separate explicit approval, never changes the permission mode, and cannot bypass danger checks. Extra writable directories require Execute Confirm/Auto. Network access with credential bindings uses only their HTTPS destinations; otherwise approval permits any network destination including local services. Full access uses current-user permissions without sandbox restrictions. timeout is positive seconds; null uses 120 seconds. A cd affects only this command. Filter large output; do not automatically retry side effects. Example: {\"command\":\"pwd\",\"timeout\":null}.".into(),
+        input_schema: serde_json::json!({"type":"object","properties":{"command":{"type":"string","minLength":1},"timeout":{"type":["integer","null"],"minimum":1,"maximum":18446744073709551u64},"requested_scope":{"type":"object","properties":{"network":{"type":"boolean","default":false},"write_roots":{"type":"array","items":{"type":"string"},"default":[]},"reason":{"type":"string","minLength":1,"maxLength":512}},"required":["reason"],"additionalProperties":false}},"required":["command","timeout"],"additionalProperties":false}),
+        strict: false,
+    });
     definitions
 }
 

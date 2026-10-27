@@ -2,8 +2,8 @@
 
 use std::fmt;
 use std::os::unix::process::ExitStatusExt;
-use std::path::PathBuf;
-use std::process::ExitStatus;
+use std::path::{Path, PathBuf};
+use std::process::{Command as StdCommand, ExitStatus};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -15,7 +15,17 @@ use tokio_util::sync::CancellationToken;
 use crate::Tools;
 use crate::error::{BashError, BashErrorCode};
 use crate::output::{BASH_READ_CHUNK_BYTES, BashOutput, BashOutputCollector, CollectedBashOutput};
-use crate::sandbox::{SandboxConfig, TempRoot, spawn_full_access_shell};
+use crate::sandbox::{SandboxConfig, SandboxNetwork, TempRoot, full_access_shell_command};
+
+mod scope;
+pub use scope::{BashScopeDirectory, BashScopeRequest, PreparedBashScope};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BashLaunchPolicy {
+    ReadOnly,
+    WorkspaceWrite,
+    FullAccess,
+}
 
 /// Default bash timeout required by the Phase 1 tool contract.
 pub const DEFAULT_BASH_TIMEOUT_MS: u64 = 120_000;
@@ -30,6 +40,7 @@ pub struct PreparedBash {
     project_root: PathBuf,
     command: String,
     timeout_ms: u64,
+    requested_scope: Option<BashScopeRequest>,
 }
 
 impl PreparedBash {
@@ -41,6 +52,30 @@ impl PreparedBash {
     /// Effective timeout in milliseconds.
     pub const fn timeout_ms(&self) -> u64 {
         self.timeout_ms
+    }
+
+    pub fn project_root(&self) -> &Path {
+        &self.project_root
+    }
+
+    pub const fn tool_instance_id(&self) -> u64 {
+        self.instance_id
+    }
+
+    pub fn requested_scope(&self) -> Option<&BashScopeRequest> {
+        self.requested_scope.as_ref()
+    }
+
+    pub fn input_json(&self) -> String {
+        let mut input = if self.timeout_ms.is_multiple_of(1000) {
+            serde_json::json!({"command": self.command, "timeout": self.timeout_ms / 1000})
+        } else {
+            serde_json::json!({"cmd": self.command, "timeout_ms": self.timeout_ms})
+        };
+        if let Some(scope) = &self.requested_scope {
+            input["requested_scope"] = serde_json::json!(scope);
+        }
+        input.to_string()
     }
 }
 
@@ -65,10 +100,17 @@ pub enum BashInputError {
     UnexpectedField,
     ConflictingFields,
     InvalidTimeout,
+    InvalidScope,
+}
+
+impl fmt::Display for BashInputError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 impl BashInputError {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::MalformedJson,
         Self::InputNotObject,
         Self::MissingCommand,
@@ -77,6 +119,7 @@ impl BashInputError {
         Self::UnexpectedField,
         Self::ConflictingFields,
         Self::InvalidTimeout,
+        Self::InvalidScope,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -89,6 +132,7 @@ impl BashInputError {
             Self::UnexpectedField => "unexpected_field",
             Self::ConflictingFields => "conflicting_fields",
             Self::InvalidTimeout => "invalid_timeout",
+            Self::InvalidScope => "invalid_scope",
         }
     }
 
@@ -102,42 +146,22 @@ impl BashInputError {
 
 impl Tools {
     pub fn prepare_bash_json(&self, raw_input: &str) -> Result<PreparedBash, BashError> {
-        let (command, timeout_ms) =
+        let (command, timeout_ms, requested_scope) =
             parse_bash_input(raw_input).map_err(|_| BashError::new(BashErrorCode::InvalidInput))?;
         Ok(PreparedBash {
             instance_id: self.instance_id,
             project_root: self.root.clone(),
             command,
             timeout_ms,
+            requested_scope,
         })
     }
 
-    /// Execute an already permission-approved bash call through Seatbelt.
-    pub async fn execute_bash(
+    fn validate_bash_launch(
         &self,
-        prepared: PreparedBash,
-        cancel: CancellationToken,
-    ) -> Result<BashOutput, BashError> {
-        self.execute_bash_inner(prepared, cancel, false).await
-    }
-
-    /// Execute an approved Full access call with current-user OS permissions.
-    /// The caller must authorize this policy independently of provider JSON.
-    pub async fn execute_bash_full_access(
-        &self,
-        prepared: PreparedBash,
-        cancel: CancellationToken,
-    ) -> Result<BashOutput, BashError> {
-        self.execute_bash_inner(prepared, cancel, true).await
-    }
-
-    async fn execute_bash_inner(
-        &self,
-        prepared: PreparedBash,
-        cancel: CancellationToken,
-
-        full_access: bool,
-    ) -> Result<BashOutput, BashError> {
+        prepared: &PreparedBash,
+        cancel: &CancellationToken,
+    ) -> Result<(), BashError> {
         if self.instance_id != prepared.instance_id || self.root != prepared.project_root {
             return Err(BashError::new(BashErrorCode::ScopeMismatch));
         }
@@ -145,23 +169,35 @@ impl Tools {
             return Err(BashError::new(BashErrorCode::Cancelled));
         }
 
-        if full_access
-            && self
-                .credential_policy
-                .as_ref()
-                .is_some_and(|policy| policy.has_bindings())
-        {
-            return Err(BashError::new(BashErrorCode::CredentialProtectionRequired));
-        }
-        let sandbox = if full_access {
-            None
-        } else {
-            Some(SandboxConfig::new(&self.root)?)
-        };
-        let temp_root = TempRoot::create()?;
+        Ok(())
+    }
 
+    pub async fn execute_bash(
+        &self,
+        prepared: PreparedBash,
+        policy: BashLaunchPolicy,
+        cancel: CancellationToken,
+    ) -> Result<BashOutput, BashError> {
+        self.execute_bash_scoped(prepared, policy, None, cancel)
+            .await
+    }
+
+    pub async fn execute_bash_scoped(
+        &self,
+        prepared: PreparedBash,
+        policy: BashLaunchPolicy,
+        scope: Option<PreparedBashScope>,
+        cancel: CancellationToken,
+    ) -> Result<BashOutput, BashError> {
+        self.validate_bash_launch(&prepared, &cancel)?;
+        if let Some(scope) = &scope {
+            scope.validate(&prepared, policy)?;
+        } else if prepared.requested_scope.is_some() && policy != BashLaunchPolicy::FullAccess {
+            return Err(BashError::new(BashErrorCode::ScopeMismatch));
+        }
+        let temp_root = TempRoot::create()?;
         let result = self
-            .execute_bash_with_temp(prepared, cancel, sandbox.as_ref(), &temp_root)
+            .execute_bash_with_temp(prepared, policy, scope, cancel, &temp_root)
             .await;
         if result.cleanup_safe {
             match temp_root.cleanup() {
@@ -173,84 +209,222 @@ impl Tools {
         }
     }
 
+    async fn prepare_bash_launch(
+        &self,
+        prepared: &PreparedBash,
+        policy: BashLaunchPolicy,
+        cancel: &CancellationToken,
+        temp_root: &TempRoot,
+    ) -> Result<BashLaunch, BashLaunchFailure> {
+        self.prepare_scoped_bash_launch(prepared, policy, None, cancel, temp_root)
+            .await
+    }
+
+    async fn prepare_scoped_bash_launch(
+        &self,
+        prepared: &PreparedBash,
+        policy: BashLaunchPolicy,
+        scope: Option<&PreparedBashScope>,
+        cancel: &CancellationToken,
+        temp_root: &TempRoot,
+    ) -> Result<BashLaunch, BashLaunchFailure> {
+        let mut lease = None;
+        match self
+            .build_scoped_bash_launch(prepared, policy, scope, cancel, temp_root, &mut lease)
+            .await
+        {
+            Ok(command) => Ok(BashLaunch {
+                command,
+                credential_lease: lease,
+            }),
+            Err(mut failure) => {
+                if let Some(lease) = lease
+                    && lease.shutdown().await.is_err()
+                {
+                    failure.error = BashError::new(BashErrorCode::CleanupFailed);
+                    failure.cleanup_safe = false;
+                }
+                Err(failure)
+            }
+        }
+    }
+
+    async fn build_scoped_bash_launch(
+        &self,
+        prepared: &PreparedBash,
+        policy: BashLaunchPolicy,
+        scope: Option<&PreparedBashScope>,
+        cancel: &CancellationToken,
+        temp_root: &TempRoot,
+        lease: &mut Option<vega_credentials::ProxyLease>,
+    ) -> Result<StdCommand, BashLaunchFailure> {
+        self.validate_bash_launch(prepared, cancel)?;
+        if policy == BashLaunchPolicy::FullAccess {
+            return full_access_shell_command(&self.root, &prepared.command, temp_root)
+                .map_err(Into::into);
+        }
+        if let Some(credentials) = &self.credential_policy {
+            credentials.validate_bindings()?;
+        }
+        let sandbox = if let Some(scope) = scope {
+            scope.validate(prepared, policy)?;
+            if self.bash_binding_snapshot()? != scope.bindings {
+                return Err(BashError::new(BashErrorCode::ScopeMismatch).into());
+            }
+            let mut environment = std::collections::BTreeMap::new();
+            let network = if !scope.network() {
+                SandboxNetwork::Denied
+            } else if scope.bindings.is_empty() {
+                SandboxNetwork::Direct
+            } else {
+                let credentials = self
+                    .credential_policy
+                    .as_ref()
+                    .ok_or_else(|| BashError::new(BashErrorCode::ScopeMismatch))?;
+                let broker = vega_credentials::CredentialBroker::new(
+                    &scope.bindings,
+                    credentials.reader.clone(),
+                )
+                .map_err(|_| BashError::new(BashErrorCode::SandboxUnavailable))?;
+                self.validate_bash_launch(prepared, cancel)?;
+                *lease = Some(
+                    vega_credentials::ProxyLease::start(broker, cancel.clone())
+                        .await
+                        .map_err(|_| BashError::new(BashErrorCode::SandboxUnavailable))?,
+                );
+                let proxy = lease
+                    .as_ref()
+                    .ok_or_else(|| BashError::new(BashErrorCode::SandboxUnavailable))?;
+                temp_root.validate_identity()?;
+                let ca_path = temp_root.path().join("ca.pem");
+                std::fs::write(&ca_path, &proxy.ca_pem)
+                    .map_err(|_| BashError::new(BashErrorCode::TempUnavailable))?;
+                environment = proxy
+                    .environment(
+                        ca_path
+                            .to_str()
+                            .ok_or_else(|| BashError::new(BashErrorCode::TempUnavailable))?,
+                    )
+                    .map_err(|_| BashError::new(BashErrorCode::SandboxUnavailable))?;
+                SandboxNetwork::Broker(proxy.port)
+            };
+            SandboxConfig::scoped(
+                &self.root,
+                policy,
+                temp_root,
+                self.credential_policy
+                    .as_ref()
+                    .map(|policy| policy.protected_root.as_path()),
+                network,
+                scope.directories.clone(),
+                environment,
+            )?
+        } else {
+            if prepared.requested_scope.is_some() {
+                return Err(BashError::new(BashErrorCode::ScopeMismatch).into());
+            }
+            SandboxConfig::new(
+                &self.root,
+                policy,
+                temp_root,
+                self.credential_policy
+                    .as_ref()
+                    .map(|policy| policy.protected_root.as_path()),
+            )?
+        };
+        self.validate_bash_launch(prepared, cancel)?;
+        let self_test = sandbox
+            .self_test(
+                temp_root,
+                cancel,
+                Duration::from_millis(prepared.timeout_ms),
+            )
+            .await;
+        if let Err(error) = self_test.result {
+            return Err(BashLaunchFailure {
+                error,
+                cleanup_safe: self_test.cleanup_safe,
+            });
+        }
+        self.validate_bash_launch(prepared, cancel)?;
+        if let Some(scope) = scope {
+            scope.validate(prepared, policy)?;
+            if self.bash_binding_snapshot()? != scope.bindings {
+                return Err(BashError::new(BashErrorCode::ScopeMismatch).into());
+            }
+        }
+        sandbox
+            .shell_command(&prepared.command, temp_root)
+            .map_err(Into::into)
+    }
+
     async fn execute_bash_with_temp(
         &self,
         prepared: PreparedBash,
+        policy: BashLaunchPolicy,
+        scope: Option<PreparedBashScope>,
         cancel: CancellationToken,
-
-        sandbox: Option<&SandboxConfig>,
         temp_root: &TempRoot,
     ) -> BashAttempt {
-        if let Some(sandbox) = sandbox
-            && let Err(error) = sandbox.preflight(temp_root)
-        {
-            return BashAttempt::safe(Err(error));
-        }
-
-        if let Some(sandbox) = sandbox {
-            let self_test = sandbox.self_test(temp_root).await;
-            if let Err(error) = self_test.result {
+        let launch_result = if let Some(scope) = &scope {
+            self.prepare_scoped_bash_launch(&prepared, policy, Some(scope), &cancel, temp_root)
+                .await
+        } else {
+            self.prepare_bash_launch(&prepared, policy, &cancel, temp_root)
+                .await
+        };
+        let launch = match launch_result {
+            Ok(launch) => launch,
+            Err(failure) => {
                 return BashAttempt {
-                    result: Err(error),
-                    cleanup_safe: self_test.cleanup_safe,
+                    result: Err(failure.error),
+                    cleanup_safe: failure.cleanup_safe,
                 };
             }
+        };
+        let mut attempt = self
+            .execute_bash_command(prepared, launch.command, cancel, temp_root)
+            .await;
+        if let Some(lease) = launch.credential_lease
+            && lease.shutdown().await.is_err()
+        {
+            attempt.result = Err(BashError::new(BashErrorCode::CleanupFailed));
+            attempt.cleanup_safe = false;
         }
+        attempt
+    }
+
+    async fn execute_bash_command(
+        &self,
+        prepared: PreparedBash,
+        command: StdCommand,
+        cancel: CancellationToken,
+        temp_root: &TempRoot,
+    ) -> BashAttempt {
         if cancel.is_cancelled() {
             return BashAttempt::safe(Err(BashError::new(BashErrorCode::Cancelled)));
         }
-
-        let credential_lease = match &self.credential_policy {
-            Some(policy) => match policy
-                .start(&temp_root.path().join("credential-ca.pem"), cancel.clone())
-                .await
-            {
-                Ok(lease) => lease,
-                Err(error) => return BashAttempt::safe(Err(error)),
-            },
-            None => None,
-        };
-        let credential_context = self.credential_policy.as_ref().map(|policy| {
-            let mut environment = crate::credentials::controlled_environment(temp_root.path());
-            if let Some((_, values)) = &credential_lease {
-                environment.extend(values.clone());
-            }
-            crate::sandbox::ShellCredentialContext {
-                protected_root: policy.protected_root.clone(),
-                proxy_port: credential_lease.as_ref().map(|(lease, _)| lease.port),
-                environment,
-            }
-        });
         let started = Instant::now();
-        let spawned = match sandbox {
-            Some(sandbox) => {
-                sandbox.spawn_shell(&prepared.command, temp_root, credential_context.as_ref())
-            }
-            None => spawn_full_access_shell(
-                &self.root,
-                &prepared.command,
-                temp_root,
-                credential_context.as_ref(),
-            ),
-        };
-        let mut child = match spawned {
+        let mut command = Command::from(command);
+        command.kill_on_drop(true);
+        let mut child = match command.spawn() {
             Ok(child) => child,
-            Err(error) => return BashAttempt::safe(Err(error)),
+            Err(_) => return BashAttempt::safe(Err(BashError::new(BashErrorCode::SpawnFailed))),
         };
-        let Some(pgid) = child.id() else {
-            let reaped = terminate_child_without_group(&mut child).await;
+        if child.id().is_none() {
+            let _ = terminate_child_without_group(&mut child).await;
             return BashAttempt {
                 result: Err(BashError::new(BashErrorCode::ProcessControlFailed)),
-                cleanup_safe: reaped,
+                cleanup_safe: false,
             };
-        };
+        }
         let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
-            let termination = terminate_group(&mut child, pgid).await;
+            let termination = terminate_group(&mut child).await;
             return BashAttempt {
                 result: Err(termination
                     .error
                     .unwrap_or_else(|| BashError::new(BashErrorCode::OutputFailed))),
-                cleanup_safe: termination.reaped,
+                cleanup_safe: termination.reaped && termination.error.is_none(),
             };
         };
         let reader_stop = CancellationToken::new();
@@ -274,16 +448,16 @@ impl Tools {
                 let status = match status {
                     Ok(status) => status,
                     Err(_) => {
-                        let termination = terminate_group(&mut child, pgid).await;
+                        let _ = terminate_child_without_group(&mut child).await;
                         reader_stop.cancel();
-                        let reader_ok = finish_stopped_reader(reader).await.is_ok();
+                        let _ = finish_stopped_reader(reader).await;
                         return BashAttempt {
                             result: Err(BashError::new(BashErrorCode::ProcessControlFailed)),
-                            cleanup_safe: termination.reaped && reader_ok,
+                            cleanup_safe: false,
                         };
                     }
                 };
-                match finish_reader(&mut reader, &reader_stop, Some(pgid)).await {
+                match finish_reader(&mut reader, &reader_stop).await {
                     Ok(mut collected) => {
                         redact_temp_path(&mut collected.text, temp_root.param());
                         BashAttempt::safe(Ok(build_output(status, started, collected)))
@@ -295,7 +469,7 @@ impl Tools {
                 }
             }
             Completion::Cancelled => {
-                let termination = terminate_group(&mut child, pgid).await;
+                let termination = terminate_group(&mut child).await;
                 reader_stop.cancel();
                 let reader_result = finish_stopped_reader(reader).await;
                 let reader_ok = reader_result.is_ok();
@@ -304,11 +478,11 @@ impl Tools {
                         .error
                         .or_else(|| reader_result.err())
                         .map_or_else(|| Err(BashError::new(BashErrorCode::Cancelled)), Err),
-                    cleanup_safe: termination.reaped && reader_ok,
+                    cleanup_safe: termination.reaped && termination.error.is_none() && reader_ok,
                 }
             }
             Completion::TimedOut => {
-                let termination = terminate_group(&mut child, pgid).await;
+                let termination = terminate_group(&mut child).await;
                 reader_stop.cancel();
                 let reader_result = finish_stopped_reader(reader).await;
                 let reader_ok = reader_result.is_ok();
@@ -317,7 +491,7 @@ impl Tools {
                         .error
                         .or_else(|| reader_result.err())
                         .map_or_else(|| Err(BashError::new(BashErrorCode::TimedOut)), Err),
-                    cleanup_safe: termination.reaped && reader_ok,
+                    cleanup_safe: termination.reaped && termination.error.is_none() && reader_ok,
                 }
             }
         }
@@ -328,7 +502,7 @@ impl Tools {
 /// execution capability. Conversation uses this to validate persisted rules.
 pub fn bash_permission_signature(raw_input: &str) -> Result<String, BashError> {
     parse_bash_input(raw_input)
-        .map(|(command, _)| command)
+        .map(|(command, _, _)| command)
         .map_err(|_| BashError::new(BashErrorCode::InvalidInput))
 }
 
@@ -356,7 +530,9 @@ pub fn bash_inputs_semantically_equal(left: &str, right: &str) -> bool {
     }
 }
 
-fn parse_bash_input(raw_input: &str) -> Result<(String, u64), BashInputError> {
+fn parse_bash_input(
+    raw_input: &str,
+) -> Result<(String, u64, Option<BashScopeRequest>), BashInputError> {
     let value =
         crate::json::parse_unique_value(raw_input).map_err(|_| BashInputError::MalformedJson)?;
     let input = value.as_object().ok_or(BashInputError::InputNotObject)?;
@@ -367,10 +543,12 @@ fn parse_bash_input(raw_input: &str) -> Result<(String, u64), BashInputError> {
     {
         return Err(BashInputError::ConflictingFields);
     }
-    if input
-        .keys()
-        .any(|key| !matches!(key.as_str(), "command" | "cmd" | "timeout" | "timeout_ms"))
-    {
+    if input.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "command" | "cmd" | "timeout" | "timeout_ms" | "requested_scope"
+        )
+    }) {
         return Err(BashInputError::UnexpectedField);
     }
     let command = input
@@ -398,7 +576,33 @@ fn parse_bash_input(raw_input: &str) -> Result<(String, u64), BashInputError> {
             }
         }
     };
-    Ok((command.to_owned(), timeout_ms))
+    let requested_scope = input
+        .get("requested_scope")
+        .map(|value| {
+            serde_json::from_value(value.clone()).map_err(|_| BashInputError::InvalidScope)
+        })
+        .transpose()?;
+    Ok((command.to_owned(), timeout_ms, requested_scope))
+}
+
+struct BashLaunch {
+    command: StdCommand,
+    credential_lease: Option<vega_credentials::ProxyLease>,
+}
+
+#[derive(Debug)]
+struct BashLaunchFailure {
+    error: BashError,
+    cleanup_safe: bool,
+}
+
+impl From<BashError> for BashLaunchFailure {
+    fn from(error: BashError) -> Self {
+        Self {
+            error,
+            cleanup_safe: true,
+        }
+    }
 }
 
 struct BashAttempt {
@@ -426,7 +630,11 @@ async fn read_output(
     let mut stdout_open = true;
     let mut stderr_open = true;
     while stdout_open || stderr_open {
+        if stop.is_cancelled() {
+            break;
+        }
         tokio::select! {
+            _ = stop.cancelled() => break,
             result = stdout.read(&mut stdout_chunk), if stdout_open => {
                 let read = result.map_err(|_| BashError::new(BashErrorCode::OutputFailed))?;
                 stdout_open = read != 0;
@@ -437,7 +645,6 @@ async fn read_output(
                 stderr_open = read != 0;
                 collector.push(&stderr_chunk[..read]);
             }
-            _ = stop.cancelled() => break,
         }
     }
     Ok(collector.finish())
@@ -446,29 +653,13 @@ async fn read_output(
 async fn finish_reader(
     reader: &mut JoinHandle<Result<CollectedBashOutput, BashError>>,
     stop: &CancellationToken,
-    pgid: Option<u32>,
 ) -> Result<CollectedBashOutput, BashError> {
     match tokio::time::timeout(OUTPUT_DRAIN_GRACE, &mut *reader).await {
         Ok(result) => join_output(result),
         Err(_) => {
-            let mut signal_error = None;
-            if let Some(group) = pgid {
-                signal_error = signal_group(group, "-TERM").await.err();
-                tokio::time::sleep(TERMINATION_GRACE).await;
-                if let Err(error) = signal_group(group, "-KILL").await
-                    && signal_error.is_none()
-                {
-                    signal_error = Some(error);
-                }
-            }
             stop.cancel();
-            let result = (&mut *reader).await;
-            let collected = join_output(result)?;
-            if let Some(error) = signal_error {
-                Err(error)
-            } else {
-                Ok(collected)
-            }
+            let _ = join_output((&mut *reader).await)?;
+            Err(BashError::new(BashErrorCode::OutputIncomplete))
         }
     }
 }
@@ -490,7 +681,13 @@ struct Termination {
     error: Option<BashError>,
 }
 
-async fn terminate_group(child: &mut Child, pgid: u32) -> Termination {
+async fn terminate_group(child: &mut Child) -> Termination {
+    let Some(pgid) = child.id() else {
+        return Termination {
+            reaped: false,
+            error: Some(BashError::new(BashErrorCode::ProcessControlFailed)),
+        };
+    };
     let mut error = signal_group(pgid, "-TERM").await.err();
     tokio::time::sleep(TERMINATION_GRACE).await;
     if let Err(kill_error) = signal_group(pgid, "-KILL").await

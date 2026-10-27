@@ -7,6 +7,9 @@ pub(crate) enum TrustedActionKind {
     ArtifactOpen,
     Commit,
     ModelSelection,
+    PermissionSelection,
+    PermissionReset,
+    DraftAutomationCreation,
     AgentPreflight,
     SkillSelection,
     /// Conversation context settings and manual summary operations own the
@@ -81,6 +84,14 @@ impl TrustedActionCoordinator {
             .unwrap_or_else(|poison| poison.into_inner())
             .active
             .is_some()
+    }
+
+    pub(crate) fn is_kind_active(&self, kind: TrustedActionKind) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .active
+            .is_some_and(|token| token.kind == kind)
     }
 
     pub(crate) fn cancel_agent_preparation(&self) -> bool {

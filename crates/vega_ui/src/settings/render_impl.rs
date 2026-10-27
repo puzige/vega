@@ -344,6 +344,9 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) {
         // 与 Esc 同效：派发同一动作，由 app 级处理器统一收口。
+        if self.guard_default_permission_close(window, cx) {
+            return;
+        }
         if self.settings_have_draft(cx) {
             self.pending_settings_close = true;
             self.pending_section = Some(SettingsDestination::ModelSection(self.section));
@@ -363,15 +366,6 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) {
         self.submit_provider(cx);
-    }
-
-    pub(crate) fn select_mode(&mut self, mode: &'static str, cx: &mut Context<Self>) {
-        self.mode_open = false;
-        let mut candidate = self.config.clone();
-        if select_permission_mode(&mut candidate, mode).is_ok() {
-            self.save_preferences(candidate, cx);
-        }
-        cx.notify();
     }
 
     pub(crate) fn select_model(&mut self, model: &str, cx: &mut Context<Self>) {
@@ -583,7 +577,7 @@ impl SettingsView {
         let sidebar_visible = !cx
             .try_global::<crate::sidebar::SidebarCollapsed>()
             .is_some_and(|sidebar| sidebar.0);
-        let enabled = !self.provider_management.saving;
+        let enabled = !self.provider_management.saving && !self.default_permission.io_pending();
         let languages = settings_actions().children(
             [
                 ("en", "settings-language-en", "settings.language.english"),
@@ -779,7 +773,7 @@ impl SettingsView {
     }
 
     pub(super) fn render_composer_predictions_switch(&self, cx: &mut Context<Self>) -> AnyElement {
-        let enabled = !self.provider_management.saving;
+        let enabled = !self.provider_management.saving && !self.default_permission.io_pending();
         settings_switch(
             "settings-composer-predictions-switch",
             t("settings.defaults.predictions"),
@@ -811,7 +805,7 @@ impl SettingsView {
     fn render_running_message_behavior(&self, cx: &mut Context<Self>) -> AnyElement {
         use vega_conversation::types::PendingMessageBehavior;
         let colors = theme(cx).colors;
-        let enabled = !self.provider_management.saving;
+        let enabled = !self.provider_management.saving && !self.default_permission.io_pending();
         settings_actions()
             .children(
                 [PendingMessageBehavior::Queue, PendingMessageBehavior::Steer]
@@ -887,6 +881,7 @@ impl SettingsView {
     pub(crate) fn render_mode_selector(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let current = self.config.defaults.permission_mode.clone();
+        let enabled = self.permission_picker_enabled();
         div()
             .min_w_0()
             .max_w_full()
@@ -896,30 +891,43 @@ impl SettingsView {
             .child(
                 settings_action_chrome(colors)
                     .id("settings-mode-picker")
+                    .role(gpui_kit::Role::Button)
+                    .aria_label(format!(
+                        "{}: {}",
+                        t("settings.defaults.permission_mode"),
+                        permission_mode_label(&current)
+                    ))
+                    .aria_toggled(self.mode_open.into())
+                    .when(!enabled, |button| button.text_color(colors.text_tertiary))
                     .interaction_surface(
                         colors.bg_elevated,
                         colors.bg_hover,
                         colors.bg_active,
-                        true,
+                        enabled,
                     )
-                    .focusable()
+                    .track_focus(&self.permission_picker_focus())
                     .tab_stop(true)
                     .focus_visible(move |style| style.border_color(colors.accent))
-                    .on_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            this.mode_open = !this.mode_open;
-                            cx.stop_propagation();
-                            cx.notify();
-                        }
-                    }))
-                    .cursor_pointer()
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                            this.mode_open = !this.mode_open;
-                            cx.notify();
-                        }),
-                    )
+                    .when(enabled, |button| {
+                        button
+                            .on_key_down(cx.listener(
+                                |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                        this.mode_open = !this.mode_open;
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }
+                                },
+                            ))
+                            .cursor_pointer()
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                    this.mode_open = !this.mode_open;
+                                    cx.notify();
+                                }),
+                            )
+                    })
                     .child(permission_mode_label(&current))
                     .child(crate::icons::icon(
                         if self.mode_open {
@@ -930,13 +938,23 @@ impl SettingsView {
                         colors.text_tertiary,
                     )),
             )
-            .when(self.mode_open, |column| {
+            .when(self.mode_open && enabled, |column| {
                 column.children(PERMISSION_MODES.iter().map(|mode| {
                     let selected = *mode == current;
                     div()
                         .id(gpui_kit::SharedString::from(format!(
                             "settings-permission-option-{mode}"
                         )))
+                        .role(gpui_kit::Role::Button)
+                        .aria_label(if selected {
+                            t_args(
+                                "settings.selection.selected",
+                                &[("label", permission_mode_label(mode))],
+                            )
+                        } else {
+                            permission_mode_label(mode).to_string()
+                        })
+                        .aria_toggled(selected.into())
                         .interaction_surface(
                             if selected {
                                 colors.bg_active
@@ -991,6 +1009,8 @@ impl SettingsView {
                         .child(permission_mode_label(mode))
                 }))
             })
+            .child(self.render_default_permission_feedback(cx))
+            .child(self.render_permission_reset(cx))
             .into_any_element()
     }
 
@@ -999,6 +1019,7 @@ impl SettingsView {
     pub(crate) fn render_model_selector(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let models = all_models(&self.config.providers);
+        let enabled = !self.provider_management.saving && !self.default_permission.io_pending();
         let current = self.config.defaults.model.clone();
         let trigger_label = if current.is_empty() {
             t("settings.model.not_selected").to_string()
@@ -1018,26 +1039,32 @@ impl SettingsView {
                         colors.bg_elevated,
                         colors.bg_hover,
                         colors.bg_active,
-                        true,
+                        enabled,
                     )
                     .focusable()
-                    .tab_stop(true)
+                    .tab_stop(enabled)
                     .focus_visible(move |style| style.border_color(colors.accent))
-                    .on_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            this.model_open = !this.model_open;
-                            cx.stop_propagation();
-                            cx.notify();
-                        }
-                    }))
-                    .cursor_pointer()
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                            this.model_open = !this.model_open;
-                            cx.notify();
-                        }),
-                    )
+                    .when(enabled, |button| {
+                        button
+                            .on_key_down(cx.listener(
+                                |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                        this.model_open = !this.model_open;
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }
+                                },
+                            ))
+                            .cursor_pointer()
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                    this.model_open = !this.model_open;
+                                    cx.notify();
+                                }),
+                            )
+                    })
+                    .when(!enabled, |button| button.text_color(colors.text_tertiary))
                     .child(div().min_w_0().child(trigger_label))
                     .child(crate::icons::icon(
                         if self.model_open {
@@ -1048,7 +1075,7 @@ impl SettingsView {
                         colors.text_tertiary,
                     )),
             )
-            .when(self.model_open, |column| {
+            .when(self.model_open && enabled, |column| {
                 column
                     .children(models.is_empty().then(|| {
                         div()
@@ -1132,6 +1159,8 @@ impl Render for SettingsView {
             cx.set_global(NativePreparationSettingsRequested(false));
         }
         self.resume_settings_navigation(window, cx);
+        self.prepare_default_permission_focus(window, cx);
+        self.prepare_permission_reset_focus(window, cx);
         self.prepare_provider_presentation(window);
         self.project_settings_motion(window, cx);
         self.ensure_model_catalog(cx);
@@ -1188,7 +1217,9 @@ impl Render for SettingsView {
                     cx.stop_propagation();
                 }
             })
-            .key_context(if self.section == 5 {
+            .key_context(if self.section == 1 {
+                "GeneralSettings"
+            } else if self.section == 5 {
                 "McpSettings"
             } else if self.section == 6 {
                 "SkillsSettings"

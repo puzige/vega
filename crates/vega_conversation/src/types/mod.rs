@@ -7,6 +7,7 @@ pub use crate::ordinary_submissions::{
     OrdinaryWorker, PersistedPayload, PrimaryFact, RawSubmission, RetryBlocker, RetryEligibility,
     RollbackFailure, SubmissionError, SubmissionFailure, SubmissionId, SubmissionSnapshot,
 };
+pub use crate::run_credentials::RunCredentialReader;
 pub use prediction_diagnostics::{PredictionEvent, record_prediction_event};
 use std::sync::Arc;
 pub use vega_runtime::ImageAttachment;
@@ -17,13 +18,16 @@ pub use vega_runtime::computer_use::{
     SUPERSEDED_CONTROL_OUTPUT, Target, preparation_from_check_permissions, unknown_preparation,
 };
 pub use vega_store::messages::RunContinuation;
-pub use vega_store::thread_admission::{AdmissionError, DatabaseIdentity, ThreadAdmission};
+pub use vega_store::thread_admission::{
+    AdmissionError, DatabaseAdmissionPause, DatabaseIdentity, ThreadAdmission,
+};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Stable, content-free pricing settings failure vocabulary.
 mod artifact;
 mod codex_task;
+mod command_scope;
 mod context;
 mod events;
 mod generated_notice;
@@ -33,10 +37,13 @@ mod message_location;
 pub use historical_history::*;
 mod meter;
 mod permission;
+mod permission_contract;
+mod permission_reset;
 mod pricing;
 mod reasoning;
 mod response;
 mod skills;
+mod startup;
 mod thread;
 mod tool_calls;
 mod usage;
@@ -46,6 +53,7 @@ mod workspace;
 
 pub use artifact::*;
 pub use codex_task::*;
+pub use command_scope::*;
 pub use context::*;
 pub use events::*;
 pub use generated_notice::*;
@@ -53,10 +61,13 @@ pub use mcp::*;
 pub use message_location::*;
 pub use meter::*;
 pub use permission::*;
+pub use permission_contract::*;
+pub use permission_reset::*;
 pub use pricing::*;
 pub use reasoning::*;
 pub use response::*;
 pub use skills::*;
+pub use startup::*;
 pub use thread::*;
 pub use tool_calls::*;
 pub use usage::*;

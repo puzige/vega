@@ -425,6 +425,12 @@ impl Drop for WritePermit<'_> {
     }
 }
 
+#[derive(Debug)]
+pub enum CommitFailure {
+    RolledBack(rusqlite::Error),
+    Unknown(rusqlite::Error),
+}
+
 pub struct WriteTransaction<'a> {
     transaction: Transaction<'a>,
     permit: WritePermit<'a>,
@@ -467,6 +473,33 @@ impl<'a> WriteTransaction<'a> {
         let result = transaction.commit();
         log_transaction(&permit, StorageOperation::Commit, started, &result);
         result
+    }
+
+    pub fn commit_with_rollback(self) -> Result<(), CommitFailure> {
+        let Self {
+            transaction,
+            permit,
+        } = self;
+        let result = transaction.execute_batch("COMMIT");
+        log_transaction(&permit, StorageOperation::Commit, permit.acquired, &result);
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) if !transaction.is_autocommit() => {
+                let rollback = transaction.execute_batch("ROLLBACK");
+                log_transaction(
+                    &permit,
+                    StorageOperation::Rollback,
+                    permit.acquired,
+                    &rollback,
+                );
+                if rollback.is_ok() && transaction.is_autocommit() {
+                    Err(CommitFailure::RolledBack(error))
+                } else {
+                    Err(CommitFailure::Unknown(error))
+                }
+            }
+            Err(error) => Err(CommitFailure::Unknown(error)),
+        }
     }
 
     pub fn rollback(self) -> rusqlite::Result<()> {

@@ -166,8 +166,46 @@ pub(super) fn verify_resume(
     snapshot: &SubagentSnapshot,
     previous: &ContinuationBoundary,
     input: &Value,
+    authority: &DelegatedAuthority,
 ) -> Result<Value, VegaError> {
+    let _permission_coordination = crate::permission_contracts::coordinate()
+        .map_err(|_| failure("permission coordination unavailable"))?;
+    crate::permission_contracts::require_admission_open(store)
+        .map_err(|_| failure("permission admission unavailable"))?;
     let tx = store.immediate_transaction()?;
+    let state = vega_store::permission_contracts::load_state(&tx)?;
+    let parent = vega_store::permission_contracts::load_run_fence(
+        &tx,
+        &snapshot.parent_message_id,
+        &snapshot.parent_thread_id,
+    )?
+    .ok_or_else(|| failure("parent permission snapshot unavailable"))?;
+    let parent: crate::types::PermissionFence =
+        serde_json::from_str(&parent).map_err(|_| failure("parent permission snapshot invalid"))?;
+    let saved = vega_store::permission_contracts::interrupted_delegated_fence(
+        &tx,
+        &snapshot.agent_id,
+        &previous.message_id,
+        &snapshot.parent_thread_id,
+    )?;
+    let saved: crate::types::PermissionFence = serde_json::from_str(&saved)
+        .map_err(|_| failure("interrupted permission snapshot invalid"))?;
+    if state.reset_pending
+        || !authority.matches_fence()
+        || !parent.is_valid()
+        || parent != authority.permission_fence
+        || parent.authority_epoch != state.authority_epoch
+        || parent.database_identity != store.database_identity().permission_fence_key()
+        || parent.thread_id != snapshot.parent_thread_id
+        || !saved.is_valid()
+        || saved.thread_id != snapshot.agent_id
+        || !saved.delegation.as_ref().is_some_and(|source| {
+            source.child_message_id == previous.message_id
+                && source.parent_fence.as_ref() == &parent
+        })
+    {
+        return Err(failure("recovery permission source changed"));
+    }
     let checkpoint = verify_resume_in_transaction(&tx, snapshot, previous, input)?;
     tx.commit()?;
     Ok(checkpoint)
@@ -183,6 +221,27 @@ pub(super) fn verify_resume_in_transaction(
         vega_store::context_compaction::load_source_version_in_transaction(tx, &snapshot.agent_id)?;
     let checkpoint = stages::latest(tx, &snapshot.agent_id, &previous.message_id)?
         .ok_or_else(|| failure("checkpoint unavailable"))?;
+    let saved = vega_store::permission_contracts::interrupted_delegated_fence(
+        tx,
+        &snapshot.agent_id,
+        &previous.message_id,
+        &snapshot.parent_thread_id,
+    )?;
+    let saved: crate::types::PermissionFence = serde_json::from_str(&saved)
+        .map_err(|_| failure("interrupted permission snapshot invalid"))?;
+    let checkpoint_fence: crate::types::PermissionFence =
+        serde_json::from_value(checkpoint["permission_fence"].clone())
+            .map_err(|_| failure("checkpoint permission snapshot unavailable"))?;
+    if !saved.is_valid()
+        || saved.thread_id != snapshot.agent_id
+        || !saved.delegation.as_ref().is_some_and(|source| {
+            source.child_message_id == previous.message_id
+                && source.parent_fence.thread_id == snapshot.parent_thread_id
+        })
+        || checkpoint_fence != saved
+    {
+        return Err(failure("checkpoint permission snapshot changed"));
+    }
     if input["checkpoint_id"] != checkpoint["id"]
         || input["source_version"] != checkpoint["source_version"]
         || input["source_fingerprint"] != checkpoint["source_fingerprint"]

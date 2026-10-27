@@ -99,7 +99,30 @@ pub fn get_key(root: &Path, name: &str) -> Result<String, Error> {
         .ok_or(Error::Missing)
 }
 
-/// Remove a key atomically; missing keys remain a typed error.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum LookupError {
+    #[error("credential storage is absent")]
+    StoreAbsent,
+    #[error(transparent)]
+    Storage(Error),
+}
+
+impl From<Error> for LookupError {
+    fn from(error: Error) -> Self {
+        match error {
+            Error::Missing => Self::StoreAbsent,
+            error => Self::Storage(error),
+        }
+    }
+}
+
+pub fn lookup_existing_key(root: &Path, name: &str) -> Result<Option<String>, LookupError> {
+    validate_ref(name)?;
+    let _guard = LOCK.lock().map_err(|_| Error::Io)?;
+    let directory = platform::directory(root, false)?;
+    Ok(platform::read_existing(&directory)?.keys.remove(name))
+}
+
 pub fn delete_key(root: &Path, name: &str) -> Result<(), Error> {
     validate_ref(name)?;
     let _guard = LOCK.lock().map_err(|_| Error::Io)?;
@@ -206,11 +229,14 @@ mod platform {
     }
 
     pub(super) fn read(directory: &File) -> Result<Document, Error> {
-        let file = match open_at(directory, NAME, libc::O_RDONLY) {
-            Ok(file) => file,
-            Err(Error::Missing) => return Ok(Document::default()),
-            Err(error) => return Err(error),
-        };
+        match read_existing(directory) {
+            Err(Error::Missing) => Ok(Document::default()),
+            result => result,
+        }
+    }
+
+    pub(super) fn read_existing(directory: &File) -> Result<Document, Error> {
+        let file = open_at(directory, NAME, libc::O_RDONLY)?;
         check(&file, false)?;
         if file.metadata().map_err(|_| Error::Io)?.len() > MAX_BYTES {
             return Err(Error::Limit);
@@ -275,6 +301,9 @@ mod platform {
         Err(Error::Unsupported)
     }
     pub(super) fn read(_: &()) -> Result<Document, Error> {
+        Err(Error::Unsupported)
+    }
+    pub(super) fn read_existing(_: &()) -> Result<Document, Error> {
         Err(Error::Unsupported)
     }
     pub(super) fn write(_: &(), _: &Document) -> Result<(), Error> {

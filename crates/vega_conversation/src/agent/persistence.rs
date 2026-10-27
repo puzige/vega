@@ -29,9 +29,36 @@ fn persistence_busy_handler(count: i32) -> bool {
 
 #[derive(Clone)]
 pub(crate) struct DelegatedAuthority {
+    pub permission_fence: crate::types::PermissionFence,
     pub run_mode: RuntimeRunMode,
     pub permission_mode: RuntimePermissionMode,
     pub exact_rules: Vec<RuntimeExactRule>,
+}
+
+impl DelegatedAuthority {
+    pub(crate) fn matches_fence(&self) -> bool {
+        let mut rules: Vec<_> = self
+            .exact_rules
+            .iter()
+            .map(|rule| (rule.tool.as_str().to_owned(), rule.pattern.clone()))
+            .collect();
+        rules.sort();
+        let run_mode = match self.run_mode {
+            RuntimeRunMode::Ask => "ask",
+            RuntimeRunMode::Plan => "plan",
+            RuntimeRunMode::Execute => "execute",
+        };
+        let permission_mode = match self.permission_mode {
+            RuntimePermissionMode::ReadOnly => "readonly",
+            RuntimePermissionMode::Confirm => "confirm",
+            RuntimePermissionMode::Auto => "auto",
+            RuntimePermissionMode::FullAccess => "full_access",
+        };
+        self.permission_fence.is_valid()
+            && self.permission_fence.run_mode == run_mode
+            && self.permission_fence.permission_mode == permission_mode
+            && self.permission_fence.exact_rules == rules
+    }
 }
 
 #[derive(Clone, Default)]
@@ -54,17 +81,28 @@ pub struct PersistenceActorConfig {
     pub(crate) interrupted_assistant: Option<crate::types::InterruptedAssistant>,
     pub(crate) steering_cancel: Option<CancellationToken>,
     pub(crate) pending_message_id: Option<String>,
+    pub(crate) pending_authority: Option<crate::types::PendingInputAuthority>,
     pub(crate) steering_source: Option<Arc<dyn vega_runtime::RuntimeSteeringSource>>,
+    pub(crate) steering_authority: Option<Arc<std::sync::OnceLock<crate::types::PermissionFence>>>,
     pub(crate) computer_use: Option<vega_runtime::computer_use::ComputerUseRun>,
     pub automatic_title: Option<crate::types::AutomaticTitleRequest>,
     pub turn_limit: u32,
     pub(crate) credential_exceptions: Option<vega_runtime::CredentialExceptionFilter>,
     pub(crate) owner_credential_reader: Option<vega_runtime::CredentialReader>,
+    pub(crate) run_credential_reader: Option<crate::types::RunCredentialReader>,
     pub(crate) replay_registry: Option<super::ReplaySessionRegistry>,
     pub(crate) replay_route_fingerprint: Option<[u8; 32]>,
 }
 
 impl PersistenceActorConfig {
+    pub fn with_accepted_pending_input(
+        mut self,
+        authority: Option<crate::types::PendingInputAuthority>,
+    ) -> Self {
+        self.pending_authority = authority;
+        self
+    }
+
     pub fn with_ordinary_submission(
         mut self,
         ordinary: Option<super::ordinary::OrdinaryRun>,
@@ -120,10 +158,15 @@ impl PersistenceActorConfig {
     pub fn with_pending_input(
         mut self,
         id: Option<String>,
-        source: Option<Arc<dyn vega_runtime::RuntimeSteeringSource>>,
+        source: Option<Arc<crate::pending_messages::QueueSteeringSource>>,
     ) -> Self {
+        if id.is_none() {
+            self.pending_authority = None;
+        }
         self.pending_message_id = id;
-        self.steering_source = source;
+        self.steering_authority = source.as_ref().map(|source| source.authority_slot());
+        self.steering_source =
+            source.map(|source| source as Arc<dyn vega_runtime::RuntimeSteeringSource>);
         self
     }
     pub fn with_computer_use(
@@ -135,6 +178,13 @@ impl PersistenceActorConfig {
     }
     pub fn with_owner_credential_reader(mut self, reader: vega_runtime::CredentialReader) -> Self {
         self.owner_credential_reader = Some(reader);
+        self.run_credential_reader = None;
+        self
+    }
+
+    pub fn with_run_credential_reader(mut self, reader: crate::types::RunCredentialReader) -> Self {
+        self.owner_credential_reader = Some(reader.reader());
+        self.run_credential_reader = Some(reader);
         self
     }
 
@@ -492,6 +542,7 @@ pub(crate) struct RuntimeEnvelope {
 }
 
 pub(crate) struct PreparedRun {
+    pub(crate) permission_fence: crate::types::PermissionFence,
     pub(crate) _admission: crate::types::ThreadAdmission,
     pub(crate) _delegated_owner: Option<Arc<vega_store::delegated_ownership::DelegatedOwnership>>,
     pub(crate) database_path: PathBuf,

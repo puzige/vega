@@ -5,7 +5,7 @@ use vega_conversation::types::PendingMessageBehavior;
 
 impl SettingsView {
     pub(crate) fn save_preferences(&mut self, candidate: AppConfig, cx: &mut Context<Self>) {
-        if self.provider_management.saving {
+        if self.provider_management.saving || self.default_permission.io_pending() {
             return;
         }
         let Some(path) = self.config_path.clone() else {
@@ -17,14 +17,20 @@ impl SettingsView {
         let theme_changed = base.ui.theme != candidate.ui.theme;
         let desktop_enable_requested =
             !base.agent.desktop_use_enabled && candidate.agent.desktop_use_enabled;
-        let replay_identity_changed = base.providers != candidate.providers
-            || base.agent != candidate.agent
-            || base.defaults.permission_mode != candidate.defaults.permission_mode;
+        let replay_identity_changed =
+            base.providers != candidate.providers || base.agent != candidate.agent;
         self.provider_management.saving = true;
         let worker = cx.background_executor().spawn(async move {
             if base.providers != candidate.providers {
                 return Err(SettingsText::key(
                     "settings.preferences.provider_form_required",
+                ));
+            }
+            if vega_conversation::types::DefaultPermissionValues::from(&base.defaults)
+                != vega_conversation::types::DefaultPermissionValues::from(&candidate.defaults)
+            {
+                return Err(SettingsText::key(
+                    "settings.permission.error.dedicated_action",
                 ));
             }
             let mut edit = config::begin_edit(&path)
@@ -44,7 +50,6 @@ impl SettingsView {
             patch!(agent.browser_use_enabled);
             patch!(agent.running_message_behavior);
             patch!(defaults.model);
-            patch!(defaults.permission_mode);
             patch!(ui.theme);
             patch!(ui.language);
             patch!(ui.sidebar_collapsed);
@@ -83,7 +88,7 @@ impl SettingsView {
                         }
                         let language_changed = vega_i18n::language() != config.ui.language;
                         vega_i18n::set_language(&config.ui.language);
-                        this.config = config;
+                        this.apply_unrelated_config(config);
                         this.error = None;
                         if language_changed {
                             this.refresh_localized_inputs(cx);

@@ -2,7 +2,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 /// The `SELECT` column list shared by the row-loading queries.
 const COLUMNS: &str = "id, project_id, title, mode, permission_mode, model, backend, \
-                       status, pinned, unread, created_at, updated_at, parent_thread_id, workspace_owner_thread_id, forked_from_thread_id, forked_from_message_id";
+                       status, pinned, unread, created_at, updated_at, parent_thread_id, workspace_owner_thread_id, forked_from_thread_id, forked_from_message_id, permission_revision, full_access_grant";
 
 /// A raw `threads` row, field-for-field with the DDL.
 ///
@@ -27,6 +27,8 @@ pub struct ThreadRow {
     pub mode: String,
     /// Permission mode DDL string (`readonly|confirm|auto`).
     pub permission_mode: String,
+    pub permission_revision: i64,
+    pub full_access_grant: Option<String>,
     /// Model id.
     pub model: String,
     pub backend: String,
@@ -54,6 +56,8 @@ pub struct NewThread<'a> {
     pub mode: &'a str,
     /// Permission mode DDL string.
     pub permission_mode: &'a str,
+    pub permission_revision: i64,
+    pub full_access_grant: Option<&'a str>,
     /// Model id.
     pub model: &'a str,
     /// Lifecycle status DDL string.
@@ -89,8 +93,8 @@ fn insert(
     )?;
     conn.execute(
         "INSERT INTO threads (id, project_id, title, mode, permission_mode, model, \
-         status, pinned, unread, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+         status, pinned, unread, created_at, updated_at, permission_revision, full_access_grant) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             thread.id,
             project_id,
@@ -103,6 +107,8 @@ fn insert(
             thread.unread,
             thread.created_at,
             thread.updated_at,
+            thread.permission_revision,
+            thread.full_access_grant,
         ],
     )?;
     Ok(())
@@ -252,7 +258,9 @@ pub fn set_permission_mode(
         return Ok(0);
     }
     conn.execute(
-        "UPDATE threads SET permission_mode = ?1, updated_at = ?2 WHERE id = ?3",
+        "UPDATE threads SET permission_mode = ?1, updated_at = ?2, \
+         permission_revision = permission_revision + 1, full_access_grant = NULL \
+         WHERE id = ?3 AND permission_revision < 9223372036854775807",
         params![mode, now, id],
     )
 }
@@ -499,6 +507,8 @@ fn thread_from_row(row: &rusqlite::Row) -> rusqlite::Result<ThreadRow> {
         title: row.get(2)?,
         mode: row.get(3)?,
         permission_mode: row.get(4)?,
+        permission_revision: row.get(16)?,
+        full_access_grant: row.get(17)?,
         model: row.get(5)?,
         backend: row.get(6)?,
         status: row.get(7)?,

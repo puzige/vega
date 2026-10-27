@@ -21,7 +21,7 @@ pub(crate) struct AutomationUi {
     pub editor_dirty: bool,
     pub timings: HashMap<String, AutomationTiming>,
     clocks: HashMap<String, Entity<AutomationClock>>,
-    pub focus: HashMap<String, [FocusHandle; 3]>,
+    pub focus: HashMap<String, [FocusHandle; 4]>,
     pub wakeup_labels: HashMap<String, String>,
 }
 #[derive(Clone)]
@@ -111,6 +111,7 @@ impl ConversationStream {
         error: Option<crate::localized_copy::LocalizedCopy>,
         cx: &mut Context<Self>,
     ) {
+        self.reconcile_automation_permission(&projection);
         let error_changed = self.automation.error.as_ref().map(|error| error.render())
             != error.as_ref().map(|error| error.render());
         self.automation.error = error;
@@ -182,6 +183,7 @@ impl ConversationStream {
             && !self.skill_mutation_pending
             && !self.privacy.pending
             && !self.automation.projection.busy
+            && !self.permission_change_pending()
             && !self.automation.editor_dirty
             && !self
                 .run_notices
@@ -206,11 +208,17 @@ impl ConversationStream {
                     .get(&task.identity)
                     .into_iter()
                     .flat_map(move |focus| {
-                        [2, 1, 0]
+                        [3, 2, 1, 0]
                             .into_iter()
                             .filter(move |index| {
-                                (*index != 1 || task.can_control())
-                                    && (*index == 0 || !self.automation.projection.busy)
+                                (*index != 3
+                                    || (self.thread.permission_mode == PermissionMode::FullAccess
+                                        && self.thread.mode == ThreadMode::Execute
+                                        && !task.status.replaceable()))
+                                    && (*index != 1 || task.can_control())
+                                    && (*index == 0
+                                        || (!self.automation.projection.busy
+                                            && !self.permission_change_pending()))
                             })
                             .map(|index| focus[index].clone())
                     })
@@ -443,6 +451,12 @@ impl ConversationStream {
             } else if !compact && let Some(clock) = self.automation.clocks.get(&task.identity) {
                 row = row.child(clock.clone());
             }
+            if self.thread.permission_mode == PermissionMode::FullAccess
+                && self.thread.mode == ThreadMode::Execute
+                && !task.status.replaceable()
+            {
+                row = row.child(self.render_automation_permission_trigger(task, &focus[3], cx));
+            }
             row = row.child(self.automation_button(
                 format!("automation-{}-clear", kind.key()),
                 (
@@ -460,7 +474,7 @@ impl ConversationStream {
                     Icon::Trash,
                 ),
                 &focus[2],
-                !self.automation.projection.busy,
+                !self.automation.projection.busy && !self.permission_change_pending(),
                 cx,
                 move |this, cx| {
                     cx.emit(AutomationRequested {
@@ -492,7 +506,7 @@ impl ConversationStream {
                         if active { Icon::Pause } else { Icon::Play },
                     ),
                     &focus[1],
-                    !self.automation.projection.busy,
+                    !self.automation.projection.busy && !self.permission_change_pending(),
                     cx,
                     move |this, cx| {
                         cx.emit(AutomationRequested {

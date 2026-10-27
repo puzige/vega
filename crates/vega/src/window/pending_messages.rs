@@ -27,6 +27,21 @@ impl VegaWindow {
         mut projection: PendingQueueProjection,
         cx: &mut Context<Self>,
     ) {
+        let current = stream.read(cx).thread_snapshot();
+        if projection.messages.iter().any(|message| {
+            message.permission_fence.as_ref().is_none_or(|fence| {
+                !fence.is_valid()
+                    || fence.thread_id != current.id
+                    || fence.project_id != current.project_id
+                    || fence.run_mode != current.mode.as_str()
+                    || fence.permission_mode != current.permission_mode.as_str()
+                    || fence.permission_revision != current.permission_revision
+                    || fence.full_access_grant != current.full_access_grant
+            })
+        }) {
+            projection.paused = true;
+            projection.error = Some(vega_i18n::t("ui.pending_authority_changed").into());
+        }
         let error = projection.error.as_deref().map(|error| {
             [
                 "ui.ordinary_send.queue_occupied",
@@ -174,6 +189,23 @@ impl VegaWindow {
             });
             return;
         };
+        let source = stream.read(cx).thread_snapshot();
+        let permission_fence = match &cx.global::<VegaStore>().0 {
+            Ok(store) => {
+                vega_conversation::pending_messages::capture_authority(store, &source).ok()
+            }
+            Err(_) => None,
+        };
+        let Some(permission_fence) = permission_fence else {
+            stream.update(cx, ConversationStream::reject_composer_submission);
+            self.reject_pending_queue_action(
+                &stream,
+                &request.thread_id,
+                vega_i18n::t("ui.pending_authority_changed"),
+                cx,
+            );
+            return;
+        };
         let thread_id = request.thread_id.clone();
         let Some(operation) = self.agent_controller.begin_queue_operation(&thread_id) else {
             stream.update(cx, ConversationStream::reject_composer_submission);
@@ -204,6 +236,7 @@ impl VegaWindow {
             behavior,
             content: request.content.clone(),
             images: request.images.clone(),
+            permission_fence: Some(permission_fence),
             references: request.references.clone(),
             reference_mentions: request.reference_mentions.clone(),
         };
@@ -218,6 +251,10 @@ impl VegaWindow {
         let model = stream.read(cx).displayed_model().to_owned();
         let mcp_settings = self.mcp_settings.clone();
         let worker = cx.background_executor().spawn(async move {
+            let store = vega_store::Store::open_existing(database)
+                .map_err(|_| vega_i18n::t("app.pending.save_failed").to_string())?;
+            vega_conversation::pending_messages::validate_authority(&store, &message)
+                .map_err(|_| vega_i18n::t("ui.pending_authority_changed").to_string())?;
             let mut credentials = mcp_settings
                 .as_ref()
                 .map(|service| service.current_owner_credential_values())
@@ -243,8 +280,6 @@ impl VegaWindow {
             if vega_runtime::contains_sensitive_credential(&message.content, &credentials) {
                 return Err(vega_i18n::t("app.pending.credentials_in_message").into());
             }
-            let store = vega_store::Store::open(database)
-                .map_err(|_| vega_i18n::t("app.pending.save_failed").to_string())?;
             vega_conversation::pending_messages::enqueue_cached(&store, &message, &cached)
                 .map_err(|error| error.to_string())
         });
@@ -589,6 +624,8 @@ impl VegaWindow {
         stream: &Entity<ConversationStream>,
         cx: &mut Context<Self>,
     ) {
+        let projection = stream.read(cx).pending_queue().clone();
+        self.project_pending_queue(thread_id, stream, projection, cx);
         if self
             .agent_controller
             .queue_drain_waits

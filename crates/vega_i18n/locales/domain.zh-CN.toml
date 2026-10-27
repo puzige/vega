@@ -39,6 +39,7 @@
 "domain.automation.reason.budget_exhausted" = "已达到 token 预算，后续回合已停止"
 "domain.automation.reason.loop_expired" = "循环已到期，恢复后将重新计时 7 天"
 "domain.automation.reason.no_progress" = "连续三轮没有可核实的进展，请检查任务后恢复"
+"domain.automation.reason.permission_reset" = "权限已重置；请检查任务后手动恢复"
 "domain.automation.reason.run_incomplete" = "本轮未完成，请检查会话中的错误或待处理事项后恢复"
 "domain.automation.reason.start_failed" = "自动任务未能开始，请检查模型和会话状态后恢复"
 "domain.automation.reason.stopped" = "已停止，恢复任务后继续"

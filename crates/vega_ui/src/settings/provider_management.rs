@@ -1099,7 +1099,7 @@ impl SettingsView {
                 this.provider_management.saving = false;
                 match result {
                     Ok((config, refs, replay_identity_changed)) => {
-                        this.config = config;
+                        this.apply_unrelated_config(config);
                         this.available_key_refs = refs;
                         cx.emit(SettingsSaved {
                             replay_identity_changed,
@@ -1161,7 +1161,7 @@ impl SettingsView {
                 }
                 match result {
                     Ok(config) => {
-                        this.config = config;
+                        this.apply_unrelated_config(config);
                         this.provider_management.statuses.clear();
                         this.provider_management.message = None;
                         this.error = None;
@@ -1215,7 +1215,7 @@ impl SettingsView {
                 this.provider_management.saving = false;
                 match result {
                     Ok((config, replay_identity_changed)) => {
-                        this.config = config;
+                        this.apply_unrelated_config(config);
                         cx.emit(SettingsSaved {
                             replay_identity_changed,
                         });

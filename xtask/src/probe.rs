@@ -12,7 +12,7 @@ use serde::Serialize;
 
 use vega_conversation::types::{ConversationEvent, Thread};
 use vega_ui::settings::SettingsOpen;
-use vega_ui::sidebar::{OpenedThread, Sidebar, SidebarCollapsed, VegaStore};
+use vega_ui::sidebar::{OpenedThread, Sidebar, VegaStore};
 
 use crate::contract::{
     C2_HOLD_MS, C6_BATCH_LIMIT, C6_INJECT_RATE_PER_S, C6_POLL, C6_STREAM_SCHEMA, C6_STREAM_SECONDS,
@@ -490,17 +490,20 @@ impl Render for ProbeRoot {
 
 /// Runs the probe app for the parsed mode. Exits when the app quits.
 pub fn run(mode: ProbeMode) {
+    let workspace = match vega_conversation::startup::prepare_default_workspace() {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            eprintln!("xtask __probe: workspace initialization failed: {error:?}");
+            return;
+        }
+    };
     let app = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
     app.run(move |cx: &mut App| {
         gpui_kit::init(cx);
-        // Production boot path (mirrors the app entry at 429cb2d).
         cx.set_global(vega_theme::Theme::system(cx));
-        cx.set_global(SidebarCollapsed(vega_ui::sidebar::load_collapsed()));
         cx.set_global(SettingsOpen(false));
         vega_ui::init(cx);
-        // Temp-HOME store: the platform data root resolves under the temp
-        // HOME; the preseeded DB was created by the parent before spawn.
-        vega_ui::sidebar::init(cx);
+        vega_ui::sidebar::init(workspace, cx);
 
         // Route: the preseeded fixture thread (latest project, first thread).
         let thread: Option<Thread> = (|| {

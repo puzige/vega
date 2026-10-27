@@ -57,6 +57,7 @@ pub enum AutomationReason {
     UserPaused,
     ThreadArchived,
     AppRestarted,
+    PermissionReset,
     LoopExpired,
     RunIncomplete,
     UsageUnverified,
@@ -72,6 +73,7 @@ impl AutomationReason {
             "user_paused" => Some(Self::UserPaused),
             "thread_archived" => Some(Self::ThreadArchived),
             "app_restarted" => Some(Self::AppRestarted),
+            "permission_reset" => Some(Self::PermissionReset),
             "loop_expired" => Some(Self::LoopExpired),
             "run_incomplete" => Some(Self::RunIncomplete),
             "usage_unverified" => Some(Self::UsageUnverified),
@@ -88,6 +90,7 @@ impl AutomationReason {
             Self::UserPaused => "已由你暂停",
             Self::ThreadArchived => "会话已归档",
             Self::AppRestarted => "应用重启后已暂停",
+            Self::PermissionReset => "权限已重置；请检查任务后手动恢复",
             Self::LoopExpired => "循环已到期，恢复后将重新计时 7 天",
             Self::RunIncomplete => "本轮未完成，请检查会话中的错误或待处理事项后恢复",
             Self::UsageUnverified => "无法核实本轮完整用量，请清除后重新设置预算",
@@ -103,6 +106,7 @@ impl AutomationReason {
             Self::UserPaused => vega_i18n::t("domain.automation.reason.user_paused"),
             Self::ThreadArchived => vega_i18n::t("domain.automation.reason.thread_archived"),
             Self::AppRestarted => vega_i18n::t("domain.automation.reason.app_restarted"),
+            Self::PermissionReset => vega_i18n::t("domain.automation.reason.permission_reset"),
             Self::LoopExpired => vega_i18n::t("domain.automation.reason.loop_expired"),
             Self::RunIncomplete => vega_i18n::t("domain.automation.reason.run_incomplete"),
             Self::UsageUnverified => vega_i18n::t("domain.automation.reason.usage_unverified"),
@@ -120,6 +124,8 @@ pub struct AutomationTask {
     pub kind: AutomationKind,
     pub identity: String,
     pub revision: u64,
+    #[serde(default)]
+    pub permission_authorization: Option<AutomationPermissionAuthorization>,
     pub instruction: String,
     pub status: AutomationStatus,
     pub token_budget: Option<u64>,
@@ -136,6 +142,52 @@ pub struct AutomationTask {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_reason: Option<AutomationReason>,
     pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AutomationPermissionAuthorization {
+    pub kind: AutomationKind,
+    pub identity: String,
+    pub revision: u64,
+    pub fence: super::PermissionFence,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutomationPermissionChange {
+    pub(crate) database: super::DatabaseIdentity,
+    pub(crate) authorization: AutomationPermissionAuthorization,
+    pub(crate) task: AutomationTask,
+    pub(crate) resume: bool,
+}
+
+impl AutomationPermissionChange {
+    pub fn task(&self) -> &AutomationTask {
+        &self.task
+    }
+    pub fn resumes_task(&self) -> bool {
+        self.resume
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutomationPermissionConfirmed {
+    pub operation: u64,
+    pub change: AutomationPermissionChange,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutomationPermissionRequested {
+    pub operation: u64,
+    pub source: super::Thread,
+    pub task: AutomationTask,
+    pub resume: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutomationPermissionReloadRequested {
+    pub operation: u64,
+    pub thread_id: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -178,6 +230,8 @@ pub struct AutomationRunClaim {
     #[serde(default)]
     pub started: bool,
     pub tasks: Vec<AutomationTask>,
+    #[serde(default)]
+    pub permission_fence: Option<super::PermissionFence>,
     pub usage_ids: Vec<i64>,
     pub tokens: u64,
     pub goal_report: Option<GoalReport>,

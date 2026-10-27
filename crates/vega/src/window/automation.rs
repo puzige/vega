@@ -111,6 +111,34 @@ impl VegaWindow {
         cx: &mut Context<Self>,
     ) {
         ensure_global(cx);
+        if stream.read(cx).permission_change_pending() {
+            self.automation_edit_error(
+                &stream,
+                editor.as_ref(),
+                vega_i18n::t("app.automation.saving").into(),
+                cx,
+            );
+            return;
+        }
+        if let AutomationCommand::Control(kind, AutomationControl::Resume) = &command
+            && stream.read(cx).thread_snapshot().permission_mode == PermissionMode::FullAccess
+            && stream.read(cx).task_backend() == TaskBackend::Native
+        {
+            let task = stream
+                .read(cx)
+                .automation_projection()
+                .tasks
+                .iter()
+                .find(|task| task.kind == *kind)
+                .cloned();
+            if let Some(task) = task {
+                stream.update(cx, |stream, cx| {
+                    stream.reject_composer_submission(cx);
+                    stream.request_automation_permission(task, true, original, cx);
+                });
+            }
+            return;
+        }
         if stream.read(cx).task_backend() != TaskBackend::Native {
             self.automation_edit_error(
                 &stream,
@@ -176,6 +204,38 @@ impl VegaWindow {
             );
             return;
         }
+        let creation_lease = if draft.is_some() {
+            if !self.owns_stream_request(&stream, thread, cx)
+                || stream.read(cx).has_pending_model_selection()
+                || stream.read(cx).run_active()
+                || self.automation_controller.draft_creation.is_some()
+            {
+                self.automation_edit_error(
+                    &stream,
+                    editor.as_ref(),
+                    vega_i18n::t("app.automation.saving").into(),
+                    cx,
+                );
+                return;
+            }
+            let Some(lease) =
+                self.trusted_actions
+                    .acquire(TrustedActionKind::DraftAutomationCreation, 0, 0)
+            else {
+                self.automation_edit_error(
+                    &stream,
+                    editor.as_ref(),
+                    vega_i18n::t("app.automation.saving").into(),
+                    cx,
+                );
+                return;
+            };
+            self.automation_controller.draft_creation = Some((thread.into(), lease));
+            Some(lease)
+        } else {
+            None
+        };
+        let creation_source = draft.clone();
         let edit_fence = match &command {
             AutomationCommand::Edit {
                 kind,
@@ -224,6 +284,9 @@ impl VegaWindow {
         projection.busy = true;
         projection.error = None;
         stream.update(cx, |stream, cx| {
+            if creation_lease.is_some() {
+                stream.set_trusted_action_busy(true, cx);
+            }
             crate::app_localization::apply_automation(stream, projection, cx)
         });
         self.automation_controller
@@ -283,11 +346,16 @@ impl VegaWindow {
             }
             let now = vega_conversation::automation::now_ms();
             let result = if let Some(draft) = &draft {
-                vega_conversation::automation::command_for_draft(&store, draft, &command, now)?
+                let (tasks, thread) =
+                    vega_conversation::automation::command_for_draft(&store, draft, &command, now)?;
+                (tasks, Some(thread))
             } else {
-                vega_conversation::automation::command(&store, &worker_thread, &command, now)?
+                (
+                    vega_conversation::automation::command(&store, &worker_thread, &command, now)?,
+                    None,
+                )
             };
-            Ok::<_, String>((result, draft.is_some()))
+            Ok::<_, String>(result)
         });
         cx.spawn(async move |this, cx| {
             let result = worker.await;
@@ -297,6 +365,40 @@ impl VegaWindow {
                 }
             });
             let _ = this.update(cx, |this, cx| {
+                if let Some(lease) = creation_lease {
+                    if !this
+                        .automation_controller
+                        .draft_creation
+                        .as_ref()
+                        .is_some_and(|(id, owner)| id == &thread && *owner == lease)
+                        || !this.trusted_actions.release(lease)
+                    {
+                        return;
+                    }
+                    this.automation_controller.draft_creation = None;
+                    stream.update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+                    if let (Some(source), Ok((_, Some(materialized)))) = (&creation_source, &result)
+                        && materialized.id == source.id
+                        && materialized.project_id == source.project_id
+                    {
+                        let current_route = this.owns_stream_request(&stream, &thread, cx)
+                            && cx.global::<OpenedThread>().0.as_ref() == Some(source);
+                        if this.draft.as_ref() == Some(source) {
+                            this.draft = None;
+                        }
+                        if stream.read(cx).thread_snapshot() == *source {
+                            stream.update(cx, |stream, cx| {
+                                stream.apply_thread(materialized.clone(), cx);
+                                stream.set_draft_route(false, cx);
+                            });
+                        }
+                        if current_route {
+                            cx.set_global(OpenedThread(Some(materialized.clone())));
+                        }
+                        this.sidebar
+                            .update(cx, |sidebar, cx| sidebar.reload_sessions(cx));
+                    }
+                }
                 if let Some((view, submitted)) = &editor {
                     view.update(cx, |view, cx| {
                         view.finish_save_localized(
@@ -330,21 +432,13 @@ impl VegaWindow {
                     return;
                 }
                 match result {
-                    Ok((tasks, materialized)) => {
+                    Ok((tasks, _)) => {
                         if let Some(kind) = enabled_kind {
                             cx.update_global::<AutomationGlobal, _>(|global, _| {
                                 global.revoked.remove(&(thread.clone(), kind));
                             });
                         }
-                        if materialized
-                            && this.draft.as_ref().is_some_and(|draft| draft.id == thread)
-                        {
-                            this.draft = None;
-                        }
                         stream.update(cx, |stream, cx| {
-                            if materialized {
-                                stream.set_draft_route(false, cx);
-                            }
                             crate::app_localization::apply_automation(
                                 stream,
                                 AutomationProjection {

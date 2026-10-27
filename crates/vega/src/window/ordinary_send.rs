@@ -1,8 +1,52 @@
 use super::*;
-use crate::ordinary_submission::{OrdinaryLaunch, finish_root};
+use crate::ordinary_submission::{
+    OrdinaryLaunch, OrdinaryMaterialization, OrdinaryPreparationOwner, finish_root,
+};
 use vega_conversation::agent::OrdinaryRun;
 
 const ORDINARY_POLL: std::time::Duration = std::time::Duration::from_millis(4);
+
+impl VegaWindow {
+    fn apply_ordinary_materialization(
+        &mut self,
+        stream: &Entity<ConversationStream>,
+        attempt: AttemptId,
+        materialized: OrdinaryMaterialization,
+        cx: &mut Context<Self>,
+    ) {
+        let current_route = self.owns_stream_request(stream, &materialized.thread.id, cx);
+        let opened = cx.global::<OpenedThread>().0.as_ref();
+        let route = if current_route { opened } else { None };
+        if let Some(projection) = materialized.reconcile(
+            attempt,
+            &mut self.draft,
+            &stream.read(cx).thread_snapshot(),
+            route,
+        ) {
+            if projection.stream {
+                stream.update(cx, |stream, cx| {
+                    stream.apply_thread(materialized.thread.clone(), cx);
+                    stream.set_draft_route(false, cx);
+                });
+            }
+            if projection.route {
+                cx.set_global(OpenedThread(Some(materialized.thread)));
+            }
+            self.sidebar.update(cx, Sidebar::reload_sessions);
+        }
+    }
+}
+
+fn take_preparation_owner(
+    owners: &mut std::collections::HashMap<String, OrdinaryPreparationOwner>,
+    thread_id: &str,
+    attempt: AttemptId,
+) -> Option<OrdinaryPreparationOwner> {
+    if owners.get(thread_id)?.attempt != attempt {
+        return None;
+    }
+    owners.remove(thread_id)
+}
 
 pub(super) struct OrdinaryPreparationRequest {
     pub(super) registered: OrdinaryWorker,
@@ -15,45 +59,61 @@ pub(super) struct OrdinaryPreparationRequest {
     cancel: tokio_util::sync::CancellationToken,
 }
 
+struct OrdinaryPreparationOutcome {
+    materialized: Option<OrdinaryMaterialization>,
+    launch: Result<OrdinaryLaunch, SubmissionFailure>,
+    _admission: vega_store::thread_admission::ThreadAdmission,
+}
+
 impl OrdinaryPreparationRequest {
-    fn prepare(self) -> Result<OrdinaryLaunch, SubmissionFailure> {
-        let result = (|| {
-            if self.cancel.is_cancelled() {
-                return Err(SubmissionFailure::Cancelled);
-            }
-            preflight_provider(self.config.as_deref(), self.run.submission.raw().model())
-                .map_err(|_| SubmissionFailure::PreflightRejected)?;
-            if self.cancel.is_cancelled() {
-                return Err(SubmissionFailure::Cancelled);
-            }
-            let store = vega_store::Store::open(&self.database)
-                .map_err(|_| SubmissionFailure::PreparationFailed)?;
-            if !self.run.worker.admission().verifies(
-                store.database_identity(),
-                &self.run.submission.snapshot().thread_id,
-            ) {
-                return Err(SubmissionFailure::PreparationFailed);
-            }
+    fn prepare(self) -> OrdinaryPreparationOutcome {
+        let materialized = self.materialize();
+        self.finish_preparation(materialized)
+    }
+
+    fn materialize(&self) -> Result<(vega_store::Store, Thread), SubmissionFailure> {
+        if self.cancel.is_cancelled() {
+            return Err(SubmissionFailure::Cancelled);
+        }
+        preflight_provider(self.config.as_deref(), self.run.submission.raw().model())
+            .map_err(|_| SubmissionFailure::PreflightRejected)?;
+        if self.cancel.is_cancelled() {
+            return Err(SubmissionFailure::Cancelled);
+        }
+        let store = vega_store::Store::open(&self.database)
+            .map_err(|_| SubmissionFailure::PreparationFailed)?;
+        if !self.run.worker.admission().verifies(
+            store.database_identity(),
+            &self.run.submission.snapshot().thread_id,
+        ) {
+            return Err(SubmissionFailure::PreparationFailed);
+        }
+        let thread = vega_conversation::permission_contracts::prepare_submission_permission(
+            &store,
+            &self.run.submission,
+            &self.run.worker,
+            &self.expected,
+            self.draft.as_ref(),
+        )
+        .map_err(|_| SubmissionFailure::PreparationFailed)?;
+        Ok((store, thread))
+    }
+
+    fn finish_preparation(
+        self,
+        committed: Result<(vega_store::Store, Thread), SubmissionFailure>,
+    ) -> OrdinaryPreparationOutcome {
+        let admission = self.run.worker.admission().clone();
+        let mut materialized = None;
+        let result = committed.and_then(|(store, thread)| {
             let thread_id = self.run.submission.snapshot().thread_id;
-            if let Some(draft) = &self.draft
-                && vega_store::threads::find(store.conn(), &thread_id)
-                    .map_err(|_| SubmissionFailure::PreparationFailed)?
-                    .is_none()
-            {
-                vega_conversation::threads::materialize_draft(&store, draft)
-                    .map_err(|_| SubmissionFailure::PreparationFailed)?;
-            }
-            let thread = vega_conversation::threads::open_thread(&store, &thread_id)
-                .map_err(|_| SubmissionFailure::PreparationFailed)?;
-            if thread.model != self.run.submission.raw().model()
-                || thread.backend != TaskBackend::Native
-                || thread.status == ThreadStatus::Archived
-                || thread.project_id != self.expected.project_id
-                || thread.mode != self.expected.mode
-                || thread.permission_mode != self.expected.permission_mode
-            {
-                return Err(SubmissionFailure::PreparationFailed);
-            }
+            materialized = self.draft.as_ref().map(|source| {
+                OrdinaryMaterialization::new(
+                    self.run.worker.attempt_id(),
+                    source.clone(),
+                    thread.clone(),
+                )
+            });
             let workspace = vega_conversation::threads::task_workspace_root(&store, &thread_id)
                 .map_err(|_| SubmissionFailure::PreparationFailed)?;
             if let Some((service, intent)) = &self.skills {
@@ -65,11 +125,11 @@ impl OrdinaryPreparationRequest {
                 return Err(SubmissionFailure::Cancelled);
             }
             Ok((workspace, thread))
-        })();
+        });
         let _ = self
             .registered
             .complete(result.as_ref().map(|_| ()).map_err(|failure| *failure));
-        match result {
+        let launch = match result {
             Ok((workspace, thread)) => Ok(OrdinaryLaunch::new(
                 self.run,
                 self.database,
@@ -81,6 +141,11 @@ impl OrdinaryPreparationRequest {
                 finish_root(self.run, Err(error));
                 Err(error)
             }
+        };
+        OrdinaryPreparationOutcome {
+            materialized,
+            launch,
+            _admission: admission,
         }
     }
 }
@@ -190,6 +255,15 @@ impl VegaWindow {
             .ordinary_requests
             .contains(&request.request_id)
         {
+            return;
+        }
+        if self
+            .agent_controller
+            .ordinary_preparing
+            .contains_key(&request.thread_id)
+        {
+            stream.update(cx, ConversationStream::reject_composer_submission);
+            stream.update(cx, ConversationStream::apply_agent_busy);
             return;
         }
         let admission =
@@ -344,9 +418,6 @@ impl VegaWindow {
             stream.update(cx, ConversationStream::refresh_ordinary_submissions);
             return;
         }
-        self.agent_controller
-            .ordinary_preparing
-            .insert(thread_id.clone(), cancel.clone());
         let registered = match worker.register_worker() {
             Ok(registered) => registered,
             Err(_) => {
@@ -370,6 +441,14 @@ impl VegaWindow {
             stream.update(cx, ConversationStream::refresh_ordinary_submissions);
             return;
         };
+        let attempt = worker.attempt_id();
+        self.agent_controller.ordinary_preparing.insert(
+            thread_id.clone(),
+            OrdinaryPreparationOwner {
+                attempt,
+                cancel: cancel.clone(),
+            },
+        );
         self.agent_controller.preparation_stream = Some(stream.clone());
         stream.update(cx, |stream, cx| stream.set_trusted_action_busy(true, cx));
         let request = OrdinaryPreparationRequest {
@@ -421,25 +500,37 @@ impl VegaWindow {
                     if waiting {
                         return;
                     }
-                    this.agent_controller.ordinary_preparing.remove(&thread_id);
+                    if take_preparation_owner(
+                        &mut this.agent_controller.ordinary_preparing,
+                        &thread_id,
+                        attempt,
+                    )
+                    .is_none()
+                    {
+                        return;
+                    }
                     let released = this.trusted_actions.release(lease);
-                    if this.agent_controller.preparation_stream.as_ref() == Some(&stream) {
+                    if released
+                        && this.agent_controller.preparation_stream.as_ref() == Some(&stream)
+                    {
                         this.agent_controller.preparation_stream = None;
                         stream.update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
                     }
-                    if let Ok(Ok(launch)) = outcome {
-                        if !released {
-                            return;
-                        }
-                        if !this.owns_stream_request(&stream, &thread_id, cx)
+                    let Ok(outcome) = outcome else {
+                        return;
+                    };
+                    if let Some(materialized) = outcome.materialized {
+                        this.apply_ordinary_materialization(&stream, attempt, materialized, cx);
+                    }
+                    if let Ok(launch) = outcome.launch {
+                        if !released
+                            || launch.cancel.is_cancelled()
+                            || !this.owns_stream_request(&stream, &thread_id, cx)
+                            || this.is_draft_route(&thread_id)
                             || cx.global::<SettingsOpen>().0
                         {
                             return;
                         }
-                        if this.draft_for_route(&thread_id).is_some() {
-                            this.draft = None;
-                        }
-                        stream.update(cx, |stream, cx| stream.set_draft_route(false, cx));
                         let reasoning = observed.raw().reasoning().cloned();
                         this.start_agent_run_with_reasoning(
                             stream.clone(),
@@ -507,7 +598,12 @@ impl VegaWindow {
                 );
             }
             OrdinaryAction::Retry => {
-                if let Ok(worker) = submission.try_retry(request.attempt) {
+                if !self
+                    .agent_controller
+                    .ordinary_preparing
+                    .contains_key(&request.thread_id)
+                    && let Ok(worker) = submission.try_retry(request.attempt)
+                {
                     self.prepare_ordinary(stream.clone(), submission, worker, cx);
                 }
             }

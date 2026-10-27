@@ -827,6 +827,7 @@ impl ConversationStream {
         self.active_permission = None;
         self.active_permission_call_id = None;
         self.deferred_permission = None;
+        self.deferred_scope_permission = None;
         self.hydration = HistoryHydration::default();
         self.apply_history_page(page, cx);
         self.restore_ordinary_history_entries(ordinary_entries, cx);
@@ -941,7 +942,8 @@ impl ConversationStream {
     /// thread-owned operation. The caller supplies the app context so the
     /// durable plan-card projection can be checked without touching SQLite.
     pub fn model_selection_blocked(&self, cx: &App) -> bool {
-        self.actions.running
+        self.permission_change_pending()
+            || self.actions.running
             || self.context_operation_busy()
             || self.composer_submit_pending
             || self.approved_not_started
@@ -992,6 +994,7 @@ impl ConversationStream {
     pub fn timeout_permission(&mut self, cx: &mut Context<Self>) {
         self.permission_queue.timeout_active();
         drop(self.deferred_permission.take());
+        drop(self.deferred_scope_permission.take());
         self.remove_active_permission(cx);
     }
 
@@ -1003,6 +1006,7 @@ impl ConversationStream {
             self.timeout_permission(cx);
             return;
         }
+        self.install_pending_scope_permission(cx);
         if self
             .deferred_permission
             .as_ref()
@@ -1071,6 +1075,66 @@ impl ConversationStream {
         self.active_permission_call_id = Some(request.call_id);
         // The prompt must be visible immediately: re-engage native tail
         // follow (which also scrolls to the end on the next layout).
+        self.list.set_follow_mode(gpui_kit::FollowMode::Tail);
+        cx.notify();
+    }
+
+    fn install_pending_scope_permission(&mut self, cx: &mut Context<Self>) {
+        if self
+            .deferred_scope_permission
+            .as_ref()
+            .is_some_and(|pending| pending.is_resolved())
+        {
+            self.deferred_scope_permission = None;
+        }
+        let Some(pending) = self
+            .deferred_scope_permission
+            .take()
+            .or_else(|| self.permission_queue.take_pending_scope())
+        else {
+            return;
+        };
+        let call_id = pending.request().call_id().to_string();
+        let tool = self.tool_cards.get(&call_id).cloned();
+        let identity = tool
+            .as_ref()
+            .and_then(|card| card.read(cx).command_scope_identity());
+        match pending.presentation(identity) {
+            vega_conversation::types::PermissionPresentation::WaitingForTool => {
+                self.deferred_scope_permission = Some(pending);
+                return;
+            }
+            vega_conversation::types::PermissionPresentation::Mismatch => {
+                drop(pending);
+                if let Some(tool) = tool {
+                    tool.update(cx, ToolCard::fail_corrupt);
+                    self.invalidate_tool_card(&tool, cx);
+                }
+                return;
+            }
+            vega_conversation::types::PermissionPresentation::Ready => {}
+        }
+        self.remove_active_permission(cx);
+        let (request, lease) = pending.into_parts();
+        let card = cx.new(|cx| PermissionCard::new_scope(&request, lease, cx));
+        cx.subscribe(&card, |this, card, _: &PermissionCardResolved, cx| {
+            if this
+                .active_permission
+                .as_ref()
+                .is_some_and(|active| active == &card)
+            {
+                this.remove_active_permission(cx);
+            }
+        })
+        .detach();
+        self.entries
+            .push(StreamEntry::Permission { card: card.clone() });
+        self.list_append(self.entries.len() - 1);
+        self.active_permission = Some(card);
+        self.active_permission_call_id = Some(call_id);
+        if let Some((_, group)) = &self.active_run_activity {
+            group.update(cx, |group, cx| group.set_waiting(true, cx));
+        }
         self.list.set_follow_mode(gpui_kit::FollowMode::Tail);
         cx.notify();
     }
@@ -1702,6 +1766,7 @@ impl ConversationStream {
                 } else {
                     self.push_corrupt_tool(call_id, cx);
                 }
+                self.install_pending_permission(cx);
             }
             ConversationEvent::ToolCallRunning { call_id } => {
                 if let Some(card) = self.tool_cards.get(&call_id) {
@@ -1718,6 +1783,7 @@ impl ConversationStream {
                 } else {
                     self.push_corrupt_tool(call_id, cx);
                 }
+                self.install_pending_permission(cx);
             }
             ConversationEvent::ToolCallOutput { .. } => {}
             ConversationEvent::ToolCallFinished { call_id, result } => {
@@ -1994,6 +2060,13 @@ impl ConversationStream {
     /// or unrelated terminal event must not consume another call's pending
     /// latch or remove its visible card.
     fn timeout_permission_for_call(&mut self, call_id: &str, cx: &mut Context<Self>) {
+        if self
+            .deferred_scope_permission
+            .as_ref()
+            .is_some_and(|pending| pending.request().call_id() == call_id)
+        {
+            self.deferred_scope_permission = None;
+        }
         let deferred_matches = self
             .deferred_permission
             .as_ref()

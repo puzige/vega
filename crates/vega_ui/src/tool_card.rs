@@ -446,6 +446,19 @@ impl ToolCard {
         Some((tool, input.permission_target()?))
     }
 
+    pub(crate) fn command_scope_identity(&self) -> Option<(&str, &str)> {
+        if !matches!(
+            self.status,
+            ToolCallStatus::Approved | ToolCallStatus::Running
+        ) || self.approval.is_none()
+            || self.result.is_some()
+        {
+            return None;
+        }
+        let input = self.input.as_ref()?;
+        (input.tool()? == "bash").then_some(("bash", input.permission_target()?))
+    }
+
     pub(crate) fn codex_permission_display(
         &self,
     ) -> Option<(CodexAcpActivityIdentity, Option<CodexArgumentPreview>)> {

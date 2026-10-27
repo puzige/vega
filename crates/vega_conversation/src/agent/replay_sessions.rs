@@ -179,11 +179,10 @@ impl ReplaySessionRegistry {
         let Ok(mut state) = self.inner.lock() else {
             return lease;
         };
-        state.next_generation = state.next_generation.saturating_add(1);
-        if state.next_generation == 0 {
-            state.next_generation = 1;
-        }
-        let generation = state.next_generation;
+        let Some(generation) = state.next_generation.checked_add(1) else {
+            return lease;
+        };
+        state.next_generation = generation;
         if let Some(session) = state.sessions.remove(thread_id) {
             state.idle_bytes = state.idle_bytes.saturating_sub(session.byte_size);
             if session.source_version == source_version
@@ -318,15 +317,18 @@ impl ReplaySessionRegistry {
     }
 
     pub fn invalidate_all(&self) {
-        let Ok(mut state) = self.inner.lock() else {
-            return;
-        };
-        let idle_bytes = state.sessions.values().fold(0usize, |total, session| {
-            total.saturating_add(session.byte_size)
-        });
+        let _ = self.invalidate_all_acknowledged();
+    }
+
+    pub fn invalidate_all_acknowledged(&self) -> Result<(), crate::types::PermissionResetError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| crate::types::PermissionResetError::Unavailable)?;
         state.sessions.clear();
-        state.idle_bytes = state.idle_bytes.saturating_sub(idle_bytes);
+        state.idle_bytes = 0;
         state.current_generation.clear();
+        Ok(())
     }
 
     pub fn invalidate_active(&self) {

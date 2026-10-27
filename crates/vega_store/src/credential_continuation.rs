@@ -11,6 +11,7 @@ pub struct CredentialContinuation {
     pub raw_user_fingerprint: String,
     pub state: String,
     pub reason: String,
+    pub permission_fence: Option<String>,
 }
 
 impl std::fmt::Debug for CredentialContinuation {
@@ -26,11 +27,11 @@ impl std::fmt::Debug for CredentialContinuation {
 
 pub fn find(conn: &Connection, id: &str) -> rusqlite::Result<Option<CredentialContinuation>> {
     conn.query_row(
-        "SELECT id, thread_id, user_message_id, source_version, source_fingerprint, state, reason, raw_user_fingerprint FROM credential_continuations WHERE id = ?1",
+        "SELECT id, thread_id, user_message_id, source_version, source_fingerprint, state, reason, raw_user_fingerprint, permission_fence FROM credential_continuations WHERE id = ?1",
         [id],
         |row| Ok(CredentialContinuation {
             id: row.get(0)?, thread_id: row.get(1)?, user_message_id: row.get(2)?,
-            source_version: u64::try_from(row.get::<_, i64>(3)?).map_err(|_| rusqlite::Error::InvalidParameterName("negative continuation source version".into()))?, source_fingerprint: row.get(4)?, state: row.get(5)?, reason: row.get(6)?, raw_user_fingerprint: row.get(7)?,
+            source_version: u64::try_from(row.get::<_, i64>(3)?).map_err(|_| rusqlite::Error::InvalidParameterName("negative continuation source version".into()))?, source_fingerprint: row.get(4)?, state: row.get(5)?, reason: row.get(6)?, raw_user_fingerprint: row.get(7)?, permission_fence: row.get(8)?,
         }),
     ).optional()
 }
@@ -53,10 +54,16 @@ pub fn suspend(
     )?;
     let raw_user_fingerprint = raw_user_fingerprint(tx, &user_message_id)?;
     let source_version = sql_source_version(source.source_version)?;
-    let unknown = has_unknown_effects(tx, thread_id, &user_message_id)?;
+    let permission_fence: Option<String> = tx.query_row(
+        "SELECT permission_fence FROM run_permission_fences WHERE message_id=?1 AND thread_id=?2",
+        params![message_id, thread_id],
+        |row| row.get(0),
+    ).optional()?;
+    let unknown =
+        permission_fence.is_none() || has_unknown_effects(tx, thread_id, &user_message_id)?;
     tx.execute(
-        "INSERT INTO credential_continuations (id, thread_id, user_message_id, source_version, source_fingerprint, state, reason, created_at, raw_user_fingerprint) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT(id) DO NOTHING",
-        params![message_id, thread_id, user_message_id, source_version, source.fingerprint, if unknown { "unknown" } else { "ready" }, reason, now, raw_user_fingerprint],
+        "INSERT INTO credential_continuations (id, thread_id, user_message_id, source_version, source_fingerprint, state, reason, created_at, raw_user_fingerprint, permission_fence) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) ON CONFLICT(id) DO NOTHING",
+        params![message_id, thread_id, user_message_id, source_version, source.fingerprint, if unknown { "unknown" } else { "ready" }, reason, now, raw_user_fingerprint, permission_fence],
     )?;
     Ok(())
 }
@@ -94,6 +101,7 @@ pub fn claim(
     tx: &Transaction<'_>,
     receipt: &CredentialContinuation,
     operation_id: &str,
+    permission_fence: &str,
 ) -> rusqlite::Result<bool> {
     let _permit = crate::write_coordination::acquire(
         tx,
@@ -101,7 +109,8 @@ pub fn claim(
     )?;
     let current =
         crate::context_compaction::load_source_version_in_transaction(tx, &receipt.thread_id)?;
-    if current.source_version != receipt.source_version
+    if receipt.permission_fence.as_deref() != Some(permission_fence)
+        || current.source_version != receipt.source_version
         || current.fingerprint != receipt.source_fingerprint
         || raw_user_fingerprint(tx, &receipt.user_message_id)? != receipt.raw_user_fingerprint
         || has_unknown_effects(tx, &receipt.thread_id, &receipt.user_message_id)?
@@ -109,8 +118,8 @@ pub fn claim(
         return Ok(false);
     }
     Ok(tx.execute(
-        "UPDATE credential_continuations SET state = 'claimed', operation_id = ?2 WHERE id = ?1 AND state = 'ready' AND source_version = ?3 AND source_fingerprint = ?4",
-        params![receipt.id, operation_id, sql_source_version(receipt.source_version)?, receipt.source_fingerprint],
+        "UPDATE credential_continuations SET state = 'claimed', operation_id = ?2 WHERE id = ?1 AND state = 'ready' AND permission_invalidated=0 AND EXISTS(SELECT 1 FROM permission_contract_state WHERE singleton=1 AND reset_state='ready') AND source_version = ?3 AND source_fingerprint = ?4 AND permission_fence = ?5 AND thread_id = ?6 AND user_message_id = ?7 AND raw_user_fingerprint = ?8",
+        params![receipt.id, operation_id, sql_source_version(receipt.source_version)?, receipt.source_fingerprint, permission_fence, receipt.thread_id, receipt.user_message_id, receipt.raw_user_fingerprint],
     )? == 1)
 }
 

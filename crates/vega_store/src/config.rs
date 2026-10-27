@@ -126,6 +126,10 @@ pub struct Defaults {
     /// Default permission mode: `"readonly"` | `"confirm"` | `"auto"` | `"full_access"`.
     /// Defaults to `"confirm"` (phase1-plan E5 safe default).
     pub permission_mode: String,
+    #[serde(default)]
+    pub permission_revision: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_access_grant: Option<String>,
 }
 
 impl Default for Defaults {
@@ -133,6 +137,8 @@ impl Default for Defaults {
         Self {
             model: String::new(),
             permission_mode: "confirm".to_string(),
+            permission_revision: 0,
+            full_access_grant: None,
         }
     }
 }
@@ -356,7 +362,7 @@ const FILE_HEADER: &str = "\
 
 /// Path of the config file: `${XDG_CONFIG_HOME:-$HOME/.config}/vega/config.toml`
 /// (resolved by [`crate::paths`]; `HOME` must be set).
-fn config_path() -> Result<PathBuf, ConfigError> {
+pub fn config_path() -> Result<PathBuf, ConfigError> {
     let dir = crate::paths::config_dir()
         .ok_or_else(|| io::Error::other("HOME environment variable is not set"))?;
     Ok(dir.join("config.toml"))
@@ -403,8 +409,18 @@ impl ConfigEdit {
     }
 }
 
-/// Read the current config under the common writer lock; a missing file starts
-/// with defaults and is not created until the caller explicitly saves.
+pub fn begin_existing_edit(path: &Path) -> Result<ConfigEdit, ConfigError> {
+    let guard = EDIT_LOCK
+        .lock()
+        .map_err(|_| io::Error::other("config edit lock unavailable"))?;
+    let config = read_from(path)?;
+    Ok(ConfigEdit {
+        config,
+        path: path.to_path_buf(),
+        _guard: guard,
+    })
+}
+
 pub fn begin_edit(path: &Path) -> Result<ConfigEdit, ConfigError> {
     let guard = EDIT_LOCK
         .lock()

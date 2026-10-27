@@ -131,6 +131,7 @@ pub enum PermissionDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalSource {
     ComputerUse,
+    SandboxReadOnly,
     /// Explicit danger-card response.
     Danger,
     /// Read-only permission mode.
@@ -160,6 +161,7 @@ impl ApprovalSource {
     fn as_str(self) -> &'static str {
         match self {
             Self::ComputerUse => "computer_use",
+            Self::SandboxReadOnly => "sandbox_readonly",
             Self::Danger => "danger",
             Self::ReadOnly => "readonly",
             Self::RunMode => "run_mode",
@@ -178,6 +180,7 @@ impl ApprovalSource {
     fn parse(value: &str) -> Option<Self> {
         match value {
             "computer_use" => Some(Self::ComputerUse),
+            "sandbox_readonly" => Some(Self::SandboxReadOnly),
             "danger" => Some(Self::Danger),
             "readonly" => Some(Self::ReadOnly),
             "run_mode" => Some(Self::RunMode),
@@ -381,6 +384,17 @@ impl ApprovalAudit {
                 .danger
                 .as_ref()
                 .is_some_and(|danger| self.decision == danger.decision && self.note == danger.note),
+            ApprovalSource::SandboxReadOnly => {
+                self.note.is_none()
+                    && match &self.danger {
+                        None => self.decision == Approval::Once,
+                        Some(danger) => {
+                            self.decision == Approval::Deny
+                                && danger.decision == Approval::Deny
+                                && danger.note.is_none()
+                        }
+                    }
+            }
             ApprovalSource::ReadOnly => {
                 self.decision == Approval::Deny
                     && self.note.is_none()
@@ -479,6 +493,7 @@ pub fn approval_audit_from_runtime(audit: &vega_runtime::RuntimeApprovalAudit) -
         note: audit.note.clone(),
         source: match audit.source {
             vega_runtime::RuntimeApprovalSource::ComputerUse => ApprovalSource::ComputerUse,
+            vega_runtime::RuntimeApprovalSource::SandboxReadOnly => ApprovalSource::SandboxReadOnly,
             vega_runtime::RuntimeApprovalSource::Danger => ApprovalSource::Danger,
             vega_runtime::RuntimeApprovalSource::ReadOnly => ApprovalSource::ReadOnly,
             vega_runtime::RuntimeApprovalSource::RunMode => ApprovalSource::RunMode,
@@ -508,6 +523,7 @@ pub fn approval_audit_to_runtime(audit: &ApprovalAudit) -> vega_runtime::Runtime
         note: audit.note.clone(),
         source: match audit.source {
             ApprovalSource::ComputerUse => vega_runtime::RuntimeApprovalSource::ComputerUse,
+            ApprovalSource::SandboxReadOnly => vega_runtime::RuntimeApprovalSource::SandboxReadOnly,
             ApprovalSource::Danger => vega_runtime::RuntimeApprovalSource::Danger,
             ApprovalSource::ReadOnly => vega_runtime::RuntimeApprovalSource::ReadOnly,
             ApprovalSource::RunMode => vega_runtime::RuntimeApprovalSource::RunMode,

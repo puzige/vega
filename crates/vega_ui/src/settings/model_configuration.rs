@@ -15,7 +15,9 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.settings_help_open.take().is_some() {
+        if self.guard_default_permission_close(window, cx) {
+            cx.stop_propagation();
+        } else if self.settings_help_open.take().is_some() {
             window.focus(&self.settings_help_focus, cx);
             cx.stop_propagation();
             cx.notify();
@@ -46,6 +48,10 @@ impl SettingsView {
         destination: SettingsDestination,
         cx: &mut Context<Self>,
     ) {
+        if self.default_permission.saving() {
+            return;
+        }
+        self.discard_default_permission_intent();
         if self.settings_have_draft(cx) {
             self.pending_section = Some(destination);
             cx.notify();

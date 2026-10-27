@@ -117,10 +117,12 @@ pub fn register_and_reveal_project(
     vega_store::projects::touch_last_opened(store.conn(), &project.id).map_err(storage)?;
     let result = mutations::apply_in_transaction(
         store,
+        &tx,
         revision,
         SidebarOrganizationAction::RevealProject {
             project_id: project.id.clone(),
         },
+        None,
     )?;
     tx.commit().map_err(storage)?;
     Ok((project.id, result.snapshot))

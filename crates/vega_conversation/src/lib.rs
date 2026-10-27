@@ -3,14 +3,19 @@ mod artifact;
 pub mod attachments;
 mod automatic_titles;
 pub mod codex_tasks;
+pub mod command_scope;
 mod composer_predictions;
 mod git_workspace;
 pub mod history;
 pub mod link_preview;
+pub mod permission_contracts;
+pub mod permission_reset;
 pub mod plans;
 mod pricing;
+pub mod startup;
 pub mod summary;
 mod thread_access;
+pub mod thread_permissions;
 pub mod threads;
 pub mod types;
 mod usage_dashboard;
@@ -49,6 +54,7 @@ pub mod ordinary_submissions;
 pub mod pending_messages;
 
 pub mod privacy;
+mod run_credentials;
 
 pub mod automation;
 

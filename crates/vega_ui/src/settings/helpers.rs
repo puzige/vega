@@ -469,18 +469,6 @@ pub(crate) fn provider_key_ref(existing: Option<&ProviderConfig>, name: &str, ke
     }
 }
 
-/// Applies a permission-mode choice, rejecting values outside the fixed set.
-pub(crate) fn select_permission_mode(
-    config: &mut AppConfig,
-    mode: &str,
-) -> Result<(), &'static str> {
-    if !PERMISSION_MODES.contains(&mode) {
-        return Err("unknown permission mode");
-    }
-    config.defaults.permission_mode = mode.to_string();
-    Ok(())
-}
-
 /// Sets the default model for new conversations.
 pub(crate) fn set_default_model(config: &mut AppConfig, model: &str) {
     config.defaults.model = model.to_string();

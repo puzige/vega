@@ -200,6 +200,9 @@ impl ConversationStream {
     }
 
     fn render_composer(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        if self.automation_permission.busy() {
+            return self.render_automation_permission(window, cx);
+        }
         let colors = theme(cx).colors;
         let file_retry_visible = self.file_selector_wanted && self.file_index_failure.is_some();
         let file_selector_active =
@@ -245,6 +248,7 @@ impl ConversationStream {
             )
             .children(self.active_user_question.clone())
             .child(self.render_automation(cx))
+            .child(self.render_thread_permission_feedback(cx))
             .child(
                 div()
                     .on_drop(cx.listener(Self::drop_images))
@@ -486,7 +490,30 @@ impl ConversationStream {
     fn render_permission_status(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let mode = self.thread.permission_mode;
-        let label = permission_label(mode);
+        let needs_authorization = mode == PermissionMode::FullAccess
+            && self
+                .thread
+                .full_access_grant
+                .as_ref()
+                .is_none_or(|grant| !grant.is_valid());
+        let changed = self
+            .permission_editor
+            .active_mode
+            .is_some_and(|active| active != mode);
+        let label = if needs_authorization {
+            vega_i18n::t_args(
+                "ui.permission_needs_authorization",
+                &[("mode", permission_label(mode))],
+            )
+        } else if changed {
+            vega_i18n::t_args(
+                "ui.permission_next_run",
+                &[("mode", permission_label(mode))],
+            )
+        } else {
+            permission_label(mode).to_string()
+        };
+        let enabled = !self.permission_change_pending();
 
         let glyph = permission_icon(mode);
 
@@ -502,6 +529,10 @@ impl ConversationStream {
             .child(
                 div()
                     .id("composer-permission-status")
+                    .role(gpui_kit::Role::Button)
+                    .aria_label(vega_i18n::t("ui.change_permission_mode"))
+                    .track_focus(&self.permission_editor.trigger)
+                    .tab_stop(enabled)
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .flex_shrink_0()
                     .flex()
@@ -515,13 +546,24 @@ impl ConversationStream {
                     .text_size(px(Typography::BODY))
                     .text_color(ink)
                     .cursor_pointer()
-                    .interactive(colors, true, self.permission_picker_open)
+                    .interactive(colors, enabled, self.permission_picker_open)
+                    .focus_visible(move |style| style.border_1().border_color(colors.accent))
                     .tooltip(move |_, cx| {
                         crate::icons::tooltip(vega_i18n::t("ui.change_permission_mode"), cx)
                     })
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(Self::toggle_permission_picker),
+                    )
+                    .on_key_down(
+                        cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                && !this.permission_change_pending()
+                            {
+                                this.open_permission_picker(window, cx);
+                                cx.stop_propagation();
+                            }
+                        }),
                     )
                     .child(
                         div()
@@ -531,6 +573,22 @@ impl ConversationStream {
                     )
                     .child(label),
             )
+            .when(changed, |chip| {
+                chip.child(
+                    div()
+                        .text_size(px(Typography::METADATA))
+                        .text_color(colors.text_secondary)
+                        .child(vega_i18n::t_args(
+                            "ui.permission_current_run",
+                            &[(
+                                "mode",
+                                permission_label(
+                                    self.permission_editor.active_mode.unwrap_or(mode),
+                                ),
+                            )],
+                        )),
+                )
+            })
             .when(self.permission_picker_open, |chip| {
                 chip.child(self.render_permission_picker(cx))
             })
@@ -581,6 +639,11 @@ impl ConversationStream {
                 };
                 div()
                     .id(("composer-permission-option", index))
+                    .role(gpui_kit::Role::Button)
+                    .aria_label(permission_label(mode))
+                    .track_focus(&self.permission_editor.options[index])
+                    .tab_stop(true)
+                    .focus_visible(move |style| style.border_1().border_color(colors.accent))
                     .min_h(px(44.))
                     .flex_shrink_0()
                     .px_2()
@@ -600,6 +663,14 @@ impl ConversationStream {
                             this.select_permission_mode(mode, window, cx);
                         }),
                     )
+                    .on_key_down(cx.listener(
+                        move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                this.select_permission_mode(mode, window, cx);
+                                cx.stop_propagation();
+                            }
+                        },
+                    ))
                     .child(crate::icons::icon(permission_icon(mode), icon_ink))
                     .child(
                         div()
@@ -611,7 +682,11 @@ impl ConversationStream {
                                 div()
                                     .text_size(px(Typography::SIDEBAR))
                                     .text_color(ink)
-                                    .child(permission_label(mode)),
+                                    .child(if selected && mode == PermissionMode::FullAccess {
+                                        vega_i18n::t("ui.permission_reauthorize_full_access")
+                                    } else {
+                                        permission_label(mode)
+                                    }),
                             )
                             .child(
                                 div()
@@ -670,7 +745,11 @@ impl ConversationStream {
                                 .min_w_0()
                                 .text_size(px(Typography::METADATA))
                                 .text_color(colors.text_secondary)
-                                .child(vega_i18n::t(PERMISSION_PICKER_TITLE)),
+                                .child(vega_i18n::t(if self.actions.running {
+                                    "ui.permission_picker_next_run"
+                                } else {
+                                    PERMISSION_PICKER_TITLE
+                                })),
                         )
                         .child(
                             div()
@@ -699,10 +778,27 @@ impl ConversationStream {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.permission_change_pending() {
+            return;
+        }
         let open = !self.permission_picker_open;
         self.close_composer_popovers(cx);
-        self.permission_picker_open = open;
-        self.focus_composer(window, cx);
+        if open {
+            self.open_permission_picker(window, cx);
+        } else {
+            window.focus(&self.permission_editor.trigger, cx);
+        }
+        cx.notify();
+    }
+
+    fn open_permission_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_composer_popovers(cx);
+        self.permission_picker_open = true;
+        let index = PERMISSION_ORDER
+            .iter()
+            .position(|mode| *mode == self.thread.permission_mode)
+            .unwrap_or(1);
+        window.focus(&self.permission_editor.options[index], cx);
         cx.notify();
     }
 
@@ -712,11 +808,32 @@ impl ConversationStream {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if event.keystroke.key != "escape" || self.input.read(cx).is_composing() {
+        if self.input.read(cx).is_composing() {
+            return;
+        }
+        if matches!(event.keystroke.key.as_str(), "up" | "down" | "tab") {
+            let current = self
+                .permission_editor
+                .options
+                .iter()
+                .position(|focus| focus.is_focused(window))
+                .unwrap_or(0);
+            let backwards = event.keystroke.key == "up"
+                || (event.keystroke.key == "tab" && event.keystroke.modifiers.shift);
+            let next = if backwards {
+                (current + 3) % 4
+            } else {
+                (current + 1) % 4
+            };
+            window.focus(&self.permission_editor.options[next], cx);
+            cx.stop_propagation();
+            return;
+        }
+        if event.keystroke.key != "escape" {
             return;
         }
         self.permission_picker_open = false;
-        self.focus_composer(window, cx);
+        window.focus(&self.permission_editor.trigger, cx);
         cx.stop_propagation();
         cx.notify();
     }
@@ -1494,6 +1611,8 @@ impl Render for ConversationStream {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.reading_preview {
             self.reconcile_pending_focus(window, cx);
+            self.prepare_thread_permission_focus(window, cx);
+            self.prepare_automation_permission_focus(window, cx);
         }
         if !self.context_usage_focus.contains_focused(window, cx) {
             self.context_usage_dismissed = false;
@@ -1733,7 +1852,7 @@ impl Render for ConversationStream {
                                                         .flex()
                                                         .flex_col()
                                                         .child(item)
-                                                        .child(notice.render(&colors, this.thread.id.clone(), this.reading_preview, cx))
+                                                        .child(notice.render(&colors, this.thread.id.clone(), this.reading_preview || this.permissions_revoked, cx))
                                                         .into_any_element()
                                                 } else {
                                                     item
@@ -1747,7 +1866,7 @@ impl Render for ConversationStream {
                                                         .flex()
                                                         .flex_col()
                                                         .child(item)
-                                                        .child(notice.render(&colors, this.thread.id.clone(), this.reading_preview, cx))
+                                                        .child(notice.render(&colors, this.thread.id.clone(), this.reading_preview || this.permissions_revoked, cx))
                                                         .into_any_element()
                                                 } else {
                                                     item
