@@ -46,6 +46,7 @@ mod scroll_state;
 mod session;
 mod skills;
 mod subagent_panel;
+mod thread_permissions;
 mod updater;
 mod workspace;
 

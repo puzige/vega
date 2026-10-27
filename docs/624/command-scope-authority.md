@@ -18,6 +18,8 @@
 
 `a4ed7b356ee622ae875003c8192fee16fd71e278` 的 [Actions 40463320312](https://github.com/puzige/vega/actions/runs/40463320312) 报测试移动后缺少 CommandScopeRequest 导入（E0425），以及范围卡三处 needless_borrow。补全测试显式导入、移除返回静态字符串的多余借用；无行为或断言变化，测试仍未进入发现/执行。
 
+修正后 `0d0730882ec720cfca19cbba4b75a3299d9a088e` 的 [Actions 40463947697](https://github.com/puzige/vega/actions/runs/40463947697) 全部成功：Clippy `122054781387`、Nextest `122054781645`、汇总 `122055886550`。原始 Nextest 为 110 发现、110 执行/通过、0 跳过，新增七项扩围回归及既有真实 GPUI 导航均通过。这完成当前扩围接线的云端验证；不包括后续线程确认/reset 补丁，不替代原生沙箱、网络和后代进程边界的用户手测，也尚未进行统一独立 review。
+
 - `vega_conversation::types` 保存独立 `RequestedCommandScope`、`CommandScopeRequest`、`CommandScopeDecision { AllowOnce, Deny, Timeout }` 与内容无关的失败词汇。严格解析拒绝未知/重复字段、空范围、错误类型和空/过长 reason；reason 最多 512 UTF-8 字节且无换行/控制字符。绝对目录文本只做词法验证，不能冒充规范化批准。
 - 请求精确绑定 command bytes、有效 timeout、PreparedBash 的工具实例和项目 cwd、run/call/request id、完整 PermissionFence、scope 和 bindings 快照。摘要不替代相等比较。Debug 不输出命令、路径、配置或凭据引用；快照仅含 binding 配置，不含秘密值。
 - 只有已持久接纳、仍 streaming 的 run 可创建 live owner；数据库身份、epoch/reset/admission、完整持久 fence 每个状态转换均核对。委派 run 还须核对原始 parent fence/parent message、仍 running 的委派归属及 held release state。活动 run 不从线程的新默认重建 authority。

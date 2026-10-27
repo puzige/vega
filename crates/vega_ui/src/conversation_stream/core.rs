@@ -21,6 +21,7 @@ impl ModelPickerLevel {
 /// the virtualized message stream, and the fixed-bottom Composer. One entity
 /// per open thread; rebuilt by the window root when another thread opens.
 pub struct ConversationStream {
+    pub(crate) permission_editor: super::thread_permissions::PermissionEditor,
     pub(crate) ordinary: Vec<super::ordinary_submissions::OrdinaryRow>,
     pub(crate) prediction_waiting_for_queue: bool,
     pub(crate) prediction_owner: Option<super::composer_predictions::ComposerPredictionOwner>,
@@ -219,6 +220,8 @@ impl EventEmitter<crate::cua_onboarding::PreparationRequested> for ConversationS
 impl EventEmitter<ImagePreviewRequested> for ConversationStream {}
 impl EventEmitter<PlanReviewRequested> for ConversationStream {}
 impl EventEmitter<ThreadSettingsRequested> for ConversationStream {}
+impl EventEmitter<ThreadPermissionConfirmed> for ConversationStream {}
+impl EventEmitter<ThreadPermissionReloadRequested> for ConversationStream {}
 impl EventEmitter<ComposerSubmitted> for ConversationStream {}
 impl EventEmitter<super::ordinary_submissions::OrdinaryActionRequested> for ConversationStream {}
 impl EventEmitter<SkillComposerProjectionRequested> for ConversationStream {}
@@ -424,6 +427,7 @@ impl ConversationStream {
                 this.context_usage_dismissed = true;
                 cx.notify();
                 this.timeout_permission(cx);
+                this.cancel_thread_permission_change(cx);
             }
         })
         .detach();
@@ -439,6 +443,7 @@ impl ConversationStream {
             {
                 this.cancel_image_import(cx);
                 this.timeout_permission(cx);
+                this.cancel_thread_permission_change(cx);
             }
         })
         .detach();
@@ -472,6 +477,7 @@ impl ConversationStream {
         .detach();
         let computer_use_task = TaskContext::new(&thread.id);
         Self {
+            permission_editor: super::thread_permissions::PermissionEditor::new(cx),
             prediction_waiting_for_queue: false,
             prediction_owner: None,
             prediction_generation: 0,

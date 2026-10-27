@@ -46,6 +46,50 @@ pub enum DefaultPermissionError {
     OutcomeUnknown,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThreadPermissionChange {
+    pub(crate) source: super::Thread,
+    pub(crate) database: super::DatabaseIdentity,
+    pub(crate) authority_epoch: String,
+    pub(crate) mode: super::PermissionMode,
+    pub(crate) draft: bool,
+}
+
+impl ThreadPermissionChange {
+    pub fn source(&self) -> &super::Thread {
+        &self.source
+    }
+
+    pub fn mode(&self) -> super::PermissionMode {
+        self.mode
+    }
+
+    pub fn is_draft(&self) -> bool {
+        self.draft
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThreadPermissionError {
+    Unavailable,
+    Conflict,
+    ResetPending,
+    ConfirmationRequired,
+    OutcomeUnknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThreadPermissionConfirmed {
+    pub operation: u64,
+    pub change: ThreadPermissionChange,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThreadPermissionReloadRequested {
+    pub operation: u64,
+    pub source: super::Thread,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum FullAccessScope {

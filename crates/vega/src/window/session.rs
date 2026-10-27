@@ -393,7 +393,10 @@ impl VegaWindow {
             || self
                 .agent_controller
                 .ordinary_preparing
-                .contains_key(&draft.id);
+                .contains_key(&draft.id)
+            || self
+                .trusted_actions
+                .is_kind_active(TrustedActionKind::PermissionSelection);
         let draft = if creating || draft.project_binding() == bound {
             draft
         } else {
@@ -981,6 +984,10 @@ impl VegaWindow {
         cx: &mut Context<Self>,
     ) {
         if !self.owns_stream_request(&stream, &request.thread_id, cx) {
+            return;
+        }
+        if let Some(mode) = request.permission_mode {
+            self.request_thread_permission(stream, mode, cx);
             return;
         }
         // A model save owns the same thread configuration boundary until its

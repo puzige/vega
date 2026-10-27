@@ -942,7 +942,8 @@ impl ConversationStream {
     /// thread-owned operation. The caller supplies the app context so the
     /// durable plan-card projection can be checked without touching SQLite.
     pub fn model_selection_blocked(&self, cx: &App) -> bool {
-        self.actions.running
+        self.permission_editor.busy()
+            || self.actions.running
             || self.context_operation_busy()
             || self.composer_submit_pending
             || self.approved_not_started

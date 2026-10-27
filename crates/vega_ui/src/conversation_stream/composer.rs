@@ -280,6 +280,7 @@ impl ConversationStream {
 
     pub(crate) fn can_submit_message(&self, cx: &App) -> bool {
         !self.reading_preview
+            && !self.permission_editor.busy()
             && (!self.actions.running || self.thread.backend == TaskBackend::Native)
             && !self.pending_queue.busy
             && !self.context_operation_busy()
@@ -480,7 +481,7 @@ impl ConversationStream {
         if self.model_selection_pending.is_some() {
             return;
         }
-        if mode != self.thread.permission_mode {
+        if mode != self.thread.permission_mode || mode == PermissionMode::FullAccess {
             cx.emit(ThreadSettingsRequested {
                 thread_id: self.thread.id.clone(),
                 mode: None,

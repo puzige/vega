@@ -123,6 +123,18 @@ impl Store {
         Self::open_with_busy_timeout(path, std::time::Duration::from_secs(2))
     }
 
+    pub fn open_existing(path: impl AsRef<Path>) -> Result<Self, rusqlite::Error> {
+        let conn = Connection::open_with_flags(
+            path.as_ref(),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        Self::configure_connection(
+            conn,
+            Some(path.as_ref().to_path_buf()),
+            std::time::Duration::from_secs(2),
+        )
+    }
+
     pub fn open_with_busy_timeout(
         path: impl AsRef<Path>,
         busy_timeout: std::time::Duration,
@@ -134,6 +146,14 @@ impl Store {
             Some(path.to_path_buf())
         };
         let conn = Connection::open(path)?;
+        Self::configure_connection(conn, database_path, busy_timeout)
+    }
+
+    fn configure_connection(
+        conn: Connection,
+        database_path: Option<PathBuf>,
+        busy_timeout: std::time::Duration,
+    ) -> Result<Self, rusqlite::Error> {
         conn.busy_timeout(busy_timeout)?;
         let mode: String = conn.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
         if !mode.eq_ignore_ascii_case("wal") {

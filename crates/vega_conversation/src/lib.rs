@@ -15,6 +15,7 @@ mod pricing;
 pub mod startup;
 pub mod summary;
 mod thread_access;
+pub mod thread_permissions;
 pub mod threads;
 pub mod types;
 mod usage_dashboard;
