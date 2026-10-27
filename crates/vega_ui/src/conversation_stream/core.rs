@@ -1809,6 +1809,7 @@ impl ConversationStream {
                 images: draft.images,
                 references,
                 reference_mentions: draft.reference_mentions,
+                permission_fence: None,
             },
             cx,
         );

@@ -69,3 +69,5 @@ Reset 批次 `b6d2ce03` 的 [Actions 40470412070](https://github.com/puzige/vega
 同步 master `d84dfc536777fd5bc571a2576ca64bc0cdff23e9`（#677/#688 结构化文件引用）时，队列三处冲突采用两方语义并存：保存引用列表/mention 及原 fence，steering 先检查原权限再读取结构化引用，dispatch proof 也比较原引用列表。回归增加拒绝未接纳引用列表的断言。该集成仍保留全部开发测试，等待同一 required CI，不变更工作流。
 
 核心原审查者已复核 `1ca814444233ea96eba0341ccbddca87a5c535a9` 的集成增量，无新发现，P1 修复继续成立。该 head 的 [Actions 40477420029](https://github.com/puzige/vega/actions/runs/40477420029) 在编译阶段报 E0505（子代理用借来的 reader 同时消费 config）及旧 fixture 的 RawSubmission 新引用参数缺失。修正为先克隆 reader 再构造配置，并逐一更新四处测试 fixture 的空引用列表；生产普通发送入口已使用真实引用列表。没有改变测试含义，本轮未执行测试。
+
+原核心审查者确认 `2f60e13f6a3673ef494e19c243f0747f93b423e2` 的 Arc 借用修正不改变权限来源。其 [Actions 40478278384](https://github.com/puzige/vega/actions/runs/40478278384) 继续在 UI 编译阶段阻断：Pixels 内部字段私有，应使用已有公共 f32 转换；master 新增的引用失败恢复草稿也构造 PendingMessage，需要显式无授权。后者只把原内容/引用恢复进输入框，设置 `permission_fence=None`，重新发送时捕获新授权，不能替恢复草稿生成 proof。本轮仍未执行测试，所有断言继续保留。

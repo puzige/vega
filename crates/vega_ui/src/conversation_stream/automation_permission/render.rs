@@ -131,7 +131,7 @@ impl ConversationStream {
                     .tab_stop(true)
                     .min_h_0()
                     .max_h(px(
-                        (window.viewport_size().height.0 - 240.0).clamp(96.0, 360.0)
+                        (f32::from(window.viewport_size().height) - 240.0).clamp(96.0, 360.0)
                     ))
                     .overflow_y_scroll()
                     .track_scroll(&self.automation_permission.details_scroll)
