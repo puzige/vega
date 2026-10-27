@@ -64,7 +64,7 @@ fn full_access_picker_and_confirmation_use_real_keyboard_and_preserve_the_draft(
         let open = |operation, cx: &mut TestAppContext| {
             window
                 .update(cx, |_, window, cx| {
-                    stream.read(cx).focus_composer(window, cx)
+                    stream.update(cx, |stream, cx| stream.focus_composer(window, cx))
                 })
                 .expect("focus input");
             draw(window, cx);

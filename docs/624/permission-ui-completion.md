@@ -31,3 +31,5 @@
 `17e0fd95f7a4a1885cb7da51a691cc304f8f860a` 的 [Actions 40466565201](https://github.com/puzige/vega/actions/runs/40466565201) 被测试宏递归展开阻断：新 GPUI 测试的 `super::*` 间接引入同名 test 宏。改为显式导入，不提高递归上限、不改产品行为或断言。该轮未取得 Rust 测试发现/执行计数。
 
 `81d8c58d64eca52ce77e95e9c8d0ff0461d5e10b` 的 [Actions 40467388506](https://github.com/puzige/vega/actions/runs/40467388506) 在 Clippy 测试目标编译时发现 E0599：ConversationStream 不实现 Focusable。测试改用其已有公开 `focus_composer` 入口，不增加生产 API 或改变键盘/持久化断言；待新 head 验证。
+
+`6124eee0633c372d109a1a52cd16da44bd3ead00` 的 [Actions 40467827129](https://github.com/puzige/vega/actions/runs/40467827129) 继续报测试 E0308：该入口要求 stream 自身的 Context，不能传父 VegaWindow Context。改为在 stream.update 内调用，保留真实窗口绘制和全部断言；该轮仍未进入 Rust 测试执行。
