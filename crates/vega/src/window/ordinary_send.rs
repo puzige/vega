@@ -136,7 +136,7 @@ impl VegaWindow {
         }
         cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(AGENT_PREFLIGHT_POLL).await;
+                cx.background_executor().timer(ORDINARY_POLL).await;
                 let result = match receiver.try_recv() {
                     Ok(result) => result,
                     Err(mpsc::TryRecvError::Empty) => continue,
