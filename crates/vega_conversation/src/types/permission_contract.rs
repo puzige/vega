@@ -152,7 +152,11 @@ impl FullAccessGrant {
     }
 
     pub fn verifies(&self, authority_epoch: &str, scope: &FullAccessScope) -> bool {
-        self.is_valid() && self.authority_epoch == authority_epoch && &self.scope == scope
+        self.is_scoped_to(scope) && self.authority_epoch == authority_epoch
+    }
+
+    pub fn is_scoped_to(&self, scope: &FullAccessScope) -> bool {
+        self.is_valid() && &self.scope == scope
     }
 
     pub fn identity(&self) -> &str {

@@ -1,6 +1,8 @@
 use super::*;
 use crate::interaction::InteractionExt;
-use vega_conversation::types::{ThreadPermissionChange, ThreadPermissionError};
+use vega_conversation::types::{
+    FullAccessGrant, FullAccessScope, ThreadPermissionChange, ThreadPermissionError, ThreadStatus,
+};
 
 pub(crate) struct PermissionEditor {
     operation: u64,
@@ -57,6 +59,48 @@ impl PermissionEditor {
 }
 
 impl ConversationStream {
+    pub(super) fn full_access_needs_confirmation(&self, cx: &App) -> bool {
+        if self.thread.permission_mode != PermissionMode::FullAccess {
+            return false;
+        }
+        if let Some(grant) = &self.thread.full_access_grant {
+            return self.thread.default_permission.is_some()
+                || !grant.is_scoped_to(&FullAccessScope::Thread {
+                    thread_id: self.thread.id.clone(),
+                });
+        }
+        let Some(snapshot) = &self.thread.default_permission else {
+            return true;
+        };
+        if self.thread.backend != TaskBackend::Native
+            || self.thread.status != ThreadStatus::Active
+            || self.thread.parent_thread_id.is_some()
+            || self.thread.forked_from_thread_id.is_some()
+            || self.thread.forked_from_message_id.is_some()
+            || self.thread.permission_revision != 0
+            || snapshot.config_path.is_none()
+            || snapshot.permission_revision < 0
+            || snapshot.permission_mode != self.thread.permission_mode.as_str()
+            || cx
+                .try_global::<crate::sidebar::NewTaskDefaults>()
+                .is_none_or(|defaults| &defaults.permission != snapshot)
+        {
+            return true;
+        }
+        let Some(configuration_id) = &snapshot.configuration_id else {
+            return true;
+        };
+        snapshot
+            .full_access_grant
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<FullAccessGrant>(value).ok())
+            .is_none_or(|grant| {
+                !grant.is_scoped_to(&FullAccessScope::FutureThreads {
+                    configuration_id: configuration_id.clone(),
+                })
+            })
+    }
+
     pub fn apply_permission_reset(
         &mut self,
         thread: Thread,
