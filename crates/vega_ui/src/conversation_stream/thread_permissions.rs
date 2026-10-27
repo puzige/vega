@@ -4,9 +4,6 @@ use vega_conversation::types::{
     FullAccessGrant, FullAccessScope, ThreadPermissionChange, ThreadPermissionError, ThreadStatus,
 };
 
-#[cfg(test)]
-mod picker_tests;
-
 pub(crate) struct PermissionEditor {
     operation: u64,
     source: Option<Thread>,

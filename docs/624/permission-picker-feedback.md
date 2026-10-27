@@ -24,6 +24,19 @@
 
 最小实现及两项开发事件回归已写入：通过真实 ConversationStream 的订阅观察权限请求，检查已授权会话/默认草稿无请求和无状态修改，缺失/错误 scope/错误配置/损坏授权/分叉/已变 revision 仍请求授权，从受限模式首次进入仍请求确认。未恢复历史测试集合。
 
-本地 `cargo fmt --all -- --check`、`git diff --check`、中英文 UI TOML 解析及键集合一致性检查通过；没有运行 Vega、编译或执行测试。云端编译/行为结果与非写入者审查待取得，后续记录实际提交和 Actions；最终清理前不合并。
+本地 `cargo fmt --all -- --check`、`git diff --check`、中英文 UI TOML 解析及键集合一致性检查通过；没有运行 Vega、编译或执行测试。
 
 独立审查在 `eab5c46313482b465c0db75db5598382929ccde2` 发现 P2：草稿创建后在设置里修改未来默认，会保留旧草稿快照；若只检查快照内部一致性，同名完全访问不再发出确认请求，创建服务却因当前配置已变拒绝物化。修正当前默认来源比较，并增加设置模式或 revision 改变后的真实全局状态/事件回归，不绕过创建服务来源检查。
+
+## 云端开发结果与清理
+
+修正版 `a30f01a6e42a3dfdecdcb90dc2c253698b9c8e68` 已获同一非写入者增量复核，P2 解决，无新增可行动发现。[Actions 40534487506](https://github.com/puzige/vega/actions/runs/40534487506) 对应本精确 head：Clippy job `122296385309`、Nextest job `122296386235`、required 汇总 `122298881914` 均成功。
+
+- `cargo nextest list --workspace --message-format json` 实际发现 2 项；`cargo nextest run --workspace` 实际执行 2、通过 2、失败 0、跳过 0。
+- 三组现存 Python 检查实际 5 + 15 + 40 = 60 项通过。
+- 原始两项测试源码：[picker_tests.rs](https://github.com/puzige/vega/blob/a30f01a6e42a3dfdecdcb90dc2c253698b9c8e68/crates/vega_ui/src/conversation_stream/thread_permissions/picker_tests.rs)，SHA-256 `75b250ae44dafc7ce3d72277800903dec2922297132f7f51f660eddc001c13a2`，Git blob `33615065f2a0aa305ea0db64d69048daae824740`；已从远端读回核对哈希。
+- [完整开发差异](https://github.com/puzige/vega/compare/b95a9c507f2149e2f6bc9a988965783ef0fa8560...a30f01a6e42a3dfdecdcb90dc2c253698b9c8e68.diff) 保留测试及其接线，不从旧 ref 恢复历史集合。
+
+取得上述真实结果后，按交付政策移除这一个测试文件、专用模块声明及 `vega_ui` 的 `test-support` dev dependency。本次生产行为不因清理改变；CI、Python/fixture、benchmark、迁移、Cargo.lock 未改动。最终 head 仍须完整 required CI 确认 `no Rust tests`（0 发现/0 执行），不以开发 2/2 替代。
+
+最终精确 head、清理增量审查及门禁结果固定于 [PR #691](https://github.com/puzige/vega/pull/691) 和 [Issue #624](https://github.com/puzige/vega/issues/624) 交付记录。云端通过与合并不代表原生显示、键盘或真实系统集成手测通过；用户明确结论前保持 Issue 开放。
