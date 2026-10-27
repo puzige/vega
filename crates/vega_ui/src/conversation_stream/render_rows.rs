@@ -515,8 +515,7 @@ pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> A
         .px(px(Layout::CONVERSATION_USER_PADDING))
         .py_2()
         .text_color(colors.conversation_user)
-        .flex()
-        .flex_col();
+        .block();
     for (index, line) in lines.iter().enumerate() {
         if !matches!(line.kind, LineKind::UserLine { .. }) {
             continue;
@@ -576,8 +575,7 @@ fn selectable_user_message(
         .px(px(Layout::CONVERSATION_USER_PADDING))
         .py_2()
         .text_color(colors.conversation_user)
-        .flex()
-        .flex_col();
+        .block();
     let mut visible_line = false;
     for line in lines {
         if !matches!(line.kind, LineKind::UserLine { .. }) {
@@ -1133,7 +1131,16 @@ fn render_line_selectable(
                 div()
                     .flex_shrink_0()
                     .w(px(Layout::MARKDOWN_LIST_INDENT))
-                    .text_color(colors.text_secondary)
+                    .text_color(if line.marker == "•" {
+                        colors.text_primary
+                    } else {
+                        colors.text_secondary
+                    })
+                    .font_weight(if line.marker == "•" {
+                        FontWeight::BOLD
+                    } else {
+                        FontWeight::NORMAL
+                    })
                     .child(marker_text),
             );
             if let Some(checked) = line.checked {
@@ -1450,7 +1457,16 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors, id_prefix: &s
                 div()
                     .flex_shrink_0()
                     .w(px(Layout::MARKDOWN_LIST_INDENT))
-                    .text_color(colors.text_secondary)
+                    .text_color(if line.marker == "•" {
+                        colors.text_primary
+                    } else {
+                        colors.text_secondary
+                    })
+                    .font_weight(if line.marker == "•" {
+                        FontWeight::BOLD
+                    } else {
+                        FontWeight::NORMAL
+                    })
                     .child(format!("{} ", line.marker).into_any_element()),
             );
             if let Some(checked) = line.checked {

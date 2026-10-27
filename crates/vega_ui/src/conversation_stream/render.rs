@@ -1188,7 +1188,7 @@ impl ConversationStream {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let over_limit = display
-            .estimated_tokens
+            .last_call_total
             .zip(display.model_input_limit)
             .is_some_and(|(used, limit)| used > limit);
         let status_color = if over_limit {
@@ -1196,7 +1196,11 @@ impl ConversationStream {
         } else {
             colors.text_primary
         };
-        let help = format!("{}；{}", display.estimate_label(), display.capacity_label());
+        let help = format!(
+            "{}；{}",
+            display.last_call_label(),
+            display.capacity_label()
+        );
         div()
             .id("context-usage-tooltip")
             .w(px(Layout::CONTEXT_USAGE_WIDTH))
@@ -1286,6 +1290,11 @@ impl ConversationStream {
                             }),
                     )
             }))
+            .children(
+                display
+                    .next_request_label()
+                    .map(|next| div().text_color(colors.text_secondary).child(next)),
+            )
             .children(
                 (display.model_input_limit.is_none() || over_limit).then(|| {
                     div()
