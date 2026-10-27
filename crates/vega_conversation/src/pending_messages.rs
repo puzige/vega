@@ -16,6 +16,10 @@ use crate::types::{ConversationError, ImageAttachment, PendingMessage, PendingMe
 struct StoredSubmission {
     content: String,
     images: Vec<Vec<u8>>,
+    #[serde(default)]
+    references: Vec<String>,
+    #[serde(default)]
+    reference_mentions: Vec<crate::types::FileReferenceMention>,
 }
 
 fn failure() -> ConversationError {
@@ -42,6 +46,8 @@ pub fn enqueue_cached(
             .iter()
             .map(|image| image.bytes().to_vec())
             .collect(),
+        references: message.references.clone(),
+        reference_mentions: message.reference_mentions.clone(),
     })
     .map_err(|_| failure())?;
     if message.content.is_empty() && message.images.is_empty() {
@@ -186,6 +192,8 @@ pub(crate) fn decode(row: rows::PendingMessageRow) -> Result<PendingMessage, Con
         behavior,
         content: payload.content,
         images,
+        references: payload.references,
+        reference_mentions: payload.reference_mentions,
     })
 }
 
@@ -291,9 +299,9 @@ impl RuntimeSteeringSource for QueueSteeringSource {
                 };
                 let message = decode(row.clone())
                     .map_err(|_| pending_failure(Stage::PendingDecode, Reason::PendingDecode))?;
-                let refs = vega_tools::reference::resolve_bounded_references(
+                let refs = vega_tools::reference::resolve_references(
                     &workspace,
-                    &message.content,
+                    &message.references,
                     vega_tools::reference::REFERENCE_MAX_FILES,
                     vega_tools::reference::REFERENCE_MAX_FILE_BYTES,
                     vega_tools::reference::REFERENCE_MAX_TOTAL_BYTES,

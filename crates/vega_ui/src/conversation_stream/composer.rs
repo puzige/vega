@@ -304,12 +304,24 @@ impl ConversationStream {
         self.invalidate_composer_prediction(cx);
         self.close_file_selector_and_cancel(cx);
         let text = self.input.read(cx).text().to_string();
+        let references = self.input.read(cx).reference_paths();
+        let reference_mentions = self.input.read(cx).reference_mentions();
         self.composer_submit_pending = true;
         self.pending_submission_revision = self
             .actions
             .running
             .then(|| self.input.read(cx).content_revision());
         self.submitted_attachments = self.attachments.clone();
+        self.submitted_draft = Some(SubmittedDraft {
+            submission: None,
+            text: text.clone(),
+            reference_mentions: reference_mentions.clone(),
+            images: self
+                .attachments
+                .iter()
+                .map(|(_, image)| image.image.clone())
+                .collect(),
+        });
         cx.emit(ComposerSubmitted {
             request_id: NEXT_SUBMISSION_REQUEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             draft_revision: self.input.read(cx).content_revision(),
@@ -325,6 +337,8 @@ impl ConversationStream {
                 .collect(),
             thread_id: self.thread.id.clone(),
             content: text,
+            references,
+            reference_mentions,
             skill_intent: self.skill_intent.clone(),
             reasoning: self.frozen_reasoning_for_submit(),
         });
@@ -339,6 +353,7 @@ impl ConversationStream {
             return;
         }
         self.composer_submit_pending = false;
+        self.submitted_draft = None;
         self.pending_submission_revision = None;
         self.pending_behavior_override = None;
         let copy = MessageCopy::from_live_text(content);
@@ -381,6 +396,7 @@ impl ConversationStream {
     pub fn reject_composer_submission(&mut self, cx: &mut Context<Self>) {
         self.pending_submission_revision = None;
         self.submitted_attachments.clear();
+        self.submitted_draft = None;
         if self.composer_submit_pending {
             self.composer_submit_pending = false;
             cx.notify();

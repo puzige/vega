@@ -139,6 +139,8 @@ pub struct ComposerSubmitted {
     pub images: Vec<ImageAttachment>,
     pub thread_id: String,
     pub content: String,
+    pub references: Vec<String>,
+    pub reference_mentions: Vec<vega_conversation::types::FileReferenceMention>,
     pub skill_intent: Option<SkillSelectionIntent>,
     /// Run-start reasoning snapshot captured from the displayed exact
     /// provider/model projection. Raw reasoning text is never part of this

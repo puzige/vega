@@ -39,6 +39,29 @@ actions!(
 /// Character displayed for every content character in masked (key) fields.
 const MASK_CHAR: char = '•';
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Mention {
+    range: Range<usize>,
+    path: SharedString,
+}
+
+impl Mention {
+    pub fn new(range: Range<usize>, path: impl Into<SharedString>) -> Self {
+        Self {
+            range,
+            path: path.into(),
+        }
+    }
+
+    pub fn range(&self) -> Range<usize> {
+        self.range.clone()
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+}
+
 /// One laid-out display line: its start offset in the content, the segment
 /// length (excluding the separating `\n`), and the shaped line. Single-line
 /// inputs keep exactly one entry (start 0).
@@ -76,6 +99,7 @@ pub struct TextInput {
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
+    mentions: Vec<Mention>,
     /// Layout cache from the last paint (one entry per display line).
     last_lines: Vec<LineLayout>,
     navigation_lines: Vec<LineLayout>,

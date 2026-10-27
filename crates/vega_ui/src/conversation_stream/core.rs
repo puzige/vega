@@ -17,6 +17,13 @@ impl ModelPickerLevel {
     }
 }
 
+pub(crate) struct SubmittedDraft {
+    pub(crate) submission: Option<vega_conversation::types::SubmissionId>,
+    pub(crate) text: String,
+    pub(crate) reference_mentions: Vec<vega_conversation::types::FileReferenceMention>,
+    pub(crate) images: Vec<ImageAttachment>,
+}
+
 /// The opened-thread content view: thread header (title and trusted actions),
 /// the virtualized message stream, and the fixed-bottom Composer. One entity
 /// per open thread; rebuilt by the window root when another thread opens.
@@ -42,6 +49,7 @@ pub struct ConversationStream {
     pub(crate) attachment_import_pending: bool,
     pub(crate) attachment_error: Option<&'static str>,
     pub(crate) submitted_attachments: Vec<(u64, attachments::ImagePreview)>,
+    pub(crate) submitted_draft: Option<SubmittedDraft>,
     pub(crate) thread: Thread,
     pub(crate) entries: Vec<StreamEntry>,
     pub(crate) assistant_role_rows: Vec<bool>,
@@ -487,6 +495,7 @@ impl ConversationStream {
             attachment_import_pending: false,
             attachment_error: None,
             submitted_attachments: Vec::new(),
+            submitted_draft: None,
             ordinary: Vec::new(),
             thread,
             entries: Vec::new(),
@@ -1758,8 +1767,36 @@ impl ConversationStream {
     ) {
         self.controller_runtime_error = None;
         self.controller_error = Some(crate::localized_copy::LocalizedCopy::Reference(code));
+        self.restore_rejected_reference_draft(cx);
         self.meter.end_run();
         cx.notify();
+    }
+
+    fn restore_rejected_reference_draft(&mut self, cx: &mut Context<Self>) {
+        let Some(draft) = self.submitted_draft.take() else {
+            return;
+        };
+        if let Some(submission) = draft.submission {
+            self.mark_ordinary_reference_failed(submission);
+        }
+        let references = draft
+            .reference_mentions
+            .iter()
+            .map(|mention| mention.path.clone())
+            .collect();
+        self.accept_pending_edit(
+            vega_conversation::types::PendingMessage {
+                id: String::new(),
+                thread_id: self.thread.id.clone(),
+                generation: String::new(),
+                behavior: PendingMessageBehavior::Queue,
+                content: draft.text,
+                images: draft.images,
+                references,
+                reference_mentions: draft.reference_mentions,
+            },
+            cx,
+        );
     }
 
     pub fn install_meter_estimator(
