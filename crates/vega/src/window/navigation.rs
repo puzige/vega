@@ -291,7 +291,7 @@ impl VegaWindow {
     }
 
     /// Coalesce all route globals before render tears down the departing editor.
-    fn default_permission_save_pending(&self, cx: &App) -> bool {
+    pub(super) fn default_permission_save_pending(&self, cx: &App) -> bool {
         self.settings_view
             .as_ref()
             .is_some_and(|settings| settings.read(cx).default_permission_save_pending())
