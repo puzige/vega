@@ -494,4 +494,4 @@ fn unavailable(_: impl std::fmt::Display) -> CommandScopeError {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

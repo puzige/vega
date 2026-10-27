@@ -14,6 +14,8 @@
 
 `df6651c59b58580574dbc126a8d91337432f9400` 的 [Actions 40462010952](https://github.com/puzige/vega/actions/runs/40462010952) 在 Clippy 与 Nextest 编译阶段均报 E0624：Bash 新路径调用的 `TempRoot::validate_identity` 仍为 sandbox 模块私有。尚未取得测试发现或执行计数。修正仅把该现有校验开放到 crate 内，不扩大公开 API、不更改校验或测试断言，待新提交云端验证。
 
+修正 `6aa75c6031b208962ad2e817033628c840d2c608` 的 [Actions 40462627353](https://github.com/puzige/vega/actions/runs/40462627353) 继续发现 type_complexity 与 E0603：新 reader 字段缺类型别名，运行时回归所在的兄弟模块不能访问私有 scoped_bash。提取 reader 类型别名，并把该回归移入 scoped_bash 的开发测试子模块、仅共享 test-only fixture；不放宽生产模块可见性或断言。两轮尚未执行 Rust 测试，均保留首次日志，不盲重跑原 head。
+
 - `vega_conversation::types` 保存独立 `RequestedCommandScope`、`CommandScopeRequest`、`CommandScopeDecision { AllowOnce, Deny, Timeout }` 与内容无关的失败词汇。严格解析拒绝未知/重复字段、空范围、错误类型和空/过长 reason；reason 最多 512 UTF-8 字节且无换行/控制字符。绝对目录文本只做词法验证，不能冒充规范化批准。
 - 请求精确绑定 command bytes、有效 timeout、PreparedBash 的工具实例和项目 cwd、run/call/request id、完整 PermissionFence、scope 和 bindings 快照。摘要不替代相等比较。Debug 不输出命令、路径、配置或凭据引用；快照仅含 binding 配置，不含秘密值。
 - 只有已持久接纳、仍 streaming 的 run 可创建 live owner；数据库身份、epoch/reset/admission、完整持久 fence 每个状态转换均核对。委派 run 还须核对原始 parent fence/parent message、仍 running 的委派归属及 held release state。活动 run 不从线程的新默认重建 authority。

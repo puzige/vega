@@ -4,13 +4,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use vega_credentials::{CredentialBinding, SecretReader};
 
+type BindingSnapshotReader =
+    Arc<dyn Fn() -> Result<Vec<CredentialBinding>, BashError> + Send + Sync>;
+
 pub struct ToolCredentialPolicy {
     pub(crate) protected_root: PathBuf,
     pub(crate) protected_identity: (u64, u64),
     pub(crate) bindings: Vec<CredentialBinding>,
     pub(crate) reader: SecretReader,
-    bindings_reader:
-        Option<Arc<dyn Fn() -> Result<Vec<CredentialBinding>, BashError> + Send + Sync>>,
+    bindings_reader: Option<BindingSnapshotReader>,
 }
 
 impl ToolCredentialPolicy {
@@ -37,10 +39,7 @@ impl ToolCredentialPolicy {
         })
     }
 
-    pub fn with_bindings_reader(
-        mut self,
-        reader: Arc<dyn Fn() -> Result<Vec<CredentialBinding>, BashError> + Send + Sync>,
-    ) -> Self {
+    pub fn with_bindings_reader(mut self, reader: BindingSnapshotReader) -> Self {
         self.bindings_reader = Some(reader);
         self
     }
