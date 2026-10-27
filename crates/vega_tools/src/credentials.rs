@@ -7,8 +7,10 @@ use vega_credentials::{CredentialBinding, SecretReader};
 pub struct ToolCredentialPolicy {
     pub(crate) protected_root: PathBuf,
     pub(crate) protected_identity: (u64, u64),
-    bindings: Vec<CredentialBinding>,
-    reader: SecretReader,
+    pub(crate) bindings: Vec<CredentialBinding>,
+    pub(crate) reader: SecretReader,
+    bindings_reader:
+        Option<Arc<dyn Fn() -> Result<Vec<CredentialBinding>, BashError> + Send + Sync>>,
 }
 
 impl ToolCredentialPolicy {
@@ -31,7 +33,27 @@ impl ToolCredentialPolicy {
             protected_identity,
             bindings,
             reader,
+            bindings_reader: None,
         })
+    }
+
+    pub fn with_bindings_reader(
+        mut self,
+        reader: Arc<dyn Fn() -> Result<Vec<CredentialBinding>, BashError> + Send + Sync>,
+    ) -> Self {
+        self.bindings_reader = Some(reader);
+        self
+    }
+
+    fn binding_snapshot(&self) -> Result<Vec<CredentialBinding>, BashError> {
+        let current = self
+            .bindings_reader
+            .as_ref()
+            .ok_or_else(|| BashError::new(BashErrorCode::ScopeMismatch))?()?;
+        if current != self.bindings {
+            return Err(BashError::new(BashErrorCode::ScopeMismatch));
+        }
+        Ok(current)
     }
 
     pub(crate) fn validate_bindings(&self) -> Result<(), BashError> {
@@ -55,6 +77,13 @@ impl Tools {
     pub fn with_credential_policy(mut self, policy: ToolCredentialPolicy) -> Self {
         self.credential_policy = Some(Arc::new(policy));
         self
+    }
+
+    pub fn bash_binding_snapshot(&self) -> Result<Vec<CredentialBinding>, BashError> {
+        self.credential_policy
+            .as_ref()
+            .ok_or_else(|| BashError::new(BashErrorCode::ScopeMismatch))?
+            .binding_snapshot()
     }
 
     pub(crate) fn check_credential_path(&self, path: &Path) -> Result<(), ToolError> {

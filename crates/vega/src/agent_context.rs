@@ -25,6 +25,7 @@ pub(crate) fn protect_project_tools(
     let root = config_path.parent().ok_or(())?.to_path_buf();
     let reader_root = root.clone();
     let binding_path = config_path.to_path_buf();
+    let snapshot_path = binding_path.clone();
     let bindings = config.credential_bindings.clone();
     let authorized = bindings.clone();
     let reader: vega_credentials::SecretReader = Arc::new(move |key_ref| {
@@ -37,7 +38,15 @@ pub(crate) fn protect_project_tools(
             .map_err(|_| vega_credentials::CredentialError::Unavailable)
     });
     Ok(tools.with_credential_policy(
-        vega_tools::ToolCredentialPolicy::new(root, bindings, reader).map_err(|_| ())?,
+        vega_tools::ToolCredentialPolicy::new(root, bindings, reader)
+            .map_err(|_| ())?
+            .with_bindings_reader(Arc::new(move || {
+                vega_store::config::read_from(&snapshot_path)
+                    .map(|config| config.credential_bindings)
+                    .map_err(|_| {
+                        vega_tools::BashError::new(vega_tools::BashErrorCode::ScopeMismatch)
+                    })
+            })),
     ))
 }
 

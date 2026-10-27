@@ -64,9 +64,18 @@ const BASE_PROFILE: &str = r#"(version 1)
 (allow sysctl-write (sysctl-name "kern.grade_cputype"))
 (allow mach-lookup (global-name "com.apple.system.opendirectoryd.libinfo"))"#;
 
+#[derive(Clone, Copy)]
+pub(crate) enum SandboxNetwork {
+    Denied,
+    Direct,
+    Broker(u16),
+}
+
 fn restricted_profile(
     policy: BashLaunchPolicy,
     protected_root: Option<&Path>,
+    network: SandboxNetwork,
+    directories: &[crate::BashScopeDirectory],
 ) -> Result<String, BashError> {
     let mut profile = BASE_PROFILE.to_owned();
     match policy {
@@ -75,6 +84,23 @@ fn restricted_profile(
             "\n(allow file-write* (subpath (param \"PROJECT_ROOT\")))\n(allow file-write* (subpath (param \"TEMP_ROOT\")))",
         ),
         BashLaunchPolicy::FullAccess => return Err(BashError::new(BashErrorCode::SandboxUnavailable)),
+    }
+    for directory in directories {
+        if policy != BashLaunchPolicy::WorkspaceWrite {
+            return Err(BashError::new(BashErrorCode::ScopeMismatch));
+        }
+        directory.validate()?;
+        let path = utf8_param(directory.path())?;
+        profile.push_str(&format!("\n(allow file-write* (subpath \"{path}\"))"));
+    }
+    match network {
+        SandboxNetwork::Denied => {},
+        SandboxNetwork::Direct => profile.push_str(
+            "\n(allow network-outbound (remote tcp \"*:*\") (remote udp \"*:*\"))\n(allow network-inbound (local tcp \"*:*\") (local udp \"*:*\"))\n(allow network-bind (local ip \"*:*\"))\n(allow mach-lookup (global-name \"com.apple.SecurityServer\") (global-name \"com.apple.networkd\") (global-name \"com.apple.ocspd\") (global-name \"com.apple.trustd.agent\") (global-name \"com.apple.SystemConfiguration.DNSConfiguration\") (global-name \"com.apple.SystemConfiguration.configd\"))\n(allow sysctl-read (sysctl-name-regex #\"^net.routetable\"))",
+        ),
+        SandboxNetwork::Broker(port) => profile.push_str(&format!(
+            "\n(allow network-outbound (remote tcp \"127.0.0.1:{port}\"))"
+        )),
     }
     profile.push_str(
         "\n(deny file-write* (subpath (param \"GIT_ENTRY\")))\n(deny file-write* (subpath (param \"GIT_DIR\")))\n(deny mach-lookup (global-name \"com.apple.taskgated\"))",
@@ -106,6 +132,7 @@ pub(crate) struct SandboxConfig {
     profile: String,
     temporary_path: PathBuf,
     environment: BTreeMap<String, String>,
+    directories: Vec<crate::BashScopeDirectory>,
 }
 
 impl SandboxConfig {
@@ -115,7 +142,27 @@ impl SandboxConfig {
         temp_root: &TempRoot,
         protected_root: Option<&Path>,
     ) -> Result<Self, BashError> {
-        let profile = restricted_profile(policy, protected_root)?;
+        Self::scoped(
+            project_root,
+            policy,
+            temp_root,
+            protected_root,
+            SandboxNetwork::Denied,
+            Vec::new(),
+            BTreeMap::new(),
+        )
+    }
+
+    pub(crate) fn scoped(
+        project_root: &Path,
+        policy: BashLaunchPolicy,
+        temp_root: &TempRoot,
+        protected_root: Option<&Path>,
+        network: SandboxNetwork,
+        directories: Vec<crate::BashScopeDirectory>,
+        additional_environment: BTreeMap<String, String>,
+    ) -> Result<Self, BashError> {
+        let profile = restricted_profile(policy, protected_root, network, &directories)?;
         temp_root.validate_identity()?;
         let metadata = fs::symlink_metadata(SANDBOX_EXEC)
             .map_err(|_| BashError::new(BashErrorCode::SandboxUnavailable))?;
@@ -129,6 +176,8 @@ impl SandboxConfig {
         let project_param = utf8_param(project_root)?;
         let git_entry_param = utf8_param(&git_entry)?;
         let git_dir_param = utf8_param(&git_dir)?;
+        let mut environment = crate::credentials::controlled_environment(temp_root.path());
+        environment.extend(additional_environment);
         Ok(Self {
             project_root: project_root.to_path_buf(),
             project_param,
@@ -138,13 +187,19 @@ impl SandboxConfig {
             git_dir_param,
             profile,
             temporary_path: temp_root.path().to_path_buf(),
-            environment: crate::credentials::controlled_environment(temp_root.path()),
+            environment,
+            directories,
         })
     }
 
     pub(crate) fn preflight(&self, temp_root: &TempRoot) -> Result<(), BashError> {
         if temp_root.path() != self.temporary_path {
             return Err(BashError::new(BashErrorCode::ScopeMismatch));
+        }
+        for directory in &self.directories {
+            directory.validate()?;
+            scan_hardlinks(directory.path(), None)?;
+            directory.validate()?;
         }
         scan_hardlinks(&self.project_root, Some((&self.git_entry, &self.git_dir)))?;
         temp_root.validate_identity()?;

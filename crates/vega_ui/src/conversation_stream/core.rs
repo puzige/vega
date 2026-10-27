@@ -95,6 +95,7 @@ pub struct ConversationStream {
     /// Request retained after the queue listener wakes before its durable
     /// ToolCallProposed event reaches this stream.
     pub(crate) deferred_permission: Option<PendingPermission>,
+    pub(crate) deferred_scope_permission: Option<vega_conversation::agent::PendingScopePermission>,
     /// The sole visible prompt; the opaque call id is only a map association.
     pub(crate) active_permission: Option<Entity<PermissionCard>>,
     /// Opaque call id paired with `active_permission` for exact terminal
@@ -437,6 +438,7 @@ impl ConversationStream {
                 })
             {
                 this.cancel_image_import(cx);
+                this.timeout_permission(cx);
             }
         })
         .detach();
@@ -535,6 +537,7 @@ impl ConversationStream {
             user_question_attention: None,
             _user_question_listener_task: user_question_listener_task,
             deferred_permission: None,
+            deferred_scope_permission: None,
             active_permission: None,
             active_permission_call_id: None,
             plan_cards: HashMap::new(),

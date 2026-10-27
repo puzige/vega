@@ -591,6 +591,22 @@ pub trait RuntimePermissionHook: Send + Sync {
         cancel: CancellationToken,
     ) -> BoxFuture<'static, Result<RuntimeUserDecision, VegaError>>;
 
+    fn execute_scoped_bash<'a>(
+        &'a self,
+        _call_id: String,
+        _tools: vega_tools::Tools,
+        _prepared: vega_tools::PreparedBash,
+        _policy: vega_tools::BashLaunchPolicy,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<vega_tools::BashOutput, vega_tools::BashError>> {
+        async {
+            Err(vega_tools::BashError::new(
+                vega_tools::BashErrorCode::ScopeMismatch,
+            ))
+        }
+        .boxed()
+    }
+
     /// External calls always require a separate one-shot decision. The
     /// default is fail-closed until a conversation/UI adapter implements it.
     fn request_mcp(

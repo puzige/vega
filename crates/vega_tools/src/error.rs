@@ -341,6 +341,7 @@ impl std::error::Error for MutationError {}
 pub enum BashErrorCode {
     InvalidInput,
     ScopeMismatch,
+    ScopeDenied,
     HardlinkPreflight,
     SandboxUnavailable,
     TempUnavailable,
@@ -363,6 +364,7 @@ impl BashErrorCode {
         match self {
             Self::InvalidInput => "invalid_input",
             Self::ScopeMismatch => "scope_mismatch",
+            Self::ScopeDenied => "scope_denied",
             Self::HardlinkPreflight => "hardlink_preflight",
             Self::SandboxUnavailable => "sandbox_unavailable",
             Self::TempUnavailable => "temp_unavailable",
@@ -384,7 +386,7 @@ pub struct BashError {
 }
 
 impl BashError {
-    pub(crate) const fn new(code: BashErrorCode) -> Self {
+    pub const fn new(code: BashErrorCode) -> Self {
         Self { code }
     }
 
@@ -406,6 +408,11 @@ impl fmt::Debug for BashError {
 impl fmt::Display for BashError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "bash failed ({})", self.code.as_str())?;
+        if self.code == BashErrorCode::ScopeDenied {
+            formatter.write_str(
+                ". This command was not started because its requested scope was not authorized. A new call and explicit scope approval are required; do not retry this call.",
+            )?;
+        }
         if self.code == BashErrorCode::OutputIncomplete {
             formatter.write_str(
                 ". The shell exited, but its output did not close. Background work may still be running. Verify it before retrying.",

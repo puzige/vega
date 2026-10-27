@@ -8,10 +8,10 @@ use gpui_kit::{
     AnyElement, App, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, MouseUpEvent, Task,
     Window, actions, div, px,
 };
-use vega_conversation::agent::{PERMISSION_TIMEOUT, PermissionLease};
+use vega_conversation::agent::{CommandScopeLease, PERMISSION_TIMEOUT, PermissionLease};
 use vega_conversation::types::{
-    CodexAcpActivityIdentity, CodexArgumentPreview, PermissionDecision, PermissionOptionChoice,
-    PermissionRequest,
+    CodexAcpActivityIdentity, CodexArgumentPreview, CommandScopeDecision, CommandScopeRequest,
+    PermissionDecision, PermissionOptionChoice, PermissionRequest,
 };
 use vega_theme::{Layout, Typography, theme};
 
@@ -138,6 +138,8 @@ impl fmt::Debug for SafePermissionPrompt {
 pub struct PermissionCard {
     prompt: SafePermissionPrompt,
     lease: Option<PermissionLease>,
+    scope_lease: Option<CommandScopeLease>,
+    scope_rows: Option<Vec<String>>,
     note: Entity<TextInput>,
     once_focus: FocusHandle,
     always_focus: FocusHandle,
@@ -159,12 +161,92 @@ impl PermissionCard {
         codex_identity: Option<(CodexAcpActivityIdentity, Option<CodexArgumentPreview>)>,
         cx: &mut gpui_kit::Context<Self>,
     ) -> Self {
+        Self::from_prompt(
+            SafePermissionPrompt::from_request(request, allow_persistent, codex_identity),
+            Some(lease),
+            None,
+            None,
+            cx,
+        )
+    }
+
+    pub(crate) fn new_scope(
+        request: &CommandScopeRequest,
+        lease: CommandScopeLease,
+        cx: &mut gpui_kit::Context<Self>,
+    ) -> Self {
+        let prompt = SafePermissionPrompt {
+            tool: "bash".into(),
+            display_target: request.command().into(),
+            command_rows: wrap_command_rows(request.command()),
+            codex_identity: None,
+            danger_rule_id: None,
+            danger_reason: None,
+            allow_persistent: false,
+            acp_options: None,
+        };
+        let mut rows = Vec::new();
+        for text in [
+            vega_i18n::t_args(
+                "ui.command_scope_location",
+                &[("path", request.project_root())],
+            ),
+            vega_i18n::t_args(
+                "ui.command_scope_timeout",
+                &[("milliseconds", &request.timeout_ms().to_string())],
+            ),
+            vega_i18n::t_args(
+                "ui.command_scope_reason",
+                &[("reason", request.scope().reason())],
+            ),
+        ] {
+            rows.extend(wrap_command_rows(&text));
+        }
+        if request.scope().network() {
+            let key = if request.bindings().is_empty() {
+                "ui.command_scope_network_direct"
+            } else {
+                "ui.command_scope_network_broker"
+            };
+            rows.extend(wrap_command_rows(&vega_i18n::t(key)));
+            let mut origins = request
+                .bindings()
+                .iter()
+                .map(|binding| binding.origin.as_str())
+                .collect::<Vec<_>>();
+            origins.sort_unstable();
+            origins.dedup();
+            for origin in origins {
+                rows.extend(wrap_command_rows(origin));
+            }
+        }
+        if !request.directories().is_empty() {
+            rows.extend(wrap_command_rows(&vega_i18n::t(
+                "ui.command_scope_directories",
+            )));
+            for directory in request.directories() {
+                rows.extend(wrap_command_rows(&directory.path().to_string_lossy()));
+            }
+            rows.extend(wrap_command_rows(&vega_i18n::t(
+                "ui.command_scope_directory_risk",
+            )));
+        }
+        Self::from_prompt(prompt, None, Some(lease), Some(rows), cx)
+    }
+
+    fn from_prompt(
+        prompt: SafePermissionPrompt,
+        lease: Option<PermissionLease>,
+        scope_lease: Option<CommandScopeLease>,
+        scope_rows: Option<Vec<String>>,
+        cx: &mut gpui_kit::Context<Self>,
+    ) -> Self {
         let note = cx.new(|cx| {
             TextInput::new(cx, "", false).with_placeholder_key("ui.reason_for_rejection_optional")
         });
         cx.observe(&note, |_, _, cx| cx.notify()).detach();
-        let danger = request.danger_rule_id.is_some();
-        let acp_option_focuses = request
+        let danger = prompt.is_danger() || scope_rows.is_some();
+        let acp_option_focuses = prompt
             .acp_options
             .as_ref()
             .map(|options| {
@@ -180,22 +262,24 @@ impl PermissionCard {
         let timeout_task = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(PERMISSION_TIMEOUT).await;
             let _ = this.update(cx, |this, cx| {
-                this.resolve(PermissionDecision::Timeout, cx);
+                this.timeout(cx);
             });
         });
+        let has_acp = prompt
+            .acp_options
+            .as_ref()
+            .is_some_and(|options| !options.is_empty());
         Self {
-            prompt: SafePermissionPrompt::from_request(request, allow_persistent, codex_identity),
-            lease: Some(lease),
+            prompt,
+            lease,
+            scope_lease,
+            scope_rows,
             note,
             once_focus: cx.focus_handle().tab_index(1).tab_stop(true),
             always_focus: cx.focus_handle().tab_index(2).tab_stop(true),
             reject_focus: cx.focus_handle().tab_index(3).tab_stop(true),
             acp_option_focuses,
-            logical_focus: if request
-                .acp_options
-                .as_ref()
-                .is_some_and(|options| !options.is_empty())
-            {
+            logical_focus: if has_acp {
                 PermissionFocus::Acp(0)
             } else if danger {
                 PermissionFocus::Reject
@@ -210,7 +294,9 @@ impl PermissionCard {
 
     /// Fixed-height rows, including UTF-8-safe wrapped command rows.
     pub fn row_count(&self) -> usize {
-        if let Some(options) = &self.prompt.acp_options {
+        if let Some(rows) = &self.scope_rows {
+            2 + self.prompt.command_rows().len() + rows.len()
+        } else if let Some(options) = &self.prompt.acp_options {
             1 + self.prompt.command_rows().len() + options.len()
         } else {
             1 + self.prompt.command_rows().len() + if self.prompt.is_danger() { 2 } else { 0 } + 2
@@ -224,17 +310,50 @@ impl PermissionCard {
 
     /// Whether another path already closed the first-wins latch.
     pub fn is_resolved(&self) -> bool {
-        self.resolved || self.lease.as_ref().is_none_or(PermissionLease::is_resolved)
+        self.resolved
+            || if self.scope_rows.is_some() {
+                self.scope_lease
+                    .as_ref()
+                    .is_none_or(CommandScopeLease::is_resolved)
+            } else {
+                self.lease.as_ref().is_none_or(PermissionLease::is_resolved)
+            }
     }
 
     /// Resolves this card's own lease without touching the queue's current
     /// active slot, which may already belong to a newer call.
     pub(crate) fn timeout(&mut self, cx: &mut gpui_kit::Context<Self>) {
-        self.resolve(PermissionDecision::Timeout, cx);
+        if self.scope_rows.is_some() {
+            self.resolve_scope(CommandScopeDecision::Timeout, cx);
+        } else {
+            self.resolve(PermissionDecision::Timeout, cx);
+        }
+    }
+
+    fn allow_once(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        if self.scope_rows.is_some() {
+            self.resolve_scope(CommandScopeDecision::AllowOnce, cx);
+        } else {
+            self.resolve(PermissionDecision::Once, cx);
+        }
+    }
+
+    fn resolve_scope(&mut self, decision: CommandScopeDecision, cx: &mut gpui_kit::Context<Self>) {
+        if self.resolved || self.scope_rows.is_none() {
+            return;
+        }
+        if let Some(lease) = &mut self.scope_lease {
+            lease.respond(decision);
+        }
+        self.scope_lease.take();
+        self.resolved = true;
+        cx.emit(PermissionCardResolved);
+        cx.notify();
     }
 
     fn resolve(&mut self, decision: PermissionDecision, cx: &mut gpui_kit::Context<Self>) {
         if self.resolved
+            || self.scope_rows.is_some()
             || (!self.prompt.allow_persistent && matches!(decision, PermissionDecision::Always))
         {
             return;
@@ -249,6 +368,10 @@ impl PermissionCard {
     }
 
     fn deny(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        if self.scope_rows.is_some() {
+            self.resolve_scope(CommandScopeDecision::Deny, cx);
+            return;
+        }
         if let Some(option) = self.prompt.acp_options.as_ref().and_then(|options| {
             options.iter().find(|option| {
                 option
@@ -279,13 +402,9 @@ impl PermissionCard {
     }
 
     fn sync_external_resolution(&mut self, cx: &mut gpui_kit::Context<Self>) {
-        if !self.resolved
-            && self
-                .lease
-                .as_ref()
-                .is_some_and(PermissionLease::is_resolved)
-        {
+        if !self.resolved && self.is_resolved() {
             self.lease.take();
+            self.scope_lease.take();
             self.resolved = true;
             cx.emit(PermissionCardResolved);
             cx.notify();
@@ -308,6 +427,15 @@ impl PermissionCard {
     }
 
     fn cycle_focus(&mut self, reverse: bool, window: &mut Window, cx: &mut App) {
+        if self.scope_rows.is_some() {
+            let next = if self.logical_focus == PermissionFocus::AllowOnce {
+                PermissionFocus::Reject
+            } else {
+                PermissionFocus::AllowOnce
+            };
+            self.focus(next, window, cx);
+            return;
+        }
         if let Some(options) = &self.prompt.acp_options {
             if options.is_empty() {
                 return;
@@ -385,7 +513,7 @@ impl PermissionCard {
             return true;
         }
         if self.once_focus.is_focused(window) {
-            self.resolve(PermissionDecision::Once, cx);
+            self.allow_once(cx);
             true
         } else if self.always_focus.is_focused(window) {
             if self.prompt.allow_persistent {
@@ -431,7 +559,7 @@ impl PermissionCard {
             .key_context("PermissionCard")
             .on_action(move |_: &PermissionEnter, window, cx| {
                 action_card.update(cx, |card, cx| {
-                    if card.prompt.acp_options.is_some() {
+                    if card.scope_rows.is_some() || card.prompt.acp_options.is_some() {
                         card.activate_focused(window, cx);
                     } else if card.prompt.is_danger() {
                         card.deny(cx);
@@ -475,7 +603,9 @@ impl PermissionCard {
             } else {
                 colors.warning
             };
-            let label = if is_danger {
+            let label = if card_ref.scope_rows.is_some() {
+                vega_i18n::t("ui.command_scope_title").to_string()
+            } else if is_danger {
                 vega_i18n::t_args(
                     "ui.dangerous_command_requires_confirmation_tool",
                     &[("tool", card_ref.prompt.display_tool())],
@@ -515,6 +645,15 @@ impl PermissionCard {
                 .text_size(px(Typography::CODE))
                 .text_color(colors.text_primary)
                 .child(command_rows[row - 1].clone())
+                .into_any_element();
+        }
+        if let Some(rows) = &card_ref.scope_rows
+            && let Some(text) = rows.get(row.saturating_sub(command_end))
+        {
+            return container
+                .text_size(px(Typography::BODY))
+                .text_color(colors.text_primary)
+                .child(text.clone())
                 .into_any_element();
         }
         if is_danger && row == command_end {
@@ -563,7 +702,7 @@ impl PermissionCard {
             }
         }
         let note_row = command_end + if is_danger { 2 } else { 0 };
-        if row == note_row {
+        if row == note_row && card_ref.scope_rows.is_none() {
             return container
                 .child(
                     div()
@@ -582,13 +721,18 @@ impl PermissionCard {
         let reject_card = card.clone();
         let mut container = container.justify_end().gap_2().child(permission_button(
             format!("permission-once-{}", card.entity_id()),
-            vega_i18n::t("ui.allow_once").to_string(),
+            vega_i18n::t(if card_ref.scope_rows.is_some() {
+                "ui.command_scope_allow"
+            } else {
+                "ui.allow_once"
+            })
+            .to_string(),
             once,
             true,
             colors,
             window,
             move |_: &MouseUpEvent, _, cx| {
-                once_card.update(cx, |card, cx| card.resolve(PermissionDecision::Once, cx));
+                once_card.update(cx, PermissionCard::allow_once);
             },
         ));
         if card.read(cx).prompt.allow_persistent {

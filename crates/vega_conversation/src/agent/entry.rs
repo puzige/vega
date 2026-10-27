@@ -1062,6 +1062,11 @@ where
     let mut streamed_content = String::new();
     let permission_adapter = RuntimePermissionAdapter {
         shared: permission_hook,
+        scope: super::scoped_bash::ScopedBashAuthority {
+            database_path: prepared.database_path.clone(),
+            fence: prepared.permission_fence.clone(),
+            run_id: prepared.assistant_message_id.clone(),
+        },
     };
     let diagnostics = Arc::new(
         super::diagnostics::DiagnosticsWriter::for_persistence_actor(actor.sender.clone()),

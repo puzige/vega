@@ -1,4 +1,5 @@
 mod offline;
+mod scope;
 
 use super::*;
 use std::collections::BTreeMap;
@@ -173,7 +174,7 @@ fn provider_input_cannot_select_a_launch_policy_or_skip_approval() {
     let exact = "  printf '%s' 'preserve bytes'\n";
     assert_eq!(
         parse_bash_input(&serde_json::json!({"command": exact, "timeout": 3}).to_string()),
-        Ok((exact.into(), 3_000))
+        Ok((exact.into(), 3_000, None))
     );
 }
 

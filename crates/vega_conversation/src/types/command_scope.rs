@@ -1,5 +1,5 @@
 use std::fmt;
-use std::path::{Component, Path};
+use std::path::Path;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -38,9 +38,7 @@ impl TryFrom<ScopeWire> for RequestedCommandScope {
                 !path.is_absolute()
                     || root.contains(['"', '\\'])
                     || root.chars().any(char::is_control)
-                    || path
-                        .components()
-                        .any(|part| matches!(part, Component::CurDir | Component::ParentDir))
+                    || root.split('/').any(|part| matches!(part, "." | ".."))
             })
         {
             return Err(CommandScopeError::InvalidRequest);
@@ -50,6 +48,16 @@ impl TryFrom<ScopeWire> for RequestedCommandScope {
             write_roots: wire.write_roots,
             reason: wire.reason,
         })
+    }
+}
+
+impl From<&vega_tools::BashScopeRequest> for RequestedCommandScope {
+    fn from(scope: &vega_tools::BashScopeRequest) -> Self {
+        Self {
+            network: scope.network(),
+            write_roots: scope.write_roots().to_vec(),
+            reason: scope.reason().into(),
+        }
     }
 }
 
@@ -127,6 +135,8 @@ pub struct CommandScopeRequest {
     pub(crate) project_root: String,
     pub(crate) fence: PermissionFence,
     pub(crate) scope: RequestedCommandScope,
+    pub(crate) directories: Vec<vega_tools::BashScopeDirectory>,
+    pub(crate) prepared_input_json: String,
     pub(crate) bindings: Vec<CredentialBinding>,
     pub(crate) input_json: String,
     pub(crate) ordinary_approval: String,
@@ -155,6 +165,10 @@ impl CommandScopeRequest {
 
     pub fn scope(&self) -> &RequestedCommandScope {
         &self.scope
+    }
+
+    pub fn directories(&self) -> &[vega_tools::BashScopeDirectory] {
+        &self.directories
     }
 
     pub fn bindings(&self) -> &[CredentialBinding] {

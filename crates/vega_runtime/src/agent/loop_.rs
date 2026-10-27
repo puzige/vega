@@ -3330,7 +3330,10 @@ where
                                 }
                                 (executed.result, false)
                             }
-                            other => execute_prepared_waiting(other, tools, &cancel).await,
+                            other => {
+                                execute_prepared_waiting(other, tools, permission_hook, &cancel)
+                                    .await
+                            }
                         };
                         if result.status == RuntimeToolStatus::Cancelled
                             && result.output == crate::computer_use::SUPERSEDED_CONTROL_OUTPUT

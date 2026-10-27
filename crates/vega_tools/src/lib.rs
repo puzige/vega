@@ -18,7 +18,8 @@ mod sha256;
 mod tools;
 
 pub use bash::{
-    BashInputError, BashLaunchPolicy, DEFAULT_BASH_TIMEOUT_MS, PreparedBash, bash_input_error,
+    BashInputError, BashLaunchPolicy, BashScopeDirectory, BashScopeRequest,
+    DEFAULT_BASH_TIMEOUT_MS, PreparedBash, PreparedBashScope, bash_input_error,
     bash_inputs_semantically_equal, bash_permission_signature, legacy_bash_input_is_invalid,
 };
 pub use codec::{

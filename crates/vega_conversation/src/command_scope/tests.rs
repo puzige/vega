@@ -85,7 +85,12 @@ impl Fixture {
     }
 
     fn call_with(&self, id: &str, command: &str, audit: &ApprovalAudit) -> PreparedBash {
-        let input = serde_json::json!({"command":command,"timeout":17}).to_string();
+        let input = serde_json::json!({"command":command,"timeout":17,"requested_scope":network()})
+            .to_string();
+        self.call_input(id, &input, audit)
+    }
+
+    fn call_input(&self, id: &str, input: &str, audit: &ApprovalAudit) -> PreparedBash {
         let seq: i64 = self
             .store
             .conn()
@@ -101,7 +106,7 @@ impl Fixture {
                 message_id: &self.accepted.assistant_message_id,
                 seq,
                 tool: "bash",
-                input_json: &input,
+                input_json: input,
                 status: "pending_approval",
                 created_at: 1,
             },
@@ -116,7 +121,7 @@ impl Fixture {
         )
         .expect("ordinary approval");
         self.tools
-            .prepare_bash_json(&input)
+            .prepare_bash_json(input)
             .expect("prepared command")
     }
 
@@ -594,7 +599,7 @@ fn scope_denial_timeout_cancel_and_lost_owner_never_produce_a_token() {
 fn scope_consumption_rejects_every_changed_identity_and_prepared_command() {
     let fixture = Fixture::new("execute", "confirm");
     let owner = fixture.owner();
-    for variant in 0..14 {
+    for variant in 0..15 {
         let call = format!("identity-{variant}");
         let prepared = fixture.call(&call, "printf exact");
         let pending = fixture.pending(&owner, &call, &prepared);
@@ -672,6 +677,7 @@ fn scope_consumption_rejects_every_changed_identity_and_prepared_command() {
                     .push(("bash".into(), "printf exact".into()));
                 None
             }
+            14 => Some(fixture.tools.prepare_bash_json(&serde_json::json!({"command":"printf exact","timeout":17,"requested_scope":{"network":true,"reason":"changed request"}}).to_string()).expect("changed requested scope")),
             _ => unreachable!(),
         };
         failure(
@@ -864,7 +870,17 @@ fn scope_preserves_readonly_danger_and_unsupported_directory_gates() {
             ),
             CommandScopeError::UnapprovedCall,
         );
-        assert!(fixture.tools.prepare_bash_json(r#"{"command":"printf fixture","requested_scope":{"network":true,"reason":"not wired"}}"#).is_err());
+        let unapproved = fixture.tools.prepare_bash_json(r#"{"command":"printf fixture","requested_scope":{"network":true,"reason":"explicit request"}}"#).expect("model may request a scope");
+        failure(
+            owner.request(
+                &fixture.store,
+                "missing-call",
+                &unapproved,
+                RequestedCommandScope::from(unapproved.requested_scope().expect("requested scope")),
+                Duration::from_secs(30),
+            ),
+            CommandScopeError::UnapprovedCall,
+        );
     }
 }
 
@@ -898,4 +914,333 @@ fn scope_storage_failure_and_cancellation_after_approval_never_return_a_dispatch
         CommandScopeError::Cancelled,
     );
     assert_eq!(fixture.state("cancel-after"), "cancelled");
+}
+
+#[tokio::test]
+async fn scope_queue_requires_its_own_live_listener_and_one_shot_response() {
+    use crate::agent::{PermissionHook, PermissionQueue};
+    let fixture = Fixture::new("execute", "confirm");
+    let owner = fixture.owner();
+    let prepared = fixture.call("queue", "printf fixture");
+    let pending = fixture.pending(&owner, "queue", &prepared);
+    let request = pending.request().clone();
+    let queue = PermissionQueue::new();
+    assert_eq!(
+        queue
+            .request_scope(request.clone(), CancellationToken::new())
+            .await
+            .expect("no listener"),
+        CommandScopeDecision::Timeout
+    );
+    let listener = queue.subscribe();
+    let waiting = queue.request_scope(request.clone(), CancellationToken::new());
+    assert!(queue.has_pending());
+    let pending_ui = queue.take_pending_scope().expect("independent prompt");
+    assert_eq!(
+        pending_ui.presentation(Some(("bash", prepared.command()))),
+        crate::types::PermissionPresentation::Ready
+    );
+    let (_, mut lease) = pending_ui.into_parts();
+    assert!(lease.respond(CommandScopeDecision::AllowOnce));
+    assert!(!lease.respond(CommandScopeDecision::Deny));
+    assert_eq!(
+        waiting.await.expect("scope decision"),
+        CommandScopeDecision::AllowOnce
+    );
+    assert!(!queue.has_pending());
+
+    let waiting = queue.request_scope(request.clone(), CancellationToken::new());
+    let stale = queue.take_pending_scope().expect("disappearing prompt");
+    drop(stale);
+    assert_eq!(
+        waiting.await.expect("disappearance"),
+        CommandScopeDecision::Timeout
+    );
+    let waiting = queue.request_scope(request.clone(), CancellationToken::new());
+    let stale = queue.take_pending_scope().expect("old listener prompt");
+    let replacement = queue.subscribe();
+    drop(listener);
+    assert_eq!(
+        waiting.await.expect("replacement"),
+        CommandScopeDecision::Timeout
+    );
+    assert!(stale.is_resolved());
+
+    let cancel = CancellationToken::new();
+    let waiting = queue.request_scope(request.clone(), cancel.clone());
+    cancel.cancel();
+    assert_eq!(
+        waiting.await.expect("cancelled"),
+        CommandScopeDecision::Timeout
+    );
+    assert!(!queue.has_pending());
+    let waiting = queue.request_scope(request.clone(), CancellationToken::new());
+    let ordinary = queue.request(
+        crate::types::PermissionRequest {
+            call_id: "ordinary".into(),
+            tool: "bash".into(),
+            display_target: prepared.command().into(),
+            danger_rule_id: None,
+            danger_reason: None,
+            external: None,
+            acp_options: None,
+        },
+        CancellationToken::new(),
+    );
+    assert_eq!(
+        waiting.await.expect("ordinary replacement"),
+        CommandScopeDecision::Timeout
+    );
+    assert!(queue.take_pending_scope().is_none());
+    drop(ordinary);
+    let waiting = queue.request_scope(request, CancellationToken::new());
+    drop(replacement);
+    assert_eq!(
+        waiting.await.expect("listener gone"),
+        CommandScopeDecision::Timeout
+    );
+}
+
+#[test]
+fn prepared_directory_scope_binds_canonical_identity_and_rejects_replacement() {
+    let fixture = Fixture::new("execute", "confirm");
+    let owner = fixture.owner();
+    let extra = fixture.root.join("extra");
+    std::fs::create_dir(&extra).expect("extra fixture");
+    let input = serde_json::json!({"command":"printf fixture","timeout":17,"requested_scope":{"write_roots":[extra],"reason":"write requested output"}}).to_string();
+    let audit = ApprovalAudit {
+        decision: Approval::Once,
+        note: None,
+        source: ApprovalSource::User,
+        danger: None,
+    };
+    let prepared = fixture.call_input("directory", &input, &audit);
+    let scope = fixture
+        .tools
+        .prepare_bash_scope(
+            &prepared,
+            vega_tools::BashLaunchPolicy::WorkspaceWrite,
+            prepared.requested_scope().expect("requested").clone(),
+            Vec::new(),
+        )
+        .expect("canonical directory scope");
+    let pending = owner
+        .request_prepared(
+            &fixture.store,
+            "directory",
+            &prepared,
+            &scope,
+            vega_tools::BashLaunchPolicy::WorkspaceWrite,
+            Duration::from_secs(30),
+        )
+        .expect("pending directory");
+    assert!(pending.request().directories() == scope.directories());
+    let current = pending.request().clone();
+    let token = owner
+        .decide(&fixture.store, pending, CommandScopeDecision::AllowOnce)
+        .expect("independent approval")
+        .expect("token");
+    std::fs::rename(&extra, fixture.root.join("original-extra"))
+        .expect("replace fixture directory");
+    std::fs::create_dir(&extra).expect("replacement directory");
+    failure(
+        owner.consume(&fixture.store, token, &current, &prepared),
+        CommandScopeError::StaleAuthority,
+    );
+    assert_eq!(fixture.state("directory"), "failed");
+}
+
+#[tokio::test]
+async fn scoped_runtime_requires_durable_consumption_before_any_launch_attempt() {
+    use crate::agent::scoped_bash::ScopedBashAuthority;
+    use crate::agent::{PermissionHook, RejectPermissionHook};
+    use futures::FutureExt;
+    struct ExplicitScope;
+    impl PermissionHook for ExplicitScope {
+        fn request(
+            &self,
+            _: crate::types::PermissionRequest,
+            _: CancellationToken,
+        ) -> futures::future::BoxFuture<
+            'static,
+            Result<crate::types::PermissionDecision, vega_runtime::VegaError>,
+        > {
+            async { Ok(crate::types::PermissionDecision::Once) }.boxed()
+        }
+        fn request_scope(
+            &self,
+            _: CommandScopeRequest,
+            _: CancellationToken,
+        ) -> futures::future::BoxFuture<
+            'static,
+            Result<CommandScopeDecision, vega_runtime::VegaError>,
+        > {
+            async { Ok(CommandScopeDecision::AllowOnce) }.boxed()
+        }
+    }
+    let fixture = Fixture::new("execute", "confirm");
+    let protected = fixture.root.join("protected");
+    std::fs::create_dir(&protected).expect("protected fixture");
+    let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = reads.clone();
+    let tools = fixture.tools.clone().with_credential_policy(
+        vega_tools::ToolCredentialPolicy::new(
+            protected,
+            Vec::new(),
+            Arc::new(move |_| {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(vega_credentials::CredentialError::Unavailable)
+            }),
+        )
+        .expect("policy")
+        .with_bindings_reader(Arc::new(|| Ok(Vec::new()))),
+    );
+    let authority = ScopedBashAuthority {
+        database_path: fixture
+            .store
+            .database_path()
+            .expect("fixture database path")
+            .to_path_buf(),
+        fence: fixture.accepted.permission_fence.clone(),
+        run_id: fixture.accepted.assistant_message_id.clone(),
+    };
+    let prepared = fixture.call("no-scope-listener", "printf fixture");
+    let result = authority
+        .execute(
+            &RejectPermissionHook,
+            "no-scope-listener".into(),
+            tools.clone(),
+            prepared,
+            vega_tools::BashLaunchPolicy::WorkspaceWrite,
+            CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(
+        result.expect_err("no listener cannot launch").code(),
+        vega_tools::BashErrorCode::ScopeDenied
+    );
+    assert_eq!(fixture.state("no-scope-listener"), "timeout");
+    let prepared = fixture.call("failed-consumption", "printf fixture");
+    fixture.store.conn().execute_batch("CREATE TRIGGER fail_runtime_consume BEFORE UPDATE ON command_scope_audits WHEN NEW.state='consumed' BEGIN SELECT RAISE(ABORT,'synthetic dispatch fault'); END;").expect("consumption fault");
+    let result = authority
+        .execute(
+            &ExplicitScope,
+            "failed-consumption".into(),
+            tools,
+            prepared,
+            vega_tools::BashLaunchPolicy::WorkspaceWrite,
+            CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(
+        result.expect_err("no consumption cannot launch").code(),
+        vega_tools::BashErrorCode::ScopeMismatch
+    );
+    assert_eq!(fixture.state("failed-consumption"), "failed");
+    assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[test]
+fn prepared_scope_requires_the_accepted_launch_policy_and_binding_snapshot() {
+    use vega_tools::BashLaunchPolicy;
+    for (mode, permission, expected, other) in [
+        (
+            "ask",
+            "confirm",
+            BashLaunchPolicy::ReadOnly,
+            BashLaunchPolicy::WorkspaceWrite,
+        ),
+        (
+            "plan",
+            "auto",
+            BashLaunchPolicy::ReadOnly,
+            BashLaunchPolicy::WorkspaceWrite,
+        ),
+        (
+            "execute",
+            "readonly",
+            BashLaunchPolicy::ReadOnly,
+            BashLaunchPolicy::WorkspaceWrite,
+        ),
+        (
+            "execute",
+            "confirm",
+            BashLaunchPolicy::WorkspaceWrite,
+            BashLaunchPolicy::ReadOnly,
+        ),
+        (
+            "execute",
+            "auto",
+            BashLaunchPolicy::WorkspaceWrite,
+            BashLaunchPolicy::ReadOnly,
+        ),
+    ] {
+        let fixture = Fixture::new(mode, permission);
+        let owner = fixture.owner();
+        let prepared = fixture.call("accepted-policy", "printf fixture");
+        let requested = prepared.requested_scope().expect("requested scope").clone();
+        let mismatched = fixture
+            .tools
+            .prepare_bash_scope(&prepared, other, requested.clone(), Vec::new())
+            .expect("different prepared policy");
+        failure(
+            owner.request_prepared(
+                &fixture.store,
+                "accepted-policy",
+                &prepared,
+                &mismatched,
+                other,
+                Duration::from_secs(30),
+            ),
+            CommandScopeError::StaleAuthority,
+        );
+        let mismatched = fixture
+            .tools
+            .prepare_bash_scope(&prepared, expected, requested.clone(), vec![binding()])
+            .expect("different binding snapshot");
+        failure(
+            owner.request_prepared(
+                &fixture.store,
+                "accepted-policy",
+                &prepared,
+                &mismatched,
+                expected,
+                Duration::from_secs(30),
+            ),
+            CommandScopeError::StaleAuthority,
+        );
+        let count: i64 = fixture
+            .store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM command_scope_audits WHERE call_id='accepted-policy'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("no stale request persisted");
+        assert_eq!(count, 0);
+        let scope = fixture
+            .tools
+            .prepare_bash_scope(&prepared, expected, requested, Vec::new())
+            .expect("accepted prepared policy");
+        let pending = owner
+            .request_prepared(
+                &fixture.store,
+                "accepted-policy",
+                &prepared,
+                &scope,
+                expected,
+                Duration::from_secs(30),
+            )
+            .expect("matching request remains usable");
+        let current = pending.request().clone();
+        let token = owner
+            .decide(&fixture.store, pending, CommandScopeDecision::AllowOnce)
+            .expect("explicit approval")
+            .expect("single token");
+        owner
+            .consume(&fixture.store, token, &current, &prepared)
+            .expect("matching receipt");
+        assert_eq!(fixture.state("accepted-policy"), "consumed");
+    }
 }

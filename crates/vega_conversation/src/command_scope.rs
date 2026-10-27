@@ -91,10 +91,71 @@ impl CommandScopeRun {
         scope: RequestedCommandScope,
         timeout: Duration,
     ) -> Result<PendingCommandScope, CommandScopeError> {
-        if !scope.network() || !scope.write_roots().is_empty() {
+        if !scope.write_roots().is_empty() {
             return Err(CommandScopeError::ScopeUnavailable);
         }
-        if call.trim().is_empty() || timeout > crate::agent::PERMISSION_TIMEOUT {
+        self.request_with_directories(store, call, prepared, scope, Vec::new(), timeout)
+    }
+
+    pub(crate) fn request_prepared(
+        &self,
+        store: &Store,
+        call: &str,
+        prepared: &PreparedBash,
+        scope: &vega_tools::PreparedBashScope,
+        policy: vega_tools::BashLaunchPolicy,
+        timeout: Duration,
+    ) -> Result<PendingCommandScope, CommandScopeError> {
+        let expected_policy = if self.inner.fence.run_mode != "execute"
+            || self.inner.fence.permission_mode == "readonly"
+        {
+            vega_tools::BashLaunchPolicy::ReadOnly
+        } else {
+            vega_tools::BashLaunchPolicy::WorkspaceWrite
+        };
+        if policy != expected_policy || scope.bindings() != (self.inner.bindings)()?.as_slice() {
+            return Err(CommandScopeError::StaleAuthority);
+        }
+        scope.validate(prepared, policy).map_err(unavailable)?;
+        let requested = prepared
+            .requested_scope()
+            .ok_or(CommandScopeError::InvalidRequest)?;
+        if !requested.write_roots().is_empty()
+            && (self.inner.fence.run_mode != "execute"
+                || !matches!(
+                    self.inner.fence.permission_mode.as_str(),
+                    "confirm" | "auto"
+                ))
+        {
+            return Err(CommandScopeError::ScopeUnavailable);
+        }
+        self.request_with_directories(
+            store,
+            call,
+            prepared,
+            requested.into(),
+            scope.directories().to_vec(),
+            timeout,
+        )
+    }
+
+    fn request_with_directories(
+        &self,
+        store: &Store,
+        call: &str,
+        prepared: &PreparedBash,
+        scope: RequestedCommandScope,
+        directories: Vec<vega_tools::BashScopeDirectory>,
+        timeout: Duration,
+    ) -> Result<PendingCommandScope, CommandScopeError> {
+        if call.trim().is_empty()
+            || timeout > crate::agent::PERMISSION_TIMEOUT
+            || prepared
+                .requested_scope()
+                .map(RequestedCommandScope::from)
+                .as_ref()
+                != Some(&scope)
+        {
             return Err(CommandScopeError::InvalidRequest);
         }
         let deadline = Instant::now()
@@ -131,6 +192,8 @@ impl CommandScopeRun {
             project_root: project_root.into(),
             fence: self.inner.fence.clone(),
             scope,
+            directories,
+            prepared_input_json: prepared.input_json(),
             bindings,
             input_json,
             ordinary_approval,
@@ -183,6 +246,7 @@ impl CommandScopeRun {
             || prepared.timeout_ms() != current.timeout_ms
             || prepared.tool_instance_id() != current.tool_instance
             || prepared.project_root().to_str() != Some(current.project_root.as_str())
+            || prepared.input_json() != current.prepared_input_json
         {
             self.record_failure(
                 store,
@@ -253,6 +317,11 @@ impl CommandScopeRun {
             || state.request.run_id != self.inner.run
         {
             return Err(CommandScopeError::StaleAuthority);
+        }
+        for directory in &state.request.directories {
+            directory
+                .validate()
+                .map_err(|_| CommandScopeError::StaleAuthority)?;
         }
         self.inner.check_deadline(state.deadline)
     }
@@ -382,10 +451,9 @@ fn validate_bindings(
 }
 
 fn validate_ordinary(request: &CommandScopeRequest) -> Result<(), CommandScopeError> {
-    let effective =
-        serde_json::json!({"cmd":request.command,"timeout_ms":request.timeout_ms}).to_string();
+    let effective = &request.prepared_input_json;
     let approval = ApprovalAudit::from_json(&request.ordinary_approval).map_err(unavailable)?;
-    if !vega_tools::bash_inputs_semantically_equal(&request.input_json, &effective)
+    if !vega_tools::bash_inputs_semantically_equal(&request.input_json, effective)
         || !matches!(approval.decision, Approval::Once | Approval::Always)
         || !crate::agent::bash_danger_audit_matches(&request.input_json, &approval)
     {

@@ -136,6 +136,11 @@ fn bash_failure_vocabulary_remains_exact_and_preserves_existing_results() {
         assert!(is_safe_bash_failure(&expected));
         assert!(!is_safe_bash_failure(&format!("{expected}\nextra data")));
     }
+    let denied = BashErrorCode::ScopeDenied.tool_output();
+    assert!(denied.contains("not started"));
+    assert!(denied.contains("new call"));
+    assert!(is_safe_bash_failure(&denied));
+    assert!(!is_safe_bash_failure(&format!("{denied}\nextra data")));
     for code in [BashErrorCode::InvalidInput, BashErrorCode::Cancelled] {
         assert!(!is_safe_bash_failure(&code.tool_output()));
     }

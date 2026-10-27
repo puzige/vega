@@ -2246,8 +2246,9 @@ fn checkpoint_scope_id(project_id: &str, thread_id: &str) -> String {
 
 pub(crate) fn is_safe_bash_failure(output: &str) -> bool {
     use vega_tools::BashErrorCode;
-    const CODES: [BashErrorCode; 10] = [
+    const CODES: [BashErrorCode; 11] = [
         BashErrorCode::ScopeMismatch,
+        BashErrorCode::ScopeDenied,
         BashErrorCode::HardlinkPreflight,
         BashErrorCode::SandboxUnavailable,
         BashErrorCode::TempUnavailable,

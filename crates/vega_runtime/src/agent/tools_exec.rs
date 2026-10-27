@@ -175,10 +175,13 @@ impl PreparedRuntimeCall {
         let call = self.call();
         let input_json = match self {
             Self::UserQuestion { input, .. } => input.to_json().ok()?,
-            Self::Subagent { arguments, .. } | Self::Automation { arguments, .. } | Self::ComputerUse { arguments, .. } | Self::Mcp { arguments, .. } => arguments.to_string(),
+            Self::Subagent { arguments, .. }
+            | Self::Automation { arguments, .. }
+            | Self::ComputerUse { arguments, .. }
+            | Self::Mcp { arguments, .. } => arguments.to_string(),
             Self::Write { prepared, .. } => prepared.model_input_json(),
             Self::Edit { prepared, .. } => prepared.model_input_json()?,
-            Self::Bash { prepared, .. } if prepared.timeout_ms() % 1000 == 0 => serde_json::json!({"command":prepared.command(),"timeout":prepared.timeout_ms()/1000}).to_string(),
+            Self::Bash { prepared, .. } => prepared.input_json(),
             Self::PinnedRead { execution, .. } => canonical_read_input(&execution.input_json)?,
             Self::ExternalRead { call, .. } => canonical_read_input(&call.input_json)?,
             Self::Grep { model_input, .. } => model_input.clone(),
@@ -191,8 +194,14 @@ impl PreparedRuntimeCall {
                 required_str(&input, "pattern").ok()?;
                 input.to_string()
             }
-            Self::Skill { action: SkillToolAction::Load { name }, .. } => serde_json::json!({"name":name}).to_string(),
-            Self::Skill { action: SkillToolAction::Read { name, path }, .. } => serde_json::json!({"name":name,"path":path}).to_string(),
+            Self::Skill {
+                action: SkillToolAction::Load { name },
+                ..
+            } => serde_json::json!({"name":name}).to_string(),
+            Self::Skill {
+                action: SkillToolAction::Read { name, path },
+                ..
+            } => serde_json::json!({"name":name,"path":path}).to_string(),
             _ => return None,
         };
         Some(ChatToolCall {
@@ -1478,6 +1487,7 @@ pub(crate) fn runtime_inputs_semantically_equal(tool: &str, left: &str, right: &
 pub(crate) async fn execute_prepared_waiting(
     prepared: PreparedRuntimeCall,
     base_tools: &vega_tools::Tools,
+    permission_hook: &dyn RuntimePermissionHook,
     cancel: &CancellationToken,
 ) -> (RuntimeToolResult, bool) {
     match prepared {
@@ -1854,9 +1864,23 @@ pub(crate) async fn execute_prepared_waiting(
             prepared,
             policy,
         } => {
-            let result = tools
-                .execute_bash(prepared, policy, cancel.child_token())
-                .await;
+            let result = if prepared.requested_scope().is_some()
+                && policy != vega_tools::BashLaunchPolicy::FullAccess
+            {
+                permission_hook
+                    .execute_scoped_bash(
+                        call.id.clone(),
+                        tools,
+                        prepared,
+                        policy,
+                        cancel.child_token(),
+                    )
+                    .await
+            } else {
+                tools
+                    .execute_bash(prepared, policy, cancel.child_token())
+                    .await
+            };
             match result {
                 Ok(output) => (
                     RuntimeToolResult {
@@ -2289,9 +2313,9 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
     }
     definitions.push(ToolDefinition {
         name: "bash".into(),
-        description: "Run a non-empty command at the project root. Ask/Plan and ReadOnly use a read-only sandbox; Confirm/Auto permit workspace writes after approval. Sandboxed commands cannot use the network or user shell startup files. Full access uses current-user permissions without sandbox restrictions. timeout is positive seconds; null uses 120 seconds. A cd affects only this command. Filter large output; do not automatically retry side effects. Example: {\"command\":\"pwd\",\"timeout\":null}.".into(),
-        input_schema: serde_json::json!({"type":"object","properties":{"command":{"type":"string","minLength":1},"timeout":{"type":["integer","null"],"minimum":1,"maximum":18446744073709551u64}},"required":["command","timeout"],"additionalProperties":false}),
-        strict: true,
+        description: "Run a non-empty command at the project root. Ask/Plan and ReadOnly use a read-only sandbox; Confirm/Auto permit workspace writes after approval. Sandboxed commands are offline and ignore user shell startup files by default. Optional requested_scope asks for one-command network access and/or extra writable directories with a reason; it requires separate explicit approval, never changes the permission mode, and cannot bypass danger checks. Extra writable directories require Execute Confirm/Auto. Network access with credential bindings uses only their HTTPS destinations; otherwise approval permits any network destination including local services. Full access uses current-user permissions without sandbox restrictions. timeout is positive seconds; null uses 120 seconds. A cd affects only this command. Filter large output; do not automatically retry side effects. Example: {\"command\":\"pwd\",\"timeout\":null}.".into(),
+        input_schema: serde_json::json!({"type":"object","properties":{"command":{"type":"string","minLength":1},"timeout":{"type":["integer","null"],"minimum":1,"maximum":18446744073709551u64},"requested_scope":{"type":"object","properties":{"network":{"type":"boolean","default":false},"write_roots":{"type":"array","items":{"type":"string"},"default":[]},"reason":{"type":"string","minLength":1,"maxLength":512}},"required":["reason"],"additionalProperties":false}},"required":["command","timeout"],"additionalProperties":false}),
+        strict: false,
     });
     definitions
 }
