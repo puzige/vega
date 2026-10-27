@@ -57,6 +57,34 @@ impl PermissionEditor {
 }
 
 impl ConversationStream {
+    pub fn apply_permission_reset(
+        &mut self,
+        thread: Thread,
+        pending: PendingQueueProjection,
+        automation: vega_conversation::types::AutomationProjection,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.thread.id != thread.id || self.thread.project_id != thread.project_id {
+            return false;
+        }
+        self.permission_editor.operation = self.permission_editor.operation.saturating_add(1);
+        self.permission_editor.phase = Phase::Idle;
+        self.permission_editor.source = None;
+        self.permission_editor.active_mode = None;
+        self.permission_picker_open = false;
+        self.interrupted_tail = None;
+        self.composer_resume_pending = false;
+        self.permissions_revoked = true;
+        self.timeout_permission(cx);
+        self.cancel_user_questions(cx);
+        self.invalidate_composer_prediction(cx);
+        self.apply_thread(thread, cx);
+        self.apply_pending_queue(pending, cx);
+        self.apply_automation(automation, cx);
+        self.refresh_ordinary_submissions(cx);
+        true
+    }
+
     pub fn begin_thread_permission_change(
         &mut self,
         mode: PermissionMode,

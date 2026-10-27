@@ -38,6 +38,7 @@ pub(crate) mod navigation;
 mod notifications;
 mod ordinary_send;
 mod pending_messages;
+mod permission_reset;
 mod pricing;
 mod privacy;
 mod reasoning;
@@ -152,6 +153,7 @@ pub(crate) struct VegaWindow {
     pub(crate) branch_controller: BranchController,
     pub(crate) commit_controller: CommitController,
     pub(crate) trusted_actions: TrustedActionCoordinator,
+    permission_reset: permission_reset::ResetController,
     pub(crate) window_alive: Arc<AtomicBool>,
     pub(crate) configured_models: Option<Vec<ModelOption>>,
     model_capability_authority: Option<ModelCapabilityAuthority>,
@@ -267,6 +269,7 @@ impl VegaWindow {
         })
         .detach();
         cx.observe_global::<SettingsOpen>(|this, cx| {
+            this.cancel_unconfirmed_permission_reset(cx);
             this.cancel_composer_prediction(cx);
             this.cancel_context_if_route_stale(cx);
             this.cancel_file_index_if_route_stale(cx);
@@ -346,6 +349,7 @@ impl VegaWindow {
             branch_controller: BranchController::default(),
             commit_controller: CommitController::default(),
             trusted_actions: TrustedActionCoordinator::default(),
+            permission_reset: permission_reset::ResetController::default(),
             window_alive: Arc::new(AtomicBool::new(true)),
             configured_models: None,
             model_capability_authority: None,

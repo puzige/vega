@@ -2,6 +2,7 @@ mod parser;
 mod reset;
 mod runtime;
 pub use parser::parse_command;
+pub(crate) use reset::pause_for_reset_in_transaction;
 pub(crate) use reset::revoke_in_transaction;
 pub(crate) use runtime::AutomationBinding;
 

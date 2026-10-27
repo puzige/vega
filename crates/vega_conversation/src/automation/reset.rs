@@ -2,6 +2,14 @@ use super::{AutomationReason, AutomationStatus, AutomationTask, decode, save, st
 use vega_store::Connection;
 
 pub(crate) fn revoke_in_transaction(conn: &Connection, now: i64) -> Result<(), String> {
+    update_for_reset(conn, now, true)
+}
+
+pub(crate) fn pause_for_reset_in_transaction(conn: &Connection, now: i64) -> Result<(), String> {
+    update_for_reset(conn, now, false)
+}
+
+fn update_for_reset(conn: &Connection, now: i64, revoke: bool) -> Result<(), String> {
     let mut query = conn
         .prepare("SELECT thread_id,kind,identity,revision,data FROM automation_tasks ORDER BY thread_id,kind")
         .map_err(storage)?;
@@ -28,7 +36,9 @@ pub(crate) fn revoke_in_transaction(conn: &Connection, now: i64) -> Result<(), S
         {
             return Err(vega_i18n::t("domain.automation.error.changed").into());
         }
-        if task.status != AutomationStatus::Active && task.permission_authorization.is_none() {
+        if task.status != AutomationStatus::Active
+            && (!revoke || task.permission_authorization.is_none())
+        {
             continue;
         }
         task.revision = task
@@ -36,10 +46,16 @@ pub(crate) fn revoke_in_transaction(conn: &Connection, now: i64) -> Result<(), S
             .checked_add(1)
             .filter(|value| i64::try_from(*value).is_ok())
             .ok_or(vega_i18n::t("domain.automation.error.revision_limit"))?;
-        task.permission_authorization = None;
+        if revoke {
+            task.permission_authorization = None;
+        }
         if task.status == AutomationStatus::Active {
             task.status = AutomationStatus::Paused;
-            task.system_reason = Some(AutomationReason::PermissionReset);
+            if revoke {
+                task.system_reason = Some(AutomationReason::PermissionReset);
+            } else {
+                task.set_pause_reason("stopped");
+            }
         }
         task.updated_at_ms = now;
         save(conn, &task)?;

@@ -1839,7 +1839,7 @@ impl Render for ConversationStream {
                                                         .flex()
                                                         .flex_col()
                                                         .child(item)
-                                                        .child(notice.render(&colors, this.thread.id.clone(), this.reading_preview, cx))
+                                                        .child(notice.render(&colors, this.thread.id.clone(), this.reading_preview || this.permissions_revoked, cx))
                                                         .into_any_element()
                                                 } else {
                                                     item
@@ -1853,7 +1853,7 @@ impl Render for ConversationStream {
                                                         .flex()
                                                         .flex_col()
                                                         .child(item)
-                                                        .child(notice.render(&colors, this.thread.id.clone(), this.reading_preview, cx))
+                                                        .child(notice.render(&colors, this.thread.id.clone(), this.reading_preview || this.permissions_revoked, cx))
                                                         .into_any_element()
                                                 } else {
                                                     item

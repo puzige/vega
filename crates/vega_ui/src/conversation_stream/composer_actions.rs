@@ -298,6 +298,7 @@ impl ConversationStream {
 
     /// Projects worker ownership, including preparation before a durable message exists.
     pub fn begin_composer_run(&mut self, cx: &mut Context<Self>) {
+        self.permissions_revoked = false;
         self.permission_editor.active_mode = Some(if self.thread.mode != ThreadMode::Execute {
             PermissionMode::ReadOnly
         } else {

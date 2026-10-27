@@ -101,7 +101,18 @@ impl Render for VegaWindow {
                 settings.update(cx, |view, cx| {
                     view.install_mcp_service(self.mcp_settings.clone(), cx);
                     view.install_default_permission_service(permission_service, cx);
+                    view.apply_permission_reset_projection(
+                        self.permission_reset.projection.clone(),
+                        cx,
+                    );
                 });
+                cx.subscribe(
+                    &settings,
+                    |this, view, request: &PermissionResetRequested, cx| {
+                        this.permission_reset_requested(view.clone(), request.0, cx);
+                    },
+                )
+                .detach();
                 crate::app_usage::bind(&settings, cx);
                 settings.update(cx, |view, cx| {
                     view.apply_update_projection(self.localized_update_projection(), cx)
@@ -493,6 +504,7 @@ impl Render for VegaWindow {
                 .flex()
                 .flex_col()
                 .child(self.render_main_header(sidebar_visible, cx))
+                .children(self.render_permission_reset_notice(cx))
                 .children(navigation_error.map(|error| {
                     div()
                         .px_3()

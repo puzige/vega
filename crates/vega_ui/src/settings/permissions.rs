@@ -78,6 +78,17 @@ impl DefaultPermissionState {
 }
 
 impl SettingsView {
+    pub fn apply_permission_reset_defaults(
+        &mut self,
+        values: DefaultPermissionValues,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_default_permission_session();
+        self.apply_default_permission_values(values);
+        self.default_permission.error = None;
+        cx.notify();
+    }
+
     pub fn install_default_permission_service(
         &mut self,
         service: Option<DefaultPermissionService>,
@@ -89,6 +100,7 @@ impl SettingsView {
 
     pub(crate) fn permission_picker_enabled(&self) -> bool {
         self.default_permission.service.is_some()
+            && !self.permission_reset.projection.authority_blocked()
             && matches!(self.default_permission.phase, PermissionPhase::Idle)
             && self.default_permission.error.is_none()
             && !self.provider_management.saving

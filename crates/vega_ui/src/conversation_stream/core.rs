@@ -22,6 +22,7 @@ impl ModelPickerLevel {
 /// per open thread; rebuilt by the window root when another thread opens.
 pub struct ConversationStream {
     pub(crate) permission_editor: super::thread_permissions::PermissionEditor,
+    pub(crate) permissions_revoked: bool,
     pub(crate) ordinary: Vec<super::ordinary_submissions::OrdinaryRow>,
     pub(crate) prediction_waiting_for_queue: bool,
     pub(crate) prediction_owner: Option<super::composer_predictions::ComposerPredictionOwner>,
@@ -478,6 +479,7 @@ impl ConversationStream {
         let computer_use_task = TaskContext::new(&thread.id);
         Self {
             permission_editor: super::thread_permissions::PermissionEditor::new(cx),
+            permissions_revoked: false,
             prediction_waiting_for_queue: false,
             prediction_owner: None,
             prediction_generation: 0,

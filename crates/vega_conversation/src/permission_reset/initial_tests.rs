@@ -20,15 +20,15 @@ use crate::types::{
 };
 use crate::{automation, ordinary_submissions, threads};
 
-struct Fixture {
-    root: PathBuf,
-    config: PathBuf,
-    store: Store,
-    thread: Thread,
+pub(super) struct Fixture {
+    pub(super) root: PathBuf,
+    pub(super) config: PathBuf,
+    pub(super) store: Store,
+    pub(super) thread: Thread,
 }
 
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let root =
             std::env::temp_dir().join(format!("vega-reset-initial-{}", ulid::Ulid::generate()));
         std::fs::create_dir(&root).expect("isolated directory");
@@ -95,7 +95,7 @@ impl Fixture {
         submission
     }
 
-    fn task(&self, kind: AutomationKind) {
+    pub(super) fn task(&self, kind: AutomationKind) {
         automation::command(
             &self.store,
             &self.thread.id,
@@ -148,7 +148,7 @@ impl Fixture {
         record
     }
 
-    fn tool(&self, name: &str, rejected: bool) -> tool_calls::ToolCallState {
+    pub(super) fn tool(&self, name: &str, rejected: bool) -> tool_calls::ToolCallState {
         messages::insert(
             self.store.conn(),
             &messages::MessageRow {

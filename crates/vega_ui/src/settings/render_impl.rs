@@ -1010,6 +1010,7 @@ impl SettingsView {
                 }))
             })
             .child(self.render_default_permission_feedback(cx))
+            .child(self.render_permission_reset(cx))
             .into_any_element()
     }
 
@@ -1159,6 +1160,7 @@ impl Render for SettingsView {
         }
         self.resume_settings_navigation(window, cx);
         self.prepare_default_permission_focus(window, cx);
+        self.prepare_permission_reset_focus(window, cx);
         self.prepare_provider_presentation(window);
         self.project_settings_motion(window, cx);
         self.ensure_model_catalog(cx);

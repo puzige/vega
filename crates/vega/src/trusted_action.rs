@@ -8,6 +8,7 @@ pub(crate) enum TrustedActionKind {
     Commit,
     ModelSelection,
     PermissionSelection,
+    PermissionReset,
     DraftAutomationCreation,
     AgentPreflight,
     SkillSelection,

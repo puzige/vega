@@ -10,8 +10,13 @@ use crate::types::{
     DatabaseAdmissionPause, PermissionResetError, PermissionResetIntent, PermissionResetReceipt,
 };
 
+mod session;
+pub use session::PermissionResetSession;
+
 #[cfg(test)]
 mod initial_tests;
+#[cfg(test)]
+mod session_tests;
 #[cfg(test)]
 mod tests;
 

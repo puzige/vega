@@ -43,6 +43,7 @@ pub struct SettingsView {
     pub(crate) provider_test_help_focuses: Vec<FocusHandle>,
     pub(crate) mode_open: bool,
     pub(crate) default_permission: super::permissions::DefaultPermissionState,
+    pub(crate) permission_reset: super::permission_reset::ResetState,
     pub(crate) model_open: bool,
     /// Inline error message (ui-spec §4.6: no modals); empty until an IO or
     /// local credential failure occurs.
@@ -75,6 +76,7 @@ impl Focusable for SettingsView {
 }
 
 impl EventEmitter<PricingMutationRequested> for SettingsView {}
+impl EventEmitter<vega_conversation::types::PermissionResetRequested> for SettingsView {}
 impl EventEmitter<PricingReloadRequested> for SettingsView {}
 impl EventEmitter<PricingRetryRequested> for SettingsView {}
 impl EventEmitter<PricingDiscardRequested> for SettingsView {}
@@ -299,6 +301,7 @@ impl SettingsView {
             provider_test_help_focuses: Vec::new(),
             mode_open: false,
             default_permission: super::permissions::DefaultPermissionState::new(cx),
+            permission_reset: super::permission_reset::ResetState::new(cx),
             model_open: false,
             error: error
                 .map(|error| SettingsText::from_known(error, &["settings.config.load_failed"])),

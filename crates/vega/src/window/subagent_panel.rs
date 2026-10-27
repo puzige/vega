@@ -45,6 +45,12 @@ struct PanelHistoryRead {
 }
 
 impl SubagentPanel {
+    pub(super) fn cached_stream(&self) -> Option<Entity<ConversationStream>> {
+        self.detail
+            .as_ref()
+            .and_then(|detail| detail.stream.clone())
+    }
+
     pub(super) fn new(cx: &mut App) -> Self {
         Self {
             parent: None,
