@@ -81,7 +81,9 @@ pub struct PersistenceActorConfig {
     pub(crate) interrupted_assistant: Option<crate::types::InterruptedAssistant>,
     pub(crate) steering_cancel: Option<CancellationToken>,
     pub(crate) pending_message_id: Option<String>,
+    pub(crate) pending_authority: Option<crate::types::PendingInputAuthority>,
     pub(crate) steering_source: Option<Arc<dyn vega_runtime::RuntimeSteeringSource>>,
+    pub(crate) steering_authority: Option<Arc<std::sync::OnceLock<crate::types::PermissionFence>>>,
     pub(crate) computer_use: Option<vega_runtime::computer_use::ComputerUseRun>,
     pub automatic_title: Option<crate::types::AutomaticTitleRequest>,
     pub turn_limit: u32,
@@ -93,6 +95,14 @@ pub struct PersistenceActorConfig {
 }
 
 impl PersistenceActorConfig {
+    pub fn with_accepted_pending_input(
+        mut self,
+        authority: Option<crate::types::PendingInputAuthority>,
+    ) -> Self {
+        self.pending_authority = authority;
+        self
+    }
+
     pub fn with_ordinary_submission(
         mut self,
         ordinary: Option<super::ordinary::OrdinaryRun>,
@@ -148,10 +158,15 @@ impl PersistenceActorConfig {
     pub fn with_pending_input(
         mut self,
         id: Option<String>,
-        source: Option<Arc<dyn vega_runtime::RuntimeSteeringSource>>,
+        source: Option<Arc<crate::pending_messages::QueueSteeringSource>>,
     ) -> Self {
+        if id.is_none() {
+            self.pending_authority = None;
+        }
         self.pending_message_id = id;
-        self.steering_source = source;
+        self.steering_authority = source.as_ref().map(|source| source.authority_slot());
+        self.steering_source =
+            source.map(|source| source as Arc<dyn vega_runtime::RuntimeSteeringSource>);
         self
     }
     pub fn with_computer_use(

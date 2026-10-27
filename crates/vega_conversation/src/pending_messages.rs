@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use futures::{FutureExt, future::BoxFuture};
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,8 @@ use crate::types::{ConversationError, ImageAttachment, PendingMessage, PendingMe
 struct StoredSubmission {
     content: String,
     images: Vec<Vec<u8>>,
+    #[serde(default)]
+    permission_fence: Option<crate::types::PermissionFence>,
 }
 
 fn failure() -> ConversationError {
@@ -34,6 +36,9 @@ pub fn enqueue_cached(
     message: &PendingMessage,
     cached: &[PendingMessage],
 ) -> Result<Vec<PendingMessage>, ConversationError> {
+    let _coordination = crate::permission_contracts::coordinate()?;
+    crate::permission_contracts::require_admission_open(store)?;
+    require_authority(store, message)?;
     crate::attachments::validate_images(&message.images).map_err(|_| failure())?;
     let payload = serde_json::to_string(&StoredSubmission {
         content: message.content.clone(),
@@ -42,6 +47,7 @@ pub fn enqueue_cached(
             .iter()
             .map(|image| image.bytes().to_vec())
             .collect(),
+        permission_fence: message.permission_fence.clone(),
     })
     .map_err(|_| failure())?;
     if message.content.is_empty() && message.images.is_empty() {
@@ -186,7 +192,105 @@ pub(crate) fn decode(row: rows::PendingMessageRow) -> Result<PendingMessage, Con
         behavior,
         content: payload.content,
         images,
+        permission_fence: payload.permission_fence,
     })
+}
+
+pub fn capture_authority(
+    store: &Store,
+    source: &crate::types::Thread,
+) -> Result<crate::types::PermissionFence, ConversationError> {
+    let _coordination = crate::permission_contracts::coordinate()?;
+    let row = vega_store::threads::find(store.conn(), &source.id)
+        .map_err(|_| failure())?
+        .ok_or_else(failure)?;
+    let current = crate::threads::thread_from_row(&row)?;
+    if current.project_id != source.project_id
+        || current.mode != source.mode
+        || current.permission_mode != source.permission_mode
+        || current.permission_revision != source.permission_revision
+        || current.full_access_grant != source.full_access_grant
+        || current.backend != crate::types::TaskBackend::Native
+        || current.backend != source.backend
+        || current.status != crate::types::ThreadStatus::Active
+    {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
+    crate::permission_contracts::capture_fence(store, &row)
+}
+
+pub(crate) fn require_authority(
+    store: &Store,
+    message: &PendingMessage,
+) -> Result<crate::types::PermissionFence, ConversationError> {
+    let saved = message
+        .permission_fence
+        .as_ref()
+        .filter(|fence| fence.is_valid() && fence.thread_id == message.thread_id)
+        .ok_or(ConversationError::InvalidTaskIdentity)?;
+    let row = vega_store::threads::find(store.conn(), &message.thread_id)
+        .map_err(|_| failure())?
+        .ok_or_else(failure)?;
+    if row.backend != "native"
+        || row.status != "active"
+        || crate::permission_contracts::capture_fence(store, &row)? != *saved
+    {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
+    Ok(saved.clone())
+}
+
+pub fn validate_authority(
+    store: &Store,
+    message: &PendingMessage,
+) -> Result<(), ConversationError> {
+    let _coordination = crate::permission_contracts::coordinate()?;
+    crate::permission_contracts::require_admission_open(store)?;
+    require_authority(store, message).map(|_| ())
+}
+
+pub fn prepare_dispatch(
+    store: &Store,
+    thread: &str,
+    id: &str,
+    content: &str,
+    images: &[ImageAttachment],
+) -> Result<crate::types::PendingInputAuthority, ConversationError> {
+    let _coordination = crate::permission_contracts::coordinate()?;
+    let row = rows::find_dispatchable(store.conn(), thread, id)
+        .map_err(|_| failure())?
+        .ok_or(ConversationError::InvalidTaskIdentity)?;
+    let message = decode(row)?;
+    if message.content != content || message.images != images {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
+    require_authority(store, &message)?;
+    Ok(crate::types::PendingInputAuthority {
+        database: store.database_identity(),
+        message,
+    })
+}
+
+pub(crate) fn verify_dispatch(
+    store: &Store,
+    accepted: &crate::types::PendingInputAuthority,
+    thread: &str,
+    id: &str,
+) -> Result<crate::types::PermissionFence, ConversationError> {
+    if accepted.database != store.database_identity()
+        || accepted.message.thread_id != thread
+        || accepted.message.id != id
+    {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
+    let row = rows::find_dispatchable(store.conn(), thread, id)
+        .map_err(|_| failure())?
+        .ok_or(ConversationError::InvalidTaskIdentity)?;
+    let message = decode(row)?;
+    if message != accepted.message {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
+    require_authority(store, &message)
 }
 
 pub struct QueueSteeringSource {
@@ -198,9 +302,14 @@ pub struct QueueSteeringSource {
     exceptions: Option<vega_runtime::CredentialExceptionFilter>,
     cancel: CancellationToken,
     admission: Option<crate::types::ThreadAdmission>,
+    authority: Arc<OnceLock<crate::types::PermissionFence>>,
 }
 
 impl QueueSteeringSource {
+    pub(crate) fn authority_slot(&self) -> Arc<OnceLock<crate::types::PermissionFence>> {
+        self.authority.clone()
+    }
+
     pub fn with_thread_admission(mut self, admission: crate::types::ThreadAdmission) -> Self {
         self.admission = Some(admission);
         self
@@ -230,6 +339,7 @@ impl QueueSteeringSource {
             exceptions: None,
             cancel,
             admission: None,
+            authority: Arc::new(OnceLock::new()),
         }
     }
 }
@@ -265,6 +375,7 @@ impl RuntimeSteeringSource for QueueSteeringSource {
         let exceptions = self.exceptions.clone();
         let cancel = self.cancel.clone();
         let admission = self.admission.clone();
+        let authority = self.authority.get().cloned();
         async move {
             tokio::task::spawn_blocking(move || {
                 if cancel.is_cancelled() {
@@ -291,6 +402,16 @@ impl RuntimeSteeringSource for QueueSteeringSource {
                 };
                 let message = decode(row.clone())
                     .map_err(|_| pending_failure(Stage::PendingDecode, Reason::PendingDecode))?;
+                let accepted = authority
+                    .as_ref()
+                    .ok_or_else(|| pending_failure(Stage::PendingAdmission, Reason::Admission))?;
+                {
+                    let _coordination = crate::permission_contracts::coordinate()
+                        .map_err(|_| pending_failure(Stage::PendingAdmission, Reason::Admission))?;
+                    if require_authority(&store, &message).as_ref().ok() != Some(accepted) {
+                        return Err(pending_failure(Stage::PendingAdmission, Reason::Admission));
+                    }
+                }
                 let refs = vega_tools::reference::resolve_bounded_references(
                     &workspace,
                     &message.content,
@@ -306,7 +427,7 @@ impl RuntimeSteeringSource for QueueSteeringSource {
                 })?;
                 let original_content = message.content.clone();
                 let content = if refs.is_empty() {
-                    message.content
+                    message.content.clone()
                 } else {
                     format!(
                         "{}\n\n{}",
@@ -322,6 +443,11 @@ impl RuntimeSteeringSource for QueueSteeringSource {
                 );
                 if cancel.is_cancelled() {
                     return Ok(None);
+                }
+                let _coordination = crate::permission_contracts::coordinate()
+                    .map_err(|_| pending_failure(Stage::PendingAdmission, Reason::Admission))?;
+                if require_authority(&store, &message).as_ref().ok() != Some(accepted) {
+                    return Err(pending_failure(Stage::PendingAdmission, Reason::Admission));
                 }
                 let tx = store.immediate_transaction()?;
                 if cancel.is_cancelled()

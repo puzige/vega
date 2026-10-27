@@ -1528,6 +1528,7 @@ where
 {
     actor_config.credential_continuation_id = Some(receipt_id.to_owned());
     actor_config.pending_message_id = None;
+    actor_config.pending_authority = None;
     actor_config.automatic_title = None;
     run_thread_task_with_images_reasoning_and_mcp(
         store,
@@ -1579,6 +1580,7 @@ where
     }
     actor_config.interrupted_assistant = Some(expected.clone());
     actor_config.pending_message_id = None;
+    actor_config.pending_authority = None;
     actor_config.automatic_title = None;
     run_thread_task_with_automation_inner(
         store,

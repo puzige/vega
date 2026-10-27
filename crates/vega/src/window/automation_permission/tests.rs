@@ -36,7 +36,7 @@ fn automation_confirmation_is_separate_from_thread_consent_and_preserves_input(
         &thread.id,
         &AutomationCommand::Create {
             kind: AutomationKind::Loop,
-            instruction: "synthetic recurring work".into(),
+            instruction: "synthetic recurring work\n".repeat(400),
             token_budget: None,
             interval_seconds: Some(60),
         },
@@ -136,6 +136,8 @@ fn automation_confirmation_is_separate_from_thread_consent_and_preserves_input(
         draw(cx);
     };
     open(1, cx);
+    cx.simulate_keystrokes(window.into(), "shift-tab end pageup home tab");
+    draw(cx);
     cx.simulate_keystrokes(window.into(), "tab shift-tab enter");
     cx.run_until_parked();
     assert_eq!(

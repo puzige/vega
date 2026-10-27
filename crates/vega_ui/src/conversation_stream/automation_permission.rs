@@ -15,6 +15,8 @@ pub(crate) struct AutomationPermissionUi {
     cancel: FocusHandle,
     confirm: FocusHandle,
     reload: FocusHandle,
+    details: FocusHandle,
+    details_scroll: ScrollHandle,
     focus_pending: bool,
 }
 
@@ -44,6 +46,8 @@ impl AutomationPermissionUi {
             cancel: cx.focus_handle().tab_stop(true),
             confirm: cx.focus_handle().tab_stop(true),
             reload: cx.focus_handle().tab_stop(true),
+            details: cx.focus_handle().tab_stop(true),
+            details_scroll: ScrollHandle::new(),
             focus_pending: false,
         }
     }
@@ -96,6 +100,9 @@ impl ConversationStream {
         self.automation_permission.operation = operation;
         self.automation_permission.task_id = Some(task.identity);
         self.automation_permission.original_input = original_input;
+        self.automation_permission
+            .details_scroll
+            .set_offset(gpui_kit::point(px(0.), px(0.)));
         self.automation_permission.phase = Phase::Preparing(Box::new(request.clone()));
         self.automation_permission.focus_pending = true;
         self.permission_picker_open = false;

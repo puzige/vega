@@ -1,6 +1,7 @@
 mod bash_output;
 mod bash_readonly;
 mod credentials;
+mod pending_authority;
 
 use std::path::PathBuf;
 use std::sync::Arc;

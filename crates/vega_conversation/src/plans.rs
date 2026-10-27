@@ -52,6 +52,26 @@ pub fn recoverable_approved_instruction(
     store: &Store,
     thread_id: &str,
 ) -> Result<Option<String>, ConversationError> {
+    let _coordination = crate::permission_contracts::coordinate()?;
+    crate::permission_contracts::require_admission_open(store)?;
+    Ok(recoverable_authority(store, thread_id)?.map(|(id, _)| id))
+}
+
+pub(crate) fn approved_authority(
+    store: &Store,
+    thread_id: &str,
+    id: &str,
+) -> Result<crate::types::PermissionFence, ConversationError> {
+    recoverable_authority(store, thread_id)?
+        .filter(|(saved, _)| saved == id)
+        .map(|(_, fence)| fence)
+        .ok_or(ConversationError::InvalidTaskIdentity)
+}
+
+fn recoverable_authority(
+    store: &Store,
+    thread_id: &str,
+) -> Result<Option<(String, crate::types::PermissionFence)>, ConversationError> {
     let thread = crate::threads::get_thread(store, thread_id)?;
     if thread.mode != crate::types::ThreadMode::Execute {
         return Ok(None);
@@ -87,7 +107,27 @@ pub fn recoverable_approved_instruction(
             "approval instruction has invalid plan binding".into(),
         ));
     }
-    Ok(Some(instruction.id.clone()))
+    let mut query = store.conn().prepare("SELECT permission_fence FROM plan_instruction_authority WHERE message_id=?1 AND thread_id=?2").map_err(store_error)?;
+    let mut rows = query
+        .query([instruction.id.as_str(), thread_id])
+        .map_err(store_error)?;
+    let Some(row) = rows.next().map_err(store_error)? else {
+        return Ok(None);
+    };
+    let encoded: String = row.get(0).map_err(store_error)?;
+    let saved: crate::types::PermissionFence =
+        serde_json::from_str(&encoded).map_err(|_| ConversationError::InvalidTaskIdentity)?;
+    let current = vega_store::threads::find(store.conn(), thread_id)
+        .map_err(store_error)?
+        .ok_or(ConversationError::InvalidTaskIdentity)?;
+    if current.backend != "native"
+        || current.status != "active"
+        || !saved.is_valid()
+        || saved != crate::permission_contracts::capture_fence(store, &current)?
+    {
+        return Ok(None);
+    }
+    Ok(Some((instruction.id.clone(), saved)))
 }
 
 /// Applies one review transaction. The returned instruction id is present
@@ -98,6 +138,8 @@ pub fn review_plan(
     plan_id: &str,
     action: PlanReviewAction,
 ) -> Result<PlanReviewOutcome, ConversationError> {
+    let _coordination = crate::permission_contracts::coordinate()?;
+    crate::permission_contracts::require_admission_open(store)?;
     let _admission = crate::thread_access::acquire(store, thread_id)?;
     let (status, note, instruction_id) = match action {
         PlanReviewAction::Approve => (
@@ -115,13 +157,27 @@ pub fn review_plan(
         }
     };
     let now = now_ms();
-    let instruction = instruction_id
-        .as_deref()
-        .map(|id| store_messages::PlanInstruction {
-            id,
-            content: APPROVAL_INSTRUCTION,
-            created_at: now,
-        });
+    let permission = instruction_id
+        .as_ref()
+        .map(|_| {
+            let row = vega_store::threads::find(store.conn(), thread_id)
+                .map_err(store_error)?
+                .ok_or(ConversationError::InvalidTaskIdentity)?;
+            let mut fence = crate::permission_contracts::capture_fence(store, &row)?;
+            fence.run_mode = "execute".into();
+            serde_json::to_string(&fence).map_err(store_error)
+        })
+        .transpose()?;
+    let instruction =
+        instruction_id
+            .as_deref()
+            .zip(permission.as_deref())
+            .map(|(id, permission_fence)| store_messages::PlanInstruction {
+                id,
+                content: APPROVAL_INSTRUCTION,
+                created_at: now,
+                permission_fence,
+            });
     let result = store_messages::review_plan(
         store.conn(),
         store_messages::PlanReview {

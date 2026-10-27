@@ -706,6 +706,15 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         super::ordinary::verified_admission(&store, &thread_id, config.admission.as_ref())?;
     let permission_coordination = crate::permission_contracts::coordinate()?;
     crate::permission_contracts::require_admission_open(&store)?;
+    let _ = authority::verify_pending_sources(
+        &store,
+        &config,
+        &thread_id,
+        &user_message_id,
+        &user_content,
+        &images,
+        uses_existing_user,
+    )?;
     if vega_store::permission_reset::load(store.conn())
         .map_err(runtime_store_error)?
         .is_some_and(|record| !record.completed)
@@ -771,6 +780,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             &config,
             &thread_id,
             &assistant_message_id,
+            &user_message_id,
             uses_existing_user,
             &user_content,
             &images,
@@ -792,6 +802,11 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         transaction.commit().map_err(runtime_store_error)?;
         authority
     };
+    if let Some(slot) = &config.steering_authority
+        && slot.get_or_init(|| credential_authority.fence.clone()) != &credential_authority.fence
+    {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
     let credential_values = if let Some(reader) = &config.run_credential_reader {
         reader
             .prepare(&credential_authority.fence, &assistant_message_id)
@@ -813,6 +828,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             &config,
             &thread_id,
             &assistant_message_id,
+            &user_message_id,
             uses_existing_user,
             &user_content,
             &images,

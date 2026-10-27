@@ -1108,6 +1108,17 @@ pub(crate) fn run_agent_worker_with_mcp(
     let mut credential_failure = false;
     let mut computer_use: Option<ComputerUseRun> = None;
     let success = (|| -> Result<bool, ()> {
+        let pending_authority = queue_context.as_ref().and_then(|context| context.message_id.as_deref()).map(|id| {
+            let PendingAgentRun::UserMessage(submission) = &run else { return Err(()); };
+            let store = Store::open_existing(&database_path).map_err(|_| ())?;
+            vega_conversation::pending_messages::prepare_dispatch(&store, &thread.id, id, &submission.content, &submission.images).map_err(|_| {
+                let _ = sender.send(AgentUpdate::Event(ConversationEvent::Error {
+                    message_id: None,
+                    error: Arc::new(vega_runtime::VegaError::Tool { tool: "pending_message".into(), message: vega_i18n::t("ui.pending_authority_changed").into() }),
+                    execution_duration_ms: None,
+                }));
+            })
+        }).transpose()?;
         let project_failure = |error| {
             let _ = sender.send(AgentUpdate::Event(ConversationEvent::Error {
                 message_id: None,
@@ -1314,7 +1325,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                     owner_credential_reader.clone(),
                     cancel.clone(),
                 ).with_thread_admission(admission.clone()).with_credential_exceptions(credential_exceptions.clone()),
-            ) as Arc<dyn vega_runtime::RuntimeSteeringSource>
+            )
         });
         let pending_message_id = queue_context.and_then(|context| context.message_id);
         let subagent_host = crate::native_subagents::NativeSubagentHost::new(sender.clone());
@@ -1448,6 +1459,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                             .with_run_credential_reader(run_credential_reader.clone())
                             .with_credential_exceptions(Some(credential_exceptions.clone()))
                             .with_user_questions(Arc::new(user_questions.clone()))
+                            .with_accepted_pending_input(pending_authority.clone())
                             .with_pending_input(
                                 pending_message_id.clone(),
                                 steering_source.clone(),
@@ -1526,6 +1538,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                             .with_run_credential_reader(run_credential_reader.clone())
                             .with_credential_exceptions(Some(credential_exceptions.clone()))
                             .with_user_questions(Arc::new(user_questions.clone()))
+                            .with_accepted_pending_input(pending_authority.clone())
                             .with_pending_input(
                                 pending_message_id.clone(),
                                 steering_source.clone(),
@@ -1594,6 +1607,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                             .with_run_credential_reader(run_credential_reader.clone())
                             .with_credential_exceptions(Some(credential_exceptions.clone()))
                             .with_user_questions(Arc::new(user_questions.clone()))
+                            .with_accepted_pending_input(pending_authority.clone())
                             .with_pending_input(
                                 pending_message_id.clone(),
                                 steering_source.clone(),
@@ -1665,6 +1679,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                             .with_run_credential_reader(run_credential_reader.clone())
                             .with_credential_exceptions(Some(credential_exceptions.clone()))
                             .with_user_questions(Arc::new(user_questions.clone()))
+                            .with_accepted_pending_input(pending_authority.clone())
                             .with_pending_input(None, steering_source.clone()),
                         pricing_catalog,
                         Some(reasoning),

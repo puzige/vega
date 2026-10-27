@@ -53,7 +53,11 @@ impl ConversationStream {
             .into_any_element()
     }
 
-    pub(crate) fn render_automation_permission(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_automation_permission(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         if !self.automation_permission.busy() {
             return div().into_any_element();
         }
@@ -79,12 +83,23 @@ impl ConversationStream {
                     } else if event.keystroke.key == "tab"
                         && matches!(this.automation_permission.phase, Phase::Confirming(_))
                     {
-                        let focus = if this.automation_permission.cancel.is_focused(window) {
-                            &this.automation_permission.confirm
-                        } else {
-                            &this.automation_permission.cancel
-                        };
-                        window.focus(focus, cx);
+                        let focuses = [
+                            &this.automation_permission.cancel,
+                            &this.automation_permission.confirm,
+                            &this.automation_permission.details,
+                        ];
+                        let current = focuses
+                            .iter()
+                            .position(|focus| focus.is_focused(window))
+                            .unwrap_or(0);
+                        let next = (current
+                            + if event.keystroke.modifiers.shift {
+                                2
+                            } else {
+                                1
+                            })
+                            % 3;
+                        window.focus(focuses[next], cx);
                         cx.stop_propagation();
                     }
                 }),
@@ -108,26 +123,74 @@ impl ConversationStream {
                 } else {
                     vega_i18n::t("ui.permission_automation_goal").to_string()
                 };
-                panel
-                    .child(vega_i18n::t_args(
-                        "ui.permission_automation_title",
-                        &[("kind", task.kind.label())],
+                let details = div()
+                    .id("automation-permission-details")
+                    .role(gpui_kit::Role::Group)
+                    .aria_label(vega_i18n::t("ui.permission_automation_details"))
+                    .track_focus(&self.automation_permission.details)
+                    .tab_stop(true)
+                    .min_h_0()
+                    .max_h(px(
+                        (window.viewport_size().height.0 - 240.0).clamp(96.0, 360.0)
                     ))
-                    .child(task.instruction.clone())
-                    .child(schedule)
-                    .when_some(task.token_budget, |panel, budget| {
-                        panel.child(vega_i18n::t_args(
-                            "ui.permission_automation_budget",
-                            &[("tokens", &budget.to_string())],
-                        ))
-                    })
-                    .child(vega_i18n::t("ui.permission_automation_scope"))
+                    .overflow_y_scroll()
+                    .track_scroll(&self.automation_permission.details_scroll)
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .border_1()
+                    .border_color(gpui_kit::transparent_black())
+                    .focus_visible(move |style| style.border_color(colors.accent))
+                    .on_scroll_wheel(crate::tool_card::contain_disclosure_scroll(
+                        &self.automation_permission.details_scroll,
+                    ))
+                    .on_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                        let scroll = &this.automation_permission.details_scroll;
+                        let mut offset = scroll.offset();
+                        let limit = scroll.max_offset().y.max(px(0.));
+                        offset.y = match event.keystroke.key.as_str() {
+                            "up" => offset.y + px(32.),
+                            "down" => offset.y - px(32.),
+                            "pageup" => offset.y + px(180.),
+                            "pagedown" => offset.y - px(180.),
+                            "space" if event.keystroke.modifiers.shift => offset.y + px(180.),
+                            "space" => offset.y - px(180.),
+                            "home" => px(0.),
+                            "end" => -limit,
+                            _ => return,
+                        }
+                        .clamp(-limit, px(0.));
+                        scroll.set_offset(offset);
+                        cx.stop_propagation();
+                        cx.notify();
+                    }))
                     .child(
                         div()
                             .text_color(colors.warning)
                             .child(vega_i18n::t("settings.permission.full_access_risk")),
                     )
                     .child(vega_i18n::t("settings.permission.persistent_effects"))
+                    .child(vega_i18n::t("ui.permission_automation_scope"))
+                    .child(schedule)
+                    .when_some(task.token_budget, |details, budget| {
+                        details.child(vega_i18n::t_args(
+                            "ui.permission_automation_budget",
+                            &[("tokens", &budget.to_string())],
+                        ))
+                    })
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_shrink_0()
+                            .whitespace_normal()
+                            .child(task.instruction.clone()),
+                    );
+                panel
+                    .child(vega_i18n::t_args(
+                        "ui.permission_automation_title",
+                        &[("kind", task.kind.label())],
+                    ))
+                    .child(details)
                     .child(
                         div()
                             .flex()

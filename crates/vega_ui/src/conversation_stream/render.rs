@@ -200,6 +200,9 @@ impl ConversationStream {
     }
 
     fn render_composer(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        if self.automation_permission.busy() {
+            return self.render_automation_permission(window, cx);
+        }
         let colors = theme(cx).colors;
         let file_retry_visible = self.file_selector_wanted && self.file_index_failure.is_some();
         let file_selector_active =
@@ -245,7 +248,6 @@ impl ConversationStream {
             )
             .children(self.active_user_question.clone())
             .child(self.render_automation(cx))
-            .child(self.render_automation_permission(cx))
             .child(self.render_thread_permission_feedback(cx))
             .child(
                 div()

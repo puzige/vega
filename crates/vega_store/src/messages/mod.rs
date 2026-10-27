@@ -44,6 +44,7 @@ pub struct PlanInstruction<'a> {
     pub id: &'a str,
     pub content: &'a str,
     pub created_at: i64,
+    pub permission_fence: &'a str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -364,6 +365,7 @@ pub fn review_plan(
         if inserted != 1 {
             return Err(PlanTransitionError::CorruptState);
         }
+        tx.execute("INSERT INTO plan_instruction_authority(message_id,thread_id,permission_fence) VALUES (?1,?2,?3)", params![instruction.id, review.thread_id, instruction.permission_fence])?;
         let _ = crate::sidebar_organization::promote_thread(&tx, review.thread_id);
     }
     tx.commit()?;

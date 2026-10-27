@@ -29,6 +29,13 @@ pub struct PendingMessage {
     pub behavior: PendingMessageBehavior,
     pub content: String,
     pub images: Vec<super::ImageAttachment>,
+    pub permission_fence: Option<super::PermissionFence>,
+}
+
+#[derive(Clone)]
+pub struct PendingInputAuthority {
+    pub(crate) database: super::DatabaseIdentity,
+    pub(crate) message: PendingMessage,
 }
 
 #[derive(Clone, Default)]

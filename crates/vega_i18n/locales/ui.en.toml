@@ -773,3 +773,6 @@
 "ui.permission_automation_scope" = "Applies to future runs of this automation, including repeats while you are away. The conversation must also have a current full-access authorization. Task edits and conversation permission changes require a new confirmation."
 "ui.permission_automation_enable" = "Authorize this automation"
 "ui.permission_automation_enable_resume" = "Authorize and resume this automation"
+
+"ui.pending_authority_changed" = "Queued permissions changed or are missing. Edit and submit the message again."
+"ui.permission_automation_details" = "Task and permission details"

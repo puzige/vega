@@ -1205,10 +1205,10 @@ fn child_lifecycle_inner<'a>(
                             crate::thread_access::verify(&store, &snapshot.agent_id, &admission)?;
                             config.admission = Some(admission.clone());
                             if let Some(reader) = &config.owner_credential_reader {
-                                config.steering_source = Some(Arc::new(crate::pending_messages::QueueSteeringSource::new(
+                                config = config.with_pending_input(None, Some(Arc::new(crate::pending_messages::QueueSteeringSource::new(
                                     database.clone(), tools.root().to_path_buf(), snapshot.agent_id.clone(), queue_generation,
                                     reader.clone(), cancel.clone(),
-                                ).with_thread_admission(admission.clone())));
+                                ).with_thread_admission(admission.clone()))));
                             }
                             let child_host = host.clone();
                             let id = snapshot.agent_id.clone();

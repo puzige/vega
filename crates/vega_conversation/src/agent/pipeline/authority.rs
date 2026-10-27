@@ -19,11 +19,44 @@ impl RunAuthority {
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(super) fn verify_pending_sources(
+    store: &Store,
+    config: &PersistenceActorConfig,
+    thread_id: &str,
+    user_id: &str,
+    _content: &str,
+    images: &[crate::types::ImageAttachment],
+    uses_existing_user: bool,
+) -> Result<Option<crate::types::PermissionFence>, ConversationError> {
+    if let Some(id) = &config.pending_message_id {
+        if uses_existing_user || id != user_id {
+            return Err(ConversationError::InvalidTaskIdentity);
+        }
+        let accepted = config
+            .pending_authority
+            .as_ref()
+            .ok_or(ConversationError::InvalidTaskIdentity)?;
+        if accepted.message.images != images {
+            return Err(ConversationError::InvalidTaskIdentity);
+        }
+        return crate::pending_messages::verify_dispatch(store, accepted, thread_id, id).map(Some);
+    }
+    if config.pending_authority.is_some() {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
+    if uses_existing_user && !config.delegated && config.credential_continuation_id.is_none() {
+        return crate::plans::approved_authority(store, thread_id, user_id).map(Some);
+    }
+    Ok(None)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn verified(
     store: &Store,
     config: &PersistenceActorConfig,
     thread_id: &str,
     assistant_message_id: &str,
+    user_message_id: &str,
     uses_existing_user: bool,
     user_content: &str,
     images: &[crate::types::ImageAttachment],
@@ -71,6 +104,15 @@ pub(super) fn verified(
         }
         crate::permission_contracts::capture_fence(store, &thread)?
     };
+    let pending = verify_pending_sources(
+        store,
+        config,
+        thread_id,
+        user_message_id,
+        user_content,
+        images,
+        uses_existing_user,
+    )?;
     let fence = if let Some(ordinary) = ordinary {
         let accepted = ordinary.run.submission.permission_fence();
         match accepted {
@@ -83,6 +125,11 @@ pub(super) fn verified(
                 return Err(ConversationError::InvalidTaskIdentity);
             }
         }
+    } else if let Some(pending) = pending {
+        if pending != current_fence {
+            return Err(ConversationError::InvalidTaskIdentity);
+        }
+        pending
     } else {
         current_fence
     };
