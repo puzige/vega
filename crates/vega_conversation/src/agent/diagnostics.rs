@@ -268,6 +268,12 @@ pub(crate) fn failure_code(error: &vega_runtime::VegaError) -> Option<Diagnostic
     }
     match error {
         VegaError::Cancelled => None,
+        VegaError::Context(ContextRuntimeError::Estimate(
+            ContextEstimateError::InvalidBudget | ContextEstimateError::Overflow,
+        )) => Some(DiagnosticFailureCode::RuntimeFailure),
+        VegaError::RuntimeFailure(_) | VegaError::Store(_) | VegaError::Io(_) => {
+            Some(DiagnosticFailureCode::RuntimeFailure)
+        }
         VegaError::ProviderPayloadTooLarge { .. } => Some(DiagnosticFailureCode::ProviderProtocol),
         VegaError::ReasoningBudgetExceeded { .. }
         | VegaError::ReasoningReplayBudgetExceeded { .. } => {
@@ -418,6 +424,7 @@ fn runtime_failure(value: RuntimeDiagnosticFailure) -> DiagnosticFailureCode {
         RuntimeDiagnosticFailure::ProviderOverloaded => DiagnosticFailureCode::ProviderOverloaded,
         RuntimeDiagnosticFailure::ProviderProtocol => DiagnosticFailureCode::ProviderProtocol,
         RuntimeDiagnosticFailure::ProviderRejected => DiagnosticFailureCode::ProviderRejected,
+        RuntimeDiagnosticFailure::RuntimeFailure => DiagnosticFailureCode::RuntimeFailure,
         RuntimeDiagnosticFailure::UnknownSafeFailure => DiagnosticFailureCode::UnknownSafeFailure,
     }
 }

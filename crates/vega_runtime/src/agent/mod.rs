@@ -951,6 +951,7 @@ pub enum RuntimeDiagnosticFailure {
     ProviderOverloaded,
     ProviderProtocol,
     ProviderRejected,
+    RuntimeFailure,
     UnknownSafeFailure,
 }
 

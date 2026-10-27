@@ -11,6 +11,13 @@ pub enum RuntimeFailureStage {
     ToolRunning,
     ToolTerminal,
     EventPipeline,
+    PendingRead,
+    PendingAdmission,
+    PendingDecode,
+    PendingReferences,
+    PendingClaim,
+    PendingWorker,
+    RequestPreparation,
 }
 
 impl RuntimeFailureStage {
@@ -23,6 +30,13 @@ impl RuntimeFailureStage {
             Self::ToolRunning => "tool_running",
             Self::ToolTerminal => "tool_terminal",
             Self::EventPipeline => "event_pipeline",
+            Self::PendingRead => "pending_read",
+            Self::PendingAdmission => "pending_admission",
+            Self::PendingDecode => "pending_decode",
+            Self::PendingReferences => "pending_references",
+            Self::PendingClaim => "pending_claim",
+            Self::PendingWorker => "pending_worker",
+            Self::RequestPreparation => "request_preparation",
         }
     }
 }
@@ -34,6 +48,13 @@ pub enum RuntimeFailureReason {
     State,
     Io,
     Pipeline,
+    Admission,
+    PendingDecode,
+    References,
+    Worker,
+    Capability,
+    ContextBudget,
+    ContextArithmetic,
 }
 
 impl RuntimeFailureReason {
@@ -44,6 +65,13 @@ impl RuntimeFailureReason {
             Self::State => "state",
             Self::Io => "io",
             Self::Pipeline => "pipeline",
+            Self::Admission => "admission",
+            Self::PendingDecode => "pending_decode",
+            Self::References => "references",
+            Self::Worker => "worker",
+            Self::Capability => "capability",
+            Self::ContextBudget => "context_budget",
+            Self::ContextArithmetic => "context_arithmetic",
         }
     }
 }
@@ -344,6 +372,20 @@ impl VegaError {
                 detail.io_kind = Some(error.kind().into());
                 detail
             }
+            Self::Context(crate::ContextRuntimeError::Estimate(error)) => {
+                let reason = match error {
+                    crate::ContextEstimateError::InvalidBudget => {
+                        RuntimeFailureReason::ContextBudget
+                    }
+                    crate::ContextEstimateError::Overflow => {
+                        RuntimeFailureReason::ContextArithmetic
+                    }
+                    crate::ContextEstimateError::InputTooLarge => {
+                        return Self::Context(error.into());
+                    }
+                };
+                RuntimeFailureDetail::new(reason)
+            }
             error => return error,
         };
         detail.stage = stage;
@@ -359,6 +401,30 @@ impl VegaError {
     }
 
     pub fn diagnostic_metrics(&self) -> crate::RuntimeDiagnosticMetrics {
+        match self {
+            Self::Store(error) => {
+                let mut detail = RuntimeFailureDetail::new(RuntimeFailureReason::Database);
+                if let Some(error) = error.sqlite_error() {
+                    detail.sqlite_code = Some(error.extended_code & 255);
+                    detail.sqlite_extended_code = Some(error.extended_code);
+                }
+                return Self::RuntimeFailure(detail).diagnostic_metrics();
+            }
+            Self::Io(error) => {
+                let mut detail = RuntimeFailureDetail::new(RuntimeFailureReason::Io);
+                detail.io_kind = Some(error.kind().into());
+                return Self::RuntimeFailure(detail).diagnostic_metrics();
+            }
+            Self::Context(crate::ContextRuntimeError::Estimate(
+                error @ (crate::ContextEstimateError::InvalidBudget
+                | crate::ContextEstimateError::Overflow),
+            )) => {
+                return Self::Context((*error).into())
+                    .at_runtime_stage(RuntimeFailureStage::RequestPreparation)
+                    .diagnostic_metrics();
+            }
+            _ => {}
+        }
         let mut metrics = crate::RuntimeDiagnosticMetrics::default();
         let (source, kind, scope) = match self {
             Self::RuntimeFailure(detail) => {
@@ -367,7 +433,7 @@ impl VegaError {
                 metrics.sqlite_code = detail.sqlite_code;
                 metrics.sqlite_extended_code = detail.sqlite_extended_code;
                 metrics.io_kind = detail.io_kind.map(RuntimeIoKind::as_str);
-                ("runtime", "unknown", None)
+                ("runtime", "runtime_failure", None)
             }
             Self::ProviderPayloadTooLarge {
                 observed_bytes,
