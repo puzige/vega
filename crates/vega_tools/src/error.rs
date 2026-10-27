@@ -343,12 +343,12 @@ pub enum BashErrorCode {
     ScopeMismatch,
     HardlinkPreflight,
     SandboxUnavailable,
-    CredentialProtectionRequired,
     TempUnavailable,
     CleanupFailed,
     SpawnFailed,
     ProcessControlFailed,
     OutputFailed,
+    OutputIncomplete,
     Cancelled,
     TimedOut,
 }
@@ -361,12 +361,12 @@ impl BashErrorCode {
             Self::ScopeMismatch => "scope_mismatch",
             Self::HardlinkPreflight => "hardlink_preflight",
             Self::SandboxUnavailable => "sandbox_unavailable",
-            Self::CredentialProtectionRequired => "credential_protection_required",
             Self::TempUnavailable => "temp_unavailable",
             Self::CleanupFailed => "cleanup_failed",
             Self::SpawnFailed => "spawn_failed",
             Self::ProcessControlFailed => "process_control_failed",
             Self::OutputFailed => "output_failed",
+            Self::OutputIncomplete => "output_incomplete",
             Self::Cancelled => "cancelled",
             Self::TimedOut => "timed_out",
         }
@@ -401,10 +401,13 @@ impl fmt::Debug for BashError {
 
 impl fmt::Display for BashError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.code == BashErrorCode::CredentialProtectionRequired {
-            return formatter.write_str(vega_i18n::t("domain.tool.credential_protection"));
+        write!(formatter, "bash failed ({})", self.code.as_str())?;
+        if self.code == BashErrorCode::OutputIncomplete {
+            formatter.write_str(
+                ". The shell exited, but its output did not close. Background work may still be running. Verify it before retrying.",
+            )?;
         }
-        write!(formatter, "bash failed ({})", self.code.as_str())
+        Ok(())
     }
 }
 

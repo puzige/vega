@@ -13,9 +13,6 @@ pub struct ToolCredentialPolicy {
 }
 
 impl ToolCredentialPolicy {
-    pub(crate) fn has_bindings(&self) -> bool {
-        !self.bindings.is_empty()
-    }
     pub fn new(
         root: PathBuf,
         bindings: Vec<CredentialBinding>,

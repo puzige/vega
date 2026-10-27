@@ -7,7 +7,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Stdio};
 
-use tokio::process::{Child, Command};
+use tokio::process::Command;
 
 use crate::error::{BashError, BashErrorCode};
 use crate::fence::discover_git_dir;
@@ -136,17 +136,16 @@ impl SandboxConfig {
         }
     }
 
-    pub(crate) fn spawn_shell(
+    pub(crate) fn shell_command(
         &self,
         command_text: &str,
         temp_root: &TempRoot,
-
         credentials: Option<&ShellCredentialContext>,
-    ) -> Result<Child, BashError> {
+    ) -> Result<StdCommand, BashError> {
         let profile = protected_profile(PROFILE, credentials)?;
         let mut command = self.command(&profile, temp_root);
         command.arg("--").arg(SHELL);
-        spawn_shell(
+        shell_command(
             command,
             &self.project_root,
             command_text,
@@ -176,32 +175,27 @@ impl SandboxConfig {
     }
 }
 
-pub(crate) fn spawn_full_access_shell(
+pub(crate) fn full_access_shell_command(
     project_root: &Path,
     command_text: &str,
     temp_root: &TempRoot,
-
-    credentials: Option<&ShellCredentialContext>,
-) -> Result<Child, BashError> {
-    let command = if let Some(context) = credentials {
-        let profile = protected_profile("(version 1)(allow default)", Some(context))?;
-        let mut command = StdCommand::new(SANDBOX_EXEC);
-        command.arg("-p").arg(profile).arg("--").arg(SHELL);
-        command
-    } else {
-        StdCommand::new(SHELL)
-    };
-    spawn_shell(command, project_root, command_text, temp_root, credentials)
+) -> Result<StdCommand, BashError> {
+    shell_command(
+        StdCommand::new(SHELL),
+        project_root,
+        command_text,
+        temp_root,
+        None,
+    )
 }
 
-fn spawn_shell(
+fn shell_command(
     mut command: StdCommand,
     project_root: &Path,
     command_text: &str,
     temp_root: &TempRoot,
-
     credentials: Option<&ShellCredentialContext>,
-) -> Result<Child, BashError> {
+) -> Result<StdCommand, BashError> {
     temp_root.validate_identity()?;
     if let Some(credentials) = credentials.filter(|context| context.proxy_port.is_some()) {
         command.env_clear().envs(&credentials.environment);
@@ -225,11 +219,7 @@ fn spawn_shell(
         .stderr(Stdio::piped())
         .process_group(0);
 
-    let mut command = Command::from(command);
-    command.kill_on_drop(true);
-    command
-        .spawn()
-        .map_err(|_| BashError::new(BashErrorCode::SpawnFailed))
+    Ok(command)
 }
 
 pub(crate) struct TempRoot {

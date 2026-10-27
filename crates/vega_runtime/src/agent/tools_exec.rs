@@ -86,7 +86,7 @@ pub(crate) enum PreparedRuntimeCall {
         call: RuntimeToolCall,
         tools: vega_tools::Tools,
         prepared: vega_tools::PreparedBash,
-        full_access: bool,
+        policy: vega_tools::BashLaunchPolicy,
     },
     InvalidWriteEdit {
         call: RuntimeToolCall,
@@ -547,7 +547,10 @@ pub(crate) fn prepare_runtime_call(
                 call: raw_call,
                 tools: base_tools.clone(),
                 prepared,
-                full_access: config.permission_mode == RuntimePermissionMode::FullAccess,
+                policy: match config.permission_mode {
+                    RuntimePermissionMode::FullAccess => vega_tools::BashLaunchPolicy::FullAccess,
+                    _ => vega_tools::BashLaunchPolicy::WorkspaceWrite,
+                },
             }),
             Err(_) => {
                 let safe_json = InvalidBashAudit::from_raw(&raw_call.input_json)
@@ -1823,15 +1826,11 @@ pub(crate) async fn execute_prepared_waiting(
             call,
             tools,
             prepared,
-            full_access,
+            policy,
         } => {
-            let result = if full_access {
-                tools
-                    .execute_bash_full_access(prepared, cancel.child_token())
-                    .await
-            } else {
-                tools.execute_bash(prepared, cancel.child_token()).await
-            };
+            let result = tools
+                .execute_bash(prepared, policy, cancel.child_token())
+                .await;
             match result {
                 Ok(output) => (
                     RuntimeToolResult {
@@ -1852,7 +1851,7 @@ pub(crate) async fn execute_prepared_waiting(
                     (
                         terminal_result(
                             &call,
-                            format!("Tool error: bash failed ({})", error.code().as_str()),
+                            format!("Tool error: {error}"),
                             if cancelled {
                                 RuntimeToolStatus::Cancelled
                             } else {
