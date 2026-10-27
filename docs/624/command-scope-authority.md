@@ -12,6 +12,8 @@
 
 本接线批次已写入 runtime、会话适配器、独立范围卡、Direct/Broker 与额外目录策略，以及解析/默认拒绝、队列生命周期、目录替换、持久消费失败和 accepted-policy/bindings 失配的开发回归。固定 1.98.0 格式、差异空白及 9 组中英键/插值参数静态检查通过；编译与运行结果待该批次的云端 CI。实现全部完成后统一非写入者审查。目录预检与 profile 构造不冒充 OS 竞态安全或原生进程清理验证；应用级 reset 与剩余权限 UI 仍未完成。
 
+`df6651c59b58580574dbc126a8d91337432f9400` 的 [Actions 40462010952](https://github.com/puzige/vega/actions/runs/40462010952) 在 Clippy 与 Nextest 编译阶段均报 E0624：Bash 新路径调用的 `TempRoot::validate_identity` 仍为 sandbox 模块私有。尚未取得测试发现或执行计数。修正仅把该现有校验开放到 crate 内，不扩大公开 API、不更改校验或测试断言，待新提交云端验证。
+
 - `vega_conversation::types` 保存独立 `RequestedCommandScope`、`CommandScopeRequest`、`CommandScopeDecision { AllowOnce, Deny, Timeout }` 与内容无关的失败词汇。严格解析拒绝未知/重复字段、空范围、错误类型和空/过长 reason；reason 最多 512 UTF-8 字节且无换行/控制字符。绝对目录文本只做词法验证，不能冒充规范化批准。
 - 请求精确绑定 command bytes、有效 timeout、PreparedBash 的工具实例和项目 cwd、run/call/request id、完整 PermissionFence、scope 和 bindings 快照。摘要不替代相等比较。Debug 不输出命令、路径、配置或凭据引用；快照仅含 binding 配置，不含秘密值。
 - 只有已持久接纳、仍 streaming 的 run 可创建 live owner；数据库身份、epoch/reset/admission、完整持久 fence 每个状态转换均核对。委派 run 还须核对原始 parent fence/parent message、仍 running 的委派归属及 held release state。活动 run 不从线程的新默认重建 authority。

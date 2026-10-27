@@ -434,7 +434,7 @@ impl TempRoot {
         &self.param
     }
 
-    fn validate_identity(&self) -> Result<(), BashError> {
+    pub(crate) fn validate_identity(&self) -> Result<(), BashError> {
         let link_metadata = fs::symlink_metadata(&self.path)
             .map_err(|_| BashError::new(BashErrorCode::TempUnavailable))?;
         if link_metadata.file_type().is_symlink()
