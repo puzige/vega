@@ -56,6 +56,8 @@ pub struct ThreadsBlock {
     /// Inline error message (ui-spec §4.6).
     pub(crate) error: Option<crate::localized_copy::LocalizedCopy>,
     action_pending: bool,
+    visit_pending: bool,
+    deferred_visit: Option<String>,
     project_generation: u64,
     actions_scroll: gpui_kit::ScrollHandle,
     menu_height: gpui_kit::Pixels,
@@ -101,6 +103,8 @@ impl ThreadsBlock {
             editing: None,
             error: None,
             action_pending: false,
+            visit_pending: false,
+            deferred_visit: None,
             project_generation: 0,
             actions_scroll: gpui_kit::ScrollHandle::new(),
             menu_height: px(360.),
@@ -226,6 +230,12 @@ impl ThreadsBlock {
         if cx.has_active_drag() {
             return;
         }
+        if self.visit_pending {
+            if crate::navigation::allow_task_navigation(Some(thread_id), cx) {
+                self.deferred_visit = Some(thread_id.to_owned());
+            }
+            return;
+        }
         if task_mutation_busy(cx) {
             self.error = Some(crate::localized_copy::LocalizedCopy::new(
                 "ui.a_task_is_being_saved_try_again_shortly",
@@ -250,6 +260,7 @@ impl ThreadsBlock {
             .map(|thread| thread.id.clone());
         let project = cx.global::<SelectedProject>().0.clone();
         let settings = cx.global::<SettingsOpen>().0;
+        self.visit_pending = true;
         crate::navigation::begin_task_mutation(cx);
         let worker = cx.background_executor().spawn(async move {
             let path = path.ok_or_else(|| {
@@ -264,6 +275,8 @@ impl ThreadsBlock {
             let result = worker.await;
             let _ = cx.update(|cx| crate::navigation::finish_task_mutation(cx));
             let _ = this.update(cx, |this, cx| {
+                this.visit_pending = false;
+                let deferred = this.deferred_visit.take();
                 if cx
                     .global::<OpenedThread>()
                     .0
@@ -273,6 +286,10 @@ impl ThreadsBlock {
                     || cx.global::<SelectedProject>().0 != project
                     || cx.global::<SettingsOpen>().0 != settings
                 {
+                    return;
+                }
+                if let Some(target) = deferred {
+                    this.open_thread(&target, cx);
                     return;
                 }
                 match result {
