@@ -163,6 +163,8 @@
 
 ### 集成与终态回归补充
 
+Full 未完成尾部回归区分两道拒绝边界：live 请求中无法归属到完整 response 的尾部 assistant 文本先被来源校验拒绝（SourceChanged）；精确 source version/fingerprint 的 fenced 请求进入 full 规划后，被不完整尾部拒绝（InvalidProjection）。两条路径均不得调用摘要 provider、安装 checkpoint 或改变原始审计。`f51230683de9232d25b0d8095a1011b68be5c064` 的 Actions `40648493811` 执行 42 项、41 通过、1 失败，Clippy 通过；失败用例以 live 请求断言规划层错误，修正开发夹具覆盖两层，不放宽生产来源栅栏或接受不完整响应。
+
 Full 首批 `2a5fa2ad209aef326dad1e06444791a3f15acf9a` 独立审查发现 `PersistenceActorConfig` 移动后读取 delegated 标志的静态编译阻断；最小修正是在移动前冻结该布尔值，不克隆整份配置。该提交的 PR 因 master `29bea083a7d955da7c64d96101ae8f4b8f1e2b12` 的 UI 用量入口增量出现冲突，未产生 Actions run；整合保留 master 的无有效用量时隐藏入口规则及本卡 partial 菜单／状态清理，不撤销 #720/#722。修正与 rebase 必须在新 head 重新验证。
 
 同步 master 的协议诊断迁移后，本分支尚未交付的投影迁移顺延为 `0047_context_projection.sql`，保留 `0046_provider_protocol_reason.sql`，不修改既有正式迁移。开发期通过仅测试 feature 暴露 UI 终态快照，直接断言状态、失败码、usage、generation 和 busy，而非借一次状态写入间接判断。完成处理提取为同一生产方法，测试可重复提交已退出的旧完成；新任务的 owner／request／lease、取消令牌及可见状态必须保持不变。路由切换后的旧完成只释放其原租约，不应用业务结果；返回同一会话也不能恢复旧 epoch 的安装权。旧 worker 退出时按 thread／model／request 精确退役其临时 Compacting 行、活动组引用与对应 pending 状态，保留单调编号屏障，不能让缓存 stream 永久 busy，也不能改写新终态。即使模型切换已经重置控制状态，也必须清除原模型的临时行；新模型或较新请求的记录、pending、取消状态和活动组阶段不能被旧请求清理。开发回归覆盖切走后结束／返回后才结束两种时序，以及控制状态已重置的模型切换，返回后应可发起新请求。需要的持久化结果只通过当前 owner 的新读取恢复，不从旧回调跨路由应用。

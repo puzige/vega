@@ -354,39 +354,57 @@ async fn full_compaction_rejects_unfinished_response_without_installing()
         steps: Default::default(),
     };
     let budget = ContextBudget::new(200_000, 32_000, true)?;
-    let failure = ConversationCompactionHook::new(&provider, path, "thread", "model", None, None)
-        .with_full_on_threshold(true)
-        .with_credential_reader(Some(Arc::new(|| Ok(Vec::new()))))
-        .compact(
-            ContextCompactionRequest {
-                trigger: ContextCompactionTrigger::Threshold,
-                system_prompt: "system".into(),
-                estimate: estimate_chat_context("system", &history, &[])?,
-                messages: history,
-                tools: Vec::new(),
-                budget,
-                target_tokens: budget.target_tokens()?,
-                source_version: source.source_version,
-                source_fingerprint: Some(source.fingerprint.clone()),
-                require_source_fence: false,
-                source_owner_id: Some("owner".into()),
-            },
-            CancellationToken::new(),
-        )
-        .await
-        .expect_err("unfinished full must fail");
-    assert!(matches!(
-        failure.error.as_ref(),
-        VegaError::Context(ContextRuntimeError::InvalidProjection)
-    ));
-    assert!(
-        vega_store::context_compaction::latest_checkpoint(store.conn(), "thread", "model")?
-            .is_none()
-    );
-    assert_eq!(
-        vega_store::context_compaction::load_source(store.conn(), "thread")?,
-        source
-    );
+    for require_source_fence in [false, true] {
+        let failure =
+            ConversationCompactionHook::new(&provider, path.clone(), "thread", "model", None, None)
+                .with_full_on_threshold(true)
+                .with_credential_reader(Some(Arc::new(|| Ok(Vec::new()))))
+                .compact(
+                    ContextCompactionRequest {
+                        trigger: ContextCompactionTrigger::Threshold,
+                        system_prompt: "system".into(),
+                        estimate: estimate_chat_context("system", &history, &[])?,
+                        messages: history.clone(),
+                        tools: Vec::new(),
+                        budget,
+                        target_tokens: budget.target_tokens()?,
+                        source_version: source.source_version,
+                        source_fingerprint: Some(source.fingerprint.clone()),
+                        require_source_fence,
+                        source_owner_id: Some("owner".into()),
+                    },
+                    CancellationToken::new(),
+                )
+                .await
+                .expect_err("unfinished full must fail");
+        if require_source_fence {
+            assert!(
+                matches!(
+                    failure.error.as_ref(),
+                    VegaError::Context(ContextRuntimeError::InvalidProjection)
+                ),
+                "unexpected fenced failure: {:?}",
+                failure.error
+            );
+        } else {
+            assert!(
+                matches!(
+                    failure.error.as_ref(),
+                    VegaError::Context(ContextRuntimeError::SourceChanged)
+                ),
+                "unexpected live failure: {:?}",
+                failure.error
+            );
+        }
+        assert!(
+            vega_store::context_compaction::latest_checkpoint(store.conn(), "thread", "model")?
+                .is_none()
+        );
+        assert_eq!(
+            vega_store::context_compaction::load_source(store.conn(), "thread")?,
+            source
+        );
+    }
     Ok(())
 }
 
