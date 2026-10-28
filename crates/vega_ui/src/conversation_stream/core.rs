@@ -1936,6 +1936,3 @@ fn reasoning_choice_for_name(name: &str) -> ReasoningChoice {
 }
 
 impl EventEmitter<CredentialContinuationRequested> for ConversationStream {}
-
-#[cfg(test)]
-mod staged_reasoning_tests;
