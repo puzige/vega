@@ -13,7 +13,10 @@ use gpui_kit::{
 use vega_theme::{Layout, Motion, ThemeColors};
 
 use super::model::MessageCopy;
-use crate::{icons::Icon, interaction::Interaction};
+use crate::{
+    icons::Icon,
+    interaction::{Interaction, InteractionExt},
+};
 
 #[derive(Clone)]
 pub(super) enum CopySource {
@@ -64,14 +67,21 @@ pub(crate) fn tool_text_copy_button(
     label: &'static str,
     colors: ThemeColors,
 ) -> AnyElement {
-    CopyReceiptButton::new(id, CopySource::Text(text.into()), label, colors, |button| {
-        button
-            .size(px(Layout::COPY_ACTION_SIZE))
-            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
-                cx.stop_propagation()
-            })
-            .focus_visible(|style| style.bg(colors.bg_active))
-    })
+    CopyReceiptButton::new(
+        id.clone(),
+        CopySource::Text(text.into()),
+        label,
+        colors,
+        |button| {
+            button
+                .id(id)
+                .size(px(Layout::COPY_ACTION_SIZE))
+                .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation()
+                })
+                .focus_visible(|style| style.bg(colors.bg_active))
+        },
+    )
     .into_any_element()
 }
 
@@ -192,15 +202,34 @@ impl CopyReceiptButton {
             .child(GlyphLayer::new(Icon::Check, colors, blend.clone(), true));
         let clicked = binding.clone();
         let accessible = binding.clone();
-        let button = crate::icons::icon_button_with_id(
-            content,
-            id.clone(),
-            label,
-            colors,
-            move |_, window, cx| {
-                activate(&clicked.borrow(), window, cx);
-            },
-        );
+        let button = if matches!(&source, CopySource::Text(_)) {
+            div()
+                .id(id.clone())
+                .aria_label(label)
+                .focusable()
+                .tab_stop(true)
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_md()
+                .cursor_pointer()
+                .interactive(colors, true, false)
+                .focus(move |style| style.bg(colors.bg_active))
+                .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
+                .on_click(move |_, window, cx| activate(&clicked.borrow(), window, cx))
+                .child(content)
+        } else {
+            crate::icons::icon_button_with_id(
+                content,
+                id.clone(),
+                label,
+                colors,
+                move |_, window, cx| {
+                    activate(&clicked.borrow(), window, cx);
+                },
+            )
+        };
         Self {
             id: id.into(),
             source,
