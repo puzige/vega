@@ -340,6 +340,7 @@ impl ConversationStream {
             TextInput::new_multiline(cx, "", COMPOSER_ROWS)
                 .with_placeholder_key("ui.describe_a_task_or_use_to_reference_files")
                 .with_image_paste()
+                .with_edit_menu()
         });
         let branch_selector = cx.new(|cx| {
             let mut selector =

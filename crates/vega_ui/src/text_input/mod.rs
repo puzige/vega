@@ -80,6 +80,7 @@ pub(crate) struct LineLayout {
 /// the real value is never shown or extracted through the UI.
 pub struct TextInput {
     image_paste: bool,
+    edit_menu: bool,
     focus_handle: FocusHandle,
     content: SharedString,
     content_revision: u64,
@@ -137,6 +138,11 @@ impl TextInput {
             self.placeholder_key = Some(key);
             cx.notify();
         }
+    }
+
+    pub fn with_edit_menu(mut self) -> Self {
+        self.edit_menu = true;
+        self
     }
 
     fn localized_placeholder(&self) -> SharedString {
