@@ -190,7 +190,8 @@ async fn reset_session_and_direct_reset_cannot_acknowledge_a_background_worker_s
         let config_path = path.with_extension("toml");
         vega_store::config::AppConfig::default().save_to(&config_path)?;
         let original_config = std::fs::read(&config_path)?;
-        let intent = crate::permission_reset::prepare_reset(&store, &config_path)?;
+        let intent = crate::permission_reset::prepare_reset(&store, &config_path)
+            .map_err(|error| format!("{error:?}"))?;
         let registry = ContextPrecomputeRegistry::global();
         let lease = bind(&registry, &store)?;
         let (provider, release) = blocked_provider();
@@ -204,7 +205,8 @@ async fn reset_session_and_direct_reset_cannot_acknowledge_a_background_worker_s
                 path.clone(),
                 config_path.clone(),
                 intent,
-            )?;
+            )
+            .map_err(|error| format!("{error:?}"))?;
             assert!(matches!(
                 session.complete(&replay, Duration::from_millis(20)),
                 Err(crate::types::PermissionResetError::Busy)
@@ -218,10 +220,13 @@ async fn reset_session_and_direct_reset_cannot_acknowledge_a_background_worker_s
                     .await?
                     .is_err()
             );
-            session.complete(&replay, Duration::from_secs(10))?;
+            session
+                .complete(&replay, Duration::from_secs(10))
+                .map_err(|error| format!("{error:?}"))?;
             assert!(session.completed());
         } else {
-            let pause = crate::permission_reset::pause_admission(&store)?;
+            let pause = crate::permission_reset::pause_admission(&store)
+                .map_err(|error| format!("{error:?}"))?;
             assert!(matches!(
                 crate::permission_reset::reset_quiescent(
                     &store,
@@ -247,7 +252,8 @@ async fn reset_session_and_direct_reset_cannot_acknowledge_a_background_worker_s
                 &intent,
                 &pause,
                 &replay,
-            )?;
+            )
+            .map_err(|error| format!("{error:?}"))?;
         }
         assert!(!lease.is_current()?);
         assert_eq!(count(&store, "token_usage")?, 1);
