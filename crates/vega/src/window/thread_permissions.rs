@@ -149,6 +149,10 @@ impl VegaWindow {
         }) {
             return;
         }
+        let current = stream.read(cx).thread_snapshot();
+        if !durable && self.draft.as_ref() == Some(source) {
+            self.draft = Some(current.clone());
+        }
         if self.owns_stream_request(stream, &source.id, cx)
             && cx.global::<OpenedThread>().0.as_ref().is_some_and(|route| {
                 route.project_id == source.project_id
@@ -157,10 +161,6 @@ impl VegaWindow {
                     && route.full_access_grant == source.full_access_grant
             })
         {
-            let current = stream.read(cx).thread_snapshot();
-            if !durable && self.draft.as_ref() == Some(source) {
-                self.draft = Some(current.clone());
-            }
             cx.set_global(OpenedThread(Some(current)));
         }
         if durable {

@@ -397,6 +397,25 @@ impl VegaWindow {
             || self
                 .trusted_actions
                 .is_kind_active(TrustedActionKind::PermissionSelection);
+        let mut draft = draft;
+        if !creating
+            && !self.trusted_actions.is_busy()
+            && let Some(defaults) = cx.try_global::<NewTaskDefaults>()
+            && draft
+                .default_permission
+                .as_ref()
+                .is_some_and(|permission| permission != &defaults.permission)
+        {
+            draft.permission_mode = PermissionMode::parse(&defaults.permission.permission_mode)
+                .unwrap_or(PermissionMode::Confirm);
+            draft.full_access_grant = None;
+            draft.default_permission = Some(defaults.permission.clone());
+            if let Some((_, stream)) = &self.stream_view
+                && stream.read(cx).thread_snapshot().id == draft.id
+            {
+                stream.update(cx, |stream, cx| stream.apply_thread(draft.clone(), cx));
+            }
+        }
         let draft = if creating || draft.project_binding() == bound {
             draft
         } else {
