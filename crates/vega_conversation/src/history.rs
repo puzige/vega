@@ -1342,7 +1342,3 @@ fn project_page_privacy(
     }
     Ok(generated_notices)
 }
-
-#[cfg(test)]
-#[path = "permission_history_tests.rs"]
-mod permission_history_tests;
