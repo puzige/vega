@@ -142,11 +142,13 @@ provider 通过仅用于 compaction 的可选工厂显式声明后台能力，�
 
 生成复用同一 planner、tool-free 摘要和 projection interpreter，但采用显式 Precompute policy：保留完整尾组，超限可退让完整组／缩小摘要批次，不得进入 summarize-all／head omission 兜底；保留前驱已有 omission，不新增 omission，不授予 reactive deeper-pass。600 秒生成期限从实际启动开始计算，不能作为 ready 消费期限。
 
-每个实际 provider stage 返回后（包括失败／取消／未知 usage）先独立结算再进行下一阶段。ledger 只记录本阶段而非累计 usage，完成或失败均封存已结算阶段；无实际请求的取消不制造账单或 unknown stage。prepared job 的执行只产生已结算 ready 或失败，不返回可被前台重复入账的累计 usage，不安装 checkpoint；发布仍受当前 generation、来源／依赖／模型及取消围栏限制，失败按精确 generation 退役，不触碰新候选。
+每个实际 provider stage 返回后（包括失败／取消／未知 usage）先独立结算再进行下一阶段。ledger 只记录本阶段而非累计 usage，完成或失败均封存已结算阶段；无实际请求的取消不制造账单或 unknown stage。发送状态必须独立于 provider 方法调用：OpenAI 在请求校验、凭据 guard 和请求构造之后、首次可能执行 HTTP 的位置置位；取消先于该位置或 guard 拒绝时不置位。同一阶段重试共享只增不减的状态，已经可能发送后发生 guard 失败／取消仍保留 unknown，不根据最终错误反推未发送。Owner 凭据包装在预检完成后转发同一状态并保留出入站过滤；未提供传输证据的 provider 保守地以调用作为可能发送边界，不猜测未收费。prepared job 的执行只产生已结算 ready 或失败，不返回可被前台重复入账的累计 usage，不安装 checkpoint；发布仍受当前 generation、来源／依赖／模型及取消围栏限制，失败按精确 generation 退役，不触碰新候选。
 
 开发回归必须证明 admission 在生成前释放、前台 append 不被阻塞且进入恢复后的当前来源、旧内容编辑拒绝 ready、取消／失败保留实际账单、不重复计费、unknown 保持 unknown，以及 typed PTL 不能让预计算新增 omission。provider 工厂回归静态构造／合成流验证配置与保护包装，不运行真实网络 E2E。此阶段不把 prepared job API 视为 runtime 自动触发、退出 drain 或最终消费安装已经完成。
 
 持久化基线 `e0c3471b14fed4d693fe4b6d567d50d6e6fd1a57` 的 Actions [40718995497](https://github.com/puzige/vega/actions/runs/40718995497) 已完成：Clippy `122924425728`、Nextest `122924426530`、required `122927304871` 成功，原始汇总 90 发现、90 执行通过、0 跳过。独立增量审查无发现；该结果不覆盖本节后续实现。
+
+后台生成提交 `e016242898cc564841b37ab18a7eab95e1b747dc` 的 Actions [40730684803](https://github.com/puzige/vega/actions/runs/40730684803) 中 Clippy `122965843440` 成功；Nextest `122965843732` 原始汇总为 99 执行、98 通过、1 失败、0 跳过，required `122968095963` 失败。失败 fixture 错把已知凭据当作可放行的格式误报，修正为分别验证已知值始终脱敏、合成格式误报例外保留、动态 reader 失败关闭，不修改生产凭据政策。独立审查另确认发送前取消／guard 拒绝可能制造 unknown stage；按上述发送边界修复，并补发送前无阶段、已发送后重试拒绝仍记 unknown 的云端回归。新修改未取得云端结果前不算验证通过。
 
 ### 4.4 provider 与本机能力
 

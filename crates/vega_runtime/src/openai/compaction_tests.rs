@@ -48,12 +48,18 @@ fn background_factory_survives_origin_runtime_and_preserves_frozen_request_guard
                 provider.model_snapshot(),
                 request_model(&request, api, "https://example.invalid/v1").ok()
             );
+            let submission = crate::ProviderRequestSubmission::default();
             assert!(matches!(
                 provider
-                    .chat_stream(request, CancellationToken::new())
+                    .chat_stream_with_submission(
+                        request,
+                        CancellationToken::new(),
+                        submission.clone()
+                    )
                     .await,
                 Err(VegaError::CredentialCheckUnavailable)
             ));
+            assert!(!submission.may_have_been_submitted());
             Ok::<_, VegaError>(())
         })?;
         assert_eq!(observed.load(Ordering::Relaxed), 1);

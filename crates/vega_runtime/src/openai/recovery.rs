@@ -113,7 +113,7 @@ impl RecoveryStream {
                     self.ended = true;
                     return Some(Err(VegaError::Cancelled));
                 }
-                sent = tokio::time::timeout(REQUEST_TIMEOUT, self.provider.send_attempt(&self.body)) => sent,
+                sent = tokio::time::timeout(REQUEST_TIMEOUT, self.provider.send_attempt(&self.body, None)) => sent,
             };
             match sent {
                 Ok(Ok(response)) if response.status().is_success() => {

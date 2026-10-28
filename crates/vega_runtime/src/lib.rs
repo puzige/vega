@@ -67,10 +67,10 @@ pub use permission::{
 pub use provider::{
     ChatMessage, ChatReasoningPresence, ChatRequest, ChatRole, ChatToolCall,
     CompactionProviderFactory, EventStream, FrozenReasoning, Provider, ProviderEvent,
-    ProviderFailureKind, ProviderResponseMetadata, ProviderStream, ReasoningBudgetScope,
-    ReasoningChoice, ReasoningDisabledWire, ReasoningProtocol, ReasoningReplayPolicy, ReplayFrame,
-    ResponseReplayLayout, ResponseReplaySlot, StopReason, ToolChoice, ToolDefinition,
-    project_model_messages,
+    ProviderFailureKind, ProviderRequestSubmission, ProviderResponseMetadata, ProviderStream,
+    ReasoningBudgetScope, ReasoningChoice, ReasoningDisabledWire, ReasoningProtocol,
+    ReasoningReplayPolicy, ReplayFrame, ResponseReplayLayout, ResponseReplaySlot, StopReason,
+    ToolChoice, ToolDefinition, project_model_messages,
 };
 pub use retry::RetryPolicy;
 

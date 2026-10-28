@@ -1888,7 +1888,36 @@ impl std::fmt::Debug for ProviderEvent {
 pub type CompactionProviderFactory =
     Box<dyn FnOnce() -> Result<std::sync::Arc<dyn Provider>, VegaError> + Send + 'static>;
 
+#[derive(Clone, Default)]
+#[allow(missing_docs)]
+pub struct ProviderRequestSubmission(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+#[allow(missing_docs)]
+impl ProviderRequestSubmission {
+    pub fn mark_possible_submission(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn may_have_been_submitted(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
 pub trait Provider: Send + Sync {
+    #[allow(missing_docs)]
+    fn chat_stream_with_submission(
+        &self,
+        req: ChatRequest,
+        cancel: CancellationToken,
+        submission: ProviderRequestSubmission,
+    ) -> BoxFuture<'static, Result<ProviderStream, VegaError>> {
+        if cancel.is_cancelled() {
+            return Box::pin(async { Err(VegaError::Cancelled) });
+        }
+        submission.mark_possible_submission();
+        self.chat_stream_with_metadata(req, cancel)
+    }
+
     #[allow(missing_docs)]
     fn compaction_provider_factory(&self) -> Option<CompactionProviderFactory> {
         None

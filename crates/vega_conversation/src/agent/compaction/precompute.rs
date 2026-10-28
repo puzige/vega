@@ -35,7 +35,7 @@ impl StageAccounting {
         stage: usize,
         metrics: &SummaryDiagnosticMetrics,
     ) -> Result<(), VegaError> {
-        if !metrics.request_started {
+        if !metrics.request_may_have_been_submitted {
             return Ok(());
         }
         let stage = u32::try_from(stage)

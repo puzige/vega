@@ -363,36 +363,255 @@ async fn background_factory_preserves_owner_credential_reader_and_exceptions() -
         .ok_or("factory missing")?;
     drop(wrapper);
     let background = factory()?;
+    let formatted = format!("{}{}", "sk-", "a".repeat(40));
+    assert!(
+        vega_runtime::inspect_credential_text(&formatted, &[])
+            .iter()
+            .any(|finding| { finding.confidence == vega_runtime::CredentialConfidence::High })
+    );
     let request = ChatRequest {
         model: "model".into(),
         messages: vec![ChatMessage::new(
             ChatRole::User,
-            "synthetic-secret-abcdefghijklmno",
+            format!("synthetic-secret-abcdefghijklmno {formatted}"),
         )],
         ..Default::default()
     };
+    let submission = vega_runtime::ProviderRequestSubmission::default();
     let stream = background
-        .chat_stream(request.clone(), CancellationToken::new())
+        .chat_stream_with_submission(
+            request.clone(),
+            CancellationToken::new(),
+            submission.clone(),
+        )
         .await?;
     drop(stream);
-    assert!(
-        provider.0.requests.lock().unwrap()[0].messages[0]
-            .content
-            .contains("synthetic-secret-abcdefghijklmno")
+    assert!(submission.may_have_been_submitted());
+    assert_eq!(
+        provider.0.requests.lock().unwrap()[0].messages[0].content,
+        format!(
+            "{} {formatted}",
+            vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER
+        ),
+    );
+    let without_exception = crate::agent::OwnerCredentialProvider::new(
+        Arc::new(provider.clone()),
+        Arc::new(|| Ok(vec!["synthetic-secret-abcdefghijklmno".into()])),
+    );
+    drop(
+        without_exception
+            .chat_stream(request.clone(), CancellationToken::new())
+            .await?,
+    );
+    assert_eq!(
+        provider.0.requests.lock().unwrap()[1].messages[0].content,
+        format!(
+            "{0} {0}",
+            vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER
+        ),
     );
     available.store(false, std::sync::atomic::Ordering::Release);
+    let rejected = vega_runtime::ProviderRequestSubmission::default();
     assert!(matches!(
         background
-            .chat_stream(request, CancellationToken::new())
+            .chat_stream_with_submission(request, CancellationToken::new(), rejected.clone())
             .await,
         Err(VegaError::CredentialCheckUnavailable)
     ));
-    assert_eq!(provider.0.requests.lock().unwrap().len(), 1);
+    assert!(!rejected.may_have_been_submitted());
+    assert_eq!(provider.0.requests.lock().unwrap().len(), 2);
     let unsupported = crate::agent::OwnerCredentialProvider::new(
         Arc::new(SummaryProvider),
         Arc::new(|| Ok(Vec::new())),
     );
     assert!(unsupported.compaction_provider_factory().is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_preflight_rejection_and_cancellation_do_not_record_unsent_stages() -> TestResult
+{
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    for responses in [false, true] {
+        for cancel_during_guard in [false, true] {
+            let (_directory, path, store) = source_fixture()?;
+            let request = input(&store)?;
+            let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+            listener.set_nonblocking(true)?;
+            let cancel = CancellationToken::new();
+            let guard_cancel = cancel.clone();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let guard_calls = calls.clone();
+            let provider = vega_runtime::OpenAiProvider::new(
+                format!("http://{}/v1", listener.local_addr()?),
+                "synthetic-not-a-secret",
+            )?
+            .with_responses_api(responses)
+            .with_pre_attempt_guard(move |_| {
+                guard_calls.fetch_add(1, Ordering::Relaxed);
+                if cancel_during_guard {
+                    guard_cancel.cancel();
+                    Ok(())
+                } else {
+                    Err(VegaError::CredentialCheckUnavailable)
+                }
+            });
+            let provider = crate::agent::OwnerCredentialProvider::new(
+                Arc::new(provider),
+                Arc::new(|| Ok(Vec::new())),
+            );
+            let hook =
+                ConversationCompactionHook::new(&provider, path, "thread", "model", None, None);
+            let prepared = hook
+                .prepare_precompute(request, CancellationToken::new())
+                .await?
+                .ok_or("not prepared")?;
+            let generation = prepared.generation().to_owned();
+            let result =
+                tokio::time::timeout(Duration::from_secs(10), prepared.generate(cancel)).await?;
+            if cancel_during_guard {
+                assert!(matches!(result, Err(VegaError::Cancelled)));
+            } else {
+                assert!(matches!(result, Err(VegaError::CredentialCheckUnavailable)));
+            }
+            assert_eq!(calls.load(Ordering::Relaxed), 1);
+            assert!(
+                matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+            );
+            assert_eq!(count(&store, "context_precompute_stages")?, 0);
+            assert_eq!(count(&store, "token_usage")?, 0);
+            assert_eq!(count(&store, "context_precompute_ready")?, 0);
+            assert_eq!(count(&store, "context_checkpoints")?, 0);
+            let settled: (u32, bool, bool) = store.conn().query_row(
+                "SELECT stage_count,usage_complete,retired FROM context_precompute_accounting WHERE generation=?1",
+                [&generation], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(settled, (0, true, true));
+        }
+    }
+    Ok(())
+}
+
+async fn receive_summary_request(stream: &mut tokio::net::TcpStream) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+
+    let mut request = Vec::new();
+    loop {
+        let mut buffer = [0; 4096];
+        let read = stream.read(&mut buffer).await?;
+        if read == 0 || request.len() + read > 2_000_000 {
+            return Err(std::io::Error::other(
+                "incomplete or oversized fixture request",
+            ));
+        }
+        request.extend_from_slice(&buffer[..read]);
+        if let Some(header_end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+            let headers =
+                std::str::from_utf8(&request[..header_end]).map_err(std::io::Error::other)?;
+            let length = headers
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                .ok_or_else(|| std::io::Error::other("fixture requires content length"))?
+                .1
+                .trim()
+                .parse::<usize>()
+                .map_err(std::io::Error::other)?;
+            if request.len() >= header_end + 4 + length {
+                return Ok(request);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn background_retry_guard_failure_retains_unknown_for_submitted_request() -> TestResult {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::AsyncWriteExt;
+
+    for responses in [false, true] {
+        for cancel_retry in [false, true] {
+            let (_directory, path, store) = source_fixture()?;
+            let request = input(&store)?;
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let base_url = format!("http://{}/v1", listener.local_addr()?);
+            let server = tokio::spawn(async move {
+                let (mut stream, _) =
+                    tokio::time::timeout(Duration::from_secs(10), listener.accept()).await??;
+                let request = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    receive_summary_request(&mut stream),
+                )
+                .await??;
+                stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await?;
+                stream.shutdown().await?;
+                Ok::<_, std::io::Error>((listener, request))
+            });
+            let cancel = CancellationToken::new();
+            let guard_cancel = cancel.clone();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let guard_calls = calls.clone();
+            let provider = vega_runtime::OpenAiProvider::new(base_url, "synthetic-not-a-secret")?
+                .with_responses_api(responses)
+                .with_retry_policy(vega_runtime::RetryPolicy {
+                    max_retries: 1,
+                    base_delay: Duration::ZERO,
+                    max_delay: Duration::ZERO,
+                })
+                .with_pre_attempt_guard(move |_| {
+                    if guard_calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                        Ok(())
+                    } else if cancel_retry {
+                        guard_cancel.cancel();
+                        Ok(())
+                    } else {
+                        Err(VegaError::CredentialCheckUnavailable)
+                    }
+                });
+            let provider = crate::agent::OwnerCredentialProvider::new(
+                Arc::new(provider),
+                Arc::new(|| Ok(Vec::new())),
+            );
+            let hook =
+                ConversationCompactionHook::new(&provider, path, "thread", "model", None, None);
+            let prepared = hook
+                .prepare_precompute(request, CancellationToken::new())
+                .await?
+                .ok_or("not prepared")?;
+            let generation = prepared.generation().to_owned();
+            let result =
+                tokio::time::timeout(Duration::from_secs(10), prepared.generate(cancel)).await?;
+            if cancel_retry {
+                assert!(matches!(result, Err(VegaError::Cancelled)));
+            } else {
+                assert!(matches!(result, Err(VegaError::CredentialCheckUnavailable)));
+            }
+            let (listener, received) =
+                tokio::time::timeout(Duration::from_secs(10), server).await???;
+            let endpoint = if responses {
+                "POST /v1/responses "
+            } else {
+                "POST /v1/chat/completions "
+            };
+            assert!(received.starts_with(endpoint.as_bytes()));
+            assert_eq!(calls.load(Ordering::Relaxed), 2);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), listener.accept())
+                    .await
+                    .is_err()
+            );
+            assert_eq!(count(&store, "context_precompute_stages")?, 1);
+            assert_eq!(count(&store, "token_usage")?, 0);
+            assert_eq!(count(&store, "context_precompute_ready")?, 0);
+            assert_eq!(count(&store, "context_checkpoints")?, 0);
+            let settled: (u32, bool, bool) = store.conn().query_row(
+                "SELECT stage_count,usage_complete,retired FROM context_precompute_accounting WHERE generation=?1",
+                [&generation], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(settled, (1, false, true));
+        }
+    }
     Ok(())
 }
 

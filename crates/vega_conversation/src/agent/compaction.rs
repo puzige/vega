@@ -2783,7 +2783,7 @@ fn validate_complete_projection(messages: &[ChatMessage]) -> Result<(), ContextC
 
 #[derive(Clone, Default)]
 struct SummaryDiagnosticMetrics {
-    request_started: bool,
+    request_may_have_been_submitted: bool,
     provider: vega_runtime::ProviderResponseMetadata,
     stop_reason: Option<StopReason>,
     input_tokens: Option<u64>,
@@ -2843,9 +2843,9 @@ async fn collect_summary_with_timeout_diagnostics(
             SummaryDiagnosticMetrics::default(),
         ));
     }
-    let request_started = std::sync::atomic::AtomicBool::new(false);
+    let submission = vega_runtime::ProviderRequestSubmission::default();
     let started_metrics = || SummaryDiagnosticMetrics {
-        request_started: request_started.load(std::sync::atomic::Ordering::Acquire),
+        request_may_have_been_submitted: submission.may_have_been_submitted(),
         ..SummaryDiagnosticMetrics::default()
     };
     let call = tokio::select! {
@@ -2855,8 +2855,7 @@ async fn collect_summary_with_timeout_diagnostics(
             return Err(summary_collection_failure(context_error(ContextRuntimeError::SummaryTimedOut), started_metrics()));
         }
         result = async {
-            request_started.store(true, std::sync::atomic::Ordering::Release);
-            provider.chat_stream_with_metadata(request.clone(), child).await
+            provider.chat_stream_with_submission(request.clone(), child, submission.clone()).await
         } => {
             match result {
                 Ok(call) => call,
