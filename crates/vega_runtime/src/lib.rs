@@ -45,7 +45,8 @@ pub use context::{
     estimate_wire_context,
 };
 pub use error::{
-    RuntimeFailureDetail, RuntimeFailureReason, RuntimeFailureStage, RuntimeIoKind, VegaError,
+    ProviderProtocolReason, RuntimeFailureDetail, RuntimeFailureReason, RuntimeFailureStage,
+    RuntimeIoKind, VegaError,
 };
 pub mod computer_use;
 pub mod images;

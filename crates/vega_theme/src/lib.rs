@@ -338,6 +338,7 @@ impl Motion {
     pub const COPY_SWAP_MS: u64 = 80;
     pub const COPY_RECEIPT_MS: u64 = 1000;
     pub const THINKING_SHIMMER_MS: u64 = 1800;
+    pub const CONVERSATION_LOADING_DELAY_MS: u64 = 150;
 }
 
 /// Shared layout tokens for the native client.
@@ -348,6 +349,7 @@ impl Motion {
 pub struct Layout;
 
 impl Layout {
+    pub const CONVERSATION_LOADING_LOGO_SIZE: f32 = 128.;
     pub const MARKDOWN_LINK_LEADING_WIDTH: f32 = 20.;
     pub const MARKDOWN_LINK_ICON_GAP: f32 = 4.;
     pub const MARKDOWN_LINK_DASH: f32 = 2.;

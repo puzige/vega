@@ -29,6 +29,8 @@ mod artifact;
 mod codex_task;
 mod command_scope;
 mod context;
+mod conversation_load;
+pub use conversation_load::ConversationLoad;
 mod events;
 mod generated_notice;
 mod historical_history;
