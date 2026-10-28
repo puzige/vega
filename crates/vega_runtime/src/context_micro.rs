@@ -3,6 +3,24 @@ use crate::{ChatMessage, ChatRole, ContextRuntimeError, VegaError};
 pub const MICRO_MIN_SAVINGS: u64 = 20_000;
 pub const MICRO_KEEP_RECENT: usize = 5;
 
+#[derive(Clone)]
+pub struct MicroCompactionRequest {
+    pub context: crate::ContextCompactionRequest,
+    pub replay_frame: Option<crate::ReplayFrame>,
+}
+
+impl MicroCompactionRequest {
+    pub fn wire_messages(&self) -> Vec<ChatMessage> {
+        let mut system = ChatMessage::new(ChatRole::System, self.context.system_prompt.clone());
+        if let Some(frame) = &self.replay_frame {
+            system.attach_replay_frame(frame.clone());
+        }
+        std::iter::once(system)
+            .chain(self.context.messages.iter().cloned())
+            .collect()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MicroCompactionTarget {
     pub call_id: String,

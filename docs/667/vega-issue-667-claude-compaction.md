@@ -179,6 +179,8 @@ Reactive 恢复图片仍使用既有有界 HistoricalImages 投影：新进入�
 
 Runtime 通过既有内部 compaction service 的独立 micro 方法取得结果，默认未支持实现 no-op；不调用摘要 provider、不发起通用 hooks。先校验只改清理目标、真实净节省及 source identity 再应用；清除 input accounting anchor／warm replay candidate，但保留消息分段与 live reasoning。micro 不重置摘要失败熔断／rapid-refill、不授予 deeper，也不伪报一次摘要完成。取消或来源冲突不继续发送。开发回归覆盖 keep-five／不足省量／重复 no-op／失败状态／reload／后续摘要／原始审计／取消与来源变更；历史原文的有界凭据过滤回读通道仍属本卡后续工作。
 
+Micro 增量审查补充：来源校验按当前 projection plan 的 retained Source 做完整内容比较，不再用 legacy covered-through 截掉 partial-from 留下的早期助手组；只有无 plan 的旧 checkpoint 保留该 cutoff。桌面观察／截图等合法临时 overlay 在校验副本中按既有规则归一化，两侧等价后才继续；原始 live 图片、观察和绑定不因 micro 被抹除。micro 的独立请求明确携带 system ReplayFrame，服务在落库前和 runtime 应用前均对同一个 framed wire 投影计算触发阈值及净省量；不能把 GLM 已不发送的历史 reasoning 算入触发量。新增非 fenced partial/disjoint、live 截图与 GLM frame 门槛回归。
+
 ### Reactive 增量审查修正（2026-10-28）
 
 Partial 的“不允许遗漏”不等于“不允许 PTL 重试”：固定选区、顺序和 covered／retained 分区不变，typed summary PTL 时缩小本次完整摘要组批次并分阶段纳入全部选区；每次实际 wire 输入必须改变，不能丢组。与其他路线共用 32 次请求／600 秒／300 秒 idle／usage 记账，单组仍不适配或普通错误则失败不安装。保尾规划只在实际 reactive 或需要移动边界时构造；普通阈值成功路径仍允许将 offset 未知但已完成工具结果的 owned streaming 尾部原样保留。不能因此允许 full 覆盖该尾部或凭空制造其内部边界。

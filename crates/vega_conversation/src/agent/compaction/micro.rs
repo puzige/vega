@@ -6,19 +6,20 @@ use vega_runtime::{
 impl ConversationCompactionHook<'_> {
     pub(super) async fn micro_compact_impl(
         &self,
-        request: ContextCompactionRequest,
+        request: vega_runtime::MicroCompactionRequest,
         cancel: CancellationToken,
     ) -> Result<Option<MicroCompactionResult>, VegaError> {
         if cancel.is_cancelled() {
             return Err(VegaError::Cancelled);
         }
+        let mut wire = request.wire_messages();
+        let request = request.context;
         if self.partial_selection.is_some() || !request.budget.automatic_compaction() {
             return Ok(None);
         }
-        let original =
-            estimate_chat_context(&request.system_prompt, &request.messages, &request.tools)
-                .map_err(|error| VegaError::Context(error.into()))?
-                .input_tokens;
+        let original = estimate_wire_context(&wire, &request.tools)
+            .map_err(|error| VegaError::Context(error.into()))?
+            .input_tokens;
         if original
             < request
                 .budget
@@ -53,7 +54,9 @@ impl ConversationCompactionHook<'_> {
         })
         .await
         .map_err(|_| context_error(ContextRuntimeError::SourceChanged))??;
-        validate_request_source(&source, checkpoint.as_ref(), &request)
+        let mut validation = request.clone();
+        vega_runtime::computer_use::redact_ephemeral_messages(&mut validation.messages);
+        validate_request_source(&source, checkpoint.as_ref(), &validation)
             .map_err(|failure| *failure.error)?;
         let active = super::super::pipeline::source_after_checkpoint(&source, checkpoint.as_ref())
             .map_err(|_| context_error(ContextRuntimeError::InvalidProjection))?;
@@ -80,9 +83,8 @@ impl ConversationCompactionHook<'_> {
         if targets.is_empty() {
             return Ok(None);
         }
-        let mut projected = request.messages.clone();
-        vega_runtime::apply_micro_compaction(&mut projected, &targets)?;
-        let after = estimate_chat_context(&request.system_prompt, &projected, &request.tools)
+        vega_runtime::apply_micro_compaction(&mut wire[1..], &targets)?;
+        let after = estimate_wire_context(&wire, &request.tools)
             .map_err(|error| VegaError::Context(error.into()))?
             .input_tokens;
         let estimated_savings = original.saturating_sub(after);

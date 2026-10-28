@@ -1426,29 +1426,31 @@ where
             && let Some(budget) = context_budget.filter(|budget| budget.automatic_compaction())
             && let Some(hook) = external_context_hook.or(request_context_hook.as_deref())
         {
-            let before =
-                crate::estimate_chat_context(&system_prompt, &messages[1..], &tool_definitions)
-                    .map_err(|error| VegaError::Context(error.into()))?;
+            let before = crate::estimate_wire_context(&messages, &tool_definitions)
+                .map_err(|error| VegaError::Context(error.into()))?;
             if before.input_tokens
                 >= budget
                     .precompute_tokens()
                     .map_err(|error| VegaError::Context(error.into()))?
                 && let Some(compacted) = hook
                     .micro_compact(
-                        crate::ContextCompactionRequest {
-                            trigger: crate::ContextCompactionTrigger::Threshold,
-                            system_prompt: system_prompt.clone(),
-                            messages: messages[1..].to_vec(),
-                            tools: tool_definitions.clone(),
-                            budget,
-                            estimate: before,
-                            target_tokens: budget
-                                .target_tokens()
-                                .map_err(|error| VegaError::Context(error.into()))?,
-                            source_version: context_source_version.unwrap_or_default(),
-                            source_fingerprint: context_source_fingerprint.clone(),
-                            require_source_fence: false,
-                            source_owner_id: Some(context_operation_id.clone()),
+                        crate::MicroCompactionRequest {
+                            context: crate::ContextCompactionRequest {
+                                trigger: crate::ContextCompactionTrigger::Threshold,
+                                system_prompt: system_prompt.clone(),
+                                messages: messages[1..].to_vec(),
+                                tools: tool_definitions.clone(),
+                                budget,
+                                estimate: before,
+                                target_tokens: budget
+                                    .target_tokens()
+                                    .map_err(|error| VegaError::Context(error.into()))?,
+                                source_version: context_source_version.unwrap_or_default(),
+                                source_fingerprint: context_source_fingerprint.clone(),
+                                require_source_fence: false,
+                                source_owner_id: Some(context_operation_id.clone()),
+                            },
+                            replay_frame: messages[0].replay_frame().cloned(),
                         },
                         cancel.clone(),
                     )
@@ -1456,9 +1458,8 @@ where
             {
                 let mut next = messages.clone();
                 crate::apply_micro_compaction(&mut next[1..], &compacted.targets)?;
-                let after =
-                    crate::estimate_chat_context(&system_prompt, &next[1..], &tool_definitions)
-                        .map_err(|error| VegaError::Context(error.into()))?;
+                let after = crate::estimate_wire_context(&next, &tool_definitions)
+                    .map_err(|error| VegaError::Context(error.into()))?;
                 let savings = before.input_tokens.saturating_sub(after.input_tokens);
                 if compacted.source_version < context_source_version.unwrap_or_default()
                     || compacted.source_fingerprint.is_empty()

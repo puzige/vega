@@ -130,7 +130,9 @@ fn validate_request_source(
             remove_owned_live_group(&request.messages, &owned_call_ids);
         let request_without_owned_group = normalize_terminal_history_groups(
             &projected_source,
-            checkpoint.map(|checkpoint| checkpoint.covered_through_seq),
+            checkpoint
+                .filter(|checkpoint| checkpoint.projection_plan.is_none())
+                .map(|checkpoint| checkpoint.covered_through_seq),
             owner_id,
             &request_without_owned_group,
         )?;
@@ -1345,7 +1347,7 @@ fn context_failure_name(failure: crate::types::ContextCompactionFailureCode) -> 
 impl ContextCompactionHook for ConversationCompactionHook<'_> {
     fn micro_compact<'a>(
         &'a self,
-        request: ContextCompactionRequest,
+        request: vega_runtime::MicroCompactionRequest,
         cancel: CancellationToken,
     ) -> futures::future::BoxFuture<
         'a,

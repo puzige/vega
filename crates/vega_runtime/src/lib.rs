@@ -46,8 +46,8 @@ pub use context::{
     estimate_chat_context, estimate_wire_context, validate_compaction_replay,
 };
 pub use context_micro::{
-    MICRO_KEEP_RECENT, MICRO_MIN_SAVINGS, MicroCompactionResult, MicroCompactionTarget,
-    apply_micro_compaction, micro_result_content,
+    MICRO_KEEP_RECENT, MICRO_MIN_SAVINGS, MicroCompactionRequest, MicroCompactionResult,
+    MicroCompactionTarget, apply_micro_compaction, micro_result_content,
 };
 pub use error::{
     ProviderProtocolReason, RuntimeFailureDetail, RuntimeFailureReason, RuntimeFailureStage,

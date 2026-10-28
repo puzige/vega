@@ -481,7 +481,7 @@ impl fmt::Debug for ContextCompactionResult {
 pub trait ContextCompactionHook: Send + Sync {
     fn micro_compact<'a>(
         &'a self,
-        _request: ContextCompactionRequest,
+        _request: crate::MicroCompactionRequest,
         _cancel: CancellationToken,
     ) -> BoxFuture<'a, Result<Option<crate::MicroCompactionResult>, VegaError>> {
         Box::pin(async { Ok(None) })
