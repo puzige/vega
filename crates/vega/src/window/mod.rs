@@ -309,6 +309,19 @@ impl VegaWindow {
                 this.cancel_composer_prediction_for_thread(thread_id, cx);
                 this.cancel_agent_for_thread(thread_id, cx);
             }
+            SidebarEvent::ThreadOpened { thread_id, started } => {
+                if !cx.global::<SettingsOpen>().0
+                    && cx
+                        .global::<OpenedThread>()
+                        .0
+                        .as_ref()
+                        .is_some_and(|thread| &thread.id == thread_id)
+                {
+                    this.conversation_loading.opened(thread_id, *started);
+                }
+                cx.notify();
+            }
+            SidebarEvent::OpeningChanged => cx.notify(),
         })
         .detach();
         let mut window = Self {

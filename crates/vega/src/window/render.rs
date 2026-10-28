@@ -224,6 +224,8 @@ impl Render for VegaWindow {
                 Some(settings) => settings.clone().into_any_element(),
                 None => div().size_full().bg(colors.bg_base).into_any_element(),
             }
+        } else if let Some((_, started)) = self.sidebar.read(cx).opening_thread(cx) {
+            self.render_conversation_loading(Some(started), cx)
         } else {
             // 设置已关闭：丢弃缓存，下次打开时重新构造并载入最新配置。
             let departing_settings = self.settings_view.take();
@@ -266,7 +268,7 @@ impl Render for VegaWindow {
                         && !draft_route
                         && !self.conversation_ready(&thread.id, cx);
                     if waiting {
-                        self.render_conversation_loading(cx)
+                        self.render_conversation_loading(None, cx)
                     } else {
                         if cached.is_some() || draft_route {
                             self.conversation_loading.clear();
@@ -388,24 +390,7 @@ impl Render for VegaWindow {
                                 self.bind_conversation_stream(&view, window, cx);
 
                                 if let Some(initial) = initial {
-                                    view.update(cx, |stream, cx| {
-                                        stream.apply_history_page(initial.history, cx);
-                                        for plan in initial.plans {
-                                            stream.apply_plan(plan, cx);
-                                        }
-                                        stream.apply_composer_history(
-                                            &thread.id,
-                                            initial.composer_history,
-                                            cx,
-                                        );
-                                        if let Some(summary) = initial.summary {
-                                            stream.apply_task_summary(summary, cx);
-                                        }
-                                        if initial.approved_not_started {
-                                            stream.apply_approved_not_started(cx);
-                                        }
-                                        stream.restore_meter(initial.usage, cx);
-                                    });
+                                    view.update(cx, |stream, cx| (initial.apply)(stream, cx));
                                 }
                                 self.conversation_loading.clear();
                                 self.rehydrate_ordinary(&view, &thread.id, cx);

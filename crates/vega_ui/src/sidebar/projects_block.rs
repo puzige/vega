@@ -41,6 +41,9 @@ pub struct ProjectsBlock {
     branch_completion: Option<ProjectBranchCompletion>,
     pub(super) organization_mode: bool,
     registration_pending: bool,
+    reload_generation: u64,
+    reload_pending: bool,
+    reload_requested: bool,
 }
 
 impl ProjectsBlock {
@@ -65,6 +68,9 @@ impl ProjectsBlock {
             branch_completion: None,
             organization_mode: false,
             registration_pending: false,
+            reload_generation: 0,
+            reload_pending: false,
+            reload_requested: false,
         };
         view.reload(cx);
         cx.spawn(async move |this, cx| {
@@ -83,6 +89,7 @@ impl ProjectsBlock {
 
     /// Re-reads the project list in the current sort order.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
+        self.invalidate_background_reload();
         self.invalidate_branches();
         let sort = self.sort;
         match with_store(cx, |store| {
@@ -100,6 +107,73 @@ impl ProjectsBlock {
             Err(message) => self.error = Some(message),
         }
         cx.notify();
+    }
+
+    fn invalidate_background_reload(&mut self) {
+        self.reload_generation = self.reload_generation.wrapping_add(1);
+        self.reload_requested = false;
+    }
+
+    pub(super) fn reload_background(&mut self, cx: &mut Context<Self>) {
+        self.reload_generation = self.reload_generation.wrapping_add(1);
+        self.reload_requested = true;
+        self.start_background_reload(cx);
+    }
+
+    fn start_background_reload(&mut self, cx: &mut Context<Self>) {
+        if self.reload_pending || !self.reload_requested {
+            return;
+        }
+        self.reload_requested = false;
+        self.reload_pending = true;
+        let generation = self.reload_generation;
+        let sort = self.sort;
+        let database = with_store(cx, |store| Ok(store.database_path().map(Path::to_path_buf)))
+            .ok()
+            .flatten();
+        let worker_database = database.clone();
+        let worker = cx.background_executor().spawn(async move {
+            let database = worker_database.ok_or_else(|| {
+                crate::localized_copy::LocalizedCopy::new(
+                    "ui.project_storage_requires_a_file_backed_database",
+                )
+            })?;
+            let store = Store::open_existing(database)
+                .map_err(crate::localized_copy::LocalizedCopy::storage)?;
+            projects::list(store.conn(), sort).map_err(|error| {
+                crate::localized_copy::LocalizedCopy::with_args(
+                    "ui.could_not_load_projects_error",
+                    vec![("error", error.to_string().into())],
+                )
+            })
+        });
+        cx.spawn(async move |this, cx| {
+            let result = worker.await;
+            let _ = this.update(cx, |this, cx| {
+                this.reload_pending = false;
+                let current_database =
+                    with_store(cx, |store| Ok(store.database_path().map(Path::to_path_buf)))
+                        .ok()
+                        .flatten();
+                if this.reload_generation == generation
+                    && this.sort == sort
+                    && current_database == database
+                    && !this.registration_pending
+                {
+                    match result {
+                        Ok(projects) => {
+                            this.projects = projects;
+                            this.invalidate_branches();
+                            this.error = None;
+                        }
+                        Err(error) => this.error = Some(error),
+                    }
+                    cx.notify();
+                }
+                this.start_background_reload(cx);
+            });
+        })
+        .detach();
     }
 
     fn invalidate_branches(&mut self) {
@@ -253,6 +327,7 @@ impl ProjectsBlock {
     /// Click = select: touch `last_opened_at`, cache the selection in the
     /// global, then let the orchestrator resync the session block.
     pub(super) fn select_project(&mut self, project_id: &str, cx: &mut Context<Self>) {
+        self.invalidate_background_reload();
         let result = with_store(cx, |store| {
             projects::touch_last_opened(store.conn(), project_id).map_err(|error| {
                 crate::localized_copy::LocalizedCopy::with_args(
@@ -276,6 +351,7 @@ impl ProjectsBlock {
     }
 
     pub(super) fn remove_project(&mut self, project_id: &str, cx: &mut Context<Self>) {
+        self.invalidate_background_reload();
         if task_mutation_busy(cx) {
             self.error = Some(crate::localized_copy::LocalizedCopy::new(
                 "ui.a_task_is_being_saved_try_removing_the",
@@ -336,6 +412,7 @@ impl ProjectsBlock {
                         vec![("error", (error).to_string().into())],
                     );
                     this.update(cx, |this, cx| {
+                        this.invalidate_background_reload();
                         this.error = Some(message);
                         cx.notify();
                     })
@@ -359,6 +436,7 @@ impl ProjectsBlock {
 
     /// Register and reveal through the durable service on the background executor.
     pub(super) fn register_path(&mut self, path: &Path, cx: &mut Context<Self>) {
+        self.invalidate_background_reload();
         if self.registration_pending
             || cx
                 .try_global::<crate::navigation::TaskMutationState>()
@@ -430,6 +508,7 @@ impl ProjectsBlock {
             });
             this.update(cx, |this, cx| {
                 this.registration_pending = false;
+                this.invalidate_background_reload();
                 if !owner_matches {
                     cx.notify();
                     return;

@@ -9,7 +9,12 @@ use organization::{Organization, OrganizationSection};
 /// Events emitted by the session block.
 pub enum ThreadsBlockEvent {
     /// A thread row was opened; the content column switched to it.
-    Opened,
+    Opened {
+        thread_id: String,
+        started: std::time::Instant,
+    },
+    OpeningChanged,
+    DraftOpened,
 }
 
 impl EventEmitter<ThreadsBlockEvent> for ThreadsBlock {}
@@ -57,6 +62,7 @@ pub struct ThreadsBlock {
     pub(crate) error: Option<crate::localized_copy::LocalizedCopy>,
     action_pending: bool,
     visit_pending: bool,
+    visit_loading: Option<(String, std::time::Instant)>,
     deferred_visit: Option<(String, u64)>,
     visit_navigation_generation: u64,
     visit_route: (Option<String>, Option<String>, bool),
@@ -112,6 +118,7 @@ impl ThreadsBlock {
             error: None,
             action_pending: false,
             visit_pending: false,
+            visit_loading: None,
             deferred_visit: None,
             visit_navigation_generation: 0,
             visit_route: Self::current_visit_route(cx),
@@ -229,7 +236,7 @@ impl ThreadsBlock {
         cx.set_global(SelectedProject(project_id));
         cx.set_global(OpenedThread(None));
         self.reload(cx);
-        cx.emit(ThreadsBlockEvent::Opened);
+        cx.emit(ThreadsBlockEvent::DraftOpened);
         cx.refresh_windows();
     }
 
@@ -247,26 +254,65 @@ impl ThreadsBlock {
         )
     }
 
-    fn observe_visit_route(&mut self, cx: &App) {
+    fn observe_visit_route(&mut self, cx: &mut Context<Self>) {
         let route = Self::current_visit_route(cx);
         if self.visit_route != route {
             self.visit_route = route;
             self.visit_navigation_generation = self.visit_navigation_generation.wrapping_add(1);
+            self.clear_visit_loading(cx);
         }
+    }
+
+    pub(super) fn opening_thread(&self, cx: &App) -> Option<(String, std::time::Instant)> {
+        (self.visit_route == Self::current_visit_route(cx))
+            .then(|| self.visit_loading.clone())
+            .flatten()
+    }
+
+    fn clear_visit_loading(&mut self, cx: &mut Context<Self>) {
+        if self.visit_loading.take().is_some() {
+            cx.emit(ThreadsBlockEvent::OpeningChanged);
+        }
+    }
+
+    fn start_visit_loading(&mut self, thread_id: &str, cx: &mut Context<Self>) {
+        let started = std::time::Instant::now();
+        self.visit_loading = Some((thread_id.to_owned(), started));
+        cx.emit(ThreadsBlockEvent::OpeningChanged);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(
+                    vega_theme::Motion::CONVERSATION_LOADING_DELAY_MS,
+                ))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this
+                    .visit_loading
+                    .as_ref()
+                    .is_some_and(|(_, epoch)| *epoch == started)
+                {
+                    cx.emit(ThreadsBlockEvent::OpeningChanged);
+                }
+            });
+        })
+        .detach();
     }
 
     fn open_thread(&mut self, thread_id: &str, cx: &mut Context<Self>) {
         if cx.has_active_drag() {
             return;
         }
+        self.observe_visit_route(cx);
         if self.visit_pending {
             if crate::navigation::allow_task_navigation(Some(thread_id), cx) {
                 self.deferred_visit =
                     Some((thread_id.to_owned(), self.visit_navigation_generation));
+                self.start_visit_loading(thread_id, cx);
             }
             return;
         }
         if task_mutation_busy(cx) {
+            self.clear_visit_loading(cx);
             self.error = Some(crate::localized_copy::LocalizedCopy::new(
                 "ui.a_task_is_being_saved_try_again_shortly",
             ));
@@ -274,9 +320,17 @@ impl ThreadsBlock {
             return;
         }
         if !crate::navigation::allow_task_navigation(Some(thread_id), cx) {
+            self.clear_visit_loading(cx);
             return;
         }
         self.close_actions();
+        if self
+            .visit_loading
+            .as_ref()
+            .is_none_or(|(target, _)| target != thread_id)
+        {
+            self.start_visit_loading(thread_id, cx);
+        }
         let path = cx
             .try_global::<VegaStore>()
             .and_then(|store| store.0.as_ref().ok())
@@ -306,13 +360,18 @@ impl ThreadsBlock {
             let result = worker.await;
             cx.update(crate::navigation::finish_task_mutation);
             let _ = this.update(cx, |this, cx| {
+                this.observe_visit_route(cx);
                 this.visit_pending = false;
                 if let Some((target, generation)) = this.deferred_visit.take() {
                     if generation == this.visit_navigation_generation {
                         this.open_thread(&target, cx);
+                    } else {
+                        this.clear_visit_loading(cx);
                     }
                     return;
                 }
+                let started = this.visit_loading.as_ref().map(|(_, started)| *started);
+                this.clear_visit_loading(cx);
                 if navigation_generation != this.visit_navigation_generation {
                     return;
                 }
@@ -333,10 +392,14 @@ impl ThreadsBlock {
                             return;
                         }
                         this.error = None;
+                        let thread_id = opened.id.clone();
                         cx.set_global(SelectedProject(opened.project_binding().map(str::to_owned)));
                         cx.set_global(OpenedThread(Some(opened)));
                         this.reload(cx);
-                        cx.emit(ThreadsBlockEvent::Opened);
+                        cx.emit(ThreadsBlockEvent::Opened {
+                            thread_id,
+                            started: started.unwrap_or_else(std::time::Instant::now),
+                        });
                     }
                     Err(message) => {
                         this.error = Some(message);

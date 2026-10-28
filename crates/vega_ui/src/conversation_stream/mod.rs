@@ -288,6 +288,7 @@ mod code_viewport;
 mod content;
 mod context_control;
 mod copy_receipt;
+mod history_preparation;
 pub use context_control::ContextUsageProjection;
 pub(crate) use copy_receipt::tool_text_copy_button;
 mod context_usage;
