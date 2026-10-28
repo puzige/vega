@@ -65,6 +65,14 @@ pub const LEGACY_BASH_INVALID_INPUT_OUTPUT: &str = "Tool error: invalid bash inp
 /// Stable content-free result when cancellation is observed after durable
 /// approval/running but before any tool worker starts.
 pub const CANCELLED_BEFORE_EXECUTION_OUTPUT: &str = "Tool cancelled before execution.";
+pub const PERMISSION_TIMEOUT_OUTPUT: &str = "Tool error: permission request timed out; tool was not executed. Retry the operation to request approval again.";
+pub const PERMISSION_CANCELLED_OUTPUT: &str =
+    "Tool error: run cancelled before authorization; tool was not executed.";
+pub const PERMISSION_UNAVAILABLE_OUTPUT: &str = "Tool error: permission request unavailable; tool was not executed. Reopen the approval flow and retry.";
+pub const PERMISSION_DENIED_OUTPUT: &str =
+    "Tool error: permission request explicitly denied; tool was not executed.";
+pub const DANGER_DENIED_OUTPUT: &str =
+    "Tool error: dangerous command confirmation denied; command was not executed.";
 pub const INVALID_READ_INPUT_OUTPUT: &str = r#"Tool error: read requires path identifying a regular text file. Expected {"path":"src/lib.rs","offset":null,"limit":null}"#;
 
 const OUTPUT_HALF_LINES: usize = 2_000;
@@ -626,7 +634,7 @@ impl RuntimePermissionHook for RejectPermissionHook {
         _prompt: RuntimePermissionPrompt,
         _cancel: CancellationToken,
     ) -> BoxFuture<'static, Result<RuntimeUserDecision, VegaError>> {
-        async { Ok(RuntimeUserDecision::Timeout) }.boxed()
+        async { Ok(RuntimeUserDecision::Unavailable) }.boxed()
     }
 }
 

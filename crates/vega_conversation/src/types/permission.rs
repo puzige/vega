@@ -120,8 +120,9 @@ pub enum PermissionDecision {
     Deny {
         note: Option<String>,
     },
-    /// Permission wait expired or disappeared.
     Timeout,
+    Cancelled,
+    Unavailable,
     AcpOption {
         option_id: String,
     },
@@ -148,6 +149,8 @@ pub enum ApprovalSource {
     User,
     /// Permission timeout.
     Timeout,
+    Cancelled,
+    Unavailable,
     /// Invalid write/edit input.
     Validation,
     /// Read-only built-in tool.
@@ -170,6 +173,8 @@ impl ApprovalSource {
             Self::FullAccess => "full_access",
             Self::User => "user",
             Self::Timeout => "timeout",
+            Self::Cancelled => "cancelled",
+            Self::Unavailable => "unavailable",
             Self::Validation => "validation",
             Self::ReadonlyTool => "readonly_tool",
             Self::Recovery => "recovery",
@@ -189,6 +194,8 @@ impl ApprovalSource {
             "full_access" => Some(Self::FullAccess),
             "user" => Some(Self::User),
             "timeout" => Some(Self::Timeout),
+            "cancelled" => Some(Self::Cancelled),
+            "unavailable" => Some(Self::Unavailable),
             "validation" => Some(Self::Validation),
             "readonly_tool" => Some(Self::ReadonlyTool),
             "recovery" => Some(Self::Recovery),
@@ -413,7 +420,7 @@ impl ApprovalAudit {
                 self.decision == Approval::Once && self.note.is_none() && self.danger.is_none()
             }
             ApprovalSource::User => self.danger.is_none(),
-            ApprovalSource::Timeout => {
+            ApprovalSource::Timeout | ApprovalSource::Cancelled | ApprovalSource::Unavailable => {
                 self.decision == Approval::Deny
                     && self.note.is_none()
                     && self.danger.as_ref().is_none_or(|danger| {
@@ -502,6 +509,8 @@ pub fn approval_audit_from_runtime(audit: &vega_runtime::RuntimeApprovalAudit) -
             vega_runtime::RuntimeApprovalSource::FullAccess => ApprovalSource::FullAccess,
             vega_runtime::RuntimeApprovalSource::User => ApprovalSource::User,
             vega_runtime::RuntimeApprovalSource::Timeout => ApprovalSource::Timeout,
+            vega_runtime::RuntimeApprovalSource::Cancelled => ApprovalSource::Cancelled,
+            vega_runtime::RuntimeApprovalSource::Unavailable => ApprovalSource::Unavailable,
             vega_runtime::RuntimeApprovalSource::Validation => ApprovalSource::Validation,
             vega_runtime::RuntimeApprovalSource::ReadonlyTool => ApprovalSource::ReadonlyTool,
             vega_runtime::RuntimeApprovalSource::Recovery => ApprovalSource::Recovery,
@@ -532,6 +541,8 @@ pub fn approval_audit_to_runtime(audit: &ApprovalAudit) -> vega_runtime::Runtime
             ApprovalSource::FullAccess => vega_runtime::RuntimeApprovalSource::FullAccess,
             ApprovalSource::User => vega_runtime::RuntimeApprovalSource::User,
             ApprovalSource::Timeout => vega_runtime::RuntimeApprovalSource::Timeout,
+            ApprovalSource::Cancelled => vega_runtime::RuntimeApprovalSource::Cancelled,
+            ApprovalSource::Unavailable => vega_runtime::RuntimeApprovalSource::Unavailable,
             ApprovalSource::Validation => vega_runtime::RuntimeApprovalSource::Validation,
             ApprovalSource::ReadonlyTool => vega_runtime::RuntimeApprovalSource::ReadonlyTool,
             ApprovalSource::Recovery => vega_runtime::RuntimeApprovalSource::Recovery,
@@ -573,7 +584,9 @@ pub fn permission_decision_to_runtime(
         PermissionDecision::Always => vega_runtime::RuntimeUserDecision::Always,
         PermissionDecision::Deny { note } => vega_runtime::RuntimeUserDecision::Deny { note },
         PermissionDecision::Timeout => vega_runtime::RuntimeUserDecision::Timeout,
-        PermissionDecision::AcpOption { .. } => vega_runtime::RuntimeUserDecision::Timeout,
+        PermissionDecision::Cancelled => vega_runtime::RuntimeUserDecision::Cancelled,
+        PermissionDecision::Unavailable => vega_runtime::RuntimeUserDecision::Unavailable,
+        PermissionDecision::AcpOption { .. } => vega_runtime::RuntimeUserDecision::Unavailable,
     }
 }
 

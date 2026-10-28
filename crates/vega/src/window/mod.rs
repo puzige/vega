@@ -176,7 +176,7 @@ pub(crate) struct VegaWindow {
     /// Settings entity and still blocks a new run until the exact ack lands.
     pub(crate) reasoning_save_pending: Option<(u64, u64)>,
     pub(crate) composer_reasoning_operation: u64,
-    pub(crate) pending_composer_thinking: Option<(String, String)>,
+    pub(crate) pending_composer_thinking: Option<(String, ComposerDefaults)>,
     /// Provider Settings saves request a model catalog reload. If a reasoning
     /// save owns the catalog authority, defer that reload until its ack so the
     /// two workers cannot regress each other's projections.

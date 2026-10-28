@@ -152,6 +152,15 @@ pub(super) fn apply_reasoning_profile_to_stream_with_app(
     } else {
         stream.update(cx, ConversationStream::clear_reasoning_profile);
     }
+    let selected_model = stream.read(cx).selector_model().to_owned();
+    let profile = if reasoning_projection_unavailable(window) {
+        None
+    } else {
+        window.reasoning_profile_for_model(&selected_model)
+    };
+    stream.update(cx, |stream, cx| {
+        stream.apply_selector_reasoning_profile(profile, cx)
+    });
 }
 
 impl VegaWindow {
@@ -325,7 +334,9 @@ impl VegaWindow {
         request: &ComposerDefaultsRequested,
         cx: &mut Context<Self>,
     ) {
-        if !self.owns_stream_request(&stream, &request.thread_id, cx) {
+        if !self.owns_stream_request(&stream, &request.thread_id, cx)
+            || request.defaults.model != stream.read(cx).selector_model()
+        {
             return;
         }
         // Every intent that reaches this handler supersedes any coalesced one:
@@ -344,24 +355,25 @@ impl VegaWindow {
         // being dropped or replayed as a queue of stale positions.
         if self.reasoning_save_pending.is_some() {
             self.pending_composer_thinking =
-                Some((request.thread_id.clone(), request.defaults.thinking.clone()));
+                Some((request.thread_id.clone(), request.defaults.clone()));
             return;
         }
         let choice = request.defaults.thinking.clone();
-        let model = stream.read(cx).displayed_model().to_owned();
+        let model = request.defaults.model.clone();
+        let displayed_model = stream.read(cx).displayed_model().to_owned();
         let Some(profile) = self.reasoning_profile_for_model(&model) else {
             // A missing profile is provider-default with no controls. The
             // stream still re-projects so a stale slider cannot survive.
-            self.apply_reasoning_profile_to_stream(&stream, &model, cx);
+            self.apply_reasoning_profile_to_stream(&stream, &displayed_model, cx);
             return;
         };
         let Some((base_config, expected_snapshot)) = self.configured_reasoning_authority.clone()
         else {
-            self.apply_reasoning_profile_to_stream(&stream, &model, cx);
+            self.apply_reasoning_profile_to_stream(&stream, &displayed_model, cx);
             return;
         };
         let Some(path) = self.reasoning_config_path() else {
-            self.apply_reasoning_profile_to_stream(&stream, &model, cx);
+            self.apply_reasoning_profile_to_stream(&stream, &displayed_model, cx);
             return;
         };
 
@@ -369,13 +381,13 @@ impl VegaWindow {
             ReasoningChoice::ProviderDefault
         } else if choice == "enabled" {
             if !profile.supports_enabled {
-                self.apply_reasoning_profile_to_stream(&stream, &model, cx);
+                self.apply_reasoning_profile_to_stream(&stream, &displayed_model, cx);
                 return;
             }
             ReasoningChoice::Enabled
         } else if choice == OFF_CHOICE_NAME {
             if !(profile.supports_disabled && profile.disabled_wire.is_some()) {
-                self.apply_reasoning_profile_to_stream(&stream, &model, cx);
+                self.apply_reasoning_profile_to_stream(&stream, &displayed_model, cx);
                 return;
             }
             ReasoningChoice::Disabled
@@ -385,7 +397,7 @@ impl VegaWindow {
             // surface as a generic I/O error, when it is really an invalid
             // intent.
             if !profile.efforts.iter().any(|effort| effort == &choice) {
-                self.apply_reasoning_profile_to_stream(&stream, &model, cx);
+                self.apply_reasoning_profile_to_stream(&stream, &displayed_model, cx);
                 return;
             }
             ReasoningChoice::Effort(choice)
@@ -393,7 +405,7 @@ impl VegaWindow {
         // An unchanged preference is already the durable authority: re-project
         // instead of writing the same bytes back.
         if profile.preference == next {
-            self.apply_reasoning_profile_to_stream(&stream, &model, cx);
+            self.apply_reasoning_profile_to_stream(&stream, &displayed_model, cx);
             return;
         }
         let mut candidate = profile.clone();
@@ -401,7 +413,7 @@ impl VegaWindow {
         let patch = match reasoning_profile_patch(&base_config, &profile, &candidate) {
             Ok(patch) => patch,
             Err(_) => {
-                self.apply_reasoning_profile_to_stream(&stream, &model, cx);
+                self.apply_reasoning_profile_to_stream(&stream, &displayed_model, cx);
                 return;
             }
         };
@@ -652,7 +664,7 @@ impl VegaWindow {
     /// matters, so they coalesce into a single slot instead of a queue that
     /// would replay every intermediate tier after the ack.
     fn start_pending_composer_thinking(&mut self, cx: &mut Context<Self>) {
-        let Some((thread_id, tier)) = self.pending_composer_thinking.take() else {
+        let Some((thread_id, defaults)) = self.pending_composer_thinking.take() else {
             return;
         };
         let Some(stream) = self
@@ -666,11 +678,6 @@ impl VegaWindow {
         // The replayed intent still goes through the same validating entry
         // point, so a coalesced tier that the profile no longer declares is
         // refused exactly like a fresh one.
-        let defaults = ComposerDefaults {
-            model: stream.read(cx).displayed_model().to_owned(),
-            thinking: tier,
-            ..ComposerDefaults::default()
-        };
         let request = ComposerDefaultsRequested {
             thread_id,
             defaults,
@@ -684,12 +691,6 @@ impl VegaWindow {
         model: &str,
         cx: &mut Context<Self>,
     ) {
-        if reasoning_projection_unavailable(self) {
-            stream.update(cx, ConversationStream::mark_reasoning_unavailable);
-        } else if let Some(profile) = self.reasoning_profile_for_model(model) {
-            stream.update(cx, |stream, cx| stream.apply_reasoning_profile(profile, cx));
-        } else {
-            stream.update(cx, ConversationStream::clear_reasoning_profile);
-        }
+        apply_reasoning_profile_to_stream_with_app(self, stream, model, cx);
     }
 }

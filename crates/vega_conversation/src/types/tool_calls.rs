@@ -1061,7 +1061,8 @@ fn skill_card_result_projection(
                 "Tool error: invalid Skill input" => name.is_none(),
                 "Tool error: mixed Skill load batch rejected other tools"
                 | vega_runtime::USER_QUESTION_BATCH_REJECTED
-                | "Tool error: permission denied" => true,
+                | "Tool error: permission denied"
+                | vega_runtime::PERMISSION_CANCELLED_OUTPUT => true,
                 other => other == vega_store::recovery::RECOVERY_REJECTED_OUTPUT,
             };
             if !allowed {
@@ -1301,6 +1302,10 @@ pub(crate) fn mutation_failure_output_allowed(
             matches!(
                 result.output.as_str(),
                 "Tool error: permission denied"
+                    | vega_runtime::PERMISSION_DENIED_OUTPUT
+                    | vega_runtime::PERMISSION_TIMEOUT_OUTPUT
+                    | vega_runtime::PERMISSION_CANCELLED_OUTPUT
+                    | vega_runtime::PERMISSION_UNAVAILABLE_OUTPUT
                     | "Tool error: denied by run mode"
                     | vega_runtime::USER_QUESTION_BATCH_REJECTED
             ) || result.output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT

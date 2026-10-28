@@ -88,7 +88,7 @@ impl PermissionLease {
 impl Drop for PermissionLease {
     fn drop(&mut self) {
         if self.armed {
-            self.responder.respond(PermissionDecision::Timeout);
+            self.responder.respond(PermissionDecision::Unavailable);
         }
     }
 }
@@ -107,7 +107,7 @@ impl Drop for PendingPermission {
         if self.armed
             && let Some(responder) = &self.responder
         {
-            responder.respond(PermissionDecision::Timeout);
+            responder.respond(PermissionDecision::Unavailable);
         }
     }
 }
@@ -140,7 +140,7 @@ impl Drop for PermissionResponseState {
         if let Ok(sender) = self.sender.get_mut()
             && let Some(sender) = sender.take()
         {
-            let _ = sender.send(PermissionDecision::Timeout);
+            let _ = sender.send(PermissionDecision::Unavailable);
         }
     }
 }
@@ -196,7 +196,7 @@ pub(crate) struct PermissionWaitGuard {
 
 impl Drop for PermissionWaitGuard {
     fn drop(&mut self) {
-        self.responder.respond(PermissionDecision::Timeout);
+        self.responder.respond(PermissionDecision::Unavailable);
         if let Ok(mut state) = self.queue_state.lock()
             && state
                 .active
@@ -214,11 +214,6 @@ impl Drop for PermissionWaitGuard {
     }
 }
 
-/// Lost-wake-safe listener owned by the exact lifetime of one UI task.
-///
-/// Dropping the listener clears only its own generation and rejects
-/// an unresolved prompt, so a window/thread disappearance cannot leave the
-/// runtime waiting on a stale card.
 pub struct PermissionQueueListener {
     pub(crate) state: Arc<Mutex<PermissionQueueState>>,
     pub(crate) generation: u64,
@@ -260,7 +255,7 @@ impl Drop for PermissionQueueListener {
         });
         if let Some((responder, queued)) = closed {
             if let Some(responder) = responder {
-                responder.respond(PermissionDecision::Timeout);
+                responder.respond(PermissionDecision::Unavailable);
             }
             drop(queued);
         }
@@ -361,7 +356,7 @@ impl PermissionQueue {
             Err(_) => (0, None, Vec::new()),
         };
         if let Some(replaced_active) = replaced_active {
-            replaced_active.respond(PermissionDecision::Timeout);
+            replaced_active.respond(PermissionDecision::Unavailable);
         }
         drop(replaced_queued);
         let listener = PermissionQueueListener {
@@ -370,7 +365,7 @@ impl PermissionQueue {
             receiver,
         };
         if generation == 0 {
-            self.timeout_active();
+            self.unavailable_active();
         }
         listener
     }
@@ -392,8 +387,23 @@ impl PermissionQueue {
         None
     }
 
-    /// Fails the current prompt closed, used when the owning view disappears.
+    pub(crate) fn finish_active(&self, cancel: &CancellationToken) -> bool {
+        self.resolve_active(if cancel.is_cancelled() {
+            PermissionDecision::Cancelled
+        } else {
+            PermissionDecision::Unavailable
+        })
+    }
+
+    pub fn unavailable_active(&self) -> bool {
+        self.resolve_active(PermissionDecision::Unavailable)
+    }
+
     pub fn timeout_active(&self) -> bool {
+        self.resolve_active(PermissionDecision::Timeout)
+    }
+
+    fn resolve_active(&self, decision: PermissionDecision) -> bool {
         let Ok(mut state) = self.state.lock() else {
             return false;
         };
@@ -401,7 +411,7 @@ impl PermissionQueue {
         let ordinary = state
             .active
             .as_ref()
-            .is_some_and(|responder| responder.respond(PermissionDecision::Timeout));
+            .is_some_and(|responder| responder.respond(decision));
         scope || ordinary
     }
 }
@@ -450,7 +460,7 @@ impl PermissionQueue {
             || request.danger_reason.is_some()
             || !std::path::Path::new(&request.display_target).is_absolute()
         {
-            return async { Ok(PermissionDecision::Timeout) }.boxed();
+            return async { Ok(PermissionDecision::Unavailable) }.boxed();
         }
         self.enqueue(request, cancel, PermissionOrigin::ArtifactValidation)
     }
@@ -462,7 +472,7 @@ impl PermissionQueue {
         origin: PermissionOrigin,
     ) -> BoxFuture<'static, Result<PermissionDecision, VegaError>> {
         if !valid_permission_request(&request) {
-            return async { Ok(PermissionDecision::Timeout) }.boxed();
+            return async { Ok(PermissionDecision::Unavailable) }.boxed();
         }
         let (sender, receiver) = oneshot::channel();
         let responder = PermissionResponder {
@@ -494,16 +504,16 @@ impl PermissionQueue {
             Err(_) => None,
         };
         let Some((old_active, old_queued, notifier, version)) = old else {
-            responder.respond(PermissionDecision::Timeout);
-            return async { Ok(PermissionDecision::Timeout) }.boxed();
+            responder.respond(PermissionDecision::Unavailable);
+            return async { Ok(PermissionDecision::Unavailable) }.boxed();
         };
         if let Some(old_active) = old_active {
-            old_active.respond(PermissionDecision::Timeout);
+            old_active.respond(PermissionDecision::Unavailable);
         }
         drop(old_queued);
         let notified = notifier.is_some_and(|notifier| notifier.send(version).is_ok());
         if !notified {
-            responder.respond(PermissionDecision::Timeout);
+            responder.respond(PermissionDecision::Unavailable);
         }
 
         let guard = PermissionWaitGuard {
@@ -511,13 +521,14 @@ impl PermissionQueue {
             queue_state: self.state.clone(),
         };
         async move {
+            let mut receiver = receiver;
             let decision = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => {
-                    guard.responder.respond(PermissionDecision::Timeout);
-                    PermissionDecision::Timeout
+                    guard.responder.respond(PermissionDecision::Cancelled);
+                    receiver.await.unwrap_or(PermissionDecision::Unavailable)
                 }
-                result = receiver => result.unwrap_or(PermissionDecision::Timeout),
+                result = &mut receiver => result.unwrap_or(PermissionDecision::Unavailable),
             };
             Ok(
                 if origin == PermissionOrigin::ArtifactValidation
@@ -526,9 +537,11 @@ impl PermissionQueue {
                         PermissionDecision::Once
                             | PermissionDecision::Deny { .. }
                             | PermissionDecision::Timeout
+                            | PermissionDecision::Cancelled
+                            | PermissionDecision::Unavailable
                     )
                 {
-                    PermissionDecision::Timeout
+                    PermissionDecision::Unavailable
                 } else {
                     decision
                 },
@@ -610,7 +623,7 @@ impl PermissionHook for RejectPermissionHook {
         _request: PermissionRequest,
         _cancel: CancellationToken,
     ) -> BoxFuture<'static, Result<PermissionDecision, VegaError>> {
-        async { Ok(PermissionDecision::Timeout) }.boxed()
+        async { Ok(PermissionDecision::Unavailable) }.boxed()
     }
 }
 
@@ -656,8 +669,10 @@ impl RuntimePermissionHook for RuntimePermissionAdapter<'_> {
                     PermissionDecision::Once => RuntimeUserDecision::Once,
                     PermissionDecision::Deny { note } => RuntimeUserDecision::Deny { note },
                     PermissionDecision::Always => RuntimeUserDecision::Deny { note: None },
-                    PermissionDecision::Timeout => RuntimeUserDecision::Timeout,
-                    PermissionDecision::AcpOption { .. } => RuntimeUserDecision::Timeout,
+                    PermissionDecision::Timeout
+                    | PermissionDecision::Cancelled
+                    | PermissionDecision::Unavailable
+                    | PermissionDecision::AcpOption { .. } => RuntimeUserDecision::Timeout,
                 })
             })
             .boxed()
