@@ -3,6 +3,7 @@ mod chat_compat;
 mod chat_reasoning;
 pub use chat_reasoning::{ChatRawState, ChatReasoningSource};
 mod context;
+mod context_micro;
 mod error;
 pub mod model_compat;
 mod openai;
@@ -43,6 +44,10 @@ pub use context::{
     ContextCompactionTrigger, ContextCompactionUsage, ContextCompactionUsageState, ContextEstimate,
     ContextEstimateError, ContextRuntimeError, SharedContextCompactionHook, classify_context,
     estimate_chat_context, estimate_wire_context, validate_compaction_replay,
+};
+pub use context_micro::{
+    MICRO_KEEP_RECENT, MICRO_MIN_SAVINGS, MicroCompactionResult, MicroCompactionTarget,
+    apply_micro_compaction, micro_result_content,
 };
 pub use error::{
     ProviderProtocolReason, RuntimeFailureDetail, RuntimeFailureReason, RuntimeFailureStage,

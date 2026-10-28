@@ -1422,6 +1422,63 @@ where
                 run.trim_messages(&mut messages);
             }
         }
+        if !force_provider_compaction
+            && let Some(budget) = context_budget.filter(|budget| budget.automatic_compaction())
+            && let Some(hook) = external_context_hook.or(request_context_hook.as_deref())
+        {
+            let before =
+                crate::estimate_chat_context(&system_prompt, &messages[1..], &tool_definitions)
+                    .map_err(|error| VegaError::Context(error.into()))?;
+            if before.input_tokens
+                >= budget
+                    .precompute_tokens()
+                    .map_err(|error| VegaError::Context(error.into()))?
+                && let Some(compacted) = hook
+                    .micro_compact(
+                        crate::ContextCompactionRequest {
+                            trigger: crate::ContextCompactionTrigger::Threshold,
+                            system_prompt: system_prompt.clone(),
+                            messages: messages[1..].to_vec(),
+                            tools: tool_definitions.clone(),
+                            budget,
+                            estimate: before,
+                            target_tokens: budget
+                                .target_tokens()
+                                .map_err(|error| VegaError::Context(error.into()))?,
+                            source_version: context_source_version.unwrap_or_default(),
+                            source_fingerprint: context_source_fingerprint.clone(),
+                            require_source_fence: false,
+                            source_owner_id: Some(context_operation_id.clone()),
+                        },
+                        cancel.clone(),
+                    )
+                    .await?
+            {
+                let mut next = messages.clone();
+                crate::apply_micro_compaction(&mut next[1..], &compacted.targets)?;
+                let after =
+                    crate::estimate_chat_context(&system_prompt, &next[1..], &tool_definitions)
+                        .map_err(|error| VegaError::Context(error.into()))?;
+                let savings = before.input_tokens.saturating_sub(after.input_tokens);
+                if compacted.source_version < context_source_version.unwrap_or_default()
+                    || compacted.source_fingerprint.is_empty()
+                    || savings < crate::MICRO_MIN_SAVINGS
+                    || savings != compacted.estimated_savings
+                {
+                    return Err(VegaError::Context(ContextRuntimeError::InvalidProjection));
+                }
+                if cancel.is_cancelled() {
+                    return Err(VegaError::Cancelled);
+                }
+                messages = next;
+                messages[0].mark_replay_unsealable();
+                replay_candidate = None;
+                drop(input_anchor.take());
+                live_projection_revision = live_projection_revision.saturating_add(1);
+                context_source_version = Some(compacted.source_version);
+                context_source_fingerprint = Some(compacted.source_fingerprint);
+            }
+        }
         'compaction: {
             let Some(budget) = context_budget else {
                 break 'compaction;

@@ -517,9 +517,10 @@ pub struct ContextToolCallRow {
     /// UTF-8 byte offset within the owning assistant text, when known.
     pub text_offset_bytes: Option<i64>,
     pub response_id: Option<String>,
+    pub micro_compacted: bool,
     /// Digest of the optional full-output path. The raw path is not exposed,
     /// but mutations still participate in the source fence.
-    output_full_path_fingerprint: String,
+    pub(super) output_full_path_fingerprint: String,
 }
 
 impl fmt::Debug for ContextToolCallRow {
@@ -1541,12 +1542,13 @@ fn load_tool_calls(
     let mut statement = conn.prepare(
         "SELECT id, thread_id, message_id, seq, tool, input_json, output_text, status, \
                 approval, exit_code, duration_ms, created_at, finished_at, text_offset_bytes, \
-                output_full_path, (SELECT response_id FROM tool_call_rounds r WHERE r.message_id = tool_calls.message_id AND r.call_id = tool_calls.id) \
+                output_full_path, (SELECT response_id FROM tool_call_rounds r WHERE r.message_id = tool_calls.message_id AND r.call_id = tool_calls.id), \
+                (SELECT source_digest FROM context_micro_compactions c WHERE c.call_id = tool_calls.id AND c.thread_id = tool_calls.thread_id) \
          FROM tool_calls WHERE thread_id = ?1 ORDER BY seq, id",
     )?;
     statement
         .query_map([thread_id], |row| {
-            Ok(ContextToolCallRow {
+            let mut call = ContextToolCallRow {
                 id: row.get(0)?,
                 thread_id: row.get(1)?,
                 message_id: row.get(2)?,
@@ -1562,8 +1564,14 @@ fn load_tool_calls(
                 finished_at: row.get(12)?,
                 text_offset_bytes: row.get(13)?,
                 response_id: row.get(15)?,
+                micro_compacted: false,
                 output_full_path_fingerprint: path_fingerprint(row.get(14)?),
-            })
+            };
+            let digest: Option<String> = row.get(16)?;
+            call.micro_compacted = digest.as_deref()
+                == Some(crate::context_micro::call_digest(&call).as_str())
+                && crate::context_micro::eligible(&call);
+            Ok(call)
         })?
         .collect()
 }
@@ -1668,6 +1676,9 @@ fn fingerprint_source(
         feed_optional_i64(&mut hash, b"finished", call.finished_at);
         feed_optional_i64(&mut hash, b"text-offset-bytes", call.text_offset_bytes);
         feed_optional_str(&mut hash, b"response-id", call.response_id.as_deref());
+        if call.micro_compacted {
+            feed(&mut hash, b"micro-compacted", b"1");
+        }
         feed(
             &mut hash,
             b"output-full-path",

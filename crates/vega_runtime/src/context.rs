@@ -479,6 +479,14 @@ impl fmt::Debug for ContextCompactionResult {
 
 /// Conversation's bounded, cancellable compaction boundary.
 pub trait ContextCompactionHook: Send + Sync {
+    fn micro_compact<'a>(
+        &'a self,
+        _request: ContextCompactionRequest,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<Option<crate::MicroCompactionResult>, VegaError>> {
+        Box::pin(async { Ok(None) })
+    }
+
     /// Builds a durable projection without mutating runtime messages itself.
     fn compact<'a>(
         &'a self,

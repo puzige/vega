@@ -1,6 +1,7 @@
 use super::*;
 use vega_store::{messages, threads, tool_calls};
 
+mod micro_tests;
 mod reactive_tests;
 
 struct SummaryProvider;

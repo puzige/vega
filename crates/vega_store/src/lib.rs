@@ -5,6 +5,7 @@ pub mod composer_prediction_events;
 pub mod computer_use_delivery;
 pub mod config;
 pub mod context_compaction;
+pub mod context_micro;
 pub mod context_projection;
 pub mod credential_continuation;
 pub mod credential_privacy;
@@ -95,6 +96,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0045_plan_instruction_authority.sql"),
     include_str!("../migrations/0046_provider_protocol_reason.sql"),
     include_str!("../migrations/0047_context_projection.sql"),
+    include_str!("../migrations/0048_context_micro_compactions.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.

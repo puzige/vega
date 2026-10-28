@@ -171,6 +171,14 @@ Last-resort 的三次限制计最旧完整来源组截断操作，不计 provide
 
 Reactive 恢复图片仍使用既有有界 HistoricalImages 投影：新进入摘要／遗漏区的完整来源消息，以及进入摘要区的旧图片引用，都必须在安装／reload 中恢复历史图片证据；摘要请求只接收显式无视觉内容的 provenance。已有保留图片引用维持原位置并扩展到需要的截止点，不再另加重叠引用；没有保留引用时放在新摘要之后。截止点不得越过仍按 Source 保留的图片消息，原始附件和审计不变。被 head 截断跨过的任务引用已保留时，不重复注入同一任务引用。
 
+### 客户端 micro 生命周期（2026-10-28）
+
+原生 context hint 在自动压缩开启且主请求达到 precompute 提前阈值时检查，不依赖不存在的 provider hint／cache expiry。仅清理当前活动投影中已有完成结果的 `read`／`Read`、`grep`、`glob`、`bash` 调用；这是当前 Vega 工具集合的明确映射，不把任意 MCP、子 agent 回执、编辑／写入、桌面截图或权限结果纳入。候选按真实调用顺序，保留最新五个 eligible 结果，已标记清理项不重复产生节省；失败结果保留其失败状态而非改称成功。所有候选替换后按完整 system＋模型消息＋工具 schema 的 wire 估算，净节省不足 20000 tokens 则 no-op；只作估算，不增加／冲抵 usage。
+
+清理只替换结果正文／媒体为不具权限的历史清理引用，保留调用身份、配对、状态以及其他消息、live reasoning／bindings。原始 `tool_calls.output_text`、消息和附件不改；新增 `context_micro_compactions` 保存 thread/call ID、原始完整调用内容 digest 与时间，不复制正文。来源加载验证 digest 后标记结果；修改／删除原记录使标记失效或级联删除，重启和摘要来源重建复用相同占位规则。当前线程权限／模型／完整来源／前驱 checkpoint／取消在写事务内复核，标记参与来源指纹，旧异步摘要不能越过 micro 的更新安装；没有经过校验的持久化成功不替换 live 内容。一般摘要继续从活动的已清理投影读，不重新搬回已清理结果正文。
+
+Runtime 通过既有内部 compaction service 的独立 micro 方法取得结果，默认未支持实现 no-op；不调用摘要 provider、不发起通用 hooks。先校验只改清理目标、真实净节省及 source identity 再应用；清除 input accounting anchor／warm replay candidate，但保留消息分段与 live reasoning。micro 不重置摘要失败熔断／rapid-refill、不授予 deeper，也不伪报一次摘要完成。取消或来源冲突不继续发送。开发回归覆盖 keep-five／不足省量／重复 no-op／失败状态／reload／后续摘要／原始审计／取消与来源变更；历史原文的有界凭据过滤回读通道仍属本卡后续工作。
+
 ### Reactive 增量审查修正（2026-10-28）
 
 Partial 的“不允许遗漏”不等于“不允许 PTL 重试”：固定选区、顺序和 covered／retained 分区不变，typed summary PTL 时缩小本次完整摘要组批次并分阶段纳入全部选区；每次实际 wire 输入必须改变，不能丢组。与其他路线共用 32 次请求／600 秒／300 秒 idle／usage 记账，单组仍不适配或普通错误则失败不安装。保尾规划只在实际 reactive 或需要移动边界时构造；普通阈值成功路径仍允许将 offset 未知但已完成工具结果的 owned streaming 尾部原样保留。不能因此允许 full 覆盖该尾部或凭空制造其内部边界。

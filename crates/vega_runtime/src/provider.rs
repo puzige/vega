@@ -1196,6 +1196,14 @@ impl ChatMessage {
         }
     }
 
+    pub(crate) fn replace_micro_result(&mut self, content: String) {
+        self.content = content;
+        self.images.clear();
+        self.tool_context = None;
+        self.runtime_guidance = None;
+        self.model_projection = false;
+    }
+
     pub fn projected_tool_result(call_id: impl Into<String>, tool: &str, content: &str) -> Self {
         const SHELL_MODEL_OUTPUT_BYTES: usize = 65_536;
         const OMISSION: &str = "\n[Shell output shortened: middle omitted for model context. Narrow/filter or page the command to retrieve more detail.]\n";

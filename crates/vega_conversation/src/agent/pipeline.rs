@@ -361,9 +361,16 @@ pub(crate) fn history_from_context_source(
                 .map_err(runtime_store_error)?;
             history.push(assistant);
             for call in group {
-                let output = call.output_text.clone().ok_or_else(|| {
-                    ConversationError::CorruptRow("terminal tool result has no output".into())
-                })?;
+                let output = if call.micro_compacted {
+                    vega_runtime::micro_result_content(&vega_runtime::MicroCompactionTarget {
+                        call_id: call.id.clone(),
+                        status: call.status.clone(),
+                    })
+                } else {
+                    call.output_text.clone().ok_or_else(|| {
+                        ConversationError::CorruptRow("terminal tool result has no output".into())
+                    })?
+                };
                 history.push(vega_runtime::ChatMessage::projected_tool_result(
                     &call.id, &call.tool, &output,
                 ));

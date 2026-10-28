@@ -4,6 +4,7 @@
 //! source/checkpoint fence, complete-group selection, summary provider call,
 //! and the labelled historical projection returned to `vega_runtime`.
 
+mod micro;
 mod projection;
 mod reactive;
 mod summary_variant;
@@ -54,6 +55,95 @@ pub(crate) fn durable_messages_equal(expected: &[&ChatMessage], actual: &[&ChatM
                 && expected.tool_call_id == actual.tool_call_id
                 && expected.tool_calls == actual.tool_calls
         })
+}
+
+fn validate_request_source(
+    source: &vega_store::context_compaction::ContextSource,
+    checkpoint: Option<&vega_store::context_compaction::ContextCheckpoint>,
+    request: &ContextCompactionRequest,
+) -> Result<(), ContextCompactionFailure> {
+    let exact_source = source.source_version == request.source_version
+        && request.source_fingerprint.as_deref() == Some(source.fingerprint.as_str());
+    if (request.require_source_fence && !exact_source)
+        || (!request.require_source_fence && source.source_version < request.source_version)
+    {
+        return Err(failure(
+            context_error(ContextRuntimeError::SourceChanged),
+            None,
+        ));
+    }
+
+    if !request.require_source_fence
+        && let Some(owner_id) = request.source_owner_id.as_deref()
+    {
+        let persisted_history =
+            crate::agent::pipeline::primary_history_from_context_source_with_checkpoint(
+                source, checkpoint, owner_id,
+            )
+            .map_err(|_| failure(context_error(ContextRuntimeError::InvalidProjection), None))?;
+        let owned_call_ids = source
+            .tool_calls
+            .iter()
+            .filter(|call| call.message_id == owner_id)
+            .map(|call| call.id.as_str())
+            .collect::<HashSet<_>>();
+        let projected_source = super::pipeline::source_after_checkpoint(source, checkpoint)
+            .map_err(|_| failure(context_error(ContextRuntimeError::SourceChanged), None))?;
+        let mut owned_source = projected_source.clone();
+        owned_source
+            .messages
+            .retain(|message| message.id == owner_id);
+        for message in &mut owned_source.messages {
+            message.status = "done".to_string();
+        }
+        owned_source
+            .tool_calls
+            .retain(|call| call.message_id == owner_id);
+        owned_source
+            .images
+            .retain(|image| image.message_id == owner_id);
+        let mut canonical_owned =
+            super::pipeline::history_from_context_source(&owned_source, "__owned_fence__", None)
+                .map_err(|_| failure(context_error(ContextRuntimeError::SourceChanged), None))?;
+        vega_runtime::computer_use::redact_ephemeral_messages(&mut canonical_owned);
+        let is_owned = |message: &&ChatMessage| {
+            (message.role == ChatRole::Assistant
+                && message
+                    .tool_calls
+                    .iter()
+                    .any(|call| owned_call_ids.contains(call.id.as_str())))
+                || (message.role == ChatRole::Tool
+                    && message
+                        .tool_call_id
+                        .as_deref()
+                        .is_some_and(|id| owned_call_ids.contains(id)))
+        };
+        let expected_owned = canonical_owned.iter().filter(is_owned).collect::<Vec<_>>();
+        let actual_owned = request.messages.iter().filter(is_owned).collect::<Vec<_>>();
+        if !durable_messages_equal(&expected_owned, &actual_owned) {
+            return Err(failure(
+                context_error(ContextRuntimeError::SourceChanged),
+                None,
+            ));
+        }
+        let request_without_owned_group =
+            remove_owned_live_group(&request.messages, &owned_call_ids);
+        let request_without_owned_group = normalize_terminal_history_groups(
+            &projected_source,
+            checkpoint.map(|checkpoint| checkpoint.covered_through_seq),
+            owner_id,
+            &request_without_owned_group,
+        )?;
+        let persisted_history = persisted_history.iter().collect::<Vec<_>>();
+        let request_without_owned_group = request_without_owned_group.iter().collect::<Vec<_>>();
+        if !durable_messages_equal(&persisted_history, &request_without_owned_group) {
+            return Err(failure(
+                context_error(ContextRuntimeError::SourceChanged),
+                None,
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn cold_context_messages(system_prompt: &str, history: &[ChatMessage]) -> Vec<ChatMessage> {
@@ -1253,6 +1343,17 @@ fn context_failure_name(failure: crate::types::ContextCompactionFailureCode) -> 
 }
 
 impl ContextCompactionHook for ConversationCompactionHook<'_> {
+    fn micro_compact<'a>(
+        &'a self,
+        request: ContextCompactionRequest,
+        cancel: CancellationToken,
+    ) -> futures::future::BoxFuture<
+        'a,
+        Result<Option<vega_runtime::MicroCompactionResult>, VegaError>,
+    > {
+        Box::pin(self.micro_compact_impl(request, cancel))
+    }
+
     fn compact<'a>(
         &'a self,
         request: ContextCompactionRequest,
@@ -1749,110 +1850,7 @@ impl ConversationCompactionHook<'_> {
             fingerprint: source.fingerprint.clone(),
             predecessor: checkpoint.as_ref().map(|previous| previous.id),
         });
-        let exact_source = source.source_version == request.source_version
-            && request.source_fingerprint.as_deref() == Some(source.fingerprint.as_str());
-        // A manual request owns an immutable source snapshot and must match
-        // it before any provider call.  The automatic live-loop request is
-        // intentionally allowed to observe same-seq streaming updates and
-        // independently-sequenced tool rows; the runtime's live revision
-        // prevents a retry storm, while the final checkpoint CAS rejects any
-        // source mutation that happened after this snapshot.
-        if (request.require_source_fence && !exact_source)
-            || (!request.require_source_fence && source.source_version < request.source_version)
-        {
-            return Err(failure(
-                context_error(ContextRuntimeError::SourceChanged),
-                None,
-            ));
-        }
-
-        if !request.require_source_fence
-            && let Some(owner_id) = request.source_owner_id.as_deref()
-        {
-            // The live assistant row is intentionally still streaming while
-            // its tool round is persisted.  Compare the durable projection
-            // with the request after removing only that owned assistant/tool
-            // group; an unrelated new user, edited history row, or old-row
-            // tool mutation must fail before any summary provider call.
-            let persisted_history =
-                crate::agent::pipeline::primary_history_from_context_source_with_checkpoint(
-                    &source,
-                    checkpoint.as_ref(),
-                    owner_id,
-                )
-                .map_err(|_| {
-                    failure(context_error(ContextRuntimeError::InvalidProjection), None)
-                })?;
-            let owned_call_ids = source
-                .tool_calls
-                .iter()
-                .filter(|call| call.message_id == owner_id)
-                .map(|call| call.id.as_str())
-                .collect::<HashSet<_>>();
-            let projected_source =
-                super::pipeline::source_after_checkpoint(&source, checkpoint.as_ref()).map_err(
-                    |_| failure(context_error(ContextRuntimeError::SourceChanged), None),
-                )?;
-            let mut owned_source = projected_source.clone();
-            owned_source
-                .messages
-                .retain(|message| message.id == owner_id);
-            for message in &mut owned_source.messages {
-                message.status = "done".to_string();
-            }
-            owned_source
-                .tool_calls
-                .retain(|call| call.message_id == owner_id);
-            owned_source
-                .images
-                .retain(|image| image.message_id == owner_id);
-            let mut canonical_owned = super::pipeline::history_from_context_source(
-                &owned_source,
-                "__owned_fence__",
-                None,
-            )
-            .map_err(|_| failure(context_error(ContextRuntimeError::SourceChanged), None))?;
-            vega_runtime::computer_use::redact_ephemeral_messages(&mut canonical_owned);
-            let is_owned = |message: &&ChatMessage| {
-                (message.role == ChatRole::Assistant
-                    && message
-                        .tool_calls
-                        .iter()
-                        .any(|call| owned_call_ids.contains(call.id.as_str())))
-                    || (message.role == ChatRole::Tool
-                        && message
-                            .tool_call_id
-                            .as_deref()
-                            .is_some_and(|id| owned_call_ids.contains(id)))
-            };
-            let expected_owned = canonical_owned.iter().filter(is_owned).collect::<Vec<_>>();
-            let actual_owned = request.messages.iter().filter(is_owned).collect::<Vec<_>>();
-            if !durable_messages_equal(&expected_owned, &actual_owned) {
-                return Err(failure(
-                    context_error(ContextRuntimeError::SourceChanged),
-                    None,
-                ));
-            }
-            let request_without_owned_group =
-                remove_owned_live_group(&request.messages, &owned_call_ids);
-            let request_without_owned_group = normalize_terminal_history_groups(
-                &projected_source,
-                checkpoint
-                    .as_ref()
-                    .map(|checkpoint| checkpoint.covered_through_seq),
-                owner_id,
-                &request_without_owned_group,
-            )?;
-            let persisted_history = persisted_history.iter().collect::<Vec<_>>();
-            let request_without_owned_group =
-                request_without_owned_group.iter().collect::<Vec<_>>();
-            if !durable_messages_equal(&persisted_history, &request_without_owned_group) {
-                return Err(failure(
-                    context_error(ContextRuntimeError::SourceChanged),
-                    None,
-                ));
-            }
-        }
+        validate_request_source(&source, checkpoint.as_ref(), &request)?;
 
         let latest_user = source
             .messages
