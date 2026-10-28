@@ -98,6 +98,10 @@ impl ContextControl {
 }
 
 impl ConversationStream {
+    pub(crate) fn context_usage_visible(&self) -> bool {
+        !self.entries.is_empty() && self.context_control.last_call_total.is_some()
+    }
+
     pub(crate) fn context_usage_display(&self) -> context_usage::ContextUsageDisplay {
         context_usage::ContextUsageDisplay::new(
             self.context_control.last_call_total,

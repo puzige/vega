@@ -978,7 +978,6 @@ impl ConversationStream {
     }
 
     fn render_model_controls(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let has_content = !self.entries.is_empty();
         let display = self.context_usage_display();
         let colors = theme(cx).colors;
         div()
@@ -988,7 +987,8 @@ impl ConversationStream {
             .items_center()
             .gap_1()
             .children(
-                has_content.then(|| self.render_context_usage_indicator(&display, colors, cx)),
+                self.context_usage_visible()
+                    .then(|| self.render_context_usage_indicator(&display, colors, cx)),
             )
             .child(self.render_model_selector(window, cx))
             .into_any_element()
