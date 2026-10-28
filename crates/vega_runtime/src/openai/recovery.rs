@@ -155,6 +155,7 @@ impl RecoveryStream {
                             status: Some(status),
                             message: format!("provider request failed (HTTP {status}): {snippet}"),
                             retryable,
+                            protocol_reason: None,
                             retry_count: Some(self.attempt),
                             request_id,
                         },
@@ -173,6 +174,7 @@ impl RecoveryStream {
                         retryable: !error.is_builder()
                             && !error.is_redirect()
                             && !error.is_decode(),
+                        protocol_reason: None,
                         retry_count: Some(self.attempt),
                         request_id: None,
                     },
@@ -225,6 +227,7 @@ impl RecoveryStream {
                     kind,
                     status,
                     message,
+                    protocol_reason,
                     request_id,
                     ..
                 } => VegaError::ProviderDiagnostic {
@@ -235,6 +238,7 @@ impl RecoveryStream {
                     status: status.or(self.metadata.http_status),
                     message,
                     retryable: false,
+                    protocol_reason,
                     retry_count: Some(self.attempt),
                     request_id: request_id.or_else(|| self.metadata.request_id.clone()),
                 },
@@ -250,6 +254,7 @@ pub(super) fn incomplete_stream_error() -> VegaError {
         status: None,
         message: "provider stream ended before completion".into(),
         retryable: true,
+        protocol_reason: None,
         retry_count: None,
         request_id: None,
     }
@@ -261,6 +266,7 @@ fn transport_timeout_error() -> VegaError {
         status: None,
         message: "provider request timed out".into(),
         retryable: true,
+        protocol_reason: None,
         retry_count: None,
         request_id: None,
     }

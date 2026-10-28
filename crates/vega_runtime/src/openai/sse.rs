@@ -1,4 +1,5 @@
 use super::*;
+use crate::ProviderProtocolReason;
 
 /// Cancel-aware sleep: cancellation aborts the backoff immediately.
 pub(crate) async fn sleep_cancellable(
@@ -121,6 +122,7 @@ pub(crate) fn map_sse_error(err: EventStreamError<reqwest::Error>, recoverable: 
         status: None,
         message: "SSE stream failed".into(),
         retryable: transport && recoverable,
+        protocol_reason: (!transport).then_some(ProviderProtocolReason::SseDecode),
         retry_count: None,
         request_id: None,
     }
@@ -158,13 +160,13 @@ impl fmt::Debug for SseAssembler {
 
 impl SseAssembler {
     pub(crate) fn absorb(&mut self, data: &str) -> Result<Vec<ProviderEvent>, VegaError> {
-        let chunk: serde_json::Value =
-            serde_json::from_str(data).map_err(|_| invalid_protocol())?;
+        let chunk: serde_json::Value = serde_json::from_str(data)
+            .map_err(|_| invalid_protocol(ProviderProtocolReason::InvalidJson))?;
         if chunk.is_null() {
             return Ok(Vec::new());
         }
         if !chunk.is_object() {
-            return Err(invalid_protocol());
+            return Err(invalid_protocol(ProviderProtocolReason::InvalidFrame));
         }
         // Only a non-null `error` payload is an error frame; several compatible
         // gateways send `"error": null` on ordinary chunks. The frame is
@@ -183,6 +185,7 @@ impl SseAssembler {
                     status: None,
                     message: "provider stream reported request_timeout".into(),
                     retryable: true,
+                    protocol_reason: None,
                     retry_count: None,
                     request_id: None,
                 });
@@ -213,15 +216,19 @@ impl SseAssembler {
         }
         if let Some(choice) = choice {
             if let Some(delta) = choice.get("delta").filter(|delta| !delta.is_null()) {
-                let delta = delta.as_object().ok_or_else(invalid_protocol)?;
+                let delta = delta
+                    .as_object()
+                    .ok_or_else(|| invalid_protocol(ProviderProtocolReason::InvalidDelta))?;
                 if self.finish_reason.is_some() && !delta.is_empty() {
-                    return Err(invalid_protocol());
+                    return Err(invalid_protocol(ProviderProtocolReason::AfterTerminal));
                 }
                 let mut aliases = Vec::new();
                 let mut empty = None;
                 for field in ["reasoning_content", "reasoning", "reasoning_text"] {
                     if let Some(value) = delta.get(field).filter(|value| !value.is_null()) {
-                        let value = value.as_str().ok_or_else(invalid_protocol)?;
+                        let value = value.as_str().ok_or_else(|| {
+                            invalid_protocol(ProviderProtocolReason::InvalidDelta)
+                        })?;
                         if value.is_empty() {
                             if empty.is_none() {
                                 empty = Some(field);
@@ -233,7 +240,9 @@ impl SseAssembler {
                 }
                 if let Some((field, value)) = aliases.first().copied() {
                     if aliases.iter().any(|(_, other)| *other != value) {
-                        return Err(invalid_protocol());
+                        return Err(invalid_protocol(
+                            ProviderProtocolReason::ReasoningAliasConflict,
+                        ));
                     }
                     if self.reasoning.is_empty() {
                         self.source = Some(field);
@@ -244,7 +253,9 @@ impl SseAssembler {
                         self.last_delta = value.into();
                         events.push(ProviderEvent::ThinkingDelta(value.into()));
                     } else if self.last_delta != value {
-                        return Err(invalid_protocol());
+                        return Err(invalid_protocol(
+                            ProviderProtocolReason::ReasoningAliasConflict,
+                        ));
                     }
                 } else if self.source.is_none() {
                     self.source = empty;
@@ -253,7 +264,9 @@ impl SseAssembler {
                     .get("reasoning_details")
                     .filter(|value| !value.is_null())
                 {
-                    let details = value.as_array().ok_or_else(invalid_protocol)?;
+                    let details = value
+                        .as_array()
+                        .ok_or_else(|| invalid_protocol(ProviderProtocolReason::InvalidDelta))?;
                     if self.details.is_none() {
                         self.details = Some(Vec::new());
                     }
@@ -262,13 +275,18 @@ impl SseAssembler {
                     }
                 }
                 if let Some(value) = delta.get("content").filter(|value| !value.is_null()) {
-                    let value = value.as_str().ok_or_else(invalid_protocol)?;
+                    let value = value
+                        .as_str()
+                        .ok_or_else(|| invalid_protocol(ProviderProtocolReason::InvalidDelta))?;
                     if !value.is_empty() {
                         events.push(ProviderEvent::TextDelta(value.into()));
                     }
                 }
                 if let Some(calls) = delta.get("tool_calls").filter(|value| !value.is_null()) {
-                    for call in calls.as_array().ok_or_else(invalid_protocol)? {
+                    for call in calls
+                        .as_array()
+                        .ok_or_else(|| invalid_protocol(ProviderProtocolReason::InvalidDelta))?
+                    {
                         self.absorb_tool_call(call)?;
                     }
                 }
@@ -277,7 +295,11 @@ impl SseAssembler {
                 .get("finish_reason")
                 .filter(|value| !value.is_null() && value.as_str() != Some(""))
             {
-                let mapped = map_finish_reason(reason.as_str().ok_or_else(invalid_protocol)?);
+                let mapped = map_finish_reason(
+                    reason
+                        .as_str()
+                        .ok_or_else(|| invalid_protocol(ProviderProtocolReason::InvalidDelta))?,
+                );
                 // A stop reason this client does not know is not malformed
                 // data: the stream is still well-formed. It degrades to the
                 // closest known terminal state so the turn still completes and
@@ -296,13 +318,13 @@ impl SseAssembler {
                     .finish_reason
                     .is_some_and(|previous| previous != reason)
                 {
-                    return Err(invalid_protocol());
+                    return Err(invalid_protocol(ProviderProtocolReason::TerminalConflict));
                 }
                 self.finish_reason = Some(reason);
                 if reason == StopReason::ToolUse {
                     events.extend(self.flush_tools()?);
                 } else if !self.tools.is_empty() {
-                    return Err(invalid_protocol());
+                    return Err(invalid_protocol(ProviderProtocolReason::TerminalConflict));
                 }
             }
         }
@@ -310,23 +332,25 @@ impl SseAssembler {
     }
 
     fn absorb_detail(&mut self, detail: &serde_json::Value) -> Result<(), VegaError> {
-        let object = detail.as_object().ok_or_else(invalid_protocol)?;
+        let object = detail
+            .as_object()
+            .ok_or_else(|| invalid_protocol(ProviderProtocolReason::ReasoningDetail))?;
         let kind = object
             .get("type")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(invalid_protocol)?;
+            .ok_or_else(|| invalid_protocol(ProviderProtocolReason::ReasoningDetail))?;
         let payload = match kind {
             "reasoning.text" => "text",
             "reasoning.summary" => "summary",
             "reasoning.encrypted" => "data",
-            _ => return Err(invalid_protocol()),
+            _ => return Err(invalid_protocol(ProviderProtocolReason::ReasoningDetail)),
         };
         if object
             .get(payload)
             .and_then(serde_json::Value::as_str)
             .is_none()
         {
-            return Err(invalid_protocol());
+            return Err(invalid_protocol(ProviderProtocolReason::ReasoningDetail));
         }
         for field in ["id", "format", "signature"] {
             if object
@@ -334,7 +358,7 @@ impl SseAssembler {
                 .filter(|value| !value.is_null())
                 .is_some_and(|value| !value.is_string())
             {
-                return Err(invalid_protocol());
+                return Err(invalid_protocol(ProviderProtocolReason::ReasoningDetail));
             }
         }
         if object
@@ -342,9 +366,12 @@ impl SseAssembler {
             .filter(|value| !value.is_null())
             .is_some_and(|value| value.as_u64().is_none())
         {
-            return Err(invalid_protocol());
+            return Err(invalid_protocol(ProviderProtocolReason::ReasoningDetail));
         }
-        let details = self.details.as_mut().ok_or_else(invalid_protocol)?;
+        let details = self
+            .details
+            .as_mut()
+            .ok_or_else(|| invalid_protocol(ProviderProtocolReason::ReasoningDetail))?;
         for existing in details.iter().filter(|existing| existing["type"] == kind) {
             let same_id = object
                 .get("id")
@@ -358,7 +385,7 @@ impl SseAssembler {
                     .zip(object.get("index").filter(|value| !value.is_null()))
                     .is_some_and(|(one, two)| one != two)
             {
-                return Err(invalid_protocol());
+                return Err(invalid_protocol(ProviderProtocolReason::ReasoningDetail));
             }
             if object
                 .get("index")
@@ -377,7 +404,7 @@ impl SseAssembler {
                     )
                     .is_some_and(|(one, two)| one != two)
             {
-                return Err(invalid_protocol());
+                return Err(invalid_protocol(ProviderProtocolReason::ReasoningDetail));
             }
         }
         if kind != "reasoning.encrypted"
@@ -385,14 +412,21 @@ impl SseAssembler {
         {
             let mut metadata = object.clone();
             metadata.remove(payload);
-            let mut previous = last.as_object().cloned().ok_or_else(invalid_protocol)?;
+            let mut previous = last
+                .as_object()
+                .cloned()
+                .ok_or_else(|| invalid_protocol(ProviderProtocolReason::ReasoningDetail))?;
             previous.remove(payload);
             if metadata == previous {
                 let mut merged = last[payload]
                     .as_str()
-                    .ok_or_else(invalid_protocol)?
+                    .ok_or_else(|| invalid_protocol(ProviderProtocolReason::ReasoningDetail))?
                     .to_string();
-                merged.push_str(detail[payload].as_str().ok_or_else(invalid_protocol)?);
+                merged.push_str(
+                    detail[payload]
+                        .as_str()
+                        .ok_or_else(|| invalid_protocol(ProviderProtocolReason::ReasoningDetail))?,
+                );
                 last[payload] = serde_json::json!(merged);
                 return Ok(());
             }
@@ -403,24 +437,34 @@ impl SseAssembler {
 
     fn absorb_tool_call(&mut self, call: &serde_json::Value) -> Result<(), VegaError> {
         if !call.is_object() {
-            return Err(invalid_protocol());
+            return Err(invalid_protocol(ProviderProtocolReason::ToolFragment));
         }
         let index = call
             .get("index")
             .filter(|value| !value.is_null())
-            .map(|value| value.as_u64().ok_or_else(invalid_protocol))
+            .map(|value| {
+                value
+                    .as_u64()
+                    .ok_or_else(|| invalid_protocol(ProviderProtocolReason::ToolFragment))
+            })
             .transpose()?;
         let id = call
             .get("id")
             .filter(|value| !value.is_null())
-            .map(|value| value.as_str().ok_or_else(invalid_protocol))
+            .map(|value| {
+                value
+                    .as_str()
+                    .ok_or_else(|| invalid_protocol(ProviderProtocolReason::ToolFragment))
+            })
             .transpose()?
             .filter(|value| !value.is_empty());
         let by_index =
             index.and_then(|index| self.tools.iter().position(|tool| tool.index == Some(index)));
         let by_id = id.and_then(|id| self.tools.iter().position(|tool| tool.id == id));
         if by_index.zip(by_id).is_some_and(|(one, two)| one != two) {
-            return Err(invalid_protocol());
+            return Err(invalid_protocol(
+                ProviderProtocolReason::ToolIdentityConflict,
+            ));
         }
         let slot = if let Some(slot) = by_index.or(by_id) {
             slot
@@ -443,14 +487,16 @@ impl SseAssembler {
                     self.tools.push(ToolFragment::default());
                     self.tools.len() - 1
                 }
-                _ => return Err(invalid_protocol()),
+                _ => return Err(invalid_protocol(ProviderProtocolReason::ToolFragment)),
             }
         };
         let tool = &mut self.tools[slot];
         if index.zip(tool.index).is_some_and(|(one, two)| one != two)
             || (by_index.is_none() && id.is_some_and(|id| !tool.id.is_empty() && tool.id != id))
         {
-            return Err(invalid_protocol());
+            return Err(invalid_protocol(
+                ProviderProtocolReason::ToolIdentityConflict,
+            ));
         }
         if let Some(index) = index {
             tool.index = Some(index);
@@ -462,27 +508,36 @@ impl SseAssembler {
         }
         if let Some(function) = call.get("function").filter(|value| !value.is_null()) {
             if !function.is_object() {
-                return Err(invalid_protocol());
+                return Err(invalid_protocol(ProviderProtocolReason::ToolFragment));
             }
             if let Some(name) = function.get("name").filter(|value| !value.is_null()) {
-                let name = name.as_str().ok_or_else(invalid_protocol)?;
+                let name = name
+                    .as_str()
+                    .ok_or_else(|| invalid_protocol(ProviderProtocolReason::ToolFragment))?;
                 if !name.is_empty() {
                     if !tool.name.is_empty() && tool.name != name {
-                        return Err(invalid_protocol());
+                        return Err(invalid_protocol(
+                            ProviderProtocolReason::ToolIdentityConflict,
+                        ));
                     }
                     tool.name = name.into();
                 }
             }
             if let Some(arguments) = function.get("arguments").filter(|value| !value.is_null()) {
-                tool.arguments
-                    .push_str(arguments.as_str().ok_or_else(invalid_protocol)?);
+                tool.arguments.push_str(
+                    arguments
+                        .as_str()
+                        .ok_or_else(|| invalid_protocol(ProviderProtocolReason::ToolFragment))?,
+                );
             }
         }
         Ok(())
     }
 
     pub(crate) fn finalize(&mut self) -> Result<Vec<ProviderEvent>, VegaError> {
-        let stop_reason = self.finish_reason.ok_or_else(invalid_protocol)?;
+        let stop_reason = self
+            .finish_reason
+            .ok_or_else(|| invalid_protocol(ProviderProtocolReason::MissingTerminal))?;
         let mut events = self.flush_tools()?;
         let text = std::mem::take(&mut self.reasoning);
         let presence = if self.source == Some("reasoning_content") {
@@ -521,7 +576,7 @@ impl SseAssembler {
                 || !serde_json::from_str::<serde_json::Value>(&tool.arguments)
                     .is_ok_and(|value| value.is_object())
         }) {
-            return Err(invalid_protocol());
+            return Err(invalid_protocol(ProviderProtocolReason::IncompleteTool));
         }
         let mut tools = std::mem::take(&mut self.tools);
         tools.sort_by_key(|tool| tool.index.unwrap_or(u64::MAX));
@@ -602,6 +657,6 @@ fn usage_counts(usage: &serde_json::Value) -> Option<UsageCounts> {
     })
 }
 
-fn invalid_protocol() -> VegaError {
-    crate::chat_compat::protocol_error()
+fn invalid_protocol(reason: ProviderProtocolReason) -> VegaError {
+    crate::chat_compat::protocol_error_with_reason(reason)
 }

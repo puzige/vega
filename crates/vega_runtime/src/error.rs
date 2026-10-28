@@ -3,6 +3,51 @@ use std::fmt;
 use thiserror::Error;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderProtocolReason {
+    InvalidJson,
+    InvalidFrame,
+    InvalidDelta,
+    AfterTerminal,
+    ReasoningAliasConflict,
+    ReasoningDetail,
+    ToolFragment,
+    ToolIdentityConflict,
+    IncompleteTool,
+    TerminalConflict,
+    MissingTerminal,
+    SseDecode,
+    FrameCapacity,
+    ResponseEvent,
+    TextSnapshotConflict,
+    ResponseOutput,
+    UsageInconsistent,
+}
+
+impl ProviderProtocolReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidJson => "invalid_json",
+            Self::InvalidFrame => "invalid_frame",
+            Self::InvalidDelta => "invalid_delta",
+            Self::AfterTerminal => "after_terminal",
+            Self::ReasoningAliasConflict => "reasoning_alias_conflict",
+            Self::ReasoningDetail => "reasoning_detail",
+            Self::ToolFragment => "tool_fragment",
+            Self::ToolIdentityConflict => "tool_identity_conflict",
+            Self::IncompleteTool => "incomplete_tool",
+            Self::TerminalConflict => "terminal_conflict",
+            Self::MissingTerminal => "missing_terminal",
+            Self::SseDecode => "sse_decode",
+            Self::FrameCapacity => "frame_capacity",
+            Self::ResponseEvent => "response_event",
+            Self::TextSnapshotConflict => "text_snapshot_conflict",
+            Self::ResponseOutput => "response_output",
+            Self::UsageInconsistent => "usage_inconsistent",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeFailureStage {
     RunPreparation,
     Snapshot,
@@ -177,6 +222,7 @@ pub enum VegaError {
     #[error("provider error (status={status:?}, retryable={retryable})")]
     ProviderDiagnostic {
         kind: crate::provider::ProviderFailureKind,
+        protocol_reason: Option<ProviderProtocolReason>,
         status: Option<u16>,
         message: String,
         retryable: bool,
@@ -283,9 +329,11 @@ impl fmt::Debug for VegaError {
                 retryable,
                 retry_count,
                 request_id,
+                protocol_reason,
             } => formatter
                 .debug_struct("ProviderDiagnostic")
                 .field("kind", kind)
+                .field("protocol_reason", protocol_reason)
                 .field("status", status)
                 .field("message_bytes", &message.len())
                 .field("retryable", retryable)
@@ -439,6 +487,7 @@ impl VegaError {
                 observed_bytes,
                 limit_bytes,
             } => {
+                metrics.protocol_reason = Some(ProviderProtocolReason::FrameCapacity.as_str());
                 metrics.failure_observed = u64::try_from(*observed_bytes).ok();
                 metrics.failure_limit = u64::try_from(*limit_bytes).ok();
                 metrics.failure_units = Some("bytes");
@@ -449,8 +498,12 @@ impl VegaError {
                 status,
                 retry_count,
                 request_id,
+                protocol_reason,
                 ..
             } => {
+                if *kind == crate::ProviderFailureKind::Protocol {
+                    metrics.protocol_reason = protocol_reason.map(ProviderProtocolReason::as_str);
+                }
                 metrics.provider.http_status = *status;
                 metrics.provider.retry_count = *retry_count;
                 metrics.provider.request_id = request_id.clone();
