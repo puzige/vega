@@ -193,9 +193,16 @@ pub(crate) struct StreamLine {
     pub depth: usize,
     pub(crate) in_list: bool,
     pub(crate) quotes: Vec<QuoteOwner>,
+    pub(crate) lists: Vec<ListOwner>,
     pub spans: Vec<StreamSpan>,
     pub table: Option<Arc<StreamTable>>,
     pub(crate) code_block: Option<Arc<StreamCodeBlock>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ListOwner {
+    pub(crate) identity: (u64, usize),
+    pub(crate) depth: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -267,6 +274,7 @@ impl StreamLine {
             depth: 0,
             in_list: false,
             quotes: Vec::new(),
+            lists: Vec::new(),
             spans: Vec::new(),
             table: None,
             code_block: None,
@@ -579,6 +587,11 @@ pub(crate) fn flatten_list(
     out: &mut Vec<StreamLine>,
     identity: &mut usize,
 ) {
+    let owner = ListOwner {
+        identity: (block_id, *identity),
+        depth,
+    };
+    *identity += 1;
     for (index, item) in list.items.iter().enumerate() {
         let marker = if list.ordered {
             format!("{}.", list.start + index as u64)
@@ -597,6 +610,7 @@ pub(crate) fn flatten_list(
         }
         for line in &mut out[start..] {
             line.in_list = true;
+            line.lists.insert(0, owner);
         }
         if let Some(first) = out.get_mut(start) {
             first.marker = marker;

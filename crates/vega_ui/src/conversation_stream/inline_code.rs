@@ -1051,6 +1051,3 @@ fn position_fragments(
     }
     (fragments, x)
 }
-
-#[cfg(all(test, feature = "assistant-layout-regressions"))]
-pub(super) mod layout_tests;

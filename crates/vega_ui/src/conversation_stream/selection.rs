@@ -18,12 +18,30 @@ use super::model::MessageCopy;
 #[derive(Clone)]
 struct LaidOutRun {
     text: SharedString,
-    layout: TextLayout,
+    layout: Option<TextLayout>,
     bounds: Bounds<Pixels>,
     order: (u64, usize),
     content_range: Range<usize>,
     logical_range: Range<usize>,
     selected: Rc<RefCell<Option<Range<usize>>>>,
+}
+
+impl LaidOutRun {
+    fn index_for_position(&self, position: Point<Pixels>) -> usize {
+        if let Some(layout) = &self.layout {
+            return layout
+                .index_for_position(position)
+                .unwrap_or_else(|index| index)
+                .min(self.content_range.len());
+        }
+        if position.y < self.bounds.top()
+            || (position.y < self.bounds.bottom() && position.x < self.bounds.center().x)
+        {
+            0
+        } else {
+            self.content_range.len()
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -119,7 +137,7 @@ impl SelectionDocumentBuilder {
                     if !run.bounds.contains(&position) {
                         return None;
                     }
-                    let index = run.layout.index_for_position(position).ok()?;
+                    let index = run.layout.as_ref()?.index_for_position(position).ok()?;
                     (index < run.content_range.len())
                         .then_some((run.content_range.start + index) as u64)
                 })
@@ -138,6 +156,34 @@ impl SelectionDocumentBuilder {
         id_prefix: &str,
     ) -> gpui_kit::AnyElement {
         self.append(text, styled, None, Vec::new(), id_prefix)
+    }
+
+    pub(super) fn append_marker(
+        &mut self,
+        text: &str,
+        body: gpui_kit::AnyElement,
+        id_prefix: &str,
+    ) -> gpui_kit::AnyElement {
+        let start = self.content.len();
+        self.content.push_str(text);
+        let order = self.next_run_order;
+        self.next_run_order += 1;
+        SelectableMarker {
+            id: ElementId::Name(format!("{id_prefix}-selection-marker-{order}").into()),
+            body,
+            run: LaidOutRun {
+                text: text.to_owned().into(),
+                layout: None,
+                bounds: Bounds::default(),
+                order: (order, 0),
+                content_range: start..self.content.len(),
+                logical_range: start..self.content.len(),
+                selected: Rc::new(RefCell::new(None)),
+            },
+            runs: self.runs.clone(),
+            selection_color: self.selection_color,
+        }
+        .into_any_element()
     }
 
     pub(super) fn append_code_runs(
@@ -348,7 +394,7 @@ impl Element for SelectableStyledText {
             .prepaint(id, inspector_id, bounds, &mut (), window, cx);
         self.runs.borrow_mut().push(LaidOutRun {
             text: self.content.clone(),
-            layout: self.text.layout().clone(),
+            layout: Some(self.text.layout().clone()),
             bounds,
             order: self.order,
             content_range: self.content_range.clone(),
@@ -422,6 +468,84 @@ impl Element for SelectableStyledText {
             window,
             cx,
         );
+    }
+}
+
+struct SelectableMarker {
+    id: ElementId,
+    body: gpui_kit::AnyElement,
+    run: LaidOutRun,
+    runs: Rc<RefCell<Vec<LaidOutRun>>>,
+    selection_color: Hsla,
+}
+
+impl IntoElement for SelectableMarker {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for SelectableMarker {
+    type RequestLayoutState = ();
+    type PrepaintState = Hitbox;
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.body.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Hitbox {
+        self.body.prepaint(window, cx);
+        self.run.bounds = bounds;
+        self.runs.borrow_mut().push(self.run.clone());
+        window.insert_hitbox(bounds, HitboxBehavior::Normal)
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        hitbox: &mut Hitbox,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if self.run.selected.borrow().is_some() {
+            window.paint_quad(PaintQuad {
+                bounds,
+                background: self.selection_color.into(),
+                corner_radii: Corners::default(),
+                border_widths: Edges::default(),
+                border_color: transparent_black(),
+                border_style: BorderStyle::default(),
+            });
+        }
+        self.body.paint(window, cx);
+        window.set_cursor_style(CursorStyle::IBeam, hitbox);
     }
 }
 
@@ -499,20 +623,43 @@ impl Element for SelectableMessage {
         self.copy.set_visible_text(self.content.clone());
         let mut runs = self.runs.borrow().clone();
         runs.sort_by_key(|run| run.order);
+        let selection_bounds = runs
+            .iter()
+            .filter(|run| run.layout.is_none())
+            .fold(bounds, |bounds, run| bounds.union(&run.bounds));
         let text_runs = runs
             .iter()
             .enumerate()
-            .map(|(order, run)| {
-                TextSelectionRun::new(run.text.clone(), run.layout.clone(), run.bounds)
-                    .with_document_order(order as u64)
+            .filter_map(|(order, run)| {
+                Some(
+                    TextSelectionRun::new(run.text.clone(), run.layout.clone()?, run.bounds)
+                        .with_document_order(order as u64),
+                )
             })
             .collect::<Vec<_>>();
         let projection = self.handle.update_runs(&text_runs, cx);
+        let mut text_ranges = projection.ranges().iter();
+        let window_points = self
+            .handle
+            .snapshot(cx)
+            .and_then(|snapshot| snapshot.window_points());
+        let projected_ranges = runs
+            .iter()
+            .map(|run| {
+                if run.layout.is_some() {
+                    return text_ranges.next().cloned().flatten();
+                }
+                let points = window_points?;
+                let start = run.index_for_position(points.anchor());
+                let end = run.index_for_position(points.cursor());
+                (start != end).then_some(start.min(end)..start.max(end))
+            })
+            .collect::<Vec<_>>();
         {
             let resolver_runs = self.runs.clone();
             self.handle.resolve_content_key_with(
                 move |point, _| {
-                    let position = point + bounds.origin;
+                    let position = point + selection_bounds.origin;
                     resolver_runs
                         .borrow()
                         .iter()
@@ -540,13 +687,7 @@ impl Element for SelectableMessage {
                         })
                         .map(|run| {
                             TextSelectionContentKey::new(
-                                (run.content_range.start
-                                    + run
-                                        .layout
-                                        .index_for_position(position)
-                                        .unwrap_or_else(|index| index)
-                                        .min(run.content_range.len()))
-                                    as u64,
+                                (run.content_range.start + run.index_for_position(position)) as u64,
                             )
                         })
                 },
@@ -571,7 +712,7 @@ impl Element for SelectableMessage {
         let local = self.copy.local_selection_range();
         let visible_selection = local.clone().or(logical_range);
         self.handle.set_local_selection(local.is_some(), cx);
-        for (run, range) in runs.iter().zip(projection.ranges()) {
+        for (run, range) in runs.iter().zip(&projected_ranges) {
             *run.selected.borrow_mut() = if let Some(local) = &visible_selection {
                 let start = local.start.max(run.content_range.start);
                 let end = local.end.min(run.content_range.end);
@@ -583,8 +724,7 @@ impl Element for SelectableMessage {
             };
         }
         let selected = visible_selection.or_else(|| {
-            projection
-                .ranges()
+            projected_ranges
                 .iter()
                 .zip(&runs)
                 .filter_map(|(range, run)| {
@@ -607,9 +747,9 @@ impl Element for SelectableMessage {
             .unwrap_or_default()
             .to_owned();
         self.copy.set_selected_text(self.generation, selection_text);
-        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        let hitbox = window.insert_hitbox(selection_bounds, HitboxBehavior::Normal);
         self.handle.register(
-            TextSelectionRegistration::new(hitbox.clone(), bounds)
+            TextSelectionRegistration::new(hitbox.clone(), selection_bounds)
                 .with_scope(self.scope)
                 .with_text_bounds(runs.iter().map(|run| run.bounds).collect()),
             window,
@@ -647,13 +787,17 @@ impl Element for SelectableMessage {
             TextSelection::activate_scope(scope, window, cx);
             if event.click_count >= 2 {
                 let selected = runs.borrow().iter().find_map(|run| {
-                    if !run.bounds.contains(&event.position)
-                        || run.content_range == run.logical_range
-                    {
+                    if !run.bounds.contains(&event.position) {
                         return None;
                     }
-                    let offset = run.layout.index_for_position(event.position).ok()?
-                        + run.content_range.start;
+                    let Some(layout) = &run.layout else {
+                        return Some(run.content_range.clone());
+                    };
+                    if run.content_range == run.logical_range {
+                        return None;
+                    }
+                    let offset =
+                        layout.index_for_position(event.position).ok()? + run.content_range.start;
                     let text = content.get(run.logical_range.clone())?;
                     let range = multi_click_range(
                         text,

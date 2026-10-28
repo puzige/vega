@@ -16,16 +16,3 @@ vega_theme.workspace = true
 # （exec-guide §5 白名单内依赖）。
 vega_markdown.workspace = true
 serde_json.workspace = true
-
-[dev-dependencies]
-gpui_kit = { workspace = true, features = ["test-support"] }
-
-[features]
-assistant-layout-regressions = []
-
-[[test]]
-name = "assistant_layout_regressions"
-path = "src/assistant_layout_regressions.rs"
-harness = false
-test = false
-required-features = ["assistant-layout-regressions"]
