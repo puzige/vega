@@ -315,8 +315,7 @@ mod protocol_diagnostics_tests {
                 .next()
                 .await
                 .expect("event")
-                .err()
-                .expect("terminal error");
+                .expect_err("terminal error");
             let metrics = error.diagnostic_metrics();
             assert_eq!(metrics.protocol_reason, Some("invalid_json"));
             assert_eq!(metrics.provider.http_status, Some(200));

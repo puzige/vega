@@ -696,16 +696,14 @@ mod protocol_diagnostics_tests {
             reason(
                 SseAssembler::default()
                     .absorb(frame)
-                    .err()
-                    .expect("must reject"),
+                    .expect_err("must reject"),
                 expected,
             );
         }
         reason(
             SseAssembler::default()
                 .finalize()
-                .err()
-                .expect("missing terminal"),
+                .expect_err("missing terminal"),
             "missing_terminal",
         );
     }
@@ -719,15 +717,13 @@ mod protocol_diagnostics_tests {
         reason(
             parser
                 .absorb(r#"{"choices":[{"delta":{"content":"private-sentinel"}}]}"#)
-                .err()
-                .expect("late delta"),
+                .expect_err("late delta"),
             "after_terminal",
         );
         reason(
             parser
                 .absorb(r#"{"choices":[{"finish_reason":"length"}]}"#)
-                .err()
-                .expect("conflict"),
+                .expect_err("conflict"),
             "terminal_conflict",
         );
         let mut parser = SseAssembler::default();
@@ -735,8 +731,7 @@ mod protocol_diagnostics_tests {
         reason(
             parser
                 .absorb(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"b"}]}}]}"#)
-                .err()
-                .expect("identity"),
+                .expect_err("identity"),
             "tool_identity_conflict",
         );
     }
@@ -751,7 +746,7 @@ mod protocol_diagnostics_tests {
             parser.absorb(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"read"}}]}}]}"#).expect("initial fragment");
             let frame = format!(r#"{{"choices":[{{"delta":{{"tool_calls":[{next}]}}}}]}}"#);
             reason(
-                parser.absorb(&frame).err().expect("conflicting identity"),
+                parser.absorb(&frame).expect_err("conflicting identity"),
                 "tool_identity_conflict",
             );
         }
@@ -815,8 +810,7 @@ mod protocol_diagnostics_tests {
         ] {
             let error = SseAssembler::default()
                 .absorb(frame)
-                .err()
-                .expect("upstream error");
+                .expect_err("upstream error");
             assert!(
                 matches!(error, VegaError::ProviderDiagnostic { kind, protocol_reason: None, .. } if kind == expected)
             );

@@ -708,7 +708,7 @@ mod protocol_diagnostics_tests {
                 "usage_inconsistent",
             ),
         ] {
-            let error = Assembler::default().absorb(frame).err().expect("reject");
+            let error = Assembler::default().absorb(frame).expect_err("reject");
             assert_eq!(error.diagnostic_metrics().protocol_reason, Some(expected));
             assert!(!format!("{error:?} {error}").contains("private-sentinel"));
         }
@@ -720,8 +720,7 @@ mod protocol_diagnostics_tests {
             .absorb(
                 r#"{"type":"response.output_text.done","item_id":"m","text":"private-sentinel"}"#,
             )
-            .err()
-            .expect("snapshot mismatch");
+            .expect_err("snapshot mismatch");
         assert_eq!(
             error.diagnostic_metrics().protocol_reason,
             Some("text_snapshot_conflict")
@@ -753,8 +752,7 @@ mod protocol_diagnostics_tests {
         assert_eq!(
             parser
                 .absorb("{}")
-                .err()
-                .expect("late event")
+                .expect_err("late event")
                 .diagnostic_metrics()
                 .protocol_reason,
             Some("after_terminal")
@@ -771,8 +769,7 @@ mod protocol_diagnostics_tests {
                 .next()
                 .await
                 .expect("terminal event")
-                .err()
-                .expect("interruption");
+                .expect_err("interruption");
             let metrics = error.diagnostic_metrics();
             assert_eq!(metrics.failure_kind, Some("stream_interrupted"));
             assert_eq!(metrics.protocol_reason, None);
