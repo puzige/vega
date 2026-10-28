@@ -1,4 +1,5 @@
 pub mod accounting;
+pub mod consume;
 pub mod ready;
 
 use rusqlite::Transaction;

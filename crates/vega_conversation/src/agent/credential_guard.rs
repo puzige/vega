@@ -143,7 +143,7 @@ fn contains_response_secret(
             })
 }
 
-fn reject_owner_secret_with_policy(
+pub(crate) fn reject_owner_secret_with_policy(
     request: &ChatRequest,
     reader: &(dyn Fn() -> Result<Vec<String>, ()> + Send + Sync),
     exceptions: Option<&vega_runtime::CredentialExceptionFilter>,

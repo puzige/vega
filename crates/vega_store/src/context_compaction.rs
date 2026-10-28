@@ -1100,11 +1100,6 @@ where
     F: Fn() -> bool,
 {
     checkpoint.validate()?;
-    let projection_plan = checkpoint
-        .projection_plan
-        .as_ref()
-        .map(ProjectionPlan::encode)
-        .transpose()?;
     let transaction = crate::write_coordination::WriteTransaction::new_with_cancel(
         conn,
         crate::write_coordination::WriteCategory::ContextCompaction,
@@ -1118,22 +1113,43 @@ where
         }
         error => ContextCheckpointError::Store(error),
     })?;
-    if should_cancel() {
+    let result = install_checkpoint_in_transaction(&transaction, checkpoint, &should_cancel)?;
+    if matches!(result, ContextCheckpointInstall::Applied(_)) {
+        transaction.commit()?;
+    } else {
         transaction.rollback()?;
+    }
+    Ok(result)
+}
+
+pub(super) fn install_checkpoint_in_transaction<F>(
+    transaction: &Transaction<'_>,
+    checkpoint: &NewContextCheckpoint,
+    should_cancel: &F,
+) -> Result<ContextCheckpointInstall, ContextCheckpointError>
+where
+    F: Fn() -> bool,
+{
+    checkpoint.validate()?;
+    let projection_plan = checkpoint
+        .projection_plan
+        .as_ref()
+        .map(ProjectionPlan::encode)
+        .transpose()?;
+    if should_cancel() {
         return Err(ContextCheckpointError::Cancelled);
     }
 
-    let current = load_source_inner(&transaction, &checkpoint.thread_id, false)?;
+    let current = load_source_inner(transaction, &checkpoint.thread_id, false)?;
     if current.source_version != checkpoint.source_version
         || current.fingerprint != checkpoint.source_fingerprint
     {
-        transaction.rollback()?;
         return Ok(ContextCheckpointInstall::Stale);
     }
 
     if let Some(plan) = &checkpoint.projection_plan {
         plan.validate_install(&current)?;
-        validate_summary_references(&transaction, &checkpoint.thread_id, plan)?;
+        validate_summary_references(transaction, &checkpoint.thread_id, plan)?;
     } else {
         if let Some(owner) = checkpoint.covered_assistant_id.as_deref() {
             let message = current
@@ -1199,7 +1215,6 @@ where
         )
         .optional()?;
     if thread_model.as_deref() != Some(checkpoint.model.as_str()) {
-        transaction.rollback()?;
         return Ok(ContextCheckpointInstall::Stale);
     }
     if checkpoint.projection_plan.is_none() {
@@ -1216,14 +1231,10 @@ where
             |row| row.get(0),
         )?;
         if incomplete != 0 {
-            transaction.rollback()?;
             return Err(ContextCheckpointError::IncompleteCoverage);
         }
     }
 
-    // Request identity includes the captured predecessor but is independent
-    // from whichever row is latest now. This makes a retry of a second append
-    // idempotent even when its original predecessor is no longer latest.
     let committed_same_request = transaction
         .query_row(
             "SELECT id, thread_id, model, source_version, covered_through_seq, \
@@ -1253,8 +1264,7 @@ where
         )
         .optional()?;
     if let Some(mut existing) = committed_same_request {
-        load_referenced_summaries(&transaction, &mut existing)?;
-        transaction.rollback()?;
+        load_referenced_summaries(transaction, &mut existing)?;
         return Ok(ContextCheckpointInstall::AlreadyCommitted(existing));
     }
 
@@ -1274,23 +1284,17 @@ where
             && previous.source_fingerprint == checkpoint.source_fingerprint
             && checkpoint.projection_plan.is_none()
         {
-            transaction.rollback()?;
             return Ok(ContextCheckpointInstall::Stale);
         }
         if checkpoint.expected_previous_id != Some(previous.id) {
-            transaction.rollback()?;
             return Ok(ContextCheckpointInstall::Stale);
         }
-        // The caller won the prior-row CAS and proposed a new append for a
-        // newer source/result. Continue to the INSERT below.
     }
     if previous.is_none() && checkpoint.expected_previous_id.is_some() {
-        transaction.rollback()?;
         return Ok(ContextCheckpointInstall::Stale);
     }
 
     if should_cancel() {
-        transaction.rollback()?;
         return Err(ContextCheckpointError::Cancelled);
     }
 
@@ -1316,7 +1320,6 @@ where
         ],
     )?;
     if should_cancel() {
-        transaction.rollback()?;
         return Err(ContextCheckpointError::Cancelled);
     }
     let id = transaction.last_insert_rowid();
@@ -1338,8 +1341,7 @@ where
         created_at: checkpoint.created_at,
     };
     let mut committed = committed;
-    load_referenced_summaries(&transaction, &mut committed)?;
-    transaction.commit()?;
+    load_referenced_summaries(transaction, &mut committed)?;
     Ok(ContextCheckpointInstall::Applied(committed))
 }
 

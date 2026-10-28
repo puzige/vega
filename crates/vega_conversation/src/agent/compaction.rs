@@ -4,6 +4,7 @@
 //! source/checkpoint fence, complete-group selection, summary provider call,
 //! and the labelled historical projection returned to `vega_runtime`.
 
+mod consume;
 mod micro;
 pub(crate) mod precompute;
 mod projection;
@@ -860,7 +861,7 @@ async fn compact_thread_manually_owned(
         hook
     };
     let result = hook
-        .compact(
+        .compact_with_replay(
             ContextCompactionRequest {
                 trigger: ContextCompactionTrigger::Manual,
                 system_prompt: system_prompt.to_string(),
@@ -874,6 +875,7 @@ async fn compact_thread_manually_owned(
                 require_source_fence: true,
                 source_owner_id: None,
             },
+            wire_messages[0].replay_frame().cloned(),
             cancel,
         )
         .await;
@@ -1084,7 +1086,12 @@ pub async fn compact_thread_selection_accounted_with_credential_reader(
     .await;
     match result {
         Ok(result) => {
-            let usage_state = context_usage_state(&result.usages, result.usage_complete);
+            let usage_state = match result.usage_state() {
+                vega_runtime::ContextCompactionUsageState::Known { priced } => {
+                    crate::types::ContextCompactionUsageState::Known { priced }
+                }
+                _ => crate::types::ContextCompactionUsageState::Unknown,
+            };
             for usage in &result.usages {
                 persist_context_usage(store, thread_id, expected_model, usage)?;
                 events.push(context_usage_event(usage));
@@ -1365,6 +1372,16 @@ impl ContextCompactionHook for ConversationCompactionHook<'_> {
         cancel: CancellationToken,
     ) -> futures::future::BoxFuture<'a, Result<ContextCompactionResult, ContextCompactionFailure>>
     {
+        self.compact_with_replay(request, None, cancel)
+    }
+
+    fn compact_with_replay<'a>(
+        &'a self,
+        request: ContextCompactionRequest,
+        replay_frame: Option<vega_runtime::ReplayFrame>,
+        cancel: CancellationToken,
+    ) -> futures::future::BoxFuture<'a, Result<ContextCompactionResult, ContextCompactionFailure>>
+    {
         Box::pin(async move {
             let operation_attempt_id = ulid::Ulid::generate().to_string();
             let operation_started_at = std::time::Instant::now();
@@ -1381,7 +1398,7 @@ impl ContextCompactionHook for ConversationCompactionHook<'_> {
             }
             let mut source_guard = None;
             let mut result = self
-                .compact_impl(request, cancel.clone(), &mut source_guard)
+                .compact_impl(request, replay_frame, cancel.clone(), &mut source_guard)
                 .await;
             // A recoverable summary error can now return to the primary loop.
             // Check the captured authority even on failure (including an End
@@ -1816,9 +1833,17 @@ impl ConversationCompactionHook<'_> {
     async fn compact_impl(
         &self,
         request: ContextCompactionRequest,
+        replay_frame: Option<vega_runtime::ReplayFrame>,
         cancel: CancellationToken,
         source_guard: &mut Option<SummarySourceGuard>,
     ) -> Result<ContextCompactionResult, ContextCompactionFailure> {
+        if let Some(result) = self
+            .consume_precompute(&request, replay_frame.as_ref(), &cancel)
+            .await
+            .map_err(|error| failure(error, None))?
+        {
+            return Ok(result);
+        }
         let (generated, guard) = self
             .generate_compaction(request, cancel.clone(), source_guard)
             .await?;
@@ -2389,6 +2414,7 @@ impl ConversationCompactionHook<'_> {
                 source_fingerprint: Some(source.fingerprint),
                 usages,
                 usage_complete,
+                settled_usage: None,
             },
         })
     }

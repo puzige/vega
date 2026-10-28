@@ -63,6 +63,7 @@ impl ContextCompactionHook for CompactingHook {
                 reactive_retained_groups: None,
                 usages: Vec::new(),
                 usage_complete: true,
+                settled_usage: None,
             })
         })
     }

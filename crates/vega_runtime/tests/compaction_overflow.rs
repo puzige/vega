@@ -162,6 +162,7 @@ fn compacted(
         reactive_retained_groups: retained,
         usages: Vec::new(),
         usage_complete: true,
+        settled_usage: None,
     }
 }
 
@@ -256,6 +257,47 @@ fn assert_overflow_failure(outcome: &AgentOutcome, gap: Option<u64>) {
         })
         .collect::<Vec<_>>();
     assert_eq!(errors, vec![Some(gap)]);
+}
+
+#[tokio::test]
+async fn settled_compaction_usage_updates_status_without_emitting_another_bill() -> TestResult {
+    use vega_runtime::{ContextCompactionPhase, ContextCompactionUsageState};
+    for state in [
+        ContextCompactionUsageState::Known { priced: true },
+        ContextCompactionUsageState::Known { priced: false },
+        ContextCompactionUsageState::Unknown,
+    ] {
+        let mut result = compacted(2, None, 60);
+        result.usage_complete = state != ContextCompactionUsageState::Unknown;
+        result.settled_usage = Some(state);
+        let hook = ScriptedHook::new([result]);
+        let provider = ScriptedProvider::new([overflow(ErrorSite::Creation, None), success()]);
+        let outcome = execute(&provider, request(hook.clone())).await?;
+        assert!(!outcome.failed);
+        assert_eq!(outcome.final_text, "Recovered.");
+        let successful = outcome
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                RuntimeEvent::ContextCompactionStatusUpdated { status }
+                    if status.phase == ContextCompactionPhase::Succeeded =>
+                {
+                    Some(status.usage)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(successful, vec![state]);
+        assert!(
+            !outcome
+                .events
+                .iter()
+                .any(|event| matches!(event, RuntimeEvent::ContextCompactionUsageUpdated { .. }))
+        );
+        assert_eq!(provider.requests().len(), 2);
+        assert_eq!(hook.requests().len(), 1);
+    }
+    Ok(())
 }
 
 #[tokio::test]

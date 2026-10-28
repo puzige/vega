@@ -1,4 +1,6 @@
 use super::*;
+
+mod consume_tests;
 use std::sync::Mutex;
 use vega_store::context_compaction::{latest_checkpoint, load_source};
 use vega_store::context_precompute::{accounting, ready};

@@ -148,7 +148,17 @@ provider 通过仅用于 compaction 的可选工厂显式声明后台能力，�
 
 持久化基线 `e0c3471b14fed4d693fe4b6d567d50d6e6fd1a57` 的 Actions [40718995497](https://github.com/puzige/vega/actions/runs/40718995497) 已完成：Clippy `122924425728`、Nextest `122924426530`、required `122927304871` 成功，原始汇总 90 发现、90 执行通过、0 跳过。独立增量审查无发现；该结果不覆盖本节后续实现。
 
-后台生成提交 `e016242898cc564841b37ab18a7eab95e1b747dc` 的 Actions [40730684803](https://github.com/puzige/vega/actions/runs/40730684803) 中 Clippy `122965843440` 成功；Nextest `122965843732` 原始汇总为 99 执行、98 通过、1 失败、0 跳过，required `122968095963` 失败。失败 fixture 错把已知凭据当作可放行的格式误报，修正为分别验证已知值始终脱敏、合成格式误报例外保留、动态 reader 失败关闭，不修改生产凭据政策。独立审查另确认发送前取消／guard 拒绝可能制造 unknown stage；按上述发送边界修复，并补发送前无阶段、已发送后重试拒绝仍记 unknown 的云端回归。新修改未取得云端结果前不算验证通过。
+后台生成提交 `e016242898cc564841b37ab18a7eab95e1b747dc` 的 Actions [40730684803](https://github.com/puzige/vega/actions/runs/40730684803) 中 Clippy `122965843440` 成功；Nextest `122965843732` 原始汇总为 99 执行、98 通过、1 失败、0 跳过，required `122968095963` 失败。失败 fixture 错把已知凭据当作可放行的格式误报，修正为分别验证已知值始终脱敏、合成格式误报例外保留、动态 reader 失败关闭，不修改生产凭据政策。独立审查另确认发送前取消／guard 拒绝可能制造 unknown stage；按上述发送边界修复，并补发送前无阶段、已发送后重试拒绝仍记 unknown 的云端回归。修复提交 `b82868543a0ede081708644289b61098c8e43053` 的 Actions [40737563571](https://github.com/puzige/vega/actions/runs/40737563571) 已成功：Clippy `122990117517`、Nextest `122990118230`、required `122992900401` 成功，原始 Nextest 启动 101 项、执行 101 项、通过 101 项、0 跳过；独立发现计数行未单独留存。非实现者增量审查确认原 P2 修复且无新增发现；静态审查不替代云端行为验证。此证据只覆盖该提交，不覆盖后续消费接线。
+
+#### Ready 消费与原子安装（2026-10-28）
+
+消费先取得当前数据库／线程的安装 admission；ready 不携带授权，也不复用生成时的 deadline。读取候选、当前完整来源、当前前驱和新的消费快照围栏必须位于同一读事务。旧候选围栏允许合法追加，但消费快照还须覆盖追加部分的原始正文、历史交付信息及 assistant 截图等 artifact；旧候选围栏与 legacy 完整指纹不能代替此校验。准备完成后仍保留旧候选原值，不能让调用方滑动 covered／omitted／Source 范围或替换摘要。
+
+最终写事务依次确认当前 slot／generation／ready 原值、原候选来源与摘要依赖、消费时完整快照围栏、完整 source version／fingerprint、当前模型／前驱／取消，再通过普通 checkpoint 安装的同一事务内核心写入；成功安装和精确 generation 退役必须同事务提交。任何失败／取消／过期／来源变化都不留下半安装、不退役当前或较新候选。消费重试在候选已移除后是无候选，不重新安装或记账；普通 checkpoint API 的 AlreadyCommitted 行为保持不变。此存储边界本身不授予安装权或证明模型适用性。
+
+conversation 使用当前系统、工具、模型及 replay frame 重建完整请求，保留合法 append 后缀；只经共享解释器及 durable equality 校验叠加仍保留的 live reasoning／bindings。兼容旧 hook 的入口没有实际 replay frame 时，不消费含当前运行 owner 的候选，仍走原前台路径；完整候选请求在安装前重新读取当前凭据并执行既有拒绝政策，不改写摘要或绕过已知凭据保护。摘要偏好必须相容，partial 或额外自定义要求不借用不匹配候选；当前 owner／task／continuation 来自消费入口，不能从旧摘要恢复权限。候选原模型不同并非硬拒绝，按当前模型的完整 framed wire 估算，结果须小于原输入且严格低于当前 auto 阈值，不得从 precompute 授予 reactive deeper-pass。已结算 usage 以独立 provenance 表达：前台不重复持久化，已知计价不因返回空 usages 被误报 unknown，确实缺失的 usage／计价继续保持未知。
+
+开发回归覆盖：真实 SQLite 中合法追加后安装与 reload 一致且只安装一次；候选身份、前驱、当前模型、源编辑、消费后追加或追加截图／raw historical 正文变化均拒绝；取消发生在插入后时 checkpoint 与退役一起回滚；旧消费不能移除新 generation，usage 行及原始 transcript 不变。conversation 另覆盖当前模型 fit／不 fit、偏好不匹配、保留 live replay、完整请求预算和已结算计量。此阶段不把安全消费 API 视为自动 arming、registry／Stop／退出 drain 或整卡已完成。
 
 ### 4.4 provider 与本机能力
 

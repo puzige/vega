@@ -450,6 +450,64 @@ pub struct ContextCompactionResult {
     pub usages: Vec<ContextCompactionUsage>,
     /// False when any stage omitted Usage; known stages still remain billable.
     pub usage_complete: bool,
+    pub settled_usage: Option<ContextCompactionUsageState>,
+}
+
+impl ContextCompactionResult {
+    pub fn usage_state(&self) -> ContextCompactionUsageState {
+        if !self.usage_complete {
+            return ContextCompactionUsageState::Unknown;
+        }
+        if let Some(state) = self.settled_usage {
+            return match state {
+                ContextCompactionUsageState::Known { priced } => {
+                    ContextCompactionUsageState::Known { priced }
+                }
+                _ => ContextCompactionUsageState::Unknown,
+            };
+        }
+        if self.usages.is_empty() {
+            ContextCompactionUsageState::Unknown
+        } else {
+            ContextCompactionUsageState::Known {
+                priced: self.usages.iter().all(|usage| usage.pricing.is_some()),
+            }
+        }
+    }
+
+    pub fn wire_messages(
+        &self,
+        request: &ContextCompactionRequest,
+        frame: Option<&crate::ReplayFrame>,
+    ) -> Result<Vec<ChatMessage>, VegaError> {
+        let mut system = ChatMessage::new(crate::ChatRole::System, &request.system_prompt);
+        system.attach_replay_frame(frame.cloned().unwrap_or_else(|| {
+            crate::ReplayFrame::new(
+                self.messages.len().saturating_add(1),
+                crate::ReasoningReplayPolicy::Unknown,
+            )
+        }));
+        let interleaved = frame
+            .is_some_and(|frame| frame.policy() == crate::ReasoningReplayPolicy::GlmInterleaved);
+        let cold = self
+            .replay_cold_prefix_messages
+            .unwrap_or(self.messages.len());
+        if !validate_compaction_replay(
+            &self.messages,
+            cold,
+            self.replay_interleaved_user_boundary,
+            interleaved,
+        ) {
+            return Err(VegaError::Context(ContextRuntimeError::InvalidProjection));
+        }
+        system.update_replay_cold_prefix(cold.saturating_add(1));
+        if let Some(boundary) = self.replay_interleaved_user_boundary {
+            system.begin_interleaved_user_round(boundary.saturating_add(1));
+        }
+        Ok(std::iter::once(system)
+            .chain(self.messages.iter().cloned())
+            .collect())
+    }
 }
 
 impl fmt::Debug for ContextCompactionResult {
@@ -473,12 +531,22 @@ impl fmt::Debug for ContextCompactionResult {
             .field("reactive_retained_groups", &self.reactive_retained_groups)
             .field("usage_count", &self.usages.len())
             .field("usage_complete", &self.usage_complete)
+            .field("settled_usage", &self.settled_usage)
             .finish()
     }
 }
 
 /// Conversation's bounded, cancellable compaction boundary.
 pub trait ContextCompactionHook: Send + Sync {
+    fn compact_with_replay<'a>(
+        &'a self,
+        request: ContextCompactionRequest,
+        _replay_frame: Option<crate::ReplayFrame>,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<ContextCompactionResult, ContextCompactionFailure>> {
+        self.compact(request, cancel)
+    }
+
     fn micro_compact<'a>(
         &'a self,
         _request: crate::MicroCompactionRequest,

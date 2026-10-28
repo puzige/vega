@@ -290,6 +290,20 @@ impl PreparedContextPrecompute {
 }
 
 impl ConversationCompactionHook<'_> {
+    pub(super) fn precompute_preferences_digest(&self) -> String {
+        let mut preferences = Sha256::new();
+        preferences.update(b"vega-precompute-preferences-v1");
+        preferences.update(self.summary_variant.instruction().as_bytes());
+        preferences.update([0]);
+        preferences.update(
+            self.summary_requirements
+                .as_deref()
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+        format!("{:x}", preferences.finalize())
+    }
+
     #[allow(missing_docs)]
     pub async fn prepare_precompute(
         &self,
@@ -335,16 +349,6 @@ impl ConversationCompactionHook<'_> {
         if cancel.is_cancelled() {
             return Err(VegaError::Cancelled);
         }
-        let mut preferences = Sha256::new();
-        preferences.update(b"vega-precompute-preferences-v1");
-        preferences.update(self.summary_variant.instruction().as_bytes());
-        preferences.update([0]);
-        preferences.update(
-            self.summary_requirements
-                .as_deref()
-                .unwrap_or_default()
-                .as_bytes(),
-        );
         Ok(Some(PreparedContextPrecompute {
             provider,
             accounting: StageAccounting {
@@ -364,7 +368,7 @@ impl ConversationCompactionHook<'_> {
             credential_exceptions: self.credential_exceptions.clone(),
             summary_variant: self.summary_variant,
             summary_requirements: self.summary_requirements.clone(),
-            preferences_digest: format!("{:x}", preferences.finalize()),
+            preferences_digest: self.precompute_preferences_digest(),
         }))
     }
 }

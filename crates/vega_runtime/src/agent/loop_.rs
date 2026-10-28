@@ -514,7 +514,7 @@ where
         crate::computer_use::redact_ephemeral_messages(&mut projected);
     }
     let compacted = hook
-        .compact(
+        .compact_with_replay(
             ContextCompactionRequest {
                 trigger: crate::ContextCompactionTrigger::Threshold,
                 system_prompt: system,
@@ -528,12 +528,13 @@ where
                 require_source_fence: false,
                 source_owner_id: Some(operation_id.to_string()),
             },
+            projected[0].replay_frame().cloned(),
             cancel.clone(),
         )
         .await;
     let (compacted, usage_state) = match compacted {
         Ok(compacted) => {
-            let usage_state = compaction_usage_state(&compacted.usages, compacted.usage_complete);
+            let usage_state = compacted.usage_state();
             for usage in compacted.usages.iter().cloned() {
                 let event = RuntimeEvent::ContextCompactionUsageUpdated { usage };
                 sink(event.clone()).await?;
@@ -1591,7 +1592,7 @@ where
                     crate::computer_use::redact_ephemeral_messages(&mut messages);
                 }
                 let compacted = hook
-                    .compact(
+                    .compact_with_replay(
                         ContextCompactionRequest {
                             trigger: if force_provider_compaction {
                                 crate::ContextCompactionTrigger::InputOverflow {
@@ -1614,6 +1615,7 @@ where
                             require_source_fence: false,
                             source_owner_id: Some(context_operation_id.clone()),
                         },
+                        messages[0].replay_frame().cloned(),
                         cancel.clone(),
                     )
                     .await;
@@ -1694,8 +1696,7 @@ where
                         return Err(*failure.error);
                     }
                 };
-                let usage_state =
-                    compaction_usage_state(&compacted.usages, compacted.usage_complete);
+                let usage_state = compacted.usage_state();
                 for usage in compacted.usages.iter().cloned() {
                     emit!(
                         events,
