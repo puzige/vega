@@ -324,6 +324,12 @@ impl ConversationStream {
         }
     }
 
+    pub(crate) fn message_anchor_rail_has_space(&self) -> bool {
+        self.workspace_width.is_some_and(|width| {
+            width >= Layout::CONVERSATION_MAX_WIDTH + 2. * Layout::CONVERSATION_PADDING
+        })
+    }
+
     pub(crate) fn render_message_anchor_rail(
         &mut self,
         stage_top_insets: &HashMap<usize, f32>,
@@ -351,9 +357,16 @@ impl ConversationStream {
         .size(px(0.));
         self.capture_visible_entry_heights();
         let geometry = self.message_anchor_geometry(stage_top_insets, cx);
-        let shown = geometry.should_show();
+        let shown = self.message_anchor_rail_has_space() && geometry.should_show();
         self.message_anchor_rail_last_shown = shown;
         if !shown {
+            self.message_anchor_rail_hovered = false;
+            self.message_anchor_hovered = None;
+            self.message_anchor_preview_hovered = None;
+            self.message_anchor_keyboard_id = None;
+            if self.message_anchor_focus.is_focused(window) {
+                window.blur(cx);
+            }
             return (observer.into_any_element(), None, false);
         }
         let anchors = geometry
