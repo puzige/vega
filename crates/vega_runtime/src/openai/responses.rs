@@ -1,4 +1,5 @@
 use super::*;
+use crate::ProviderProtocolReason;
 use crate::{ChatRole, ProviderEvent};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -70,12 +71,17 @@ fn invalid() -> VegaError {
     response_error(crate::ProviderFailureKind::Protocol)
 }
 
+fn invalid_response(reason: ProviderProtocolReason) -> VegaError {
+    crate::chat_compat::protocol_error_with_reason(reason)
+}
+
 fn response_error(kind: crate::ProviderFailureKind) -> VegaError {
     VegaError::ProviderDiagnostic {
         kind,
         status: None,
         message: String::new(),
         retryable: false,
+        protocol_reason: None,
         retry_count: None,
         request_id: None,
     }
@@ -275,9 +281,13 @@ struct TextProgress {
 impl TextProgress {
     fn absorb<'a>(&mut self, text: &'a str, done: bool) -> Result<&'a str, VegaError> {
         let suffix = if done {
-            let prefix = text.get(..self.bytes).ok_or_else(invalid)?;
+            let prefix = text
+                .get(..self.bytes)
+                .ok_or_else(|| invalid_response(ProviderProtocolReason::TextSnapshotConflict))?;
             if Sha256::digest(prefix.as_bytes()) != self.digest.clone().finalize() {
-                return Err(invalid());
+                return Err(invalid_response(
+                    ProviderProtocolReason::TextSnapshotConflict,
+                ));
             }
             &text[self.bytes..]
         } else {
@@ -300,7 +310,10 @@ pub(crate) struct Assembler {
 impl Assembler {
     fn text_event(&mut self, event: &Value, kind: &str) -> Result<Vec<ProviderEvent>, VegaError> {
         let mut out = Vec::new();
-        let item = event["item_id"].as_str().ok_or_else(invalid)?.to_owned();
+        let item = event["item_id"]
+            .as_str()
+            .ok_or_else(|| invalid_response(ProviderProtocolReason::ResponseEvent))?
+            .to_owned();
         let index = event["summary_index"]
             .as_u64()
             .or_else(|| event["content_index"].as_u64())
@@ -319,7 +332,7 @@ impl Assembler {
             "delta"
         }]
         .as_str()
-        .ok_or_else(invalid)?;
+        .ok_or_else(|| invalid_response(ProviderProtocolReason::ResponseEvent))?;
         let text = self.deltas.entry(key).or_default().absorb(text, done)?;
         if text.is_empty() {
             return Ok(out);
@@ -369,10 +382,13 @@ impl Assembler {
             });
         }
         if self.terminal {
-            return Err(invalid());
+            return Err(invalid_response(ProviderProtocolReason::AfterTerminal));
         }
-        let event: Value = serde_json::from_str(data).map_err(|_| invalid())?;
-        let kind = event["type"].as_str().ok_or_else(invalid)?;
+        let event: Value = serde_json::from_str(data)
+            .map_err(|_| invalid_response(ProviderProtocolReason::InvalidJson))?;
+        let kind = event["type"]
+            .as_str()
+            .ok_or_else(|| invalid_response(ProviderProtocolReason::ResponseEvent))?;
         let mut out = Vec::new();
         match kind {
             "response.incomplete" => {
@@ -415,7 +431,9 @@ impl Assembler {
                 out.extend(self.text_event(&event, kind)?);
             }
             "response.output_item.added" | "response.output_item.done" => {
-                let index = event["output_index"].as_u64().ok_or_else(invalid)?;
+                let index = event["output_index"]
+                    .as_u64()
+                    .ok_or_else(|| invalid_response(ProviderProtocolReason::ResponseEvent))?;
                 self.items.insert(index, event["item"].clone());
                 if kind.ends_with(".done") {
                     self.complete.insert(index);
@@ -423,12 +441,19 @@ impl Assembler {
                 }
             }
             "response.function_call_arguments.delta" => {
-                let index = event["output_index"].as_u64().ok_or_else(invalid)?;
-                let item = self.items.get_mut(&index).ok_or_else(invalid)?;
-                let delta = event["delta"].as_str().ok_or_else(invalid)?;
+                let index = event["output_index"]
+                    .as_u64()
+                    .ok_or_else(|| invalid_response(ProviderProtocolReason::ResponseEvent))?;
+                let item = self
+                    .items
+                    .get_mut(&index)
+                    .ok_or_else(|| invalid_response(ProviderProtocolReason::ResponseEvent))?;
+                let delta = event["delta"]
+                    .as_str()
+                    .ok_or_else(|| invalid_response(ProviderProtocolReason::ResponseEvent))?;
                 let mut arguments = item["arguments"].as_str().unwrap_or_default().to_owned();
                 if arguments.len().saturating_add(delta.len()) > TOOL_ARGUMENT_LIMIT {
-                    return Err(invalid());
+                    return Err(invalid_response(ProviderProtocolReason::ResponseEvent));
                 }
                 arguments.push_str(delta);
                 item["arguments"] = json!(arguments);
@@ -438,7 +463,7 @@ impl Assembler {
                     .as_str()
                     .is_some_and(|status| status != "completed")
                 {
-                    return Err(invalid());
+                    return Err(invalid_response(ProviderProtocolReason::ResponseOutput));
                 }
                 if let Some(items) = event["response"]["output"].as_array() {
                     for item in self
@@ -450,7 +475,7 @@ impl Assembler {
                             candidate["type"] == "function_call"
                                 && candidate["call_id"] == item["call_id"]
                         }) {
-                            return Err(invalid());
+                            return Err(invalid_response(ProviderProtocolReason::ResponseOutput));
                         }
                     }
                     let mut merged = BTreeMap::new();
@@ -480,7 +505,7 @@ impl Assembler {
                 let mut slots = Vec::with_capacity(self.items.len());
                 for (index, item) in &self.items {
                     if !self.complete.contains(index) {
-                        return Err(invalid());
+                        return Err(invalid_response(ProviderProtocolReason::ResponseOutput));
                     }
                     match item["type"].as_str() {
                         Some("reasoning") => {
@@ -488,21 +513,29 @@ impl Assembler {
                             slots.push(crate::ResponseReplaySlot::Reasoning(item.clone()));
                         }
                         Some("function_call") => {
-                            let arguments = item["arguments"].as_str().ok_or_else(invalid)?;
+                            let arguments = item["arguments"].as_str().ok_or_else(|| {
+                                invalid_response(ProviderProtocolReason::ResponseOutput)
+                            })?;
                             if arguments.len() > TOOL_ARGUMENT_LIMIT
                                 || !serde_json::from_str::<Value>(arguments)
                                     .is_ok_and(|v| v.is_object())
                             {
-                                return Err(invalid());
+                                return Err(invalid_response(
+                                    ProviderProtocolReason::ResponseOutput,
+                                ));
                             }
                             let id = item["call_id"]
                                 .as_str()
                                 .filter(|id| !id.is_empty())
-                                .ok_or_else(invalid)?;
+                                .ok_or_else(|| {
+                                    invalid_response(ProviderProtocolReason::ResponseOutput)
+                                })?;
                             let name = item["name"]
                                 .as_str()
                                 .filter(|name| !name.is_empty())
-                                .ok_or_else(invalid)?;
+                                .ok_or_else(|| {
+                                    invalid_response(ProviderProtocolReason::ResponseOutput)
+                                })?;
                             slots.push(crate::ResponseReplaySlot::FunctionCall {
                                 item: item.clone(),
                                 call_id: id.into(),
@@ -517,11 +550,13 @@ impl Assembler {
                         }
                         Some("message") => {
                             if item["role"].as_str() != Some("assistant") {
-                                return Err(invalid());
+                                return Err(invalid_response(
+                                    ProviderProtocolReason::ResponseOutput,
+                                ));
                             }
                             slots.push(crate::ResponseReplaySlot::Message(item.clone()))
                         }
-                        _ => return Err(invalid()),
+                        _ => return Err(invalid_response(ProviderProtocolReason::ResponseOutput)),
                     }
                 }
                 if !replay.is_empty() {
@@ -538,8 +573,12 @@ impl Assembler {
                 };
                 out.extend(tools);
                 if let Some(usage) = event["response"].get("usage").filter(|v| !v.is_null()) {
-                    let input = usage["input_tokens"].as_u64().ok_or_else(invalid)?;
-                    let output = usage["output_tokens"].as_u64().ok_or_else(invalid)?;
+                    let input = usage["input_tokens"].as_u64().ok_or_else(|| {
+                        invalid_response(ProviderProtocolReason::UsageInconsistent)
+                    })?;
+                    let output = usage["output_tokens"].as_u64().ok_or_else(|| {
+                        invalid_response(ProviderProtocolReason::UsageInconsistent)
+                    })?;
                     let cache_read = usage["input_tokens_details"]["cached_tokens"].as_u64();
                     let cache_write = usage["input_tokens_details"]["cache_write_tokens"].as_u64();
                     if cache_read
@@ -547,7 +586,7 @@ impl Assembler {
                         .saturating_add(cache_write.unwrap_or(0))
                         > input
                     {
-                        return Err(invalid());
+                        return Err(invalid_response(ProviderProtocolReason::UsageInconsistent));
                     }
                     out.push(ProviderEvent::Usage {
                         input,
@@ -637,10 +676,88 @@ pub(super) fn event_stream_with_recovery(
                     }
                     Some(Err(_)) => {
                         ended = true;
-                        pending.push_back(Err(invalid()));
+                        pending.push_back(Err(invalid_response(ProviderProtocolReason::SseDecode)));
                     }
                 }
             }
         },
     ))
+}
+
+#[cfg(test)]
+mod protocol_diagnostics_tests {
+    use super::*;
+
+    #[test]
+    fn response_rejections_are_distinct_without_payloads() {
+        for (frame, expected) in [
+            ("private-sentinel", "invalid_json"),
+            ("{}", "response_event"),
+            (
+                r#"{"type":"response.completed","response":{"status":"failed"}}"#,
+                "response_output",
+            ),
+            (
+                r#"{"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"input_tokens_details":{"cached_tokens":2}}}}"#,
+                "usage_inconsistent",
+            ),
+        ] {
+            let error = Assembler::default().absorb(frame).err().expect("reject");
+            assert_eq!(error.diagnostic_metrics().protocol_reason, Some(expected));
+            assert!(!format!("{error:?} {error}").contains("private-sentinel"));
+        }
+        let mut parser = Assembler::default();
+        parser
+            .absorb(r#"{"type":"response.output_text.delta","item_id":"m","delta":"hello"}"#)
+            .expect("delta");
+        let error = parser
+            .absorb(
+                r#"{"type":"response.output_text.done","item_id":"m","text":"private-sentinel"}"#,
+            )
+            .err()
+            .expect("snapshot mismatch");
+        assert_eq!(
+            error.diagnostic_metrics().protocol_reason,
+            Some("text_snapshot_conflict")
+        );
+    }
+
+    #[test]
+    fn completed_response_emits_text_and_tools_but_rejects_late_events() {
+        let mut parser = Assembler::default();
+        let events = parser.absorb(r#"{"type":"response.completed","response":{"status":"completed","output":[{"id":"m","type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]},{"id":"f","type":"function_call","call_id":"call","name":"read","arguments":"{}"}]}}"#).expect("complete");
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, ProviderEvent::TextDelta(text) if text == "ok"))
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, ProviderEvent::ToolUse { .. }))
+                .count(),
+            1
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse
+            }
+        )));
+        assert_eq!(
+            parser
+                .absorb("{}")
+                .err()
+                .expect("late event")
+                .diagnostic_metrics()
+                .protocol_reason,
+            Some("after_terminal")
+        );
+        assert_eq!(
+            recovery::incomplete_stream_error()
+                .diagnostic_metrics()
+                .failure_kind,
+            Some("stream_interrupted")
+        );
+    }
 }

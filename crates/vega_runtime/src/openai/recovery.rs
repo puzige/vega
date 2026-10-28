@@ -155,6 +155,7 @@ impl RecoveryStream {
                             status: Some(status),
                             message: format!("provider request failed (HTTP {status}): {snippet}"),
                             retryable,
+                            protocol_reason: None,
                             retry_count: Some(self.attempt),
                             request_id,
                         },
@@ -173,6 +174,7 @@ impl RecoveryStream {
                         retryable: !error.is_builder()
                             && !error.is_redirect()
                             && !error.is_decode(),
+                        protocol_reason: None,
                         retry_count: Some(self.attempt),
                         request_id: None,
                     },
@@ -225,6 +227,7 @@ impl RecoveryStream {
                     kind,
                     status,
                     message,
+                    protocol_reason,
                     request_id,
                     ..
                 } => VegaError::ProviderDiagnostic {
@@ -235,6 +238,7 @@ impl RecoveryStream {
                     status: status.or(self.metadata.http_status),
                     message,
                     retryable: false,
+                    protocol_reason,
                     retry_count: Some(self.attempt),
                     request_id: request_id.or_else(|| self.metadata.request_id.clone()),
                 },
@@ -250,6 +254,7 @@ pub(super) fn incomplete_stream_error() -> VegaError {
         status: None,
         message: "provider stream ended before completion".into(),
         retryable: true,
+        protocol_reason: None,
         retry_count: None,
         request_id: None,
     }
@@ -261,7 +266,73 @@ fn transport_timeout_error() -> VegaError {
         status: None,
         message: "provider request timed out".into(),
         retryable: true,
+        protocol_reason: None,
         retry_count: None,
         request_id: None,
+    }
+}
+
+#[cfg(test)]
+mod protocol_diagnostics_tests {
+    use super::*;
+
+    fn state(visible: bool, exhausted: bool) -> RecoveryStream {
+        let provider =
+            OpenAiProvider::new("https://example.invalid/v1", "synthetic").expect("client");
+        let attempt = if exhausted {
+            provider.recovery_retry.max_retries
+        } else {
+            0
+        };
+        let error = crate::chat_compat::protocol_error_with_reason(
+            crate::ProviderProtocolReason::InvalidJson,
+        );
+        RecoveryStream {
+            provider,
+            request: ChatRequest::default(),
+            body: serde_json::json!({}),
+            cancel: CancellationToken::new(),
+            stream: Some(Box::pin(futures::stream::iter(vec![Err(error)]))),
+            metadata: ProviderResponseMetadata {
+                http_status: Some(200),
+                request_id: Some("synthetic-request".into()),
+                retry_count: None,
+            },
+            attempt,
+            delay: None,
+            completed: false,
+            emitted_visible: visible,
+            ended: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_protocol_error_preserves_reason_and_response_metadata() {
+        for (visible, exhausted) in [(true, false), (false, true)] {
+            let mut state = state(visible, exhausted);
+            let expected_attempt = state.attempt;
+            let error = state
+                .next()
+                .await
+                .expect("event")
+                .err()
+                .expect("terminal error");
+            let metrics = error.diagnostic_metrics();
+            assert_eq!(metrics.protocol_reason, Some("invalid_json"));
+            assert_eq!(metrics.provider.http_status, Some(200));
+            assert_eq!(metrics.provider.retry_count, Some(expected_attempt));
+            assert_eq!(
+                metrics.provider.request_id.as_deref(),
+                Some("synthetic-request")
+            );
+            assert!(state.ended);
+        }
+        let mut state = state(false, false);
+        assert!(matches!(
+            state.next().await,
+            Some(Ok(ProviderEvent::RetryScheduled { attempt: 1, .. }))
+        ));
+        assert!(!state.ended);
+        assert!(state.stream.is_none());
     }
 }

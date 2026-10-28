@@ -84,9 +84,21 @@ pub(crate) fn protocol_error() -> VegaError {
         status: None,
         message: "Chat Completions protocol data is invalid or unsupported".into(),
         retryable: false,
+        protocol_reason: None,
         retry_count: None,
         request_id: None,
     }
+}
+
+pub(crate) fn protocol_error_with_reason(reason: crate::ProviderProtocolReason) -> VegaError {
+    let mut error = protocol_error();
+    if let VegaError::ProviderDiagnostic {
+        protocol_reason, ..
+    } = &mut error
+    {
+        *protocol_reason = Some(reason);
+    }
+    error
 }
 
 /// The provider stated, inside an established response, that it cannot serve
@@ -98,6 +110,7 @@ pub(crate) fn overloaded_error() -> VegaError {
         status: None,
         message: "provider reported it is temporarily unavailable".into(),
         retryable: true,
+        protocol_reason: None,
         retry_count: None,
         request_id: None,
     }
@@ -124,6 +137,7 @@ pub(crate) fn rejected_error() -> VegaError {
         status: None,
         message: "provider reported the response could not be completed".into(),
         retryable: false,
+        protocol_reason: None,
         retry_count: None,
         request_id: None,
     }
@@ -157,7 +171,7 @@ pub(crate) fn stream_error_frame(error: &serde_json::Value) -> VegaError {
     } else if error.is_object() {
         rejected_error()
     } else {
-        protocol_error()
+        protocol_error_with_reason(crate::ProviderProtocolReason::InvalidFrame)
     }
 }
 

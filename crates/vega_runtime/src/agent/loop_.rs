@@ -282,6 +282,7 @@ fn primary_attempt_event(
     if let Some(error) = error {
         let detail = error.diagnostic_metrics();
         metrics.runtime_stage = detail.runtime_stage;
+        metrics.protocol_reason = detail.protocol_reason;
         metrics.runtime_reason = detail.runtime_reason;
         metrics.sqlite_code = detail.sqlite_code;
         metrics.sqlite_extended_code = detail.sqlite_extended_code;
@@ -2150,6 +2151,7 @@ where
                             status: None,
                             message: "duplicate reasoning replay in one provider call".into(),
                             retryable: false,
+                            protocol_reason: None,
                             retry_count: None,
                             request_id: None,
                         })
@@ -2189,6 +2191,7 @@ where
                             status: None,
                             message: "duplicate chat reasoning state in one provider call".into(),
                             retryable: false,
+                            protocol_reason: None,
                             retry_count: None,
                             request_id: None,
                         };
@@ -2241,6 +2244,7 @@ where
                             status: None,
                             message: "duplicate response replay layout in one provider call".into(),
                             retryable: false,
+                            protocol_reason: None,
                             retry_count: None,
                             request_id: None,
                         };
@@ -2549,6 +2553,7 @@ where
                 status: None,
                 message: "provider stream ended without a terminal event".into(),
                 retryable: false,
+                protocol_reason: Some(crate::ProviderProtocolReason::MissingTerminal),
                 retry_count: None,
                 request_id: None,
             })

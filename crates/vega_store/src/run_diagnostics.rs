@@ -144,6 +144,7 @@ impl DiagnosticStopReason {
 #[serde(rename_all = "snake_case")]
 pub struct DiagnosticMetrics {
     pub runtime_stage: Option<String>,
+    pub protocol_reason: Option<String>,
     pub runtime_reason: Option<String>,
     pub sqlite_code: Option<i32>,
     pub sqlite_extended_code: Option<i32>,
@@ -258,10 +259,10 @@ pub fn insert(conn: &Connection, event: &NewDiagnosticEvent) -> Result<i64, Diag
           thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state,
           failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens,
           cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes,
-          tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index, runtime_stage, runtime_reason, sqlite_code, sqlite_extended_code, io_kind
+          tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index, runtime_stage, runtime_reason, sqlite_code, sqlite_extended_code, io_kind, protocol_reason
         ) VALUES (
           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-          ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35
+          ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36
         )",
         params![
             event.thread_id,
@@ -345,6 +346,7 @@ pub fn insert(conn: &Connection, event: &NewDiagnosticEvent) -> Result<i64, Diag
             event.metrics.sqlite_code,
             event.metrics.sqlite_extended_code,
             event.metrics.io_kind,
+            event.metrics.protocol_reason,
 
         ],
     )?;
@@ -358,7 +360,7 @@ pub fn read_by_run(
 ) -> Result<Vec<DiagnosticEvent>, DiagnosticError> {
     validate_identity(thread_id, "thread_id")?;
     validate_identity(run_id, "run_id")?;
-    let mut statement = conn.prepare("SELECT id, thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state, failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes, tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index, runtime_stage, runtime_reason, sqlite_code, sqlite_extended_code, io_kind FROM run_diagnostic_events WHERE thread_id = ?1 AND run_id = ?2 ORDER BY id")?;
+    let mut statement = conn.prepare("SELECT id, thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state, failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes, tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index, runtime_stage, runtime_reason, sqlite_code, sqlite_extended_code, io_kind, protocol_reason FROM run_diagnostic_events WHERE thread_id = ?1 AND run_id = ?2 ORDER BY id")?;
     let rows = statement.query_map(params![thread_id, run_id], read_row)?;
     rows.collect::<Result<Vec<_>, _>>()?
         .into_iter()
@@ -371,7 +373,7 @@ pub fn read_by_thread(
     thread_id: &str,
 ) -> Result<Vec<DiagnosticEvent>, DiagnosticError> {
     validate_identity(thread_id, "thread_id")?;
-    let mut statement = conn.prepare("SELECT id, thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state, failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes, tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index, runtime_stage, runtime_reason, sqlite_code, sqlite_extended_code, io_kind FROM run_diagnostic_events WHERE thread_id = ?1 ORDER BY id")?;
+    let mut statement = conn.prepare("SELECT id, thread_id, run_id, attempt_id, parent_attempt_id, tool_call_id, phase, state, failure_code, occurred_at, duration_ms, stop_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, visible_output_bytes, tool_output_bytes, tool_truncated, http_status, request_id, retry_count, failure_source, failure_kind, failure_scope, failure_observed, failure_limit, failure_units, failure_observed_items, failure_limit_items, failure_tool_index, runtime_stage, runtime_reason, sqlite_code, sqlite_extended_code, io_kind, protocol_reason FROM run_diagnostic_events WHERE thread_id = ?1 ORDER BY id")?;
     let rows = statement.query_map([thread_id], read_row)?;
     rows.collect::<Result<Vec<_>, _>>()?
         .into_iter()
@@ -523,6 +525,7 @@ fn validate(event: &NewDiagnosticEvent) -> Result<(), DiagnosticError> {
             field: "failure_kind",
         });
     }
+    validate_protocol_reason(&event.metrics)?;
     if event.metrics.failure_scope.as_deref().is_some_and(|value| {
         !matches!(
             value,
@@ -583,6 +586,38 @@ fn validate_identity(value: &str, field: &'static str) -> Result<(), DiagnosticE
     } else {
         Err(DiagnosticError::InvalidField { field })
     }
+}
+
+fn validate_protocol_reason(metrics: &DiagnosticMetrics) -> Result<(), DiagnosticError> {
+    if let Some(reason) = metrics.protocol_reason.as_deref()
+        && (metrics.failure_source.as_deref() != Some("provider")
+            || metrics.failure_kind.as_deref() != Some("protocol")
+            || !matches!(
+                reason,
+                "invalid_json"
+                    | "invalid_frame"
+                    | "invalid_delta"
+                    | "after_terminal"
+                    | "reasoning_alias_conflict"
+                    | "reasoning_detail"
+                    | "tool_fragment"
+                    | "tool_identity_conflict"
+                    | "incomplete_tool"
+                    | "terminal_conflict"
+                    | "missing_terminal"
+                    | "sse_decode"
+                    | "frame_capacity"
+                    | "response_event"
+                    | "text_snapshot_conflict"
+                    | "response_output"
+                    | "usage_inconsistent"
+            ))
+    {
+        return Err(DiagnosticError::InvalidField {
+            field: "protocol_reason",
+        });
+    }
+    Ok(())
 }
 
 fn validate_runtime_details(metrics: &DiagnosticMetrics) -> Result<(), DiagnosticError> {
@@ -675,6 +710,7 @@ fn sql_i64(value: u64) -> Result<i64, std::num::TryFromIntError> {
 }
 
 struct RawEvent {
+    protocol_reason: Option<String>,
     runtime_stage: Option<String>,
     runtime_reason: Option<String>,
     sqlite_code: Option<i32>,
@@ -716,6 +752,7 @@ struct RawEvent {
 
 fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawEvent> {
     Ok(RawEvent {
+        protocol_reason: row.get(36)?,
         runtime_stage: row.get(31)?,
         runtime_reason: row.get(32)?,
         sqlite_code: row.get(33)?,
@@ -780,6 +817,7 @@ impl TryFrom<RawEvent> for DiagnosticEvent {
                     })
                     .transpose()?,
                 metrics: DiagnosticMetrics {
+                    protocol_reason: raw.protocol_reason,
                     runtime_stage: raw.runtime_stage,
                     runtime_reason: raw.runtime_reason,
                     sqlite_code: raw.sqlite_code,
@@ -818,6 +856,7 @@ impl TryFrom<RawEvent> for DiagnosticEvent {
                 },
             },
         };
+        validate_protocol_reason(&event.event.metrics)?;
         validate_runtime_details(&event.event.metrics)?;
         Ok(event)
     }
@@ -893,5 +932,81 @@ fn parse_failure(value: &str) -> Result<DiagnosticFailureCode, DiagnosticError> 
         _ => Err(DiagnosticError::InvalidField {
             field: "failure_code",
         }),
+    }
+}
+
+#[cfg(test)]
+mod protocol_diagnostics_tests {
+    use super::*;
+
+    #[test]
+    fn protocol_reasons_survive_storage_and_reject_untrusted_values() {
+        let store = crate::Store::open(":memory:").expect("store");
+        store.migrate().expect("all migrations");
+        let conn = store.conn();
+        conn.execute("INSERT INTO threads (id, title, model, created_at, updated_at) VALUES ('synthetic-thread', '', 'synthetic', 0, 0)", []).expect("thread");
+        let mut event = NewDiagnosticEvent {
+            thread_id: "synthetic-thread".into(),
+            run_id: "run".into(),
+            attempt_id: "attempt".into(),
+            parent_attempt_id: None,
+            tool_call_id: None,
+            phase: DiagnosticPhase::ContextSummary,
+            state: DiagnosticState::Started,
+            failure_code: None,
+            occurred_at: 0,
+            duration_ms: None,
+            metrics: DiagnosticMetrics::default(),
+        };
+        insert(conn, &event).expect("start");
+        event.state = DiagnosticState::Failed;
+        event.failure_code = Some(DiagnosticFailureCode::ProviderProtocol);
+        event.duration_ms = Some(1);
+        event.metrics.failure_source = Some("provider".into());
+        event.metrics.failure_kind = Some("protocol".into());
+        event.metrics.protocol_reason = Some("invalid_json".into());
+        let id = insert(conn, &event).expect("failure");
+        let rows = read_by_run(conn, "synthetic-thread", "run").expect("read");
+        assert_eq!(rows[0].event.metrics.protocol_reason, None);
+        assert_eq!(rows[1].event, event);
+        assert_eq!(
+            read_by_thread(conn, "synthetic-thread").expect("thread read"),
+            rows
+        );
+        assert!(
+            !export_run(conn, "synthetic-thread", "run")
+                .expect("export")
+                .contains("private-sentinel")
+        );
+        event.metrics.protocol_reason = Some("private-sentinel".into());
+        assert!(matches!(
+            validate(&event),
+            Err(DiagnosticError::InvalidField {
+                field: "protocol_reason"
+            })
+        ));
+        assert!(
+            conn.execute(
+                "UPDATE run_diagnostic_events SET protocol_reason='private-sentinel' WHERE id=?1",
+                [id]
+            )
+            .is_err()
+        );
+        event.metrics.protocol_reason = Some("invalid_json".into());
+        for (source, kind) in [
+            (None, Some("protocol")),
+            (Some("runtime"), Some("protocol")),
+            (Some("provider"), Some("overloaded")),
+        ] {
+            event.metrics.failure_source = source.map(str::to_owned);
+            event.metrics.failure_kind = kind.map(str::to_owned);
+            assert!(matches!(
+                validate(&event),
+                Err(DiagnosticError::InvalidField {
+                    field: "protocol_reason"
+                })
+            ));
+            assert!(conn.execute("UPDATE run_diagnostic_events SET failure_source=?1, failure_kind=?2 WHERE id=?3", params![source, kind, id]).is_err());
+        }
     }
 }

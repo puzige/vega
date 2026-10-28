@@ -264,6 +264,7 @@ impl OpenAiProvider {
                             status: Some(status),
                             message,
                             retryable: false,
+                            protocol_reason: None,
                             retry_count: Some(attempt),
                             request_id,
                         });
@@ -277,6 +278,7 @@ impl OpenAiProvider {
                                 self.retry.max_retries
                             ),
                             retryable: false,
+                            protocol_reason: None,
                             retry_count: Some(attempt),
                             request_id,
                         });
@@ -296,6 +298,7 @@ impl OpenAiProvider {
                             status: None,
                             message,
                             retryable: false,
+                            protocol_reason: None,
                             retry_count: Some(attempt),
                             request_id: None,
                         });

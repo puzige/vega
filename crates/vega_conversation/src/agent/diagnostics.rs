@@ -185,6 +185,7 @@ impl DiagnosticsWriter {
             duration_ms: attempt.duration_ms,
             metrics: DiagnosticMetrics {
                 runtime_stage: attempt.metrics.runtime_stage.map(str::to_owned),
+                protocol_reason: attempt.metrics.protocol_reason.map(str::to_owned),
                 runtime_reason: attempt.metrics.runtime_reason.map(str::to_owned),
                 sqlite_code: attempt.metrics.sqlite_code,
                 sqlite_extended_code: attempt.metrics.sqlite_extended_code,
@@ -352,6 +353,7 @@ pub(crate) fn failure_metrics(error: &vega_runtime::VegaError) -> DiagnosticMetr
     let detail = error.diagnostic_metrics();
     let mut metrics = DiagnosticMetrics {
         runtime_stage: detail.runtime_stage.map(str::to_owned),
+        protocol_reason: detail.protocol_reason.map(str::to_owned),
         runtime_reason: detail.runtime_reason.map(str::to_owned),
         sqlite_code: detail.sqlite_code,
         sqlite_extended_code: detail.sqlite_extended_code,
@@ -391,6 +393,7 @@ pub(crate) fn with_failure_metrics(
 ) -> DiagnosticMetrics {
     let detail = failure_metrics(error);
     metrics.runtime_stage = detail.runtime_stage;
+    metrics.protocol_reason = detail.protocol_reason;
     metrics.runtime_reason = detail.runtime_reason;
     metrics.sqlite_code = detail.sqlite_code;
     metrics.sqlite_extended_code = detail.sqlite_extended_code;
@@ -461,4 +464,40 @@ fn now_ms() -> i64 {
         .ok()
         .and_then(|duration| i64::try_from(duration.as_millis()).ok())
         .unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod protocol_diagnostics_tests {
+    use super::*;
+
+    #[test]
+    fn summary_failure_mapping_preserves_closed_reason_and_usage() {
+        let error = vega_runtime::VegaError::ProviderDiagnostic {
+            kind: vega_runtime::ProviderFailureKind::Protocol,
+            protocol_reason: Some(vega_runtime::ProviderProtocolReason::InvalidJson),
+            status: Some(200),
+            message: "private-sentinel".into(),
+            retryable: false,
+            retry_count: Some(2),
+            request_id: None,
+        };
+        let metrics = with_failure_metrics(
+            DiagnosticMetrics {
+                input_tokens: Some(10),
+                ..Default::default()
+            },
+            &error,
+        );
+        assert_eq!(metrics.protocol_reason.as_deref(), Some("invalid_json"));
+        assert_eq!(metrics.failure_source.as_deref(), Some("provider"));
+        assert_eq!(metrics.failure_kind.as_deref(), Some("protocol"));
+        assert_eq!(metrics.input_tokens, Some(10));
+        assert_eq!(metrics.http_status, Some(200));
+        assert_eq!(metrics.retry_count, Some(2));
+        assert!(
+            !serde_json::to_string(&metrics)
+                .expect("serialize")
+                .contains("private-sentinel")
+        );
+    }
 }
