@@ -76,6 +76,7 @@ impl VegaWindow {
                     if draft.permission_mode == PermissionMode::FullAccess {
                         draft.permission_mode = PermissionMode::Confirm;
                     }
+                    draft.draft_authority_epoch = None;
                     draft.full_access_grant = None;
                     draft.default_permission = None;
                     draft

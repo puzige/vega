@@ -12,7 +12,6 @@ pub(crate) struct DefaultPermissionState {
     error: Option<DefaultPermissionError>,
     picker_focus: FocusHandle,
     cancel_focus: FocusHandle,
-    confirm_focus: FocusHandle,
     reload_focus: FocusHandle,
     focus_pending: Option<PermissionFocus>,
 }
@@ -20,7 +19,6 @@ pub(crate) struct DefaultPermissionState {
 enum PermissionPhase {
     Idle,
     Preparing(u64),
-    Confirming(DefaultPermissionChange),
     Saving(u64),
     Reloading(u64),
 }
@@ -34,7 +32,6 @@ enum PermissionFocus {
 
 #[derive(Clone, Copy)]
 enum PermissionAction {
-    Confirm,
     Cancel,
     Reload,
 }
@@ -48,7 +45,6 @@ impl DefaultPermissionState {
             error: None,
             picker_focus: cx.focus_handle().tab_stop(true),
             cancel_focus: cx.focus_handle().tab_stop(true),
-            confirm_focus: cx.focus_handle().tab_stop(true),
             reload_focus: cx.focus_handle().tab_stop(true),
             focus_pending: None,
         }
@@ -144,11 +140,7 @@ impl SettingsView {
                     return;
                 }
                 match result {
-                    Ok(change) if mode == PermissionMode::FullAccess => {
-                        this.default_permission.phase = PermissionPhase::Confirming(change);
-                        this.default_permission.focus_pending = Some(PermissionFocus::Cancel);
-                    }
-                    Ok(change) => this.save_default_permission(change, false, cx),
+                    Ok(change) => this.save_default_permission(change, cx),
                     Err(error) => this.default_permission_failed(error),
                 }
                 cx.notify();
@@ -158,12 +150,7 @@ impl SettingsView {
         cx.notify();
     }
 
-    fn save_default_permission(
-        &mut self,
-        change: DefaultPermissionChange,
-        confirmed: bool,
-        cx: &mut Context<Self>,
-    ) {
+    fn save_default_permission(&mut self, change: DefaultPermissionChange, cx: &mut Context<Self>) {
         if self.provider_management.saving
             || self.codex_profile_saving
             || self.default_permission.saving()
@@ -183,7 +170,7 @@ impl SettingsView {
         self.default_permission.focus_pending = Some(PermissionFocus::Picker);
         let worker = cx
             .background_executor()
-            .spawn(async move { service.save(&change, confirmed) });
+            .spawn(async move { service.save(&change) });
         cx.spawn(async move |this, cx| {
             let result = worker.await;
             let _ = this.update(cx, |this, cx| {
@@ -330,11 +317,6 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) {
         match action {
-            PermissionAction::Confirm => {
-                if let PermissionPhase::Confirming(change) = &self.default_permission.phase {
-                    self.save_default_permission(change.clone(), true, cx);
-                }
-            }
             PermissionAction::Cancel => {
                 self.guard_default_permission_close(window, cx);
             }
@@ -350,11 +332,6 @@ impl SettingsView {
     ) -> AnyElement {
         let colors = theme(cx).colors;
         let (id, label, focus) = match action {
-            PermissionAction::Confirm => (
-                "default-permission-confirm",
-                t("settings.permission.enable_future"),
-                &self.default_permission.confirm_focus,
-            ),
             PermissionAction::Cancel => (
                 "default-permission-cancel",
                 t("settings.action.cancel"),
@@ -409,39 +386,6 @@ impl SettingsView {
         let colors = theme(cx).colors;
         let preferences_saving = self.provider_management.saving || self.codex_profile_saving;
         match &self.default_permission.phase {
-            PermissionPhase::Confirming(_) => settings_section()
-                .p(px(Layout::SETTINGS_CONTENT_GAP))
-                .rounded(px(Layout::PANEL_RADIUS))
-                .border_1()
-                .border_color(colors.warning)
-                .child(section_title(
-                    t("settings.permission.confirm_future"),
-                    colors.text_primary,
-                ))
-                .child(div().child(t("settings.permission.future_scope")))
-                .child(
-                    div()
-                        .text_color(colors.warning)
-                        .child(t("settings.permission.full_access_risk")),
-                )
-                .child(div().child(t("settings.permission.persistent_effects")))
-                .when(preferences_saving, |panel| {
-                    panel.child(settings_status(
-                        t("settings.permission.wait_preferences"),
-                        colors.text_secondary,
-                        colors,
-                    ))
-                })
-                .child(
-                    settings_actions()
-                        .child(self.permission_button(PermissionAction::Cancel, true, cx))
-                        .child(self.permission_button(
-                            PermissionAction::Confirm,
-                            !preferences_saving,
-                            cx,
-                        )),
-                )
-                .into_any_element(),
             PermissionPhase::Saving(_) => settings_status(
                 t("settings.permission.saving"),
                 colors.text_secondary,

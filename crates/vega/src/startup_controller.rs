@@ -1,4 +1,7 @@
-use std::{sync::mpsc, time::Duration};
+use std::{
+    sync::mpsc,
+    time::{Duration, Instant},
+};
 
 use gpui_kit::{prelude::*, *};
 use vega_conversation::types::{PermissionResetError, StartupError};
@@ -10,19 +13,24 @@ actions!(startup, [NextFocus, PreviousFocus]);
 
 pub(crate) struct StartupView {
     running: bool,
+    loading_epoch: Instant,
+    loading_focus: FocusHandle,
     error: Option<StartupError>,
     retry_focus: FocusHandle,
     quit_focus: FocusHandle,
 }
 
 impl StartupView {
-    pub(crate) fn new(cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        vega_ui::interaction::observe_system_motion(window, cx);
         cx.bind_keys([
             KeyBinding::new("tab", NextFocus, Some("Startup")),
             KeyBinding::new("shift-tab", PreviousFocus, Some("Startup")),
         ]);
         Self {
             running: false,
+            loading_epoch: Instant::now(),
+            loading_focus: cx.focus_handle(),
             error: None,
             retry_focus: cx.focus_handle(),
             quit_focus: cx.focus_handle(),
@@ -35,7 +43,8 @@ impl StartupView {
         }
         self.running = true;
         self.error = None;
-        window.focus(&self.quit_focus, cx);
+        self.loading_epoch = Instant::now();
+        window.focus(&self.loading_focus, cx);
         cx.notify();
         let (sender, receiver) = mpsc::channel();
         if std::thread::Builder::new()
@@ -168,6 +177,23 @@ impl StartupView {
 impl Render for StartupView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(cx).colors;
+        if self.error.is_none() {
+            return div()
+                .id("startup-loading")
+                .key_context("Startup")
+                .track_focus(&self.loading_focus)
+                .aria_label(t("app.startup.loading"))
+                .size_full()
+                .bg(colors.bg_base)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(crate::loading_logo::loading_logo(
+                    self.loading_epoch,
+                    colors,
+                ))
+                .into_any_element();
+        }
         div()
             .id("startup")
             .key_context("Startup")
@@ -199,11 +225,7 @@ impl Render for StartupView {
                         div()
                             .text_size(px(Typography::SETTINGS_TITLE))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(t(if self.running {
-                                "app.startup.loading"
-                            } else {
-                                "app.startup.failed"
-                            })),
+                            .child(t("app.startup.failed")),
                     )
                     .when_some(self.error, |content, error| {
                         content.child(div().text_color(colors.danger).child(t(error_key(error))))
@@ -216,6 +238,7 @@ impl Render for StartupView {
                             .child(self.button(false, cx)),
                     ),
             )
+            .into_any_element()
     }
 }
 

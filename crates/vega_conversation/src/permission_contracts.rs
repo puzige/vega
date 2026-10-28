@@ -4,8 +4,7 @@ use vega_store::Store;
 
 use crate::types::{
     ConversationError, DefaultPermissionChange, DefaultPermissionError, DefaultPermissionSnapshot,
-    DefaultPermissionValues, FullAccessGrant, FullAccessScope, PermissionMode, TaskBackend, Thread,
-    ThreadStatus,
+    DefaultPermissionValues, PermissionMode, TaskBackend, Thread, ThreadStatus,
 };
 
 static COORDINATION: Mutex<()> = Mutex::new(());
@@ -34,7 +33,7 @@ pub fn default_permission_snapshot(
         configuration_id: config_path.and_then(|path| configuration_identity(path).ok()),
         permission_mode: defaults.permission_mode.clone(),
         permission_revision: defaults.permission_revision,
-        full_access_grant: defaults.full_access_grant.clone(),
+        full_access_grant: None,
     }
 }
 
@@ -49,7 +48,7 @@ fn configuration_identity(path: &std::path::Path) -> Result<String, Conversation
 }
 
 pub(crate) struct DraftCreationGuard {
-    config: Option<vega_store::config::ConfigEdit>,
+    _config: Option<vega_store::config::ConfigEdit>,
     draft: Thread,
     _coordination: MutexGuard<'static, ()>,
 }
@@ -76,7 +75,7 @@ impl DraftCreationGuard {
             return Err(ConversationError::InvalidTaskIdentity);
         }
         let config = if let Some(snapshot) = &draft.default_permission {
-            if draft.permission_revision != 0 || draft.full_access_grant.is_some() {
+            if draft.permission_revision != 0 {
                 return Err(ConversationError::InvalidTaskIdentity);
             }
             let path = snapshot
@@ -89,26 +88,16 @@ impl DraftCreationGuard {
                 || snapshot.permission_mode != draft.permission_mode.as_str()
                 || edit.config.defaults.permission_mode != snapshot.permission_mode
                 || edit.config.defaults.permission_revision != snapshot.permission_revision
-                || edit.config.defaults.full_access_grant != snapshot.full_access_grant
             {
                 return Err(ConversationError::InvalidTaskIdentity);
             }
             Some(edit)
         } else {
-            match draft.permission_mode {
-                PermissionMode::FullAccess => {
-                    verify_thread_grant(store.conn(), &draft.id, draft.full_access_grant.as_ref())?;
-                }
-                _ if draft.full_access_grant.is_some() => {
-                    return Err(ConversationError::InvalidTaskIdentity);
-                }
-                _ => {}
-            }
             None
         };
         Ok(Self {
             _coordination: coordination,
-            config,
+            _config: config,
             draft: draft.clone(),
         })
     }
@@ -119,40 +108,18 @@ impl DraftCreationGuard {
     ) -> Result<Thread, ConversationError> {
         let state =
             vega_store::permission_contracts::load_state(transaction).map_err(storage_error)?;
-        if state.reset_pending {
+        if state.reset_pending
+            || self
+                .draft
+                .draft_authority_epoch
+                .as_ref()
+                .is_some_and(|epoch| epoch != &state.authority_epoch)
+        {
             return Err(ConversationError::InvalidTaskIdentity);
         }
         let mut thread = self.draft.clone();
-        if let (Some(edit), Some(snapshot)) = (&self.config, &thread.default_permission) {
-            let default_grant: Option<FullAccessGrant> = edit
-                .config
-                .defaults
-                .full_access_grant
-                .as_deref()
-                .map(serde_json::from_str)
-                .transpose()
-                .map_err(|_| ConversationError::InvalidTaskIdentity)?;
-            if thread.permission_mode == PermissionMode::FullAccess {
-                let grant = default_grant.ok_or(ConversationError::InvalidTaskIdentity)?;
-                let configuration_id = snapshot
-                    .configuration_id
-                    .clone()
-                    .ok_or(ConversationError::InvalidTaskIdentity)?;
-                if !grant.verifies(
-                    &state.authority_epoch,
-                    &FullAccessScope::FutureThreads { configuration_id },
-                ) {
-                    return Err(ConversationError::InvalidTaskIdentity);
-                }
-                thread.full_access_grant = Some(
-                    grant
-                        .derive_thread(&thread.id, crate::threads::now_ms())
-                        .ok_or(ConversationError::InvalidTaskIdentity)?,
-                );
-            } else if default_grant.is_some() {
-                return Err(ConversationError::InvalidTaskIdentity);
-            }
-        }
+        thread.draft_authority_epoch = None;
+        thread.full_access_grant = None;
         thread.default_permission = None;
         crate::threads::materialize_draft_in_transaction(transaction, &thread)
     }
@@ -163,7 +130,6 @@ pub fn change_thread_permission(
     thread_id: &str,
     expected_revision: i64,
     mode: PermissionMode,
-    confirmed_full_access: bool,
     issued_at: i64,
 ) -> Result<Thread, ConversationError> {
     let _coordination = coordinate()?;
@@ -172,35 +138,16 @@ pub fn change_thread_permission(
     let transaction = store.immediate_transaction().map_err(storage_error)?;
     let state =
         vega_store::permission_contracts::load_state(&transaction).map_err(storage_error)?;
-    if state.reset_pending || (mode == PermissionMode::FullAccess && !confirmed_full_access) {
+    if state.reset_pending {
         return Err(ConversationError::InvalidTaskIdentity);
     }
-    let grant = if mode == PermissionMode::FullAccess {
-        Some(
-            FullAccessGrant::confirmed(
-                &state.authority_epoch,
-                FullAccessScope::Thread {
-                    thread_id: thread_id.to_owned(),
-                },
-                issued_at,
-            )
-            .ok_or(ConversationError::InvalidTaskIdentity)?,
-        )
-    } else {
-        None
-    };
-    let encoded = grant
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()
-        .map_err(|_| ConversationError::InvalidTaskIdentity)?;
     if !vega_store::permission_contracts::compare_exchange_thread(
         &transaction,
         thread_id,
         expected_revision,
         &state.authority_epoch,
         mode.as_str(),
-        encoded.as_deref(),
+        None,
         issued_at,
     )
     .map_err(storage_error)?
@@ -242,7 +189,6 @@ impl DefaultPermissionService {
         let change = self.capture(mode)?;
         if change.source.permission_mode != expected.permission_mode
             || change.source.permission_revision != expected.permission_revision
-            || change.source.full_access_grant != expected.full_access_grant
         {
             return Err(DefaultPermissionError::Conflict);
         }
@@ -298,11 +244,7 @@ impl DefaultPermissionService {
     pub fn save(
         &self,
         change: &DefaultPermissionChange,
-        confirmed_full_access: bool,
     ) -> Result<DefaultPermissionValues, DefaultPermissionError> {
-        if change.mode == PermissionMode::FullAccess && !confirmed_full_access {
-            return Err(DefaultPermissionError::ConfirmationRequired);
-        }
         let _coordination = coordinate().map_err(|_| DefaultPermissionError::Unavailable)?;
         let identity = configuration_identity(&self.config_path)
             .map_err(|_| DefaultPermissionError::Unavailable)?;
@@ -332,27 +274,9 @@ impl DefaultPermissionService {
         {
             return Err(DefaultPermissionError::Conflict);
         }
-        let grant = if change.mode == PermissionMode::FullAccess {
-            Some(
-                FullAccessGrant::confirmed(
-                    &state.authority_epoch,
-                    FullAccessScope::FutureThreads {
-                        configuration_id: identity.clone(),
-                    },
-                    crate::threads::now_ms(),
-                )
-                .ok_or(DefaultPermissionError::Unavailable)?,
-            )
-        } else {
-            None
-        };
         edit.config.defaults.permission_mode = change.mode.as_str().to_owned();
         edit.config.defaults.permission_revision = change.source.permission_revision + 1;
-        edit.config.defaults.full_access_grant = grant
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(|_| DefaultPermissionError::Unavailable)?;
+        edit.config.defaults.full_access_grant = None;
         transaction
             .commit()
             .map_err(|_| DefaultPermissionError::Unavailable)?;
@@ -368,27 +292,6 @@ impl DefaultPermissionService {
         }
         Ok(values)
     }
-}
-
-pub(crate) fn verify_thread_grant(
-    conn: &vega_store::Connection,
-    thread_id: &str,
-    grant: Option<&FullAccessGrant>,
-) -> Result<(), ConversationError> {
-    let state = vega_store::permission_contracts::load_state(conn).map_err(storage_error)?;
-    if state.reset_pending
-        || !grant.is_some_and(|grant| {
-            grant.verifies(
-                &state.authority_epoch,
-                &FullAccessScope::Thread {
-                    thread_id: thread_id.to_owned(),
-                },
-            )
-        })
-    {
-        return Err(ConversationError::InvalidTaskIdentity);
-    }
-    Ok(())
 }
 
 pub fn prepare_submission_permission(
@@ -450,10 +353,7 @@ pub fn prepare_submission_permission(
         || thread.permission_mode != expected.permission_mode
         || match &accepted {
             Some(accepted) => accepted != &fence,
-            None => {
-                fence.permission_revision != expected_permission.permission_revision
-                    || fence.full_access_grant != expected_permission.full_access_grant
-            }
+            None => fence.permission_revision != expected_permission.permission_revision,
         }
     {
         return Err(ConversationError::InvalidTaskIdentity);
@@ -495,7 +395,7 @@ pub(crate) fn capture_fence(
     let workspace = crate::threads::task_workspace_root(store, &thread.id)?;
     let fence = crate::types::PermissionFence {
         schema_version: 1,
-        execution_policy_version: 1,
+        execution_policy_version: 2,
         authority_epoch: state.authority_epoch,
         database_identity: store.database_identity().permission_fence_key(),
         thread_id: thread.id.clone(),
@@ -520,12 +420,7 @@ pub(crate) fn capture_fence(
             rules.sort();
             rules
         },
-        full_access_grant: thread
-            .full_access_grant
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(|_| ConversationError::InvalidTaskIdentity)?,
+        full_access_grant: None,
     };
     if !fence.is_valid() {
         return Err(ConversationError::InvalidTaskIdentity);
