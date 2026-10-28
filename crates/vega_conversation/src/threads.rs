@@ -18,6 +18,26 @@ pub enum ForkThreadError {
     History(ConversationError),
 }
 
+pub fn load_conversation(
+    database: &std::path::Path,
+    thread_id: &str,
+) -> Result<crate::types::ConversationLoad, ConversationError> {
+    let store = Store::open_existing(database).map_err(store_error)?;
+    let history =
+        crate::history::restart_history_page(&store, thread_id, vega_store::messages::PAGE_LIMIT)?;
+    Ok(crate::types::ConversationLoad {
+        history,
+        plans: crate::plans::list_plans(&store, thread_id)?,
+        composer_history: composer_history(&store, thread_id)?,
+        approved_not_started: crate::plans::recoverable_approved_instruction(&store, thread_id)?
+            .is_some(),
+        usage: thread_usage_seed(&store, thread_id)?,
+        summary: crate::summary::latest_task_summary(&store, thread_id, None)?,
+        pending_model: vega_store::threads::pending_model(store.conn(), thread_id)
+            .map_err(store_error)?,
+    })
+}
+
 pub fn fork_thread(
     store: &Store,
     source_thread_id: &str,

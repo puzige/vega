@@ -1,3 +1,4 @@
+"app.conversation.load_failed" = "无法加载此对话，请重试。"
 "app.startup.loading" = "正在打开 Vega…"
 "app.startup.failed" = "无法打开 Vega"
 "app.startup.quit" = "退出"
