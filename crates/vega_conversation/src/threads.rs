@@ -211,6 +211,7 @@ fn assemble_thread(
         mode: ThreadMode::Execute,
         permission_mode,
         permission_revision: 0,
+        draft_authority_epoch: None,
         full_access_grant: None,
         default_permission: None,
         model: model.to_string(),
@@ -285,17 +286,6 @@ pub(crate) fn materialize_draft_in_transaction(
 ) -> Result<Thread, ConversationError> {
     let state = vega_store::permission_contracts::load_state(transaction).map_err(store_error)?;
     if state.reset_pending || thread.default_permission.is_some() {
-        return Err(ConversationError::InvalidTaskIdentity);
-    }
-    if let Some(grant) = &thread.full_access_grant
-        && (thread.permission_mode != PermissionMode::FullAccess
-            || !grant.verifies(
-                &state.authority_epoch,
-                &crate::types::FullAccessScope::Thread {
-                    thread_id: thread.id.clone(),
-                },
-            ))
-    {
         return Err(ConversationError::InvalidTaskIdentity);
     }
     let project_id = thread.project_binding();
@@ -429,7 +419,6 @@ pub fn set_thread_permission_mode(
         thread_id,
         thread.permission_revision,
         mode,
-        false,
         now_ms(),
     )
 }
@@ -669,10 +658,8 @@ pub(crate) fn thread_from_row(row: &store::ThreadRow) -> Result<Thread, Conversa
         mode,
         permission_mode,
         permission_revision: row.permission_revision,
-        full_access_grant: row
-            .full_access_grant
-            .as_deref()
-            .and_then(|encoded| serde_json::from_str(encoded).ok()),
+        draft_authority_epoch: None,
+        full_access_grant: None,
         default_permission: None,
         model: row.model.clone(),
         status,

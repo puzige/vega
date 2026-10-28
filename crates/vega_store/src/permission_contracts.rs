@@ -176,7 +176,7 @@ pub fn compare_exchange_thread(
     if expected_revision < 0
         || expected_revision == i64::MAX
         || !matches!(mode, "readonly" | "confirm" | "auto" | "full_access")
-        || (mode == "full_access") != grant.is_some()
+        || grant.is_some()
     {
         return Err(rusqlite::Error::InvalidQuery);
     }

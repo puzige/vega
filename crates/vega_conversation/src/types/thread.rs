@@ -94,6 +94,7 @@ pub struct Thread {
     /// Permission mode (`readonly|confirm|auto|full_access`).
     pub permission_mode: PermissionMode,
     pub permission_revision: i64,
+    pub draft_authority_epoch: Option<String>,
     pub full_access_grant: Option<FullAccessGrant>,
     pub default_permission: Option<DefaultPermissionSnapshot>,
     pub model: String,

@@ -292,7 +292,6 @@ pub fn decide_capability(
     }
 }
 
-/// Applies Execute order: danger → ReadOnly → rule → Auto/FullAccess → Confirm.
 pub fn decide_execute_permission(
     eligibility: RuntimeExecuteEligibility,
     facts: RuntimeExecutePermission,
@@ -301,6 +300,15 @@ pub fn decide_execute_permission(
         return Err(RuntimePermissionError::InvalidTarget);
     }
     validate_facts(&facts)?;
+    if facts.permission_mode == RuntimePermissionMode::FullAccess {
+        return Ok(approved(
+            RuntimeApprovalDecision::Once,
+            RuntimeApprovalSource::FullAccess,
+            None,
+            None,
+            false,
+        ));
+    }
     if let Some(danger) = &facts.danger {
         return decide_danger(
             facts.permission_mode,
