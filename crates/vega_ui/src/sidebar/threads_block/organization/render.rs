@@ -515,9 +515,6 @@ impl ThreadsBlock {
                 .child(
                     div()
                         .id("organization-pinned-scroll")
-                        // Include the row surface outset inside the scroll clip.
-                        .ml(px(-8.0))
-                        .pl_2()
                         .flex()
                         .flex_col()
                         .children(pinned.iter().map(|thread| {
@@ -642,8 +639,6 @@ impl ThreadsBlock {
             .child(
                 div()
                     .id("organization-recents-scroll")
-                    .ml(px(-8.0))
-                    .pl_2()
                     .flex()
                     .flex_col()
                     .children(empty)
@@ -707,12 +702,7 @@ impl ThreadsBlock {
         };
         let all_projects: Vec<_> = ordered.into_iter().collect();
         self.sync_project_task_windows(&all_projects, show_archived);
-        let mut rows = div()
-            .id("organization-projects-scroll")
-            .ml(px(-8.0))
-            .pl_2()
-            .flex()
-            .flex_col();
+        let mut rows = div().id("organization-projects-scroll").flex().flex_col();
         for project in all_projects.into_iter().take(visible_count) {
             rows = rows.child(self.render_pi_project(project, snapshot, show_archived, cx));
         }
@@ -746,7 +736,7 @@ impl ThreadsBlock {
             .role(gpui_kit::Role::Button)
             .aria_label(label)
             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-            .pl(px(Layout::SIDEBAR_ROW_INSET))
+            .pl(px(Layout::SIDEBAR_LABEL_INSET))
             .rounded_lg()
             .flex()
             .items_center()
@@ -869,8 +859,7 @@ impl ThreadsBlock {
                 format!("project-header-{}", project.id).into(),
             ))
             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-            .ml(px(-8.0))
-            .pl_2()
+            .pl(px(Layout::SIDEBAR_LABEL_INSET))
             .flex()
             .items_center()
             .gap_2()

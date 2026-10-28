@@ -518,7 +518,8 @@ impl Sidebar {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .px_2()
+                    .pl(px(Layout::SIDEBAR_LABEL_INSET))
+                    .pr_2()
                     .rounded_lg()
                     .text_color(colors.text_primary)
                     .text_size(px(Typography::SIDEBAR))
@@ -576,7 +577,8 @@ impl Sidebar {
                             .w_full()
                             .h_full()
                             .rounded_lg()
-                            .px_2()
+                            .pl(px(Layout::SIDEBAR_LABEL_INSET))
+                            .pr_2()
                             .text_color(colors.text_primary)
                             .accessibility_label(vega_i18n::t("ui.settings"))
                             .tooltip(vega_i18n::t("ui.settings"))
@@ -663,10 +665,6 @@ impl Render for Sidebar {
                                 }
                             })
                             .id("sidebar-scroll")
-                            // Organization content keeps an 8px application-edge inset;
-                            // Pinned row surfaces extend 8px left of the title column.
-                            .ml(px(-4.0))
-                            .pl_2()
                             .flex_1()
                             .min_h_0()
                             .flex()

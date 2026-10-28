@@ -186,7 +186,7 @@
 "ui.context_ready" = "Context ready"
 "ui.context_usage" = "Context usage"
 "ui.context_window" = "Context window:"
-"ui.context_window_full" = "{percent}% full"
+"ui.context_window_used_remaining" = "{percent}% used ({remaining}% left)"
 "ui.context_window_capacity" = "{tokens} tokens capacity"
 "ui.context_window_tokens_used" = "{used} / {limit} tokens used"
 "ui.context_window_used" = "{tokens} tokens used"
