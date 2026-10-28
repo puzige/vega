@@ -59,6 +59,7 @@ pub struct ThreadsBlock {
     visit_pending: bool,
     deferred_visit: Option<(String, u64)>,
     visit_navigation_generation: u64,
+    visit_route: (Option<String>, Option<String>, bool),
     project_generation: u64,
     actions_scroll: gpui_kit::ScrollHandle,
     menu_height: gpui_kit::Pixels,
@@ -76,18 +77,12 @@ pub(crate) struct RenameSession {
 impl ThreadsBlock {
     /// Creates the block and loads the selected project's thread list.
     pub fn new(cx: &mut Context<Self>) -> Self {
-        cx.observe_global::<OpenedThread>(|this, _| {
-            this.visit_navigation_generation = this.visit_navigation_generation.wrapping_add(1);
-        })
-        .detach();
-        cx.observe_global::<SelectedProject>(|this, _| {
-            this.visit_navigation_generation = this.visit_navigation_generation.wrapping_add(1);
-        })
-        .detach();
-        cx.observe_global::<SettingsOpen>(|this, _| {
-            this.visit_navigation_generation = this.visit_navigation_generation.wrapping_add(1);
-        })
-        .detach();
+        cx.observe_global::<OpenedThread>(|this, cx| this.observe_visit_route(cx))
+            .detach();
+        cx.observe_global::<SelectedProject>(|this, cx| this.observe_visit_route(cx))
+            .detach();
+        cx.observe_global::<SettingsOpen>(|this, cx| this.observe_visit_route(cx))
+            .detach();
         let mut view = Self {
             threads: Vec::new(),
             archived: Vec::new(),
@@ -119,6 +114,7 @@ impl ThreadsBlock {
             visit_pending: false,
             deferred_visit: None,
             visit_navigation_generation: 0,
+            visit_route: Self::current_visit_route(cx),
             project_generation: 0,
             actions_scroll: gpui_kit::ScrollHandle::new(),
             menu_height: px(360.),
@@ -240,6 +236,25 @@ impl ThreadsBlock {
     /// Click = open: bumps `threads.updated_at` + the owning project's
     /// `last_opened_at` (single transaction) and switches the content column
     /// via the [`OpenedThread`] global.
+    fn current_visit_route(cx: &App) -> (Option<String>, Option<String>, bool) {
+        (
+            cx.global::<OpenedThread>()
+                .0
+                .as_ref()
+                .map(|thread| thread.id.clone()),
+            cx.global::<SelectedProject>().0.clone(),
+            cx.global::<SettingsOpen>().0,
+        )
+    }
+
+    fn observe_visit_route(&mut self, cx: &App) {
+        let route = Self::current_visit_route(cx);
+        if self.visit_route != route {
+            self.visit_route = route;
+            self.visit_navigation_generation = self.visit_navigation_generation.wrapping_add(1);
+        }
+    }
+
     fn open_thread(&mut self, thread_id: &str, cx: &mut Context<Self>) {
         if cx.has_active_drag() {
             return;
