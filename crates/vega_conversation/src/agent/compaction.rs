@@ -5,6 +5,7 @@
 //! and the labelled historical projection returned to `vega_runtime`.
 
 mod projection;
+mod reactive;
 mod summary_variant;
 
 use crate::types::ContextCompactionTrigger;
@@ -1370,6 +1371,30 @@ fn reject_unprojected_shell_credentials(
     Ok(())
 }
 
+struct SummaryExecution<'a> {
+    request: &'a ContextCompactionRequest,
+    task: &'a ChatMessage,
+    cancel: &'a CancellationToken,
+    deadline: tokio::time::Instant,
+    attempts: usize,
+    usages: Vec<ContextCompactionUsage>,
+    usage_complete: bool,
+    rejected_inputs: Vec<Vec<ChatMessage>>,
+}
+
+impl SummaryExecution<'_> {
+    fn failure(&self, error: VegaError) -> ContextCompactionFailure {
+        failure_with_usages(error, &self.usages, self.usage_complete)
+    }
+
+    fn input_limit(&self, estimated_tokens: u64) -> ContextCompactionFailure {
+        self.failure(context_error(ContextRuntimeError::SummaryInputOverLimit {
+            estimated_tokens,
+            input_budget: self.request.budget.input_budget(),
+        }))
+    }
+}
+
 struct SummarySourceGuard {
     version: u64,
     fingerprint: String,
@@ -1560,6 +1585,96 @@ impl ConversationCompactionHook<'_> {
         }
     }
 
+    async fn summarize_history(
+        &self,
+        history: &[ChatMessage],
+        execution: &mut SummaryExecution<'_>,
+    ) -> Result<String, ContextCompactionFailure> {
+        validate_complete_projection(history)
+            .map_err(|failure| execution.failure(*failure.error))?;
+        let mut history = history.to_vec();
+        for message in &mut history {
+            if !message.images.is_empty() {
+                message.content.push_str(&format!("\n[attachment: {} image(s); visual data omitted from summarizer input; do not infer appearance.]", message.images.len()));
+                message.images.clear();
+            }
+        }
+        let groups = summary_api_rounds(history);
+        let mut cursor = 0;
+        let mut aggregate = String::new();
+        while cursor < groups.len() {
+            if execution.cancel.is_cancelled() {
+                return Err(execution.failure(VegaError::Cancelled));
+            }
+            if tokio::time::Instant::now() >= execution.deadline {
+                return Err(execution.failure(context_error(ContextRuntimeError::SummaryTimedOut)));
+            }
+            let mut stage = Vec::new();
+            if !aggregate.is_empty() {
+                stage.push(vec![super::pipeline::historical_summary_message(
+                    &aggregate,
+                )]);
+            }
+            let mut selected = None;
+            let mut estimate_tokens = 0;
+            for (offset, group) in groups[cursor..].iter().enumerate() {
+                stage.push(group.clone());
+                let mut direct = direct_summary_request(
+                    execution.request,
+                    &self.model,
+                    self.reasoning.as_ref(),
+                    &stage,
+                    Some(execution.task),
+                    self.summary_variant,
+                );
+                self.apply_summary_requirements(&mut direct);
+                estimate_tokens = estimate_wire_context(&direct.messages, &[])
+                    .map_err(|error| execution.failure(VegaError::Context(error.into())))?
+                    .input_tokens;
+                if estimate_tokens > execution.request.budget.input_budget() {
+                    break;
+                }
+                selected = Some((cursor + offset + 1, direct));
+            }
+            let Some((end, direct)) = selected else {
+                return Err(execution.input_limit(estimate_tokens));
+            };
+            if execution.attempts >= SUMMARY_MAX_STAGES
+                || execution
+                    .rejected_inputs
+                    .iter()
+                    .any(|previous| *previous == direct.messages)
+            {
+                return Err(execution.input_limit(estimate_tokens));
+            }
+            execution.attempts += 1;
+            let input = direct.messages.clone();
+            match self
+                .run_summary_stage(
+                    direct,
+                    execution.attempts,
+                    &mut execution.usages,
+                    &mut execution.usage_complete,
+                    execution.cancel,
+                    execution.deadline,
+                )
+                .await
+            {
+                Ok(summary) => {
+                    aggregate = summary;
+                    cursor = end;
+                }
+                Err(failure) => {
+                    if classify_summary_input_overflow(failure.error.as_ref()).is_some() {
+                        execution.rejected_inputs.push(input);
+                    }
+                    return Err(failure);
+                }
+            }
+        }
+        Ok(aggregate)
+    }
+
     async fn compact_impl(
         &self,
         request: ContextCompactionRequest,
@@ -1748,12 +1863,31 @@ impl ConversationCompactionHook<'_> {
         let full = self.full_on_threshold
             && request.trigger == ContextCompactionTrigger::Threshold
             && self.partial_selection.is_none();
+        let reactive_trigger = matches!(
+            request.trigger,
+            ContextCompactionTrigger::InputOverflow { .. } | ContextCompactionTrigger::HardLimit
+        );
+        let mut response_planner = if self.partial_selection.is_none() {
+            Some(reactive::ResponsePlanner::new(
+                &source,
+                checkpoint.as_ref(),
+                request.source_owner_id.as_deref(),
+            )?)
+        } else {
+            None
+        };
         let mut planned_projection = if let Some(selection) = &self.partial_selection {
             Some(projection::partial_plan(
                 &source,
                 checkpoint.as_ref(),
                 selection,
             )?)
+        } else if reactive_trigger {
+            let planner = response_planner.as_mut().ok_or_else(|| {
+                failure(context_error(ContextRuntimeError::InvalidProjection), None)
+            })?;
+            planner.start_reactive(request.trigger)?;
+            Some(planner.plan(&source, &request)?)
         } else if full {
             Some(projection::full_plan(
                 &source,
@@ -1836,12 +1970,6 @@ impl ConversationCompactionHook<'_> {
                 None,
             ));
         }
-        let suffix = if full {
-            Vec::new()
-        } else {
-            request.messages[suffix_index..].to_vec()
-        };
-        validate_complete_projection(&suffix)?;
         let mut projection_plan = if let Some(planned) = &planned_projection {
             planned.plan.clone()
         } else {
@@ -1868,18 +1996,211 @@ impl ConversationCompactionHook<'_> {
         ) {
             projection_plan.strategy = vega_store::context_projection::ProjectionStrategy::Reactive;
         }
-        if full {
-            let boundary = projection_plan
-                .fragments
-                .last()
-                .and_then(|fragment| match fragment {
-                    vega_store::context_projection::ProjectionFragment::Source { range } => {
-                        range.after.as_ref()
+        if !reactive_trigger && let Some(planner) = &mut response_planner {
+            planner.align(&projection_plan);
+        }
+        let mut history = planned_projection
+            .take()
+            .ok_or_else(|| failure(context_error(ContextRuntimeError::InvalidProjection), None))?
+            .summary_history;
+        let interleaved_policy = self.reasoning.as_ref().is_some_and(|profile| {
+            profile.replay_policy == vega_runtime::ReasoningReplayPolicy::GlmInterleaved
+        });
+        let mut referenced_summaries = checkpoint
+            .as_ref()
+            .map(|previous| previous.referenced_summaries.clone())
+            .unwrap_or_default();
+        if let Some(previous) = &checkpoint {
+            referenced_summaries.insert(previous.id, previous.summary.clone());
+        }
+        let original_tokens =
+            estimate_chat_context(&request.system_prompt, &request.messages, &request.tools)
+                .map_err(|error| failure(VegaError::Context(error.into()), None))?
+                .input_tokens;
+        let mut execution = SummaryExecution {
+            request: &request,
+            task: &summary_task_reference,
+            cancel: &cancel,
+            deadline,
+            attempts: 0,
+            usages: Vec::new(),
+            usage_complete: true,
+            rejected_inputs: Vec::new(),
+        };
+        let mut allow_omission = self.partial_selection.is_none()
+            && (full || reactive_trigger || request.trigger == ContextCompactionTrigger::Manual);
+        let preserve_live =
+            self.partial_selection.is_none() && !full && request.source_owner_id.is_some();
+        let (aggregate, projected, replay_cold_prefix_messages, replay_interleaved_user_boundary) = loop {
+            let live = if preserve_live {
+                super::pipeline::match_live_ranges(&source, &projection_plan, &request.messages)
+                    .map_err(|_| {
+                        execution.failure(context_error(ContextRuntimeError::InvalidProjection))
+                    })?
+            } else {
+                Vec::new()
+            };
+            let project = |summary: &str| {
+                super::pipeline::interpret_projection_with_live(
+                    &source,
+                    &projection_plan,
+                    summary,
+                    &referenced_summaries,
+                    "__compaction_projection__",
+                    &live,
+                )
+                .map_err(|_| context_error(ContextRuntimeError::InvalidProjection))
+            };
+            let empty = project("").map_err(|error| execution.failure(error))?;
+            let fixed = estimate_chat_context(&request.system_prompt, &empty, &request.tools)
+                .map_err(|error| execution.failure(VegaError::Context(error.into())))?
+                .input_tokens;
+            let summary_result = if fixed.saturating_add(64) >= request.target_tokens {
+                Err(
+                    execution.failure(context_error(ContextRuntimeError::ResultOverLimit {
+                        estimated_tokens: fixed.saturating_add(64),
+                        target_tokens: request.target_tokens,
+                    })),
+                )
+            } else {
+                self.summarize_history(&history, &mut execution).await
+            };
+            let aggregate = match summary_result {
+                Ok(summary) => summary,
+                Err(problem) => {
+                    let overflow = classify_summary_input_overflow(problem.error.as_ref());
+                    let local_summary_limit = matches!(
+                        problem.error.as_ref(),
+                        VegaError::Context(ContextRuntimeError::SummaryInputOverLimit { .. })
+                    );
+                    let final_limit = matches!(
+                        problem.error.as_ref(),
+                        VegaError::Context(ContextRuntimeError::ResultOverLimit { .. })
+                    );
+                    if execution.attempts >= SUMMARY_MAX_STAGES
+                        || (!local_summary_limit && !final_limit && overflow.is_none())
+                    {
+                        return Err(problem);
                     }
-                    _ => None,
+                    allow_omission |= self.partial_selection.is_none() && overflow.is_some();
+                    let gap = overflow.and_then(|overflow| overflow.token_gap);
+                    let Some(planner) = &mut response_planner else {
+                        return Err(problem);
+                    };
+                    let changed = (!full && !final_limit && planner.retreat(gap))
+                        || (allow_omission && planner.fallback(gap));
+                    if !changed {
+                        return Err(problem);
+                    }
+                    let next = planner
+                        .plan(&source, &request)
+                        .map_err(|failure| execution.failure(*failure.error))?;
+                    projection_plan = next.plan;
+                    history = next.summary_history;
+                    continue;
+                }
+            };
+            let projected = project(&aggregate).map_err(|error| execution.failure(error))?;
+            let projected_estimate =
+                estimate_chat_context(&request.system_prompt, &projected, &request.tools).map_err(
+                    |_| {
+                        execution
+                            .failure(context_error(ContextRuntimeError::SummaryProjectionInvalid))
+                    },
+                )?;
+            let mut cold_prefix = projected.len();
+            if let Some(first) = live.first() {
+                for start in 0..projected.len() {
+                    let end = start + first.messages.len();
+                    if projected.get(start..end) == Some(first.messages) {
+                        cold_prefix = start;
+                        break;
+                    }
+                }
+            }
+            let retained_user = projected[cold_prefix..]
+                .iter()
+                .rposition(|message| message.role == ChatRole::User)
+                .map(|index| cold_prefix + index);
+            if interleaved_policy && retained_user.is_none() {
+                cold_prefix = projected.len();
+            }
+            let user_boundary = interleaved_policy.then_some(retained_user.unwrap_or(cold_prefix));
+            let over_limit = projected_estimate.input_tokens > request.target_tokens
+                || projected_estimate.input_tokens > request.budget.input_budget();
+            let no_shrink = (reactive_trigger
+                || projection_plan.strategy
+                    == vega_store::context_projection::ProjectionStrategy::Reactive)
+                && projected_estimate.input_tokens >= original_tokens;
+            if over_limit || no_shrink {
+                if allow_omission
+                    && let Some(planner) = &mut response_planner
+                    && planner.fallback(None)
+                {
+                    let next = planner
+                        .plan(&source, &request)
+                        .map_err(|failure| execution.failure(*failure.error))?;
+                    projection_plan = next.plan;
+                    history = next.summary_history;
+                    continue;
+                }
+                return Err(
+                    execution.failure(context_error(ContextRuntimeError::SummaryProjectionInvalid))
+                );
+            }
+            if !vega_runtime::validate_compaction_replay(
+                &projected,
+                cold_prefix,
+                user_boundary,
+                interleaved_policy,
+            ) {
+                return Err(
+                    execution.failure(context_error(ContextRuntimeError::SummaryProjectionInvalid))
+                );
+            }
+            validate_complete_projection(&projected).map_err(|_| {
+                execution.failure(context_error(ContextRuntimeError::SummaryProjectionInvalid))
+            })?;
+            break (aggregate, projected, cold_prefix, user_boundary);
+        };
+        if cancel.is_cancelled() {
+            return Err(execution.failure(VegaError::Cancelled));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(execution.failure(context_error(ContextRuntimeError::SummaryTimedOut)));
+        }
+        let reactive_retained_groups = if matches!(
+            request.trigger,
+            ContextCompactionTrigger::InputOverflow { .. }
+        ) {
+            response_planner
+                .as_ref()
+                .map(reactive::ResponsePlanner::retained_groups)
+        } else {
+            None
+        };
+        if full
+            || reactive_trigger
+            || projection_plan.strategy
+                == vega_store::context_projection::ProjectionStrategy::Reactive
+        {
+            let boundary = projection_plan
+                .covered
+                .iter()
+                .chain(&projection_plan.omitted)
+                .filter_map(|range| range.through.as_ref())
+                .max_by_key(|cursor| {
+                    (
+                        cursor.message_seq,
+                        cursor.assistant.is_none(),
+                        cursor
+                            .assistant
+                            .as_ref()
+                            .map_or(0, |cursor| cursor.tool_seq),
+                    )
                 })
                 .ok_or_else(|| {
-                    failure(context_error(ContextRuntimeError::InvalidProjection), None)
+                    execution.failure(context_error(ContextRuntimeError::InvalidProjection))
                 })?;
             covered_seq = boundary.message_seq;
             covered_assistant_id = None;
@@ -1892,349 +2213,8 @@ impl ConversationCompactionHook<'_> {
                 covered_assistant_tool_seq = cursor.tool_seq;
             }
         }
-        let retained_context = super::pipeline::historical_continuation_projection(
-            &source,
-            covered_seq,
-            covered_assistant_id.as_deref(),
-        )
-        .map_err(|_| failure(context_error(ContextRuntimeError::InvalidProjection), None))?;
-        let prefix_len = 1 + retained_context.len();
-        let interleaved_policy = self.reasoning.as_ref().is_some_and(|profile| {
-            profile.replay_policy == vega_runtime::ReasoningReplayPolicy::GlmInterleaved
-        });
-        let retained_user = suffix
-            .iter()
-            .rposition(|message| message.role == ChatRole::User);
-        let mut replay_cold_prefix_messages = if interleaved_policy && retained_user.is_none() {
-            prefix_len + suffix.len()
-        } else {
-            prefix_len
-        };
-        let mut replay_interleaved_user_boundary = interleaved_policy.then_some(
-            retained_user.map_or(replay_cold_prefix_messages, |index| prefix_len + index),
-        );
-        let mut referenced_summaries = checkpoint
-            .as_ref()
-            .map(|previous| previous.referenced_summaries.clone())
-            .unwrap_or_default();
-        if let Some(previous) = &checkpoint {
-            referenced_summaries.insert(previous.id, previous.summary.clone());
-        }
-        let retained_range = projection_plan
-            .fragments
-            .last()
-            .and_then(|fragment| {
-                if let vega_store::context_projection::ProjectionFragment::Source { range } =
-                    fragment
-                {
-                    Some(range)
-                } else {
-                    None
-                }
-            })
-            .ok_or_else(|| failure(context_error(ContextRuntimeError::InvalidProjection), None))?;
-        let cold_ordered_tail = ordered_tail && request.source_owner_id.is_none();
-        let live = if !ordered_tail || cold_ordered_tail {
-            Vec::new()
-        } else {
-            vec![super::pipeline::LiveSourceRange {
-                range: retained_range,
-                messages: &suffix,
-            }]
-        };
-        let project = |summary: &str| {
-            super::pipeline::interpret_projection_with_live(
-                &source,
-                &projection_plan,
-                summary,
-                &referenced_summaries,
-                "__compaction_projection__",
-                &live,
-            )
-            .map_err(|_| context_error(ContextRuntimeError::InvalidProjection))
-        };
-        let estimate_projection = |messages: &[ChatMessage]| {
-            estimate_chat_context(&request.system_prompt, messages, &request.tools)
-                .map_err(|error| VegaError::Context(error.into()))
-        };
-        let empty_projection = project("").map_err(|error| failure(error, None))?;
-        if planned_projection.is_some() && (!ordered_tail || cold_ordered_tail) {
-            replay_cold_prefix_messages = empty_projection.len();
-            replay_interleaved_user_boundary = interleaved_policy.then_some(empty_projection.len());
-        } else if ordered_tail {
-            let prefix_len = empty_projection
-                .len()
-                .checked_sub(suffix.len())
-                .ok_or_else(|| {
-                    failure(context_error(ContextRuntimeError::InvalidProjection), None)
-                })?;
-            replay_cold_prefix_messages = if interleaved_policy && retained_user.is_none() {
-                empty_projection.len()
-            } else {
-                prefix_len
-            };
-            replay_interleaved_user_boundary = interleaved_policy.then_some(
-                retained_user.map_or(replay_cold_prefix_messages, |index| prefix_len + index),
-            );
-        }
-        let fixed = estimate_projection(&empty_projection)
-            .map_err(|error| failure(error, None))?
-            .input_tokens;
-        if fixed.saturating_add(64) >= request.target_tokens {
-            return Err(failure(
-                context_error(ContextRuntimeError::ResultOverLimit {
-                    estimated_tokens: fixed.saturating_add(64),
-                    target_tokens: request.target_tokens,
-                }),
-                None,
-            ));
-        }
-        let mut history = if let Some(planned) = &planned_projection {
-            planned.summary_history.clone()
-        } else {
-            let mut summary_source =
-                super::pipeline::source_after_checkpoint(&source, checkpoint.as_ref()).map_err(
-                    |_| failure(context_error(ContextRuntimeError::InvalidProjection), None),
-                )?;
-            summary_source.messages.retain(|message| {
-                message.seq as u64 <= covered_seq
-                    || Some(&message.id) == covered_assistant_id.as_ref()
-            });
-            if let Some(owner) = covered_assistant_id.as_deref() {
-                let previous_bytes = checkpoint
-                    .as_ref()
-                    .filter(|previous| previous.covered_assistant_id.as_deref() == Some(owner))
-                    .map_or(0, |previous| previous.covered_assistant_text_bytes);
-                let count = covered_assistant_text_bytes
-                    .checked_sub(previous_bytes)
-                    .ok_or_else(|| {
-                        failure(
-                            context_error(ContextRuntimeError::NoCompactablePrefix),
-                            None,
-                        )
-                    })? as usize;
-                if let Some(message) = summary_source
-                    .messages
-                    .iter_mut()
-                    .find(|message| message.id == owner)
-                {
-                    if !message.content.is_char_boundary(count) {
-                        return Err(failure(
-                            context_error(ContextRuntimeError::InvalidProjection),
-                            None,
-                        ));
-                    }
-                    message.content.truncate(count);
-                    message.status = "done".to_string();
-                }
-                summary_source.tool_calls.retain(|call| {
-                    call.message_id != owner || call.seq as u64 <= covered_assistant_tool_seq
-                });
-            }
-            let mut history = super::pipeline::history_from_context_source(
-                &summary_source,
-                "__summary__",
-                checkpoint
-                    .as_ref()
-                    .map(|previous| previous.covered_through_seq),
-            )
-            .map_err(|_| failure(context_error(ContextRuntimeError::InvalidProjection), None))?;
-            if history
-                .iter()
-                .all(|message| message.content.trim().is_empty() && message.tool_calls.is_empty())
-                && checkpoint.as_ref().is_none_or(|previous| {
-                    previous.model == self.model || previous.summary.trim().is_empty()
-                })
-            {
-                return Err(failure(
-                    context_error(ContextRuntimeError::NoCompactablePrefix),
-                    None,
-                ));
-            }
-            if let Some(previous) = &checkpoint {
-                history.insert(
-                    0,
-                    super::pipeline::historical_summary_message(&previous.summary),
-                );
-            }
-            history
-        };
-        validate_complete_projection(&history)?;
-        for message in &mut history {
-            if !message.images.is_empty() {
-                message.content.push_str(&format!("\n[attachment: {} image(s); visual data omitted from summarizer input; do not infer appearance.]", message.images.len()));
-                message.images.clear();
-            }
-        }
-        let groups = summary_api_rounds(history);
-        for group in &groups {
-            let mut direct = direct_summary_request(
-                &request,
-                &self.model,
-                self.reasoning.as_ref(),
-                std::slice::from_ref(group),
-                Some(&summary_task_reference),
-                self.summary_variant,
-            );
-            self.apply_summary_requirements(&mut direct);
-            let estimate = estimate_wire_context(&direct.messages, &[])
-                .map_err(|error| failure(VegaError::Context(error.into()), None))?;
-            if estimate.input_tokens > request.budget.input_budget() {
-                return Err(failure(
-                    context_error(ContextRuntimeError::SummaryInputOverLimit {
-                        estimated_tokens: estimate.input_tokens,
-                        input_budget: request.budget.input_budget(),
-                    }),
-                    None,
-                ));
-            }
-        }
-        let mut attempts = 0usize;
-        let mut usages = Vec::new();
-        let mut usage_complete = true;
-        let mut cursor = 0usize;
-        let mut aggregate = String::new();
-        let mut stage_limit = request.budget.input_budget();
-        let mut overflow_retries = 0usize;
-        while cursor < groups.len() {
-            if cancel.is_cancelled() {
-                return Err(failure_with_usages(
-                    VegaError::Cancelled,
-                    &usages,
-                    usage_complete,
-                ));
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(failure_with_usages(
-                    context_error(ContextRuntimeError::SummaryTimedOut),
-                    &usages,
-                    usage_complete,
-                ));
-            }
-            let mut stage = Vec::new();
-            if !aggregate.is_empty() {
-                stage.push(vec![super::pipeline::historical_summary_message(
-                    &aggregate,
-                )]);
-            }
-            let mut end = cursor;
-            let mut selected = None;
-            for group in &groups[cursor..] {
-                stage.push(group.clone());
-                let mut direct = direct_summary_request(
-                    &request,
-                    &self.model,
-                    self.reasoning.as_ref(),
-                    &stage,
-                    Some(&summary_task_reference),
-                    self.summary_variant,
-                );
-                self.apply_summary_requirements(&mut direct);
-                let estimate = estimate_wire_context(&direct.messages, &[]).map_err(|error| {
-                    failure_with_usages(VegaError::Context(error.into()), &usages, usage_complete)
-                })?;
-                if estimate.input_tokens > stage_limit {
-                    break;
-                }
-                end += 1;
-                selected = Some(direct);
-            }
-            let Some(direct) = selected else {
-                return Err(failure_with_usages(
-                    context_error(ContextRuntimeError::SummaryInputOverLimit {
-                        estimated_tokens: stage_limit.saturating_add(1),
-                        input_budget: stage_limit,
-                    }),
-                    &usages,
-                    usage_complete,
-                ));
-            };
-            if attempts >= SUMMARY_MAX_STAGES {
-                return Err(failure_with_usages(
-                    context_error(ContextRuntimeError::SummaryInputOverLimit {
-                        estimated_tokens: stage_limit.saturating_add(1),
-                        input_budget: stage_limit,
-                    }),
-                    &usages,
-                    usage_complete,
-                ));
-            }
-            attempts += 1;
-            match self
-                .run_summary_stage(
-                    direct,
-                    attempts,
-                    &mut usages,
-                    &mut usage_complete,
-                    &cancel,
-                    deadline,
-                )
-                .await
-            {
-                Ok(summary) => {
-                    aggregate = summary;
-                    cursor = end;
-                    overflow_retries = 0;
-                }
-                Err(failure) => {
-                    if let Some(overflow) = classify_summary_input_overflow(failure.error.as_ref())
-                    {
-                        if overflow_retries >= 3 {
-                            return Err(failure);
-                        }
-                        overflow_retries += 1;
-                        let reduction = overflow.token_gap.unwrap_or(stage_limit / 5).max(1);
-                        stage_limit = stage_limit.saturating_sub(reduction);
-                        continue;
-                    }
-                    return Err(failure);
-                }
-            }
-        }
-        let projected = project(&aggregate)
-            .map_err(|error| failure_with_usages(error, &usages, usage_complete))?;
-        let projected_estimate = estimate_projection(&projected).map_err(|_| {
-            failure_with_usages(
-                context_error(ContextRuntimeError::SummaryProjectionInvalid),
-                &usages,
-                usage_complete,
-            )
-        })?;
-        if projected_estimate.input_tokens > request.target_tokens
-            || !vega_runtime::validate_compaction_replay(
-                &projected,
-                replay_cold_prefix_messages,
-                replay_interleaved_user_boundary,
-                interleaved_policy,
-            )
-        {
-            return Err(failure_with_usages(
-                context_error(ContextRuntimeError::SummaryProjectionInvalid),
-                &usages,
-                usage_complete,
-            ));
-        }
-        validate_complete_projection(&projected).map_err(|_| {
-            failure_with_usages(
-                context_error(ContextRuntimeError::SummaryProjectionInvalid),
-                &usages,
-                usage_complete,
-            )
-        })?;
-        if cancel.is_cancelled() {
-            return Err(failure_with_usages(
-                VegaError::Cancelled,
-                &usages,
-                usage_complete,
-            ));
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return Err(failure_with_usages(
-                context_error(ContextRuntimeError::SummaryTimedOut),
-                &usages,
-                usage_complete,
-            ));
-        }
+        let usages = execution.usages;
+        let usage_complete = execution.usage_complete;
         let checkpoint = NewContextCheckpoint {
             thread_id: self.thread_id.clone(),
             model: self.model.clone(),
@@ -2304,6 +2284,7 @@ impl ConversationCompactionHook<'_> {
             replay_cold_prefix_messages: Some(replay_cold_prefix_messages),
             replay_interleaved_user_boundary,
             messages: projected,
+            reactive_retained_groups,
             source_version: source.source_version,
             source_fingerprint: Some(source.fingerprint),
             usages,

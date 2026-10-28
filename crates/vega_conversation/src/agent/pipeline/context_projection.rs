@@ -38,33 +38,7 @@ pub(crate) fn interpret_projection_with_live(
     for fragment in &plan.fragments {
         match fragment {
             ProjectionFragment::Source { range } => {
-                let mut selected = range.project(source).map_err(|_| {
-                    ConversationError::CorruptRow("invalid context source range".into())
-                })?;
-                if let Some(owner) = plan.source_owner_id.as_deref()
-                    && owner != current_assistant_id
-                    && let Some(message) = selected
-                        .messages
-                        .iter_mut()
-                        .find(|message| message.id == owner && message.status == "streaming")
-                {
-                    let calls = selected
-                        .tool_calls
-                        .iter()
-                        .filter(|call| call.message_id == owner)
-                        .collect::<Vec<_>>();
-                    if !calls.is_empty()
-                        && calls.iter().all(|call| {
-                            matches!(
-                                call.status.as_str(),
-                                "success" | "failed" | "cancelled" | "rejected"
-                            ) && call.output_text.is_some()
-                        })
-                    {
-                        message.status = "done".into();
-                    }
-                }
-                let durable = history_from_context_source(&selected, current_assistant_id, None)?;
+                let durable = source_range_history(source, plan, range, current_assistant_id)?;
                 if let Some(overlay) = live.iter().find(|overlay| overlay.range == range) {
                     let expected = comparable_assistant_segments(&durable)?;
                     let actual = comparable_assistant_segments(overlay.messages)?;
@@ -110,6 +84,97 @@ pub(crate) fn interpret_projection_with_live(
         }
     }
     Ok(messages)
+}
+
+fn source_range_history(
+    source: &vega_store::context_compaction::ContextSource,
+    plan: &ProjectionPlan,
+    range: &SourceRange,
+    current_assistant_id: &str,
+) -> Result<Vec<vega_runtime::ChatMessage>, ConversationError> {
+    let mut selected = range
+        .project(source)
+        .map_err(|_| ConversationError::CorruptRow("invalid context source range".into()))?;
+    if let Some(owner) = plan.source_owner_id.as_deref()
+        && owner != current_assistant_id
+        && let Some(message) = selected
+            .messages
+            .iter_mut()
+            .find(|message| message.id == owner && message.status == "streaming")
+    {
+        let calls = selected
+            .tool_calls
+            .iter()
+            .filter(|call| call.message_id == owner)
+            .collect::<Vec<_>>();
+        if !calls.is_empty()
+            && calls.iter().all(|call| {
+                matches!(
+                    call.status.as_str(),
+                    "success" | "failed" | "cancelled" | "rejected"
+                ) && call.output_text.is_some()
+            })
+        {
+            message.status = "done".into();
+        }
+    }
+    history_from_context_source(&selected, current_assistant_id, None)
+}
+
+pub(crate) fn match_live_ranges<'a>(
+    source: &vega_store::context_compaction::ContextSource,
+    plan: &'a ProjectionPlan,
+    messages: &'a [vega_runtime::ChatMessage],
+) -> Result<Vec<LiveSourceRange<'a>>, ConversationError> {
+    let mut live = Vec::new();
+    let mut cursor = 0;
+    for fragment in &plan.fragments {
+        let ProjectionFragment::Source { range } = fragment else {
+            continue;
+        };
+        let expected = comparable_assistant_segments(&source_range_history(
+            source,
+            plan,
+            range,
+            "__live_projection__",
+        )?)?;
+        if expected.is_empty() {
+            continue;
+        }
+        let expected_refs = expected.iter().collect::<Vec<_>>();
+        let mut matched = None;
+        for start in cursor..messages.len() {
+            if messages[start].role != expected[0].role {
+                continue;
+            }
+            for end in start + 1..=messages.len() {
+                let actual = comparable_assistant_segments(&messages[start..end])?;
+                if actual.len() > expected.len() {
+                    break;
+                }
+                if super::super::compaction::durable_messages_equal(
+                    &expected_refs,
+                    &actual.iter().collect::<Vec<_>>(),
+                ) {
+                    if matched.is_some() {
+                        return Err(ConversationError::CorruptRow(
+                            "ambiguous live context range".into(),
+                        ));
+                    }
+                    matched = Some(start..end);
+                    break;
+                }
+            }
+        }
+        let matched = matched
+            .ok_or_else(|| ConversationError::CorruptRow("live context range missing".into()))?;
+        cursor = matched.end;
+        live.push(LiveSourceRange {
+            range,
+            messages: &messages[matched],
+        });
+    }
+    Ok(live)
 }
 
 fn comparable_assistant_segments(

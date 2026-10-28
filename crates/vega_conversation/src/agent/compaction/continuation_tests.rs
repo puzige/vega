@@ -1,6 +1,8 @@
 use super::*;
 use vega_store::{messages, threads, tool_calls};
 
+mod reactive_tests;
+
 struct SummaryProvider;
 
 impl Provider for SummaryProvider {
@@ -715,7 +717,10 @@ async fn compaction_preserves_retained_live_reasoning_without_persisting_it()
     retained.reasoning_content = Some("Run-local provider reasoning".into());
     retained.response_reasoning = vec![serde_json::json!({"type":"reasoning", "id":"live-only"})];
     let retained = retained.clone();
-    let provider = SummaryProvider;
+    let provider = reactive_tests::ScriptedSummaryProvider::new([
+        reactive_tests::SummaryReply::Text("FIRST_SUMMARY ".repeat(300)),
+        reactive_tests::SummaryReply::Text("SECOND_SUMMARY".into()),
+    ]);
     let reasoning = FrozenReasoning {
         compatibility: None,
         provider: "development".into(),
@@ -760,7 +765,7 @@ async fn compaction_preserves_retained_live_reasoning_without_persisting_it()
         .compact(
             ContextCompactionRequest {
                 trigger: ContextCompactionTrigger::InputOverflow {
-                    token_gap: Some(100),
+                    token_gap: Some(1_000),
                     deeper: false,
                 },
                 system_prompt: "system".into(),
@@ -804,9 +809,14 @@ async fn compaction_preserves_retained_live_reasoning_without_persisting_it()
         "__none__",
     )?;
     assert!(durable_messages_equal(
-        &result.messages.iter().collect::<Vec<_>>(),
+        &repeated.messages.iter().collect::<Vec<_>>(),
         &reloaded.iter().collect::<Vec<_>>()
     ));
+    assert!(
+        estimate_chat_context("system", &repeated.messages, &[])?.input_tokens
+            < estimate_chat_context("system", &result.messages, &[])?.input_tokens
+    );
+    assert_eq!(provider.requests().len(), 2);
     let cold = reloaded
         .iter()
         .find(|message| message.tool_calls.iter().any(|call| call.id == "live-call"))

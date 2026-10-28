@@ -165,6 +165,12 @@
 
 保尾候选从当前活动 fragments 顺序切分，不从完整审计历史重新构建前缀。Source 的切分点复用 SourceCursor 的完整 response 校验；Summary／PreviousSummary 在压缩侧原位进入摘要输入，在保留侧保持引用。既有 covered 和 omitted 不丢失、不互换。候选最终安装继续经过完整分区校验；不得以全源 prefix_plan 覆盖既有 partial 分区。规划、摘要重试与最后恢复共享一次操作的取消、期限和调用计数。
 
+响应组规划使用当前 fragment 的原始完整 response／完整消息游标，摘要引用也是有序输入单元；空的开放未来区间不计为保留组。fresh typed PTL 的成功结果返回实际保留的原始组数，至少两组（加新摘要至少三组）才能授予相邻 deeper；deeper 必须从前驱 Reactive 投影减少原始保留组数。运行态只在结果通过完整请求校验并应用后授予，下一次主请求的非 PTL 结果或任何已输出内容使资格失效，deeper 自身不能再次授予。
+
+Last-resort 的三次限制计最旧完整来源组截断操作，不计 provider 调用；无 gap 每次去掉剩余可摘要组约 20%（至少一组），已知 gap 以各组估算量选择。被跨过的旧摘要／任务／附件引用不能伪称遗漏的原始来源，而须保留在新摘要之前的原有顺序；原 covered／omitted 不互换。尚未处理的最后用户消息及开放未来区间始终保留。输入推进失败、真实缩减失败、预算不满足或没有至少一个可摘要组时，不安装 checkpoint。保留侧 live 段必须逐范围唯一匹配并验证 durable 内容，不能为绕过组合问题抹掉 reasoning。
+
+Reactive 恢复图片仍使用既有有界 HistoricalImages 投影：新进入摘要／遗漏区的完整来源消息，以及进入摘要区的旧图片引用，都必须在安装／reload 中恢复历史图片证据；摘要请求只接收显式无视觉内容的 provenance。已有保留图片引用维持原位置并扩展到需要的截止点，不再另加重叠引用；没有保留引用时放在新摘要之后。截止点不得越过仍按 Source 保留的图片消息，原始附件和审计不变。被 head 截断跨过的任务引用已保留时，不重复注入同一任务引用。
+
 ### 集成与终态回归补充
 
 Full 未完成尾部回归区分两道拒绝边界：live 请求中无法归属到完整 response 的尾部 assistant 文本先被来源校验拒绝（SourceChanged）；精确 source version/fingerprint 的 fenced 请求进入 full 规划后，被不完整尾部拒绝（InvalidProjection）。两条路径均不得调用摘要 provider、安装 checkpoint 或改变原始审计。`f51230683de9232d25b0d8095a1011b68be5c064` 的 Actions `40648493811` 执行 42 项、41 通过、1 失败，Clippy 通过；失败用例以 live 请求断言规划层错误，修正开发夹具覆盖两层，不放宽生产来源栅栏或接受不完整响应。

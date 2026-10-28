@@ -445,6 +445,7 @@ pub struct ContextCompactionResult {
     pub source_fingerprint: Option<String>,
     pub replay_cold_prefix_messages: Option<usize>,
     pub replay_interleaved_user_boundary: Option<usize>,
+    pub reactive_retained_groups: Option<usize>,
     /// Actual usage from each completed summary stage, in request order.
     pub usages: Vec<ContextCompactionUsage>,
     /// False when any stage omitted Usage; known stages still remain billable.
@@ -469,6 +470,7 @@ impl fmt::Debug for ContextCompactionResult {
                 "replay_interleaved_user_boundary",
                 &self.replay_interleaved_user_boundary,
             )
+            .field("reactive_retained_groups", &self.reactive_retained_groups)
             .field("usage_count", &self.usages.len())
             .field("usage_complete", &self.usage_complete)
             .finish()

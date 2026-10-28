@@ -224,7 +224,7 @@ pub(super) fn partial_plan(
     })
 }
 
-fn previous_plan(
+pub(super) fn previous_plan(
     source: &ContextSource,
     checkpoint: Option<&vega_store::context_compaction::ContextCheckpoint>,
 ) -> Result<Option<ProjectionPlan>, ContextCompactionFailure> {
@@ -249,6 +249,42 @@ fn previous_plan(
             }
         })
         .transpose()
+}
+
+pub(super) fn fragment_history(
+    source: &ContextSource,
+    checkpoint: Option<&vega_store::context_compaction::ContextCheckpoint>,
+    fragment: &ProjectionFragment,
+) -> Result<Vec<ChatMessage>, ContextCompactionFailure> {
+    let invalid = || failure(context_error(ContextRuntimeError::InvalidProjection), None);
+    Ok(match fragment {
+        ProjectionFragment::Source { range } => {
+            super::super::pipeline::history_from_context_source(
+                &range.project(source).map_err(|_| invalid())?,
+                "__summary__",
+                None,
+            )
+            .map_err(|_| invalid())?
+        }
+        ProjectionFragment::Summary => vec![super::super::pipeline::historical_summary_message(
+            &checkpoint.ok_or_else(invalid)?.summary,
+        )],
+        ProjectionFragment::PreviousSummary { checkpoint_id } => {
+            vec![super::super::pipeline::historical_summary_message(
+                checkpoint
+                    .and_then(|checkpoint| checkpoint.referenced_summaries.get(checkpoint_id))
+                    .ok_or_else(invalid)?,
+            )]
+        }
+        ProjectionFragment::TaskReference { message_id } => vec![
+            super::super::pipeline::historical_task_reference(source, message_id)
+                .map_err(|_| invalid())?,
+        ],
+        ProjectionFragment::HistoricalImages { through_seq } => {
+            super::super::pipeline::historical_image_projection(source, *through_seq)
+                .map_err(|_| invalid())?
+        }
+    })
 }
 
 pub(super) fn full_plan(

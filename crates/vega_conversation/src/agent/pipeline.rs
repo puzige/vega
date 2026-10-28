@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 mod authority;
 mod context_projection;
 pub(crate) use context_projection::{
-    LiveSourceRange, interpret_projection, interpret_projection_with_live,
+    interpret_projection, interpret_projection_with_live, match_live_ranges,
 };
 #[cfg(test)]
 mod compaction_tests;

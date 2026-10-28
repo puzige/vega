@@ -1070,7 +1070,9 @@ where
     let mut automatic_compaction_failures = 0_u8;
     let mut compaction_refill = super::compaction_refill::CompactionRefill::default();
     let mut provider_overflow_recovered = false;
+    let mut provider_overflow_deeper_eligible = false;
     let mut force_provider_compaction = false;
+    let mut provider_compaction_deeper = false;
     let mut provider_overflow_gap = None;
     let mut completed = request.completed_tool_results;
     let tool_config = request.tool_config;
@@ -1536,7 +1538,7 @@ where
                             trigger: if force_provider_compaction {
                                 crate::ContextCompactionTrigger::InputOverflow {
                                     token_gap: provider_overflow_gap,
-                                    deeper: false,
+                                    deeper: provider_compaction_deeper,
                                 }
                             } else if matches!(check, ContextCheck::OverLimit) {
                                 crate::ContextCompactionTrigger::HardLimit
@@ -1807,7 +1809,6 @@ where
                 if force_provider_compaction && next_messages == messages {
                     return Err(VegaError::Context(ContextRuntimeError::NoCompactablePrefix));
                 }
-                force_provider_compaction = false;
                 automatic_compaction_failures = 0;
                 compaction_refill.installed();
                 messages = next_messages;
@@ -1822,6 +1823,12 @@ where
                 live_projection_revision = generation;
                 context_source_version = Some(compacted.source_version);
                 context_source_fingerprint = compacted.source_fingerprint;
+                provider_overflow_deeper_eligible = force_provider_compaction
+                    && !provider_compaction_deeper
+                    && compacted
+                        .reactive_retained_groups
+                        .is_some_and(|retained| retained >= 2);
+                force_provider_compaction = false;
                 emit!(
                     events,
                     sink,
@@ -1955,6 +1962,8 @@ where
         if let Some(run) = &tool_config.computer_use {
             run.consume_model_batch(&mut messages);
         }
+        let mut adjacent_provider_overflow_deeper =
+            std::mem::take(&mut provider_overflow_deeper_eligible);
         let call = match if cancel.is_cancelled() {
             Err(VegaError::Cancelled)
         } else {
@@ -2004,7 +2013,7 @@ where
                         Some(&error),
                     )
                 );
-                if !provider_overflow_recovered
+                if (!provider_overflow_recovered || adjacent_provider_overflow_deeper)
                     && let Some(token_gap) = error.context_input_overflow()
                     && !is_initial_user_input(&messages)
                     && context_budget.is_some_and(|budget| budget.automatic_compaction())
@@ -2014,6 +2023,7 @@ where
                 {
                     provider_overflow_recovered = true;
                     force_provider_compaction = true;
+                    provider_compaction_deeper = adjacent_provider_overflow_deeper;
                     provider_overflow_gap = token_gap;
                     attempted_context_source = None;
                     drop(input_anchor.take());
@@ -2088,6 +2098,7 @@ where
                     attempt,
                     max_retries,
                 }) => {
+                    adjacent_provider_overflow_deeper = false;
                     if let Some(hook) = tool_config.usage_hook() {
                         if !usage_seen {
                             hook.missing_usage();
@@ -2122,6 +2133,9 @@ where
                     );
                 }
                 Ok(ProviderEvent::TextDelta(delta)) => {
+                    if !delta.is_empty() {
+                        adjacent_provider_overflow_deeper = false;
+                    }
                     if delta.chars().any(|character| !character.is_whitespace()) {
                         response_last_visible = Some(tokio::time::Instant::now());
                     }
@@ -2136,6 +2150,9 @@ where
                     emit!(events, sink, RuntimeEvent::TextDelta(delta));
                 }
                 Ok(ProviderEvent::ReasoningReplay(items)) => {
+                    if !items.is_empty() {
+                        adjacent_provider_overflow_deeper = false;
+                    }
                     let error = if !response_reasoning.is_empty() {
                         Some(VegaError::ProviderDiagnostic {
                             kind: crate::ProviderFailureKind::Protocol,
@@ -2264,6 +2281,9 @@ where
                     }
                 }
                 Ok(ProviderEvent::ThinkingDelta(delta) | ProviderEvent::SummaryDelta(delta)) => {
+                    if !delta.is_empty() {
+                        adjacent_provider_overflow_deeper = false;
+                    }
                     reasoning_turn_bytes = reasoning_turn_bytes.saturating_add(delta.len());
                     let event = if is_summary {
                         RuntimeEvent::SummaryDelta(delta)
@@ -2278,6 +2298,7 @@ where
                     name,
                     input_json,
                 }) => {
+                    adjacent_provider_overflow_deeper = false;
                     calls.push(RuntimeToolCall {
                         id,
                         name,
@@ -2436,6 +2457,7 @@ where
                 Ok(ProviderEvent::Done {
                     stop_reason: reason,
                 }) => {
+                    adjacent_provider_overflow_deeper = false;
                     diagnostic_metrics.stop_reason = Some(reason);
                     stop_reason = Some(reason);
                 }
@@ -2476,7 +2498,7 @@ where
                             Some(&error),
                         )
                     );
-                    if !provider_overflow_recovered
+                    if (!provider_overflow_recovered || adjacent_provider_overflow_deeper)
                         && let Some(token_gap) = error.context_input_overflow()
                         && !is_initial_user_input(&messages)
                         && context_budget.is_some_and(|budget| budget.automatic_compaction())
@@ -2491,6 +2513,7 @@ where
                     {
                         provider_overflow_recovered = true;
                         force_provider_compaction = true;
+                        provider_compaction_deeper = adjacent_provider_overflow_deeper;
                         provider_overflow_gap = token_gap;
                         attempted_context_source = None;
                         drop(input_anchor.take());

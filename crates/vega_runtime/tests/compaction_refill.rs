@@ -60,6 +60,7 @@ impl ContextCompactionHook for CompactingHook {
                 source_fingerprint: Some(format!("source-{installed}")),
                 replay_cold_prefix_messages: Some(1),
                 replay_interleaved_user_boundary: None,
+                reactive_retained_groups: None,
                 usages: Vec::new(),
                 usage_complete: true,
             })
