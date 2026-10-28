@@ -163,7 +163,7 @@ impl PermissionQueue {
         });
         if let Some((active, queued, scope, pending, notifier, version)) = old {
             if let Some(active) = active {
-                active.respond(PermissionDecision::Timeout);
+                active.respond(PermissionDecision::Unavailable);
             }
             if let Some(scope) = scope {
                 scope.respond(CommandScopeDecision::Timeout);

@@ -833,8 +833,10 @@ impl ArtifactGroup {
         if rows == 0 {
             0.
         } else {
-            Layout::ARTIFACT_HEADER_HEIGHT
+            Layout::ARTIFACT_BODY_GAP
+                + Layout::ARTIFACT_HEADER_HEIGHT
                 + rows as f32 * Layout::ARTIFACT_ROW_HEIGHT
+                + self.visible_files().saturating_sub(1) as f32 * Layout::ARTIFACT_FILE_GAP
                 + 2. * Layout::ARTIFACT_BORDER
         }
     }
@@ -1068,8 +1070,15 @@ impl ArtifactGroup {
             .child(header);
         for (index, card) in files.into_iter().enumerate() {
             let last = index + 1 == visible && !has_toggle && errors.is_empty();
-            container =
-                container.child(card.update(cx, |card, cx| card.render_compact(last, window, cx)));
+            let file = card.update(cx, |card, cx| card.render_compact(last, window, cx));
+            container = container.child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .when(index > 0, |file| file.mt(px(Layout::ARTIFACT_FILE_GAP)))
+                    .child(file),
+            );
         }
         if has_toggle {
             let label = if expanded {
@@ -1160,7 +1169,12 @@ impl ArtifactGroup {
                     .child(error_label(Some(error))),
             );
         }
-        container.into_any_element()
+        div()
+            .w_full()
+            .min_w_0()
+            .pt(px(Layout::ARTIFACT_BODY_GAP))
+            .child(container)
+            .into_any_element()
     }
 }
 

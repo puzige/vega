@@ -419,6 +419,8 @@ impl Layout {
     pub const READING_NAVIGATION_PADDING: f32 = 4.0;
     pub const READING_NAVIGATION_PADDING_X: f32 = 12.0;
     pub const READING_NAVIGATION_GAP: f32 = 8.0;
+    pub const ARTIFACT_BODY_GAP: f32 = 16.0;
+    pub const ARTIFACT_FILE_GAP: f32 = 8.0;
     pub const ARTIFACT_HEADER_HEIGHT: f32 = 44.0;
     pub const ARTIFACT_ROW_HEIGHT: f32 = 36.0;
     pub const ARTIFACT_ACTION_SIZE: f32 = 24.0;
