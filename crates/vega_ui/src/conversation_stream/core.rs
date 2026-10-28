@@ -188,6 +188,7 @@ pub struct ConversationStream {
     /// Keyboard stop for the visible failed-index Retry action.
     pub(crate) file_retry_focus: FocusHandle,
     pub(crate) composer_defaults: ComposerDefaults,
+    pub(crate) selector_reasoning: Option<ReasoningProfileProjection>,
     pub(crate) thinking_slider: Entity<ThinkingSlider>,
     pub(crate) model_options: Vec<ModelOption>,
     pub(crate) model_picker_level: ModelPickerLevel,
@@ -617,6 +618,7 @@ impl ConversationStream {
                 reasoning: None,
                 reasoning_unavailable: false,
             },
+            selector_reasoning: None,
             thinking_slider,
             model_options: Vec::new(),
             model_picker_level: ModelPickerLevel::Closed,
@@ -1291,29 +1293,46 @@ impl ConversationStream {
         cx.notify();
     }
 
+    pub fn apply_selector_reasoning_profile(
+        &mut self,
+        profile: Option<ReasoningProfileProjection>,
+        cx: &mut Context<Self>,
+    ) {
+        self.selector_reasoning = profile.filter(|profile| profile.model == self.selector_model());
+        self.sync_thinking_slider(cx);
+        cx.notify();
+    }
+
     pub(crate) fn sync_thinking_slider(&mut self, cx: &mut Context<Self>) {
-        let (model_name, tiers, supports_off, default_tier) =
-            match self.composer_defaults.reasoning.as_ref() {
-                Some(profile) => (
-                    profile.model.clone(),
-                    if profile.supports_enabled {
-                        vec!["enabled".into()]
-                    } else {
-                        declared_tiers(profile.support, &profile.efforts)
-                    },
-                    supports_off_position(profile),
-                    preferred_tier_name(&profile.preference)
-                        .unwrap_or_default()
-                        .to_string(),
-                ),
-                None => (
-                    self.composer_defaults.model.clone(),
-                    Vec::new(),
-                    false,
-                    String::new(),
-                ),
-            };
-        let current = self.composer_defaults.thinking.clone();
+        let (model_name, tiers, supports_off, default_tier) = match self
+            .selector_reasoning
+            .as_ref()
+            .filter(|profile| profile.model == self.selector_model())
+        {
+            Some(profile) => (
+                profile.model.clone(),
+                if profile.supports_enabled {
+                    vec!["enabled".into()]
+                } else {
+                    declared_tiers(profile.support, &profile.efforts)
+                },
+                supports_off_position(profile),
+                preferred_tier_name(&profile.preference)
+                    .unwrap_or_default()
+                    .to_string(),
+            ),
+            None => (
+                self.selector_model().to_owned(),
+                Vec::new(),
+                false,
+                String::new(),
+            ),
+        };
+        let current = self
+            .selector_reasoning
+            .as_ref()
+            .map(|profile| reasoning_choice_name(&profile.preference))
+            .unwrap_or_else(|| "provider_default".to_owned());
         self.thinking_slider.update(cx, |slider, cx| {
             slider.set_model_and_tiers(model_name, tiers, supports_off, current, default_tier, cx);
         });
@@ -1329,10 +1348,16 @@ impl ConversationStream {
         event: &ThinkingTierSelected,
         cx: &mut Context<Self>,
     ) {
-        let Some(profile) = self.composer_defaults.reasoning.as_ref() else {
+        let Some(profile) = self
+            .selector_reasoning
+            .as_ref()
+            .filter(|profile| profile.model == self.selector_model())
+        else {
             return;
         };
-        if profile.model != event.model || self.composer_defaults.thinking == event.choice {
+        if profile.model != event.model
+            || reasoning_choice_name(&profile.preference) == event.choice
+        {
             return;
         }
         let accepted = if event.choice == "provider_default" {
@@ -1347,10 +1372,16 @@ impl ConversationStream {
         if !accepted {
             return;
         }
-        self.composer_defaults.thinking = event.choice.clone();
+        let mut defaults = self.composer_defaults.clone();
+        defaults.model = event.model.clone();
+        defaults.reasoning = Some(profile.clone());
+        defaults.thinking = event.choice.clone();
+        if let Some(profile) = self.selector_reasoning.as_mut() {
+            profile.preference = reasoning_choice_for_name(&event.choice);
+        }
         cx.emit(ComposerDefaultsRequested {
             thread_id: self.thread.id.clone(),
-            defaults: self.composer_defaults.clone(),
+            defaults,
         });
         cx.notify();
     }
@@ -1515,6 +1546,7 @@ impl ConversationStream {
             return;
         }
         self.next_turn_model = Some(model.to_owned());
+        self.sync_thinking_slider(cx);
         self.model_selection_pending = None;
         self.clear_model_selection_save_owner(request_id, cx);
         self.model_picker_level = ModelPickerLevel::Closed;
@@ -1526,6 +1558,7 @@ impl ConversationStream {
     pub fn restore_next_turn_model(&mut self, model: Option<String>, cx: &mut Context<Self>) {
         if self.model_selection_pending.is_none() {
             self.next_turn_model = model;
+            self.sync_thinking_slider(cx);
             cx.notify();
         }
     }
@@ -1551,9 +1584,7 @@ impl ConversationStream {
         }
         if !self.model_picker_level.is_open() {
             self.close_composer_popovers(cx);
-            if self.selector_model() == self.displayed_model()
-                && self.thinking_slider.read(cx).has_tiers()
-            {
+            if self.thinking_slider.read(cx).has_tiers() {
                 self.open_model_picker_slider(cx);
             } else {
                 self.open_model_picker_list(cx);
@@ -1578,7 +1609,7 @@ impl ConversationStream {
     }
 
     pub(crate) fn open_model_picker_slider(&mut self, cx: &mut Context<Self>) {
-        if self.selector_model() != self.displayed_model() {
+        if !self.thinking_slider.read(cx).has_tiers() {
             self.open_model_picker_list(cx);
             return;
         }
@@ -1905,3 +1936,6 @@ fn reasoning_choice_for_name(name: &str) -> ReasoningChoice {
 }
 
 impl EventEmitter<CredentialContinuationRequested> for ConversationStream {}
+
+#[cfg(test)]
+mod staged_reasoning_tests;

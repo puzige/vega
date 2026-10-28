@@ -66,6 +66,10 @@ fn finish_thread_model_selection(
                 stream.update(cx, |stream, cx| {
                     stream.apply_thread_model_staged(thread_id, request_id, &thread.model, cx);
                 });
+                let model = stream.read(cx).displayed_model().to_owned();
+                super::reasoning::apply_reasoning_profile_to_stream_with_app(
+                    window, stream, &model, cx,
+                );
             }
             _ => stream.update(cx, |stream, cx| {
                 stream.apply_thread_model_failed(thread_id, request_id, cx);
