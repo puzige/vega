@@ -396,7 +396,8 @@ impl Layout {
     pub const SCREENSHOT_PREVIEW_MARGIN: f32 = 24.0;
     pub const ICON_SIZE: f32 = 16.0;
     pub const CONTEXT_USAGE_SIZE: f32 = 28.0;
-    pub const CONTEXT_USAGE_WIDTH: f32 = 178.0;
+    pub const CONTEXT_USAGE_MIN_WIDTH: f32 = 178.0;
+    pub const CONTEXT_USAGE_BORDER: f32 = 1.0;
     pub const CONTEXT_USAGE_PADDING: f32 = 16.0;
     pub const CONTEXT_USAGE_VERTICAL_PADDING: f32 = 4.0;
     pub const CONTEXT_USAGE_LINE_HEIGHT: f32 = 20.0;

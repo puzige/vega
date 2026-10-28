@@ -186,7 +186,7 @@
 "ui.context_ready" = "上下文已就绪"
 "ui.context_usage" = "上下文用量"
 "ui.context_window" = "上下文窗口："
-"ui.context_window_full" = "已使用 {percent}%"
+"ui.context_window_used_remaining" = "已用 {percent}%（剩余 {remaining}%）"
 "ui.context_window_capacity" = "容量 {tokens} tokens"
 "ui.context_window_tokens_used" = "已用 {used} / {limit} tokens"
 "ui.context_window_used" = "已用 {tokens} tokens"

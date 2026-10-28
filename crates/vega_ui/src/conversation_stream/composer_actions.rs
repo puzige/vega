@@ -492,7 +492,7 @@ impl ConversationStream {
         if self.thread.backend == TaskBackend::Native && !self.permission_change_pending() {
             controls.push(self.permission_editor.trigger.clone());
         }
-        if self.thread.backend == TaskBackend::Native && !self.entries.is_empty() {
+        if self.thread.backend == TaskBackend::Native && self.context_usage_visible() {
             controls.push(self.context_usage_focus.clone());
         }
         controls.push(self.model_focus.clone());
