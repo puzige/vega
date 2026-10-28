@@ -22,6 +22,7 @@ fn legacy_defaults_materialize_without_valid_grants() {
     for grant in [None, Some("malformed legacy grant".to_owned())] {
         let fixture = Fixture::new();
         let store = Store::open(fixture.0.join("db")).unwrap();
+        store.migrate().unwrap();
         let path = fixture.0.join("config.toml");
         let mut config = AppConfig::default();
         config.defaults.permission_mode = "full_access".into();
@@ -56,6 +57,7 @@ fn mode_selection_stays_draft_and_old_epoch_is_rejected() {
     let fixture = Fixture::new();
     let path = fixture.0.join("db");
     let store = Store::open(&path).unwrap();
+    store.migrate().unwrap();
     let service = ThreadPermissionService::new(path);
     let draft = threads::draft_thread(None, "model", "confirm");
     let change = service.prepare(&draft, PermissionMode::FullAccess).unwrap();
@@ -87,7 +89,8 @@ fn mode_selection_stays_draft_and_old_epoch_is_rejected() {
 fn default_mode_saves_directly_and_stale_changes_conflict() {
     let fixture = Fixture::new();
     let database = fixture.0.join("db");
-    let _store = Store::open(&database).unwrap();
+    let store = Store::open(&database).unwrap();
+    store.migrate().unwrap();
     let path = fixture.0.join("config.toml");
     AppConfig::default().save_to(&path).unwrap();
     let service = DefaultPermissionService::new(database, path.clone());
