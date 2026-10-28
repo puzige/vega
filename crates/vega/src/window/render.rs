@@ -283,6 +283,8 @@ impl Render for VegaWindow {
                                     }
                                 }
                                 self.stream_view = Some((thread.id.clone(), view.clone()));
+                                let model = view.read(cx).displayed_model().to_owned();
+                                self.apply_reasoning_profile_to_stream(&view, &model, cx);
                                 if !draft_route
                                     && self.composer_prediction_stream(&thread.id).as_ref()
                                         != Some(&view)
