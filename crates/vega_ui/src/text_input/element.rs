@@ -691,9 +691,9 @@ impl Render for TextInput {
                 let input = input.read(cx);
                 let can_copy = !input.masked && !input.selected_range.is_empty();
                 menu.action_context(input.focus_handle.clone())
+                    .menu(vega_i18n::t("ui.paste"), Box::new(Paste))
                     .menu_with_disabled(vega_i18n::t("ui.cut"), Box::new(Cut), !can_copy)
                     .menu_with_disabled(vega_i18n::t("ui.copy"), Box::new(Copy), !can_copy)
-                    .menu(vega_i18n::t("ui.paste"), Box::new(Paste))
                     .menu_with_disabled(
                         vega_i18n::t("ui.select_all"),
                         Box::new(SelectAll),
