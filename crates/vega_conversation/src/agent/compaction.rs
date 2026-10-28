@@ -5,6 +5,7 @@
 //! and the labelled historical projection returned to `vega_runtime`.
 
 mod micro;
+pub(crate) mod precompute;
 mod projection;
 mod reactive;
 mod summary_variant;
@@ -194,6 +195,7 @@ pub struct ConversationCompactionHook<'a> {
     summary_requirements: Option<String>,
     partial_selection: Option<crate::types::PartialCompactionSelection>,
     full_on_threshold: bool,
+    stage_accounting: Option<precompute::StageAccounting>,
 }
 
 impl<'a> ConversationCompactionHook<'a> {
@@ -221,6 +223,7 @@ impl<'a> ConversationCompactionHook<'a> {
             summary_requirements: None,
             partial_selection: None,
             full_on_threshold: false,
+            stage_accounting: None,
         }
     }
 
@@ -1503,6 +1506,12 @@ struct GeneratedCompaction {
     result: ContextCompactionResult,
 }
 
+struct CapturedCompaction {
+    source: vega_store::context_compaction::ContextSource,
+    checkpoint: Option<vega_store::context_compaction::ContextCheckpoint>,
+    precompute: Option<precompute::CapturedPrecompute>,
+}
+
 struct CompactionInstallGuard {
     admission: crate::types::ThreadAdmission,
     deadline: tokio::time::Instant,
@@ -1621,7 +1630,7 @@ impl ConversationCompactionHook<'_> {
                 *usage_complete,
             ));
         }
-        match collect_summary_with_timeout_diagnostics(
+        let collection = collect_summary_with_timeout_diagnostics(
             self.provider,
             summary_request,
             self.pricing_catalog.as_ref(),
@@ -1629,8 +1638,18 @@ impl ConversationCompactionHook<'_> {
             SUMMARY_IDLE_TIMEOUT,
             deadline,
         )
-        .await
-        {
+        .await;
+        if let Some(accounting) = &self.stage_accounting {
+            let metrics = match &collection {
+                Ok(collection) => &collection.metrics,
+                Err(problem) => &problem.metrics,
+            };
+            accounting
+                .record(stage_number, metrics)
+                .await
+                .map_err(|error| failure_with_usages(error, usages, *usage_complete))?;
+        }
+        match collection {
             Ok(collection) => {
                 if let Some(usage) = collection.metrics.usage.clone() {
                     usages.push(usage);
@@ -1806,12 +1825,12 @@ impl ConversationCompactionHook<'_> {
         self.install_generated(generated, guard, cancel).await
     }
 
-    async fn generate_compaction(
+    async fn capture_compaction(
         &self,
-        request: ContextCompactionRequest,
-        cancel: CancellationToken,
-        source_guard: &mut Option<SummarySourceGuard>,
-    ) -> Result<(GeneratedCompaction, CompactionInstallGuard), ContextCompactionFailure> {
+        request: &ContextCompactionRequest,
+        cancel: &CancellationToken,
+        precompute: bool,
+    ) -> Result<(CapturedCompaction, CompactionInstallGuard), ContextCompactionFailure> {
         if cancel.is_cancelled() {
             return Err(failure(VegaError::Cancelled, None));
         }
@@ -1820,37 +1839,75 @@ impl ConversationCompactionHook<'_> {
         let thread_id = self.thread_id.clone();
         let model = self.model.clone();
         let admission = self.admission.clone();
+        let source_owner_id = request.source_owner_id.clone();
         let capture = tokio::task::spawn_blocking(move || {
             let store = Store::open(path).map_err(VegaError::Store)?;
             let admission =
                 super::ordinary::verified_admission(&store, &thread_id, admission.as_ref())
                     .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?;
-            // Capture source and predecessor from one SQLite snapshot.  A
-            // pair of independent reads could otherwise summarize one
-            // revision while installing against another revision that shares
-            // the same maximum sequence number.
             let transaction = store
                 .conn()
                 .unchecked_transaction()
                 .map_err(VegaError::Store)?;
             let model_matches: bool = transaction
                 .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM threads WHERE id = ?1 AND model = ?2)",
-                    (&thread_id, &model),
+                    "SELECT EXISTS(SELECT 1 FROM threads WHERE id = ?1 AND model = ?2 AND (?3=0 OR pending_model IS NULL))",
+                    (&thread_id, &model, precompute),
                     |row| row.get(0),
                 )
                 .map_err(VegaError::Store)?;
             if !model_matches {
                 return Err(context_error(ContextRuntimeError::SourceChanged));
             }
-            let source =
-                load_source_in_transaction(&transaction, &thread_id).map_err(VegaError::Store)?;
+            let (source, precompute) = if precompute {
+                let (source, fence) = vega_store::context_precompute::capture_in_transaction(
+                    &transaction,
+                    &thread_id,
+                    source_owner_id.as_deref(),
+                )
+                .map_err(precompute::store_error)?;
+                let dependencies =
+                    vega_store::context_precompute::ready::summary_dependencies_in_transaction(
+                        &transaction,
+                        &thread_id,
+                        &model,
+                    )
+                    .map_err(precompute::store_error)?;
+                let expected_generation =
+                    vega_store::context_precompute::ready::current_generation(
+                        &transaction,
+                        &thread_id,
+                    )
+                    .map_err(precompute::store_error)?;
+                (
+                    source,
+                    Some(precompute::CapturedPrecompute {
+                        fence,
+                        dependencies,
+                        expected_generation,
+                        database_identity: store.database_identity(),
+                    }),
+                )
+            } else {
+                (
+                    load_source_in_transaction(&transaction, &thread_id)
+                        .map_err(VegaError::Store)?,
+                    None,
+                )
+            };
             let checkpoint = latest_checkpoint_in_transaction(&transaction, &thread_id, &model)
                 .map_err(VegaError::Store)?;
             transaction.commit().map_err(VegaError::Store)?;
-            Ok::<_, VegaError>((source, checkpoint, admission))
+            Ok::<_, VegaError>((
+                CapturedCompaction {
+                    source,
+                    checkpoint,
+                    precompute,
+                },
+                admission,
+            ))
         });
-        let (source, checkpoint, admission) = tokio::select! {
+        let (captured, admission) = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(failure(VegaError::Cancelled, None)),
             _ = tokio::time::sleep_until(deadline) => {
@@ -1861,6 +1918,44 @@ impl ConversationCompactionHook<'_> {
                 .map_err(|error| failure(error, None))?,
         };
 
+        Ok((
+            captured,
+            CompactionInstallGuard {
+                admission,
+                deadline,
+            },
+        ))
+    }
+
+    async fn generate_compaction(
+        &self,
+        request: ContextCompactionRequest,
+        cancel: CancellationToken,
+        source_guard: &mut Option<SummarySourceGuard>,
+    ) -> Result<(GeneratedCompaction, CompactionInstallGuard), ContextCompactionFailure> {
+        let (captured, guard) = self.capture_compaction(&request, &cancel, false).await?;
+        *source_guard = Some(SummarySourceGuard {
+            version: captured.source.source_version,
+            fingerprint: captured.source.fingerprint.clone(),
+            predecessor: captured.checkpoint.as_ref().map(|previous| previous.id),
+        });
+        let generated = self
+            .generate_captured(request, cancel, captured, guard.deadline, false)
+            .await?;
+        Ok((generated, guard))
+    }
+
+    async fn generate_captured(
+        &self,
+        request: ContextCompactionRequest,
+        cancel: CancellationToken,
+        captured: CapturedCompaction,
+        deadline: tokio::time::Instant,
+        precompute: bool,
+    ) -> Result<GeneratedCompaction, ContextCompactionFailure> {
+        let CapturedCompaction {
+            source, checkpoint, ..
+        } = captured;
         reject_unprojected_shell_credentials(
             &source,
             checkpoint.as_ref(),
@@ -1869,11 +1964,6 @@ impl ConversationCompactionHook<'_> {
             self.credential_exceptions.as_ref(),
         )
         .map_err(|error| failure(error, None))?;
-        *source_guard = Some(SummarySourceGuard {
-            version: source.source_version,
-            fingerprint: source.fingerprint.clone(),
-            predecessor: checkpoint.as_ref().map(|previous| previous.id),
-        });
         validate_request_source(&source, checkpoint.as_ref(), &request)?;
 
         let latest_user = source
@@ -1888,13 +1978,16 @@ impl ConversationCompactionHook<'_> {
                 )
             })?;
         let summary_task_reference = ChatMessage::new(ChatRole::User, latest_user.content.clone());
-        let full = self.full_on_threshold
+        let full = !precompute
+            && self.full_on_threshold
             && request.trigger == ContextCompactionTrigger::Threshold
             && self.partial_selection.is_none();
-        let reactive_trigger = matches!(
-            request.trigger,
-            ContextCompactionTrigger::InputOverflow { .. } | ContextCompactionTrigger::HardLimit
-        );
+        let reactive_trigger = precompute
+            || matches!(
+                request.trigger,
+                ContextCompactionTrigger::InputOverflow { .. }
+                    | ContextCompactionTrigger::HardLimit
+            );
         let mut response_planner = if self.partial_selection.is_none() && (reactive_trigger || full)
         {
             Some(reactive::ResponsePlanner::new(
@@ -2056,7 +2149,8 @@ impl ConversationCompactionHook<'_> {
             usage_complete: true,
             rejected_inputs: Vec::new(),
         };
-        let mut allow_omission = self.partial_selection.is_none()
+        let mut allow_omission = !precompute
+            && self.partial_selection.is_none()
             && (full || reactive_trigger || request.trigger == ContextCompactionTrigger::Manual);
         let preserve_live =
             self.partial_selection.is_none() && !full && request.source_owner_id.is_some();
@@ -2111,7 +2205,8 @@ impl ConversationCompactionHook<'_> {
                     {
                         return Err(problem);
                     }
-                    allow_omission |= self.partial_selection.is_none() && overflow.is_some();
+                    allow_omission |=
+                        !precompute && self.partial_selection.is_none() && overflow.is_some();
                     let gap = overflow.and_then(|overflow| overflow.token_gap);
                     if response_planner.is_none() && self.partial_selection.is_none() {
                         let mut planner = reactive::ResponsePlanner::new(
@@ -2262,6 +2357,10 @@ impl ConversationCompactionHook<'_> {
                 covered_assistant_tool_seq = cursor.tool_seq;
             }
         }
+        if precompute {
+            projection_plan.strategy =
+                vega_store::context_projection::ProjectionStrategy::Precompute;
+        }
         let usages = execution.usages;
         let usage_complete = execution.usage_complete;
         let checkpoint = NewContextCheckpoint {
@@ -2279,25 +2378,19 @@ impl ConversationCompactionHook<'_> {
             projection_plan: Some(projection_plan),
             created_at: now_ms(),
         };
-        Ok((
-            GeneratedCompaction {
-                checkpoint,
-                result: ContextCompactionResult {
-                    replay_cold_prefix_messages: Some(replay_cold_prefix_messages),
-                    replay_interleaved_user_boundary,
-                    messages: projected,
-                    reactive_retained_groups,
-                    source_version: source.source_version,
-                    source_fingerprint: Some(source.fingerprint),
-                    usages,
-                    usage_complete,
-                },
+        Ok(GeneratedCompaction {
+            checkpoint,
+            result: ContextCompactionResult {
+                replay_cold_prefix_messages: Some(replay_cold_prefix_messages),
+                replay_interleaved_user_boundary,
+                messages: projected,
+                reactive_retained_groups,
+                source_version: source.source_version,
+                source_fingerprint: Some(source.fingerprint),
+                usages,
+                usage_complete,
             },
-            CompactionInstallGuard {
-                admission,
-                deadline,
-            },
-        ))
+        })
     }
 
     async fn install_generated(
@@ -2690,6 +2783,7 @@ fn validate_complete_projection(messages: &[ChatMessage]) -> Result<(), ContextC
 
 #[derive(Clone, Default)]
 struct SummaryDiagnosticMetrics {
+    request_started: bool,
     provider: vega_runtime::ProviderResponseMetadata,
     stop_reason: Option<StopReason>,
     input_tokens: Option<u64>,
@@ -2743,17 +2837,31 @@ async fn collect_summary_with_timeout_diagnostics(
         (tokio::time::Instant::now() + idle_timeout).min(operation_deadline),
     );
     tokio::pin!(idle_deadline);
+    if cancel.is_cancelled() {
+        return Err(summary_collection_failure(
+            VegaError::Cancelled,
+            SummaryDiagnosticMetrics::default(),
+        ));
+    }
+    let request_started = std::sync::atomic::AtomicBool::new(false);
+    let started_metrics = || SummaryDiagnosticMetrics {
+        request_started: request_started.load(std::sync::atomic::Ordering::Acquire),
+        ..SummaryDiagnosticMetrics::default()
+    };
     let call = tokio::select! {
         biased;
-        _ = cancel.cancelled() => return Err(summary_collection_failure(VegaError::Cancelled, SummaryDiagnosticMetrics::default())),
+        _ = cancel.cancelled() => return Err(summary_collection_failure(VegaError::Cancelled, started_metrics())),
         _ = &mut idle_deadline => {
-            return Err(summary_collection_failure(context_error(ContextRuntimeError::SummaryTimedOut), SummaryDiagnosticMetrics::default()));
+            return Err(summary_collection_failure(context_error(ContextRuntimeError::SummaryTimedOut), started_metrics()));
         }
-        result = provider.chat_stream_with_metadata(request.clone(), child) => {
+        result = async {
+            request_started.store(true, std::sync::atomic::Ordering::Release);
+            provider.chat_stream_with_metadata(request.clone(), child).await
+        } => {
             match result {
                 Ok(call) => call,
                 Err(error) => {
-                    let mut metrics = SummaryDiagnosticMetrics::default();
+                    let mut metrics = started_metrics();
                     set_summary_provider_error(&mut metrics, &error);
                     return Err(summary_collection_failure(error, metrics));
                 }
@@ -2763,7 +2871,7 @@ async fn collect_summary_with_timeout_diagnostics(
     let mut metrics = SummaryDiagnosticMetrics {
         provider: call.metadata,
         visible_output_bytes: Some(0),
-        ..SummaryDiagnosticMetrics::default()
+        ..started_metrics()
     };
     let mut stream = call.events;
     let mut text = String::new();

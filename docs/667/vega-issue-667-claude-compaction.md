@@ -134,6 +134,20 @@
 
 开发回归覆盖重开数据库后的 ready 读取、合法追加、过期／未来／超限／错 schema／错线程／来源修改、旧 generation 不能替换或删除新候选；计量重复／冲突／unknown／跨线程／取消后丢弃及删除后的账单保留。本批仅交付持久化边界，不把存储 API 当作完整后台调度或产品 UI 接线。
 
+#### 脱离前台的生成与逐阶段结算（2026-10-28）
+
+后台准备在当前 admission 下完成有界捕获：来源、append fence、前驱及引用摘要 digest 来自同一快照，拒绝 staged model change、来源不一致与不完整响应组。返回的 prepared job 不包含 admission、前台 actor、diagnostics channel 或任何 SQLite connection；只保存冻结请求、来源快照、摘要偏好、计价及凭据投影策略。前台生成仍全程持有原 admission 和同一 600 秒期限，不改变既有安装语义。
+
+provider 通过仅用于 compaction 的可选工厂显式声明后台能力，默认不支持。工厂在后台执行器内构造独立传输；OpenAI-compatible 实现使用新 HTTP client／连接池，保留冻结 endpoint、协议、model snapshot、重试策略和每次请求前的凭据 guard，不把前台池的 `Send + Sync` 当作跨 runtime 存活证明。OwnerCredentialProvider 必须重建完整保护包装，保留动态凭据读取及例外策略；借用式 child／观测包装不自动获得后台能力。没有此能力只跳过预计算，不影响前台压缩。
+
+生成复用同一 planner、tool-free 摘要和 projection interpreter，但采用显式 Precompute policy：保留完整尾组，超限可退让完整组／缩小摘要批次，不得进入 summarize-all／head omission 兜底；保留前驱已有 omission，不新增 omission，不授予 reactive deeper-pass。600 秒生成期限从实际启动开始计算，不能作为 ready 消费期限。
+
+每个实际 provider stage 返回后（包括失败／取消／未知 usage）先独立结算再进行下一阶段。ledger 只记录本阶段而非累计 usage，完成或失败均封存已结算阶段；无实际请求的取消不制造账单或 unknown stage。prepared job 的执行只产生已结算 ready 或失败，不返回可被前台重复入账的累计 usage，不安装 checkpoint；发布仍受当前 generation、来源／依赖／模型及取消围栏限制，失败按精确 generation 退役，不触碰新候选。
+
+开发回归必须证明 admission 在生成前释放、前台 append 不被阻塞且进入恢复后的当前来源、旧内容编辑拒绝 ready、取消／失败保留实际账单、不重复计费、unknown 保持 unknown，以及 typed PTL 不能让预计算新增 omission。provider 工厂回归静态构造／合成流验证配置与保护包装，不运行真实网络 E2E。此阶段不把 prepared job API 视为 runtime 自动触发、退出 drain 或最终消费安装已经完成。
+
+持久化基线 `e0c3471b14fed4d693fe4b6d567d50d6e6fd1a57` 的 Actions [40718995497](https://github.com/puzige/vega/actions/runs/40718995497) 已完成：Clippy `122924425728`、Nextest `122924426530`、required `122927304871` 成功，原始汇总 90 发现、90 执行通过、0 跳过。独立增量审查无发现；该结果不覆盖本节后续实现。
+
 ### 4.4 provider 与本机能力
 
 - 使用实际冻结模型定义中的 `context_window`、`max_output_tokens` 以及用户覆盖。既有配置的 input-limit / reserve 语义要显式迁移或适配，不把 input cap 偷换成 total window；不直接改用户本机配置/数据库。

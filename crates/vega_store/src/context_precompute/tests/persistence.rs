@@ -294,6 +294,29 @@ fn ready_publication_is_separate_from_install_and_recovery_retains_safe_appends(
 }
 
 #[test]
+fn ready_publication_cancellation_rolls_back_without_losing_accounting() -> TestResult {
+    let store = fixture(false)?;
+    let candidate = candidate(&store, "cancelled")?;
+    start_and_settle(&store, "cancelled", None)?;
+    let mut guards = 0;
+    let result = ready::publish_with_guard(store.conn(), &candidate, 1000, || {
+        guards += 1;
+        guards == 1
+    });
+    assert!(matches!(result, Err(ContextCheckpointError::Cancelled)));
+    assert_eq!(guards, 2);
+    assert!(ready::recover(store.conn(), "thread", 1000)?.is_none());
+    assert_eq!(bills(&store)?, 1);
+    ready::publish_with_guard(store.conn(), &candidate, 1000, || true)?;
+    assert_eq!(
+        ready::recover(store.conn(), "thread", 1000)?,
+        Some(candidate)
+    );
+    assert_eq!(bills(&store)?, 1);
+    Ok(())
+}
+
+#[test]
 fn ready_generation_cas_prevents_late_publication_removal_and_resurrection() -> TestResult {
     let store = fixture(false)?;
     let old = candidate(&store, "old")?;

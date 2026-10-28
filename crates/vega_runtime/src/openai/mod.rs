@@ -312,6 +312,25 @@ impl OpenAiProvider {
 }
 
 impl Provider for OpenAiProvider {
+    fn compaction_provider_factory(&self) -> Option<crate::provider::CompactionProviderFactory> {
+        let base_url = self.base_url.clone();
+        let key = self.key.clone();
+        let responses_api = self.responses_api;
+        let model_snapshot = self.model_snapshot.clone();
+        let retry = self.retry.clone();
+        let recovery_retry = self.recovery_retry.clone();
+        let before_attempt = self.before_attempt.clone();
+        Some(Box::new(move || {
+            let mut provider = Self::new(base_url, key)?;
+            provider.responses_api = responses_api;
+            provider.model_snapshot = model_snapshot;
+            provider.retry = retry;
+            provider.recovery_retry = recovery_retry;
+            provider.before_attempt = before_attempt;
+            Ok(Arc::new(provider))
+        }))
+    }
+
     fn model_snapshot(&self) -> Option<crate::model_compat::ResolvedModel> {
         self.model_snapshot.as_deref().cloned()
     }
@@ -456,6 +475,8 @@ async fn error_snippet(resp: reqwest::Response, cancel: &CancellationToken) -> S
 }
 
 mod chat;
+#[cfg(test)]
+mod compaction_tests;
 mod recovery;
 pub(crate) mod responses;
 mod sse;

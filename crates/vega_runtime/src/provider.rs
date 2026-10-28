@@ -1884,7 +1884,16 @@ impl std::fmt::Debug for ProviderEvent {
 /// `chat_stream` returns a `BoxFuture` resolving to an [`EventStream`] so
 /// that connection setup, retries, and cancellation all happen inside the
 /// future while the loop only polls events afterwards.
+#[allow(missing_docs)]
+pub type CompactionProviderFactory =
+    Box<dyn FnOnce() -> Result<std::sync::Arc<dyn Provider>, VegaError> + Send + 'static>;
+
 pub trait Provider: Send + Sync {
+    #[allow(missing_docs)]
+    fn compaction_provider_factory(&self) -> Option<CompactionProviderFactory> {
+        None
+    }
+
     fn model_snapshot(&self) -> Option<crate::model_compat::ResolvedModel> {
         None
     }

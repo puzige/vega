@@ -419,6 +419,19 @@ fn protected_stream(
 }
 
 impl Provider for OwnerCredentialProvider {
+    fn compaction_provider_factory(&self) -> Option<vega_runtime::CompactionProviderFactory> {
+        let factory = self.provider.compaction_provider_factory()?;
+        let known = self.known.clone();
+        let exceptions = self.exceptions.clone();
+        Some(Box::new(move || {
+            Ok(Arc::new(Self {
+                provider: factory()?,
+                known,
+                exceptions,
+            }))
+        }))
+    }
+
     fn model_snapshot(&self) -> Option<vega_runtime::model_compat::ResolvedModel> {
         self.provider.model_snapshot()
     }

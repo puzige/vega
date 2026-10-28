@@ -6,6 +6,9 @@
 //! payloads.
 
 use super::ThreadMode;
+pub use crate::agent::compaction::precompute::{
+    ContextPrecomputeWorker, PreparedContextPrecompute,
+};
 pub use vega_runtime::ContextCompactionTrigger;
 
 /// Provenance of a live primary input decision; reload always starts Estimated.

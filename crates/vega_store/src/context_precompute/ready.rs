@@ -257,6 +257,18 @@ pub fn publish(
     candidate: &ReadyCompaction,
     now_ms: i64,
 ) -> Result<(), ContextCheckpointError> {
+    publish_with_guard(conn, candidate, now_ms, || true)
+}
+
+pub fn publish_with_guard(
+    conn: &Connection,
+    candidate: &ReadyCompaction,
+    now_ms: i64,
+    mut permitted: impl FnMut() -> bool,
+) -> Result<(), ContextCheckpointError> {
+    if !permitted() {
+        return Err(ContextCheckpointError::Cancelled);
+    }
     let encoded = candidate.encode()?;
     let transaction = WriteTransaction::new(conn, WriteCategory::ContextCompaction)?;
     let current: bool = transaction.query_row(
@@ -294,6 +306,9 @@ pub fn publish(
                 encoded
             ],
         )?;
+    }
+    if !permitted() {
+        return Err(ContextCheckpointError::Cancelled);
     }
     transaction.commit()?;
     Ok(())

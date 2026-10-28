@@ -65,11 +65,12 @@ pub use permission::{
     RuntimeToolClass, RuntimeUserDecision, decide_capability, decide_execute_permission,
 };
 pub use provider::{
-    ChatMessage, ChatReasoningPresence, ChatRequest, ChatRole, ChatToolCall, EventStream,
-    FrozenReasoning, Provider, ProviderEvent, ProviderFailureKind, ProviderResponseMetadata,
-    ProviderStream, ReasoningBudgetScope, ReasoningChoice, ReasoningDisabledWire,
-    ReasoningProtocol, ReasoningReplayPolicy, ReplayFrame, ResponseReplayLayout,
-    ResponseReplaySlot, StopReason, ToolChoice, ToolDefinition, project_model_messages,
+    ChatMessage, ChatReasoningPresence, ChatRequest, ChatRole, ChatToolCall,
+    CompactionProviderFactory, EventStream, FrozenReasoning, Provider, ProviderEvent,
+    ProviderFailureKind, ProviderResponseMetadata, ProviderStream, ReasoningBudgetScope,
+    ReasoningChoice, ReasoningDisabledWire, ReasoningProtocol, ReasoningReplayPolicy, ReplayFrame,
+    ResponseReplayLayout, ResponseReplaySlot, StopReason, ToolChoice, ToolDefinition,
+    project_model_messages,
 };
 pub use retry::RetryPolicy;
 
