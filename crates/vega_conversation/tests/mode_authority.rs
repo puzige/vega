@@ -39,7 +39,7 @@ fn legacy_defaults_materialize_without_valid_grants() {
         store
             .conn()
             .execute(
-                "UPDATE threads SET full_access_grant='invalid' WHERE id=?1",
+                "UPDATE threads SET full_access_grant='{}' WHERE id=?1",
                 [&saved.id],
             )
             .unwrap();
