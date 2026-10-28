@@ -1016,13 +1016,6 @@ impl ConversationStream {
                     .focusable()
                     .track_focus(&self.context_usage_focus)
                     .tab_stop(true)
-                    .on_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                        if event.keystroke.key == "escape" {
-                            this.context_usage_trigger_hovered = false;
-                            cx.notify();
-                            cx.stop_propagation();
-                        }
-                    }))
                     .size_full()
                     .rounded_full()
                     .flex()
@@ -1705,6 +1698,13 @@ impl Render for ConversationStream {
             .text_color(colors.text_primary)
             .key_context("ConversationStream")
             .track_focus(&self.selection_focus)
+            .capture_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                if this.context_usage_trigger_hovered && event.keystroke.key == "escape" {
+                    this.context_usage_trigger_hovered = false;
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
