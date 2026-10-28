@@ -6,6 +6,7 @@ pub mod computer_use_delivery;
 pub mod config;
 pub mod context_compaction;
 pub mod context_micro;
+pub mod context_precompute;
 pub mod context_projection;
 pub mod credential_continuation;
 pub mod credential_privacy;

@@ -104,6 +104,16 @@
 
 开发回归通过真实 SQLite 和合成摘要 provider 验证：生成不落库，显式安装与 reload 投影一致；生成后取消／期限届满／同序号编辑／模型变化／前驱竞争均不增加 checkpoint，且保留已发生 usage；未安装候选被丢弃后 admission 释放。此分离只是后台生命周期的共用基础，不声称已实现后台并发、ready 持久化、append-safe 消费或恢复。
 
+#### 后台候选的 append-safe 来源围栏（2026-10-28）
+
+候选另外保存版本化 `ContextAppendFence`，只含 thread、捕获时最大 seq、旧来源 digest 和可选 streaming owner 的稳定身份／UTF-8 长度／最后完整 response cursor，不持久化原始消息、工具输出或凭据。捕获必须来自同一 SQLite 快照；除末尾已知 owner 外，既有消息和调用均已终态。owner 只在空白且无调用，或文本末尾恰好对应完整已结束响应组时可扩展，不能冻结半个响应。
+
+消费重新读取完整当前来源，再对捕获 seq 范围内的消息／调用及其历史投递元数据、工具回执、图片计算同一有界 digest；历史投递可能遮住的 user 原文也参与候选 digest。只允许该 owner 在原 UTF-8 前缀之后追加文本和新的完整响应组，状态由 streaming 变 done 可归一；新增工具不得挂到其他旧消息，旧响应不能追加同 response ID 的调用。新消息、调用和相关图片／历史元数据可在捕获 watermark 后追加，不应让有效候选无条件过期；同 seq 编辑、删行、旧图片或历史元数据变更、micro 标记变化、旧调用路径或 response 身份变化必须拒绝。此来源围栏不是授权：消费仍须当前 owner／模型／前驱／预算校验，重新构造投影后在最终事务内复核候选围栏并用当下完整来源 CAS 安装，不能拿捕获 digest 替代最终事务检查。原整体来源指纹算法及旧 checkpoint 兼容性不变。
+
+开发回归覆盖正常追加与重载、空／有工具的 streaming owner、保留锚点和覆盖来源篡改、图片／历史元数据／micro／调用路径变化、旧消息挂新调用、同响应跨边界及无效围栏。该存储原语不单独宣称后台调度、候选 ready 持久化和消费接线已完成。
+
+生成／安装拆分提交 `eaee6266a4896d69aabfa3b0114a4f741e7a7116` 的 Actions [40702321829](https://github.com/puzige/vega/actions/runs/40702321829) 已成功：Nextest `122865129665` 原始日志 73 发现、73 执行通过、0 跳过；Clippy `122865130027`、required `122867516709` 成功。非实现者独立增量审查无发现，包含前一 scripted reply 修正；仅此版本已验证，不覆盖后续 append-safe 修改。PR 仍为草稿。
+
 ### 4.3 持久化与回读
 
 - 新增递增 migration，保留旧 `context_checkpoints` 可读；新投影 metadata 包含 schema/version、策略与 continuation mode、源/owner fences、稳定 covered/kept 范围、head-truncated 标记及遗漏范围、恢复状态来源。

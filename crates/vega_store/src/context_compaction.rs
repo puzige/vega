@@ -1630,19 +1630,89 @@ fn fingerprint_source(
     thread_id: &str,
     materialize_images: bool,
 ) -> rusqlite::Result<(String, Vec<ImageRow>)> {
-    // SHA-256 is a stable source revision, not an authorization primitive.
-    // Every field is length-delimited and Option discriminants are explicit,
-    // so same-seq content/status/tool/image mutations cannot be mistaken for
-    // an unchanged source.
+    fingerprint_source_with_scope(
+        conn,
+        messages,
+        tool_calls,
+        thread_id,
+        materialize_images,
+        false,
+    )
+}
+
+pub(super) fn fingerprint_selected_source(
+    conn: &Connection,
+    source: &ContextSource,
+) -> rusqlite::Result<String> {
+    fingerprint_source_with_scope(
+        conn,
+        &source.messages,
+        &source.tool_calls,
+        &source.thread_id,
+        false,
+        true,
+    )
+    .map(|(fingerprint, _)| fingerprint)
+}
+
+fn fingerprint_source_with_scope(
+    conn: &Connection,
+    messages: &[MessageRow],
+    tool_calls: &[ContextToolCallRow],
+    thread_id: &str,
+    materialize_images: bool,
+    selected_rows: bool,
+) -> rusqlite::Result<(String, Vec<ImageRow>)> {
     let mut hash = Sha256::new();
     let historical_bytes: i64 = conn.query_row("SELECT COALESCE((SELECT SUM(length(CAST(COALESCE(model_content,'') AS BLOB))) FROM historical_message_delivery WHERE thread_id=?1),0)+COALESCE((SELECT SUM(length(CAST(input_json AS BLOB))+length(CAST(COALESCE(output_text,'') AS BLOB))+length(CAST(references_json AS BLOB))) FROM historical_tool_receipts WHERE thread_id=?1),0)", [thread_id], |row| row.get(0))?;
     if historical_bytes > MAX_SOURCE_TEXT_BYTES {
         return Err(source_too_large());
     }
-    let mut historical = conn.prepare("SELECT message_id,json_array(model_content,previous_assistant_id) FROM historical_message_delivery WHERE thread_id=?1 UNION ALL SELECT call_id,json_array(kind,source_thread_id,source_message_id,source_call_id,input_json,output_text,references_json) FROM historical_tool_receipts WHERE thread_id=?1 ORDER BY 1,2")?;
+    let message_ids = messages
+        .iter()
+        .filter(|_| selected_rows)
+        .map(|row| row.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let call_ids = tool_calls
+        .iter()
+        .filter(|_| selected_rows)
+        .map(|row| row.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    if selected_rows {
+        let raw_bytes: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(length(CAST(content AS BLOB))),0) FROM messages WHERE thread_id=?1 AND role='user'",
+            [thread_id], |row| row.get(0),
+        )?;
+        if raw_bytes > MAX_SOURCE_TEXT_BYTES {
+            return Err(source_too_large());
+        }
+        let mut raw = conn.prepare(
+            "SELECT id,content FROM messages WHERE thread_id=?1 AND role='user' ORDER BY seq,id",
+        )?;
+        let mut rows = raw.query([thread_id])?;
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            if message_ids.contains(id.as_str()) {
+                let content = row.get_ref(1)?.as_str()?;
+                feed(&mut hash, b"raw-user-id", id.as_bytes());
+                feed(&mut hash, b"raw-user-content", content.as_bytes());
+            }
+        }
+    }
+    let mut historical = conn.prepare("SELECT message_id,json_array(model_content,previous_assistant_id),0 FROM historical_message_delivery WHERE thread_id=?1 UNION ALL SELECT call_id,json_array(kind,source_thread_id,source_message_id,source_call_id,input_json,output_text,references_json),1 FROM historical_tool_receipts WHERE thread_id=?1 ORDER BY 1,2")?;
     let mut rows = historical.query([thread_id])?;
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
+        let is_call: bool = row.get(2)?;
+        if selected_rows
+            && !if is_call {
+                call_ids.contains(id.as_str())
+            } else {
+                message_ids.contains(id.as_str())
+            }
+        {
+            continue;
+        }
         let value: String = row.get(1)?;
         feed(&mut hash, b"historical-id", id.as_bytes());
         feed(&mut hash, b"historical-value", value.as_bytes());
@@ -1688,8 +1758,8 @@ fn fingerprint_source(
     let (image_count, image_bytes): (i64, i64) = conn.query_row(
         "SELECT COUNT(*), COALESCE(SUM(length(encoded)), 0) \
          FROM image_attachments a JOIN messages m ON m.id = a.message_id \
-         WHERE m.thread_id = ?1 AND m.role = 'user'",
-        [thread_id],
+         WHERE m.thread_id = ?1 AND (m.role = 'user' OR ?2)",
+        params![thread_id, selected_rows],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     if image_count > MAX_SOURCE_ROWS || image_bytes > MAX_SOURCE_IMAGE_BYTES {
@@ -1702,15 +1772,32 @@ fn fingerprint_source(
     };
     let mut images = Vec::with_capacity(image_capacity);
     let mut statement = conn.prepare(
-        "SELECT a.message_id, a.ordinal, a.encoded \
+        "SELECT a.message_id, a.ordinal, a.encoded, \
+         (SELECT s.call_id FROM computer_screenshot_artifacts s WHERE s.message_id=a.message_id AND s.ordinal=a.ordinal) \
          FROM image_attachments a JOIN messages m ON m.id = a.message_id \
-         WHERE m.thread_id = ?1 AND m.role = 'user' ORDER BY m.seq, a.ordinal",
+         WHERE m.thread_id = ?1 AND (m.role = 'user' OR ?2) ORDER BY m.seq, a.ordinal",
     )?;
-    let mut rows = statement.query([thread_id])?;
+    let mut rows = statement.query(params![thread_id, selected_rows])?;
     while let Some(row) = rows.next()? {
         let message_id: String = row.get(0)?;
+        let artifact_call_id: Option<String> = row.get(3)?;
+        if selected_rows
+            && (!message_ids.contains(message_id.as_str())
+                || artifact_call_id
+                    .as_ref()
+                    .is_some_and(|id| !call_ids.contains(id.as_str())))
+        {
+            continue;
+        }
         let ordinal: i64 = row.get(1)?;
         let encoded = row.get_ref(2)?.as_blob()?;
+        if selected_rows {
+            feed_optional_str(
+                &mut hash,
+                b"image-artifact-call",
+                artifact_call_id.as_deref(),
+            );
+        }
         feed(&mut hash, b"image-message", message_id.as_bytes());
         feed(&mut hash, b"image-ordinal", &ordinal.to_le_bytes());
         feed(&mut hash, b"image-bytes", encoded);
