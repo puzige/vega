@@ -148,6 +148,7 @@ pub(crate) struct VegaWindow {
     pub(crate) agent_controller: AppAgentController,
     pub(crate) automation_controller: crate::automation_controller::AutomationController,
     pub(crate) context_controller: context::ContextController,
+    context_precompute_owner: ContextPrecomputeOwner,
     pub(crate) file_index_controller: FileIndexController,
     pub(crate) diff_controller: DiffController,
     pub(crate) artifact_controller: ArtifactController,
@@ -350,6 +351,7 @@ impl VegaWindow {
             agent_controller: AppAgentController::default(),
             automation_controller: crate::automation_controller::AutomationController::default(),
             context_controller: context::ContextController::default(),
+            context_precompute_owner: ContextPrecomputeRegistry::global().owner(),
             file_index_controller: FileIndexController::default(),
             diff_controller: DiffController::default(),
             workspace: workspace::Workspace::default(),
@@ -394,6 +396,9 @@ impl VegaWindow {
     }
 
     pub(crate) fn window_terminal_cleanup(&mut self) {
+        if self.context_precompute_owner.close().is_err() {
+            tracing::error!("window context precompute cancellation unavailable");
+        }
         self.composer_predictions.clear();
         self.image_preview.retire();
         self.context_controller.cancel();

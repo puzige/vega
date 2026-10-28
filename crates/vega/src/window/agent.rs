@@ -580,7 +580,23 @@ impl VegaWindow {
         self.cancel_agent_for_thread(&thread_id, cx);
     }
 
+    fn cancel_background_context(&self, thread_id: &str, cx: &mut Context<Self>) {
+        let result = match &cx.global::<VegaStore>().0 {
+            Ok(store) => vega_conversation::threads::cancel_context_precompute(store, thread_id)
+                .map(|_| ())
+                .map_err(|_| ()),
+            Err(_) => Err(()),
+        };
+        if result.is_err() {
+            tracing::error!("context precompute cancellation unavailable");
+            if let Some(stream) = self.current_cached_stream_for_thread(thread_id, cx) {
+                stream.update(cx, ConversationStream::apply_controller_error);
+            }
+        }
+    }
+
     pub(super) fn cancel_agent_for_thread(&mut self, thread_id: &str, cx: &mut Context<Self>) {
+        self.cancel_background_context(thread_id, cx);
         if let Some(sessions) = cx.try_global::<crate::app_agent::AppReplaySessions>() {
             sessions.0.invalidate_thread(thread_id);
         }
@@ -681,6 +697,7 @@ impl VegaWindow {
         if !self.owns_stream_request(&stream, &request.thread_id, cx) {
             return;
         }
+        self.cancel_background_context(&request.thread_id, cx);
         self.agent_controller
             .request_active_cancel(&request.thread_id);
         self.pause_automation_all(&request.thread_id, "stopped", cx);
@@ -977,6 +994,14 @@ impl VegaWindow {
             return;
         };
 
+        let precompute_lease = match &cx.global::<VegaStore>().0 {
+            Ok(store) => self
+                .context_precompute_owner
+                .bind(store.database_identity(), thread_id, &admission)
+                .ok()
+                .flatten(),
+            Err(_) => None,
+        };
         let pricing_catalog = self.pricing_controller.catalog_for_run(&thread.model);
 
         let permission_queue = stream.read(cx).permission_queue();
@@ -1121,6 +1146,7 @@ impl VegaWindow {
                     queue_context,
                     automation_pauses,
                     replay_registry,
+                    precompute_lease,
                     admission,
                 );
                 drop(worker_activity);

@@ -7,7 +7,7 @@
 
 use super::ThreadMode;
 pub use crate::agent::compaction::precompute::registry::{
-    ContextPrecomputeDrain, ContextPrecomputeLease, ContextPrecomputePause,
+    ContextPrecomputeDrain, ContextPrecomputeLease, ContextPrecomputeOwner, ContextPrecomputePause,
     ContextPrecomputeRegistry, ContextPrecomputeTask,
 };
 pub use crate::agent::compaction::precompute::{

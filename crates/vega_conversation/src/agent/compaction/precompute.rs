@@ -345,6 +345,11 @@ impl ConversationCompactionHook<'_> {
         {
             return Ok(None);
         }
+        if let Some(lease) = &self.precompute_lease
+            && !lease.is_current()?
+        {
+            return Ok(None);
+        }
         let Some(provider) = self.provider.compaction_provider_factory() else {
             return Ok(None);
         };

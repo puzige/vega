@@ -176,6 +176,18 @@ conversation 使用当前系统、工具、模型及 replay frame 重建完整�
 
 precompute 的连续失败计数与前台 automatic／rapid-refill 独立；同 epoch 成功归零，三次实际失败后拒绝 re-arm。显式取消、来源失效及完整响应组不足不计 counted failure；旧 epoch 的迟到完成只释放自身槽，不改变新 epoch 的计数或任务。开发回归使用真实 SQLite、真实生成／结算 worker 与可阻塞的合成 provider，验证单在途、不同数据库隔离、旧 lease 失效、等待取消独立、drain 必须等 provider 资源释放、ready／账单终态、暂停／关闭以及失败 gate。该注册原语不单独宣称 runtime 自动触发、Stop／模型／权限重置／删除／窗口和 app quit 接线已完成；接入须继续覆盖这些具体入口。
 
+注册原语提交 `318f71cc0e169338e3f0e47c1fe32291aa498310`（tree `e9ca2a9b14bbc1e7bbfac85bb42bad996e54c6cf`）的 Actions [40763908020](https://github.com/puzige/vega/actions/runs/40763908020) 未执行构建或测试：Clippy `123082813541`、Nextest `123082814274` 均 cancelled 且 steps 为空，annotation 明确 hosted macOS arm64 runner 容量不足；required `123090610049` 失败，Rust 发现／执行计数未取得，不是 no Rust tests。独立审查指出缺少旧 epoch 的实际 counted failure 迟到回归，生产 epoch 比较未发现确定缺陷。本批补齐真实失败已结算但 runtime 仍未退出时失效的场景，并保留新 epoch 三次失败／第四次拒绝和旧结果重观察不重复计费的断言。
+
+#### 生命周期与自动入口接线（2026-10-28）
+
+自动生成启用前先接破坏性边界。显式 Stop 在前台或准备阶段是否存在均撤销该线程的旧 lease；仅导航、等待取消或交接不等同 Stop。模型 set／stage／promote 在写入期间暂停该键并撤销 pending，已完成 ready 不删除；新的运行在窗口启动边界、当前 admission 下绑定一次 lease，沿四种运行配置传至 conversation；不能推迟到工作线程或 hook 首次调用时重新绑定，使 Stop 之后的迟到准备取得新 epoch。权限重置 session 同时持有数据库 admission pause 与 precompute pause，完成／恢复原语在持有 precompute pause 且真实 drain 完成后才能修改配置／权限；超时保持 Busy，不假报完成。删除同时暂停父／子线程并检查真实 drain，未退出时返回明确的“正在停止，请稍后重试”，不在 UI 同步等待、不先删除 transcript 或账单。
+
+窗口拥有可关闭的 compaction owner，只跟踪其 lease／worker，不携带 admission 或内容；关闭撤销本 owner 的旧 lease 和 worker，不取消其他窗口后来启动的任务。app quit 关闭进程内 registry 并等待实际 drain。当前 GPUI 0.3.4 的 `on_app_quit` Future 仅等待 200ms 且不可否决退出，因此压缩专用 callback 在返回 Future 前同步等待独立 runtime 的真实退出；不将异步 hook 的超时当作完成，也不修改通用退出框架。该终止阶段可能延迟退出，不依赖 UI／前台 actor 推进结算。窗口关闭本身不宣称 worker 已退出，全局注册仍保留它直到结算／退出。错误保持失败关闭并记录未能确认退出，不通过新建 registry 绕过暂停或关闭。
+
+runtime 在完整持久化响应／工具结果边界、micro 之后用完整 framed wire 的当前可信 usage anchor 或保守估算判断 precompute 阈值，首次单用户／无完整组、已尝试 reactive 或紧随压缩成功的迭代不启动。不在 delta、未完成工具响应或 final-turn 子 agent 处 arm。conversation 启动前重新验证来源、模型／pending、当前 lease，已有有效 ready 或 pending 时不替换。前台 threshold／manual／reactive 可等同键 pending，取消等待不取消后台，后台失败仍按当前来源走普通前台 fallback；真正安装一律复用完整消费校验，不因等待成功直接接受摘要。该入口使用独立 precompute breaker，不改变前台 automatic／rapid-refill 计数。
+
+本批开发回归覆盖窗口 owner 关闭／重观察不影响其他窗口、阻塞 runtime 超过 200ms 时 shutdown drain 不提前完成、三种模型变更保留 ready、删除保留 transcript 直到退出、direct reset 与 session reset 的 Busy／真实退出后完成，以及 GPUI 中后台单独运行／标题等待／普通准备／活跃运行／trusted preparation 五条 Stop 路径与旧 stream／导航不误撤销。上述行为待本批云端验证；自动 arm／pending 消费入口仍未启用，不以生命周期接线宣称整卡完成。
+
 ### 4.4 provider 与本机能力
 
 - 使用实际冻结模型定义中的 `context_window`、`max_output_tokens` 以及用户覆盖。既有配置的 input-limit / reserve 语义要显式迁移或适配，不把 input cap 偷换成 total window；不直接改用户本机配置/数据库。

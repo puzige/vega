@@ -197,6 +197,7 @@ pub struct ConversationCompactionHook<'a> {
     partial_selection: Option<crate::types::PartialCompactionSelection>,
     full_on_threshold: bool,
     stage_accounting: Option<precompute::StageAccounting>,
+    precompute_lease: Option<crate::types::ContextPrecomputeLease>,
 }
 
 impl<'a> ConversationCompactionHook<'a> {
@@ -225,7 +226,16 @@ impl<'a> ConversationCompactionHook<'a> {
             partial_selection: None,
             full_on_threshold: false,
             stage_accounting: None,
+            precompute_lease: None,
         }
+    }
+
+    pub(crate) fn with_precompute_lease(
+        mut self,
+        lease: Option<crate::types::ContextPrecomputeLease>,
+    ) -> Self {
+        self.precompute_lease = lease;
+        self
     }
 
     pub(crate) fn with_full_on_threshold(mut self, enabled: bool) -> Self {

@@ -1,4 +1,5 @@
 use super::*;
+mod lifecycle_tests;
 use crate::types::{ContextPrecomputeLease, ContextPrecomputeRegistry, PreparedContextPrecompute};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -110,6 +111,7 @@ impl Drop for ReleaseGate {
 }
 
 struct RuntimeDrainState {
+    failure: bool,
     started: tokio::sync::Notify,
     blocked: tokio::sync::Notify,
     released: AtomicBool,
@@ -149,7 +151,15 @@ impl Provider for RuntimeDrainProvider {
                 })])
                 .chain(futures::stream::poll_fn(move |_| {
                     state.started.notify_one();
-                    std::task::Poll::Pending
+                    if state.failure {
+                        std::task::Poll::Ready(Some(Err(VegaError::Provider {
+                            status: Some(503),
+                            message: "Synthetic unavailable".into(),
+                            retryable: false,
+                        })))
+                    } else {
+                        std::task::Poll::Pending
+                    }
                 })),
             );
             Ok(events)
@@ -164,6 +174,7 @@ async fn invalidation_keeps_slot_until_accounting_and_background_runtime_exit() 
     let registry = ContextPrecomputeRegistry::default();
     let lease = bind(&registry, &store)?;
     let state = Arc::new(RuntimeDrainState {
+        failure: false,
         started: tokio::sync::Notify::new(),
         blocked: tokio::sync::Notify::new(),
         released: AtomicBool::new(false),
@@ -229,6 +240,87 @@ async fn invalidation_keeps_slot_until_accounting_and_background_runtime_exit() 
     assert_eq!(count(&store, "token_usage")?, 2);
     assert_eq!(count(&store, "context_precompute_ready")?, 1);
     assert_eq!(replacement.0.requests.lock().unwrap().len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn late_counted_failure_cannot_spend_the_replacement_epochs_failure_budget() -> TestResult {
+    let (_directory, path, store) = source_fixture()?;
+    let request = input(&store)?;
+    let registry = ContextPrecomputeRegistry::default();
+    let lease = bind(&registry, &store)?;
+    let state = Arc::new(RuntimeDrainState {
+        failure: true,
+        started: tokio::sync::Notify::new(),
+        blocked: tokio::sync::Notify::new(),
+        released: AtomicBool::new(false),
+        gate: Arc::new((Mutex::new(false), std::sync::Condvar::new())),
+    });
+    let release = ReleaseGate {
+        gate: state.gate.clone(),
+    };
+    let provider = RuntimeDrainProvider(state.clone());
+    let old = lease
+        .try_launch(prepare(&path, &request, &provider).await?)?
+        .ok_or("old task missing")?;
+    tokio::time::timeout(Duration::from_secs(10), state.started.notified()).await?;
+    tokio::time::timeout(Duration::from_secs(10), state.blocked.notified()).await?;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let settled: bool = store.conn().query_row(
+                "SELECT EXISTS(SELECT 1 FROM context_precompute_accounting WHERE generation=?1 AND stage_count=1 AND usage_complete=1 AND retired=1)",
+                [old.generation()], |row| row.get(0),
+            )?;
+            if settled { return Ok::<_, Box<dyn std::error::Error>>(()); }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }).await??;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), old.wait())
+            .await
+            .is_err()
+    );
+    let drain = registry.invalidate(store.database_identity(), "thread")?;
+    let fresh = bind(&registry, &store)?;
+    assert!(!drain.is_finished()?);
+    release.release();
+    tokio::time::timeout(Duration::from_secs(10), drain.wait()).await??;
+    for _ in 0..2 {
+        assert!(matches!(
+            old.wait().await.as_ref().map_err(|error| error.as_ref()),
+            Err(VegaError::Provider {
+                status: Some(503),
+                ..
+            })
+        ));
+    }
+    let failure = BackgroundProvider::new("failure", false);
+    for index in 0..3 {
+        let task = fresh
+            .try_launch(prepare(&path, &request, &failure).await?)?
+            .ok_or("old failure spent new budget")?;
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(10), task.wait())
+                .await?
+                .as_ref()
+                .map_err(|error| error.as_ref()),
+            Err(VegaError::Provider {
+                status: Some(503),
+                ..
+            })
+        ));
+        assert!(old.wait().await.is_err());
+        assert_eq!(count(&store, "token_usage")?, index + 2);
+    }
+    assert!(
+        fresh
+            .try_launch(prepare(&path, &request, &failure).await?)?
+            .is_none()
+    );
+    assert_eq!(failure.0.requests.lock().unwrap().len(), 3);
+    assert_eq!(count(&store, "context_precompute_stages")?, 4);
+    assert_eq!(count(&store, "context_precompute_ready")?, 0);
+    assert_eq!(count(&store, "context_checkpoints")?, 0);
     Ok(())
 }
 

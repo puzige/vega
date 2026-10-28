@@ -61,6 +61,7 @@ struct Flight {
     epoch: Arc<CancellationToken>,
     generation: String,
     cancel: CancellationToken,
+    owner: Option<Arc<CancellationToken>>,
     state: Mutex<FlightState>,
 }
 
@@ -89,6 +90,13 @@ pub struct ContextPrecomputeLease {
     registry: ContextPrecomputeRegistry,
     key: Key,
     epoch: Arc<CancellationToken>,
+    owner: Option<Arc<CancellationToken>>,
+}
+
+#[derive(Clone)]
+pub struct ContextPrecomputeOwner {
+    registry: ContextPrecomputeRegistry,
+    cancel: Arc<CancellationToken>,
 }
 
 #[derive(Clone)]
@@ -130,11 +138,28 @@ impl ContextPrecomputeRegistry {
         REGISTRY.get_or_init(Self::default).clone()
     }
 
+    pub fn owner(&self) -> ContextPrecomputeOwner {
+        ContextPrecomputeOwner {
+            registry: self.clone(),
+            cancel: Arc::new(CancellationToken::new()),
+        }
+    }
+
     pub fn bind(
         &self,
         database: DatabaseIdentity,
         thread: &str,
         admission: &ThreadAdmission,
+    ) -> Result<Option<ContextPrecomputeLease>, VegaError> {
+        self.bind_owned(database, thread, admission, None)
+    }
+
+    fn bind_owned(
+        &self,
+        database: DatabaseIdentity,
+        thread: &str,
+        admission: &ThreadAdmission,
+        owner: Option<Arc<CancellationToken>>,
     ) -> Result<Option<ContextPrecomputeLease>, VegaError> {
         if !admission.verifies(database, thread) {
             return Err(unavailable());
@@ -144,7 +169,10 @@ impl ContextPrecomputeRegistry {
             thread: thread.to_owned(),
         };
         let mut state = self.inner.lock().map_err(|_| unavailable())?;
-        if state.closed || state.pauses.keys().any(|scope| scope.contains(&key)) {
+        if state.closed
+            || owner.as_ref().is_some_and(|owner| owner.is_cancelled())
+            || state.pauses.keys().any(|scope| scope.contains(&key))
+        {
             return Ok(None);
         }
         state.entries.retain(|_, entry| {
@@ -155,6 +183,7 @@ impl ContextPrecomputeRegistry {
             registry: self.clone(),
             key,
             epoch: entry.epoch.clone(),
+            owner,
         }))
     }
 
@@ -276,6 +305,33 @@ impl ContextPrecomputeRegistry {
 }
 
 impl ContextPrecomputeLease {
+    pub fn is_current(&self) -> Result<bool, VegaError> {
+        let state = self.registry.inner.lock().map_err(|_| unavailable())?;
+        Ok(!state.closed
+            && !self.epoch.is_cancelled()
+            && !self
+                .owner
+                .as_ref()
+                .is_some_and(|owner| owner.is_cancelled())
+            && !state.pauses.keys().any(|scope| scope.contains(&self.key))
+            && state
+                .entries
+                .get(&self.key)
+                .is_some_and(|entry| Arc::ptr_eq(&entry.epoch, &self.epoch)))
+    }
+
+    pub fn verifies(
+        &self,
+        database: DatabaseIdentity,
+        thread: &str,
+        admission: &ThreadAdmission,
+    ) -> Result<bool, VegaError> {
+        Ok(self.key.database == database
+            && self.key.thread == thread
+            && admission.verifies(database, thread)
+            && self.is_current()?)
+    }
+
     pub fn try_launch(
         &self,
         prepared: PreparedContextPrecompute,
@@ -290,6 +346,10 @@ impl ContextPrecomputeLease {
             let mut state = self.registry.inner.lock().map_err(|_| unavailable())?;
             if state.closed
                 || self.epoch.is_cancelled()
+                || self
+                    .owner
+                    .as_ref()
+                    .is_some_and(|owner| owner.is_cancelled())
                 || state.pauses.keys().any(|scope| scope.contains(&self.key))
             {
                 return Ok(None);
@@ -308,6 +368,7 @@ impl ContextPrecomputeLease {
                 epoch: self.epoch.clone(),
                 generation: prepared.generation().to_owned(),
                 cancel: self.epoch.child_token(),
+                owner: self.owner.clone(),
                 state: Mutex::new(FlightState::default()),
             });
             entry.pending = Some(flight.clone());
@@ -325,6 +386,46 @@ impl ContextPrecomputeLease {
             registry: self.registry.clone(),
             flight,
         }))
+    }
+}
+
+impl ContextPrecomputeOwner {
+    pub fn bind(
+        &self,
+        database: DatabaseIdentity,
+        thread: &str,
+        admission: &ThreadAdmission,
+    ) -> Result<Option<ContextPrecomputeLease>, VegaError> {
+        self.registry
+            .bind_owned(database, thread, admission, Some(self.cancel.clone()))
+    }
+
+    pub fn close(&self) -> Result<ContextPrecomputeDrain, VegaError> {
+        let state = self.registry.inner.lock().map_err(|_| unavailable())?;
+        self.cancel.cancel();
+        let flights = state
+            .entries
+            .values()
+            .filter_map(|entry| {
+                entry
+                    .pending
+                    .as_ref()
+                    .filter(|flight| {
+                        flight
+                            .owner
+                            .as_ref()
+                            .is_some_and(|owner| Arc::ptr_eq(owner, &self.cancel))
+                    })
+                    .map(|flight| {
+                        flight.cancel.cancel();
+                        flight.clone()
+                    })
+            })
+            .collect();
+        Ok(ContextPrecomputeDrain {
+            registry: self.registry.clone(),
+            flights,
+        })
     }
 }
 
@@ -355,6 +456,13 @@ impl ContextPrecomputeDrain {
     pub async fn wait(&self) -> Result<(), VegaError> {
         while !self.is_finished()? {
             tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Ok(())
+    }
+
+    pub fn wait_blocking(&self) -> Result<(), VegaError> {
+        while !self.is_finished()? {
+            std::thread::sleep(Duration::from_millis(10));
         }
         Ok(())
     }

@@ -16,6 +16,9 @@ use vega_ui::conversation_stream::ConversationStream;
 use vega_ui::settings::SettingsOpen;
 use vega_ui::sidebar::{OpenedThread, SelectedProject, VegaStore};
 
+#[path = "context_tests/precompute_lifecycle_tests.rs"]
+mod precompute_lifecycle_tests;
+
 type WorkerResult = Result<Vec<ConversationEvent>, ()>;
 
 struct Fixture {

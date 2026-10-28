@@ -17,6 +17,8 @@ pub enum ConversationError {
     Store(String),
     #[error("{}", vega_i18n::t("domain.conversation.invalid_task"))]
     InvalidTaskIdentity,
+    #[error("{}", vega_i18n::t("domain.context.cleanup_pending"))]
+    ContextCleanupPending,
     #[error(
         "{}",
         vega_i18n::t("domain.conversation.unsupported_historical_consumer")

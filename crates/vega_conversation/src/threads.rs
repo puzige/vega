@@ -423,6 +423,24 @@ pub fn set_thread_permission_mode(
     )
 }
 
+pub fn cancel_context_precompute(
+    store: &Store,
+    thread_id: &str,
+) -> Result<crate::types::ContextPrecomputeDrain, ConversationError> {
+    crate::types::ContextPrecomputeRegistry::global()
+        .invalidate(store.database_identity(), thread_id)
+        .map_err(|error| ConversationError::Runtime(std::sync::Arc::new(error)))
+}
+
+fn pause_context_precompute(
+    store: &Store,
+    thread_id: &str,
+) -> Result<crate::types::ContextPrecomputePause, ConversationError> {
+    crate::types::ContextPrecomputeRegistry::global()
+        .pause_thread(store.database_identity(), thread_id)
+        .map_err(|error| ConversationError::Runtime(std::sync::Arc::new(error)))
+}
+
 pub fn set_thread_model(
     store: &Store,
     thread_id: &str,
@@ -432,6 +450,7 @@ pub fn set_thread_model(
     if model.is_empty() {
         return Err(ConversationError::NotFound(thread_id.to_string()));
     }
+    let _precompute = pause_context_precompute(store, thread_id)?;
     let updated =
         store::set_model(store.conn(), thread_id, model, now_ms()).map_err(store_error)?;
     if updated == 0 {
@@ -445,6 +464,7 @@ pub fn stage_thread_model(
     thread_id: &str,
     model: &str,
 ) -> Result<Thread, ConversationError> {
+    let _precompute = pause_context_precompute(store, thread_id)?;
     let updated =
         store::stage_model(store.conn(), thread_id, model, now_ms()).map_err(store_error)?;
     if updated == 0 {
@@ -462,6 +482,7 @@ pub fn promote_thread_model(
     admission: &ThreadAdmission,
 ) -> Result<Thread, ConversationError> {
     crate::thread_access::verify(store, thread_id, admission)?;
+    let _precompute = pause_context_precompute(store, thread_id)?;
     let updated = store::promote_pending_model(store.conn(), thread_id, model, now_ms())
         .map_err(store_error)?;
     if updated == 0 {
@@ -491,6 +512,19 @@ pub fn delete_thread(store: &Store, thread_id: &str) -> Result<(), ConversationE
         ));
     }
 
+    let precompute = std::iter::once(thread_id)
+        .chain(children.iter().map(|child| child.child_thread_id.as_str()))
+        .map(|thread| pause_context_precompute(store, thread))
+        .collect::<Result<Vec<_>, _>>()?;
+    for pause in &precompute {
+        if !pause
+            .drain()
+            .is_finished()
+            .map_err(|error| ConversationError::Runtime(std::sync::Arc::new(error)))?
+        {
+            return Err(ConversationError::ContextCleanupPending);
+        }
+    }
     let deleted = store::delete_thread(store.conn(), thread_id).map_err(store_error)?;
     if deleted == 0 {
         return Err(ConversationError::NotFound(thread_id.to_string()));

@@ -700,6 +700,11 @@ where
     }
     let admission =
         super::ordinary::verified_admission(store, thread_id, actor_config.admission.as_ref())?;
+    let precompute_lease = actor_config.precompute_lease.take().filter(|lease| {
+        lease
+            .verifies(store.database_identity(), thread_id, &admission)
+            .unwrap_or(false)
+    });
     actor_config.admission = Some(admission.clone());
     actor_config.steering_cancel = Some(cancel.clone());
     crate::attachments::validate_images(&images)
@@ -1097,6 +1102,7 @@ where
             prepared.request.pricing_catalog.clone(),
         )
         .with_full_on_threshold(full_on_threshold)
+        .with_precompute_lease(precompute_lease)
         .with_thread_admission(admission.clone())
         .with_credential_reader(prepared.request.tool_config.credential_reader())
         .with_credential_exceptions(prepared.request.tool_config.credential_exceptions())
