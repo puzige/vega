@@ -658,7 +658,8 @@ pub(crate) fn selectable_markdown_content(
 ) -> AnyElement {
     let selection_color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
     let mut document =
-        SelectionDocumentBuilder::new(copy.clone(), interaction.focus.clone(), selection_color);
+        SelectionDocumentBuilder::new(copy.clone(), interaction.focus.clone(), selection_color)
+            .with_punctuation_rules();
     let body = div().w_full().min_w_0().flex_shrink_0().flex().flex_col();
     let mut previous: Option<(u64, LineKind, Option<Arc<StreamCodeBlock>>)> = None;
     let selection = document.code_drag_selection(window, cx);
@@ -1081,7 +1082,7 @@ fn render_line_selectable(
                 .into_any_element()
         }
         LineKind::Code => {
-            let selected = document.append_styled_runs(
+            let selected = document.append_code_runs(
                 &text,
                 block_text_runs(&line.spans, code_run_style(colors.text_primary), colors),
                 link_ranges(&line.spans),

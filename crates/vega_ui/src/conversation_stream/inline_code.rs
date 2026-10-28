@@ -7,7 +7,7 @@ use gpui_kit::{
     TextStyleRefinement, WhiteSpace, Window, WrappedLine, WrappedLineLayout, point, px, size,
     transparent_black,
 };
-use vega_theme::Layout;
+use vega_theme::{Layout, Typography};
 
 use super::links::{LinkRange, fragment_link_ranges, link_element_id, register_link_interactions};
 
@@ -211,6 +211,25 @@ fn endpoint_positions(
 }
 
 pub(super) fn paint_backgrounds(layout: &TextLayout, runs: &[TextRun], window: &mut Window) {
+    paint_inline_backgrounds(layout, runs, false, window);
+}
+
+pub(super) fn paint_inline_backgrounds(
+    layout: &TextLayout,
+    runs: &[TextRun],
+    assistant: bool,
+    window: &mut Window,
+) {
+    let padding = if assistant {
+        Layout::ASSISTANT_INLINE_CODE_PADDING_X
+    } else {
+        Layout::MARKDOWN_INLINE_CODE_PADDING_X
+    };
+    let radius = if assistant {
+        Layout::ASSISTANT_INLINE_CODE_RADIUS
+    } else {
+        Layout::MARKDOWN_INLINE_CODE_RADIUS
+    };
     let mut offset = 0;
     let backgrounds = runs
         .iter()
@@ -234,8 +253,11 @@ pub(super) fn paint_backgrounds(layout: &TextLayout, runs: &[TextRun], window: &
         let line_backgrounds = &backgrounds[first..last];
         let positions = endpoint_positions(&line, line_backgrounds, line_offset);
         let x_for_index = |index| positions.get(&index).copied().unwrap_or(unwrapped.width);
-        let height =
-            (line.font_size() + px(Layout::MARKDOWN_INLINE_CODE_EXTRA_HEIGHT)).min(line_height);
+        let height = if assistant {
+            line_height + px(Layout::ASSISTANT_INLINE_CODE_PADDING_Y * 2.)
+        } else {
+            (line.font_size() + px(Layout::MARKDOWN_INLINE_CODE_EXTRA_HEIGHT)).min(line_height)
+        };
         let mut start = 0;
         for end in line
             .wrap_boundaries
@@ -259,11 +281,8 @@ pub(super) fn paint_backgrounds(layout: &TextLayout, runs: &[TextRun], window: &
                 let from = range.start.max(line_offset + start);
                 let to = range.end.min(line_offset + end);
                 if from < to {
-                    let left = x + x_for_index(from - line_offset)
-                        - start_x
-                        - px(Layout::MARKDOWN_INLINE_CODE_PADDING_X);
-                    let right = x + x_for_index(to - line_offset) - start_x
-                        + px(Layout::MARKDOWN_INLINE_CODE_PADDING_X);
+                    let left = x + x_for_index(from - line_offset) - start_x - px(padding);
+                    let right = x + x_for_index(to - line_offset) - start_x + px(padding);
                     if right > left {
                         let fragment_size = size(right - left, height);
                         window.paint_quad(PaintQuad {
@@ -271,7 +290,7 @@ pub(super) fn paint_backgrounds(layout: &TextLayout, runs: &[TextRun], window: &
                                 point(left, y + (line_height - height) / 2.),
                                 fragment_size,
                             ),
-                            corner_radii: Corners::all(px(Layout::MARKDOWN_INLINE_CODE_RADIUS))
+                            corner_radii: Corners::all(px(radius))
                                 .clamp_radii_for_quad_size(fragment_size),
                             background: (*color).into(),
                             border_widths: Edges::default(),
@@ -326,9 +345,23 @@ pub(super) fn flow_with_links(
     links: Vec<LinkRange>,
     fragment: impl Fn(Range<usize>, SharedString, Vec<TextRun>) -> AnyElement + 'static,
 ) -> AnyElement {
+    flow_with_punctuation(content, runs, links, false, fragment)
+}
+
+pub(super) fn flow_with_punctuation(
+    content: SharedString,
+    runs: Vec<TextRun>,
+    links: Vec<LinkRange>,
+    punctuation_rules: bool,
+    fragment: impl Fn(Range<usize>, SharedString, Vec<TextRun>) -> AnyElement + 'static,
+) -> AnyElement {
     InlineFlow {
         content,
-        runs: Rc::new(RunIndex::new(runs).with_links(links)),
+        runs: Rc::new(
+            RunIndex::new(runs)
+                .with_links(links)
+                .with_punctuation_rules(punctuation_rules),
+        ),
         fragment: Box::new(fragment),
     }
     .into_any_element()
@@ -338,6 +371,7 @@ pub(super) struct RunIndex {
     runs: Vec<(Range<usize>, TextRun)>,
     code: Vec<Range<usize>>,
     links: Vec<LinkRange>,
+    punctuation_rules: bool,
 }
 
 impl RunIndex {
@@ -360,7 +394,13 @@ impl RunIndex {
             runs,
             code,
             links: Vec::new(),
+            punctuation_rules: false,
         }
+    }
+
+    pub(super) fn with_punctuation_rules(mut self, enabled: bool) -> Self {
+        self.punctuation_rules = enabled;
+        self
     }
 
     pub(super) fn with_links(mut self, links: Vec<LinkRange>) -> Self {
@@ -393,16 +433,24 @@ impl RunIndex {
         &self.code[start..end]
     }
 
+    fn code_padding(&self) -> f32 {
+        if self.punctuation_rules {
+            Layout::ASSISTANT_INLINE_CODE_PADDING_X
+        } else {
+            Layout::MARKDOWN_INLINE_CODE_PADDING_X
+        }
+    }
+
     fn padding(&self, range: Range<usize>) -> Pixels {
-        px(self.code_ranges(range.clone()).len() as f32
-            * Layout::MARKDOWN_INLINE_CODE_PADDING_X
-            * 2.
-            + self
-                .links
-                .iter()
-                .filter(|link| link.starts_here && range.contains(&link.range.start))
-                .count() as f32
-                * Layout::MARKDOWN_LINK_LEADING_WIDTH)
+        px(
+            self.code_ranges(range.clone()).len() as f32 * self.code_padding() * 2.
+                + self
+                    .links
+                    .iter()
+                    .filter(|link| link.starts_here && range.contains(&link.range.start))
+                    .count() as f32
+                    * Layout::MARKDOWN_LINK_LEADING_WIDTH,
+        )
     }
 }
 
@@ -412,6 +460,10 @@ pub(super) struct Fragment {
     pub(super) origin: gpui_kit::Point<Pixels>,
     pub(super) width: Pixels,
     pub(super) line_width: Pixels,
+    font_size: Pixels,
+    line_height: Pixels,
+    baseline: Pixels,
+    code: bool,
 }
 
 #[derive(Default)]
@@ -487,7 +539,7 @@ impl IntoElement for InlineFlow {
 
 impl Element for InlineFlow {
     type RequestLayoutState = Rc<RefCell<FlowMeasurements>>;
-    type PrepaintState = Vec<AnyElement>;
+    type PrepaintState = Vec<(AnyElement, TextStyleRefinement)>;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -566,6 +618,15 @@ impl Element for InlineFlow {
                         TextAlign::Center => (bounds.size.width - fragment.line_width) / 2.,
                         TextAlign::Right => bounds.size.width - fragment.line_width,
                     };
+                    let refinement = TextStyleRefinement {
+                        font_size: Some(fragment.font_size.into()),
+                        line_height: Some(gpui_kit::relative(
+                            f32::from(fragment.line_height) / f32::from(fragment.font_size),
+                        )),
+                        white_space: Some(WhiteSpace::Nowrap),
+                        text_align: Some(TextAlign::Left),
+                        ..Default::default()
+                    };
                     let content =
                         SharedString::from(self.content[fragment.range.clone()].to_owned());
                     let mut element = (self.fragment)(
@@ -573,16 +634,18 @@ impl Element for InlineFlow {
                         content,
                         self.runs.slice(fragment.range),
                     );
-                    element.prepaint_as_root(
-                        bounds.origin + fragment.origin + point(offset, px(0.)),
-                        size(
-                            AvailableSpace::Definite(fragment.width),
-                            AvailableSpace::MaxContent,
-                        ),
-                        window,
-                        cx,
-                    );
-                    elements.push(element);
+                    window.with_text_style(Some(refinement.clone()), |window| {
+                        element.prepaint_as_root(
+                            bounds.origin + fragment.origin + point(offset, px(0.)),
+                            size(
+                                AvailableSpace::Definite(fragment.width),
+                                AvailableSpace::Definite(fragment.line_height),
+                            ),
+                            window,
+                            cx,
+                        );
+                    });
+                    elements.push((element, refinement));
                 }
             },
         );
@@ -605,8 +668,10 @@ impl Element for InlineFlow {
                 ..Default::default()
             }),
             |window| {
-                for element in elements {
-                    element.paint(window, cx);
+                for (element, refinement) in elements {
+                    window.with_text_style(Some(refinement.clone()), |window| {
+                        element.paint(window, cx);
+                    });
                 }
             },
         );
@@ -626,13 +691,13 @@ fn layout_flow(
             .line_height
             .to_pixels(font_size.into(), window.rem_size()),
     );
-    shape_flow(
+    shape_flow_with_metrics(
         content,
         runs,
-        font_size,
-        line_height,
+        (font_size, line_height),
         width,
         window.text_system(),
+        &|height| window.pixel_snap(height),
     )
 }
 
@@ -644,6 +709,25 @@ pub(super) fn shape_flow(
     width: Option<Pixels>,
     text_system: &gpui_kit::WindowTextSystem,
 ) -> FlowLayout {
+    shape_flow_with_metrics(
+        content,
+        runs,
+        (font_size, line_height),
+        width,
+        text_system,
+        &|height| height,
+    )
+}
+
+fn shape_flow_with_metrics(
+    content: &SharedString,
+    runs: &RunIndex,
+    metrics: (Pixels, Pixels),
+    width: Option<Pixels>,
+    text_system: &gpui_kit::WindowTextSystem,
+    snap: &dyn Fn(Pixels) -> Pixels,
+) -> FlowLayout {
+    let (font_size, line_height) = metrics;
     let all_runs = runs.slice(0..content.len());
     let lines = match text_system.shape_text(content.clone(), font_size, &all_runs, None, None) {
         Ok(lines) => lines,
@@ -691,8 +775,51 @@ pub(super) fn shape_flow(
             {
                 fit_ix += 1;
             }
+            if runs.punctuation_rules
+                && let Some(width) = width
+            {
+                let mut low = start_ix + 1;
+                let mut high = indices.len();
+                while low + 1 < high {
+                    let middle = low + (high - low) / 2;
+                    let (_, measured) = position_fragments(
+                        content,
+                        runs,
+                        offset + start..offset + indices[middle],
+                        font_size,
+                        y,
+                        text_system,
+                    );
+                    if measured <= width {
+                        low = middle;
+                    } else {
+                        high = middle;
+                    }
+                }
+                fit_ix = low;
+            }
             let mut end = indices[fit_ix];
-            if fit_ix + 1 < indices.len() {
+            if runs.punctuation_rules && end < line.len() {
+                let remaining = offset + start..offset + line.len();
+                let text = SharedString::from(content[remaining.clone()].to_owned());
+                let row_runs = runs.slice(remaining);
+                let shaped = text_system.shape_line(text.clone(), font_size, &row_runs, None);
+                let budget = shaped.x_for_index(end - start);
+                if let Ok(wrapped) = text_system.shape_text(
+                    text,
+                    font_size,
+                    &row_runs,
+                    Some(budget.max(px(0.01))),
+                    None,
+                ) && let Some(first) = wrapped.first()
+                    && let Some(boundary) = first.wrap_boundaries.first()
+                {
+                    let candidate = first.runs()[boundary.run_ix].glyphs[boundary.glyph_ix].index;
+                    if candidate > 0 && start + candidate <= end {
+                        end = start + candidate;
+                    }
+                }
+            } else if fit_ix + 1 < indices.len() {
                 let prefix_end = offset + indices[fit_ix + 1];
                 let prefix_start = offset + start;
                 let prefix = SharedString::from(content[prefix_start..prefix_end].to_owned());
@@ -710,6 +837,14 @@ pub(super) fn shape_flow(
                         end = start + candidate;
                     }
                 }
+            }
+            if runs.punctuation_rules {
+                end = punctuation_boundary(
+                    &content[offset..offset + line.len()],
+                    &indices,
+                    start,
+                    end,
+                );
             }
             let (mut fragments, mut actual_width) = position_fragments(
                 content,
@@ -734,6 +869,18 @@ pub(super) fn shape_flow(
                         })
                     })
                 });
+                let candidate = candidate.map(|candidate| {
+                    if runs.punctuation_rules {
+                        punctuation_boundary(
+                            &content[offset..offset + line.len()],
+                            &indices,
+                            start,
+                            start + candidate,
+                        ) - start
+                    } else {
+                        candidate
+                    }
+                });
                 let Some(candidate) =
                     candidate.filter(|candidate| *candidate > 0 && *candidate < end - start)
                 else {
@@ -749,15 +896,82 @@ pub(super) fn shape_flow(
                     text_system,
                 );
             }
+            let row_height =
+                align_fragments(&mut fragments, line_height, y, runs.punctuation_rules, snap);
             result.fragments.extend(fragments);
             result.size.width = result.size.width.max(actual_width);
-            y += line_height;
+            y += row_height;
             start_ix = indices.partition_point(|index| *index < end);
         }
         offset += line.len() + 1;
     }
     result.size.height = y;
     result
+}
+
+fn align_fragments(
+    fragments: &mut [Fragment],
+    line_height: Pixels,
+    y: Pixels,
+    assistant: bool,
+    snap: &dyn Fn(Pixels) -> Pixels,
+) -> Pixels {
+    if !assistant {
+        for fragment in fragments {
+            fragment.line_height = line_height;
+        }
+        return line_height;
+    }
+    for fragment in fragments.iter_mut() {
+        let height = snap(fragment.line_height);
+        fragment.baseline += (height - fragment.line_height) / 2.;
+        fragment.line_height = height;
+    }
+    let padding = |fragment: &Fragment| {
+        if fragment.code {
+            px(Layout::ASSISTANT_INLINE_CODE_PADDING_Y)
+        } else {
+            px(0.)
+        }
+    };
+    let ascent = fragments.iter().fold(px(0.), |height, fragment| {
+        height.max(fragment.baseline + padding(fragment))
+    });
+    let descent = fragments.iter().fold(px(0.), |height, fragment| {
+        height.max(fragment.line_height - fragment.baseline + padding(fragment))
+    });
+    let row_height = line_height.max(ascent + descent);
+    let baseline = (row_height - ascent - descent) / 2. + ascent;
+    for fragment in fragments {
+        fragment.origin.y = y + baseline - fragment.baseline;
+    }
+    row_height
+}
+
+fn punctuation_boundary(text: &str, boundaries: &[usize], start: usize, proposed: usize) -> usize {
+    let valid = |boundary: usize| {
+        boundary == text.len()
+            || (!text[boundary..]
+                .chars()
+                .next()
+                .is_some_and(|ch| "，。、；：！？）》】」』〕〉〗〙〛…,.!?;:%”’".contains(ch))
+                && !text[..boundary]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|ch| "（《【「『〔〈〖〘〚(“‘".contains(ch)))
+    };
+    boundaries
+        .iter()
+        .copied()
+        .rev()
+        .find(|boundary| *boundary > start && *boundary <= proposed && valid(*boundary))
+        .or_else(|| {
+            boundaries
+                .iter()
+                .copied()
+                .find(|boundary| *boundary > proposed && valid(*boundary))
+        })
+        .unwrap_or(text.len())
 }
 
 fn position_fragments(
@@ -796,13 +1010,19 @@ fn position_fragments(
             .first()
             .is_some_and(|run| run.background_color.is_some())
         {
-            px(Layout::MARKDOWN_INLINE_CODE_PADDING_X)
+            px(runs.code_padding())
         } else {
             px(0.)
         };
+        let code = padding > px(0.);
+        let fragment_font = if code && runs.punctuation_rules {
+            font_size * Typography::ASSISTANT_INLINE_CODE_SCALE
+        } else {
+            font_size
+        };
         let shaped = text_system.shape_line(
             SharedString::from(content[range.clone()].to_owned()),
-            font_size,
+            fragment_font,
             &fragment_runs,
             None,
         );
@@ -819,6 +1039,10 @@ fn position_fragments(
             origin: point(x, y),
             width: shaped.width(),
             line_width: px(0.),
+            font_size: fragment_font,
+            line_height: shaped.ascent + shaped.descent,
+            baseline: shaped.ascent,
+            code,
         });
         x += shaped.width() + padding;
     }
@@ -827,3 +1051,6 @@ fn position_fragments(
     }
     (fragments, x)
 }
+
+#[cfg(test)]
+mod layout_tests;

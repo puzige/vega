@@ -290,6 +290,7 @@ pub struct Typography;
 impl Typography {
     pub const CONVERSATION: f32 = 13.5;
     pub const CONVERSATION_LINE_HEIGHT: f32 = 23.0 / Self::CONVERSATION;
+    pub const ASSISTANT_INLINE_CODE_SCALE: f32 = 0.92;
     pub const SETTINGS_TITLE: f32 = 20.0;
     /// Body text: 13px (§3 "正文字体 …13px/1.55 行高").
     pub const BODY: f32 = 13.0;
@@ -462,6 +463,9 @@ impl Layout {
     pub const MARKDOWN_INLINE_CODE_PADDING_X: f32 = 4.0;
     pub const MARKDOWN_INLINE_CODE_EXTRA_HEIGHT: f32 = 4.0;
     pub const MARKDOWN_INLINE_CODE_RADIUS: f32 = 4.0;
+    pub const ASSISTANT_INLINE_CODE_PADDING_X: f32 = 6.0;
+    pub const ASSISTANT_INLINE_CODE_PADDING_Y: f32 = 1.0;
+    pub const ASSISTANT_INLINE_CODE_RADIUS: f32 = 6.0;
     pub const MARKDOWN_TABLE_COLUMN_DEMAND_CAP: f32 = 4.0 * Self::MARKDOWN_TABLE_COLUMN_MIN_WIDTH;
     pub const MARKDOWN_TABLE_PADDING_X: f32 = 12.0;
     pub const MARKDOWN_TABLE_PADDING_Y: f32 = 8.0;

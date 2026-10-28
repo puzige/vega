@@ -36,6 +36,7 @@ pub(crate) struct SelectionDocumentBuilder {
     next_run_order: u64,
     runs: Rc<RefCell<Vec<LaidOutRun>>>,
     selection_color: Hsla,
+    punctuation_rules: bool,
 }
 
 impl SelectionDocumentBuilder {
@@ -49,7 +50,13 @@ impl SelectionDocumentBuilder {
             next_run_order: 0,
             runs: Rc::new(RefCell::new(Vec::new())),
             selection_color,
+            punctuation_rules: false,
         }
+    }
+
+    pub(super) fn with_punctuation_rules(mut self) -> Self {
+        self.punctuation_rules = true;
+        self
     }
 
     pub(super) fn projected(
@@ -96,6 +103,7 @@ impl SelectionDocumentBuilder {
             selected: Rc::new(RefCell::new(None)),
             selection_color: self.selection_color,
             paint_runs,
+            assistant_inline: false,
         }
         .into_any_element()
     }
@@ -132,6 +140,20 @@ impl SelectionDocumentBuilder {
         self.append(text, styled, None, Vec::new(), id_prefix)
     }
 
+    pub(super) fn append_code_runs(
+        &mut self,
+        text: &str,
+        runs: Vec<TextRun>,
+        links: Vec<LinkRange>,
+        id_prefix: &str,
+    ) -> gpui_kit::AnyElement {
+        let assistant = self.punctuation_rules;
+        self.punctuation_rules = false;
+        let element = self.append_styled_runs(text, runs, links, id_prefix);
+        self.punctuation_rules = assistant;
+        element
+    }
+
     pub(crate) fn append_styled_runs(
         &mut self,
         text: &str,
@@ -140,7 +162,8 @@ impl SelectionDocumentBuilder {
         id_prefix: &str,
     ) -> gpui_kit::AnyElement {
         let styled = StyledText::new(text.to_owned()).with_runs(runs.clone());
-        let paint_runs = (runs.iter().any(|run| run.background_color.is_some())
+        let paint_runs = (self.punctuation_rules
+            || runs.iter().any(|run| run.background_color.is_some())
             || !links.is_empty())
         .then_some(runs);
         self.append(text, styled, paint_runs, links, id_prefix)
@@ -168,9 +191,17 @@ impl SelectionDocumentBuilder {
         super::links::own_links(&mut links, &fragment_id_owner(id_prefix, order));
         let fragment_links = links.clone();
         let fragment_id = format!("{id_prefix}-selection-run-{order}");
+        let assistant_inline = self.punctuation_rules;
         let fragment =
             move |range: Range<usize>, content: SharedString, paint_runs: Vec<TextRun>| {
                 let styled = StyledText::new(content.clone()).with_runs(paint_runs.clone());
+                let code = paint_runs
+                    .first()
+                    .is_some_and(|run| run.background_color.is_some());
+                let mut links = fragment_link_ranges(&fragment_links, &range);
+                for link in &mut links {
+                    link.assistant_code_padding = assistant_inline && code && link.starts_here;
+                }
                 let paint_runs = paint_runs
                     .iter()
                     .any(|run| run.background_color.is_some())
@@ -183,15 +214,22 @@ impl SelectionDocumentBuilder {
                     logical_range: start..end,
                     order: (order, range.start),
                     runs: runs.clone(),
-                    links: fragment_link_ranges(&fragment_links, &range),
+                    links,
                     selected: Rc::new(RefCell::new(None)),
                     selection_color,
                     paint_runs,
+                    assistant_inline,
                 }
                 .into_any_element()
             };
         if let Some(paint_runs) = paint_runs {
-            super::inline_code::flow_with_links(text.into(), paint_runs, links, fragment)
+            super::inline_code::flow_with_punctuation(
+                text.into(),
+                paint_runs,
+                links,
+                self.punctuation_rules,
+                fragment,
+            )
         } else {
             SelectableStyledText {
                 id: ElementId::Name(format!("{id_prefix}-selection-run-{order}").into()),
@@ -205,6 +243,7 @@ impl SelectionDocumentBuilder {
                 selected: Rc::new(RefCell::new(None)),
                 selection_color,
                 paint_runs: None,
+                assistant_inline: false,
             }
             .into_any_element()
         }
@@ -256,6 +295,7 @@ struct SelectableStyledText {
     selected: Rc<RefCell<Option<Range<usize>>>>,
     selection_color: Hsla,
     paint_runs: Option<Vec<TextRun>>,
+    assistant_inline: bool,
 }
 
 struct SelectablePrepaintState {
@@ -349,7 +389,12 @@ impl Element for SelectableStyledText {
         if prepaint.lines.is_some()
             && let Some(runs) = &self.paint_runs
         {
-            super::inline_code::paint_backgrounds(self.text.layout(), runs, window);
+            super::inline_code::paint_inline_backgrounds(
+                self.text.layout(),
+                runs,
+                self.assistant_inline,
+                window,
+            );
         }
         if let Some(range) = self.selected.borrow().as_ref() {
             paint_selection(
