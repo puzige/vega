@@ -49,6 +49,11 @@ pub(crate) struct ArtifactProposal {
     pub(crate) owner: Option<(String, u64)>,
 }
 
+pub(crate) struct ArtifactInteractionResult<T> {
+    pub(crate) cards: Vec<ArtifactProjection>,
+    pub(crate) result: Result<T, GitWorkspaceErrorCode>,
+}
+
 pub(crate) struct ArtifactTerminalResult {
     pub(crate) captured: Option<(String, ArtifactProjection)>,
     pub(crate) capture_error: Option<GitWorkspaceErrorCode>,
@@ -84,6 +89,7 @@ pub(crate) struct ActiveArtifactRoute {
     pub(crate) service: Arc<ArtifactService>,
     pub(crate) cancel: tokio_util::sync::CancellationToken,
     pub(crate) agent_generation: Option<u64>,
+    pub(crate) retain_while_cached: bool,
     pub(crate) proposals: HashMap<String, ArtifactProposal>,
     pub(crate) terminal_sequence: u64,
     pub(crate) terminal_in_flight: Option<ArtifactTerminalOwner>,
@@ -150,7 +156,8 @@ impl ArtifactController {
 
     pub(crate) fn retire_drained(&mut self) {
         self.retained.retain(|_, route| {
-            route.agent_generation.is_some()
+            route.retain_while_cached
+                || route.agent_generation.is_some()
                 || route.terminal_in_flight.is_some()
                 || !route.terminal_queue.is_empty()
         });
@@ -192,6 +199,7 @@ impl ArtifactController {
             service,
             cancel: tokio_util::sync::CancellationToken::new(),
             agent_generation: None,
+            retain_while_cached: false,
             proposals: HashMap::new(),
             terminal_sequence: 0,
             terminal_in_flight: None,
@@ -290,7 +298,7 @@ pub(crate) fn run_artifact_preview_worker(
     cancel: tokio_util::sync::CancellationToken,
     sender: mpsc::SyncSender<(
         ArtifactPreviewFence,
-        Result<ArtifactPreviewProjection, GitWorkspaceErrorCode>,
+        Result<ArtifactInteractionResult<ArtifactPreviewProjection>, GitWorkspaceErrorCode>,
     )>,
 ) {
     let result = tokio::runtime::Builder::new_current_thread()
@@ -298,9 +306,20 @@ pub(crate) fn run_artifact_preview_worker(
         .build()
         .map_err(|_| GitWorkspaceErrorCode::SpawnFailed)
         .and_then(|runtime| {
-            runtime
-                .block_on(service.preview(fence.card_id, cancel))
-                .map_err(|failure| failure.code())
+            runtime.block_on(async {
+                service
+                    .refresh(cancel.clone())
+                    .await
+                    .map_err(|failure| failure.code())?;
+                let result = service
+                    .preview(fence.card_id, cancel)
+                    .await
+                    .map_err(|failure| failure.code());
+                Ok(ArtifactInteractionResult {
+                    cards: service.cards(),
+                    result,
+                })
+            })
         });
     let _ = sender.send((fence, result));
 }
@@ -311,7 +330,7 @@ pub(crate) fn run_artifact_open_worker(
     cancel: tokio_util::sync::CancellationToken,
     sender: mpsc::SyncSender<(
         ArtifactOpenFence,
-        Result<OpenInOutcome, GitWorkspaceErrorCode>,
+        Result<ArtifactInteractionResult<OpenInOutcome>, GitWorkspaceErrorCode>,
     )>,
 ) {
     let result = tokio::runtime::Builder::new_current_thread()
@@ -319,9 +338,20 @@ pub(crate) fn run_artifact_open_worker(
         .build()
         .map_err(|_| GitWorkspaceErrorCode::SpawnFailed)
         .and_then(|runtime| {
-            runtime
-                .block_on(service.open_in(fence.card_id, fence.target, cancel))
-                .map_err(|failure| failure.code())
+            runtime.block_on(async {
+                service
+                    .refresh(cancel.clone())
+                    .await
+                    .map_err(|failure| failure.code())?;
+                let result = service
+                    .open_in(fence.card_id, fence.target, cancel)
+                    .await
+                    .map_err(|failure| failure.code());
+                Ok(ArtifactInteractionResult {
+                    cards: service.cards(),
+                    result,
+                })
+            })
         });
     let _ = sender.send((fence, result));
 }

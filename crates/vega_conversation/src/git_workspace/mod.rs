@@ -227,6 +227,7 @@ pub(crate) struct ServiceState {
     identity: Option<Arc<SnapshotIdentity>>,
     snapshot: Option<WorkspaceSnapshot>,
     files: Vec<PrivateFile>,
+    artifact_files: Vec<ArtifactWorkspaceFile>,
 }
 
 /// Single-use capability for the authoritative snapshot handoff following a
@@ -365,6 +366,7 @@ impl GitWorkspaceService {
         state.generation = generation;
         state.identity = Some(identity);
         state.files = files;
+        state.artifact_files.clear();
         state.snapshot = Some(snapshot.clone());
         Ok(snapshot)
     }
@@ -522,6 +524,7 @@ impl GitWorkspaceService {
         state.generation = generation;
         state.identity = Some(identity);
         state.files = files;
+        state.artifact_files.clear();
         state.snapshot = Some(snapshot.clone());
         let Some(request) = state.next_request.checked_add(1) else {
             state.active_mutation_owner = None;
@@ -579,18 +582,75 @@ impl GitWorkspaceService {
         Ok(result)
     }
 
-    pub(crate) fn artifact_file_for_path(&self, path: &OsStr) -> Option<ArtifactWorkspaceFile> {
-        let state = self
+    pub(crate) async fn artifact_file_for_path(
+        &self,
+        path: &OsStr,
+        cancel: CancellationToken,
+    ) -> Result<ArtifactWorkspaceFile, GitWorkspaceError> {
+        let (generation, snapshot_identity) = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let identity = state
+                .identity
+                .clone()
+                .ok_or_else(|| error(GitWorkspaceErrorCode::StaleGeneration))?;
+            (state.generation, identity)
+        };
+        let root = self.root.clone();
+        let identity = self.identity;
+        let path = path.to_owned();
+        let mut file = tokio::task::spawn_blocking(move || {
+            let runner = runner_for_parts(root, identity, &cancel)?;
+            let file = ArtifactWorkspaceFile {
+                id: WorkspaceFileId {
+                    generation,
+                    slot: 0,
+                    seal: 0,
+                },
+                worktree_identity: read_worktree_identity(&runner.root, path.as_bytes())?,
+                path,
+                snapshot_identity,
+            };
+            let _ = fence_artifact_file(&runner, &file, &cancel)?;
+            Ok::<_, GitWorkspaceError>(file)
+        })
+        .await
+        .map_err(|_| error(GitWorkspaceErrorCode::GitFailed))??;
+        let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        let file = unique_file(
-            state
-                .files
-                .iter()
-                .filter(|file| file.path.as_bytes() == path.as_bytes()),
-        )?;
-        Some(artifact_workspace_file(file))
+        if state.generation != generation
+            || state.identity.as_ref() != Some(&file.snapshot_identity)
+        {
+            return Err(error(GitWorkspaceErrorCode::StaleGeneration));
+        }
+        if let Some(existing) = state.artifact_files.iter().find(|existing| {
+            existing.path == file.path && existing.worktree_identity == file.worktree_identity
+        }) {
+            return Ok(existing.clone());
+        }
+        if state.artifact_files.len() >= PATH_LIMIT {
+            return Err(error(GitWorkspaceErrorCode::ArtifactLimit));
+        }
+        let slot = u32::MAX
+            - u32::try_from(state.artifact_files.len())
+                .map_err(|_| error(GitWorkspaceErrorCode::ArtifactLimit))?;
+        file.id = WorkspaceFileId {
+            generation,
+            slot,
+            seal: seal(
+                self.identity,
+                self.instance_nonce,
+                generation,
+                slot,
+                file.path.as_bytes(),
+            ),
+        };
+        state.artifact_files.push(file.clone());
+        Ok(file)
     }
 
     pub(crate) fn artifact_path_matches(&self, path: &OsStr) -> Vec<ArtifactPathMatch> {
@@ -628,12 +688,17 @@ impl GitWorkspaceService {
         }
         let slot =
             usize::try_from(file_id.slot).map_err(|_| error(GitWorkspaceErrorCode::UnknownFile))?;
-        let file = state
-            .files
+        if let Some(file) = state.files.get(slot).filter(|file| file.id == file_id) {
+            return Ok(artifact_workspace_file(file));
+        }
+        let slot = usize::try_from(u32::MAX - file_id.slot)
+            .map_err(|_| error(GitWorkspaceErrorCode::UnknownFile))?;
+        state
+            .artifact_files
             .get(slot)
             .filter(|file| file.id == file_id)
-            .ok_or_else(|| error(GitWorkspaceErrorCode::UnknownFile))?;
-        Ok(artifact_workspace_file(file))
+            .cloned()
+            .ok_or_else(|| error(GitWorkspaceErrorCode::UnknownFile))
     }
 
     pub(crate) async fn artifact_evidence(
@@ -726,11 +791,6 @@ fn runner_for_parts(
     Ok(Runner::new(root, identity, executable))
 }
 
-fn unique_file<'a>(mut files: impl Iterator<Item = &'a PrivateFile>) -> Option<&'a PrivateFile> {
-    let candidate = files.next()?;
-    files.next().is_none().then_some(candidate)
-}
-
 fn artifact_workspace_file(file: &PrivateFile) -> ArtifactWorkspaceFile {
     ArtifactWorkspaceFile {
         id: file.id,
@@ -745,6 +805,7 @@ fn invalidate_current(state: &mut ServiceState) {
     state.identity = None;
     state.snapshot = None;
     state.files.clear();
+    state.artifact_files.clear();
 }
 
 fn same_snapshot_content(

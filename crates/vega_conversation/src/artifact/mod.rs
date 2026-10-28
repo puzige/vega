@@ -273,7 +273,16 @@ impl ArtifactService {
         let mut label = escape_label(path.as_os_str().as_bytes());
         let mut current_file_id = None;
         let mut evidence = None;
-        if let Some(file) = self.workspace.artifact_file_for_path(&path) {
+        let resolved = self
+            .workspace
+            .artifact_file_for_path(&path, cancel.clone())
+            .await;
+        if let Err(failure) = &resolved
+            && failure.code() == GitWorkspaceErrorCode::Cancelled
+        {
+            return Err(workspace_error(failure.code()));
+        }
+        if let Ok(file) = resolved {
             label = escape_label(file.path.as_bytes());
             if file.is_regular_current() {
                 current_file_id = Some(file.id);
@@ -370,29 +379,38 @@ impl ArtifactService {
                         record.path.clone(),
                         record.source,
                         record.evidence.clone(),
-                        record.stale_disabled,
                     )
                 })
                 .collect::<Vec<_>>()
         };
-        for (card_id, prior_path, source, prior_evidence, stale_disabled) in candidates {
+        for (card_id, prior_path, source, prior_evidence) in candidates {
             if cancel.is_cancelled() {
                 return Err(workspace_error(GitWorkspaceErrorCode::Cancelled));
             }
-            if stale_disabled {
-                continue;
-            }
             let mut matches = self.workspace.artifact_path_matches(&prior_path);
-            if matches.len() != 1 {
+            if matches.len() > 1 {
                 self.apply_reconcile(card_id, None, None, None, true)?;
                 continue;
             }
-            let matched = matches
-                .pop()
-                .ok_or_else(|| workspace_error(GitWorkspaceErrorCode::ChangedDuringRead))?;
-            let renamed = matched.previous_path_match;
-            let file = matched.file;
-            let next_path = file.path.clone();
+            let matched = matches.pop();
+            let renamed = matched
+                .as_ref()
+                .is_some_and(|matched| matched.previous_path_match);
+            let next_path = matched.map_or(prior_path, |matched| matched.file.path);
+            let file = match self
+                .workspace
+                .artifact_file_for_path(&next_path, cancel.clone())
+                .await
+            {
+                Ok(file) => file,
+                Err(failure) if failure.code() == GitWorkspaceErrorCode::Cancelled => {
+                    return Err(failure);
+                }
+                Err(_) => {
+                    self.apply_reconcile(card_id, None, None, None, true)?;
+                    continue;
+                }
+            };
             let next_label = escape_label(next_path.as_bytes());
             if !file.is_regular_current() {
                 self.apply_reconcile(card_id, Some(next_path), Some(next_label), None, true)?;
@@ -422,6 +440,14 @@ impl ArtifactService {
             )?;
         }
         Ok(self.cards())
+    }
+
+    pub async fn refresh(
+        &self,
+        cancel: CancellationToken,
+    ) -> Result<Vec<ArtifactCard>, GitWorkspaceError> {
+        self.workspace.refresh(cancel.clone()).await?;
+        self.reconcile(cancel).await
     }
 
     /// Returns safe card projections in route insertion order.
@@ -538,7 +564,7 @@ impl ArtifactService {
             record.label = label;
         }
         record.current_file_id = current_file_id;
-        record.stale_disabled |= current_file_id.is_none();
+        record.stale_disabled = current_file_id.is_none();
         if downgrade {
             record.source = ArtifactSource::WorkspaceChange;
             record.evidence = None;
