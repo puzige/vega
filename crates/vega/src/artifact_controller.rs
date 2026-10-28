@@ -50,14 +50,12 @@ pub(crate) struct ArtifactProposal {
 }
 
 pub(crate) struct ArtifactInteractionResult<T> {
-    pub(crate) cards: Vec<ArtifactProjection>,
     pub(crate) result: Result<T, GitWorkspaceErrorCode>,
 }
 
 pub(crate) struct ArtifactTerminalResult {
     pub(crate) captured: Option<(String, ArtifactProjection)>,
     pub(crate) capture_error: Option<GitWorkspaceErrorCode>,
-    pub(crate) cards: Vec<ArtifactProjection>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -231,7 +229,7 @@ impl ArtifactController {
 }
 
 pub(crate) fn run_artifact_terminal_worker(
-    workspace: Arc<GitWorkspaceService>,
+    _workspace: Arc<GitWorkspaceService>,
     service: Arc<ArtifactService>,
     job: ArtifactTerminalJob,
     cancel: tokio_util::sync::CancellationToken,
@@ -243,11 +241,7 @@ pub(crate) fn run_artifact_terminal_worker(
         .map_err(|_| GitWorkspaceErrorCode::SpawnFailed)
         .and_then(|runtime| {
             runtime.block_on(async {
-                let refreshed = workspace.refresh(cancel.child_token()).await;
-                service
-                    .reconcile(cancel.child_token())
-                    .await
-                    .map_err(|failure| failure.code())?;
+                let refreshed = service.refresh(cancel.child_token()).await;
                 if let Err(failure) = refreshed {
                     if failure.code() == GitWorkspaceErrorCode::Cancelled {
                         return Err(failure.code());
@@ -261,7 +255,6 @@ pub(crate) fn run_artifact_terminal_worker(
                                 ArtifactTerminalWork::Capture { .. }
                             )
                             .then_some(failure.code()),
-                            cards: service.cards(),
                         },
                     ));
                 }
@@ -275,7 +268,7 @@ pub(crate) fn run_artifact_terminal_worker(
                         .map(|card| (call_id, card)),
                     ArtifactTerminalWork::Refresh => None,
                 };
-                let cards = service
+                service
                     .reconcile(cancel)
                     .await
                     .map_err(|failure| failure.code())?;
@@ -284,7 +277,6 @@ pub(crate) fn run_artifact_terminal_worker(
                     ArtifactTerminalResult {
                         captured,
                         capture_error: None,
-                        cards,
                     },
                 ))
             })
@@ -315,10 +307,7 @@ pub(crate) fn run_artifact_preview_worker(
                     .preview(fence.card_id, cancel)
                     .await
                     .map_err(|failure| failure.code());
-                Ok(ArtifactInteractionResult {
-                    cards: service.cards(),
-                    result,
-                })
+                Ok(ArtifactInteractionResult { result })
             })
         });
     let _ = sender.send((fence, result));
@@ -347,10 +336,7 @@ pub(crate) fn run_artifact_open_worker(
                     .open_in(fence.card_id, fence.target, cancel)
                     .await
                     .map_err(|failure| failure.code());
-                Ok(ArtifactInteractionResult {
-                    cards: service.cards(),
-                    result,
-                })
+                Ok(ArtifactInteractionResult { result })
             })
         });
     let _ = sender.send((fence, result));

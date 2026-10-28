@@ -772,18 +772,17 @@ impl VegaWindow {
                 self.artifact_controller.retire_drained();
                 return;
             }
-            for projection in result.cards {
-                let card = self
-                    .artifact_controller
-                    .route(identity)
-                    .and_then(|active| active.cards.get(&projection.id).cloned());
-                if let Some(card) = card {
-                    card.update(cx, |card, cx| {
-                        let _ = card.apply_metadata(projection, cx);
-                    });
-                }
-            }
-            if let Some((call_id, projection)) = result.captured {
+            self.sync_artifact_metadata(identity, cx);
+            if let Some((call_id, captured)) = result.captured
+                && let Some(projection) =
+                    self.artifact_controller.route(identity).and_then(|active| {
+                        active
+                            .service
+                            .cards()
+                            .into_iter()
+                            .find(|card| card.id == captured.id)
+                    })
+            {
                 let existing = self
                     .artifact_controller
                     .route(identity)
@@ -1204,9 +1203,13 @@ impl VegaWindow {
         result: Result<ArtifactInteractionResult<T>, GitWorkspaceErrorCode>,
         cx: &mut Context<Self>,
     ) -> Result<T, GitWorkspaceErrorCode> {
-        let output = result?;
+        self.sync_artifact_metadata(identity, cx);
+        result?.result
+    }
+
+    fn sync_artifact_metadata(&self, identity: &ArtifactRouteIdentity, cx: &mut Context<Self>) {
         if let Some(active) = self.artifact_controller.route(identity) {
-            for projection in output.cards {
+            for projection in active.service.cards() {
                 if let Some(card) = active.cards.get(&projection.id) {
                     card.update(cx, |card, cx| {
                         let _ = card.apply_metadata(projection, cx);
@@ -1214,7 +1217,6 @@ impl VegaWindow {
                 }
             }
         }
-        output.result
     }
 
     pub(crate) fn clear_artifact_requests(

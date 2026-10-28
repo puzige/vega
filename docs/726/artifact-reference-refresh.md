@@ -18,12 +18,13 @@
 | 文件变成 symlink/硬链接、目录、越界路径/.git | 原有安全围栏拒绝预览与打开 | 静态审查 + 用户手测 |
 | provenance 不确定、内容被替换 | 降级 workspace change，不恢复 agent provenance | 静态审查 |
 | 旧 route/sequence completion 或取消 | 不覆盖当前卡片，不重复 external launch | 静态审查 |
+| terminal reconcile 与交互 refresh 交叠、不同卡片 completion 延迟 | 所有权串行，延迟回调读取当前 metadata，不回退文件能力或 provenance | 独立静态审查 |
 
 ## 实现计划
 
 1. GitWorkspaceService 内单独维护有界、generation-bound 的产物文件能力。仅由已验证卡片的原路径解析，clean 文件无需混入公开 Git diff 变更列表。能力注册前执行现有 fence，刷新/失效时清空。
 2. reconcile 不再永久跳过暂时失效文件，缺失与 provenance 单向降级分离；rename 歧义保持拒绝。
-3. 每次预览/Open in 的后台 worker 先 refresh/reconcile，将最新 metadata 与操作结果一起返回。仍只做一次外部打开，不自动重放。
+3. 每次预览/Open in 的后台 worker 先 refresh/reconcile。产物 capture/reconcile/refresh 使用同一异步互斥所有权，refresh 与 reconcile 连续持有所有权，旧任务不能覆盖后续恢复。UI 完成回调读取服务当前 metadata，不套用延迟任务捕获的整组快照；terminal 返回的 captured 卡片也须替换为当前 projection。仍只做一次外部打开，不自动重放。
 4. 设置期间保留缓存卡片的 route；返回缓存实体时复用并 reconcile，清理不再缓存且无 live owner 的 route，防止无界保留。
 
 ## 验证约束

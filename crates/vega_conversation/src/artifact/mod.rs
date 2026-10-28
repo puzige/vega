@@ -148,6 +148,7 @@ pub struct ArtifactService {
     route_epoch: u64,
     instance_nonce: u64,
     state: Mutex<ArtifactState>,
+    reconciliation: tokio::sync::Mutex<()>,
     launcher: PathBuf,
     open_timeout: Duration,
     launch_attempts: Arc<AtomicU64>,
@@ -192,6 +193,7 @@ impl ArtifactService {
             route_epoch,
             instance_nonce,
             state: Mutex::new(ArtifactState::default()),
+            reconciliation: tokio::sync::Mutex::new(()),
             launcher: PathBuf::from(OPEN),
             open_timeout: OPEN_TIMEOUT,
             launch_attempts: Arc::new(AtomicU64::new(0)),
@@ -261,6 +263,7 @@ impl ArtifactService {
         candidate: ArtifactCaptureCandidate,
         cancel: CancellationToken,
     ) -> Result<Option<ArtifactCard>, GitWorkspaceError> {
+        let _owner = self.reconciliation.lock().await;
         let ArtifactCaptureCandidate {
             call_id,
             fingerprint,
@@ -365,6 +368,14 @@ impl ArtifactService {
         &self,
         cancel: CancellationToken,
     ) -> Result<Vec<ArtifactCard>, GitWorkspaceError> {
+        let _owner = self.reconciliation.lock().await;
+        self.reconcile_owned(cancel).await
+    }
+
+    async fn reconcile_owned(
+        &self,
+        cancel: CancellationToken,
+    ) -> Result<Vec<ArtifactCard>, GitWorkspaceError> {
         let candidates = {
             let state = self
                 .state
@@ -446,8 +457,9 @@ impl ArtifactService {
         &self,
         cancel: CancellationToken,
     ) -> Result<Vec<ArtifactCard>, GitWorkspaceError> {
+        let _owner = self.reconciliation.lock().await;
         self.workspace.refresh(cancel.clone()).await?;
-        self.reconcile(cancel).await
+        self.reconcile_owned(cancel).await
     }
 
     /// Returns safe card projections in route insertion order.
