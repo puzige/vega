@@ -544,8 +544,9 @@ impl Layout {
     pub const SIDEBAR_TOOLBAR_CONTENT_GAP: f32 = 18.0;
     /// Shared leading origin for Sidebar navigation row titles.
     pub const SIDEBAR_NAV_CONTENT_INSET: f32 = 32.0;
-    pub const SIDEBAR_LABEL_INSET: f32 = 0.0;
-    pub const SIDEBAR_ROW_INSET: f32 = 24.0;
+    pub const SIDEBAR_LABEL_INSET: f32 = 12.0;
+    pub const SIDEBAR_ROW_INSET: f32 = 36.0;
+    pub const SIDEBAR_RENAME_CHROME_INSET: f32 = 9.0;
     /// Stable width reserved for project metadata in pinned task rows.
     pub const SIDEBAR_PROJECT_METADATA_WIDTH: f32 = 85.0;
     pub const SIDEBAR_SECTION_GAP: f32 = 12.0;

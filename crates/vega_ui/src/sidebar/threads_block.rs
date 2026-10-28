@@ -1185,7 +1185,7 @@ impl ThreadsBlock {
             false,
             0.0,
             Layout::SIDEBAR_ROW_INSET,
-            0.0,
+            Layout::SIDEBAR_ROW_INSET - Layout::SIDEBAR_RENAME_CHROME_INSET,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
         )
@@ -1208,9 +1208,9 @@ impl ThreadsBlock {
             actions_enabled,
             true,
             false,
-            8.0,
-            8.0,
-            8.0,
+            0.0,
+            Layout::SIDEBAR_LABEL_INSET,
+            Layout::SIDEBAR_LABEL_INSET - Layout::SIDEBAR_RENAME_CHROME_INSET,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
         )
@@ -1232,9 +1232,9 @@ impl ThreadsBlock {
             true,
             false,
             false,
-            8.0,
-            8.0,
             0.0,
+            Layout::SIDEBAR_LABEL_INSET,
+            Layout::SIDEBAR_LABEL_INSET - Layout::SIDEBAR_RENAME_CHROME_INSET,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
         )
