@@ -112,7 +112,7 @@
 
 开发回归覆盖正常追加与重载、空／有工具的 streaming owner、保留锚点和覆盖来源篡改、图片／历史元数据／micro／调用路径变化、旧消息挂新调用、同响应跨边界及无效围栏。该存储原语不单独宣称后台调度、候选 ready 持久化和消费接线已完成。
 
-增量审查发现 `29af6dc5e96fae589676043a9ecccde85f640942` 错将两张表的独立 seq 当作共同时间轴；真实 `messages::next_seq`／`tool_calls::next_seq` 各取自身表的 MAX，首个工具 seq=1 可以小于所属 assistant 消息 seq=2。修正为独立消息／工具边界，调用只按真实 message ID 归属，不比较跨表 seq 大小；保留所有内容／响应边界校验。fixture 使用真实分配器，并覆盖消息领先、工具领先、连续无跳号追加及同 owner 新调用。该提交 Actions [40709384606](https://github.com/puzige/vega/actions/runs/40709384606) 的 Nextest `122890170904` 原始汇总 80 发现／80 执行通过／0 跳过，Clippy `122890170383` 和 required `122892377437` 成功，但不能替代这项已确认的产品修复；修正后需要新版本审查和 CI。
+增量审查发现 `29af6dc5e96fae589676043a9ecccde85f640942` 错将两张表的独立 seq 当作共同时间轴；真实 `messages::next_seq`／`tool_calls::next_seq` 各取自身表的 MAX，首个工具 seq=1 可以小于所属 assistant 消息 seq=2。修正为独立消息／工具边界，调用只按真实 message ID 归属，不比较跨表 seq 大小；保留所有内容／响应边界校验。fixture 使用真实分配器，并覆盖消息领先、工具领先、连续无跳号追加及同 owner 新调用。修正提交 `bca7e338ca1c3ef1c758a7e51be8a95730c5699d` 的 Actions [40713706790](https://github.com/puzige/vega/actions/runs/40713706790) 已成功：81 发现／81 执行通过／0 跳过，Nextest `122905534396`、Clippy `122905534134`、required `122909045215` 成功；非实现者增量复核确认原 P2 已修复、无新增发现。原缺陷提交 Actions [40709384606](https://github.com/puzige/vega/actions/runs/40709384606) 的 Nextest `122890170904` 原始汇总 80 发现／80 执行通过／0 跳过，Clippy `122890170383` 和 required `122892377437` 成功，但它未覆盖这项已确认的产品缺陷，故另行修复并取得上述新版本审查和 CI。
 
 生成／安装拆分提交 `eaee6266a4896d69aabfa3b0114a4f741e7a7116` 的 Actions [40702321829](https://github.com/puzige/vega/actions/runs/40702321829) 已成功：Nextest `122865129665` 原始日志 73 发现、73 执行通过、0 跳过；Clippy `122865130027`、required `122867516709` 成功。非实现者独立增量审查无发现，包含前一 scripted reply 修正；仅此版本已验证，不覆盖后续 append-safe 修改。PR 仍为草稿。
 
@@ -123,6 +123,16 @@
 - 回读应从 conversation 的当前线程访问边界获取已保留 transcript/tool output，并执行现有凭据过滤和有界分页。不可要求模型读取本机整个 SQLite 文件；不可自动重执行旧 Bash。
 - precompute candidate、completed summary、installed checkpoint 是不同状态。ready candidate 可持久化并在重启后重新校验，不能直接视为已安装；schema/体积/年龄/session/边界/保留 UUID 先校验，实际安装仍经过当前 owner/source/前驱/预算事务。参考恢复处的 model/CLI 版本比较是遥测，不把它误写成其硬拒绝条件；Vega 的当前模型适用性在消费/安装时重新核实。中断的 pending 生成不复活。
 - usage 独立于是否安装：失败、丢弃与取消也可能收费；缺失 usage 保持 unknown。
+
+#### Ready 候选与后台计量持久化（2026-10-28）
+
+新增 SQLite migration 分开保存 ready 候选和 generation/stage 计量身份。每线程最多一个 ready，候选 schema=1、总编码不超过 8000000 bytes、创建时间不可在未来且年龄不超过 604800000ms（7 天）；包含 generation、线程、原模型、原始捕获版本／完整指纹／独立 seq 围栏、前驱、合法 Precompute plan、摘要、估算及摘要偏好标识，不保存 live reasoning、临时桌面 observation、provider 或 admission。只有完成且已结算的生成可发布 ready；pending 不落候选表，重启不能复活中断生成。
+
+每线程另存不含内容的当前 generation slot，启动时按期望前代 CAS；它只防旧结果发布，不提供中断恢复能力。ready 发布、读取、移除和失效都按线程／generation 身份进行，已消费／失效 generation 退役且不可再发布，旧异步结果不能覆盖／删除另一 generation 的候选。恢复先限制字节和版本，再校验 age、来源围栏、plan／摘要引用及前驱；前驱摘要及其引用内容另存摘要依赖 digest，原记录脱敏而 ID 不变也必须失效；原模型与当前模型不相等不在恢复时一刀切删除，真正消费须按当前模型重新估算并复核安装权。正常消费移除，借用只读；源编辑／删除／凭据脱敏使候选不可恢复。发布与恢复均不安装 checkpoint、不修改原始对话；最终消费接线仍需后续实现。
+
+每个实际摘要阶段按不可复用的 generation ID＋stage（1..32）独立事务结算，与候选是否成功、丢弃、取消或过期无关。已报告 usage 写 thread-level `token_usage` 并保存幂等结算标记；缺失 usage 只保存 unknown 标记，不编造 0 tokens。相同身份相同内容重试返回原结果，内容冲突或跨线程／模型复用 generation 拒绝并回滚，不覆盖账单；删除候选／线程不会级联删除用量身份或账单。ready 的 stage 数及 usage_complete 必须与账目一致，恢复和消费不再次写账。进程被外部强杀前尚未收到／未落库的 provider usage 无法推断，不能宣称能恢复服务端未知账单。
+
+开发回归覆盖重开数据库后的 ready 读取、合法追加、过期／未来／超限／错 schema／错线程／来源修改、旧 generation 不能替换或删除新候选；计量重复／冲突／unknown／跨线程／取消后丢弃及删除后的账单保留。本批仅交付持久化边界，不把存储 API 当作完整后台调度或产品 UI 接线。
 
 ### 4.4 provider 与本机能力
 

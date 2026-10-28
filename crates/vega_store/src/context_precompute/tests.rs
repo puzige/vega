@@ -2,6 +2,8 @@ use super::*;
 use crate::Store;
 use rusqlite::params;
 
+mod persistence;
+
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn fixture(streaming: bool) -> Result<Store, Box<dyn std::error::Error>> {

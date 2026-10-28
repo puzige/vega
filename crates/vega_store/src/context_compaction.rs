@@ -587,7 +587,8 @@ pub struct ContextSourceVersion {
 }
 
 /// A checkpoint waiting to be atomically installed.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NewContextCheckpoint {
     /// Conversation identity.
     pub thread_id: String,
@@ -632,7 +633,7 @@ impl fmt::Debug for NewContextCheckpoint {
 }
 
 impl NewContextCheckpoint {
-    fn validate(&self) -> Result<(), ContextCheckpointError> {
+    pub(super) fn validate(&self) -> Result<(), ContextCheckpointError> {
         if self.thread_id.trim().is_empty()
             || self.model.trim().is_empty()
             || self.source_version > i64::MAX as u64
@@ -1342,7 +1343,7 @@ where
     Ok(ContextCheckpointInstall::Applied(committed))
 }
 
-fn validate_summary_references(
+pub(super) fn validate_summary_references(
     conn: &Connection,
     thread_id: &str,
     plan: &ProjectionPlan,
