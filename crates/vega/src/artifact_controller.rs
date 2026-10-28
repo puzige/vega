@@ -49,10 +49,13 @@ pub(crate) struct ArtifactProposal {
     pub(crate) owner: Option<(String, u64)>,
 }
 
+pub(crate) struct ArtifactInteractionResult<T> {
+    pub(crate) result: Result<T, GitWorkspaceErrorCode>,
+}
+
 pub(crate) struct ArtifactTerminalResult {
     pub(crate) captured: Option<(String, ArtifactProjection)>,
     pub(crate) capture_error: Option<GitWorkspaceErrorCode>,
-    pub(crate) cards: Vec<ArtifactProjection>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -84,6 +87,7 @@ pub(crate) struct ActiveArtifactRoute {
     pub(crate) service: Arc<ArtifactService>,
     pub(crate) cancel: tokio_util::sync::CancellationToken,
     pub(crate) agent_generation: Option<u64>,
+    pub(crate) retain_while_cached: bool,
     pub(crate) proposals: HashMap<String, ArtifactProposal>,
     pub(crate) terminal_sequence: u64,
     pub(crate) terminal_in_flight: Option<ArtifactTerminalOwner>,
@@ -150,7 +154,8 @@ impl ArtifactController {
 
     pub(crate) fn retire_drained(&mut self) {
         self.retained.retain(|_, route| {
-            route.agent_generation.is_some()
+            route.retain_while_cached
+                || route.agent_generation.is_some()
                 || route.terminal_in_flight.is_some()
                 || !route.terminal_queue.is_empty()
         });
@@ -192,6 +197,7 @@ impl ArtifactController {
             service,
             cancel: tokio_util::sync::CancellationToken::new(),
             agent_generation: None,
+            retain_while_cached: false,
             proposals: HashMap::new(),
             terminal_sequence: 0,
             terminal_in_flight: None,
@@ -223,7 +229,7 @@ impl ArtifactController {
 }
 
 pub(crate) fn run_artifact_terminal_worker(
-    workspace: Arc<GitWorkspaceService>,
+    _workspace: Arc<GitWorkspaceService>,
     service: Arc<ArtifactService>,
     job: ArtifactTerminalJob,
     cancel: tokio_util::sync::CancellationToken,
@@ -235,11 +241,7 @@ pub(crate) fn run_artifact_terminal_worker(
         .map_err(|_| GitWorkspaceErrorCode::SpawnFailed)
         .and_then(|runtime| {
             runtime.block_on(async {
-                let refreshed = workspace.refresh(cancel.child_token()).await;
-                service
-                    .reconcile(cancel.child_token())
-                    .await
-                    .map_err(|failure| failure.code())?;
+                let refreshed = service.refresh(cancel.child_token()).await;
                 if let Err(failure) = refreshed {
                     if failure.code() == GitWorkspaceErrorCode::Cancelled {
                         return Err(failure.code());
@@ -253,7 +255,6 @@ pub(crate) fn run_artifact_terminal_worker(
                                 ArtifactTerminalWork::Capture { .. }
                             )
                             .then_some(failure.code()),
-                            cards: service.cards(),
                         },
                     ));
                 }
@@ -267,7 +268,7 @@ pub(crate) fn run_artifact_terminal_worker(
                         .map(|card| (call_id, card)),
                     ArtifactTerminalWork::Refresh => None,
                 };
-                let cards = service
+                service
                     .reconcile(cancel)
                     .await
                     .map_err(|failure| failure.code())?;
@@ -276,7 +277,6 @@ pub(crate) fn run_artifact_terminal_worker(
                     ArtifactTerminalResult {
                         captured,
                         capture_error: None,
-                        cards,
                     },
                 ))
             })
@@ -290,7 +290,7 @@ pub(crate) fn run_artifact_preview_worker(
     cancel: tokio_util::sync::CancellationToken,
     sender: mpsc::SyncSender<(
         ArtifactPreviewFence,
-        Result<ArtifactPreviewProjection, GitWorkspaceErrorCode>,
+        Result<ArtifactInteractionResult<ArtifactPreviewProjection>, GitWorkspaceErrorCode>,
     )>,
 ) {
     let result = tokio::runtime::Builder::new_current_thread()
@@ -298,9 +298,17 @@ pub(crate) fn run_artifact_preview_worker(
         .build()
         .map_err(|_| GitWorkspaceErrorCode::SpawnFailed)
         .and_then(|runtime| {
-            runtime
-                .block_on(service.preview(fence.card_id, cancel))
-                .map_err(|failure| failure.code())
+            runtime.block_on(async {
+                service
+                    .refresh(cancel.clone())
+                    .await
+                    .map_err(|failure| failure.code())?;
+                let result = service
+                    .preview(fence.card_id, cancel)
+                    .await
+                    .map_err(|failure| failure.code());
+                Ok(ArtifactInteractionResult { result })
+            })
         });
     let _ = sender.send((fence, result));
 }
@@ -311,7 +319,7 @@ pub(crate) fn run_artifact_open_worker(
     cancel: tokio_util::sync::CancellationToken,
     sender: mpsc::SyncSender<(
         ArtifactOpenFence,
-        Result<OpenInOutcome, GitWorkspaceErrorCode>,
+        Result<ArtifactInteractionResult<OpenInOutcome>, GitWorkspaceErrorCode>,
     )>,
 ) {
     let result = tokio::runtime::Builder::new_current_thread()
@@ -319,9 +327,17 @@ pub(crate) fn run_artifact_open_worker(
         .build()
         .map_err(|_| GitWorkspaceErrorCode::SpawnFailed)
         .and_then(|runtime| {
-            runtime
-                .block_on(service.open_in(fence.card_id, fence.target, cancel))
-                .map_err(|failure| failure.code())
+            runtime.block_on(async {
+                service
+                    .refresh(cancel.clone())
+                    .await
+                    .map_err(|failure| failure.code())?;
+                let result = service
+                    .open_in(fence.card_id, fence.target, cancel)
+                    .await
+                    .map_err(|failure| failure.code());
+                Ok(ArtifactInteractionResult { result })
+            })
         });
     let _ = sender.send((fence, result));
 }
