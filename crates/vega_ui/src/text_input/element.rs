@@ -679,7 +679,7 @@ impl Render for TextInput {
         if !self.edit_menu {
             return container.into_any_element();
         }
-        use gpui_kit::component::menu::ContextMenuExt;
+        use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 
         let input = cx.entity().downgrade();
         container
@@ -690,15 +690,24 @@ impl Render for TextInput {
                 };
                 let input = input.read(cx);
                 let can_copy = !input.masked && !input.selected_range.is_empty();
+                let edit_item =
+                    |label: &'static str, action: Box<dyn gpui_kit::Action>, enabled: bool| {
+                        let label = vega_i18n::t(label);
+                        if enabled {
+                            PopupMenuItem::new(label).action(action)
+                        } else {
+                            PopupMenuItem::Label(label.into())
+                        }
+                    };
                 menu.action_context(input.focus_handle.clone())
                     .menu(vega_i18n::t("ui.paste"), Box::new(Paste))
-                    .menu_with_disabled(vega_i18n::t("ui.cut"), Box::new(Cut), !can_copy)
-                    .menu_with_disabled(vega_i18n::t("ui.copy"), Box::new(Copy), !can_copy)
-                    .menu_with_disabled(
-                        vega_i18n::t("ui.select_all"),
+                    .item(edit_item("ui.cut", Box::new(Cut), can_copy))
+                    .item(edit_item("ui.copy", Box::new(Copy), can_copy))
+                    .item(edit_item(
+                        "ui.select_all",
                         Box::new(SelectAll),
-                        input.content.is_empty(),
-                    )
+                        !input.content.is_empty(),
+                    ))
             })
             .into_any_element()
     }
