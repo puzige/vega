@@ -117,6 +117,7 @@ impl TerminalView {
             .round()
             .clamp(0., cols as f32) as usize;
         if col > 0
+            && col < cols
             && snapshot.cells[row]
                 .get(col)
                 .is_some_and(|cell| cell.continuation)
