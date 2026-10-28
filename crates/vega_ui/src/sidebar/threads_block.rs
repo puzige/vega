@@ -237,25 +237,63 @@ impl ThreadsBlock {
             return;
         }
         self.close_actions();
+        let path = cx
+            .try_global::<VegaStore>()
+            .and_then(|store| store.0.as_ref().ok())
+            .and_then(|store| store.database_path())
+            .map(std::path::Path::to_path_buf);
+        let thread_id = thread_id.to_owned();
+        let origin = cx
+            .global::<OpenedThread>()
+            .0
+            .as_ref()
+            .map(|thread| thread.id.clone());
+        let project = cx.global::<SelectedProject>().0.clone();
+        let settings = cx.global::<SettingsOpen>().0;
         crate::navigation::begin_task_mutation(cx);
-        let result = with_store(cx, |store| {
-            conversation::visit_thread(store, thread_id)
+        let worker = cx.background_executor().spawn(async move {
+            let path = path.ok_or_else(|| {
+                crate::localized_copy::LocalizedCopy::new("app.conversation.load_failed")
+            })?;
+            let store = Store::open_existing(path)
+                .map_err(crate::localized_copy::LocalizedCopy::storage)?;
+            conversation::visit_thread(&store, &thread_id)
                 .map_err(crate::localized_copy::LocalizedCopy::from)
         });
-        crate::navigation::finish_task_mutation(cx);
-        match result {
-            Ok(opened) => {
-                self.error = None;
-                cx.set_global(SelectedProject(opened.project_binding().map(str::to_owned)));
-                cx.set_global(OpenedThread(Some(opened)));
-                self.reload(cx);
-                cx.emit(ThreadsBlockEvent::Opened);
-            }
-            Err(message) => {
-                self.error = Some(message);
-                cx.notify();
-            }
-        }
+        cx.spawn(async move |this, cx| {
+            let result = worker.await;
+            let _ = cx.update(|cx| crate::navigation::finish_task_mutation(cx));
+            let _ = this.update(cx, |this, cx| {
+                if cx
+                    .global::<OpenedThread>()
+                    .0
+                    .as_ref()
+                    .map(|thread| thread.id.clone())
+                    != origin
+                    || cx.global::<SelectedProject>().0 != project
+                    || cx.global::<SettingsOpen>().0 != settings
+                {
+                    return;
+                }
+                match result {
+                    Ok(opened) => {
+                        if !crate::navigation::allow_task_navigation(Some(&opened.id), cx) {
+                            return;
+                        }
+                        this.error = None;
+                        cx.set_global(SelectedProject(opened.project_binding().map(str::to_owned)));
+                        cx.set_global(OpenedThread(Some(opened)));
+                        this.reload(cx);
+                        cx.emit(ThreadsBlockEvent::Opened);
+                    }
+                    Err(message) => {
+                        this.error = Some(message);
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
     }
 
     /// Runs one thread mutation, reloads the cached rows, and surfaces a

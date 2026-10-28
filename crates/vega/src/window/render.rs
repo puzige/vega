@@ -69,6 +69,7 @@ impl Render for VegaWindow {
         self.sync_navigation(cx);
         let settings_open = cx.global::<SettingsOpen>().0;
         let content: AnyElement = if settings_open {
+            self.conversation_loading.clear();
             if self.settings_view.is_none()
                 && let Some((_, stream)) = &self.stream_view
             {
@@ -261,11 +262,88 @@ impl Render for VegaWindow {
                             }
                             _ => None,
                         });
-                    let stream = match cached {
-                        Some(view) => {
-                            if self.stream_view.as_ref().is_none_or(|(thread_id, cached)| {
-                                thread_id != &thread.id || cached != &view
-                            }) {
+                    let waiting = cached.is_none()
+                        && !draft_route
+                        && !self.conversation_ready(&thread.id, cx);
+                    if waiting {
+                        self.render_conversation_loading(cx)
+                    } else {
+                        if cached.is_some() || draft_route {
+                            self.conversation_loading.clear();
+                        }
+                        let stream = match cached {
+                            Some(view) => {
+                                if self.stream_view.as_ref().is_none_or(|(thread_id, cached)| {
+                                    thread_id != &thread.id || cached != &view
+                                }) {
+                                    if let Some((previous_id, previous)) = self.stream_view.take() {
+                                        if previous_id != thread.id {
+                                            let anchor = previous.read(cx).scroll_anchor_snapshot();
+                                            self.thread_scroll_states
+                                                .remember(previous_id.clone(), anchor);
+                                        }
+                                        if self
+                                            .agent_controller
+                                            .active_stream_for_thread(&previous_id)
+                                            .as_ref()
+                                            != Some(&previous)
+                                        {
+                                            previous.update(cx, |stream, cx| {
+                                                stream.timeout_permission(cx)
+                                            });
+                                        }
+                                    }
+                                    self.stream_view = Some((thread.id.clone(), view.clone()));
+                                    if !draft_route
+                                        && self.composer_prediction_stream(&thread.id).as_ref()
+                                            != Some(&view)
+                                    {
+                                        self.load_pending_queue(
+                                            view.clone(),
+                                            thread.id.clone(),
+                                            cx,
+                                        );
+                                    }
+                                    self.load_running_message_default(cx);
+                                }
+                                if self.agent_controller.delegated_unbound.remove(&thread.id) {
+                                    let models = self.model_options_for_pricing();
+                                    let label = self
+                                        .sidebar
+                                        .read(cx)
+                                        .project_label(&thread.project_id, cx)
+                                        .unwrap_or_default();
+                                    view.update(cx, |stream, cx| {
+                                        stream.apply_model_options(models, cx);
+                                        stream.set_project_label(label, cx);
+                                    });
+                                    self.apply_reasoning_profile_to_stream(
+                                        &view,
+                                        &thread.model,
+                                        cx,
+                                    );
+                                    self.bind_conversation_stream(&view, window, cx);
+                                }
+
+                                let needs_rebind = draft_route
+                                    && view.read(cx).route_project_id() != thread.project_id;
+                                let label = if needs_rebind {
+                                    self.sidebar
+                                        .read(cx)
+                                        .project_label(&thread.project_id, cx)
+                                        .unwrap_or_default()
+                                } else {
+                                    String::new()
+                                };
+                                view.update(cx, |stream, cx| {
+                                    stream.set_draft_route(draft_route, cx);
+                                    if needs_rebind {
+                                        stream.rebind_draft_project(thread.clone(), label, cx);
+                                    }
+                                });
+                                view
+                            }
+                            None => {
                                 if let Some((previous_id, previous)) = self.stream_view.take() {
                                     if previous_id != thread.id {
                                         let anchor = previous.read(cx).scroll_anchor_snapshot();
@@ -282,211 +360,111 @@ impl Render for VegaWindow {
                                             .update(cx, |stream, cx| stream.timeout_permission(cx));
                                     }
                                 }
-                                self.stream_view = Some((thread.id.clone(), view.clone()));
-                                if !draft_route
-                                    && self.composer_prediction_stream(&thread.id).as_ref()
-                                        != Some(&view)
-                                {
-                                    self.load_pending_queue(view.clone(), thread.id.clone(), cx);
-                                }
-                                self.load_running_message_default(cx);
-                            }
-                            if self.agent_controller.delegated_unbound.remove(&thread.id) {
-                                let models = self.model_options_for_pricing();
+                                let view = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
                                 let label = self
                                     .sidebar
                                     .read(cx)
                                     .project_label(&thread.project_id, cx)
                                     .unwrap_or_default();
                                 view.update(cx, |stream, cx| {
-                                    stream.apply_model_options(models, cx);
+                                    stream.set_draft_route(draft_route, cx);
                                     stream.set_project_label(label, cx);
                                 });
-                                self.apply_reasoning_profile_to_stream(&view, &thread.model, cx);
-                                self.bind_conversation_stream(&view, window, cx);
-                            }
 
-                            let needs_rebind = draft_route
-                                && view.read(cx).route_project_id() != thread.project_id;
-                            let label = if needs_rebind {
-                                self.sidebar
-                                    .read(cx)
-                                    .project_label(&thread.project_id, cx)
-                                    .unwrap_or_default()
-                            } else {
-                                String::new()
-                            };
-                            view.update(cx, |stream, cx| {
-                                stream.set_draft_route(draft_route, cx);
-                                if needs_rebind {
-                                    stream.rebind_draft_project(thread.clone(), label, cx);
-                                }
-                            });
-                            view
-                        }
-                        None => {
-                            if let Some((previous_id, previous)) = self.stream_view.take() {
-                                if previous_id != thread.id {
-                                    let anchor = previous.read(cx).scroll_anchor_snapshot();
-                                    self.thread_scroll_states
-                                        .remember(previous_id.clone(), anchor);
-                                }
-                                if self
-                                    .agent_controller
-                                    .active_stream_for_thread(&previous_id)
+                                let model_options = self.model_options_for_pricing();
+                                let initial = self.conversation_loading.take_ready();
+                                let pending_model = initial
                                     .as_ref()
-                                    != Some(&previous)
-                                {
-                                    previous.update(cx, |stream, cx| stream.timeout_permission(cx));
-                                }
-                            }
-                            let view = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
-                            let label = self
-                                .sidebar
-                                .read(cx)
-                                .project_label(&thread.project_id, cx)
-                                .unwrap_or_default();
-                            view.update(cx, |stream, cx| {
-                                stream.set_draft_route(draft_route, cx);
-                                stream.set_project_label(label, cx);
-                            });
+                                    .and_then(|loaded| loaded.pending_model.clone());
+                                view.update(cx, |stream, cx| {
+                                    stream.apply_thread(thread.clone(), cx);
+                                    stream.restore_next_turn_model(pending_model, cx);
+                                    stream.apply_model_options(model_options, cx);
+                                });
+                                self.apply_reasoning_profile_to_stream(&view, &thread.model, cx);
+                                self.agent_controller.delegated_unbound.remove(&thread.id);
+                                self.bind_conversation_stream(&view, window, cx);
 
-                            let model_options = self.model_options_for_pricing();
-                            let pending_model = cx
-                                .global::<VegaStore>()
-                                .0
-                                .as_ref()
-                                .ok()
-                                .and_then(|store| {
-                                    vega_store::threads::pending_model(store.conn(), &thread.id)
-                                        .ok()
-                                })
-                                .flatten();
-                            view.update(cx, |stream, cx| {
-                                stream.apply_thread(thread.clone(), cx);
-                                stream.restore_next_turn_model(pending_model, cx);
-                                stream.apply_model_options(model_options, cx);
-                            });
-                            self.apply_reasoning_profile_to_stream(&view, &thread.model, cx);
-                            self.agent_controller.delegated_unbound.remove(&thread.id);
-                            self.bind_conversation_stream(&view, window, cx);
-
-                            let initial = if draft_route {
-                                None
-                            } else {
-                                Some(match &cx.global::<VegaStore>().0 {
-                                    Ok(store) => (|| {
-                                        let hydration =
-                                            vega_conversation::history::restart_history_page(
-                                                store,
-                                                &thread.id,
-                                                vega_store::messages::PAGE_LIMIT,
-                                            )?;
-                                        let plans = vega_conversation::plans::list_plans(
-                                            store, &thread.id,
-                                        )?;
-                                        let history = vega_conversation::threads::composer_history(
-                                            store, &thread.id,
-                                        )?;
-                                        let recovery =
-                                            vega_conversation::plans::recoverable_approved_instruction(
-                                                store, &thread.id,
-                                            )?;
-
-                                        let usage = vega_conversation::threads::thread_usage_seed(
-                                            store, &thread.id,
-                                        )?;
-
-                                        let summary =
-                                            vega_conversation::summary::latest_task_summary(
-                                                store, &thread.id, None,
-                                            )?;
-                                        Ok((hydration, plans, history, recovery, usage, summary))
-                                    })(),
-                                    Err(error) => {
-                                        Err(vega_conversation::types::ConversationError::Store(
-                                            error.clone(),
-                                        ))
-                                    }
-                                })
-                            };
-                            if let Some(initial) = initial {
-                                view.update(cx, |stream, cx| match initial {
-                                    Ok((hydration, plans, history, recovery, usage, summary)) => {
-                                        // Hydrated history lands first so route-open
-                                        // plan cards keep their position after it.
-                                        stream.apply_history_page(hydration, cx);
-                                        for plan in plans {
+                                if let Some(initial) = initial {
+                                    view.update(cx, |stream, cx| {
+                                        stream.apply_history_page(initial.history, cx);
+                                        for plan in initial.plans {
                                             stream.apply_plan(plan, cx);
                                         }
-                                        stream.apply_composer_history(&thread.id, history, cx);
-                                        if let Some(summary) = summary {
-                                            stream.apply_task_summary(summary, cx);
-                                        }
-                                        if recovery.is_some() {
-                                            stream.apply_approved_not_started(cx);
-                                        }
-                                        stream.restore_meter(usage, cx);
-                                    }
-                                    Err(_) => stream.apply_controller_error(cx),
-                                });
-                            }
-                            self.rehydrate_ordinary(&view, &thread.id, cx);
-                            self.stream_view = Some((thread.id.clone(), view.clone()));
-                            if !draft_route {
-                                self.load_pending_queue(view.clone(), thread.id.clone(), cx);
-                            }
-                            if let Some(anchor) = self.thread_scroll_states.get(&thread.id) {
-                                view.update(cx, |stream, cx| {
-                                    if !stream.restore_scroll_anchor(&anchor)
-                                        && let Some(message_id) = anchor.message_id.as_deref()
-                                    {
-                                        stream.request_message_location_with_anchor(
-                                            message_id,
-                                            Some(anchor.clone()),
+                                        stream.apply_composer_history(
+                                            &thread.id,
+                                            initial.composer_history,
                                             cx,
                                         );
-                                    }
-                                });
+                                        if let Some(summary) = initial.summary {
+                                            stream.apply_task_summary(summary, cx);
+                                        }
+                                        if initial.approved_not_started {
+                                            stream.apply_approved_not_started(cx);
+                                        }
+                                        stream.restore_meter(initial.usage, cx);
+                                    });
+                                }
+                                self.conversation_loading.clear();
+                                self.rehydrate_ordinary(&view, &thread.id, cx);
+                                self.stream_view = Some((thread.id.clone(), view.clone()));
+                                if !draft_route {
+                                    self.load_pending_queue(view.clone(), thread.id.clone(), cx);
+                                }
+                                if let Some(anchor) = self.thread_scroll_states.get(&thread.id) {
+                                    view.update(cx, |stream, cx| {
+                                        if !stream.restore_scroll_anchor(&anchor)
+                                            && let Some(message_id) = anchor.message_id.as_deref()
+                                        {
+                                            stream.request_message_location_with_anchor(
+                                                message_id,
+                                                Some(anchor.clone()),
+                                                cx,
+                                            );
+                                        }
+                                    });
+                                }
+                                self.restore_navigation_draft(&thread.id, &view, cx);
+                                self.sync_navigation(cx);
+                                self.start_model_catalog_load(cx);
+                                view
                             }
-                            self.restore_navigation_draft(&thread.id, &view, cx);
-                            self.sync_navigation(cx);
-                            self.start_model_catalog_load(cx);
-                            view
-                        }
-                    };
-                    stream.update(cx, ConversationStream::refresh_ordinary_submissions);
-                    self.sync_context_route(&stream, cx);
-                    // Settings close invalidates the catalog even when this
-                    // thread entity remains cached; restart the worker on
-                    // the next visible frame so newly saved providers/models
-                    // become selectable without rebuilding the session.
-                    self.start_model_catalog_load(cx);
+                        };
+                        stream.update(cx, ConversationStream::refresh_ordinary_submissions);
+                        self.sync_context_route(&stream, cx);
+                        // Settings close invalidates the catalog even when this
+                        // thread entity remains cached; restart the worker on
+                        // the next visible frame so newly saved providers/models
+                        // become selectable without rebuilding the session.
+                        self.start_model_catalog_load(cx);
 
-                    if !draft_route {
-                        self.ensure_artifact_route(&thread, stream.clone(), cx);
-                    }
-                    self.ensure_branch_route(&thread, stream.clone(), cx);
-                    let commit_focus = self
-                        .commit_controller
-                        .active
-                        .as_ref()
-                        .filter(|active| active.focus_pending && active.identity.stream == stream)
-                        .map(|active| active.identity.panel.read(cx).focus_handle(cx));
-                    if let Some(focus) = commit_focus {
-                        window.focus(&focus, cx);
-                        if let Some(active) = self.commit_controller.active.as_mut() {
-                            active.focus_pending = false;
+                        if !draft_route {
+                            self.ensure_artifact_route(&thread, stream.clone(), cx);
                         }
+                        self.ensure_branch_route(&thread, stream.clone(), cx);
+                        let commit_focus = self
+                            .commit_controller
+                            .active
+                            .as_ref()
+                            .filter(|active| {
+                                active.focus_pending && active.identity.stream == stream
+                            })
+                            .map(|active| active.identity.panel.read(cx).focus_handle(cx));
+                        if let Some(focus) = commit_focus {
+                            window.focus(&focus, cx);
+                            if let Some(active) = self.commit_controller.active.as_mut() {
+                                active.focus_pending = false;
+                            }
+                        }
+                        if returning_from_settings {
+                            stream.update(cx, |stream, cx| {
+                                stream.request_skill_projection(cx);
+                                stream.focus_composer(window, cx);
+                            });
+                        }
+                        stream.update(cx, |stream, cx| stream.set_reading_preview(false, cx));
+                        stream.into_any_element()
                     }
-                    if returning_from_settings {
-                        stream.update(cx, |stream, cx| {
-                            stream.request_skill_projection(cx);
-                            stream.focus_composer(window, cx);
-                        });
-                    }
-                    stream.update(cx, |stream, cx| stream.set_reading_preview(false, cx));
-                    stream.into_any_element()
                 }
             }
         };

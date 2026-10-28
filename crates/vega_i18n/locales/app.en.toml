@@ -1,3 +1,4 @@
+"app.conversation.load_failed" = "Could not load this conversation. Please retry."
 "app.startup.loading" = "Opening Vega…"
 "app.startup.failed" = "Vega could not open"
 "app.startup.quit" = "Quit"

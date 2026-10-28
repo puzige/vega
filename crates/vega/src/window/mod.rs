@@ -26,6 +26,7 @@ mod commit;
 mod commit_reconcile;
 mod composer_predictions;
 mod context;
+mod conversation_loading;
 mod cua_onboarding;
 mod diff;
 mod file_index;
@@ -137,6 +138,7 @@ pub(crate) struct VegaWindow {
     pub(crate) mcp_settings: Option<vega_conversation::McpServerSettingsService>,
     pub(crate) pricing_controller: PricingController,
     pub(crate) stream_view: Option<(String, Entity<ConversationStream>)>,
+    conversation_loading: conversation_loading::ConversationLoading,
     thread_scroll_states: scroll_state::ThreadScrollStateLru,
     pub(crate) message_location_route_thread_id: Option<String>,
     pub(crate) message_location_route_generation: u64,
@@ -227,6 +229,8 @@ impl VegaWindow {
                 .0
                 .as_ref()
                 .map(|thread| thread.id.clone());
+            this.conversation_loading
+                .invalidate_route(route_thread_id.as_deref());
             let stale_waits: Vec<_> = this
                 .agent_controller
                 .queue_drain_waits
@@ -264,6 +268,7 @@ impl VegaWindow {
         })
         .detach();
         cx.observe_global::<SettingsOpen>(|this, cx| {
+            this.conversation_loading.clear();
             this.cancel_unconfirmed_permission_reset(cx);
             this.cancel_composer_prediction(cx);
             this.cancel_context_if_route_stale(cx);
@@ -318,6 +323,7 @@ impl VegaWindow {
                 .and_then(|settings| settings.0.clone()),
             pricing_controller: PricingController::new(pricing_service),
             stream_view: None,
+            conversation_loading: conversation_loading::ConversationLoading::default(),
             thread_scroll_states: scroll_state::ThreadScrollStateLru::default(),
             message_location_route_thread_id: None,
             message_location_route_generation: 0,
