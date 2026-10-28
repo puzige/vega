@@ -43,6 +43,7 @@ pub struct ThreadsBlock {
     pub(crate) recents_total: usize,
     /// Thread id whose compact low-frequency action menu is open.
     pub(crate) actions_open: Option<String>,
+    actions_row: Option<String>,
     /// Highlighted action inside the open menu (arrow keys move it).
     pub(crate) actions_highlight: usize,
     /// Scope handle for the open action menu; leaving the row closes it.
@@ -65,6 +66,7 @@ pub struct ThreadsBlock {
 /// [`TextInput`] entity pre-filled with its current title.
 pub(crate) struct RenameSession {
     pub(crate) thread_id: String,
+    row_key: String,
     pub(crate) input: Entity<TextInput>,
 }
 
@@ -91,6 +93,7 @@ impl ThreadsBlock {
             recents_visible: organization::RECENTS_PAGE,
             recents_total: 0,
             actions_open: None,
+            actions_row: None,
             actions_highlight: 0,
             actions_scope_focus: cx.focus_handle(),
             actions_focus_subscription: None,
@@ -166,8 +169,7 @@ impl ThreadsBlock {
             .as_ref()
             .is_some_and(|thread_id| !existing_ids.iter().any(|id| id == thread_id))
         {
-            self.actions_open = None;
-            self.actions_highlight = 0;
+            self.close_actions();
         }
         cx.notify();
     }
@@ -320,13 +322,22 @@ impl ThreadsBlock {
     /// Double-click = rename: builds the inline editor pre-filled with the
     /// current title and moves focus into it. (合成键盘事件送不进 GPUI：键入
     /// 与 Enter/Esc 提交路径为人工验收；提交/取消的纯逻辑见 [`resolve_rename`]。)
-    fn start_rename(&mut self, thread: &Thread, window: &mut Window, cx: &mut Context<Self>) {
+    fn start_rename(
+        &mut self,
+        thread: &Thread,
+        row_key: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.close_actions();
-        if self
+        if let Some(session) = self
             .editing
-            .as_ref()
-            .is_some_and(|session| session.thread_id == thread.id)
+            .as_mut()
+            .filter(|session| session.thread_id == thread.id)
         {
+            session.row_key = row_key;
+            window.focus(&session.input.read(cx).focus_handle(cx), cx);
+            cx.notify();
             return;
         }
         let input = cx
@@ -334,6 +345,7 @@ impl ThreadsBlock {
         input.update(cx, |input, cx| input.set_text(&thread.title, cx));
         self.editing = Some(RenameSession {
             thread_id: thread.id.clone(),
+            row_key,
             input: input.clone(),
         });
         let focus_handle = input.read(cx).focus_handle(cx);
@@ -458,17 +470,30 @@ impl ThreadsBlock {
     }
 
     fn sync_contextual_focus(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let thread_ids: HashSet<_> = self
+        let row_keys: HashSet<_> = self
             .threads
             .iter()
             .chain(self.archived.iter())
-            .map(|thread| thread.id.clone())
+            .flat_map(|thread| {
+                let prefixes: &[&str] = if self.organization.is_none() {
+                    &["thread-row-"]
+                } else if thread.pinned {
+                    &["pinned-thread-row-"]
+                } else if thread.is_standalone() {
+                    &["standalone-thread-row-"]
+                } else {
+                    &["project-thread-row-", "standalone-thread-row-"]
+                };
+                prefixes
+                    .iter()
+                    .map(move |prefix| format!("{prefix}{}", thread.id))
+            })
             .collect();
         self.thread_action_focuses
-            .retain(|id, _| thread_ids.contains(id));
-        for thread in self.threads.iter().chain(self.archived.iter()) {
+            .retain(|key, _| row_keys.contains(key));
+        for key in row_keys {
             self.thread_action_focuses
-                .entry(thread.id.clone())
+                .entry(key)
                 .or_insert_with(|| cx.focus_handle());
         }
         if let Some(snapshot) = self
@@ -509,20 +534,28 @@ impl ThreadsBlock {
     /// Opens or closes the compact action menu for one thread. The trigger
     /// and menu each have a scoped key context, so focusing the trigger is
     /// enough to operate the full menu with Enter/Space, arrows, and Esc.
-    fn toggle_actions(&mut self, thread_id: &str, _: &mut Window, cx: &mut Context<Self>) {
+    fn toggle_actions(
+        &mut self,
+        thread_id: &str,
+        row_key: &str,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if cx.has_active_drag() {
             return;
         }
-        if self.actions_open.as_deref() == Some(thread_id) {
+        if self.actions_row.as_deref() == Some(row_key) {
             self.close_actions();
         } else {
             self.actions_open = Some(thread_id.to_string());
+            self.actions_row = Some(row_key.to_string());
             self.actions_highlight = 0;
         }
         cx.notify();
     }
 
     fn close_actions(&mut self) {
+        self.actions_row = None;
         if self.actions_open.take().is_some() {
             self.actions_highlight = 0;
         }
@@ -835,11 +868,15 @@ impl ThreadsBlock {
         else {
             return;
         };
+        let row_key = self
+            .actions_row
+            .clone()
+            .unwrap_or_else(|| format!("thread-row-{thread_id}"));
         self.close_actions();
         let project_bound = !thread.is_standalone();
         match (project_bound, index) {
             (_, 0) => self.toggle_pin(thread_id, thread.pinned, cx),
-            (_, 1) => self.start_rename(&thread, window, cx),
+            (_, 1) => self.start_rename(&thread, row_key, window, cx),
             (_, 2) => self.set_thread_status(
                 thread_id,
                 if thread.status == ThreadStatus::Archived {
@@ -1131,18 +1168,20 @@ impl ThreadsBlock {
     ) -> AnyElement {
         let colors = theme(cx).colors;
         let selected = opened_id.as_deref() == Some(thread.id.as_str());
-        let hovered = self.hovered.as_deref() == Some(thread.id.as_str());
+        let row_key = format!("{selector_prefix}{}", thread.id);
+        let hovered = self.hovered.as_deref() == Some(row_key.as_str());
         let editing_session = self
             .editing
             .as_ref()
-            .filter(|session| session.thread_id == thread.id);
+            .filter(|session| session.row_key == row_key);
         let editing_this_row = editing_session.is_some();
         let actions_visible = row_shows_actions(hovered, editing_this_row)
-            || self.actions_open.as_deref() == Some(thread.id.as_str())
-            || self.focused_thread_action.as_deref() == Some(thread.id.as_str());
+            || self.actions_row.as_deref() == Some(row_key.as_str())
+            || self.focused_thread_action.as_deref() == Some(row_key.as_str());
         let thread_id = thread.id.clone();
-        let hover_thread_id = thread_id.clone();
-        let mouse_move_thread_id = thread_id.clone();
+        let hover_thread_id = row_key.clone();
+        let mouse_move_thread_id = row_key.clone();
+        let rename_row_key = row_key.clone();
         let row_thread = thread.clone();
         let accessibility_label = if thread_is_running(&thread.id, cx) {
             vega_i18n::t_args("ui.title_running", &[("title", &thread.title)])
@@ -1172,6 +1211,7 @@ impl ThreadsBlock {
                 MouseButton::Right,
                 cx.listener({
                     let thread_id = thread.id.clone();
+                    let row_key = row_key.clone();
                     move |this, _, window, cx| {
                         cx.stop_propagation();
                         if this
@@ -1182,8 +1222,8 @@ impl ThreadsBlock {
                         {
                             return;
                         }
-                        this.toggle_actions(&thread_id, window, cx);
-                        if let Some(focus) = this.thread_action_focuses.get(&thread_id) {
+                        this.toggle_actions(&thread_id, &row_key, window, cx);
+                        if let Some(focus) = this.thread_action_focuses.get(&row_key) {
                             focus.focus(window, cx);
                         }
                     }
@@ -1193,8 +1233,8 @@ impl ThreadsBlock {
                 if selected {
                     colors.bg_active
                 } else if !editing_this_row
-                    && (self.actions_open.as_deref() == Some(thread.id.as_str())
-                        || self.focused_thread_action.as_deref() == Some(thread.id.as_str()))
+                    && (self.actions_row.as_deref() == Some(row_key.as_str())
+                        || self.focused_thread_action.as_deref() == Some(row_key.as_str()))
                 {
                     colors.bg_hover
                 } else {
@@ -1235,7 +1275,12 @@ impl ThreadsBlock {
                                     return;
                                 }
                                 if event.click_count >= 2 {
-                                    this.start_rename(&row_thread, window, cx);
+                                    this.start_rename(
+                                        &row_thread,
+                                        rename_row_key.clone(),
+                                        window,
+                                        cx,
+                                    );
                                 } else {
                                     this.open_thread(&row_thread.id, cx);
                                 }
@@ -1284,7 +1329,11 @@ impl ThreadsBlock {
         }
         if self.organization.is_some() && !editing_this_row {
             self.render_reorder_row(
-                organization::ReorderItem::Thread(thread.id.clone()),
+                if selector_prefix == "standalone-thread-row-" {
+                    organization::ReorderItem::RecentThread(thread.id.clone())
+                } else {
+                    organization::ReorderItem::Thread(thread.id.clone())
+                },
                 thread_title(thread),
                 row,
                 cx,
@@ -1305,15 +1354,16 @@ impl ThreadsBlock {
     ) -> AnyElement {
         let colors = theme(cx).colors;
         let thread_id = thread.id.clone();
+        let row_key = format!("{selector_prefix}{thread_id}");
         let action_prefix = selector_prefix
             .strip_suffix("thread-row-")
             .unwrap_or(selector_prefix);
 
         let running = thread_is_running(&thread.id, cx);
-        let menu_open = self.actions_open.as_deref() == Some(thread.id.as_str());
-        let keyboard_focused = self.focused_thread_action.as_deref() == Some(thread.id.as_str());
+        let menu_open = self.actions_row.as_deref() == Some(row_key.as_str());
+        let keyboard_focused = self.focused_thread_action.as_deref() == Some(row_key.as_str());
         let quick_actions_visible =
-            self.hovered.as_deref() == Some(thread.id.as_str()) && !menu_open && !keyboard_focused;
+            self.hovered.as_deref() == Some(row_key.as_str()) && !menu_open && !keyboard_focused;
         let mut trigger = div()
             .id(ElementId::Name(
                 format!("{action_prefix}thread-actions-{thread_id}").into(),
@@ -1329,7 +1379,7 @@ impl ThreadsBlock {
             .when_some(
                 self.organization
                     .as_ref()
-                    .and_then(|_| self.thread_action_focuses.get(&thread.id)),
+                    .and_then(|_| self.thread_action_focuses.get(&row_key)),
                 |trigger, focus| trigger.track_focus(focus),
             )
             .focus_visible(|style| {
@@ -1353,8 +1403,9 @@ impl ThreadsBlock {
                 .key_context("ThreadActionTrigger")
                 .on_action(cx.listener({
                     let thread_id = thread.id.clone();
+                    let row_key = row_key.clone();
                     move |this, _: &OpenThreadActions, window, cx| {
-                        this.toggle_actions(&thread_id, window, cx);
+                        this.toggle_actions(&thread_id, &row_key, window, cx);
                     }
                 }));
         }
@@ -1393,10 +1444,10 @@ impl ThreadsBlock {
             .items_center()
             .justify_center()
             .capture_any_mouse_up(cx.listener({
-                let thread_id = thread.id.clone();
+                let row_key = row_key.clone();
                 move |this, event: &MouseUpEvent, _, cx| {
                     if event.button == MouseButton::Left
-                        && this.actions_open.as_deref() == Some(thread_id.as_str())
+                        && this.actions_row.as_deref() == Some(row_key.as_str())
                     {
                         this.close_actions();
                         cx.notify();
@@ -1408,8 +1459,9 @@ impl ThreadsBlock {
                 MouseButton::Left,
                 cx.listener({
                     let thread_id = thread.id.clone();
+                    let row_key = row_key.clone();
                     move |this, _: &MouseUpEvent, window, cx| {
-                        this.toggle_actions(&thread_id, window, cx);
+                        this.toggle_actions(&thread_id, &row_key, window, cx);
                     }
                 }),
             )

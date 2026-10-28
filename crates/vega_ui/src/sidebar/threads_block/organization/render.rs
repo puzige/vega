@@ -543,23 +543,22 @@ impl ThreadsBlock {
     ) -> AnyElement {
         let colors = theme(cx).colors;
         let label = vega_i18n::t("sidebar.recents");
-        let mut standalone: Vec<_> = self
-            .threads
-            .iter()
-            .filter(|thread| thread.is_standalone() && !thread.pinned)
-            .cloned()
+        let recents: Vec<_> = self
+            .eligible_threads(show_archived)
+            .into_iter()
+            .filter(|thread| {
+                !thread.pinned
+                    && (!snapshot.preferences.hide_project_threads_from_recents
+                        || thread.is_standalone())
+            })
             .collect();
-        if show_archived {
-            standalone.extend(
-                self.archived
-                    .iter()
-                    .filter(|thread| thread.is_standalone() && !thread.pinned)
-                    .cloned(),
-            );
-        }
-        standalone = super::projections::sorted_threads(&standalone, &snapshot.preferences);
+        let recents = super::projections::sorted_threads(&recents, &snapshot.preferences);
         let header_actions_visible = self.hovered_section == Some(OrganizationSection::Recents)
-            || self.focused_section == Some(OrganizationSection::Recents);
+            || self.focused_section == Some(OrganizationSection::Recents)
+            || self
+                .organization
+                .as_ref()
+                .is_some_and(|org| matches!(org.menu, Some(OrganizationMenu::Recents)));
         let header = div()
             .id("organization-recents-header")
             .track_focus(&self.recents_header_focus)
@@ -580,6 +579,14 @@ impl ThreadsBlock {
                     .flex()
                     .items_center()
                     .gap_1()
+                    .child(self.vector_control(
+                        "organization-recents-menu",
+                        vega_i18n::t("sidebar.recents_options"),
+                        crate::icons::Icon::More,
+                        Control::Menu(OrganizationMenu::Recents),
+                        !header_actions_visible,
+                        cx,
+                    ))
                     .child(self.archive_control(!header_actions_visible, cx))
                     .child(self.vector_control(
                         "organization-new-session",
@@ -598,10 +605,10 @@ impl ThreadsBlock {
             .0
             .as_ref()
             .map(|thread| thread.id.clone());
-        let empty = standalone.is_empty();
+        let empty = recents.is_empty();
 
-        self.recents_total = standalone.len();
-        let rows = standalone
+        self.recents_total = recents.len();
+        let rows = recents
             .into_iter()
             .take(self.recents_visible)
             .map(|thread| {

@@ -1,6 +1,8 @@
 "sidebar.pinned" = "置顶"
 "sidebar.projects" = "项目"
 "sidebar.recents" = "最近"
+"sidebar.recents_options" = "最近对话选项"
+"sidebar.show_project_conversations_selected" = "{selected} 显示项目对话"
 "ui.a_task_is_being_saved_try_again_shortly" = "任务正在保存，请稍后重试"
 "ui.a_task_is_being_saved_try_deleting_it" = "任务正在保存，请稍后重试删除"
 "ui.a_task_is_being_saved_try_removing_the" = "任务正在保存，请稍后重试移除项目"

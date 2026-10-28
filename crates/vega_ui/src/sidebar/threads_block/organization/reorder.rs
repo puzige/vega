@@ -35,12 +35,13 @@ impl ReorderState {
 pub(in crate::sidebar::threads_block) enum ReorderItem {
     Project(String),
     Thread(String),
+    RecentThread(String),
 }
 
 impl ReorderItem {
     fn id(&self) -> &str {
         match self {
-            Self::Project(id) | Self::Thread(id) => id,
+            Self::Project(id) | Self::Thread(id) | Self::RecentThread(id) => id,
         }
     }
 
@@ -50,7 +51,7 @@ impl ReorderItem {
                 project_id: id.clone(),
                 before_id,
             },
-            Self::Thread(id) => SidebarOrganizationAction::ReorderThread {
+            Self::Thread(id) | Self::RecentThread(id) => SidebarOrganizationAction::ReorderThread {
                 thread_id: id.clone(),
                 before_id,
             },
@@ -156,7 +157,7 @@ impl ThreadsBlock {
                         .map(|project| project.id.clone()),
                 )
                 .collect(),
-            ReorderItem::Thread(id) => {
+            ReorderItem::Thread(id) | ReorderItem::RecentThread(id) => {
                 let threads = self.eligible_threads(true);
                 let Some(source) = threads.iter().find(|thread| &thread.id == id) else {
                     return Vec::new();

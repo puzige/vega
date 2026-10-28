@@ -1,6 +1,8 @@
 "sidebar.pinned" = "Pinned"
 "sidebar.projects" = "Projects"
 "sidebar.recents" = "Recents"
+"sidebar.recents_options" = "Recents options"
+"sidebar.show_project_conversations_selected" = "{selected} Show project conversations"
 "ui.a_task_is_being_saved_try_again_shortly" = "A task is being saved. Try again shortly."
 "ui.a_task_is_being_saved_try_deleting_it" = "A task is being saved. Try deleting it again shortly."
 "ui.a_task_is_being_saved_try_removing_the" = "A task is being saved. Try removing the project again shortly."
