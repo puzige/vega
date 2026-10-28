@@ -149,6 +149,20 @@ impl VegaWindow {
         }) {
             return;
         }
+        let current = stream.read(cx).thread_snapshot();
+        if !durable && self.draft.as_ref() == Some(source) {
+            self.draft = Some(current.clone());
+            if cx.global::<OpenedThread>().0.as_ref() == Some(source)
+                && let Some(visible) = self.current_cached_stream_for_thread(&source.id, cx)
+                && &visible != stream
+                && visible.read(cx).thread_snapshot() == *source
+                && !visible.read(cx).permission_change_pending()
+                && !visible.read(cx).has_pending_model_selection()
+            {
+                visible.update(cx, |stream, cx| stream.apply_thread(current.clone(), cx));
+                cx.set_global(OpenedThread(Some(current.clone())));
+            }
+        }
         if self.owns_stream_request(stream, &source.id, cx)
             && cx.global::<OpenedThread>().0.as_ref().is_some_and(|route| {
                 route.project_id == source.project_id
@@ -157,10 +171,6 @@ impl VegaWindow {
                     && route.full_access_grant == source.full_access_grant
             })
         {
-            let current = stream.read(cx).thread_snapshot();
-            if !durable && self.draft.as_ref() == Some(source) {
-                self.draft = Some(current.clone());
-            }
             cx.set_global(OpenedThread(Some(current)));
         }
         if durable {
@@ -183,17 +193,11 @@ fn persist_permission_selection(
     if change.is_draft() && draft.as_ref() != Some(&source) {
         return Err(ThreadPermissionError::Conflict);
     }
-    if change.is_draft() && mode != PermissionMode::FullAccess {
-        Ok(Outcome::Draft(Thread {
-            permission_mode: mode,
-            full_access_grant: None,
-            default_permission: None,
-            ..source
-        }))
+    let saved = service.save(&change, mode == PermissionMode::FullAccess)?;
+    if change.is_draft() {
+        Ok(Outcome::Draft(saved))
     } else {
-        service
-            .save(&change, mode == PermissionMode::FullAccess)
-            .map(Outcome::Saved)
+        Ok(Outcome::Saved(saved))
     }
 }
 
