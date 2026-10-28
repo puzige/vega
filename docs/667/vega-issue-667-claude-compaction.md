@@ -181,6 +181,8 @@ Runtime 通过既有内部 compaction service 的独立 micro 方法取得结果
 
 Micro 增量审查补充：来源校验按当前 projection plan 的 retained Source 做完整内容比较，不再用 legacy covered-through 截掉 partial-from 留下的早期助手组；只有无 plan 的旧 checkpoint 保留该 cutoff。桌面观察／截图等合法临时 overlay 在校验副本中按既有规则归一化，两侧等价后才继续；原始 live 图片、观察和绑定不因 micro 被抹除。micro 的独立请求明确携带 system ReplayFrame，服务在落库前和 runtime 应用前均对同一个 framed wire 投影计算触发阈值及净省量；不能把 GLM 已不发送的历史 reasoning 算入触发量。新增非 fenced partial/disjoint、live 截图与 GLM frame 门槛回归。
 
+Micro 回归夹具修正：`d89e0594029ce3e29484128958fd800d016532dc` 的 Actions `40692740896` 实际执行 70 项，69 通过、1 失败、0 跳过，Clippy／格式通过；独立增量审查确认三个生产修复均已处理。失败发生在 partial/disjoint 场景准备的水位断言：唯一用户消息 seq=1，partial 的 legacy 水位按最后用户之前计算为 0，而不是按选中尾部 seq=100 计算。夹具增加 seq=99 的后续用户消息，使旧助手 seq=2 保留且确实早于水位 98；保留非 fenced 校验、篡改拒绝、36 个精确目标、live 结果／checkpoint 不变与无额外摘要请求的验收，不修改生产水位规则或放宽断言。
+
 ### Reactive 增量审查修正（2026-10-28）
 
 Partial 的“不允许遗漏”不等于“不允许 PTL 重试”：固定选区、顺序和 covered／retained 分区不变，typed summary PTL 时缩小本次完整摘要组批次并分阶段纳入全部选区；每次实际 wire 输入必须改变，不能丢组。与其他路线共用 32 次请求／600 秒／300 秒 idle／usage 记账，单组仍不适配或普通错误则失败不安装。保尾规划只在实际 reactive 或需要移动边界时构造；普通阈值成功路径仍允许将 offset 未知但已完成工具结果的 owned streaming 尾部原样保留。不能因此允许 full 覆盖该尾部或凭空制造其内部边界。

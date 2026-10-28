@@ -288,8 +288,14 @@ async fn micro_accepts_partial_retained_prefix_and_disjoint_history_with_a_live_
             .conn()
             .execute("UPDATE messages SET status='done' WHERE id='owner'", [])?;
         let mut row = messages::find(store.conn(), "owner")?.ok_or("owner missing")?;
+        row.id = "later-task".into();
+        row.seq = 99;
+        row.role = "user".into();
+        row.content = "Summarize the tail while keeping the earlier results".into();
+        messages::insert(store.conn(), &row)?;
         row.id = "tail".into();
         row.seq = 100;
+        row.role = "assistant".into();
         row.content = "TAIL_TO_SUMMARIZE".into();
         messages::insert(store.conn(), &row)?;
         let source = load_source(store.conn(), "thread")?;
@@ -329,6 +335,7 @@ async fn micro_accepts_partial_retained_prefix_and_disjoint_history_with_a_live_
         let checkpoint =
             latest_checkpoint(store.conn(), "thread", "model")?.ok_or("checkpoint missing")?;
         assert!(checkpoint.covered_through_seq >= 2);
+        assert_eq!(checkpoint.covered_through_seq, 98);
         row.id = "followup".into();
         row.seq = 101;
         row.role = "user".into();
