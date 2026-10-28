@@ -2333,6 +2333,11 @@ pub(crate) fn bash_danger_audit_matches(input_json: &str, approval: &ApprovalAud
     let Some(danger) = danger else {
         return approval.source != ApprovalSource::Danger && approval.danger.is_none();
     };
+    if approval.source == ApprovalSource::FullAccess {
+        return approval.decision == Approval::Once
+            && approval.note.is_none()
+            && approval.danger.is_none();
+    }
     if matches!(
         approval.source,
         ApprovalSource::RunMode | ApprovalSource::Recovery
