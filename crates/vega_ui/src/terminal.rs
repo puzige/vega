@@ -16,8 +16,12 @@ pub struct TerminalView {
     session: Option<TerminalSession>,
     snapshot: Option<TerminalSnapshot>,
     size: (u16, u16),
+    viewport_size: (u16, u16),
     marked: String,
     input_error: bool,
+    viewport: Option<(Bounds<Pixels>, Pixels, Pixels)>,
+    selection: Option<(usize, usize)>,
+    selecting: bool,
 }
 
 impl TerminalView {
@@ -41,6 +45,7 @@ impl TerminalView {
                             .as_ref()
                             .and_then(|s| s.snapshot(this.snapshot.as_ref().map(|s| s.generation)))
                         {
+                            this.clear_selection();
                             this.snapshot = Some(snapshot);
                             cx.notify();
                         }
@@ -58,12 +63,17 @@ impl TerminalView {
             session,
             snapshot: None,
             size: (0, 0),
+            viewport_size: (0, 0),
             marked: String::new(),
             input_error: false,
+            viewport: None,
+            selection: None,
+            selecting: false,
         }
     }
 
     fn send(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
+        self.clear_selection();
         self.input_error = self
             .session
             .as_ref()
@@ -72,6 +82,7 @@ impl TerminalView {
     }
 
     fn restart(&mut self, cx: &mut Context<Self>) {
+        self.clear_selection();
         self.session.take();
         self.session = TerminalSession::start_target(self.target.clone()).ok();
         self.snapshot = None;
@@ -80,30 +91,124 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn copy_screen(&mut self, _: &text_input::Copy, _: &mut Window, cx: &mut Context<Self>) {
+    fn clear_selection(&mut self) {
+        self.selection = None;
+        self.selecting = false;
+    }
+
+    fn selection_range(&self) -> Option<Range<usize>> {
+        self.selection.and_then(|(anchor, head)| {
+            (anchor != head).then_some(anchor.min(head)..anchor.max(head))
+        })
+    }
+
+    fn cell_boundary(&self, position: Point<Pixels>) -> Option<usize> {
+        let (bounds, cell_width, line_height) = self.viewport?;
+        let snapshot = self.snapshot.as_ref()?;
+        let cols = usize::from(self.viewport_size.1);
+        let rows = snapshot.cells.len().min(usize::from(self.viewport_size.0));
+        if rows == 0 || cols == 0 {
+            return None;
+        }
+        let row = (f32::from(position.y - bounds.top()) / f32::from(line_height))
+            .floor()
+            .clamp(0., (rows - 1) as f32) as usize;
+        let mut col = (f32::from(position.x - bounds.left()) / f32::from(cell_width))
+            .round()
+            .clamp(0., cols as f32) as usize;
+        if col > 0
+            && col < cols
+            && snapshot.cells[row]
+                .get(col)
+                .is_some_and(|cell| cell.continuation)
+        {
+            col -= 1;
+        }
+        Some(row * cols + col)
+    }
+
+    fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.focus, cx);
+        self.clear_selection();
+        if self
+            .viewport
+            .is_some_and(|(bounds, _, _)| bounds.contains(&event.position))
+            && let Some(offset) = self.cell_boundary(event.position)
+        {
+            self.selection = Some((offset, offset));
+            self.selecting = true;
+        }
+        cx.notify();
+    }
+
+    fn mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if event.pressed_button != Some(MouseButton::Left) {
+            self.selecting = false;
+        }
+        if self.selecting
+            && let Some(offset) = self.cell_boundary(event.position)
+            && let Some((anchor, _)) = self.selection
+        {
+            self.selection = Some((anchor, offset));
+            cx.notify();
+        }
+    }
+
+    fn mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.selecting
+            && let Some(offset) = self.cell_boundary(event.position)
+            && let Some((anchor, _)) = self.selection
+        {
+            self.selection = Some((anchor, offset));
+        }
+        self.selecting = false;
+        cx.notify();
+    }
+
+    fn copy_text(&self, selection: Option<Range<usize>>, cx: &mut Context<Self>) {
         if let Some(snapshot) = &self.snapshot {
+            let cols = usize::from(self.viewport_size.1);
             let text = snapshot
                 .cells
                 .iter()
-                .map(|row| {
-                    row.iter()
-                        .filter(|cell| !cell.continuation)
-                        .map(|cell| {
+                .take(usize::from(self.viewport_size.0))
+                .enumerate()
+                .filter_map(|(index, row)| {
+                    let start = index * cols;
+                    let end = start + row.len().min(cols);
+                    let range = selection.as_ref().map_or(start..end, |range| {
+                        range.start.max(start)..range.end.min(end)
+                    });
+                    if range.is_empty() {
+                        return None;
+                    }
+                    let text = row
+                        .iter()
+                        .enumerate()
+                        .filter(|(col, cell)| range.contains(&(start + col)) && !cell.continuation)
+                        .map(|(_, cell)| {
                             if cell.text.is_empty() {
                                 " "
                             } else {
                                 &cell.text
                             }
                         })
-                        .collect::<String>()
-                        .trim_end()
-                        .to_string()
+                        .collect::<String>();
+                    Some(if range.end == end {
+                        text.trim_end().to_string()
+                    } else {
+                        text
+                    })
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
         cx.stop_propagation();
+    }
+
+    fn copy_screen(&mut self, _: &text_input::Copy, _: &mut Window, cx: &mut Context<Self>) {
+        self.copy_text(self.selection_range(), cx);
     }
 
     fn paste(&mut self, _: &text_input::Paste, _: &mut Window, cx: &mut Context<Self>) {
@@ -205,13 +310,13 @@ impl Render for TerminalView {
             .on_key_down(cx.listener(Self::key_down))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::copy_screen))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    window.focus(&this.focus, cx);
-                }),
-            )
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
+            .on_mouse_move(cx.listener(Self::mouse_move))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::mouse_up))
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+                this.clear_selection();
+                cx.notify();
                 let delta = event.delta.pixel_delta(px(Typography::CODE * 1.5));
                 let rows = (f32::from(delta.y) / (Typography::CODE * 1.5)).round() as i32;
                 if let Some(session) = &this.session {
@@ -242,9 +347,7 @@ impl Render for TerminalView {
                                     Icon::Document,
                                     "ui.copy_current_terminal_screen_c",
                                     colors,
-                                    cx.listener(|this, _, window, cx| {
-                                        this.copy_screen(&text_input::Copy, window, cx)
-                                    }),
+                                    cx.listener(|this, _, _, cx| this.copy_text(None, cx)),
                                 ))
                                 .child(crate::icons::localized_icon_button(
                                     Icon::Refresh,
@@ -279,7 +382,8 @@ impl Render for TerminalView {
                                     paint_terminal(&view, bounds, window, cx);
                                 },
                             )
-                            .size_full(),
+                            .size_full()
+                            .cursor(CursorStyle::IBeam),
                         ),
                     ),
             )
@@ -327,6 +431,11 @@ fn paint_terminal(
         .floor()
         .clamp(2., 400.) as u16;
     view.update(cx, |view, cx| {
+        if view.viewport_size != (rows, cols) {
+            view.clear_selection();
+            view.viewport_size = (rows, cols);
+        }
+        view.viewport = Some((bounds, cell_width, line_height));
         if view.size != (rows, cols)
             && let Some(session) = &view.session
             && session.resize(rows, cols).is_ok()
@@ -339,10 +448,11 @@ fn paint_terminal(
             cx,
         );
         if let Some(snapshot) = &view.snapshot {
+            let selection = view.selection_range();
             for (row, cells) in snapshot.cells.iter().take(rows as usize).enumerate() {
                 let mut text = String::new();
                 let mut runs = Vec::new();
-                for cell in cells.iter().take(cols as usize) {
+                for (col, cell) in cells.iter().take(cols as usize).enumerate() {
                     if cell.continuation {
                         continue;
                     }
@@ -357,6 +467,13 @@ fn paint_terminal(
                     let mut bg = terminal_color(cell.background, colors.bg_base);
                     if cell.inverse {
                         std::mem::swap(&mut fg, &mut bg);
+                    }
+                    if selection
+                        .as_ref()
+                        .is_some_and(|range| range.contains(&(row * usize::from(cols) + col)))
+                    {
+                        fg = colors.brand_on_accent;
+                        bg = colors.brand_primary;
                     }
                     let mut font = font.clone();
                     if cell.bold {
@@ -374,14 +491,10 @@ fn paint_terminal(
                 let line = window
                     .text_system()
                     .shape_line(text.into(), size, &runs, None);
-                let _ = line.paint(
-                    point(bounds.left(), bounds.top() + line_height * row as f32),
-                    line_height,
-                    TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                );
+                let origin = point(bounds.left(), bounds.top() + line_height * row as f32);
+                let _ =
+                    line.paint_background(origin, line_height, TextAlign::Left, None, window, cx);
+                let _ = line.paint(origin, line_height, TextAlign::Left, None, window, cx);
             }
             let mut fade = ScrollFadeMetrics::new(
                 bounds,

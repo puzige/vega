@@ -222,6 +222,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-cmd-space", text_input::ShowCharacterPalette, None),
         KeyBinding::new("cmd-v", text_input::Paste, None),
         KeyBinding::new("cmd-c", text_input::Copy, None),
+        KeyBinding::new("cmd-c", text_input::Copy, Some("Terminal")),
+        KeyBinding::new("cmd-v", text_input::Paste, Some("Terminal")),
         KeyBinding::new(
             "cmd-c",
             conversation_stream::CopySelectedText,
