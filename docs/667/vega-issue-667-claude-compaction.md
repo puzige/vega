@@ -171,6 +171,10 @@ Last-resort 的三次限制计最旧完整来源组截断操作，不计 provide
 
 Reactive 恢复图片仍使用既有有界 HistoricalImages 投影：新进入摘要／遗漏区的完整来源消息，以及进入摘要区的旧图片引用，都必须在安装／reload 中恢复历史图片证据；摘要请求只接收显式无视觉内容的 provenance。已有保留图片引用维持原位置并扩展到需要的截止点，不再另加重叠引用；没有保留引用时放在新摘要之后。截止点不得越过仍按 Source 保留的图片消息，原始附件和审计不变。被 head 截断跨过的任务引用已保留时，不重复注入同一任务引用。
 
+### Reactive 增量审查修正（2026-10-28）
+
+Partial 的“不允许遗漏”不等于“不允许 PTL 重试”：固定选区、顺序和 covered／retained 分区不变，typed summary PTL 时缩小本次完整摘要组批次并分阶段纳入全部选区；每次实际 wire 输入必须改变，不能丢组。与其他路线共用 32 次请求／600 秒／300 秒 idle／usage 记账，单组仍不适配或普通错误则失败不安装。保尾规划只在实际 reactive 或需要移动边界时构造；普通阈值成功路径仍允许将 offset 未知但已完成工具结果的 owned streaming 尾部原样保留。不能因此允许 full 覆盖该尾部或凭空制造其内部边界。
+
 ### 集成与终态回归补充
 
 Full 未完成尾部回归区分两道拒绝边界：live 请求中无法归属到完整 response 的尾部 assistant 文本先被来源校验拒绝（SourceChanged）；精确 source version/fingerprint 的 fenced 请求进入 full 规划后，被不完整尾部拒绝（InvalidProjection）。两条路径均不得调用摘要 provider、安装 checkpoint 或改变原始审计。`f51230683de9232d25b0d8095a1011b68be5c064` 的 Actions `40648493811` 执行 42 项、41 通过、1 失败，Clippy 通过；失败用例以 live 请求断言规划层错误，修正开发夹具覆盖两层，不放宽生产来源栅栏或接受不完整响应。

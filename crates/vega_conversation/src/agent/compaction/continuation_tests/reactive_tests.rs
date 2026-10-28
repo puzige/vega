@@ -162,6 +162,35 @@ fn calls(messages: &[ChatMessage]) -> Vec<&str> {
         .collect()
 }
 
+fn summary_calls(request: &ChatRequest) -> Vec<String> {
+    let mut calls = Vec::new();
+    let mut results = Vec::new();
+    for message in input_history(request) {
+        assert!(message.tool_calls.is_empty());
+        assert!(message.tool_call_id.is_none());
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&message.content) else {
+            continue;
+        };
+        let Some(observation) = value.get("vega_history_observation") else {
+            continue;
+        };
+        assert_eq!(observation["authority"], "none");
+        assert_eq!(observation["version"], 1);
+        match observation["kind"].as_str().unwrap() {
+            "tool_activity" => {
+                for call in observation["calls"].as_array().unwrap() {
+                    assert_eq!(call["arguments_available"], false);
+                    calls.push(call["call_id"].as_str().unwrap().to_owned());
+                }
+            }
+            "tool_result" => results.push(observation["call_id"].as_str().unwrap().to_owned()),
+            other => panic!("unexpected historical observation: {other}"),
+        }
+    }
+    assert_eq!(calls, results);
+    calls
+}
+
 fn text(messages: &[ChatMessage]) -> String {
     messages
         .iter()
@@ -246,11 +275,11 @@ async fn summary_overflow_moves_complete_response_boundary_with_and_without_gap(
         let requests = provider.requests();
         assert_eq!(requests.len(), 2);
         assert_eq!(
-            calls(input_history(&requests[0])),
+            summary_calls(&requests[0]),
             ["call-1", "call-2", "call-3", "call-4"]
         );
         assert_eq!(
-            calls(input_history(&requests[1])),
+            summary_calls(&requests[1]),
             if known_gap {
                 vec!["call-1", "call-2"]
             } else {
@@ -350,7 +379,7 @@ async fn initial_gap_keeps_multiple_groups_and_deeper_reduces_the_retained_tail(
     );
     let requests = provider.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(calls(input_history(&requests[1])), ["call-4"]);
+    assert_eq!(summary_calls(&requests[1]), ["call-4"]);
     assert!(!text(input_history(&requests[1])).contains("RESULT_1"));
     ordered(input_history(&requests[1]), &["FIRST_SUMMARY", "RESULT_4"]);
     reload_matches(&store, &source, &second)?;
@@ -509,7 +538,7 @@ async fn last_resort_omits_only_oldest_complete_groups_and_protects_pending_user
         ["call-1"]
     );
     assert_eq!(
-        calls(input_history(&requests[2])),
+        summary_calls(&requests[2]),
         ["call-2", "call-3", "call-4", "call-5", "call-6"]
     );
     assert!(text(&result.messages).contains("NOT covered by the following summary"));
@@ -541,10 +570,7 @@ async fn last_resort_stops_after_three_head_truncations_without_installing() -> 
     assert!(failure.error.context_input_overflow().is_some());
     let requests = provider.requests();
     assert_eq!(requests.len(), 4);
-    let selected = requests
-        .iter()
-        .map(|request| calls(input_history(request)))
-        .collect::<Vec<_>>();
+    let selected = requests.iter().map(summary_calls).collect::<Vec<_>>();
     assert_eq!(
         selected.iter().map(Vec::len).collect::<Vec<_>>(),
         [10, 8, 6, 4]
@@ -673,6 +699,191 @@ async fn reactive_and_deeper_restore_historical_images_without_duplicate_referen
                 .all(|message| message.images.is_empty())
         );
         assert!(text(input_history(request)).contains("visual data omitted from summarizer input"));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn partial_overflow_retries_smaller_batches_without_changing_coverage() -> TestResult {
+    use crate::types::{PartialCompactionDirection as Direction, PartialCompactionSelection};
+    for direction in [Direction::From, Direction::UpTo] {
+        let (_directory, path, store) = source_fixture()?;
+        prepare_rounds(&store, 4)?;
+        store
+            .conn()
+            .execute("UPDATE messages SET status='done' WHERE id='owner'", [])?;
+        let mut tail = messages::find(store.conn(), "task")?.ok_or("task missing")?;
+        tail.id = "pending".into();
+        tail.seq = 20;
+        tail.content = "PENDING_SELECTION_TAIL".into();
+        messages::insert(store.conn(), &tail)?;
+        let source = load_source(store.conn(), "thread")?;
+        let selection = PartialCompactionSelection {
+            message_id: if direction == Direction::From {
+                "owner"
+            } else {
+                "pending"
+            }
+            .into(),
+            direction,
+            source_fingerprint: source.fingerprint.clone(),
+        };
+        let expected = projection::partial_plan(&source, None, &selection)
+            .map_err(|failure| *failure.error)?;
+        let provider = ScriptedSummaryProvider::new(
+            [
+                SummaryReply::Error(overflow(None)),
+                SummaryReply::Text("STAGE_ONE".into()),
+                SummaryReply::Text("STAGE_TWO".into()),
+            ]
+            .into_iter()
+            .chain(
+                (direction == Direction::UpTo).then(|| SummaryReply::Text("STAGE_THREE".into())),
+            ),
+        );
+        let result =
+            ConversationCompactionHook::new(&provider, path, "thread", "model", None, None)
+                .with_partial_selection(selection)
+                .compact(
+                    request(
+                        &source,
+                        visible_history(&source, None)?,
+                        ContextCompactionTrigger::Manual,
+                        None,
+                    )?,
+                    CancellationToken::new(),
+                )
+                .await
+                .map_err(|failure| *failure.error)?;
+        let requests = provider.requests();
+        assert_eq!(
+            requests.len(),
+            if direction == Direction::From { 3 } else { 4 }
+        );
+        assert_eq!(
+            summary_calls(&requests[0]),
+            ["call-1", "call-2", "call-3", "call-4"]
+        );
+        assert_eq!(
+            summary_calls(&requests[1]),
+            if direction == Direction::From {
+                vec!["call-1", "call-2"]
+            } else {
+                vec!["call-1"]
+            }
+        );
+        assert_eq!(
+            requests[1..]
+                .iter()
+                .flat_map(summary_calls)
+                .collect::<Vec<_>>(),
+            ["call-1", "call-2", "call-3", "call-4"]
+        );
+        assert!(
+            requests
+                .windows(2)
+                .all(|pair| pair[0].messages != pair[1].messages)
+        );
+        assert!(
+            estimate_wire_context(&requests[1].messages, &[])?.input_tokens
+                < estimate_wire_context(&requests[0].messages, &[])?.input_tokens
+        );
+        assert!(text(input_history(&requests[2])).contains("STAGE_ONE"));
+        assert_eq!(result.usages.len(), requests.len());
+        assert!(result.usage_complete);
+        let checkpoint =
+            latest_checkpoint(store.conn(), "thread", "model")?.ok_or("checkpoint missing")?;
+        let plan = checkpoint.projection_plan.as_ref().unwrap();
+        assert_eq!(plan, &expected.plan);
+        assert!(plan.omitted.is_empty());
+        if direction == Direction::From {
+            assert_eq!(
+                result.messages.first().unwrap().content,
+                source.messages[0].content
+            );
+        } else {
+            assert_eq!(result.messages.last().unwrap().content, tail.content);
+        }
+        reload_matches(&store, &source, &result)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn ordinary_compaction_retains_legacy_unsplittable_tail_but_full_rejects_coverage()
+-> TestResult {
+    for full in [false, true] {
+        let (_directory, path, store) = source_fixture()?;
+        prepare_rounds(&store, 2)?;
+        store
+            .conn()
+            .execute("UPDATE messages SET status='done' WHERE id='owner'", [])?;
+        let mut row = messages::find(store.conn(), "task")?.ok_or("task missing")?;
+        row.id = "latest-task".into();
+        row.seq = 10;
+        row.content = "LATEST_TASK_TO_RETAIN".into();
+        messages::insert(store.conn(), &row)?;
+        row.id = "legacy-owner".into();
+        row.seq = 11;
+        row.role = "assistant".into();
+        row.status = "streaming".into();
+        row.content = "legacy response".into();
+        messages::insert(store.conn(), &row)?;
+        tool_calls::insert(
+            store.conn(),
+            tool_calls::NewToolCall {
+                id: "legacy-call",
+                thread_id: "thread",
+                message_id: "legacy-owner",
+                seq: 12,
+                tool: "read",
+                input_json: "{\"path\":\"notes.txt\",\"offset\":null,\"limit\":null}",
+                status: "success",
+                created_at: 12,
+            },
+        )?;
+        store.conn().execute("UPDATE tool_calls SET text_offset_bytes=NULL, output_text='LEGACY_RESULT' WHERE id='legacy-call'", [])?;
+        let source = load_source(store.conn(), "thread")?;
+        let history = visible_history(&source, None)?;
+        let retained_start = history
+            .iter()
+            .position(|message| message.content == "LATEST_TASK_TO_RETAIN")
+            .ok_or("retained task missing")?;
+        let provider = ScriptedSummaryProvider::new(
+            (!full).then(|| SummaryReply::Text("OLDER_PREFIX_SUMMARY".into())),
+        );
+        let result =
+            ConversationCompactionHook::new(&provider, path, "thread", "model", None, None)
+                .with_full_on_threshold(full)
+                .compact(
+                    request(
+                        &source,
+                        history.clone(),
+                        ContextCompactionTrigger::Threshold,
+                        Some("legacy-owner"),
+                    )?,
+                    CancellationToken::new(),
+                )
+                .await;
+        if full {
+            assert!(matches!(
+                *result.unwrap_err().error,
+                VegaError::Context(ContextRuntimeError::InvalidProjection)
+            ));
+            assert!(provider.requests().is_empty());
+            assert!(latest_checkpoint(store.conn(), "thread", "model")?.is_none());
+        } else {
+            let result = result.map_err(|failure| *failure.error)?;
+            assert_eq!(&result.messages[1..], &history[retained_start..]);
+            assert_eq!(result.replay_cold_prefix_messages, Some(1));
+            assert_eq!(result.reactive_retained_groups, None);
+            let requests = provider.requests();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(summary_calls(&requests[0]), ["call-1", "call-2"]);
+            assert!(!text(input_history(&requests[0])).contains("LEGACY_RESULT"));
+            reload_matches(&store, &source, &result)?;
+        }
+        assert_eq!(load_source(store.conn(), "thread")?, source);
     }
     Ok(())
 }

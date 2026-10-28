@@ -1600,6 +1600,7 @@ impl ConversationCompactionHook<'_> {
             }
         }
         let groups = summary_api_rounds(history);
+        let mut stage_limit = groups.len();
         let mut cursor = 0;
         let mut aggregate = String::new();
         while cursor < groups.len() {
@@ -1617,7 +1618,7 @@ impl ConversationCompactionHook<'_> {
             }
             let mut selected = None;
             let mut estimate_tokens = 0;
-            for (offset, group) in groups[cursor..].iter().enumerate() {
+            for (offset, group) in groups[cursor..].iter().take(stage_limit).enumerate() {
                 stage.push(group.clone());
                 let mut direct = direct_summary_request(
                     execution.request,
@@ -1639,16 +1640,14 @@ impl ConversationCompactionHook<'_> {
             let Some((end, direct)) = selected else {
                 return Err(execution.input_limit(estimate_tokens));
             };
+            let input = vega_runtime::project_model_messages(&direct.messages)
+                .map_err(|error| execution.failure(error))?;
             if execution.attempts >= SUMMARY_MAX_STAGES
-                || execution
-                    .rejected_inputs
-                    .iter()
-                    .any(|previous| *previous == direct.messages)
+                || execution.rejected_inputs.contains(&input)
             {
                 return Err(execution.input_limit(estimate_tokens));
             }
             execution.attempts += 1;
-            let input = direct.messages.clone();
             match self
                 .run_summary_stage(
                     direct,
@@ -1667,6 +1666,13 @@ impl ConversationCompactionHook<'_> {
                 Err(failure) => {
                     if classify_summary_input_overflow(failure.error.as_ref()).is_some() {
                         execution.rejected_inputs.push(input);
+                        if self.partial_selection.is_some()
+                            && end - cursor > 1
+                            && execution.attempts < SUMMARY_MAX_STAGES
+                        {
+                            stage_limit = (end - cursor) / 2;
+                            continue;
+                        }
                     }
                     return Err(failure);
                 }
@@ -1867,7 +1873,8 @@ impl ConversationCompactionHook<'_> {
             request.trigger,
             ContextCompactionTrigger::InputOverflow { .. } | ContextCompactionTrigger::HardLimit
         );
-        let mut response_planner = if self.partial_selection.is_none() {
+        let mut response_planner = if self.partial_selection.is_none() && (reactive_trigger || full)
+        {
             Some(reactive::ResponsePlanner::new(
                 &source,
                 checkpoint.as_ref(),
@@ -2084,6 +2091,16 @@ impl ConversationCompactionHook<'_> {
                     }
                     allow_omission |= self.partial_selection.is_none() && overflow.is_some();
                     let gap = overflow.and_then(|overflow| overflow.token_gap);
+                    if response_planner.is_none() && self.partial_selection.is_none() {
+                        let mut planner = reactive::ResponsePlanner::new(
+                            &source,
+                            checkpoint.as_ref(),
+                            request.source_owner_id.as_deref(),
+                        )
+                        .map_err(|failure| execution.failure(*failure.error))?;
+                        planner.align(&projection_plan);
+                        response_planner = Some(planner);
+                    }
                     let Some(planner) = &mut response_planner else {
                         return Err(problem);
                     };
@@ -2133,6 +2150,16 @@ impl ConversationCompactionHook<'_> {
                     == vega_store::context_projection::ProjectionStrategy::Reactive)
                 && projected_estimate.input_tokens >= original_tokens;
             if over_limit || no_shrink {
+                if allow_omission && response_planner.is_none() {
+                    let mut planner = reactive::ResponsePlanner::new(
+                        &source,
+                        checkpoint.as_ref(),
+                        request.source_owner_id.as_deref(),
+                    )
+                    .map_err(|failure| execution.failure(*failure.error))?;
+                    planner.align(&projection_plan);
+                    response_planner = Some(planner);
+                }
                 if allow_omission
                     && let Some(planner) = &mut response_planner
                     && planner.fallback(None)
