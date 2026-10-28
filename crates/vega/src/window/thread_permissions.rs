@@ -152,6 +152,16 @@ impl VegaWindow {
         let current = stream.read(cx).thread_snapshot();
         if !durable && self.draft.as_ref() == Some(source) {
             self.draft = Some(current.clone());
+            if cx.global::<OpenedThread>().0.as_ref() == Some(source)
+                && let Some(visible) = self.current_cached_stream_for_thread(&source.id, cx)
+                && &visible != stream
+                && visible.read(cx).thread_snapshot() == *source
+                && !visible.read(cx).permission_change_pending()
+                && !visible.read(cx).has_pending_model_selection()
+            {
+                visible.update(cx, |stream, cx| stream.apply_thread(current.clone(), cx));
+                cx.set_global(OpenedThread(Some(current.clone())));
+            }
         }
         if self.owns_stream_request(stream, &source.id, cx)
             && cx.global::<OpenedThread>().0.as_ref().is_some_and(|route| {
