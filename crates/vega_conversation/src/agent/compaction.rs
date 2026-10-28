@@ -1498,6 +1498,16 @@ impl SummaryExecution<'_> {
     }
 }
 
+struct GeneratedCompaction {
+    checkpoint: NewContextCheckpoint,
+    result: ContextCompactionResult,
+}
+
+struct CompactionInstallGuard {
+    admission: crate::types::ThreadAdmission,
+    deadline: tokio::time::Instant,
+}
+
 struct SummarySourceGuard {
     version: u64,
     fingerprint: String,
@@ -1790,6 +1800,18 @@ impl ConversationCompactionHook<'_> {
         cancel: CancellationToken,
         source_guard: &mut Option<SummarySourceGuard>,
     ) -> Result<ContextCompactionResult, ContextCompactionFailure> {
+        let (generated, guard) = self
+            .generate_compaction(request, cancel.clone(), source_guard)
+            .await?;
+        self.install_generated(generated, guard, cancel).await
+    }
+
+    async fn generate_compaction(
+        &self,
+        request: ContextCompactionRequest,
+        cancel: CancellationToken,
+        source_guard: &mut Option<SummarySourceGuard>,
+    ) -> Result<(GeneratedCompaction, CompactionInstallGuard), ContextCompactionFailure> {
         if cancel.is_cancelled() {
             return Err(failure(VegaError::Cancelled, None));
         }
@@ -2257,12 +2279,55 @@ impl ConversationCompactionHook<'_> {
             projection_plan: Some(projection_plan),
             created_at: now_ms(),
         };
+        Ok((
+            GeneratedCompaction {
+                checkpoint,
+                result: ContextCompactionResult {
+                    replay_cold_prefix_messages: Some(replay_cold_prefix_messages),
+                    replay_interleaved_user_boundary,
+                    messages: projected,
+                    reactive_retained_groups,
+                    source_version: source.source_version,
+                    source_fingerprint: Some(source.fingerprint),
+                    usages,
+                    usage_complete,
+                },
+            },
+            CompactionInstallGuard {
+                admission,
+                deadline,
+            },
+        ))
+    }
+
+    async fn install_generated(
+        &self,
+        generated: GeneratedCompaction,
+        guard: CompactionInstallGuard,
+        cancel: CancellationToken,
+    ) -> Result<ContextCompactionResult, ContextCompactionFailure> {
+        let GeneratedCompaction { checkpoint, result } = generated;
+        let fail = |error| failure_with_usages(error, &result.usages, result.usage_complete);
+        if cancel.is_cancelled() {
+            return Err(fail(VegaError::Cancelled));
+        }
+        if tokio::time::Instant::now() >= guard.deadline {
+            return Err(fail(context_error(ContextRuntimeError::SummaryTimedOut)));
+        }
+        if checkpoint.thread_id != self.thread_id || checkpoint.model != self.model {
+            return Err(fail(context_error(ContextRuntimeError::SourceChanged)));
+        }
+        let CompactionInstallGuard {
+            admission,
+            deadline,
+        } = guard;
         let install = tokio::task::spawn_blocking({
             let path = self.database_path.clone();
             let install_cancel = cancel.clone();
             move || {
-                let _admission = admission;
                 let store = Store::open(path).map_err(VegaError::Store)?;
+                crate::thread_access::verify(&store, &checkpoint.thread_id, &admission)
+                    .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?;
                 vega_store::context_compaction::install_checkpoint_with_guard(
                     store.conn(),
                     &checkpoint,
@@ -2292,31 +2357,12 @@ impl ConversationCompactionHook<'_> {
             }
         })
         .await
-        .map_err(|_| {
-            failure_with_usages(
-                context_error(ContextRuntimeError::SourceChanged),
-                &usages,
-                usage_complete,
-            )
-        })?
-        .map_err(|error| failure_with_usages(error, &usages, usage_complete))?;
+        .map_err(|_| fail(context_error(ContextRuntimeError::SourceChanged)))?
+        .map_err(fail)?;
         if matches!(install, ContextCheckpointInstall::Stale) {
-            return Err(failure_with_usages(
-                context_error(ContextRuntimeError::SourceChanged),
-                &usages,
-                usage_complete,
-            ));
+            return Err(fail(context_error(ContextRuntimeError::SourceChanged)));
         }
-        Ok(ContextCompactionResult {
-            replay_cold_prefix_messages: Some(replay_cold_prefix_messages),
-            replay_interleaved_user_boundary,
-            messages: projected,
-            reactive_retained_groups,
-            source_version: source.source_version,
-            source_fingerprint: Some(source.fingerprint),
-            usages,
-            usage_complete,
-        })
+        Ok(result)
     }
 }
 

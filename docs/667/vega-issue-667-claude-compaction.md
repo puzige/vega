@@ -98,6 +98,12 @@
 
 预计算允许“捕获前缀仍完全相同、之后只追加可拼接后缀”，不允许把现有整体 source CAS 简单去掉。需要单独验证 covered prefix 与 retained anchors，并在最终事务重新验证当下源和整个拼接结果。取消和资源释放用 `CancellationToken`，不用 abort。
 
+#### 生成／安装分离的内部边界（2026-10-28）
+
+前台 `compact` 先取得 `GeneratedCompaction`（候选 checkpoint、已验证投影及 usage），再显式 install；生成阶段不得写 `context_checkpoints` 或改变活动投影。前台为保持既有串行语义，可随生成结果返回本次 admission 与同一 600 秒 deadline，但 admission 不属于可持久化候选，也不能成为后续后台 ready 状态长期占用线程的方式。安装必须核对线程／模型身份与当前数据库 admission，再复用事务内完整 source fingerprint／前驱／模型／取消校验；等待期间有同序号编辑、追加或竞争 checkpoint 时仍拒绝，直到独立的 append-safe 消费逻辑明确验证并重建当前来源。生成成功不等于完成安装，不触发完成状态，不提前丢失 usage；安装失败、取消和超时返回原生成 usage。普通压缩入口、摘要来源检查、凭据过滤和 retry／omission 策略保持不变。
+
+开发回归通过真实 SQLite 和合成摘要 provider 验证：生成不落库，显式安装与 reload 投影一致；生成后取消／期限届满／同序号编辑／模型变化／前驱竞争均不增加 checkpoint，且保留已发生 usage；未安装候选被丢弃后 admission 释放。此分离只是后台生命周期的共用基础，不声称已实现后台并发、ready 持久化、append-safe 消费或恢复。
+
 ### 4.3 持久化与回读
 
 - 新增递增 migration，保留旧 `context_checkpoints` 可读；新投影 metadata 包含 schema/version、策略与 continuation mode、源/owner fences、稳定 covered/kept 范围、head-truncated 标记及遗漏范围、恢复状态来源。
@@ -184,6 +190,8 @@ Micro 增量审查补充：来源校验按当前 projection plan 的 retained So
 Micro 回归夹具修正：`d89e0594029ce3e29484128958fd800d016532dc` 的 Actions `40692740896` 实际执行 70 项，69 通过、1 失败、0 跳过，Clippy／格式通过；独立增量审查确认三个生产修复均已处理。失败发生在 partial/disjoint 场景准备的水位断言：唯一用户消息 seq=1，partial 的 legacy 水位按最后用户之前计算为 0，而不是按选中尾部 seq=100 计算。夹具增加 seq=99 的后续用户消息，使旧助手 seq=2 保留且确实早于水位 98；保留非 fenced 校验、篡改拒绝、36 个精确目标、live 结果／checkpoint 不变与无额外摘要请求的验收，不修改生产水位规则或放宽断言。
 
 第二轮 `9d827511e81bc9e488742d8f17a8e302f519016a`／Actions `40695779457` 同为 70 执行、69 通过、1 失败、0 跳过，Clippy／格式通过。单选区分支已通过 micro 的来源拒绝／精确目标／live 与 checkpoint 检查，随后在替身 `requests()` 的剩余响应检查失败：该分支只应消费一次准备摘要，却预装了两条。按 disjoint 与否分别准备一／两条响应，保留队列耗尽和请求数断言，下一轮仍须实际执行两种分支。
+
+Micro 当前验证：`dfb965795f54b038e1a3e05ad846c597a3e87f6e`／Actions `40699159283` 的 Clippy `122853943726`、Nextest `122853944249` 和 required `122856560420` 均成功；原始日志 2026-10-28T13:47:02Z 记录 70 发现／70 执行／70 通过／0 跳过（22 binaries）。该结果不覆盖随后生成／安装拆分的新代码；未做本地 Vega 执行、编译或测试，PR 继续草稿。
 
 ### Reactive 增量审查修正（2026-10-28）
 

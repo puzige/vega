@@ -1,6 +1,7 @@
 use super::*;
 use vega_store::{messages, threads, tool_calls};
 
+mod generation_tests;
 mod micro_tests;
 mod reactive_tests;
 
