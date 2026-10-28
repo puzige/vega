@@ -343,6 +343,7 @@ pub enum ToolCardInputProjection {
     /// Full bash command, already strictly decoded by the tools boundary.
     Bash {
         command: String,
+        description: Option<String>,
     },
     /// Safe write audit summary; the body and fingerprint are discarded.
     Write {
@@ -643,10 +644,38 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
                 ToolCardInputProjection::Corrupt
             }
         }
-        "bash" => vega_tools::bash_permission_signature(&call.input_json)
-            .map_or(ToolCardInputProjection::Corrupt, |command| {
-                ToolCardInputProjection::Bash { command }
-            }),
+        "bash" => vega_tools::bash_permission_signature(&call.input_json).map_or(
+            ToolCardInputProjection::Corrupt,
+            |command| {
+                let description = serde_json::from_str::<serde_json::Value>(&call.input_json)
+                    .ok()
+                    .and_then(|input| {
+                        input
+                            .get("description")
+                            .and_then(serde_json::Value::as_str)
+                            .map(|text| {
+                                let text: String = text
+                                    .chars()
+                                    .map(|character| {
+                                        if character.is_control()
+                                            || matches!(character, '\u{2028}' | '\u{2029}')
+                                        {
+                                            ' '
+                                        } else {
+                                            character
+                                        }
+                                    })
+                                    .collect();
+                                text.trim().chars().take(120).collect::<String>()
+                            })
+                    })
+                    .filter(|text| !text.trim().is_empty());
+                ToolCardInputProjection::Bash {
+                    command,
+                    description,
+                }
+            },
+        ),
         "Write" | "Edit" | "write" | "edit" => {
             match vega_tools::WriteEditAudit::from_json(&call.input_json) {
                 Ok(vega_tools::WriteEditAudit::Write {

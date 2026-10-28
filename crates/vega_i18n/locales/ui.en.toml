@@ -161,6 +161,7 @@
 "ui.command_rejected_en" = "Command rejected:"
 "ui.command_rejected_use_a_non_empty_command_and" = "Command rejected: use a non-empty command and a positive timeout in seconds, or null for the default"
 "ui.command_running_duration" = "Running command for {duration}"
+"ui.command_status_description" = "{status} · {description}"
 "ui.command_success_duration" = "Ran command in {duration}"
 "ui.command_superseded_duration" = "Not run after takeover after {duration}"
 "ui.commit" = "Commit (⌘↵)"
