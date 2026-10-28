@@ -16,6 +16,7 @@ pub struct TerminalView {
     session: Option<TerminalSession>,
     snapshot: Option<TerminalSnapshot>,
     size: (u16, u16),
+    viewport_size: (u16, u16),
     marked: String,
     input_error: bool,
     viewport: Option<(Bounds<Pixels>, Pixels, Pixels)>,
@@ -62,6 +63,7 @@ impl TerminalView {
             session,
             snapshot: None,
             size: (0, 0),
+            viewport_size: (0, 0),
             marked: String::new(),
             input_error: false,
             viewport: None,
@@ -103,8 +105,8 @@ impl TerminalView {
     fn cell_boundary(&self, position: Point<Pixels>) -> Option<usize> {
         let (bounds, cell_width, line_height) = self.viewport?;
         let snapshot = self.snapshot.as_ref()?;
-        let cols = usize::from(self.size.1);
-        let rows = snapshot.cells.len().min(usize::from(self.size.0));
+        let cols = usize::from(self.viewport_size.1);
+        let rows = snapshot.cells.len().min(usize::from(self.viewport_size.0));
         if rows == 0 || cols == 0 {
             return None;
         }
@@ -164,14 +166,15 @@ impl TerminalView {
 
     fn copy_text(&self, selection: Option<Range<usize>>, cx: &mut Context<Self>) {
         if let Some(snapshot) = &self.snapshot {
-            let cols = usize::from(self.size.1);
+            let cols = usize::from(self.viewport_size.1);
             let text = snapshot
                 .cells
                 .iter()
+                .take(usize::from(self.viewport_size.0))
                 .enumerate()
                 .filter_map(|(index, row)| {
                     let start = index * cols;
-                    let end = start + row.len();
+                    let end = start + row.len().min(cols);
                     let range = selection.as_ref().map_or(start..end, |range| {
                         range.start.max(start)..range.end.min(end)
                     });
@@ -427,8 +430,9 @@ fn paint_terminal(
         .floor()
         .clamp(2., 400.) as u16;
     view.update(cx, |view, cx| {
-        if view.size != (rows, cols) {
+        if view.viewport_size != (rows, cols) {
             view.clear_selection();
+            view.viewport_size = (rows, cols);
         }
         view.viewport = Some((bounds, cell_width, line_height));
         if view.size != (rows, cols)

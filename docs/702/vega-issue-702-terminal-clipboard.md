@@ -24,7 +24,9 @@ This is a source-level diagnosis, not a claim of native reproduction.
 - Input, restart, scrolling, viewport resize and a new terminal snapshot clear
   selection to prevent copying coordinates against changed content. Selection
   is confined to the visible snapshot; no cross-scrollback drag/autoscroll,
-  word/line multiclick selection or terminal mouse reporting is added.
+  word/line multiclick selection or terminal mouse reporting is added. Viewport
+  geometry is independent of PTY resize acknowledgement; exited-shell output
+  remains selectable after resizing, and copy never includes clipped rows/cells.
 - Paint each line background before glyphs. Both light and dark themes preserve
   default, ANSI/RGB and inverse backgrounds; selection uses the existing brand
   foreground/background token pair and overrides terminal attributes locally.
@@ -47,6 +49,7 @@ read-only review and final-head required Actions are required before merge.
 Native acceptance remains the user's manual check: forward/reverse multiline
 selection, Chinese/wide characters, selection vs whole-screen copy, Ctrl+C,
 plain/multiline pasted text with zsh inverse highlighting in light and dark
-mode, ANSI backgrounds and selection invalidation. CI does not prove native UI
+mode, ANSI backgrounds, selection invalidation and exited-shell selection after
+resizing. CI does not prove native UI
 or clipboard behavior. The source-level routing fix does not prove the user's
 original Cmd+C failure had only one cause.
