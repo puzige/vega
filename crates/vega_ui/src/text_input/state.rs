@@ -7,6 +7,7 @@ impl TextInput {
     pub fn new(cx: &mut Context<Self>, placeholder: impl Into<SharedString>, masked: bool) -> Self {
         Self {
             image_paste: false,
+            edit_menu: false,
             focus_handle: cx.focus_handle(),
             content: "".into(),
             content_revision: 0,
