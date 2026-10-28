@@ -25,6 +25,7 @@ mod branch_controller;
 mod codex_agent;
 mod commit_controller;
 mod diff_controller;
+mod loading_logo;
 mod model_catalog;
 mod native_subagents;
 mod ordinary_submission;
@@ -55,6 +56,7 @@ fn main() {
         app_notifications::init(cx);
         gpui_kit::init(cx);
         apply_appearance(None, cx);
+        vega_ui::interaction::install_system_motion(cx);
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
         cx.on_action(|_: &Quit, cx| cx.quit());
         let bounds = Bounds::centered(
@@ -73,7 +75,7 @@ fn main() {
                 window_min_size: Some(size(px(WINDOW_MIN_WIDTH), px(WINDOW_MIN_HEIGHT))),
                 ..Default::default()
             },
-            |_, cx| cx.new(startup_controller::StartupView::new),
+            |window, cx| cx.new(|cx| startup_controller::StartupView::new(window, cx)),
         );
         let window = match window {
             Ok(window) => window,
@@ -132,7 +134,6 @@ fn open_workspace(
         KeyBinding::new("cmd-b", ToggleSidebar, None),
     ]);
     vega_ui::init(cx);
-    vega_ui::interaction::install_system_motion(cx);
     vega_ui::sidebar::init(workspace, cx);
     automation_controller::startup_ready(cx);
     let mcp_settings = cx
