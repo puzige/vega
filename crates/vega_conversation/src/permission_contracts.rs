@@ -342,7 +342,7 @@ pub fn prepare_submission_permission(
     )
     .map_err(storage_error)?
     .ok_or(ConversationError::InvalidTaskIdentity)?;
-    let thread = crate::threads::thread_from_row(&row)?;
+    let mut thread = crate::threads::thread_from_row(&row)?;
     let fence = capture_fence(store, &row)?;
     let expected_permission = created.as_ref().unwrap_or(expected);
     if thread.model != submission.raw().model()
@@ -357,6 +357,20 @@ pub fn prepare_submission_permission(
         }
     {
         return Err(ConversationError::InvalidTaskIdentity);
+    }
+    if created.is_some() && thread.title.is_empty() {
+        let fallback = crate::automatic_titles::fallback_title(submission.raw().text());
+        if !fallback.is_empty()
+            && vega_store::threads::seed_auto_title(
+                &transaction,
+                &thread.id,
+                submission.user_message_id(),
+                &fallback,
+            )
+            .map_err(storage_error)?
+        {
+            thread.title = fallback;
+        }
     }
     let pending = worker
         .stage_permission_fence(fence)
