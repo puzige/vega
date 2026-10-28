@@ -149,15 +149,6 @@ impl SelectionDocumentBuilder {
         self.content.push_str(text);
     }
 
-    pub(crate) fn append_styled(
-        &mut self,
-        text: &str,
-        styled: StyledText,
-        id_prefix: &str,
-    ) -> gpui_kit::AnyElement {
-        self.append(text, styled, None, Vec::new(), id_prefix)
-    }
-
     pub(super) fn append_marker(
         &mut self,
         text: &str,
