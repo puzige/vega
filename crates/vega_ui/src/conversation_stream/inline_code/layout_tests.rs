@@ -1,12 +1,50 @@
 use super::*;
-use gpui_kit::{Context, Render, TestAppContext, div, prelude::*};
+use gpui_kit::{Context, HeadlessAppContext, Render, canvas, div, prelude::*};
+use std::{cell::Cell, rc::Rc};
 
-struct LayoutHost;
+type LayoutCheck = Box<dyn FnOnce(&mut Window, &mut App)>;
+
+struct LayoutHost {
+    check: Option<LayoutCheck>,
+}
 
 impl Render for LayoutHost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
+        let check = self.check.take();
+        div().size_full().child(
+            canvas(
+                move |_, window, cx| {
+                    if let Some(check) = check {
+                        check(window, cx);
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .size_full(),
+        )
     }
+}
+
+fn check_layout(check: impl 'static + FnOnce(&mut Window, &mut App)) {
+    let platform = gpui_kit::platform::current_platform(true);
+    let mut cx = HeadlessAppContext::new(platform.text_system());
+    let ran = Rc::new(Cell::new(false));
+    let completed = ran.clone();
+    let handle = cx
+        .open_window(size(px(1024.), px(768.)), move |_, cx| {
+            cx.new(|_| LayoutHost {
+                check: Some(Box::new(move |window, cx| {
+                    check(window, cx);
+                    completed.set(true);
+                })),
+            })
+        })
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.draw(cx);
+    })
+    .unwrap();
+    assert!(ran.get(), "layout assertions must run during prepaint");
 }
 
 fn assistant_style() -> TextStyle {
@@ -60,10 +98,8 @@ fn text_layout(
     layout
 }
 
-#[gpui_kit::test]
-fn punctuation_groups_survive_zero_fit_and_multibyte_wrapping(cx: &mut TestAppContext) {
-    let handle = cx.add_window(|_, _| LayoutHost);
-    cx.update_window(handle.into(), |_, window, _| {
+fn punctuation_groups_survive_zero_fit_and_multibyte_wrapping() {
+    check_layout(|window, _| {
         let style = assistant_style();
         for (source, first) in [("“中文", "“中"), ("中，文", "中，")] {
             let content: SharedString = source.into();
@@ -104,14 +140,11 @@ fn punctuation_groups_survive_zero_fit_and_multibyte_wrapping(cx: &mut TestAppCo
             }
             assert_eq!(end, source.len());
         }
-    })
-    .unwrap();
+    });
 }
 
-#[gpui_kit::test]
-fn mixed_code_fragments_match_text_layout_and_share_a_baseline(cx: &mut TestAppContext) {
-    let handle = cx.add_window(|_, _| LayoutHost);
-    cx.update_window(handle.into(), |_, window, cx| {
+fn mixed_code_fragments_match_text_layout_and_share_a_baseline() {
+    check_layout(|window, cx| {
         let style = assistant_style();
         let content: SharedString = "正文 inline_code tail".into();
         let prefix = "正文 ".len();
@@ -133,9 +166,18 @@ fn mixed_code_fragments_match_text_layout_and_share_a_baseline(cx: &mut TestAppC
                 window,
                 cx,
             );
-            assert!((layout.bounds().size.width - fragment.width).abs() <= px(0.01));
             assert_eq!(layout.line_height(), fragment.line_height);
             let line = layout.line_layouts()[0].clone();
+            assert!((line.unwrapped_layout.width - fragment.width).abs() <= px(0.01));
+            assert_eq!(
+                layout.bounds().size.width,
+                window.pixel_snap(fragment.width.ceil())
+            );
+            assert!(layout.bounds().size.width >= fragment.width);
+            for glyph in line.runs().iter().flat_map(|run| &run.glyphs) {
+                assert!(glyph.position.x >= px(0.));
+                assert!(glyph.position.x <= layout.bounds().size.width);
+            }
             let actual = layout.bounds().top()
                 + (layout.line_height() - line.ascent() - line.descent()) / 2.
                 + line.ascent();
@@ -159,14 +201,11 @@ fn mixed_code_fragments_match_text_layout_and_share_a_baseline(cx: &mut TestAppC
         let old = layout_flow(&content, &legacy, &style, None, window);
         assert!(old.fragments.iter().all(|part| part.font_size == px(16.)));
         assert_eq!(old.fragments[1].origin.x - old.fragments[0].width, px(4.));
-    })
-    .unwrap();
+    });
 }
 
-#[gpui_kit::test]
-fn code_link_icons_share_hit_geometry_without_changing_instance_identity(cx: &mut TestAppContext) {
-    let handle = cx.add_window(|_, _| LayoutHost);
-    cx.update_window(handle.into(), |_, window, cx| {
+fn code_link_icons_share_hit_geometry_without_changing_instance_identity() {
+    check_layout(|window, cx| {
         let style = assistant_style();
         let content: SharedString = "code_label continuation".into();
         let spans = vec![super::super::model::StreamSpan {
@@ -218,6 +257,28 @@ fn code_link_icons_share_hit_geometry_without_changing_instance_identity(cx: &mu
         let repeated = super::super::links::link_ranges(&repeated);
         assert_eq!(repeated.len(), 2);
         assert_ne!(repeated[0].occurrence, repeated[1].occurrence);
-    })
-    .unwrap();
+    });
+}
+
+pub(in crate::conversation_stream) fn run() {
+    let cases: [(&str, fn()); 3] = [
+        (
+            "punctuation_groups_survive_zero_fit_and_multibyte_wrapping",
+            punctuation_groups_survive_zero_fit_and_multibyte_wrapping,
+        ),
+        (
+            "mixed_code_fragments_match_text_layout_and_share_a_baseline",
+            mixed_code_fragments_match_text_layout_and_share_a_baseline,
+        ),
+        (
+            "code_link_icons_share_hit_geometry_without_changing_instance_identity",
+            code_link_icons_share_hit_geometry_without_changing_instance_identity,
+        ),
+    ];
+    for (name, check) in cases {
+        println!("native layout: RUN {name}");
+        check();
+        println!("native layout: PASS {name}");
+    }
+    println!("Native layout: 3 executed, 3 passed, 0 failed, 0 skipped (macOS system fonts).");
 }

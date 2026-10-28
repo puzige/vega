@@ -310,6 +310,12 @@ mod text_cache;
 use run_activity::{RunActivityChild, RunActivityGroup, RunActivityStatus};
 mod autolinks;
 mod inline_code;
+
+#[cfg(all(test, feature = "assistant-layout-regressions"))]
+pub(crate) fn run_assistant_layout_regressions() {
+    inline_code::layout_tests::run();
+}
+
 pub(crate) mod links;
 mod selection;
 mod selection_menu;

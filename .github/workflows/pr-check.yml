@@ -65,6 +65,25 @@ jobs:
           python3 scripts/prepare_computer_use_tests.py
           python3 -m unittest discover -s scripts/tests -v
 
+      - name: Native assistant layout development regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifacts="$RUNNER_TEMP/assistant-layout-artifacts.jsonl"
+          cargo test -p vega_ui --test assistant_layout_regressions --features assistant-layout-regressions --no-run --message-format json > "$artifacts"
+          executable=$(python3 - "$artifacts" <<'PY'
+          import json
+          import sys
+          artifacts = [json.loads(line) for line in open(sys.argv[1])]
+          executables = [item["executable"] for item in artifacts if item.get("reason") == "compiler-artifact" and item.get("target", {}).get("name") == "assistant_layout_regressions" and item.get("executable")]
+          if len(executables) != 1:
+              raise SystemExit(f"expected one native layout executable, found {len(executables)}")
+          print(executables[0])
+          PY
+          )
+          "$executable" | tee "$RUNNER_TEMP/assistant-layout-results.txt"
+          cat "$RUNNER_TEMP/assistant-layout-results.txt" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Test the workspace
         shell: bash
         run: |
