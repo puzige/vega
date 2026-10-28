@@ -1293,9 +1293,33 @@ impl ToolCard {
             ToolActivityState::Cancelled => vega_i18n::t("ui.command_cancelled_en"),
             ToolActivityState::Failed => vega_i18n::t("ui.command_failed_en"),
         };
-        let Some(ToolCardInputProjection::Bash { command }) = &self.input else {
+        let Some(ToolCardInputProjection::Bash {
+            command,
+            description,
+        }) = &self.input
+        else {
             return action.into();
         };
+        if let Some(description) = description {
+            let status_key = match self.activity_state() {
+                ToolActivityState::Success => return description.clone(),
+                ToolActivityState::Active if self.status != ToolCallStatus::PendingApproval => {
+                    return description.clone();
+                }
+                ToolActivityState::Active => "ui.awaiting_approval_to_run",
+                ToolActivityState::Failed => "ui.command_failed",
+                ToolActivityState::Cancelled => "ui.command_cancelled",
+                ToolActivityState::Rejected => "ui.command_rejected",
+                ToolActivityState::Superseded => "ui.not_run_after_takeover",
+            };
+            return vega_i18n::t_args(
+                "ui.command_status_description",
+                &[
+                    ("status", vega_i18n::t(status_key)),
+                    ("description", description),
+                ],
+            );
+        }
         vega_i18n::t_args(
             "ui.command_action",
             &[("action", action), ("command", &compact_object(command))],
@@ -1375,7 +1399,7 @@ impl ToolCard {
 
     fn detail(&self) -> Option<ToolDetail> {
         match &self.input {
-            Some(ToolCardInputProjection::Bash { command }) => Some(ToolDetail {
+            Some(ToolCardInputProjection::Bash { command, .. }) => Some(ToolDetail {
                 title: Some(self.bash_detail_title()),
                 command: Some(command.clone()),
                 output: if self.output_rows.is_empty()

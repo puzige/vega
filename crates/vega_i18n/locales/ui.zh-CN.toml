@@ -161,6 +161,7 @@
 "ui.command_rejected_en" = "命令已拒绝："
 "ui.command_rejected_use_a_non_empty_command_and" = "命令已拒绝：命令不能为空，超时须为正数秒或 null（使用默认值）"
 "ui.command_running_duration" = "正在运行命令，已用 {duration}"
+"ui.command_status_description" = "{status} · {description}"
 "ui.command_success_duration" = "已运行命令，用时 {duration}"
 "ui.command_superseded_duration" = "接管后未执行，已用 {duration}"
 "ui.commit" = "提交（⌘↵）"
