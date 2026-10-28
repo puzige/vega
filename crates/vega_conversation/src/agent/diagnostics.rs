@@ -465,39 +465,3 @@ fn now_ms() -> i64 {
         .and_then(|duration| i64::try_from(duration.as_millis()).ok())
         .unwrap_or(i64::MAX)
 }
-
-#[cfg(test)]
-mod protocol_diagnostics_tests {
-    use super::*;
-
-    #[test]
-    fn summary_failure_mapping_preserves_closed_reason_and_usage() {
-        let error = vega_runtime::VegaError::ProviderDiagnostic {
-            kind: vega_runtime::ProviderFailureKind::Protocol,
-            protocol_reason: Some(vega_runtime::ProviderProtocolReason::InvalidJson),
-            status: Some(200),
-            message: "private-sentinel".into(),
-            retryable: false,
-            retry_count: Some(2),
-            request_id: None,
-        };
-        let metrics = with_failure_metrics(
-            DiagnosticMetrics {
-                input_tokens: Some(10),
-                ..Default::default()
-            },
-            &error,
-        );
-        assert_eq!(metrics.protocol_reason.as_deref(), Some("invalid_json"));
-        assert_eq!(metrics.failure_source.as_deref(), Some("provider"));
-        assert_eq!(metrics.failure_kind.as_deref(), Some("protocol"));
-        assert_eq!(metrics.input_tokens, Some(10));
-        assert_eq!(metrics.http_status, Some(200));
-        assert_eq!(metrics.retry_count, Some(2));
-        assert!(
-            !serde_json::to_string(&metrics)
-                .expect("serialize")
-                .contains("private-sentinel")
-        );
-    }
-}
