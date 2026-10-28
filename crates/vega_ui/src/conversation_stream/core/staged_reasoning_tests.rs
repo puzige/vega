@@ -39,6 +39,13 @@ fn staged_menu_keeps_current_submission_and_routes_edits_to_selected_model(
     cx: &mut TestAppContext,
 ) {
     let stream = cx.new(|cx| ConversationStream::new(thread(), cx));
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured = events.clone();
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&stream, move |_, event: &ComposerDefaultsRequested, _| {
+            captured.borrow_mut().push(event.defaults.clone());
+        })
+    });
     stream.update(cx, |stream, cx| {
         stream.apply_reasoning_profile(profile("a", "low"), cx);
         stream.apply_selector_reasoning_profile(Some(profile("a", "low")), cx);
@@ -73,6 +80,31 @@ fn staged_menu_keeps_current_submission_and_routes_edits_to_selected_model(
         stream.open_model_picker_slider(cx);
         assert_eq!(stream.thinking_slider.read(cx).choice_name(), Some("high"));
     });
+    assert_eq!(events.borrow().len(), 1);
+    assert_eq!(events.borrow()[0].model, "b");
+    assert_eq!(events.borrow()[0].thinking, "high");
+    assert_eq!(events.borrow()[0].reasoning.as_ref().unwrap().model, "b");
+    stream.update(cx, |stream, cx| {
+        stream.apply_selector_reasoning_profile(Some(profile("b", "medium")), cx);
+        assert_eq!(
+            stream.thinking_slider.read(cx).choice_name(),
+            Some("medium")
+        );
+        stream.apply_thinking_tier_selected(
+            &ThinkingTierSelected {
+                model: "b".into(),
+                choice: "high".into(),
+            },
+            cx,
+        );
+        stream.apply_selector_reasoning_profile(None, cx);
+        assert!(!stream.thinking_slider.read(cx).has_tiers());
+        assert_eq!(
+            stream.composer_defaults.reasoning.as_ref().unwrap().model,
+            "a"
+        );
+    });
+    assert_eq!(events.borrow().len(), 2);
 }
 
 #[gpui_kit::test]
