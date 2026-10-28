@@ -41,6 +41,10 @@ const fn rgba_alpha(hex: u32, a: f32) -> Rgba {
 /// shipped palettes are [`LIGHT`] and [`DARK`].
 #[derive(Debug, Clone, Copy)]
 pub struct ThemeColors {
+    pub context_tooltip_bg: Rgba,
+    pub context_tooltip_border: Rgba,
+    pub context_tooltip_primary: Rgba,
+    pub context_tooltip_secondary: Rgba,
     pub conversation_marker: Rgba,
     pub conversation_clock: Rgba,
     pub conversation_stage: Rgba,
@@ -98,6 +102,10 @@ pub struct ThemeColors {
 
 /// Light palette (UI spec §2, "Light" column).
 pub const LIGHT: ThemeColors = ThemeColors {
+    context_tooltip_bg: rgba(0x1B1E1FFF),
+    context_tooltip_border: rgba(0x303334FF),
+    context_tooltip_primary: rgba(0xFFFFFFFF),
+    context_tooltip_secondary: rgba(0xA1A1A1FF),
     conversation_marker: rgba(0xD2D3D3FF),
     conversation_clock: rgba(0x8E8F90FF),
     conversation_stage: rgba(0xA7A8A9FF),
@@ -141,6 +149,10 @@ pub const LIGHT: ThemeColors = ThemeColors {
 
 /// Dark palette (UI spec §2, "Dark" column).
 pub const DARK: ThemeColors = ThemeColors {
+    context_tooltip_bg: rgba(0x1B1E1FFF),
+    context_tooltip_border: rgba(0x303334FF),
+    context_tooltip_primary: rgba(0xFFFFFFFF),
+    context_tooltip_secondary: rgba(0xA1A1A1FF),
     conversation_marker: rgba(0x383838FF),
     conversation_clock: rgba(0xABABABFF),
     conversation_stage: rgba(0x828282FF),
@@ -382,8 +394,12 @@ impl Layout {
     pub const SCREENSHOT_PREVIEW_MARGIN: f32 = 24.0;
     pub const ICON_SIZE: f32 = 16.0;
     pub const CONTEXT_USAGE_SIZE: f32 = 28.0;
-    pub const CONTEXT_USAGE_WIDTH: f32 = 320.0;
+    pub const CONTEXT_USAGE_WIDTH: f32 = 178.0;
     pub const CONTEXT_USAGE_PADDING: f32 = 16.0;
+    pub const CONTEXT_USAGE_VERTICAL_PADDING: f32 = 4.0;
+    pub const CONTEXT_USAGE_LINE_HEIGHT: f32 = 20.0;
+    pub const CONTEXT_USAGE_RADIUS: f32 = 16.0;
+    pub const CONTEXT_USAGE_GAP: f32 = 6.0;
     pub const CONVERSATION_NAVIGATION_GUTTER: f32 = 24.0;
     pub const CONVERSATION_PADDING: f32 = 32.0;
     pub const MESSAGE_ANCHOR_TRACK_WIDTH: f32 = 2.0;

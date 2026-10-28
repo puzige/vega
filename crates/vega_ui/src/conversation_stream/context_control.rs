@@ -112,9 +112,6 @@ impl ConversationStream {
         self.context_control.next_operation_id = next;
         self.context_control.retired_through = next;
         self.context_usage_trigger_hovered = false;
-        self.context_usage_tooltip_hovered = false;
-        self.context_usage_open = false;
-        self.context_usage_dismissed = false;
     }
 
     /// Whether context preparation/save currently excludes a competing submit.
@@ -523,7 +520,6 @@ impl ConversationStream {
             && self.context_control.last_call_total.is_none()
         {
             self.context_usage_trigger_hovered = false;
-            self.context_usage_tooltip_hovered = false;
         }
     }
 

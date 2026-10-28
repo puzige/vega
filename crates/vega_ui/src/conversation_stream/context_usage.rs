@@ -44,24 +44,51 @@ impl ContextUsageDisplay {
         })
     }
 
-    pub(crate) fn usage_label(&self) -> &'static str {
-        vega_i18n::t("ui.last_call_total_configured_input_limit")
-    }
-
     pub(crate) fn compact_usage_label(&self) -> String {
         let Some(total) = self.last_call_total else {
             return vega_i18n::t("ui.no_data_yet").into();
         };
         match self.model_input_limit {
             Some(limit) => vega_i18n::t_args(
-                "ui.token_usage",
+                "ui.context_window_tokens_used",
                 &[
                     ("used", &compact_token_count(total)),
                     ("limit", &compact_token_count(limit)),
                 ],
             ),
-            None => vega_i18n::t_args("ui.token_count", &[("tokens", &compact_token_count(total))]),
+            None => vega_i18n::t_args(
+                "ui.context_window_used",
+                &[("tokens", &compact_token_count(total))],
+            ),
         }
+    }
+
+    pub(crate) fn tooltip_status(&self) -> String {
+        match self.last_call_total.zip(self.model_input_limit) {
+            Some((used, limit)) => {
+                let percent = ((u128::from(used) * 100 + u128::from(limit) / 2)
+                    / u128::from(limit))
+                .to_string();
+                vega_i18n::t_args("ui.context_window_full", &[("percent", &percent)])
+            }
+            None if self.last_call_total.is_none() => vega_i18n::t("ui.no_data_yet").into(),
+            None => vega_i18n::t("ui.capacity_not_configured").into(),
+        }
+    }
+
+    pub(crate) fn tooltip_usage(&self) -> String {
+        if self.last_call_total.is_some() {
+            return self.compact_usage_label();
+        }
+        self.model_input_limit.map_or_else(
+            || vega_i18n::t("ui.capacity_not_configured").into(),
+            |limit| {
+                vega_i18n::t_args(
+                    "ui.context_window_capacity",
+                    &[("tokens", &compact_token_count(limit))],
+                )
+            },
+        )
     }
 
     pub(crate) fn last_call_label(&self) -> String {

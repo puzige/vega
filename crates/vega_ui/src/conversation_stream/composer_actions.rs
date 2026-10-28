@@ -281,10 +281,7 @@ impl ConversationStream {
     pub(crate) fn close_composer_popovers(&mut self, cx: &mut Context<Self>) {
         self.pending_ui.menu = None;
         self.context_control.open = false;
-        self.context_usage_open = false;
-        self.context_usage_dismissed = true;
         self.context_usage_trigger_hovered = false;
-        self.context_usage_tooltip_hovered = false;
         self.actions.close_menu();
         self.actions.slash = None;
         self.model_picker_level = ModelPickerLevel::Closed;
