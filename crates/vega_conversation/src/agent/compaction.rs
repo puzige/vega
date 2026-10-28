@@ -1748,7 +1748,7 @@ impl ConversationCompactionHook<'_> {
         let full = self.full_on_threshold
             && request.trigger == ContextCompactionTrigger::Threshold
             && self.partial_selection.is_none();
-        let planned_projection = if let Some(selection) = &self.partial_selection {
+        let mut planned_projection = if let Some(selection) = &self.partial_selection {
             Some(projection::partial_plan(
                 &source,
                 checkpoint.as_ref(),
@@ -1855,6 +1855,13 @@ impl ConversationCompactionHook<'_> {
                 request.trigger == ContextCompactionTrigger::Manual,
             )?
         };
+        let ordered_tail = planned_projection.is_none();
+        if ordered_tail {
+            let planned =
+                projection::ordered_prefix_plan(&source, checkpoint.as_ref(), projection_plan)?;
+            projection_plan = planned.plan.clone();
+            planned_projection = Some(planned);
+        }
         if matches!(
             request.trigger,
             ContextCompactionTrigger::InputOverflow { .. } | ContextCompactionTrigger::HardLimit
@@ -1926,7 +1933,8 @@ impl ConversationCompactionHook<'_> {
                 }
             })
             .ok_or_else(|| failure(context_error(ContextRuntimeError::InvalidProjection), None))?;
-        let live = if planned_projection.is_some() {
+        let cold_ordered_tail = ordered_tail && request.source_owner_id.is_none();
+        let live = if !ordered_tail || cold_ordered_tail {
             Vec::new()
         } else {
             vec![super::pipeline::LiveSourceRange {
@@ -1950,9 +1958,24 @@ impl ConversationCompactionHook<'_> {
                 .map_err(|error| VegaError::Context(error.into()))
         };
         let empty_projection = project("").map_err(|error| failure(error, None))?;
-        if planned_projection.is_some() {
+        if planned_projection.is_some() && (!ordered_tail || cold_ordered_tail) {
             replay_cold_prefix_messages = empty_projection.len();
             replay_interleaved_user_boundary = interleaved_policy.then_some(empty_projection.len());
+        } else if ordered_tail {
+            let prefix_len = empty_projection
+                .len()
+                .checked_sub(suffix.len())
+                .ok_or_else(|| {
+                    failure(context_error(ContextRuntimeError::InvalidProjection), None)
+                })?;
+            replay_cold_prefix_messages = if interleaved_policy && retained_user.is_none() {
+                empty_projection.len()
+            } else {
+                prefix_len
+            };
+            replay_interleaved_user_boundary = interleaved_policy.then_some(
+                retained_user.map_or(replay_cold_prefix_messages, |index| prefix_len + index),
+            );
         }
         let fixed = estimate_projection(&empty_projection)
             .map_err(|error| failure(error, None))?

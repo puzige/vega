@@ -161,7 +161,13 @@
 - Last-resort 只在明确允许的 full／手动／typed PTL／本地硬阻塞路径使用；普通 API 错误、partial、precompute 和媒体错误不能获得丢弃资格。最多三次完整最旧组截断，记录精确 omitted，不把省略说成摘要覆盖；保留尚未处理的用户请求和至少一组。共享 32 次摘要请求、600 秒操作／300 秒空闲界限不放宽。一次相邻 deeper-pass 只由 fresh typed PTL 成功且重建至少三组授予；重试再 PTL 时消费，不能无限重置。deeper 使用更少的尾部组且最终必须更小，无法形成安全更深边界则失败。
 - 必要开发回归：full／manual 区别、partial→full 的摘要顺序、空保留后的追加／reload、同偏移不同 response、typed-gap/no-gap 输入前进、完整组遗漏与审计不变、取消/失败 usage，以及相邻 deeper 的一次性与部分输出禁止恢复。当前本节为待实现合同，不表示云端已通过。
 
+### Reactive 有序规划实现约束
+
+保尾候选从当前活动 fragments 顺序切分，不从完整审计历史重新构建前缀。Source 的切分点复用 SourceCursor 的完整 response 校验；Summary／PreviousSummary 在压缩侧原位进入摘要输入，在保留侧保持引用。既有 covered 和 omitted 不丢失、不互换。候选最终安装继续经过完整分区校验；不得以全源 prefix_plan 覆盖既有 partial 分区。规划、摘要重试与最后恢复共享一次操作的取消、期限和调用计数。
+
 ### 集成与终态回归补充
+
+Full 未完成尾部回归区分两道拒绝边界：live 请求中无法归属到完整 response 的尾部 assistant 文本先被来源校验拒绝（SourceChanged）；精确 source version/fingerprint 的 fenced 请求进入 full 规划后，被不完整尾部拒绝（InvalidProjection）。两条路径均不得调用摘要 provider、安装 checkpoint 或改变原始审计。`f51230683de9232d25b0d8095a1011b68be5c064` 的 Actions `40648493811` 执行 42 项、41 通过、1 失败，Clippy 通过；失败用例以 live 请求断言规划层错误，修正开发夹具覆盖两层，不放宽生产来源栅栏或接受不完整响应。
 
 Full 首批 `2a5fa2ad209aef326dad1e06444791a3f15acf9a` 独立审查发现 `PersistenceActorConfig` 移动后读取 delegated 标志的静态编译阻断；最小修正是在移动前冻结该布尔值，不克隆整份配置。该提交的 PR 因 master `29bea083a7d955da7c64d96101ae8f4b8f1e2b12` 的 UI 用量入口增量出现冲突，未产生 Actions run；整合保留 master 的无有效用量时隐藏入口规则及本卡 partial 菜单／状态清理，不撤销 #720/#722。修正与 rebase 必须在新 head 重新验证。
 

@@ -409,6 +409,136 @@ pub(super) fn full_plan(
     })
 }
 
+pub(super) fn ordered_prefix_plan(
+    source: &ContextSource,
+    checkpoint: Option<&vega_store::context_compaction::ContextCheckpoint>,
+    mut plan: ProjectionPlan,
+) -> Result<PlannedProjection, ContextCompactionFailure> {
+    let invalid = || failure(context_error(ContextRuntimeError::InvalidProjection), None);
+    let boundary = plan
+        .covered
+        .first()
+        .and_then(|range| range.through.clone())
+        .ok_or_else(invalid)?;
+    let prior = previous_plan(source, checkpoint)?;
+    let original = prior.as_ref().map_or_else(
+        || {
+            vec![ProjectionFragment::Source {
+                range: SourceRange {
+                    after: None,
+                    through: None,
+                },
+            }]
+        },
+        |previous| previous.fragments.clone(),
+    );
+    plan.covered = prior
+        .as_ref()
+        .map_or_else(Vec::new, |previous| previous.covered.clone());
+    plan.omitted = prior
+        .as_ref()
+        .map_or_else(Vec::new, |previous| previous.omitted.clone());
+    let key = |cursor: &SourceCursor| match &cursor.assistant {
+        Some(response) => (
+            cursor.message_seq,
+            false,
+            response.tool_seq,
+            response.text_bytes,
+        ),
+        None => (cursor.message_seq, true, 0, 0),
+    };
+    let mut reached = false;
+    let mut retained = Vec::new();
+    let mut history = Vec::new();
+    for fragment in original {
+        if let ProjectionFragment::Source { range } = &fragment {
+            if range
+                .after
+                .as_ref()
+                .is_some_and(|after| key(after) >= key(&boundary))
+            {
+                reached = true;
+            }
+            if !reached {
+                let mut prefix = range.clone();
+                if range
+                    .through
+                    .as_ref()
+                    .is_none_or(|through| key(through) > key(&boundary))
+                {
+                    prefix.through = Some(boundary.clone());
+                    retained.push(ProjectionFragment::Source {
+                        range: SourceRange {
+                            after: Some(boundary.clone()),
+                            through: range.through.clone(),
+                        },
+                    });
+                    reached = true;
+                } else if range.through.as_ref() == Some(&boundary) {
+                    reached = true;
+                }
+                prefix.validate_terminal(source).map_err(|_| invalid())?;
+                history.extend(
+                    super::super::pipeline::history_from_context_source(
+                        &prefix.project(source).map_err(|_| invalid())?,
+                        "__summary__",
+                        None,
+                    )
+                    .map_err(|_| invalid())?,
+                );
+                plan.covered.push(prefix);
+                continue;
+            }
+        }
+        if reached {
+            retained.push(match fragment {
+                ProjectionFragment::Summary => ProjectionFragment::PreviousSummary {
+                    checkpoint_id: checkpoint.ok_or_else(invalid)?.id,
+                },
+                other => other,
+            });
+            continue;
+        }
+        match fragment {
+            ProjectionFragment::Summary => {
+                history.push(super::super::pipeline::historical_summary_message(
+                    &checkpoint.ok_or_else(invalid)?.summary,
+                ))
+            }
+            ProjectionFragment::PreviousSummary { checkpoint_id } => {
+                history.push(super::super::pipeline::historical_summary_message(
+                    checkpoint
+                        .and_then(|previous| previous.referenced_summaries.get(&checkpoint_id))
+                        .ok_or_else(invalid)?,
+                ))
+            }
+            ProjectionFragment::TaskReference { message_id } => history.push(
+                super::super::pipeline::historical_task_reference(source, &message_id)
+                    .map_err(|_| invalid())?,
+            ),
+            ProjectionFragment::HistoricalImages { through_seq } => history.extend(
+                super::super::pipeline::historical_image_projection(source, through_seq)
+                    .map_err(|_| invalid())?,
+            ),
+            ProjectionFragment::Source { .. } => return Err(invalid()),
+        }
+    }
+    if history.is_empty() || !reached {
+        return Err(failure(
+            context_error(ContextRuntimeError::NoCompactablePrefix),
+            None,
+        ));
+    }
+    plan.fragments
+        .retain(|fragment| !matches!(fragment, ProjectionFragment::Source { .. }));
+    plan.fragments.extend(retained);
+    plan.validate_install(source).map_err(|_| invalid())?;
+    Ok(PlannedProjection {
+        plan,
+        summary_history: history,
+    })
+}
+
 pub(super) fn prefix_plan(
     source: &ContextSource,
     covered_seq: u64,
