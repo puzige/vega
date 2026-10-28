@@ -2,6 +2,7 @@ use super::*;
 
 mod arming_tests;
 mod consume_tests;
+mod diagnostics_tests;
 mod registry_tests;
 use std::sync::Mutex;
 use vega_store::context_compaction::{latest_checkpoint, load_source};

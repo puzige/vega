@@ -41,7 +41,7 @@ async fn explicit_and_model_skill_compaction_suppress_same_owner_precomputation(
         let hook = RecordingHook::new(trace.clone(), false, false);
         let mut request = request(hook.clone());
         request.history.extend([
-            ChatMessage::new(ChatRole::Assistant, "a".repeat(300_000)),
+            ChatMessage::new(ChatRole::Assistant, "a".repeat(220_000)),
             ChatMessage::new(ChatRole::User, "Continue the task"),
         ]);
         request.tool_config = request.tool_config.with_skill_run(
@@ -80,6 +80,27 @@ async fn explicit_and_model_skill_compaction_suppress_same_owner_precomputation(
         )
         .await?;
         assert!(!outcome.failed);
+        assert!(outcome.events.iter().any(|event| matches!(event,
+            RuntimeEvent::ContextAccountingUpdated(decision)
+                if decision.stage == vega_runtime::ContextAccountingStage::SkillProspect
+                    && decision.predicted_input > decision.input_budget
+        )));
+        if !explicit {
+            let decision = outcome
+                .events
+                .iter()
+                .find_map(|event| match event {
+                    RuntimeEvent::ContextAccountingUpdated(decision)
+                        if decision.stage
+                            == vega_runtime::ContextAccountingStage::PrimaryPreflight =>
+                    {
+                        Some(decision)
+                    }
+                    _ => None,
+                })
+                .ok_or("primary preflight")?;
+            assert!(decision.predicted_input < 80_000);
+        }
         assert_eq!(hook.compacted.lock().unwrap().len(), 1);
         assert!(hook.armed.lock().unwrap().is_empty());
         assert!(outcome.events.iter().any(|event| matches!(event, RuntimeEvent::SkillActivation { audit, .. } if audit.status == "loaded")));

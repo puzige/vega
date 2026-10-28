@@ -1691,10 +1691,22 @@ impl ConversationCompactionHook<'_> {
                 Ok(collection) => &collection.metrics,
                 Err(problem) => &problem.metrics,
             };
-            accounting
-                .record(stage_number, metrics)
-                .await
-                .map_err(|error| failure_with_usages(error, usages, *usage_complete))?;
+            if let Err(error) = accounting.record(stage_number, metrics).await {
+                if let Some(diagnostics) = &self.diagnostics {
+                    diagnostics.stage_event(
+                        &attempt_id,
+                        vega_store::run_diagnostics::DiagnosticPhase::ContextSummary,
+                        vega_store::run_diagnostics::DiagnosticState::Failed,
+                        super::diagnostics::failure_code(&error),
+                        started_at,
+                        super::diagnostics::with_failure_metrics(
+                            summary_store_metrics(metrics),
+                            &error,
+                        ),
+                    );
+                }
+                return Err(failure_with_usages(error, usages, *usage_complete));
+            }
         }
         match collection {
             Ok(collection) => {
@@ -1707,11 +1719,22 @@ impl ConversationCompactionHook<'_> {
                     Some(reader) => match reader() {
                         Ok(credentials) => credentials,
                         Err(()) => {
-                            return Err(failure_with_usages(
-                                VegaError::CredentialCheckUnavailable,
-                                usages,
-                                *usage_complete,
-                            ));
+                            let error = VegaError::CredentialCheckUnavailable;
+                            if let Some(diagnostics) = &self.diagnostics {
+                                let metrics = super::diagnostics::with_failure_metrics(
+                                    summary_store_metrics(&collection.metrics),
+                                    &error,
+                                );
+                                diagnostics.stage_event(
+                                    &attempt_id,
+                                    vega_store::run_diagnostics::DiagnosticPhase::ContextSummary,
+                                    vega_store::run_diagnostics::DiagnosticState::Failed,
+                                    super::diagnostics::failure_code(&error),
+                                    started_at,
+                                    metrics,
+                                );
+                            }
+                            return Err(failure_with_usages(error, usages, *usage_complete));
                         }
                     },
                     None => Vec::new(),

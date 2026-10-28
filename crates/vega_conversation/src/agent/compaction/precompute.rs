@@ -227,7 +227,66 @@ impl PreparedContextPrecompute {
         })
     }
 
-    pub(super) async fn generate(mut self, cancel: CancellationToken) -> Result<(), VegaError> {
+    pub(super) async fn generate(self, cancel: CancellationToken) -> Result<(), VegaError> {
+        use super::super::diagnostics::{DiagnosticsContext, DiagnosticsWriter};
+        use vega_store::run_diagnostics::DiagnosticState;
+        let accounting = self.accounting.clone();
+        let writer = Arc::new(DiagnosticsWriter::for_background_compaction(
+            SUMMARY_MAX_STAGES,
+        ));
+        let context = DiagnosticsContext {
+            writer: writer.clone(),
+            thread_id: accounting.thread_id.clone(),
+            run_id: accounting.generation.clone(),
+            root_attempt_id: ulid::Ulid::generate().to_string(),
+        };
+        let started = std::time::Instant::now();
+        writer.root_event(
+            &context.thread_id,
+            &context.run_id,
+            &context.root_attempt_id,
+            DiagnosticState::Started,
+            (None, Default::default()),
+            started,
+        );
+        let result = self
+            .generate_with_diagnostics(cancel, context.clone())
+            .await;
+        let (state, code, metrics) = match &result {
+            Ok(()) => (DiagnosticState::Succeeded, None, Default::default()),
+            Err(VegaError::Cancelled) => (DiagnosticState::Cancelled, None, Default::default()),
+            Err(error) => (
+                DiagnosticState::Failed,
+                super::super::diagnostics::failure_code(error),
+                super::super::diagnostics::failure_metrics(error),
+            ),
+        };
+        writer.root_event(
+            &context.thread_id,
+            &context.run_id,
+            &context.root_attempt_id,
+            state,
+            (code, metrics),
+            started,
+        );
+        let flushed = tokio::task::spawn_blocking(move || {
+            let store = accounting.open()?;
+            writer
+                .flush_background_compaction(&store)
+                .map_err(|_| context_error(ContextRuntimeError::SourceChanged))
+        })
+        .await;
+        if !matches!(flushed, Ok(Ok(()))) {
+            tracing::error!("context precompute diagnostics could not be persisted");
+        }
+        result
+    }
+
+    async fn generate_with_diagnostics(
+        mut self,
+        cancel: CancellationToken,
+        diagnostics: super::super::diagnostics::DiagnosticsContext,
+    ) -> Result<(), VegaError> {
         let captured = self
             .captured
             .precompute
@@ -270,6 +329,7 @@ impl PreparedContextPrecompute {
             hook.summary_variant = self.summary_variant;
             hook.summary_requirements = self.summary_requirements;
             hook.stage_accounting = Some(accounting.clone());
+            hook.diagnostics = Some(diagnostics);
             let pre_tokens = self.request.estimate.input_tokens;
             let generated = hook
                 .generate_captured(

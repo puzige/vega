@@ -178,6 +178,17 @@ fn request(hook: Arc<RecordingHook>) -> AgentRequest {
     }
 }
 
+fn fixture_wire(request: &AgentRequest) -> Vec<ChatMessage> {
+    let mut system = ChatMessage::new(ChatRole::System, &request.system_prompt);
+    system.attach_replay_frame(vega_runtime::ReplayFrame::new(
+        request.history.len() + 1,
+        vega_runtime::ReasoningReplayPolicy::Unknown,
+    ));
+    std::iter::once(system)
+        .chain(request.history.iter().cloned())
+        .collect()
+}
+
 fn sink_event(trace: &Trace, event: &RuntimeEvent) {
     let name = match event {
         RuntimeEvent::TextDelta(_) => "delta",
@@ -323,6 +334,16 @@ async fn preflight_arms_only_after_micro_and_never_for_the_initial_single_user()
                 .history
                 .push(ChatMessage::new(ChatRole::User, "Continue"));
         }
+        let definitions = vega_runtime::tool_definitions(request.tool_config.run_mode);
+        let mut projected = fixture_wire(&request);
+        if !initial {
+            apply_micro_compaction(&mut projected[1..], &micro_targets())?;
+        }
+        let input = estimate_wire_context(&projected, &definitions)?.input_tokens;
+        let budget = ContextBudget::new(input + 25_000, 10_000, true)?;
+        assert!(input >= budget.precompute_tokens()?);
+        assert!(input < budget.trigger_tokens()?);
+        request.context_budget = Some(budget);
         let provider =
             ScriptedProvider::new(trace.clone(), vec![response(1000, StopReason::Length)]);
         let tools = vega_tools::Tools::new(std::env::current_dir()?)?;
@@ -434,6 +455,16 @@ async fn automatic_and_reactive_attempts_suppress_arming_until_a_new_steering_ow
             ),
             ChatMessage::new(ChatRole::User, "Continue the task"),
         ]);
+        let input = estimate_wire_context(
+            &fixture_wire(&request),
+            &vega_runtime::tool_definitions(request.tool_config.run_mode),
+        )?;
+        if case != "overflow" {
+            let budget = ContextBudget::new(input.input_tokens + 16_000, 10_000, true)?;
+            assert_eq!(budget.check(input)?, vega_runtime::ContextCheck::Triggered);
+            request.context_budget = Some(budget);
+        }
+        let final_input = request.context_budget.unwrap().precompute_tokens()? + 1000;
         let mut replies = Vec::new();
         if case == "overflow" {
             replies.push(vec![Err(VegaError::Provider {
@@ -456,7 +487,7 @@ async fn automatic_and_reactive_attempts_suppress_arming_until_a_new_steering_ow
                 )))));
             replies.push(response(1000, StopReason::End));
         }
-        replies.push(response(81_000, StopReason::End));
+        replies.push(response(final_input, StopReason::End));
         let provider = ScriptedProvider::new(trace.clone(), replies);
         let tools = vega_tools::Tools::new(std::env::current_dir()?)?;
         let outcome = run_agent_with_sink(
