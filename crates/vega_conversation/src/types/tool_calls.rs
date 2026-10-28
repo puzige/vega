@@ -401,7 +401,7 @@ impl ToolCardInputProjection {
     /// Exact permission target for mutating cards.
     pub fn permission_target(&self) -> Option<&str> {
         match self {
-            Self::Bash { command } => Some(command),
+            Self::Bash { command, .. } => Some(command),
             Self::Write { path, .. } | Self::Edit { path, .. } => Some(path),
             Self::Mcp {
                 permission_target, ..
