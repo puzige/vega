@@ -1822,7 +1822,10 @@ fn detail_copy_region(
     let Some(source) = source else {
         return content;
     };
+    let group: gpui_kit::SharedString = format!("{id}-region").into();
     div()
+        .id(group.clone())
+        .group(group.clone())
         .w_full()
         .min_w_0()
         .flex_shrink_0()
@@ -1832,6 +1835,7 @@ fn detail_copy_region(
         .child(div().min_w_0().flex_1().child(content))
         .child(crate::conversation_stream::tool_text_copy_button(
             id.into(),
+            group,
             source,
             label,
             *colors,

@@ -63,6 +63,7 @@ impl CopySource {
 
 pub(crate) fn tool_text_copy_button(
     id: SharedString,
+    group: SharedString,
     text: String,
     label: &'static str,
     colors: ThemeColors,
@@ -79,7 +80,9 @@ pub(crate) fn tool_text_copy_button(
                 .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
                     cx.stop_propagation()
                 })
-                .focus_visible(|style| style.bg(colors.bg_active))
+                .opacity(0.)
+                .group_hover(group, |style| style.opacity(1.))
+                .focus_visible(|style| style.opacity(1.).bg(colors.bg_active))
         },
     )
     .into_any_element()
