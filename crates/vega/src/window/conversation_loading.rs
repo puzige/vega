@@ -99,6 +99,7 @@ impl VegaWindow {
     pub(super) fn render_conversation_loading(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let mut content = div()
+            .id("conversation-loading")
             .size_full()
             .flex()
             .flex_col()

@@ -57,7 +57,8 @@ pub struct ThreadsBlock {
     pub(crate) error: Option<crate::localized_copy::LocalizedCopy>,
     action_pending: bool,
     visit_pending: bool,
-    deferred_visit: Option<String>,
+    deferred_visit: Option<(String, u64)>,
+    visit_navigation_generation: u64,
     project_generation: u64,
     actions_scroll: gpui_kit::ScrollHandle,
     menu_height: gpui_kit::Pixels,
@@ -75,6 +76,18 @@ pub(crate) struct RenameSession {
 impl ThreadsBlock {
     /// Creates the block and loads the selected project's thread list.
     pub fn new(cx: &mut Context<Self>) -> Self {
+        cx.observe_global::<OpenedThread>(|this, _| {
+            this.visit_navigation_generation = this.visit_navigation_generation.wrapping_add(1);
+        })
+        .detach();
+        cx.observe_global::<SelectedProject>(|this, _| {
+            this.visit_navigation_generation = this.visit_navigation_generation.wrapping_add(1);
+        })
+        .detach();
+        cx.observe_global::<SettingsOpen>(|this, _| {
+            this.visit_navigation_generation = this.visit_navigation_generation.wrapping_add(1);
+        })
+        .detach();
         let mut view = Self {
             threads: Vec::new(),
             archived: Vec::new(),
@@ -105,6 +118,7 @@ impl ThreadsBlock {
             action_pending: false,
             visit_pending: false,
             deferred_visit: None,
+            visit_navigation_generation: 0,
             project_generation: 0,
             actions_scroll: gpui_kit::ScrollHandle::new(),
             menu_height: px(360.),
@@ -232,7 +246,8 @@ impl ThreadsBlock {
         }
         if self.visit_pending {
             if crate::navigation::allow_task_navigation(Some(thread_id), cx) {
-                self.deferred_visit = Some(thread_id.to_owned());
+                self.deferred_visit =
+                    Some((thread_id.to_owned(), self.visit_navigation_generation));
             }
             return;
         }
@@ -261,6 +276,7 @@ impl ThreadsBlock {
         let project = cx.global::<SelectedProject>().0.clone();
         let settings = cx.global::<SettingsOpen>().0;
         self.visit_pending = true;
+        let navigation_generation = self.visit_navigation_generation;
         crate::navigation::begin_task_mutation(cx);
         let worker = cx.background_executor().spawn(async move {
             let path = path.ok_or_else(|| {
@@ -273,10 +289,18 @@ impl ThreadsBlock {
         });
         cx.spawn(async move |this, cx| {
             let result = worker.await;
-            let _ = cx.update(|cx| crate::navigation::finish_task_mutation(cx));
+            cx.update(crate::navigation::finish_task_mutation);
             let _ = this.update(cx, |this, cx| {
                 this.visit_pending = false;
-                let deferred = this.deferred_visit.take();
+                if let Some((target, generation)) = this.deferred_visit.take() {
+                    if generation == this.visit_navigation_generation {
+                        this.open_thread(&target, cx);
+                    }
+                    return;
+                }
+                if navigation_generation != this.visit_navigation_generation {
+                    return;
+                }
                 if cx
                     .global::<OpenedThread>()
                     .0
@@ -286,10 +310,6 @@ impl ThreadsBlock {
                     || cx.global::<SelectedProject>().0 != project
                     || cx.global::<SettingsOpen>().0 != settings
                 {
-                    return;
-                }
-                if let Some(target) = deferred {
-                    this.open_thread(&target, cx);
                     return;
                 }
                 match result {
