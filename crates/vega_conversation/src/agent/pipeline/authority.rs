@@ -147,12 +147,6 @@ pub(super) fn verified(
     {
         return Err(ConversationError::InvalidTaskIdentity);
     }
-    let thread_grant = thread
-        .full_access_grant
-        .as_deref()
-        .map(serde_json::from_str::<crate::types::FullAccessGrant>)
-        .transpose()
-        .map_err(|_| ConversationError::InvalidTaskIdentity)?;
     let resumed_user = if let Some(expected) = &config.interrupted_assistant {
         if !crate::permission_contracts::interrupted_authority_matches(conn, expected, &fence)? {
             return Err(ConversationError::InvalidTaskIdentity);
@@ -195,7 +189,6 @@ pub(super) fn verified(
                     || snapshot.mode.as_str() != thread.mode
                     || snapshot.permission_mode.as_str() != thread.permission_mode
                     || snapshot.permission_revision != thread.permission_revision
-                    || snapshot.full_access_grant != thread_grant
             }))
     {
         let _ = ordinary
@@ -210,9 +203,6 @@ pub(super) fn verified(
         crate::types::PermissionMode::parse(&fence.permission_mode).ok_or_else(|| {
             ConversationError::CorruptRow(format!("permission_mode: {}", thread.permission_mode))
         })?;
-    if !config.delegated && permission_mode == crate::types::PermissionMode::FullAccess {
-        crate::permission_contracts::verify_thread_grant(conn, thread_id, thread_grant.as_ref())?;
-    }
     Ok(RunAuthority {
         fence,
         thread,

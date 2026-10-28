@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 const SCHEMA_VERSION: u32 = 1;
-const CONTRACT_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DefaultPermissionSnapshot {
@@ -24,7 +23,7 @@ impl From<&vega_store::config::Defaults> for DefaultPermissionValues {
         Self {
             permission_mode: defaults.permission_mode.clone(),
             permission_revision: defaults.permission_revision,
-            full_access_grant: defaults.full_access_grant.clone(),
+            full_access_grant: None,
         }
     }
 }
@@ -110,77 +109,6 @@ pub struct FullAccessGrant {
     issued_at: i64,
 }
 
-impl FullAccessGrant {
-    pub fn confirmed(
-        authority_epoch: &str,
-        scope: FullAccessScope,
-        issued_at: i64,
-    ) -> Option<Self> {
-        let grant = Self {
-            schema_version: SCHEMA_VERSION,
-            contract_version: CONTRACT_VERSION,
-            grant_id: ulid::Ulid::generate().to_string(),
-            authority_epoch: authority_epoch.to_owned(),
-            scope,
-            origin: FullAccessOrigin::UserConfirmation,
-            issued_at,
-        };
-        grant.is_valid().then_some(grant)
-    }
-
-    pub fn derive_thread(&self, thread_id: &str, issued_at: i64) -> Option<Self> {
-        if !self.is_valid() || !matches!(self.scope, FullAccessScope::FutureThreads { .. }) {
-            return None;
-        }
-        let mut grant = Self::confirmed(
-            &self.authority_epoch,
-            FullAccessScope::Thread {
-                thread_id: thread_id.to_owned(),
-            },
-            issued_at,
-        )?;
-        grant.origin = FullAccessOrigin::DefaultGrant {
-            grant_id: self.grant_id.clone(),
-        };
-        Some(grant)
-    }
-
-    pub fn verifies(&self, authority_epoch: &str, scope: &FullAccessScope) -> bool {
-        self.is_scoped_to(scope) && self.authority_epoch == authority_epoch
-    }
-
-    pub fn is_scoped_to(&self, scope: &FullAccessScope) -> bool {
-        self.is_valid() && &self.scope == scope
-    }
-
-    pub fn identity(&self) -> &str {
-        &self.grant_id
-    }
-
-    pub fn is_valid(&self) -> bool {
-        self.schema_version == SCHEMA_VERSION
-            && self.contract_version == CONTRACT_VERSION
-            && valid_id(&self.grant_id)
-            && valid_id(&self.authority_epoch)
-            && match &self.scope {
-                FullAccessScope::Thread { thread_id } => valid_id(thread_id),
-                FullAccessScope::FutureThreads { configuration_id } => {
-                    !configuration_id.is_empty()
-                        && configuration_id.len() <= 4096
-                        && !configuration_id.chars().any(char::is_control)
-                }
-            }
-            && match &self.origin {
-                FullAccessOrigin::UserConfirmation => true,
-                FullAccessOrigin::DefaultGrant { grant_id } => {
-                    valid_id(grant_id)
-                        && grant_id != &self.grant_id
-                        && matches!(self.scope, FullAccessScope::Thread { .. })
-                }
-            }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PermissionFence {
@@ -212,7 +140,7 @@ pub struct DelegatedPermissionSource {
 impl PermissionFence {
     pub fn is_valid(&self) -> bool {
         self.schema_version == SCHEMA_VERSION
-            && self.execution_policy_version == CONTRACT_VERSION
+            && self.execution_policy_version == 2
             && valid_id(&self.authority_epoch)
             && valid_id(&self.thread_id)
             && !self.database_identity.is_empty()
@@ -236,20 +164,8 @@ impl PermissionFence {
                     && parent.exact_rules == self.exact_rules
                     && self.full_access_grant.is_none()
             } else {
-                match super::PermissionMode::parse(&self.permission_mode) {
-                    Some(super::PermissionMode::FullAccess) => {
-                        self.full_access_grant.as_ref().is_some_and(|grant| {
-                            grant.verifies(
-                                &self.authority_epoch,
-                                &FullAccessScope::Thread {
-                                    thread_id: self.thread_id.clone(),
-                                },
-                            )
-                        })
-                    }
-                    Some(_) => self.full_access_grant.is_none(),
-                    None => false,
-                }
+                super::PermissionMode::parse(&self.permission_mode).is_some()
+                    && self.full_access_grant.is_none()
             }
     }
 }

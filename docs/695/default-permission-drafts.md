@@ -1,25 +1,36 @@
-# 新对话默认权限与草稿权限选择
+# 新对话默认权限与基于模式的执行权限
 
-## 目标与替代边界
+## 2026-10-28 用户裁决与替代边界
 
-用户反馈：默认 Full access 的新对话仍需重新选择才能发送；选择权限会提前生成 Untitled task。本规格补充并取代 `../624/direct-permission-selection.md` 中草稿选择 Full access 立即持久化的时机，保留显式选择即授权、默认授权派生及所有执行安全检查。
+保留 ReadOnly、Confirm、Auto、FullAccess 四种模式，删除默认/会话 Full Access grant 作为执行前提及重复授权确认。用户进一步明确：FullAccess 不保留危险命令确认；其他模式的限制和危险命令确认不变。该裁决替代本文件旧版、../624/direct-permission-selection.md 和 ../624/vega-permission-sandbox-alignment.md 中相冲突的 grant 与 FullAccess 危险确认条款。OS 权限、独立能力审批、能力资格检查不在移除范围。
 
-## 行为契约
+PR #697 解决了草稿权限选择提前落库及默认快照刷新，但用户手测未通过。实际默认配置为 full_access、缺少 grant，与 DraftCreationGuard 首次物化拒绝条件吻合；没有该次提交的细分日志，不将静态分析称为运行复现。
 
-1. 新对话从已保存的系统默认设置取得权限快照。设置保存刷新时，仍继承默认设置且尚未开始首次发送/创建的草稿同步新的权限模式、revision 和默认授权快照；手动选择过权限的草稿不被覆盖。模型默认变化继续独立同步。若刷新期间有 trusted action，保留不覆盖操作中来源的保护，并在后续空闲草稿 route 解析时重新比较默认快照，不能只依赖一次 catalog 回调。
-2. 草稿选择任意权限，包括 Full access，只更新内存草稿与当前会话投影，不创建 threads 行，不新增侧栏任务。Full access 的显式选择生成绑定当前数据库 authority epoch 与草稿 thread ID 的授权；不更改系统默认设置。
-3. 首次发送才物化草稿。继承默认权限继续核对配置身份、默认 revision、授权内容、FutureThreads scope 与数据库 epoch，派生 thread grant；显式选择继续核对 thread scope、epoch、reset 状态。不得仅凭 Full access 字符串绕过授权。
-4. 多次切换权限、重新加载、首次发送保持相同草稿 ID、内容、图片和项目绑定；已持久化对话继续使用 revision CAS，不改生命周期。权限回执完成时若用户已离开该 route，仍更新精确匹配 source 的窗口草稿，但不覆盖其他当前 route。
-5. reset、旧 epoch、配置快照冲突、数据库身份变化仍失败关闭。没有有效默认授权的历史配置不自动伪造授权；用户须在设置页明确保存 Full access。不修改用户配置或历史空任务。
+## 验收用例
 
-## 实现与验证范围
+| 前置与操作 | 可观察结果 | 验证层级与状态 |
+| --- | --- | --- |
+| 旧默认配置为 FullAccess，缺少、过期或无效旧 grant；创建并发送 | 直接继承模式，不因旧 grant 阻塞 | 静态审查、云端验证、用户手测待完成 |
+| 设置默认 FullAccess 并重启 | 一次模式选择保存，无额外授权确认；后续新会话直接发送 | 同上 |
+| 旧 FullAccess 会话继续发送 | 不要求重新授权；新执行快照基于模式 | 同上 |
+| 草稿携带输入/图片，切换任意模式并导航返回 | 不提前生成任务，内容与 ID 保持；首次发送只创建一次 | 同上 |
+| 手选草稿权限后刷新默认设置 | 不覆盖手选模式；继承默认的空闲草稿同步 | 同上 |
+| FullAccess Execute 中普通或命中危险分类的命令 | 通过既有能力资格检查后自动批准，无危险确认；审计归属 FullAccess | 同上 |
+| ReadOnly/Confirm/Auto 命中危险分类 | 原有拒绝/确认行为不变；普通操作限制不变 | 同上 |
+| 权限修改、reset、运行恢复、fork/子任务 | revision、epoch、数据库/工作区身份与父子执行来源校验仍生效；已撤回的执行快照不得继续使用 | 同上 |
+| 旧执行快照恢复 | 不把旧 grant 迁移为新授权；策略版本不兼容时拒绝自动续跑，由新提交重新捕获模式 | 同上 |
 
-- 默认刷新：window/session；草稿选择投影：window/thread_permissions；授权服务：conversation/thread_permissions；首次物化：conversation/permission_contracts。
-- 不增加 UI 文案、弹窗、依赖、schema 或运行时执行特权。
-- 本地只做格式、差异和静态安全路径检查，不运行 Vega、构建或测试。最终 head 经非实现者独立审查和现有 required Actions；不新增临时 Rust 测试，CI 空集不称功能测试通过。
-- 用户手测：设置默认 Full access 后在现有空草稿直接发送；连续创建新对话直接发送；未发送切换 Full access/Auto/ReadOnly/Confirm 不新增侧栏项；附图片后切换仍保留附件；首次发送只创建一个任务；已存在会话修改权限正常；reset 后旧草稿不保留可执行授权。
+## 实现契约
 
-## 已定位缺陷
+1. 模式是权限依据。旧 grant 字段可作为兼容存储暂留，但不得生成、派生或验证来决定执行权限；新保存清空旧 grant，新读取不依赖其格式。
+2. 设置和会话选择直接保存模式，不增加确认面板。草稿仍只更新内存；首次提交核对配置身份、模式、revision 及 admission/reset 后落库。保留异步来源、导航回执和默认刷新保护。
+3. 执行 fence 保留 authority epoch、数据库身份、thread/project/workspace、运行模式、权限模式、revision、规则与 delegation。提高执行策略版本，旧执行记录不得静默按更宽松策略续跑；新提交捕获新策略。不得机械删除 reset 或 revision 检查。
+4. FullAccess 仅在 Execute 能力资格检查成功后优先自动批准，跳过危险确认；危险检测本身、其他模式决策和独立能力审批不删除。不伪造用户曾确认危险命令的审计。
+5. 默认设置的保存和并发冲突检测继续有效，旧配置直接按其已保存模式生效，不由 Agent 修改本机配置/数据库。历史空任务不清理。
+6. 存储旧字段暂留支持数据兼容，不破坏性删除 schema；回滚旧二进制可能重新要求旧 grant，必须重新选择权限。新策略的在途执行快照不能由旧策略自动恢复。
 
-- 配置刷新仅在默认模型变化时同步草稿模型，没有同步仍继承默认设置的权限快照；旧草稿与已保存默认设置不一致时，首次物化拒绝。
-- window 的草稿分支排除 Full access，服务的 draft save 又直接物化，因此显式选择提前创建任务。
+## 实现计划与验证
+
+先核对 conversation 权限服务、草稿物化、线程读取、执行 fence/authority、automation 与 delegation，再调整设置确认状态和 runtime 决策。核对 #700 在途修改，避免覆盖其失败原因修复；本卡仅改变 FullAccess 的确认语义。
+
+本地不运行 Vega、构建或测试，只做低 CPU 格式/差异/静态检查。行为验证按风险选择开发辅助测试，仅在云端执行并按仓库规则留痕清理，不改现存 Python 测试或 CI 门禁。最终精确 head 经非实现者独立审查及 required Actions；Rust 空集如实写 no Rust tests，不称功能回归通过。合并后保持 Issue OPEN/In review，等待用户手测。

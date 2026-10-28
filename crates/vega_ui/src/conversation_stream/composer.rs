@@ -497,7 +497,7 @@ impl ConversationStream {
         if self.model_selection_pending.is_some() || self.permission_change_pending() {
             return;
         }
-        if mode != self.thread.permission_mode || self.full_access_selection_needs_save(cx) {
+        if mode != self.thread.permission_mode {
             cx.emit(ThreadSettingsRequested {
                 thread_id: self.thread.id.clone(),
                 mode: None,

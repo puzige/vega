@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use vega_store::{Store, threads};
 
 use crate::types::{
-    FullAccessGrant, FullAccessScope, PermissionMode, TaskBackend, Thread, ThreadPermissionChange,
-    ThreadPermissionError, ThreadStatus,
+    PermissionMode, TaskBackend, Thread, ThreadPermissionChange, ThreadPermissionError,
+    ThreadStatus,
 };
 
 #[derive(Clone)]
@@ -49,6 +49,13 @@ impl ThreadPermissionService {
         if state.reset_pending {
             return Err(ThreadPermissionError::ResetPending);
         }
+        if source
+            .draft_authority_epoch
+            .as_ref()
+            .is_some_and(|epoch| epoch != &state.authority_epoch)
+        {
+            return Err(ThreadPermissionError::Conflict);
+        }
         let current = threads::find(&tx, &source.id).map_err(unavailable)?;
         let draft = match current {
             Some(row) => {
@@ -60,17 +67,7 @@ impl ThreadPermissionService {
             }
             None if source.parent_thread_id.is_none()
                 && source.forked_from_thread_id.is_none()
-                && source.forked_from_message_id.is_none()
-                && source.full_access_grant.as_ref().is_none_or(|grant| {
-                    source.permission_mode == PermissionMode::FullAccess
-                        && source.default_permission.is_none()
-                        && grant.verifies(
-                            &state.authority_epoch,
-                            &FullAccessScope::Thread {
-                                thread_id: source.id.clone(),
-                            },
-                        )
-                }) =>
+                && source.forked_from_message_id.is_none() =>
             {
                 true
             }
@@ -86,14 +83,7 @@ impl ThreadPermissionService {
         })
     }
 
-    pub fn save(
-        &self,
-        change: &ThreadPermissionChange,
-        confirmed: bool,
-    ) -> Result<Thread, ThreadPermissionError> {
-        if change.mode == PermissionMode::FullAccess && !confirmed {
-            return Err(ThreadPermissionError::ConfirmationRequired);
-        }
+    pub fn save(&self, change: &ThreadPermissionChange) -> Result<Thread, ThreadPermissionError> {
         let _coordination = crate::permission_contracts::coordinate().map_err(unavailable)?;
         let store = Store::open_existing(&self.database_path).map_err(unavailable)?;
         require_open(&store)?;
@@ -125,20 +115,6 @@ impl ThreadPermissionService {
             _ => return Err(ThreadPermissionError::Conflict),
         }
         let issued_at = crate::threads::now_ms();
-        let grant = if change.mode == PermissionMode::FullAccess {
-            Some(
-                FullAccessGrant::confirmed(
-                    &state.authority_epoch,
-                    FullAccessScope::Thread {
-                        thread_id: change.source.id.clone(),
-                    },
-                    issued_at,
-                )
-                .ok_or(ThreadPermissionError::Unavailable)?,
-            )
-        } else {
-            None
-        };
         let revision = change
             .source
             .permission_revision
@@ -148,25 +124,21 @@ impl ThreadPermissionService {
             let next = Thread {
                 permission_mode: change.mode,
                 permission_revision: revision,
-                full_access_grant: grant.clone(),
+                draft_authority_epoch: Some(state.authority_epoch.clone()),
+                full_access_grant: None,
                 default_permission: None,
                 ..change.source.clone()
             };
             tx.commit().map_err(unavailable)?;
             return Ok(next);
         }
-        let encoded = grant
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(unavailable)?;
         if !vega_store::permission_contracts::compare_exchange_thread(
             &tx,
             &change.source.id,
             change.source.permission_revision,
             &state.authority_epoch,
             change.mode.as_str(),
-            encoded.as_deref(),
+            None,
             issued_at,
         )
         .map_err(unavailable)?
@@ -179,7 +151,6 @@ impl ThreadPermissionService {
             .map_err(|_| ThreadPermissionError::OutcomeUnknown)?;
         if saved.permission_mode != change.mode
             || saved.permission_revision != revision
-            || saved.full_access_grant != grant
             || saved.project_id != change.source.project_id
         {
             return Err(ThreadPermissionError::OutcomeUnknown);
@@ -206,7 +177,6 @@ fn same_source(current: &Thread, expected: &Thread) -> bool {
         && current.model == expected.model
         && current.permission_mode == expected.permission_mode
         && current.permission_revision == expected.permission_revision
-        && current.full_access_grant == expected.full_access_grant
         && current.parent_thread_id == expected.parent_thread_id
 }
 
