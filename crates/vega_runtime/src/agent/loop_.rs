@@ -411,6 +411,7 @@ async fn compact_before_skill_rejection<F, Fut>(
     projection_revision: &mut u64,
     attempted_source: &mut Option<(u64, Option<String>, u64)>,
     automatic_failures: &mut u8,
+    precompute_suppressed: &mut bool,
     refill: &mut super::compaction_refill::CompactionRefill,
     cancel: &CancellationToken,
     events: &mut Vec<RuntimeEvent>,
@@ -506,6 +507,7 @@ where
     sink(started.clone()).await?;
     events.push(started);
     *attempted_source = Some((source, fingerprint.clone(), *projection_revision));
+    *precompute_suppressed = true;
     if let Some(run) = computer_use {
         run.invalidate_observations();
         run.trim_messages(messages);
@@ -1069,6 +1071,7 @@ where
     let mut live_projection_revision = 0_u64;
     let mut attempted_context_source = None::<(u64, Option<String>, u64)>;
     let mut automatic_compaction_failures = 0_u8;
+    let mut precompute_suppressed = false;
     let mut compaction_refill = super::compaction_refill::CompactionRefill::default();
     let mut provider_overflow_recovered = false;
     let mut provider_overflow_deeper_eligible = false;
@@ -1219,6 +1222,7 @@ where
                         &mut live_projection_revision,
                         &mut attempted_context_source,
                         &mut automatic_compaction_failures,
+                        &mut precompute_suppressed,
                         &mut compaction_refill,
                         &cancel,
                         &mut events,
@@ -1520,7 +1524,38 @@ where
                 && (force_provider_compaction
                     || (matches!(check, ContextCheck::Triggered | ContextCheck::OverLimit)
                         && !is_initial_user_input(&messages)));
+            if !should_compact
+                && !precompute_suppressed
+                && !is_initial_user_input(&messages)
+                && budget.automatic_compaction()
+                && estimate.input_tokens
+                    >= budget
+                        .precompute_tokens()
+                        .map_err(|error| VegaError::Context(error.into()))?
+                && let Some(hook) = external_context_hook.or(request_context_hook.as_deref())
+            {
+                hook.arm_precompute(
+                    ContextCompactionRequest {
+                        trigger: crate::ContextCompactionTrigger::Threshold,
+                        system_prompt: system_prompt.clone(),
+                        messages: messages[1..].to_vec(),
+                        tools: tool_definitions.clone(),
+                        budget,
+                        estimate,
+                        target_tokens: budget
+                            .target_tokens()
+                            .map_err(|error| VegaError::Context(error.into()))?,
+                        source_version: context_source_version.unwrap_or_default(),
+                        source_fingerprint: context_source_fingerprint.clone(),
+                        require_source_fence: false,
+                        source_owner_id: Some(context_operation_id.clone()),
+                    },
+                    cancel.clone(),
+                )
+                .await;
+            }
             if should_compact {
+                precompute_suppressed = true;
                 let source_version = context_source_version.unwrap_or_default();
                 let source_fingerprint = context_source_fingerprint.clone();
                 if automatic_compaction_failures >= 3
@@ -2000,7 +2035,7 @@ where
         let chat_request = ChatRequest {
             model: request.model.clone(),
             messages: crate::project_model_messages(&messages)?,
-            tools: tool_definitions,
+            tools: tool_definitions.clone(),
             max_tokens: request_output_cap(request.max_tokens, context_budget),
             reasoning: request.reasoning.clone(),
             model_snapshot: request.model_snapshot.clone(),
@@ -2822,6 +2857,7 @@ where
                 progress = progress::ProgressReporter::new();
                 recovery = progress_recovery::ProgressRecovery::default();
                 context_operation_id = input.assistant_message_id.clone();
+                precompute_suppressed = false;
                 let interleaved_user_boundary = messages.len();
                 messages[0].begin_interleaved_user_round(interleaved_user_boundary);
                 messages.push(input.message);
@@ -2831,6 +2867,42 @@ where
                 continue;
             }
             emit!(events, sink, RuntimeEvent::Finished(finish));
+            if normal_terminal
+                && anchor_protocol_valid
+                && !precompute_suppressed
+                && let Some(budget) = context_budget.filter(|budget| budget.automatic_compaction())
+                && let Some(hook) = external_context_hook.or(request_context_hook.as_deref())
+                && let Ok(decision) = input_decision(
+                    input_anchor.as_ref(),
+                    &messages,
+                    &tool_definitions,
+                    &request.model,
+                    request.reasoning.as_ref(),
+                    request_output_cap(request.max_tokens, context_budget),
+                    primary_revision,
+                )
+                && let Ok(threshold) = budget.precompute_tokens()
+                && let Ok(target_tokens) = budget.target_tokens()
+                && decision.estimate.input_tokens >= threshold
+            {
+                hook.arm_precompute(
+                    ContextCompactionRequest {
+                        trigger: crate::ContextCompactionTrigger::Threshold,
+                        system_prompt: system_prompt.clone(),
+                        messages: messages[1..].to_vec(),
+                        tools: tool_definitions.clone(),
+                        budget,
+                        estimate: decision.estimate,
+                        target_tokens,
+                        source_version: context_source_version.unwrap_or_default(),
+                        source_fingerprint: context_source_fingerprint.clone(),
+                        require_source_fence: false,
+                        source_owner_id: Some(context_operation_id.clone()),
+                    },
+                    cancel.clone(),
+                )
+                .await;
+            }
             return Ok(outcome(
                 events,
                 messages,
@@ -3367,6 +3439,7 @@ where
                                         &mut live_projection_revision,
                                         &mut attempted_context_source,
                                         &mut automatic_compaction_failures,
+                                        &mut precompute_suppressed,
                                         &mut compaction_refill,
                                         &cancel,
                                         &mut events,
@@ -3623,6 +3696,7 @@ where
             recovery = progress_recovery::ProgressRecovery::default();
             steered = true;
             context_operation_id = input.assistant_message_id.clone();
+            precompute_suppressed = false;
             let interleaved_user_boundary = messages.len();
             messages[0].begin_interleaved_user_round(interleaved_user_boundary);
             messages.push(input.message);

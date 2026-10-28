@@ -9,6 +9,7 @@ pub(super) struct CapturedPrecompute {
     pub fence: vega_store::context_precompute::ContextAppendFence,
     pub dependencies: String,
     pub expected_generation: Option<String>,
+    pub ready_preferences: Option<String>,
     pub database_identity: vega_store::thread_admission::DatabaseIdentity,
 }
 
@@ -337,7 +338,7 @@ impl ConversationCompactionHook<'_> {
     #[allow(missing_docs)]
     pub async fn prepare_precompute(
         &self,
-        request: ContextCompactionRequest,
+        mut request: ContextCompactionRequest,
         cancel: CancellationToken,
     ) -> Result<Option<crate::types::PreparedContextPrecompute>, VegaError> {
         if self.partial_selection.is_some()
@@ -357,8 +358,19 @@ impl ConversationCompactionHook<'_> {
             .capture_compaction(&request, &cancel, true)
             .await
             .map_err(|failure| *failure.error)?;
-        validate_request_source(&captured.source, captured.checkpoint.as_ref(), &request)
-            .map_err(|failure| *failure.error)?;
+        let preferences_digest = self.precompute_preferences_digest();
+        if self.precompute_lease.is_some()
+            && captured.precompute.as_ref().is_some_and(|captured| {
+                captured.ready_preferences.as_deref() == Some(preferences_digest.as_str())
+            })
+        {
+            return Ok(None);
+        }
+        vega_runtime::computer_use::redact_ephemeral_messages(&mut request.messages);
+        validate_precompute_source(&captured, &request)?;
+        request.require_source_fence = true;
+        request.source_version = captured.source.source_version;
+        request.source_fingerprint = Some(captured.source.fingerprint.clone());
         reject_unprojected_shell_credentials(
             &captured.source,
             captured.checkpoint.as_ref(),
@@ -403,9 +415,89 @@ impl ConversationCompactionHook<'_> {
             credential_exceptions: self.credential_exceptions.clone(),
             summary_variant: self.summary_variant,
             summary_requirements: self.summary_requirements.clone(),
-            preferences_digest: self.precompute_preferences_digest(),
+            preferences_digest,
         }))
     }
+}
+
+fn validate_precompute_source(
+    captured: &CapturedCompaction,
+    request: &ContextCompactionRequest,
+) -> Result<(), VegaError> {
+    if request.require_source_fence || request.source_owner_id.is_none() {
+        return validate_request_source(&captured.source, captured.checkpoint.as_ref(), request)
+            .map_err(|failure| *failure.error);
+    }
+    let changed = || context_error(ContextRuntimeError::SourceChanged);
+    if captured.source.source_version < request.source_version {
+        return Err(changed());
+    }
+    let owner = request.source_owner_id.as_deref().ok_or_else(changed)?;
+    let projected = super::super::pipeline::source_after_checkpoint(
+        &captured.source,
+        captured.checkpoint.as_ref(),
+    )
+    .map_err(|_| changed())?;
+    let mut owned = projected.clone();
+    owned.messages.retain(|message| message.id == owner);
+    owned.tool_calls.retain(|call| call.message_id == owner);
+    owned.images.retain(|image| image.message_id == owner);
+    if owned.tool_calls.is_empty()
+        && owned.images.is_empty()
+        && owned
+            .messages
+            .iter()
+            .all(|message| message.content.is_empty())
+    {
+        return validate_request_source(&captured.source, captured.checkpoint.as_ref(), request)
+            .map_err(|failure| *failure.error);
+    }
+    for message in &mut owned.messages {
+        message.status = "done".into();
+    }
+    let mut suffix =
+        super::super::pipeline::history_from_context_source(&owned, "__precompute_owner__", None)
+            .map_err(|_| changed())?;
+    vega_runtime::computer_use::redact_ephemeral_messages(&mut suffix);
+    if suffix.is_empty() {
+        return validate_request_source(&captured.source, captured.checkpoint.as_ref(), request)
+            .map_err(|failure| *failure.error);
+    }
+    let split = request
+        .messages
+        .len()
+        .checked_sub(suffix.len())
+        .ok_or_else(changed)?;
+    if !durable_messages_equal(
+        &suffix.iter().collect::<Vec<_>>(),
+        &request.messages[split..].iter().collect::<Vec<_>>(),
+    ) {
+        return Err(changed());
+    }
+    let prefix = normalize_terminal_history_groups(
+        &projected,
+        captured
+            .checkpoint
+            .as_ref()
+            .filter(|checkpoint| checkpoint.projection_plan.is_none())
+            .map(|checkpoint| checkpoint.covered_through_seq),
+        owner,
+        &request.messages[..split],
+    )
+    .map_err(|failure| *failure.error)?;
+    let expected = super::super::pipeline::primary_history_from_context_source_with_checkpoint(
+        &captured.source,
+        captured.checkpoint.as_ref(),
+        owner,
+    )
+    .map_err(|_| changed())?;
+    if !durable_messages_equal(
+        &expected.iter().collect::<Vec<_>>(),
+        &prefix.iter().collect::<Vec<_>>(),
+    ) {
+        return Err(changed());
+    }
+    Ok(())
 }
 
 pub(super) fn store_error(

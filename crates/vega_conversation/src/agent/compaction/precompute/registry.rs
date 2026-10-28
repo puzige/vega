@@ -187,6 +187,31 @@ impl ContextPrecomputeRegistry {
         }))
     }
 
+    pub fn pending(
+        &self,
+        database: DatabaseIdentity,
+        thread: &str,
+        admission: &ThreadAdmission,
+    ) -> Result<Option<ContextPrecomputeTask>, VegaError> {
+        if !admission.verifies(database, thread) {
+            return Err(unavailable());
+        }
+        let key = Key {
+            database,
+            thread: thread.to_owned(),
+        };
+        self.refresh(&key)?;
+        let state = self.inner.lock().map_err(|_| unavailable())?;
+        Ok(state
+            .entries
+            .get(&key)
+            .and_then(|entry| entry.pending.clone())
+            .map(|flight| ContextPrecomputeTask {
+                registry: self.clone(),
+                flight,
+            }))
+    }
+
     pub fn invalidate(
         &self,
         database: DatabaseIdentity,
@@ -332,6 +357,17 @@ impl ContextPrecomputeLease {
             && self.is_current()?)
     }
 
+    pub fn can_launch(&self) -> Result<bool, VegaError> {
+        self.registry.refresh(&self.key)?;
+        if !self.is_current()? {
+            return Ok(false);
+        }
+        let state = self.registry.inner.lock().map_err(|_| unavailable())?;
+        Ok(state.entries.get(&self.key).is_some_and(|entry| {
+            Arc::ptr_eq(&entry.epoch, &self.epoch) && entry.pending.is_none() && entry.failures < 3
+        }))
+    }
+
     pub fn try_launch(
         &self,
         prepared: PreparedContextPrecompute,
@@ -432,6 +468,13 @@ impl ContextPrecomputeOwner {
 impl ContextPrecomputeTask {
     pub fn generation(&self) -> &str {
         &self.flight.generation
+    }
+
+    pub async fn wait_for_exit(&self) -> Result<(), VegaError> {
+        while self.registry.observe(&self.flight)?.is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Ok(())
     }
 
     pub async fn wait(&self) -> Result<(), Arc<VegaError>> {

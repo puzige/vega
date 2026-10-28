@@ -1365,6 +1365,26 @@ fn context_failure_name(failure: crate::types::ContextCompactionFailureCode) -> 
 }
 
 impl ContextCompactionHook for ConversationCompactionHook<'_> {
+    fn arm_precompute<'a>(
+        &'a self,
+        request: ContextCompactionRequest,
+        cancel: CancellationToken,
+    ) -> futures::future::BoxFuture<'a, ()> {
+        Box::pin(async move {
+            let Some(lease) = &self.precompute_lease else {
+                return;
+            };
+            if !lease.can_launch().unwrap_or(false) || cancel.is_cancelled() {
+                return;
+            }
+            if let Ok(Some(prepared)) = self.prepare_precompute(request, cancel.clone()).await
+                && !cancel.is_cancelled()
+            {
+                let _ = lease.try_launch(prepared);
+            }
+        })
+    }
+
     fn micro_compact<'a>(
         &'a self,
         request: vega_runtime::MicroCompactionRequest,
@@ -1914,12 +1934,25 @@ impl ConversationCompactionHook<'_> {
                         &thread_id,
                     )
                     .map_err(precompute::store_error)?;
+                let ready_preferences =
+                    match vega_store::context_precompute::ready::recover_in_transaction(
+                        &transaction,
+                        &thread_id,
+                        now_ms(),
+                    ) {
+                        Ok(candidate) => candidate.map(|candidate| candidate.preferences_digest),
+                        Err(vega_store::context_compaction::ContextCheckpointError::Store(
+                            error,
+                        )) => return Err(VegaError::Store(error)),
+                        Err(_) => None,
+                    };
                 (
                     source,
                     Some(precompute::CapturedPrecompute {
                         fence,
                         dependencies,
                         expected_generation,
+                        ready_preferences,
                         database_identity: store.database_identity(),
                     }),
                 )

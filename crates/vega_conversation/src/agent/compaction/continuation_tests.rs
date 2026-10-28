@@ -84,7 +84,7 @@ fn source_fixture() -> Result<(DatabaseDirectory, PathBuf, Store), Box<dyn std::
             project_id: "",
             title: "Synthetic",
             mode: "execute",
-            permission_mode: "read_only",
+            permission_mode: crate::types::PermissionMode::ReadOnly.as_str(),
             permission_revision: 0,
             full_access_grant: None,
             model: "model",

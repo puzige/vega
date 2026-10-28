@@ -3,6 +3,41 @@ use vega_store::context_compaction::ContextCheckpointError;
 use vega_store::context_precompute::consume;
 
 impl ConversationCompactionHook<'_> {
+    async fn wait_for_precompute(
+        &self,
+        cancel: &CancellationToken,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), VegaError> {
+        let path = self.database_path.clone();
+        let thread_id = self.thread_id.clone();
+        let admission = self.admission.clone();
+        let pending = tokio::task::spawn_blocking(move || {
+            let store = Store::open(path).map_err(VegaError::Store)?;
+            let admission =
+                super::super::ordinary::verified_admission(&store, &thread_id, admission.as_ref())
+                    .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?;
+            crate::types::ContextPrecomputeRegistry::global().pending(
+                store.database_identity(),
+                &thread_id,
+                &admission,
+            )
+        })
+        .await
+        .map_err(|_| context_error(ContextRuntimeError::SourceChanged))??;
+        if let Some(pending) = pending {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(VegaError::Cancelled),
+                _ = tokio::time::sleep_until(deadline) => return Err(context_error(ContextRuntimeError::SourceChanged)),
+                result = pending.wait_for_exit() => result?,
+            }
+        }
+        if cancel.is_cancelled() {
+            return Err(VegaError::Cancelled);
+        }
+        Ok(())
+    }
+
     pub(super) async fn consume_precompute(
         &self,
         request: &ContextCompactionRequest,
@@ -37,6 +72,7 @@ impl ConversationCompactionHook<'_> {
         {
             return Ok(None);
         }
+        self.wait_for_precompute(cancel, deadline).await?;
         let path = self.database_path.clone();
         let thread_id = self.thread_id.clone();
         let model = self.model.clone();

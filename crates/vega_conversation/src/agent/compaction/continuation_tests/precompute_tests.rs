@@ -1,5 +1,6 @@
 use super::*;
 
+mod arming_tests;
 mod consume_tests;
 mod registry_tests;
 use std::sync::Mutex;

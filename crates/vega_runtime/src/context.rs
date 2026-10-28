@@ -538,6 +538,14 @@ impl fmt::Debug for ContextCompactionResult {
 
 /// Conversation's bounded, cancellable compaction boundary.
 pub trait ContextCompactionHook: Send + Sync {
+    fn arm_precompute<'a>(
+        &'a self,
+        _request: ContextCompactionRequest,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async {})
+    }
+
     fn compact_with_replay<'a>(
         &'a self,
         request: ContextCompactionRequest,
