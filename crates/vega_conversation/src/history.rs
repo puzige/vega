@@ -919,16 +919,17 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
             audit.source,
             ApprovalSource::Cancelled | ApprovalSource::Unavailable
         )
-    }) || matches!(
-        call.output_text.as_deref(),
-        Some(
-            vega_runtime::PERMISSION_CANCELLED_OUTPUT
-                | vega_runtime::PERMISSION_UNAVAILABLE_OUTPUT
-                | vega_runtime::PERMISSION_TIMEOUT_OUTPUT
-                | vega_runtime::PERMISSION_DENIED_OUTPUT
-                | vega_runtime::DANGER_DENIED_OUTPUT
-        )
-    );
+    }) || (status == ToolCallStatus::Rejected
+        && matches!(
+            call.output_text.as_deref(),
+            Some(
+                vega_runtime::PERMISSION_CANCELLED_OUTPUT
+                    | vega_runtime::PERMISSION_UNAVAILABLE_OUTPUT
+                    | vega_runtime::PERMISSION_TIMEOUT_OUTPUT
+                    | vega_runtime::PERMISSION_DENIED_OUTPUT
+                    | vega_runtime::DANGER_DENIED_OUTPUT
+            )
+        ));
     let invalid_permission_outcome = permission_outcome_claim
         && !(status == ToolCallStatus::Rejected
             && call.exit_code.is_none()
@@ -1341,3 +1342,7 @@ fn project_page_privacy(
     }
     Ok(generated_notices)
 }
+
+#[cfg(test)]
+#[path = "permission_history_tests.rs"]
+mod permission_history_tests;
