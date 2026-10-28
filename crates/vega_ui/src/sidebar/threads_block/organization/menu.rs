@@ -13,6 +13,25 @@ impl ThreadsBlock {
         };
         let mut items = Vec::new();
         match menu {
+            OrganizationMenu::Recents => {
+                let mut preferences = snapshot.preferences.clone();
+                preferences.hide_project_threads_from_recents =
+                    !preferences.hide_project_threads_from_recents;
+                items.push((
+                    vega_i18n::t_args(
+                        "sidebar.show_project_conversations_selected",
+                        &[(
+                            "selected",
+                            if snapshot.preferences.hide_project_threads_from_recents {
+                                "  "
+                            } else {
+                                "✓"
+                            },
+                        )],
+                    ),
+                    MenuCommand::Apply(SidebarOrganizationAction::SetPreferences(preferences)),
+                ));
+            }
             OrganizationMenu::Group(id) => {
                 items.push((
                     vega_i18n::t("ui.new_task").into(),
@@ -128,6 +147,7 @@ impl ThreadsBlock {
         };
         let items = self.organization_menu_items();
         let title = match org.menu {
+            Some(OrganizationMenu::Recents) => vega_i18n::t("sidebar.recents"),
             Some(OrganizationMenu::Group(_)) => vega_i18n::t("ui.group_actions"),
             _ => vega_i18n::t("ui.project_actions"),
         };

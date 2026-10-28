@@ -135,6 +135,7 @@ struct GroupEditor {
 enum OrganizationMenu {
     Group(String),
     Project(String),
+    Recents,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OrganizationSection {

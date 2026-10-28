@@ -44,6 +44,8 @@ pub struct SidebarPreferences {
     pub sort: SidebarTaskSort,
     #[serde(default)]
     pub manual_thread_order: Vec<String>,
+    #[serde(default)]
+    pub hide_project_threads_from_recents: bool,
 }
 /// Local-calendar timeline section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
