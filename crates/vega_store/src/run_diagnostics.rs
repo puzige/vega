@@ -1009,4 +1009,27 @@ mod protocol_diagnostics_tests {
             assert!(conn.execute("UPDATE run_diagnostic_events SET failure_source=?1, failure_kind=?2 WHERE id=?3", params![source, kind, id]).is_err());
         }
     }
+    #[test]
+    fn migration_keeps_existing_diagnostics_without_inventing_reasons() {
+        let store = crate::Store::open(":memory:").expect("store");
+        store.migrate().expect("schema");
+        let conn = store.conn();
+        conn.execute(
+            "ALTER TABLE run_diagnostic_events DROP COLUMN protocol_reason",
+            [],
+        )
+        .expect("pre-reason schema");
+        conn.pragma_update(None, "user_version", 45)
+            .expect("old version");
+        conn.execute("INSERT INTO threads (id, title, model, created_at, updated_at) VALUES ('old-thread', '', 'synthetic', 0, 0)", []).expect("thread");
+        conn.execute("INSERT INTO run_diagnostic_events (thread_id,run_id,attempt_id,phase,state,occurred_at,duration_ms,failure_code,failure_source,failure_kind) VALUES ('old-thread','run','attempt','context_summary','failed',0,1,'provider_protocol','provider','protocol')", []).expect("old failure");
+        store.migrate().expect("upgrade");
+        let rows = read_by_run(conn, "old-thread", "run").expect("read old failure");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event.metrics.protocol_reason, None);
+        assert_eq!(
+            rows[0].event.failure_code,
+            Some(DiagnosticFailureCode::ProviderProtocol)
+        );
+    }
 }

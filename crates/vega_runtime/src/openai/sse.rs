@@ -494,7 +494,9 @@ impl SseAssembler {
         if index.zip(tool.index).is_some_and(|(one, two)| one != two)
             || (by_index.is_none() && id.is_some_and(|id| !tool.id.is_empty() && tool.id != id))
         {
-            return Err(invalid_protocol(ProviderProtocolReason::ToolFragment));
+            return Err(invalid_protocol(
+                ProviderProtocolReason::ToolIdentityConflict,
+            ));
         }
         if let Some(index) = index {
             tool.index = Some(index);
@@ -514,7 +516,9 @@ impl SseAssembler {
                     .ok_or_else(|| invalid_protocol(ProviderProtocolReason::ToolFragment))?;
                 if !name.is_empty() {
                     if !tool.name.is_empty() && tool.name != name {
-                        return Err(invalid_protocol(ProviderProtocolReason::ToolFragment));
+                        return Err(invalid_protocol(
+                            ProviderProtocolReason::ToolIdentityConflict,
+                        ));
                     }
                     tool.name = name.into();
                 }
@@ -735,6 +739,22 @@ mod protocol_diagnostics_tests {
                 .expect("identity"),
             "tool_identity_conflict",
         );
+    }
+
+    #[test]
+    fn changed_tool_index_or_name_is_an_identity_conflict() {
+        for next in [
+            r#"{"index":1,"id":"a"}"#,
+            r#"{"index":0,"id":"a","function":{"name":"other"}}"#,
+        ] {
+            let mut parser = SseAssembler::default();
+            parser.absorb(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"read"}}]}}]}"#).expect("initial fragment");
+            let frame = format!(r#"{{"choices":[{{"delta":{{"tool_calls":[{next}]}}}}]}}"#);
+            reason(
+                parser.absorb(&frame).err().expect("conflicting identity"),
+                "tool_identity_conflict",
+            );
+        }
     }
 
     #[test]

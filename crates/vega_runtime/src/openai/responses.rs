@@ -67,10 +67,6 @@ impl fmt::Display for ResponseBytesError {
     }
 }
 
-fn invalid() -> VegaError {
-    response_error(crate::ProviderFailureKind::Protocol)
-}
-
 fn invalid_response(reason: ProviderProtocolReason) -> VegaError {
     crate::chat_compat::protocol_error_with_reason(reason)
 }
@@ -624,15 +620,25 @@ pub(super) fn event_stream_with_recovery(
     cancel: CancellationToken,
     recoverable: bool,
 ) -> EventStream {
-    let bytes = resp
-        .bytes_stream()
-        .scan(ResponseFrameBudget::default(), |budget, chunk| {
-            let next = match chunk {
-                Ok(chunk) => budget.consume(&chunk).map(|()| chunk),
-                Err(_) => Err(ResponseBytesError::Transport),
-            };
-            futures::future::ready(Some(next))
-        });
+    response_byte_stream(resp.bytes_stream(), cancel, recoverable)
+}
+
+fn response_byte_stream<B, E>(
+    bytes: impl Stream<Item = Result<B, E>> + Send + 'static,
+    cancel: CancellationToken,
+    recoverable: bool,
+) -> EventStream
+where
+    B: AsRef<[u8]> + Send + 'static,
+    E: Send + 'static,
+{
+    let bytes = bytes.scan(ResponseFrameBudget::default(), |budget, chunk| {
+        let next = match chunk {
+            Ok(chunk) => budget.consume(chunk.as_ref()).map(|()| chunk),
+            Err(_) => Err(ResponseBytesError::Transport),
+        };
+        futures::future::ready(Some(next))
+    });
     let inner = Box::pin(bytes.eventsource());
     Box::pin(futures::stream::unfold(
         (inner, Assembler::default(), VecDeque::new(), false, cancel),
@@ -753,11 +759,24 @@ mod protocol_diagnostics_tests {
                 .protocol_reason,
             Some("after_terminal")
         );
-        assert_eq!(
-            recovery::incomplete_stream_error()
-                .diagnostic_metrics()
-                .failure_kind,
-            Some("stream_interrupted")
-        );
+    }
+    #[tokio::test]
+    async fn unfinished_response_bytes_end_as_interruption_without_protocol_reason() {
+        for recoverable in [false, true] {
+            let bytes = futures::stream::iter(vec![Ok::<_, std::io::Error>(
+                b"data: {\"type\":\"response.created\"}\n\n".to_vec(),
+            )]);
+            let mut events = response_byte_stream(bytes, CancellationToken::new(), recoverable);
+            let error = events
+                .next()
+                .await
+                .expect("terminal event")
+                .err()
+                .expect("interruption");
+            let metrics = error.diagnostic_metrics();
+            assert_eq!(metrics.failure_kind, Some("stream_interrupted"));
+            assert_eq!(metrics.protocol_reason, None);
+            assert!(events.next().await.is_none());
+        }
     }
 }
