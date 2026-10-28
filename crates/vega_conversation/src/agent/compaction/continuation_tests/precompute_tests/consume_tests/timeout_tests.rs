@@ -203,7 +203,7 @@ async fn ready_timeout_revalidates_the_complete_snapshot_before_primary_recovery
         .to_string();
         store.conn().execute(
             "UPDATE tool_calls SET input_json=?1,output_text=?2 WHERE id='live-call'",
-            vega_store::params![audit, receipt],
+            [audit.as_str(), receipt.as_str()],
         )?;
         let source = load_source(store.conn(), "thread")?;
         let mut visible = source.clone();
