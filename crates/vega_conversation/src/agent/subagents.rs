@@ -1078,7 +1078,7 @@ fn child_lifecycle_inner<'a>(
                 Ok::<(),VegaError>(())
             }.await;
             if let Err(error) = validation {
-                questions.cancel_active(); permissions.timeout_active();
+                questions.cancel_active(); permissions.finish_active(&cancel);
                 if resumed_admission && host.finish_and_release(lifecycle_ownership::unstarted_terminal(&snapshot,&cancel),false).await.is_err() {
                     ownership.quarantine("Recovery validation host release failed; ownership remains occupied");
                 } else if ownership.disarm_unstarted() { registry.discard(&snapshot,Some(previous)); }
@@ -1239,7 +1239,7 @@ fn child_lifecycle_inner<'a>(
         };
         activity.finish();
         questions.cancel_active();
-        permissions.timeout_active();
+        permissions.finish_active(&cancel);
         let handoff = Store::open(&database).and_then(|store| vega_store::delegated_stages::handoff(store.conn(),&snapshot.agent_id,&snapshot.message_id)).ok().flatten().is_some();
         snapshot.state = match &result {
             Ok(_) if handoff => SubagentState::Completed,

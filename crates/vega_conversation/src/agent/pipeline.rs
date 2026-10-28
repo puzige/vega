@@ -121,7 +121,9 @@ fn valid_skill_result(
                     ApprovalSource::Validation,
                     "Tool error: mixed Skill load batch rejected other tools",
                 ) => true,
-                (ApprovalSource::Timeout, "Tool error: permission denied") => true,
+                (ApprovalSource::Timeout, "Tool error: permission denied")
+                | (ApprovalSource::Timeout, vega_runtime::PERMISSION_TIMEOUT_OUTPUT)
+                | (ApprovalSource::Cancelled, vega_runtime::PERMISSION_CANCELLED_OUTPUT) => true,
                 (ApprovalSource::Recovery, vega_store::recovery::RECOVERY_REJECTED_OUTPUT) => true,
                 _ => false,
             };
@@ -1701,7 +1703,13 @@ pub(crate) fn validate_recovered_projection(
                 output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT
             }
             (RuntimeToolStatus::Rejected, Approval::Deny, ApprovalSource::Timeout) => {
-                output == "Tool error: permission denied"
+                matches!(
+                    output,
+                    "Tool error: permission denied" | vega_runtime::PERMISSION_TIMEOUT_OUTPUT
+                )
+            }
+            (RuntimeToolStatus::Rejected, Approval::Deny, ApprovalSource::Cancelled) => {
+                output == vega_runtime::PERMISSION_CANCELLED_OUTPUT
             }
             _ => false,
         };
@@ -1876,8 +1884,18 @@ pub(crate) fn validate_recovered_projection(
                             && output == "Tool error: denied: unavailable tool")
                             || (approval.source == ApprovalSource::Recovery
                                 && output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT)
-                            || (approval.source == ApprovalSource::Timeout
-                                && output == "Tool error: permission denied"))
+                            || matches!(
+                                (approval.source, output),
+                                (ApprovalSource::Timeout, "Tool error: permission denied")
+                                    | (
+                                        ApprovalSource::Timeout,
+                                        vega_runtime::PERMISSION_TIMEOUT_OUTPUT
+                                    )
+                                    | (
+                                        ApprovalSource::Cancelled,
+                                        vega_runtime::PERMISSION_CANCELLED_OUTPUT
+                                    )
+                            ))
                 }
             };
             if !valid_json
@@ -2031,7 +2049,9 @@ pub(crate) fn validate_recovered_projection(
                         output == legacy_unavailable_output(tool)
                             || output == "Tool error: permission denied"
                     }
-                    RuntimeToolStatus::Rejected => output == "Tool error: permission denied",
+                    RuntimeToolStatus::Rejected => {
+                        permission_rejection_output_matches(approval.source, output)
+                    }
                     RuntimeToolStatus::Cancelled
                         if output == vega_store::recovery::RECOVERY_CANCELLED_OUTPUT =>
                     {
@@ -2128,16 +2148,9 @@ pub(crate) fn validate_recovered_projection(
             }
             if tool != "bash"
                 && status == RuntimeToolStatus::Rejected
-                && !matches!(
-                    (approval.source, output),
-                    (
-                        ApprovalSource::Recovery,
-                        vega_store::recovery::RECOVERY_REJECTED_OUTPUT
-                    ) | (
-                        ApprovalSource::Timeout | ApprovalSource::User,
-                        "Tool error: permission denied"
-                    )
-                )
+                && !(permission_rejection_output_matches(approval.source, output)
+                    || (approval.source == ApprovalSource::Recovery
+                        && output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT))
             {
                 return Err(corrupt());
             }
@@ -2159,7 +2172,9 @@ pub(crate) fn validate_recovered_projection(
                         output == legacy_unavailable_output(tool)
                             || output == "Tool error: permission denied"
                     }
-                    RuntimeToolStatus::Rejected => output == "Tool error: permission denied",
+                    RuntimeToolStatus::Rejected => {
+                        permission_rejection_output_matches(approval.source, output)
+                    }
                     RuntimeToolStatus::Failed => is_safe_bash_failure(output),
                     RuntimeToolStatus::Cancelled => {
                         output == "Tool error: bash failed (cancelled)"
@@ -2189,6 +2204,29 @@ pub(crate) fn validate_recovered_projection(
             Ok(input_json.to_string())
         }
         _ => Err(corrupt()),
+    }
+}
+
+pub(crate) fn permission_rejection_output_matches(source: ApprovalSource, output: &str) -> bool {
+    match source {
+        ApprovalSource::Cancelled => output == vega_runtime::PERMISSION_CANCELLED_OUTPUT,
+        ApprovalSource::Unavailable => output == vega_runtime::PERMISSION_UNAVAILABLE_OUTPUT,
+        ApprovalSource::Timeout => matches!(
+            output,
+            "Tool error: permission denied" | vega_runtime::PERMISSION_TIMEOUT_OUTPUT
+        ),
+        ApprovalSource::User => matches!(
+            output,
+            "Tool error: permission denied" | vega_runtime::PERMISSION_DENIED_OUTPUT
+        ),
+        ApprovalSource::Danger => matches!(
+            output,
+            "Tool error: permission denied" | vega_runtime::DANGER_DENIED_OUTPUT
+        ),
+        ApprovalSource::ReadOnly | ApprovalSource::SandboxReadOnly => {
+            output == "Tool error: permission denied"
+        }
+        _ => false,
     }
 }
 
@@ -2325,7 +2363,7 @@ pub(crate) fn bash_danger_audit_matches(input_json: &str, approval: &ApprovalAud
                 && approval.note.is_none()
                 && matches!(audit.decision, Approval::Once | Approval::Always)
         }
-        ApprovalSource::Timeout => {
+        ApprovalSource::Timeout | ApprovalSource::Cancelled | ApprovalSource::Unavailable => {
             approval.decision == Approval::Deny
                 && approval.note.is_none()
                 && audit.decision == Approval::Deny
@@ -2351,6 +2389,42 @@ pub(crate) fn approval_source_matches(
     source: ApprovalSource,
     invalid_projection: bool,
 ) -> bool {
+    if matches!(
+        source,
+        ApprovalSource::Cancelled | ApprovalSource::Unavailable
+    ) {
+        return status == RuntimeToolStatus::Rejected
+            && !invalid_projection
+            && match source {
+                ApprovalSource::Unavailable => {
+                    matches!(
+                        tool,
+                        "Read" | "read" | "Write" | "write" | "Edit" | "edit" | "bash"
+                    ) || (tool == "grep"
+                        && crate::types::grep_permission_path(input_json).is_some())
+                }
+                ApprovalSource::Cancelled => {
+                    matches!(
+                        tool,
+                        "Read"
+                            | "read"
+                            | "Write"
+                            | "write"
+                            | "Edit"
+                            | "edit"
+                            | "bash"
+                            | "grep"
+                            | "glob"
+                            | "load_skill"
+                            | "read_skill_resource"
+                            | "get_goal"
+                            | "update_goal"
+                            | "schedule_wakeup"
+                    ) || vega_runtime::is_subagent_tool(tool)
+                }
+                _ => false,
+            };
+    }
     if vega_runtime::computer_use::ComputerUseRun::tool_capability(tool).is_some() {
         return if status == RuntimeToolStatus::Rejected {
             matches!(
