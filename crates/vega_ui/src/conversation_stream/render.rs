@@ -981,12 +981,7 @@ impl ConversationStream {
         let has_content = !self.entries.is_empty();
         let display = self.context_usage_display();
         let colors = theme(cx).colors;
-        let focused = self.context_usage_focus.contains_focused(window, cx);
-        let hovered = self.context_usage_trigger_hovered || self.context_usage_tooltip_hovered;
-        let shown = has_content
-            && (self.context_usage_open || (!self.context_usage_dismissed && (focused || hovered)));
         div()
-            .relative()
             .min_w_0()
             .flex_shrink_1()
             .flex()
@@ -996,45 +991,6 @@ impl ConversationStream {
                 has_content.then(|| self.render_context_usage_indicator(&display, colors, cx)),
             )
             .child(self.render_model_selector(window, cx))
-            .children(shown.then(|| {
-                let tooltip_hover = cx.listener(|this, hovered: &bool, _, cx| {
-                    this.context_usage_tooltip_hovered = *hovered;
-                    cx.notify();
-                });
-                div().absolute().top_0().right_0().size(px(0.0)).child(
-                    div().relative().child(
-                        anchored()
-                            .anchor(Anchor::BottomRight)
-                            .position_mode(AnchoredPositionMode::Local)
-                            .position(point(px(0.0), px(0.0)))
-                            .snap_to_window()
-                            .child(
-                                gpui_kit::deferred(
-                                    div()
-                                        .id("context-usage-tooltip-popover")
-                                        .on_hover(tooltip_hover)
-                                        .on_mouse_down_out(cx.listener(
-                                            |this, _: &MouseDownEvent, window, cx| {
-                                                if this.context_usage_open {
-                                                    cx.stop_propagation();
-                                                }
-                                                this.dismiss_context_usage(window, cx);
-                                            },
-                                        ))
-                                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                            cx.stop_propagation()
-                                        })
-                                        .child(
-                                            self.context_usage_tooltip_element(
-                                                &display, colors, cx,
-                                            ),
-                                        ),
-                                )
-                                .with_priority(2),
-                            ),
-                    ),
-                )
-            }))
             .into_any_element()
     }
 
@@ -1044,62 +1000,30 @@ impl ConversationStream {
         colors: ThemeColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let accessible_label = display.accessibility_label();
-        let control = div()
+        div()
             .id("composer-context-usage-hover-target")
+            .relative()
             .flex_shrink_0()
-            .min_h(px(Layout::TITLEBAR_CONTROL_SIZE))
-            .flex()
-            .items_center()
+            .size(px(Layout::CONTEXT_USAGE_SIZE))
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 this.context_usage_trigger_hovered = *hovered;
-                if *hovered {
-                    this.context_usage_dismissed = false;
-                }
                 cx.notify();
             }))
             .child(
                 div()
                     .id("composer-context-usage")
-                    .aria_label(accessible_label)
+                    .aria_label(display.accessibility_label())
                     .focusable()
                     .track_focus(&self.context_usage_focus)
                     .tab_stop(true)
-                    .capture_any_mouse_down(|_, _, cx| cx.stop_propagation())
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            if this.context_usage_open {
-                                this.dismiss_context_usage(window, cx);
-                            } else {
-                                this.close_composer_popovers(cx);
-                                this.context_usage_open = true;
-                                this.context_usage_dismissed = false;
-                                this.context_usage_focus.focus(window, cx);
-                                cx.notify();
-                            }
-                        }),
-                    )
-                    .on_key_down(
-                        cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                            match event.keystroke.key.as_str() {
-                                "escape" => this.dismiss_context_usage(window, cx),
-                                "enter" | "space" => {
-                                    if this.context_usage_open {
-                                        this.dismiss_context_usage(window, cx);
-                                    } else {
-                                        this.close_composer_popovers(cx);
-                                        this.context_usage_open = true;
-                                        this.context_usage_dismissed = false;
-                                        cx.notify();
-                                    }
-                                }
-                                _ => return,
-                            }
+                    .on_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                        if event.keystroke.key == "escape" {
+                            this.context_usage_trigger_hovered = false;
+                            cx.notify();
                             cx.stop_propagation();
-                        }),
-                    )
-                    .size(px(Layout::CONTEXT_USAGE_SIZE))
+                        }
+                    }))
+                    .size_full()
                     .rounded_full()
                     .flex()
                     .items_center()
@@ -1108,12 +1032,33 @@ impl ConversationStream {
                     .focus_visible(move |style| style.bg(colors.bg_hover))
                     .child(
                         div()
-                            .size(px(16.0))
+                            .size(px(Layout::ICON_SIZE))
                             .flex_shrink_0()
                             .child(Self::context_usage_ring(display, colors)),
                     ),
-            );
-        div().child(control).into_any_element()
+            )
+            .children(self.context_usage_trigger_hovered.then(|| {
+                div().absolute().top_0().left_0().size(px(0.0)).child(
+                    div().relative().child(
+                        anchored()
+                            .anchor(Anchor::BottomLeft)
+                            .position_mode(AnchoredPositionMode::Local)
+                            .position(point(
+                                px((Layout::CONTEXT_USAGE_SIZE - Layout::CONTEXT_USAGE_WIDTH)
+                                    / 2.0),
+                                px(-Layout::CONTEXT_USAGE_GAP),
+                            ))
+                            .snap_to_window()
+                            .child(
+                                gpui_kit::deferred(Self::context_usage_tooltip_element(
+                                    display, colors,
+                                ))
+                                .with_priority(2),
+                            ),
+                    ),
+                )
+            }))
+            .into_any_element()
     }
 
     fn context_usage_ring(display: &ContextUsageDisplay, colors: ThemeColors) -> AnyElement {
@@ -1159,151 +1104,33 @@ impl ConversationStream {
         .into_any_element()
     }
 
-    fn dismiss_context_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.context_usage_open = false;
-        self.context_usage_dismissed = true;
-        self.context_usage_trigger_hovered = false;
-        self.context_usage_tooltip_hovered = false;
-        self.context_usage_focus.focus(window, cx);
-        cx.notify();
-    }
-
     fn context_usage_tooltip_element(
-        &self,
         display: &ContextUsageDisplay,
         colors: ThemeColors,
-        cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let over_limit = display
-            .last_call_total
-            .zip(display.model_input_limit)
-            .is_some_and(|(used, limit)| used > limit);
-        let status_color = if over_limit {
-            colors.warning
-        } else {
-            colors.text_primary
-        };
-        let help = format!(
-            "{}；{}",
-            display.last_call_label(),
-            display.capacity_label()
-        );
         div()
             .id("context-usage-tooltip")
             .w(px(Layout::CONTEXT_USAGE_WIDTH))
-            .p(px(Layout::CONTEXT_USAGE_PADDING))
+            .px(px(Layout::CONTEXT_USAGE_PADDING))
+            .py(px(Layout::CONTEXT_USAGE_VERTICAL_PADDING))
             .flex()
             .flex_col()
-            .gap_3()
-            .rounded(px(Layout::TOOL_DETAIL_RADIUS))
+            .items_center()
+            .text_center()
+            .rounded(px(Layout::CONTEXT_USAGE_RADIUS))
             .border_1()
-            .border_color(colors.border_subtle)
-            .bg(colors.bg_elevated)
-            .shadow_sm()
-            .text_size(px(Typography::METADATA))
-            .text_color(colors.text_secondary)
+            .border_color(colors.context_tooltip_border)
+            .bg(colors.context_tooltip_bg)
+            .shadow_md()
+            .text_size(px(Typography::BODY))
+            .line_height(px(Layout::CONTEXT_USAGE_LINE_HEIGHT))
+            .text_color(colors.context_tooltip_secondary)
+            .child(div().child(vega_i18n::t("ui.context_window")))
+            .child(div().child(display.tooltip_status()))
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(Typography::BODY))
-                            .text_color(colors.text_primary)
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(vega_i18n::t("ui.context_usage")),
-                    )
-                    .child(
-                        div()
-                            .id("context-usage-help")
-                            .size(px(Layout::ICON_SIZE))
-                            .tooltip(move |_, cx| crate::icons::tooltip(help.clone(), cx))
-                            .child(crate::icons::icon(
-                                crate::icons::Icon::Help,
-                                colors.text_secondary,
-                            )),
-                    )
-                    .child(crate::icons::localized_icon_button(
-                        crate::icons::Icon::Close,
-                        "ui.close_context_usage",
-                        colors,
-                        cx.listener(|this, _, window, cx| this.dismiss_context_usage(window, cx)),
-                    )),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .children(display.percentage_value().map(|percentage| {
-                        div()
-                            .text_size(px(Typography::EMPTY_STATE_TITLE))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(status_color)
-                            .child(percentage)
-                    }))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(div().child(display.usage_label()))
-                            .child(
-                                div()
-                                    .text_color(colors.text_primary)
-                                    .child(display.compact_usage_label()),
-                            ),
-                    ),
-            )
-            .children(display.percentage_value().map(|_| {
-                div()
-                    .h(px(6.))
-                    .w_full()
-                    .rounded_full()
-                    .overflow_hidden()
-                    .bg(colors.border_subtle)
-                    .child(
-                        div()
-                            .h_full()
-                            .w(gpui_kit::relative(display.fill_fraction))
-                            .rounded_full()
-                            .bg(if over_limit {
-                                colors.warning
-                            } else {
-                                colors.accent
-                            }),
-                    )
-            }))
-            .children(
-                display
-                    .next_request_label()
-                    .map(|next| div().text_color(colors.text_secondary).child(next)),
-            )
-            .children(
-                (display.model_input_limit.is_none() || over_limit).then(|| {
-                    div()
-                        .text_color(if over_limit {
-                            colors.warning
-                        } else {
-                            colors.text_secondary
-                        })
-                        .child(if over_limit {
-                            vega_i18n::t("ui.configured_input_limit_exceeded")
-                        } else {
-                            vega_i18n::t("ui.input_limit_not_configured")
-                        })
-                }),
-            )
-            .on_key_down(
-                cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "escape" {
-                        this.dismiss_context_usage(window, cx);
-                        cx.stop_propagation();
-                    }
-                }),
+                    .text_color(colors.context_tooltip_primary)
+                    .child(display.tooltip_usage()),
             )
     }
 
@@ -1598,18 +1425,6 @@ impl Render for ConversationStream {
             self.reconcile_pending_focus(window, cx);
             self.prepare_thread_permission_focus(window, cx);
             self.prepare_automation_permission_focus(window, cx);
-        }
-        if !self.context_usage_focus.contains_focused(window, cx) {
-            self.context_usage_dismissed = false;
-        }
-        if self.context_usage_focus_subscriptions.is_none() {
-            let focus = self.context_usage_focus.clone();
-            let focus_in = cx.on_focus_in(&focus, window, |_, _, cx| cx.notify());
-            let focus_out = cx.on_focus_out(&focus, window, |this, _, _, cx| {
-                this.context_usage_dismissed = false;
-                cx.notify();
-            });
-            self.context_usage_focus_subscriptions = Some((focus_in, focus_out));
         }
         if !self.reading_preview && !self.selection_view_initialized {
             gpui_kit::base::TextSelection::clear(window, cx);

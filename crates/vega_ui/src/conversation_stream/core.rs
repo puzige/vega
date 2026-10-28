@@ -205,12 +205,7 @@ pub struct ConversationStream {
     pub(crate) permission_picker_open: bool,
     pub(crate) model_selector_highlight: usize,
     pub(crate) context_usage_focus: FocusHandle,
-    pub(crate) context_usage_focus_subscriptions:
-        Option<(gpui_kit::Subscription, gpui_kit::Subscription)>,
     pub(crate) context_usage_trigger_hovered: bool,
-    pub(crate) context_usage_tooltip_hovered: bool,
-    pub(crate) context_usage_open: bool,
-    pub(crate) context_usage_dismissed: bool,
     pub(crate) model_focus: FocusHandle,
     pub(crate) model_selection_pending: Option<(u64, String)>,
     /// Exact app-level owner for the in-flight model save. This is separate
@@ -431,9 +426,6 @@ impl ConversationStream {
                 .is_some_and(|settings| settings.0)
             {
                 this.context_usage_trigger_hovered = false;
-                this.context_usage_tooltip_hovered = false;
-                this.context_usage_open = false;
-                this.context_usage_dismissed = true;
                 cx.notify();
                 this.timeout_permission(cx);
                 this.cancel_automation_permission(cx);
@@ -642,11 +634,7 @@ impl ConversationStream {
             permission_picker_open: false,
             model_selector_highlight: 0,
             context_usage_focus: cx.focus_handle().tab_index(15).tab_stop(true),
-            context_usage_focus_subscriptions: None,
             context_usage_trigger_hovered: false,
-            context_usage_tooltip_hovered: false,
-            context_usage_open: false,
-            context_usage_dismissed: false,
             model_focus: cx.focus_handle().tab_index(16).tab_stop(true),
             model_selection_pending: None,
             model_selection_save_owner: None,
