@@ -174,6 +174,11 @@ impl Global for PendingDeleteConfirm {}
 
 pub enum SidebarEvent {
     ThreadDeleted(String),
+    ThreadOpened {
+        thread_id: String,
+        started: std::time::Instant,
+    },
+    OpeningChanged,
 }
 
 impl EventEmitter<SidebarEvent> for Sidebar {}
@@ -390,11 +395,29 @@ impl Sidebar {
     fn on_sessions_event(
         &mut self,
         _: Entity<ThreadsBlock>,
-        _: &ThreadsBlockEvent,
+        event: &ThreadsBlockEvent,
         cx: &mut Context<Self>,
     ) {
-        self.projects_block.update(cx, ProjectsBlock::reload);
-        cx.refresh_windows();
+        match event {
+            ThreadsBlockEvent::Opened { thread_id, started } => {
+                self.projects_block
+                    .update(cx, ProjectsBlock::reload_background);
+                cx.emit(SidebarEvent::ThreadOpened {
+                    thread_id: thread_id.clone(),
+                    started: *started,
+                });
+            }
+            ThreadsBlockEvent::OpeningChanged => cx.emit(SidebarEvent::OpeningChanged),
+            ThreadsBlockEvent::DraftOpened => {
+                self.projects_block.update(cx, ProjectsBlock::reload);
+                cx.refresh_windows();
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn opening_thread(&self, cx: &App) -> Option<(String, std::time::Instant)> {
+        self.sessions_block.read(cx).opening_thread(cx)
     }
 
     pub fn confirm_pending_delete(&mut self, cx: &mut Context<Self>) {
