@@ -175,6 +175,36 @@ async fn ready_timeout_revalidates_the_complete_snapshot_before_primary_recovery
              INSERT INTO image_attachments(message_id,ordinal,encoded) VALUES('live-owner',0,X'0708');
              INSERT INTO computer_screenshot_artifacts(call_id,message_id,ordinal) VALUES('live-call','live-owner',0);"
         )?;
+        let mut screenshot = [ChatMessage::assistant_with_tools(
+            String::new(),
+            vec![vega_runtime::ChatToolCall {
+                id: "live-call".into(),
+                name: "ComputerScreenshot".into(),
+                input_json: serde_json::json!({"target_id":"synthetic-window"}).to_string(),
+            }],
+        )];
+        vega_runtime::computer_use::redact_ephemeral_messages(&mut screenshot);
+        let audit = &screenshot[0].tool_calls[0].input_json;
+        assert!(
+            vega_runtime::computer_use::ComputerUseAudit::valid_for_tool(
+                "ComputerScreenshot",
+                audit,
+            )
+        );
+        let receipt = serde_json::json!({
+            "status":"delivered",
+            "artifact_id":"screenshot:live-call",
+            "delivery":"conversation_image_attachment",
+            "saved_in_history":true,
+            "read_only":true,
+            "unchanged":false,
+            "next_step":"continue_remaining_requested_work_or_finish",
+        })
+        .to_string();
+        store.conn().execute(
+            "UPDATE tool_calls SET input_json=?1,output_text=?2 WHERE id='live-call'",
+            vega_store::params![audit, receipt],
+        )?;
         let source = load_source(store.conn(), "thread")?;
         let mut visible = source.clone();
         visible.messages.last_mut().unwrap().status = "done".into();
@@ -231,7 +261,12 @@ async fn ready_timeout_revalidates_the_complete_snapshot_before_primary_recovery
         let result =
             vega_runtime::run_agent(&primary, &tools, agent_request, CancellationToken::new())
                 .await;
-        assert_eq!(reads.load(Ordering::SeqCst), 1, "{mutation}");
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            1,
+            "{mutation}: {:?}",
+            result.as_ref().err()
+        );
         if mutation == "unchanged" {
             let outcome = result?;
             assert!(!outcome.failed);

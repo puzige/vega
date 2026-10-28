@@ -164,6 +164,8 @@ conversation 使用当前系统、工具、模型及 replay frame 重建完整�
 
 首版消费提交 `33fa22034e164df474cb396d40f33ad526c21c84` 的 Actions [40748830780](https://github.com/puzige/vega/actions/runs/40748830780) 中 Clippy `123029714963` 成功，Nextest `123029714446` 与 required `123032384255` 失败：112 项执行、111 通过、1 失败、0 跳过，独立发现计数行未取得。失败是偏好回退 fixture 只有一个用户轮次，却以默认 prefix 策略期待前台生成；补齐可压缩的旧轮次并覆盖 prefix／full 两种策略，不改变生产策略或原断言。非实现者审查另发现消费超时未复核失败来源的 P2；按上段修复，修复后的云端和增量审查证据另记。
 
+超时围栏修复提交 `9e49dca0ee882082b3449238c9dcb9b83053d06e` 的 Actions [40753788063](https://github.com/puzige/vega/actions/runs/40753788063) 在开发测试编译阶段失败：两个 generation 查询断言误传临时 Transaction；未执行 Rust 回归，Clippy `123047142538`、Nextest `123047144562`、required `123049597329` 失败。`d4e8c74095116327e175235a1307766d7611ac09` 仅改为 API 所需的 Connection，独立增量审查无发现；其 Actions [40756538550](https://github.com/puzige/vega/actions/runs/40756538550) 的 Clippy `123056850951` 成功，Nextest `123056850626` 执行 113 项、112 通过、1 失败、0 跳过，required `123059526769` 失败，独立发现计数行未取得。偏好回退回归已通过；唯一超时竞争回归在变更注入前退出，fixture 将 read 改名为 ComputerScreenshot 却保留无效 `{}` 参数，不满足生产审计记录合同。改用既有桌面参数规范化函数构造合法审计及交付回执，保持七种变更、primary 请求数、完整快照与账单断言，未改变生产校验或超时恢复政策。修正后的云端结果另记；此前静态 Clear 不等于行为验证成功。
+
 ### 4.4 provider 与本机能力
 
 - 使用实际冻结模型定义中的 `context_window`、`max_output_tokens` 以及用户覆盖。既有配置的 input-limit / reserve 语义要显式迁移或适配，不把 input cap 偷换成 total window；不直接改用户本机配置/数据库。
