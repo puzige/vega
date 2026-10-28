@@ -160,6 +160,10 @@ conversation 使用当前系统、工具、模型及 replay frame 重建完整�
 
 开发回归覆盖：真实 SQLite 中合法追加后安装与 reload 一致且只安装一次；候选身份、前驱、当前模型、源编辑、消费后追加或追加截图／raw historical 正文变化均拒绝；取消发生在插入后时 checkpoint 与退役一起回滚；旧消费不能移除新 generation，usage 行及原始 transcript 不变。conversation 另覆盖当前模型 fit／不 fit、偏好不匹配、保留 live replay、完整请求预算和已结算计量。此阶段不把安全消费 API 视为自动 arming、registry／Stop／退出 drain 或整卡已完成。
 
+消费超时的失败恢复仍需来源授权：安装 guard 在事务校验前超时，也必须在返回可恢复的 SummaryTimedOut 前，于新的只读事务复核原候选／generation／依赖、完整消费快照围栏、完整 source version／fingerprint、当前模型及 pending model 状态。复用安装校验，不以 legacy fingerprint 代替追加 raw 正文和截图围栏；读取失败或任一来源变化均返回不可恢复的 SourceChanged，禁止 primary 发送旧请求。显式取消保持取消。回归覆盖未变来源可恢复超时，以及来源／追加隐藏正文／截图／模型／前驱变化与安装前超时同时发生时关闭恢复，checkpoint／候选／账单无额外变化。
+
+首版消费提交 `33fa22034e164df474cb396d40f33ad526c21c84` 的 Actions [40748830780](https://github.com/puzige/vega/actions/runs/40748830780) 中 Clippy `123029714963` 成功，Nextest `123029714446` 与 required `123032384255` 失败：112 项执行、111 通过、1 失败、0 跳过，独立发现计数行未取得。失败是偏好回退 fixture 只有一个用户轮次，却以默认 prefix 策略期待前台生成；补齐可压缩的旧轮次并覆盖 prefix／full 两种策略，不改变生产策略或原断言。非实现者审查另发现消费超时未复核失败来源的 P2；按上段修复，修复后的云端和增量审查证据另记。
+
 ### 4.4 provider 与本机能力
 
 - 使用实际冻结模型定义中的 `context_window`、`max_output_tokens` 以及用户覆盖。既有配置的 input-limit / reserve 语义要显式迁移或适配，不把 input cap 偷换成 total window；不直接改用户本机配置/数据库。

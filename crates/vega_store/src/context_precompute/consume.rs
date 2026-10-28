@@ -103,6 +103,30 @@ pub fn prepare_in_transaction(
     }))
 }
 
+pub fn validate_for_install_in_transaction(
+    transaction: &Transaction<'_>,
+    prepared: &PreparedConsumption,
+    model: &str,
+    now_ms: i64,
+) -> Result<bool, ContextCheckpointError> {
+    let candidate = &prepared.candidate;
+    let thread_id = &candidate.checkpoint.thread_id;
+    if ready::recover_in_transaction(transaction, thread_id, now_ms)?.as_ref() != Some(candidate) {
+        return Ok(false);
+    }
+    let current = validate_in_transaction(transaction, &prepared.source_fence)?;
+    if current.source_version != prepared.source.source_version
+        || current.fingerprint != prepared.source.fingerprint
+    {
+        return Ok(false);
+    }
+    Ok(transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM threads WHERE id=?1 AND model=?2 AND pending_model IS NULL)",
+        rusqlite::params![thread_id, model],
+        |row| row.get(0),
+    )?)
+}
+
 pub fn install_with_guard<F>(
     conn: &Connection,
     prepared: &PreparedConsumption,
@@ -138,23 +162,7 @@ where
             error => ContextCheckpointError::Store(error),
         })?;
     let candidate = &prepared.candidate;
-    if ready::recover_in_transaction(&transaction, &checkpoint.thread_id, now_ms)?.as_ref()
-        != Some(candidate)
-    {
-        return Ok(ContextCheckpointInstall::Stale);
-    }
-    let current = validate_in_transaction(&transaction, &prepared.source_fence)?;
-    if current.source_version != prepared.source.source_version
-        || current.fingerprint != prepared.source.fingerprint
-    {
-        return Ok(ContextCheckpointInstall::Stale);
-    }
-    let model_matches: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM threads WHERE id=?1 AND model=?2 AND pending_model IS NULL)",
-        rusqlite::params![checkpoint.thread_id, checkpoint.model],
-        |row| row.get(0),
-    )?;
-    if !model_matches {
+    if !validate_for_install_in_transaction(&transaction, prepared, &checkpoint.model, now_ms)? {
         return Ok(ContextCheckpointInstall::Stale);
     }
     let result = install_checkpoint_in_transaction(&transaction, checkpoint, &should_cancel)?;

@@ -1,6 +1,8 @@
 use super::*;
 use vega_runtime::{ContextCompactionUsageState, ReasoningReplayPolicy, ReplayFrame};
 
+mod timeout_tests;
+
 async fn publish(
     hook: &ConversationCompactionHook<'_>,
     request: ContextCompactionRequest,
@@ -354,23 +356,33 @@ async fn ready_consumption_rereads_credentials_and_honors_cancellation() -> Test
 
 #[tokio::test]
 async fn incompatible_ready_preferences_fall_back_to_foreground_generation() -> TestResult {
-    let (_directory, path, store) = source_fixture()?;
-    let request = input(&store)?;
-    let provider = BackgroundProvider::new("success", false);
-    let hook =
-        ConversationCompactionHook::new(&provider, path.clone(), "thread", "model", None, None);
-    publish(&hook, request.clone()).await?;
-    let hook = ConversationCompactionHook::new(&provider, path, "thread", "model", None, None)
-        .with_summary_requirements("Preserve the pending work".into())
-        .map_err(|failure| *failure.error)?;
-    let result = hook
-        .compact_with_replay(request, None, CancellationToken::new())
-        .await
-        .map_err(|failure| *failure.error)?;
-    assert_eq!(provider.0.requests.lock().unwrap().len(), 2);
-    assert_eq!(result.usages.len(), 1);
-    assert!(result.settled_usage.is_none());
-    assert_eq!(count(&store, "token_usage")?, 1);
-    assert_eq!(count(&store, "context_checkpoints")?, 1);
+    for full in [false, true] {
+        let (_directory, path, store) = source_fixture()?;
+        let request = input(&store)?;
+        let provider = BackgroundProvider::new("success", false);
+        let hook =
+            ConversationCompactionHook::new(&provider, path.clone(), "thread", "model", None, None);
+        publish(&hook, request.clone()).await?;
+        let candidate = ready::recover(store.conn(), "thread", now_ms())?.unwrap();
+        append(&store)?;
+        let request = current_input(&store, request)?;
+        let hook = ConversationCompactionHook::new(&provider, path, "thread", "model", None, None)
+            .with_full_on_threshold(full)
+            .with_summary_requirements("Preserve the pending work".into())
+            .map_err(|failure| *failure.error)?;
+        let result = hook
+            .compact_with_replay(request, None, CancellationToken::new())
+            .await
+            .map_err(|failure| *failure.error)?;
+        assert_eq!(provider.0.requests.lock().unwrap().len(), 2);
+        assert_eq!(result.usages.len(), 1);
+        assert!(result.settled_usage.is_none());
+        assert_eq!(count(&store, "token_usage")?, 1);
+        assert_eq!(count(&store, "context_checkpoints")?, 1);
+        assert_eq!(
+            ready::current_generation(&store.conn().unchecked_transaction()?, "thread")?,
+            Some(candidate.generation)
+        );
+    }
     Ok(())
 }
