@@ -1243,7 +1243,8 @@ async fn consecutive_partial_summaries_preserve_input_and_projection_order()
     let previous =
         vega_store::context_compaction::latest_checkpoint(store.conn(), "thread", "model")?
             .ok_or("partial checkpoint absent")?;
-    let template = projection::prefix_plan(&source, 4, None, None, true)?;
+    let template =
+        projection::prefix_plan(&source, 4, None, None, true).map_err(|failure| *failure.error)?;
     let ordered = projection::ordered_prefix_plan(&source, Some(&previous), template)
         .map_err(|failure| *failure.error)?;
     let ordered_text = ordered
