@@ -257,7 +257,7 @@ impl PreparedContextPrecompute {
             Err(VegaError::Cancelled) => (DiagnosticState::Cancelled, None, Default::default()),
             Err(error) => (
                 DiagnosticState::Failed,
-                super::super::diagnostics::failure_code(error),
+                Some(super::super::diagnostics::run_failure(error)),
                 super::super::diagnostics::failure_metrics(error),
             ),
         };

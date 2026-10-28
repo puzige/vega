@@ -1697,7 +1697,7 @@ impl ConversationCompactionHook<'_> {
                         &attempt_id,
                         vega_store::run_diagnostics::DiagnosticPhase::ContextSummary,
                         vega_store::run_diagnostics::DiagnosticState::Failed,
-                        super::diagnostics::failure_code(&error),
+                        Some(super::diagnostics::run_failure(&error)),
                         started_at,
                         super::diagnostics::with_failure_metrics(
                             summary_store_metrics(metrics),
@@ -1729,7 +1729,7 @@ impl ConversationCompactionHook<'_> {
                                     &attempt_id,
                                     vega_store::run_diagnostics::DiagnosticPhase::ContextSummary,
                                     vega_store::run_diagnostics::DiagnosticState::Failed,
-                                    super::diagnostics::failure_code(&error),
+                                    Some(super::diagnostics::run_failure(&error)),
                                     started_at,
                                     metrics,
                                 );
@@ -1770,7 +1770,13 @@ impl ConversationCompactionHook<'_> {
                         &attempt_id,
                         vega_store::run_diagnostics::DiagnosticPhase::ContextSummary,
                         state,
-                        super::diagnostics::failure_code(stage_failure.failure.error.as_ref()),
+                        (state == vega_store::run_diagnostics::DiagnosticState::Failed).then(
+                            || {
+                                super::diagnostics::run_failure(
+                                    stage_failure.failure.error.as_ref(),
+                                )
+                            },
+                        ),
                         started_at,
                         super::diagnostics::with_failure_metrics(
                             summary_store_metrics(&stage_failure.metrics),

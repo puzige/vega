@@ -17,6 +17,24 @@ impl Provider for DiagnosticProvider {
         Some(Box::new(move || Ok(Arc::new(provider))))
     }
 
+    fn chat_stream_with_metadata(
+        &self,
+        request: ChatRequest,
+        cancel: CancellationToken,
+    ) -> futures::future::BoxFuture<'static, Result<vega_runtime::ProviderStream, VegaError>> {
+        let response = self.chat_stream(request, cancel);
+        Box::pin(async move {
+            Ok(vega_runtime::ProviderStream {
+                events: response.await?,
+                metadata: vega_runtime::ProviderResponseMetadata {
+                    http_status: Some(200),
+                    request_id: Some("synthetic-secret-abcdefghijklmno".into()),
+                    retry_count: Some(2),
+                },
+            })
+        })
+    }
+
     fn chat_stream(
         &self,
         _request: ChatRequest,
@@ -40,16 +58,7 @@ impl Provider for DiagnosticProvider {
                 );
                 return Ok(stream);
             }
-            let mut events = vec![
-                usage,
-                Ok(ProviderEvent::ResponseMetadata(
-                    vega_runtime::ProviderResponseMetadata {
-                        http_status: Some(200),
-                        request_id: Some("synthetic-secret-abcdefghijklmno".into()),
-                        retry_count: Some(2),
-                    },
-                )),
-            ];
+            let mut events = vec![usage];
             if mode == "failure" {
                 events.push(Err(VegaError::ProviderDiagnostic {
                     kind: vega_runtime::ProviderFailureKind::Http,
@@ -125,7 +134,7 @@ async fn background_exit_persists_isolated_content_free_diagnostics_for_every_te
         assert_eq!(
             result.is_ok(),
             matches!(mode, "success" | "telemetry"),
-            "{mode}"
+            "{mode}: {result:?}"
         );
         foreground.flush_to(&store);
         let foreground_count: i64 = store.conn().query_row(

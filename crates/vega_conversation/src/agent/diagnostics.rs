@@ -116,13 +116,11 @@ impl DiagnosticsWriter {
                 events.push_back(event);
             }
             Some(DiagnosticsSink::Buffered(_)) => {}
-            Some(DiagnosticsSink::Compaction { events, capacity }) => {
-                if events.len() < *capacity {
-                    event.metrics.request_id = None;
-                    events.push_back(event);
-                }
+            Some(DiagnosticsSink::Compaction { events, capacity }) if events.len() < *capacity => {
+                event.metrics.request_id = None;
+                events.push_back(event);
             }
-            None => {}
+            Some(DiagnosticsSink::Compaction { .. }) | None => {}
         }
     }
 
