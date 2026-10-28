@@ -1207,6 +1207,9 @@ impl ConversationStream {
                     .on_action(cx.listener(Self::on_model_previous))
                     .on_action(cx.listener(Self::on_model_next))
                     .on_action(cx.listener(Self::on_model_close))
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .min_w(px(Layout::COMPOSER_TEXT_TRIGGER_HEIGHT))
                     .flex_shrink_1()
                     .truncate()
@@ -1231,7 +1234,7 @@ impl ConversationStream {
                     .child(
                         div()
                             .min_w_0()
-                            .h_full()
+                            .flex_shrink_1()
                             .flex()
                             .items_center()
                             .gap_1()
@@ -1241,6 +1244,7 @@ impl ConversationStream {
                                     .min_w_0()
                                     .flex_shrink_1()
                                     .truncate()
+                                    .text_center()
                                     .child(current.to_owned()),
                             )
                             .child(crate::icons::icon(

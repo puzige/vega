@@ -61,6 +61,9 @@
 ## 本轮云端交付
 
 - 复用上述精确版本的生产修复与 8 个回归测试，未改测试断言或验收；worktree 已安全快进至 `0b31956674ec7315828a87f65a9654c460083d51`。上游 permission_contracts 增量仅为首次提交的自动标题填充，未改本卡权限恢复函数。
-- 开发版本使用既有 PR Check 的全目标 Clippy、Python 检查和 Nextest 实际运行回归；不执行命令字符串中的危险操作。结果待 CI，未运行不标通过。
+- 开发版本 `693e06485d8c158a56af12e5f1eb0de09c3afc67` 的 [Actions 40788453465](https://github.com/puzige/vega/actions/runs/40788453465) 与集成 Bash 描述契约后版本 `fef11cadbd125ae1d8cb6ff0f06e0bb3348c919c` 的 [Actions 40789342177](https://github.com/puzige/vega/actions/runs/40789342177) 均通过：fmt、全目标 Clippy、三组 Python（5 / 15 / 40 tests）和 required check 成功；每轮 Nextest 均为 8 discovered / 8 executed / 8 passed / 0 skipped，无失败。不执行命令字符串中的危险操作。
+- 已由 GitHub contents API 验证[原始测试源码](https://github.com/puzige/vega/blob/693e06485d8c158a56af12e5f1eb0de09c3afc67/crates/vega_conversation/src/agent/full_access_audit_tests.rs)可达：Git blob `76e2edf1f83d8fdf9a0242b493ee875e729e8cca`，SHA-256 `e2b3d8076001fcdccf0ec111729c38c0ad065df9302048485c5e20c24d86a432`；[原始提交 patch](https://github.com/puzige/vega/commit/693e06485d8c158a56af12e5f1eb0de09c3afc67.patch)保留接线和完整改动，不依赖本机临时文件或 Actions artifact。
+- 非实现者独立审查及 #737 增量审查均无发现；静态审查不替代云端回归或用户桌面手测。清理版本删除上述已验证开发测试及 mod.rs 的 2 行独占接线，保留生产修复不变；最终门禁待 CI（空集不冒充回归通过）。
+- 最终交付前合入 `9a8a9ca5ab11ccaf6acb80404d25b6a1e332e1eb`，额外上游增量仅为 UI 按钮对齐，与本卡权限逻辑无关。
 - 开发回归通过后，在 PR 固定可访问测试源码及完整 SHA，按仓库政策清理开发测试与独占模块接线。最终 head 再跑完整 required CI；独立审查及门禁通过后 squash merge，Issue 保持开放并进入 In review 等待用户手测。
 - 无 UI 文案、权限检测规则、执行授权或 scope 行为变化；规格偏离：无。回滚为撤回 matcher 的 5 行兼容分支（会恢复原缺陷），不修改用户数据或安装应用。
