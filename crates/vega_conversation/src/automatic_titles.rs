@@ -26,6 +26,10 @@ impl std::fmt::Debug for AutomaticTitleRequest {
     }
 }
 
+pub(crate) fn fallback_title(source: &str) -> String {
+    normalized(source, 2000).chars().take(40).collect()
+}
+
 impl AutomaticTitleRequest {
     pub fn new(
         source: &str,
