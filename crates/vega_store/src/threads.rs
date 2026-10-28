@@ -402,6 +402,19 @@ pub fn update(
     )
 }
 
+pub fn seed_auto_title(
+    conn: &Connection,
+    id: &str,
+    message_id: &str,
+    fallback: &str,
+) -> rusqlite::Result<bool> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Threads,
+    )?;
+    Ok(conn.execute("UPDATE threads SET title = ?3, auto_title_claim = ?2 WHERE id = ?1 AND title = '' AND auto_title_state = 'eligible' AND NOT EXISTS (SELECT 1 FROM messages WHERE thread_id = ?1)", params![id, message_id, fallback])? == 1)
+}
+
 pub fn claim_auto_title(
     conn: &Connection,
     id: &str,
@@ -412,7 +425,7 @@ pub fn claim_auto_title(
         conn,
         crate::write_coordination::WriteCategory::Threads,
     )?;
-    Ok(conn.execute("UPDATE threads SET title = ?3, auto_title_state = 'claimed', auto_title_claim = ?2 WHERE id = ?1 AND title = '' AND auto_title_state = 'eligible' AND EXISTS (SELECT 1 FROM messages WHERE id = ?2 AND thread_id = ?1 AND role = 'user') AND NOT EXISTS (SELECT 1 FROM messages WHERE thread_id = ?1 AND id != ?2)", params![id, message_id, fallback])? == 1)
+    Ok(conn.execute("UPDATE threads SET title = ?3, auto_title_state = 'claimed', auto_title_claim = ?2 WHERE id = ?1 AND (title = '' OR auto_title_claim IS NOT NULL) AND auto_title_state = 'eligible' AND EXISTS (SELECT 1 FROM messages WHERE id = ?2 AND thread_id = ?1 AND role = 'user') AND NOT EXISTS (SELECT 1 FROM messages WHERE thread_id = ?1 AND id != ?2)", params![id, message_id, fallback])? == 1)
 }
 
 /// Applies only an unmodified title claim; manual rename wins even after ABA.
