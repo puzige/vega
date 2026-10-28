@@ -1010,7 +1010,14 @@ impl SettingsView {
                 }))
             })
             .child(self.render_default_permission_feedback(cx))
-            .child(self.render_permission_reset(cx))
+            .when(
+                !matches!(
+                    self.permission_reset.projection,
+                    vega_conversation::types::PermissionResetProjection::Idle
+                        | vega_conversation::types::PermissionResetProjection::Completed
+                ),
+                |section| section.child(self.render_permission_reset(cx)),
+            )
             .into_any_element()
     }
 

@@ -203,6 +203,8 @@
 "ui.paste" = "Paste"
 "ui.select_all" = "Select All"
 "ui.copy_code" = "Copy code"
+"ui.copy_command" = "Copy command"
+"ui.copy_output" = "Copy output"
 "ui.copy_conversation_id" = "Copy conversation ID"
 "ui.copy_current_terminal_screen_c" = "Copy current terminal screen (⌘C)"
 "ui.copy_final_reply" = "Copy final reply"

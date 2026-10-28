@@ -49,7 +49,9 @@ impl Projection {
     fn apply(self, cx: &mut App) {
         cx.set_global(SelectedProject(self.project));
         cx.set_global(OpenedThread(self.thread));
-        cx.set_global(SettingsOpen(self.settings));
+        if cx.global::<SettingsOpen>().0 != self.settings {
+            cx.set_global(SettingsOpen(self.settings));
+        }
     }
 }
 

@@ -63,7 +63,11 @@ impl SettingsView {
             Projection::Blocked { .. } => 3,
             _ => 0,
         };
-        window.focus(&self.permission_reset.focuses[index], cx);
+        if matches!(self.permission_reset.projection, Projection::Completed) {
+            window.focus(&self.permission_picker_focus(), cx);
+        } else {
+            window.focus(&self.permission_reset.focuses[index], cx);
+        }
     }
 
     fn permission_reset_button(
@@ -135,15 +139,7 @@ impl SettingsView {
             },
         ));
         match &self.permission_reset.projection {
-            Projection::Idle | Projection::Completed => panel
-                .child(self.permission_reset_button(
-                    Action::Prepare,
-                    !self.default_permission.io_pending()
-                        && !self.provider_management.saving
-                        && !self.codex_profile_saving,
-                    cx,
-                ))
-                .into_any_element(),
+            Projection::Idle | Projection::Completed => div().into_any_element(),
             Projection::Preparing => panel
                 .child(settings_status(
                     vega_i18n::t("ui.permission_reset_preparing"),
