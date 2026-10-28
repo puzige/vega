@@ -106,11 +106,13 @@
 
 #### 后台候选的 append-safe 来源围栏（2026-10-28）
 
-候选另外保存版本化 `ContextAppendFence`，只含 thread、捕获时最大 seq、旧来源 digest 和可选 streaming owner 的稳定身份／UTF-8 长度／最后完整 response cursor，不持久化原始消息、工具输出或凭据。捕获必须来自同一 SQLite 快照；除末尾已知 owner 外，既有消息和调用均已终态。owner 只在空白且无调用，或文本末尾恰好对应完整已结束响应组时可扩展，不能冻结半个响应。
+候选另外保存版本化 `ContextAppendFence`，只含 thread、捕获时消息与工具各自的最大 seq、旧来源 digest 和可选 streaming owner 的稳定身份／UTF-8 长度／最后完整 response cursor，不持久化原始消息、工具输出或凭据。捕获必须来自同一 SQLite 快照；除末尾已知 owner 外，既有消息和调用均已终态。owner 只在空白且无调用，或文本末尾恰好对应完整已结束响应组时可扩展，不能冻结半个响应。
 
-消费重新读取完整当前来源，再对捕获 seq 范围内的消息／调用及其历史投递元数据、工具回执、图片计算同一有界 digest；历史投递可能遮住的 user 原文也参与候选 digest。只允许该 owner 在原 UTF-8 前缀之后追加文本和新的完整响应组，状态由 streaming 变 done 可归一；新增工具不得挂到其他旧消息，旧响应不能追加同 response ID 的调用。新消息、调用和相关图片／历史元数据可在捕获 watermark 后追加，不应让有效候选无条件过期；同 seq 编辑、删行、旧图片或历史元数据变更、micro 标记变化、旧调用路径或 response 身份变化必须拒绝。此来源围栏不是授权：消费仍须当前 owner／模型／前驱／预算校验，重新构造投影后在最终事务内复核候选围栏并用当下完整来源 CAS 安装，不能拿捕获 digest 替代最终事务检查。原整体来源指纹算法及旧 checkpoint 兼容性不变。
+消费重新读取完整当前来源，再分别按消息／工具各自捕获 seq 范围，对消息／调用及其历史投递元数据、工具回执、图片计算同一有界 digest；历史投递可能遮住的 user 原文也参与候选 digest。只允许该 owner 在原 UTF-8 前缀之后追加文本和新的完整响应组，状态由 streaming 变 done 可归一；新增工具不得挂到其他旧消息，旧响应不能追加同 response ID 的调用。新消息、调用和相关图片／历史元数据可在捕获 watermark 后追加，不应让有效候选无条件过期；同 seq 编辑、删行、旧图片或历史元数据变更、micro 标记变化、旧调用路径或 response 身份变化必须拒绝。此来源围栏不是授权：消费仍须当前 owner／模型／前驱／预算校验，重新构造投影后在最终事务内复核候选围栏并用当下完整来源 CAS 安装，不能拿捕获 digest 替代最终事务检查。原整体来源指纹算法及旧 checkpoint 兼容性不变。
 
 开发回归覆盖正常追加与重载、空／有工具的 streaming owner、保留锚点和覆盖来源篡改、图片／历史元数据／micro／调用路径变化、旧消息挂新调用、同响应跨边界及无效围栏。该存储原语不单独宣称后台调度、候选 ready 持久化和消费接线已完成。
+
+增量审查发现 `29af6dc5e96fae589676043a9ecccde85f640942` 错将两张表的独立 seq 当作共同时间轴；真实 `messages::next_seq`／`tool_calls::next_seq` 各取自身表的 MAX，首个工具 seq=1 可以小于所属 assistant 消息 seq=2。修正为独立消息／工具边界，调用只按真实 message ID 归属，不比较跨表 seq 大小；保留所有内容／响应边界校验。fixture 使用真实分配器，并覆盖消息领先、工具领先、连续无跳号追加及同 owner 新调用。该提交 Actions [40709384606](https://github.com/puzige/vega/actions/runs/40709384606) 的 Nextest `122890170904` 原始汇总 80 发现／80 执行通过／0 跳过，Clippy `122890170383` 和 required `122892377437` 成功，但不能替代这项已确认的产品修复；修正后需要新版本审查和 CI。
 
 生成／安装拆分提交 `eaee6266a4896d69aabfa3b0114a4f741e7a7116` 的 Actions [40702321829](https://github.com/puzige/vega/actions/runs/40702321829) 已成功：Nextest `122865129665` 原始日志 73 发现、73 执行通过、0 跳过；Clippy `122865130027`、required `122867516709` 成功。非实现者独立增量审查无发现，包含前一 scripted reply 修正；仅此版本已验证，不覆盖后续 append-safe 修改。PR 仍为草稿。
 

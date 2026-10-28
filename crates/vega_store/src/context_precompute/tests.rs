@@ -7,15 +7,15 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 fn fixture(streaming: bool) -> Result<Store, Box<dyn std::error::Error>> {
     let store = Store::open(":memory:")?;
     store.migrate()?;
+    store.conn().execute(
+        "INSERT INTO threads(id,model,created_at,updated_at) VALUES('thread','model',1,1)",
+        [],
+    )?;
+    assert_eq!(insert_message(&store, "task", "user", "RAW_TASK")?, 1);
+    assert_eq!(insert_message(&store, "owner", "assistant", "好")?, 2);
+    assert_eq!(insert_call(&store, "call-1", "owner", "response-1", 3)?, 1);
     store.conn().execute_batch(
-        "INSERT INTO threads(id,model,created_at,updated_at) VALUES('thread','model',1,1);
-         INSERT INTO messages(id,thread_id,seq,role,content,status,created_at) VALUES
-             ('task','thread',1,'user','RAW_TASK','done',1),
-             ('owner','thread',2,'assistant','好','done',2);
-         INSERT INTO tool_calls(id,thread_id,message_id,seq,tool,input_json,output_text,status,created_at,text_offset_bytes)
-             VALUES('call-1','thread','owner',3,'read','{}','RESULT','success',3,3);
-         INSERT INTO tool_call_rounds(message_id,call_id,response_id) VALUES('owner','call-1','response-1');
-         INSERT INTO historical_message_delivery(message_id,thread_id,model_content)
+        "INSERT INTO historical_message_delivery(message_id,thread_id,model_content)
              VALUES('task','thread','PROJECTED_TASK');
          INSERT INTO historical_tool_receipts(call_id,thread_id,kind,source_thread_id,source_message_id,source_call_id,input_json,output_text,references_json)
              VALUES('call-1','thread','delegation','origin','original-owner','original-call','{}','HISTORICAL_RESULT','[]');
@@ -50,15 +50,46 @@ fn validate(
     Ok(result)
 }
 
+fn insert_message(
+    store: &Store,
+    id: &str,
+    role: &str,
+    content: &str,
+) -> Result<i64, rusqlite::Error> {
+    let seq = crate::messages::next_seq(store.conn(), "thread")?;
+    store.conn().execute(
+        "INSERT INTO messages(id,thread_id,seq,role,content,status,created_at) VALUES(?1,'thread',?2,?3,?4,'done',?2)",
+        params![id, seq, role, content],
+    )?;
+    Ok(seq)
+}
+
+fn insert_call(
+    store: &Store,
+    id: &str,
+    owner: &str,
+    response: &str,
+    offset: i64,
+) -> Result<i64, rusqlite::Error> {
+    let seq = crate::tool_calls::next_seq(store.conn(), "thread")?;
+    store.conn().execute(
+        "INSERT INTO tool_calls(id,thread_id,message_id,seq,tool,input_json,output_text,status,created_at,text_offset_bytes)
+         VALUES(?1,'thread',?2,?3,'read','{}','RESULT','success',?3,?4)",
+        params![id, owner, seq, offset],
+    )?;
+    store.conn().execute(
+        "INSERT INTO tool_call_rounds(message_id,call_id,response_id) VALUES(?1,?2,?3)",
+        params![owner, id, response],
+    )?;
+    Ok(seq)
+}
+
 fn append_turn(store: &Store) -> Result<(), rusqlite::Error> {
+    insert_message(store, "next-task", "user", "NEXT_TASK")?;
+    insert_message(store, "next-owner", "assistant", "new")?;
+    insert_call(store, "next-call", "next-owner", "next-response", 3)?;
     store.conn().execute_batch(
-        "INSERT INTO messages(id,thread_id,seq,role,content,status,created_at) VALUES
-             ('next-task','thread',10,'user','NEXT_TASK','done',10),
-             ('next-owner','thread',11,'assistant','new','done',11);
-         INSERT INTO tool_calls(id,thread_id,message_id,seq,tool,input_json,output_text,status,created_at,text_offset_bytes)
-             VALUES('next-call','thread','next-owner',12,'read','{}','NEXT_RESULT','success',12,3);
-         INSERT INTO tool_call_rounds(message_id,call_id,response_id) VALUES('next-owner','next-call','next-response');
-         INSERT INTO historical_message_delivery(message_id,thread_id,model_content) VALUES('next-task','thread','PROJECTED_NEXT');
+        "INSERT INTO historical_message_delivery(message_id,thread_id,model_content) VALUES('next-task','thread','PROJECTED_NEXT');
          INSERT INTO historical_tool_receipts(call_id,thread_id,kind,source_thread_id,source_message_id,source_call_id,input_json,output_text,references_json)
              VALUES('next-call','thread','delegation','origin','next-origin-owner','next-origin-call','{}','NEXT_HISTORY','[]');
          INSERT INTO image_attachments(message_id,ordinal,encoded) VALUES('next-task',0,X'040506');",
@@ -77,7 +108,7 @@ fn append_fence_accepts_new_turns_and_returns_the_current_full_source() -> TestR
     assert_eq!(validate(&store, &recovered)?, original);
     append_turn(&store)?;
     let current = validate(&store, &recovered)?;
-    assert_eq!(current.source_version, 12);
+    assert_eq!(current.source_version, 4);
     assert_ne!(current.fingerprint, original.fingerprint);
     assert_eq!(current.messages.len(), 4);
     assert_eq!(current.tool_calls.len(), 2);
@@ -101,12 +132,10 @@ fn append_fence_preserves_streaming_owner_prefix_and_complete_response_groups() 
     for terminal in [false, true] {
         let store = fixture(true)?;
         let (original, fence) = capture(&store, Some("owner"))?;
-        store.conn().execute_batch(
-            "UPDATE messages SET content='好追加' WHERE id='owner';
-             INSERT INTO tool_calls(id,thread_id,message_id,seq,tool,input_json,output_text,status,created_at,text_offset_bytes)
-                 VALUES('call-2','thread','owner',4,'read','{}','SECOND','success',4,9);
-             INSERT INTO tool_call_rounds(message_id,call_id,response_id) VALUES('owner','call-2','response-2');",
-        )?;
+        store
+            .conn()
+            .execute("UPDATE messages SET content='好追加' WHERE id='owner'", [])?;
+        assert_eq!(insert_call(&store, "call-2", "owner", "response-2", 9)?, 2);
         if terminal {
             store
                 .conn()
@@ -151,12 +180,14 @@ fn append_fence_accepts_an_empty_owner_without_fabricating_a_response_cursor() -
             .as_ref()
             .is_some_and(|owner| owner.response.is_none())
     );
-    store.conn().execute_batch(
-        "UPDATE messages SET content='first',status='done' WHERE id='owner';
-         INSERT INTO tool_calls(id,thread_id,message_id,seq,tool,input_json,output_text,status,created_at,text_offset_bytes)
-             VALUES('first-call','thread','owner',3,'read','{}','FIRST','success',3,5);
-         INSERT INTO tool_call_rounds(message_id,call_id,response_id) VALUES('owner','first-call','first-response');",
+    store.conn().execute(
+        "UPDATE messages SET content='first',status='done' WHERE id='owner'",
+        [],
     )?;
+    assert_eq!(
+        insert_call(&store, "first-call", "owner", "first-response", 5)?,
+        1
+    );
     assert_eq!(validate(&store, &fence)?.tool_calls.len(), 1);
     Ok(())
 }
@@ -213,21 +244,19 @@ fn append_fence_rejects_invalid_extensions_and_partial_capture_boundaries() -> T
     ] {
         let store = fixture(true)?;
         let (_, fence) = capture(&store, Some("owner"))?;
-        store.conn().execute_batch(
-            "UPDATE messages SET content='好追加' WHERE id='owner';
-             INSERT INTO tool_calls(id,thread_id,message_id,seq,tool,input_json,output_text,status,created_at,text_offset_bytes)
-                 VALUES('call-2','thread','owner',4,'read','{}','SECOND','success',4,9);
-             INSERT INTO tool_call_rounds(message_id,call_id,response_id) VALUES('owner','call-2','response-2');",
-        )?;
+        store
+            .conn()
+            .execute("UPDATE messages SET content='好追加' WHERE id='owner'", [])?;
+        assert_eq!(insert_call(&store, "call-2", "owner", "response-2", 9)?, 2);
         store.conn().execute(mutation, [])?;
         assert!(validate(&store, &fence).is_err(), "{mutation}");
     }
     let store = fixture(false)?;
     let (_, fence) = capture(&store, None)?;
-    store.conn().execute_batch(
-        "INSERT INTO tool_calls(id,thread_id,message_id,seq,tool,input_json,output_text,status,created_at,text_offset_bytes)
-             VALUES('injected','thread','owner',4,'read','{}','SECOND','success',4,3);",
-    )?;
+    assert_eq!(
+        insert_call(&store, "injected", "owner", "injected-response", 3)?,
+        2
+    );
     assert!(matches!(
         validate(&store, &fence),
         Err(ContextCheckpointError::Stale)
@@ -252,10 +281,12 @@ fn append_fence_tracks_screenshot_bytes_but_accepts_new_owner_artifacts() -> Tes
          INSERT INTO computer_screenshot_artifacts(call_id,message_id,ordinal) VALUES('call-1','owner',0);",
     )?;
     let (before, fence) = capture(&store, Some("owner"))?;
+    assert_eq!(
+        insert_call(&store, "screenshot-2", "owner", "response-2", 3)?,
+        2
+    );
     store.conn().execute_batch(
-        "INSERT INTO tool_calls(id,thread_id,message_id,seq,tool,input_json,output_text,status,created_at,text_offset_bytes)
-             VALUES('screenshot-2','thread','owner',4,'ComputerScreenshot','{}','RECEIPT','success',4,3);
-         INSERT INTO tool_call_rounds(message_id,call_id,response_id) VALUES('owner','screenshot-2','response-2');
+        "UPDATE tool_calls SET tool='ComputerScreenshot',output_text='RECEIPT' WHERE id='screenshot-2';
          INSERT INTO image_attachments(message_id,ordinal,encoded) VALUES('owner',1,X'040506');
          INSERT INTO computer_screenshot_artifacts(call_id,message_id,ordinal) VALUES('screenshot-2','owner',1);",
     )?;
@@ -276,13 +307,68 @@ fn append_fence_tracks_screenshot_bytes_but_accepts_new_owner_artifacts() -> Tes
 }
 
 #[test]
+fn append_fence_uses_independent_allocators_when_either_sequence_space_leads() -> TestResult {
+    for tools_lead in [false, true] {
+        let store = fixture(false)?;
+        for index in 0..6 {
+            if tools_lead {
+                insert_call(
+                    &store,
+                    &format!("old-call-{index}"),
+                    "owner",
+                    &format!("old-response-{index}"),
+                    3,
+                )?;
+            } else {
+                insert_message(&store, &format!("old-message-{index}"), "user", "old task")?;
+            }
+        }
+        let (source, fence) = capture(&store, None)?;
+        assert_eq!(fence.through_message_seq, if tools_lead { 2 } else { 8 });
+        assert_eq!(fence.through_tool_seq, if tools_lead { 7 } else { 1 });
+        let expected_message = crate::messages::next_seq(store.conn(), "thread")?;
+        assert_eq!(
+            insert_message(&store, "new-task", "user", "new task")?,
+            expected_message
+        );
+        let with_task = validate(&store, &fence)?;
+        assert_eq!(with_task.messages.len(), source.messages.len() + 1);
+        if tools_lead {
+            assert_eq!(with_task.source_version, source.source_version);
+        }
+        assert_eq!(
+            insert_message(&store, "new-owner", "assistant", "new reply")?,
+            expected_message + 1
+        );
+        let expected_call = crate::tool_calls::next_seq(store.conn(), "thread")?;
+        assert_eq!(
+            insert_call(&store, "new-call", "new-owner", "new-response", 9)?,
+            expected_call
+        );
+        let current = validate(&store, &fence)?;
+        assert_eq!(current.messages.len(), source.messages.len() + 2);
+        assert_eq!(current.tool_calls.len(), source.tool_calls.len() + 1);
+        store.conn().execute(
+            "UPDATE messages SET content='changed old task' WHERE id='task'",
+            [],
+        )?;
+        assert!(matches!(
+            validate(&store, &fence),
+            Err(ContextCheckpointError::Stale)
+        ));
+    }
+    Ok(())
+}
+
+#[test]
 fn append_fence_decoding_is_versioned_bounded_and_closed() -> TestResult {
     let store = fixture(false)?;
     let (_, fence) = capture(&store, None)?;
     let value = serde_json::to_value(&fence)?;
     for (field, replacement) in [
         ("schema", serde_json::json!(2)),
-        ("through_seq", serde_json::json!(u64::MAX)),
+        ("through_message_seq", serde_json::json!(u64::MAX)),
+        ("through_tool_seq", serde_json::json!(u64::MAX)),
         ("fingerprint", serde_json::json!("invalid")),
         ("unknown", serde_json::json!(true)),
         ("thread_id", serde_json::json!("")),

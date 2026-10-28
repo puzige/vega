@@ -14,7 +14,8 @@ mod tests;
 pub struct ContextAppendFence {
     schema: u32,
     thread_id: String,
-    through_seq: u64,
+    through_message_seq: u64,
+    through_tool_seq: u64,
     fingerprint: String,
     append_owner: Option<AppendOwner>,
 }
@@ -52,7 +53,8 @@ impl ContextAppendFence {
         if self.schema != 1
             || self.thread_id.is_empty()
             || self.thread_id.len() > 4096
-            || self.through_seq > i64::MAX as u64
+            || self.through_message_seq > i64::MAX as u64
+            || self.through_tool_seq > i64::MAX as u64
             || self.fingerprint.len() != 64
             || !self
                 .fingerprint
@@ -64,7 +66,7 @@ impl ContextAppendFence {
         if let Some(owner) = &self.append_owner {
             if owner.message_id.is_empty()
                 || owner.message_id.len() > 4096
-                || owner.message_seq > self.through_seq
+                || owner.message_seq > self.through_message_seq
                 || owner.text_bytes > 64 * 1024 * 1024
             {
                 return Err(ContextCheckpointError::Invalid);
@@ -75,7 +77,7 @@ impl ContextAppendFence {
                         && cursor.message_seq == owner.message_seq
                         && cursor.assistant.as_ref().is_some_and(|response| {
                             response.text_bytes == owner.text_bytes
-                                && response.tool_seq <= self.through_seq
+                                && response.tool_seq <= self.through_tool_seq
                                 && !response.tool_id.is_empty()
                                 && response.tool_id.len() <= 4096
                                 && response
@@ -107,7 +109,19 @@ pub fn capture_in_transaction(
     let mut fence = ContextAppendFence {
         schema: 1,
         thread_id: source.thread_id.clone(),
-        through_seq: source.source_version,
+        through_message_seq: u64::try_from(
+            source.messages.iter().map(|row| row.seq).max().unwrap_or(0),
+        )
+        .map_err(|_| ContextCheckpointError::Invalid)?,
+        through_tool_seq: u64::try_from(
+            source
+                .tool_calls
+                .iter()
+                .map(|row| row.seq)
+                .max()
+                .unwrap_or(0),
+        )
+        .map_err(|_| ContextCheckpointError::Invalid)?,
         fingerprint: "0".repeat(64),
         append_owner,
     };
@@ -183,14 +197,21 @@ fn captured_prefix(
     current: &ContextSource,
     fence: &ContextAppendFence,
 ) -> Result<ContextSource, ContextCheckpointError> {
-    if current.thread_id != fence.thread_id || current.source_version < fence.through_seq {
+    if current.thread_id != fence.thread_id
+        || current.source_version < fence.through_message_seq.max(fence.through_tool_seq)
+    {
         return Err(ContextCheckpointError::Stale);
     }
     validate_current_source(current, fence)?;
-    let through = i64::try_from(fence.through_seq).map_err(|_| ContextCheckpointError::Invalid)?;
+    let through_message =
+        i64::try_from(fence.through_message_seq).map_err(|_| ContextCheckpointError::Invalid)?;
+    let through_tool =
+        i64::try_from(fence.through_tool_seq).map_err(|_| ContextCheckpointError::Invalid)?;
     let mut captured = current.clone();
-    captured.messages.retain(|message| message.seq <= through);
-    captured.tool_calls.retain(|call| call.seq <= through);
+    captured
+        .messages
+        .retain(|message| message.seq <= through_message);
+    captured.tool_calls.retain(|call| call.seq <= through_tool);
     let message_ids = captured
         .messages
         .iter()
@@ -207,7 +228,7 @@ fn captured_prefix(
                 || call.output_text.is_none()
         })
         || current.tool_calls.iter().any(|call| {
-            call.seq > through
+            call.seq > through_tool
                 && message_ids.contains(call.message_id.as_str())
                 && fence
                     .append_owner
@@ -285,10 +306,10 @@ fn validate_current_source(
         let message = messages
             .get(call.message_id.as_str())
             .ok_or(ContextCheckpointError::Stale)?;
-        if message.role != "assistant" || call.seq <= message.seq {
+        if message.role != "assistant" {
             return Err(ContextCheckpointError::Stale);
         }
-        if call.seq as u64 <= fence.through_seq {
+        if call.seq as u64 <= fence.through_tool_seq {
             if let Some(response) = &call.response_id {
                 prior_responses.insert((call.message_id.as_str(), response.as_str()));
             }
