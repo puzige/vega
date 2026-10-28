@@ -992,7 +992,7 @@ impl ConversationStream {
     /// Fails the visible/pending prompt closed before Settings, thread switch,
     /// or window teardown hides the card.
     pub fn timeout_permission(&mut self, cx: &mut Context<Self>) {
-        self.permission_queue.timeout_active();
+        self.permission_queue.unavailable_active();
         drop(self.deferred_permission.take());
         drop(self.deferred_scope_permission.take());
         self.remove_active_permission(cx);

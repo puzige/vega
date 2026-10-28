@@ -845,9 +845,6 @@ pub(crate) async fn authorize_call(
 ) -> Result<Authorization, VegaError> {
     match prepared {
         PreparedRuntimeCall::InvalidRead(call) => {
-            if cancel.is_cancelled() {
-                return Ok(cancelled_permission(call));
-            }
             Ok(Authorization::Terminal(invalid_read_result(call)))
         }
         PreparedRuntimeCall::InvalidUserQuestion { call, code } => {
@@ -989,7 +986,17 @@ pub(crate) async fn authorize_call(
                 )));
             }
             if cancel.is_cancelled() || frozen.is_revoked() {
-                return Ok(cancelled_permission(call));
+                return Ok(Authorization::Terminal(terminal_result(
+                    call,
+                    "Tool error: MCP call not approved".to_string(),
+                    RuntimeToolStatus::Rejected,
+                    Some(RuntimeApprovalAudit {
+                        decision: RuntimeApprovalDecision::Deny,
+                        note: None,
+                        source: RuntimeApprovalSource::Timeout,
+                        danger: None,
+                    }),
+                )));
             }
             let decision =
                 wait_for_mcp_permission(hook, prompt.clone(), config.permission_timeout, cancel)
@@ -1009,7 +1016,9 @@ pub(crate) async fn authorize_call(
                         danger: None,
                     }
                 }
-                RuntimeUserDecision::Timeout => RuntimeApprovalAudit {
+                RuntimeUserDecision::Timeout
+                | RuntimeUserDecision::Cancelled
+                | RuntimeUserDecision::Unavailable => RuntimeApprovalAudit {
                     decision: RuntimeApprovalDecision::Deny,
                     note: None,
                     source: RuntimeApprovalSource::Timeout,
@@ -1113,6 +1122,18 @@ pub(crate) async fn authorize_call(
                     RuntimeApprovalSource::Timeout,
                     false,
                 ),
+                RuntimeUserDecision::Cancelled => (
+                    RuntimeApprovalDecision::Deny,
+                    None,
+                    RuntimeApprovalSource::Cancelled,
+                    false,
+                ),
+                RuntimeUserDecision::Unavailable => (
+                    RuntimeApprovalDecision::Deny,
+                    None,
+                    RuntimeApprovalSource::Unavailable,
+                    false,
+                ),
             };
             let audit = RuntimeApprovalAudit {
                 decision,
@@ -1120,13 +1141,14 @@ pub(crate) async fn authorize_call(
                 source,
                 danger: None,
             };
-            if cancel.is_cancelled() {
+            if cancel.is_cancelled() && decision != RuntimeApprovalDecision::Deny {
                 return Ok(cancelled_permission(prepared.call()));
             }
             if decision == RuntimeApprovalDecision::Deny {
+                let output = permission_feedback(source);
                 Ok(Authorization::Terminal(terminal_result(
                     call,
-                    "Tool error: permission denied".into(),
+                    output.to_string(),
                     RuntimeToolStatus::Rejected,
                     Some(audit),
                 )))
@@ -1258,9 +1280,9 @@ async fn wait_for_mcp_permission(
     let future = hook.request_mcp(prompt, prompt_cancel.clone());
     let decision = tokio::select! {
         biased;
-        _ = cancel.cancelled() => RuntimeUserDecision::Timeout,
+        _ = cancel.cancelled() => RuntimeUserDecision::Cancelled,
         _ = tokio::time::sleep(timeout) => RuntimeUserDecision::Timeout,
-        response = future => response.unwrap_or(RuntimeUserDecision::Timeout),
+        response = future => response.unwrap_or(RuntimeUserDecision::Unavailable),
     };
     prompt_cancel.cancel();
     decision
@@ -1327,13 +1349,18 @@ pub(crate) fn permission_outcome(
             audit,
             remember_rule,
         } => {
+            let output = if audit.source == RuntimeApprovalSource::Danger {
+                crate::DANGER_DENIED_OUTPUT
+            } else {
+                permission_feedback(audit.source)
+            };
             let mut result = terminal_result(
                 &RuntimeToolCall {
                     id: target.call_id.clone(),
                     name: target.tool.as_str().to_string(),
                     input_json: String::new(),
                 },
-                "Tool error: permission denied".to_string(),
+                output.to_string(),
                 RuntimeToolStatus::Rejected,
                 Some(audit),
             );
@@ -1354,12 +1381,21 @@ pub(crate) async fn wait_for_permission(
     let future = hook.request(prompt, prompt_cancel.clone());
     let waited = tokio::select! {
         biased;
-        _ = prompt_cancel.cancelled() => (RuntimeUserDecision::Timeout, true),
+        decision = future => (decision.unwrap_or(RuntimeUserDecision::Unavailable), false),
+        _ = cancel.cancelled() => (RuntimeUserDecision::Cancelled, true),
+        _ = prompt_cancel.cancelled() => (RuntimeUserDecision::Unavailable, false),
         _ = tokio::time::sleep(timeout) => (RuntimeUserDecision::Timeout, false),
-        decision = future => (decision.unwrap_or(RuntimeUserDecision::Timeout), false),
     };
-    let waited = if prompt_cancel.is_cancelled() {
-        (RuntimeUserDecision::Timeout, true)
+    let waited = if matches!(
+        waited.0,
+        RuntimeUserDecision::Once | RuntimeUserDecision::Always
+    ) && prompt_cancel.is_cancelled()
+    {
+        if cancel.is_cancelled() {
+            (RuntimeUserDecision::Cancelled, true)
+        } else {
+            (RuntimeUserDecision::Unavailable, false)
+        }
     } else {
         waited
     };
@@ -1385,15 +1421,26 @@ pub(crate) fn run_mode_denial() -> RuntimeApprovalAudit {
     }
 }
 
+fn permission_feedback(source: RuntimeApprovalSource) -> &'static str {
+    match source {
+        RuntimeApprovalSource::Danger => crate::DANGER_DENIED_OUTPUT,
+        RuntimeApprovalSource::Timeout => crate::PERMISSION_TIMEOUT_OUTPUT,
+        RuntimeApprovalSource::Cancelled => crate::PERMISSION_CANCELLED_OUTPUT,
+        RuntimeApprovalSource::Unavailable => crate::PERMISSION_UNAVAILABLE_OUTPUT,
+        RuntimeApprovalSource::User => crate::PERMISSION_DENIED_OUTPUT,
+        _ => "Tool error: permission denied",
+    }
+}
+
 pub(crate) fn cancelled_permission(call: &RuntimeToolCall) -> Authorization {
     Authorization::Terminal(terminal_result(
         call,
-        "Tool error: permission denied".to_string(),
+        crate::PERMISSION_CANCELLED_OUTPUT.to_string(),
         RuntimeToolStatus::Rejected,
         Some(RuntimeApprovalAudit {
             decision: RuntimeApprovalDecision::Deny,
             note: None,
-            source: RuntimeApprovalSource::Timeout,
+            source: RuntimeApprovalSource::Cancelled,
             danger: None,
         }),
     ))

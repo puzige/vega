@@ -92,9 +92,12 @@ pub enum RuntimeUserDecision {
     /// Allow and remember the exact signature.
     Always,
     /// Reject, optionally with a user note.
-    Deny { note: Option<String> },
-    /// Permission wait expired or disappeared.
+    Deny {
+        note: Option<String>,
+    },
     Timeout,
+    Cancelled,
+    Unavailable,
 }
 
 /// Persistable approval decision.
@@ -129,6 +132,8 @@ pub enum RuntimeApprovalSource {
     User,
     /// Permission timeout.
     Timeout,
+    Cancelled,
+    Unavailable,
     /// Invalid tool input rejected without permission or execution.
     Validation,
     /// Read-only built-in tool.
@@ -503,6 +508,18 @@ fn user_parts(
             RuntimeApprovalDecision::Deny,
             None,
             RuntimeApprovalSource::Timeout,
+            false,
+        ),
+        RuntimeUserDecision::Cancelled => (
+            RuntimeApprovalDecision::Deny,
+            None,
+            RuntimeApprovalSource::Cancelled,
+            false,
+        ),
+        RuntimeUserDecision::Unavailable => (
+            RuntimeApprovalDecision::Deny,
+            None,
+            RuntimeApprovalSource::Unavailable,
             false,
         ),
     }
