@@ -121,6 +121,7 @@ struct ToolDetail {
     title: Option<String>,
     command: Option<String>,
     output: Vec<String>,
+    output_copy: Option<String>,
     footer: Option<(String, ToolActivityState)>,
 }
 
@@ -914,6 +915,7 @@ impl ToolCard {
             title: None,
             command: None,
             output: current.output_rows.clone(),
+            output_copy: None,
             footer: None,
         });
         let detail_scroll = current.detail_scroll.clone();
@@ -1375,13 +1377,19 @@ impl ToolCard {
         match &self.input {
             Some(ToolCardInputProjection::Bash { command }) => Some(ToolDetail {
                 title: Some(self.bash_detail_title()),
-                command: Some(format!("$ {command}")),
+                command: Some(command.clone()),
                 output: if self.output_rows.is_empty()
                     && self.activity_state() != ToolActivityState::Active
                 {
                     vec![vega_i18n::t("ui.no_output").to_string()]
                 } else {
                     self.output_rows.clone()
+                },
+                output_copy: match &self.result {
+                    Some(ToolCardResultProjection::Bash { output, .. }) if !output.is_empty() => {
+                        Some(output.clone())
+                    }
+                    _ => None,
                 },
                 footer: Some((self.terminal_footer(), self.activity_state())),
             }),
@@ -1392,6 +1400,7 @@ impl ToolCard {
                 title: None,
                 command: None,
                 output: self.output_rows.clone(),
+                output_copy: None,
                 footer: None,
             }),
             Some(
@@ -1400,6 +1409,7 @@ impl ToolCard {
                 title: None,
                 command: None,
                 output: self.output_rows.clone(),
+                output_copy: None,
                 footer: None,
             }),
             Some(ToolCardInputProjection::CodexAcp { .. }) if !self.output_rows.is_empty() => {
@@ -1415,6 +1425,7 @@ impl ToolCard {
                         }
                         _ => self.output_rows.clone(),
                     },
+                    output_copy: None,
                     footer: None,
                 })
             }
@@ -1696,21 +1707,42 @@ fn render_detail(
         ));
     }
     if let Some(command) = detail.command {
-        rows.push(detail_row(
+        let text = detail_row(
             "tool-detail-command",
-            command,
+            format!("$ {command}"),
             colors.text_primary,
             true,
+        );
+        let source = (!command.is_empty()).then_some(command);
+        rows.push(detail_copy_region(
+            text,
+            source,
+            format!("{id}-copy-command"),
+            vega_i18n::t("ui.copy_command"),
+            colors,
         ));
     }
-    rows.extend(detail.output.into_iter().enumerate().map(|(index, line)| {
-        detail_row(
-            gpui_kit::SharedString::from(format!("tool-output-{index}")),
-            line,
-            colors.text_primary,
-            true,
-        )
-    }));
+    let output = div()
+        .w_full()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .children(detail.output.into_iter().enumerate().map(|(index, line)| {
+            detail_row(
+                gpui_kit::SharedString::from(format!("tool-output-{index}")),
+                line,
+                colors.text_primary,
+                true,
+            )
+        }))
+        .into_any_element();
+    rows.push(detail_copy_region(
+        output,
+        detail.output_copy,
+        format!("{id}-copy-output"),
+        vega_i18n::t("ui.copy_output"),
+        colors,
+    ));
     if let Some((footer, state)) = detail.footer {
         let color = if state == ToolActivityState::Success {
             colors.text_secondary
@@ -1777,6 +1809,33 @@ fn render_detail(
             )
         })
         .child(disclosure_scrollbar(scroll, cx))
+        .into_any_element()
+}
+
+fn detail_copy_region(
+    content: AnyElement,
+    source: Option<String>,
+    id: String,
+    label: &'static str,
+    colors: &ThemeColors,
+) -> AnyElement {
+    let Some(source) = source else {
+        return content;
+    };
+    div()
+        .w_full()
+        .min_w_0()
+        .flex_shrink_0()
+        .flex()
+        .items_start()
+        .gap(px(Layout::COPY_ACTION_GAP))
+        .child(div().min_w_0().flex_1().child(content))
+        .child(crate::conversation_stream::tool_text_copy_button(
+            id.into(),
+            source,
+            label,
+            *colors,
+        ))
         .into_any_element()
 }
 
