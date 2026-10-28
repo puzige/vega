@@ -380,7 +380,7 @@ async fn incompatible_ready_preferences_fall_back_to_foreground_generation() -> 
         assert_eq!(count(&store, "token_usage")?, 1);
         assert_eq!(count(&store, "context_checkpoints")?, 1);
         assert_eq!(
-            ready::current_generation(&store.conn().unchecked_transaction()?, "thread")?,
+            ready::current_generation(store.conn(), "thread")?,
             Some(candidate.generation)
         );
     }

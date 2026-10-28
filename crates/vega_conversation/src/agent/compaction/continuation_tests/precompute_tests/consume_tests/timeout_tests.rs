@@ -263,7 +263,7 @@ async fn ready_timeout_revalidates_the_complete_snapshot_before_primary_recovery
         assert_eq!(count(&store, "context_precompute_stages")?, 1);
         assert_eq!(count(&store, "context_precompute_ready")?, 1);
         assert_eq!(
-            ready::current_generation(&store.conn().unchecked_transaction()?, "thread")?,
+            ready::current_generation(store.conn(), "thread")?,
             Some(candidate.generation)
         );
         if matches!(mutation, "hidden_body" | "screenshot") {
