@@ -58,7 +58,22 @@ impl ThreadPermissionService {
                 }
                 false
             }
-            None if source.parent_thread_id.is_none() && source.full_access_grant.is_none() => true,
+            None if source.parent_thread_id.is_none()
+                && source.forked_from_thread_id.is_none()
+                && source.forked_from_message_id.is_none()
+                && source.full_access_grant.as_ref().is_none_or(|grant| {
+                    source.permission_mode == PermissionMode::FullAccess
+                        && source.default_permission.is_none()
+                        && grant.verifies(
+                            &state.authority_epoch,
+                            &FullAccessScope::Thread {
+                                thread_id: source.id.clone(),
+                            },
+                        )
+                }) =>
+            {
+                true
+            }
             None => return Err(ThreadPermissionError::Conflict),
         };
         tx.commit().map_err(unavailable)?;
@@ -124,11 +139,6 @@ impl ThreadPermissionService {
         } else {
             None
         };
-        let encoded = grant
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(unavailable)?;
         let revision = change
             .source
             .permission_revision
@@ -142,8 +152,15 @@ impl ThreadPermissionService {
                 default_permission: None,
                 ..change.source.clone()
             };
-            crate::threads::materialize_draft_in_transaction(&tx, &next).map_err(unavailable)?;
-        } else if !vega_store::permission_contracts::compare_exchange_thread(
+            tx.commit().map_err(unavailable)?;
+            return Ok(next);
+        }
+        let encoded = grant
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(unavailable)?;
+        if !vega_store::permission_contracts::compare_exchange_thread(
             &tx,
             &change.source.id,
             change.source.permission_revision,

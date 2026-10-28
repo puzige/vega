@@ -183,17 +183,11 @@ fn persist_permission_selection(
     if change.is_draft() && draft.as_ref() != Some(&source) {
         return Err(ThreadPermissionError::Conflict);
     }
-    if change.is_draft() && mode != PermissionMode::FullAccess {
-        Ok(Outcome::Draft(Thread {
-            permission_mode: mode,
-            full_access_grant: None,
-            default_permission: None,
-            ..source
-        }))
+    let saved = service.save(&change, mode == PermissionMode::FullAccess)?;
+    if change.is_draft() {
+        Ok(Outcome::Draft(saved))
     } else {
-        service
-            .save(&change, mode == PermissionMode::FullAccess)
-            .map(Outcome::Saved)
+        Ok(Outcome::Saved(saved))
     }
 }
 

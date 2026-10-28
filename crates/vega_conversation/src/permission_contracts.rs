@@ -70,13 +70,15 @@ impl DraftCreationGuard {
             || draft.parent_thread_id.is_some()
             || draft.forked_from_thread_id.is_some()
             || draft.forked_from_message_id.is_some()
-            || draft.permission_revision != 0
-            || draft.full_access_grant.is_some()
+            || !(0..i64::MAX).contains(&draft.permission_revision)
             || ulid::Ulid::from_string(&draft.id).is_err()
         {
             return Err(ConversationError::InvalidTaskIdentity);
         }
         let config = if let Some(snapshot) = &draft.default_permission {
+            if draft.permission_revision != 0 || draft.full_access_grant.is_some() {
+                return Err(ConversationError::InvalidTaskIdentity);
+            }
             let path = snapshot
                 .config_path
                 .as_deref()
@@ -93,8 +95,14 @@ impl DraftCreationGuard {
             }
             Some(edit)
         } else {
-            if draft.permission_mode == PermissionMode::FullAccess {
-                return Err(ConversationError::InvalidTaskIdentity);
+            match draft.permission_mode {
+                PermissionMode::FullAccess => {
+                    verify_thread_grant(store.conn(), &draft.id, draft.full_access_grant.as_ref())?;
+                }
+                _ if draft.full_access_grant.is_some() => {
+                    return Err(ConversationError::InvalidTaskIdentity);
+                }
+                _ => {}
             }
             None
         };

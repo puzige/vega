@@ -925,22 +925,44 @@ impl VegaWindow {
             .is_none_or(|previous| previous.model != defaults.model);
         if defaults_changed {
             cx.set_global(defaults.clone());
-            if let Some(draft) = self.draft.as_mut()
-                && default_model_changed
-                && !self
-                    .agent_controller
-                    .ordinary_preparing
-                    .contains_key(&draft.id)
-                && !self
-                    .automation_controller
-                    .draft_creation
+        }
+        if let Some(draft) = self.draft.as_mut()
+            && (default_model_changed
+                || draft
+                    .default_permission
                     .as_ref()
-                    .is_some_and(|(thread, _)| thread == &draft.id)
-            {
+                    .is_some_and(|permission| permission != &defaults.permission))
+            && !self.trusted_actions.is_busy()
+            && !self
+                .agent_controller
+                .ordinary_preparing
+                .contains_key(&draft.id)
+            && !self
+                .automation_controller
+                .draft_creation
+                .as_ref()
+                .is_some_and(|(thread, _)| thread == &draft.id)
+        {
+            if default_model_changed {
                 draft.model = defaults.model;
-                let draft = draft.clone();
+            }
+            if draft.default_permission.is_some() {
+                draft.permission_mode = PermissionMode::parse(&defaults.permission.permission_mode)
+                    .unwrap_or(PermissionMode::Confirm);
+                draft.full_access_grant = None;
+                draft.default_permission = Some(defaults.permission);
+            }
+            let draft = draft.clone();
+            if cx
+                .global::<OpenedThread>()
+                .0
+                .as_ref()
+                .is_some_and(|opened| opened.id == draft.id)
+            {
                 cx.set_global(OpenedThread(Some(draft.clone())));
-                if let Some((_, stream)) = &self.stream_view {
+                if let Some((_, stream)) = &self.stream_view
+                    && stream.read(cx).thread_snapshot().id == draft.id
+                {
                     stream.update(cx, |stream, cx| stream.apply_thread(draft, cx));
                 }
             }
