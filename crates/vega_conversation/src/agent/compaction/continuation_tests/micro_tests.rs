@@ -299,15 +299,14 @@ async fn micro_accepts_partial_retained_prefix_and_disjoint_history_with_a_live_
         row.content = "TAIL_TO_SUMMARIZE".into();
         messages::insert(store.conn(), &row)?;
         let source = load_source(store.conn(), "thread")?;
-        let provider = ScriptedSummaryProvider::new([
-            SummaryReply::Text("SUMMARY_TAIL".into()),
-            SummaryReply::Text("SUMMARY_TASK".into()),
-        ]);
-        let mut projected = history(&source)?;
+        let mut replies = vec![SummaryReply::Text("SUMMARY_TAIL".into())];
         let mut selections = vec![("tail", Direction::From)];
         if disjoint {
+            replies.push(SummaryReply::Text("SUMMARY_TASK".into()));
             selections.push(("owner", Direction::UpTo));
         }
+        let provider = ScriptedSummaryProvider::new(replies);
+        let mut projected = history(&source)?;
         for (message_id, direction) in selections {
             let mut context = request(&source, projected)?.context;
             context.trigger = ContextCompactionTrigger::Manual;
