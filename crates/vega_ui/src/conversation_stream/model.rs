@@ -879,6 +879,63 @@ pub(crate) struct MessageCopy {
     selection_subscriptions: std::rc::Rc<std::cell::RefCell<Vec<gpui_kit::Subscription>>>,
 }
 
+pub(super) struct PreparedMessage {
+    text: String,
+    notices: Vec<super::generated_notice::GeneratedNoticeFragment>,
+    display_text: Option<String>,
+    stream: MarkdownStream,
+    model: StreamModel,
+}
+
+impl PreparedMessage {
+    pub(super) fn new(
+        text: &str,
+        notices: Vec<super::generated_notice::GeneratedNoticeFragment>,
+        counters: &StreamCounters,
+    ) -> Self {
+        let mut stream = MarkdownStream::new();
+        stream.append(text);
+        stream.finish();
+        let mut model = StreamModel::default();
+        let display_text = if notices.is_empty() {
+            model.sync(&stream.snapshot(), counters);
+            None
+        } else {
+            let display_text = super::generated_notice::project_text(text, &notices);
+            let mut projected = MarkdownStream::new();
+            projected.append(&display_text);
+            projected.finish();
+            model.sync(&projected.snapshot(), counters);
+            model.content_revision = 1;
+            Some(display_text)
+        };
+        Self {
+            text: text.to_owned(),
+            notices,
+            display_text,
+            stream,
+            model,
+        }
+    }
+
+    pub(super) fn into_message(
+        self,
+        counters: &StreamCounters,
+    ) -> (MessageCopy, Box<MarkdownStream>, StreamModel) {
+        let copy = MessageCopy::new("");
+        let has_notices = self.display_text.is_some();
+        *copy.text.borrow_mut() = self.text;
+        *copy.generated_notices.borrow_mut() = self.notices;
+        *copy.display_model_text.borrow_mut() = self.display_text;
+        copy.stream_finished.set(true);
+        let mut model = self.model;
+        if has_notices {
+            copy.sync_model(&self.stream, &mut model, counters);
+        }
+        (copy, Box::new(self.stream), model)
+    }
+}
+
 impl MessageCopy {
     pub(crate) fn new(text: &str) -> Self {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
