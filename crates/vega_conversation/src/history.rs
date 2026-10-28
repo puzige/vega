@@ -914,7 +914,42 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
             .is_ok()
                 && call.duration_ms.is_none()
         });
+    let permission_outcome_claim = approval_audit.as_ref().is_some_and(|audit| {
+        matches!(
+            audit.source,
+            ApprovalSource::Cancelled | ApprovalSource::Unavailable
+        )
+    }) || matches!(
+        call.output_text.as_deref(),
+        Some(
+            vega_runtime::PERMISSION_CANCELLED_OUTPUT
+                | vega_runtime::PERMISSION_UNAVAILABLE_OUTPUT
+                | vega_runtime::PERMISSION_TIMEOUT_OUTPUT
+                | vega_runtime::PERMISSION_DENIED_OUTPUT
+                | vega_runtime::DANGER_DENIED_OUTPUT
+        )
+    );
+    let invalid_permission_outcome = permission_outcome_claim
+        && !(status == ToolCallStatus::Rejected
+            && call.exit_code.is_none()
+            && call.duration_ms.is_none()
+            && approval_audit.as_ref().is_some_and(|audit| {
+                crate::agent::validate_recovered_projection(
+                    "",
+                    "",
+                    &call.id,
+                    &call.tool,
+                    &call.input_json,
+                    call.output_text.as_deref().unwrap_or_default(),
+                    vega_runtime::RuntimeToolStatus::Rejected,
+                    audit,
+                    None,
+                    None,
+                )
+                .is_ok()
+            }));
     let (input, result) = if invalid_bash_claim
+        || invalid_permission_outcome
         || invalid_computer_use_audit
         || invalid_superseded_claim
         || matches!(input, ToolCardInputProjection::Corrupt)
