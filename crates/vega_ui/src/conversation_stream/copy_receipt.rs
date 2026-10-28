@@ -19,13 +19,14 @@ use crate::{icons::Icon, interaction::Interaction};
 pub(super) enum CopySource {
     Message(MessageCopy),
     Code(Arc<str>),
+    Text(Arc<str>),
 }
 
 impl CopySource {
     fn generation(&self) -> u64 {
         match self {
             Self::Message(copy) => copy.content_generation(),
-            Self::Code(_) => 0,
+            Self::Code(_) | Self::Text(_) => 0,
         }
     }
 
@@ -33,6 +34,7 @@ impl CopySource {
         match (self, other) {
             (Self::Message(left), Self::Message(right)) => left.id == right.id,
             (Self::Code(left), Self::Code(right)) => Arc::ptr_eq(left, right),
+            (Self::Text(left), Self::Text(right)) => left == right,
             _ => false,
         }
     }
@@ -45,7 +47,7 @@ impl CopySource {
                 }
                 copy.copy(cx);
             }
-            Self::Code(source) => {
+            Self::Code(source) | Self::Text(source) => {
                 if source.is_empty() {
                     return false;
                 }
@@ -54,6 +56,23 @@ impl CopySource {
         }
         true
     }
+}
+
+pub(crate) fn tool_text_copy_button(
+    id: SharedString,
+    text: String,
+    label: &'static str,
+    colors: ThemeColors,
+) -> AnyElement {
+    CopyReceiptButton::new(id, CopySource::Text(text.into()), label, colors, |button| {
+        button
+            .size(px(Layout::COPY_ACTION_SIZE))
+            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation()
+            })
+            .focus_visible(|style| style.bg(colors.bg_active))
+    })
+    .into_any_element()
 }
 
 struct Receipt {
