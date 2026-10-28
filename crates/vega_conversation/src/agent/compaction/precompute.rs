@@ -3,6 +3,8 @@ use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use vega_store::context_precompute::{accounting, ready};
 
+pub(crate) mod registry;
+
 pub(super) struct CapturedPrecompute {
     pub fence: vega_store::context_precompute::ContextAppendFence,
     pub dependencies: String,
@@ -136,6 +138,7 @@ pub struct ContextPrecomputeWorker {
     generation: String,
     cancel: CancellationToken,
     completion: tokio::sync::oneshot::Receiver<Result<(), VegaError>>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for ContextPrecomputeWorker {
@@ -155,9 +158,29 @@ impl ContextPrecomputeWorker {
     }
 
     pub async fn wait(&mut self) -> Result<(), VegaError> {
-        (&mut self.completion)
-            .await
-            .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?
+        loop {
+            if let Some(result) = self.take_finished() {
+                return result;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    fn take_finished(&mut self) -> Option<Result<(), VegaError>> {
+        let Some(thread) = self.thread.as_ref() else {
+            return Some(Err(context_error(ContextRuntimeError::SourceChanged)));
+        };
+        if !thread.is_finished() {
+            return None;
+        }
+        let thread = self.thread.take()?;
+        Some(match thread.join() {
+            Ok(()) => self
+                .completion
+                .try_recv()
+                .unwrap_or_else(|_| Err(context_error(ContextRuntimeError::SourceChanged))),
+            Err(_) => Err(context_error(ContextRuntimeError::SourceChanged)),
+        })
     }
 }
 
@@ -168,11 +191,17 @@ impl PreparedContextPrecompute {
     }
 
     pub fn launch(self) -> Result<ContextPrecomputeWorker, VegaError> {
+        self.launch_with_cancel(CancellationToken::new())
+    }
+
+    fn launch_with_cancel(
+        self,
+        cancel: CancellationToken,
+    ) -> Result<ContextPrecomputeWorker, VegaError> {
         let generation = self.accounting.generation.clone();
-        let cancel = CancellationToken::new();
         let worker_cancel = cancel.clone();
         let (sender, completion) = tokio::sync::oneshot::channel();
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name("vega-context-precompute".into())
             .spawn(move || {
                 let result = match tokio::runtime::Builder::new_current_thread()
@@ -193,6 +222,7 @@ impl PreparedContextPrecompute {
             generation,
             cancel,
             completion,
+            thread: Some(thread),
         })
     }
 

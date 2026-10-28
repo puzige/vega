@@ -166,6 +166,16 @@ conversation 使用当前系统、工具、模型及 replay frame 重建完整�
 
 超时围栏修复提交 `9e49dca0ee882082b3449238c9dcb9b83053d06e` 的 Actions [40753788063](https://github.com/puzige/vega/actions/runs/40753788063) 在开发测试编译阶段失败：两个 generation 查询断言误传临时 Transaction；未执行 Rust 回归，Clippy `123047142538`、Nextest `123047144562`、required `123049597329` 失败。`d4e8c74095116327e175235a1307766d7611ac09` 仅改为 API 所需的 Connection，独立增量审查无发现；其 Actions [40756538550](https://github.com/puzige/vega/actions/runs/40756538550) 的 Clippy `123056850951` 成功，Nextest `123056850626` 执行 113 项、112 通过、1 失败、0 跳过，required `123059526769` 失败，独立发现计数行未取得。偏好回退回归已通过；唯一超时竞争回归在变更注入前退出，fixture 将 read 改名为 ComputerScreenshot 却保留无效 `{}` 参数，不满足生产审计记录合同。改用既有桌面参数规范化函数构造合法审计及交付回执，保持七种变更、primary 请求数、完整快照与账单断言，未改变生产校验或超时恢复政策。修正后的云端结果另记；此前静态 Clear 不等于行为验证成功。
 
+截图夹具提交 `d73b46cdafda2f254093717f7181e5a96afcb7a6` 的 Actions [40758317009](https://github.com/puzige/vega/actions/runs/40758317009) 在测试编译时发现未导出的 `vega_store::params!`：Clippy `123063099400`、Nextest `123063098976`、required `123065344322` 失败，未执行 Rust 回归、发现计数未取得。单行修复 `b7d36375cb197761f9a13be51d1f1bf80f0814e0`（tree `d88a87795707e07aa7fced184aaa35d18c43c247`）使用同内容／顺序的 `[&str; 2]` 参数绑定，未改断言或生产实现；非实现者增量审查 Clear。其 Actions [40761984680](https://github.com/puzige/vega/actions/runs/40761984680) 的 Clippy `123076036023`、Nextest `123076036469`、required `123078474093` 均成功；原始日志明确 113 项发现、113 执行／通过、0 跳过，22 binaries，12.339s。偏好回退与七场景超时围栏回归均实际通过。该结果不覆盖后续 registry 改动，也不是最终删测交付。
+
+#### 压缩专用在途注册、失效与退出回执（2026-10-28）
+
+注册以数据库真实身份（不是路径字符串）＋线程区分主／子 agent；每键最多一个在途 worker。前台在当前 admission 下取得不含 admission 的运行 lease，lease 固定 epoch，Stop／模型阶段变化／删除／权限重置／关闭使旧 epoch 失效；原运行不能通过旧 lease 再启动。后台不持有前台 actor、runtime、admission 或跨 await 的 SQLite connection。注册锁不跨 await、生成、结算或线程等待持有；互斥失败按不可用拒绝启动，不绕过围栏。
+
+取消与完成分离：取消请求只撤销旧 lease 并取消 pending 的 token，不立即删除在途记录或允许同键第二个 worker。完成回执须在生成、逐阶段结算／封存、失败精确退役、后台 runtime 销毁并 join 工作线程之后产生。等待者取消或丢弃 wait future 不取消 worker；显式取消由注册入口执行。drain 只等待所捕获的真实任务，不制造成功；期限内仍未退出则保持阻塞并报告超时，不通过 abort 或丢弃 handle 伪装关闭。数据库 pause 在持有期间拒绝新 lease／启动，支持重叠 pause，释放最后一个 pause 也不恢复旧 epoch；registry close 不可重开。ready 仍由持久化／消费校验，不因单纯模型切换删除已完成候选。
+
+precompute 的连续失败计数与前台 automatic／rapid-refill 独立；同 epoch 成功归零，三次实际失败后拒绝 re-arm。显式取消、来源失效及完整响应组不足不计 counted failure；旧 epoch 的迟到完成只释放自身槽，不改变新 epoch 的计数或任务。开发回归使用真实 SQLite、真实生成／结算 worker 与可阻塞的合成 provider，验证单在途、不同数据库隔离、旧 lease 失效、等待取消独立、drain 必须等 provider 资源释放、ready／账单终态、暂停／关闭以及失败 gate。该注册原语不单独宣称 runtime 自动触发、Stop／模型／权限重置／删除／窗口和 app quit 接线已完成；接入须继续覆盖这些具体入口。
+
 ### 4.4 provider 与本机能力
 
 - 使用实际冻结模型定义中的 `context_window`、`max_output_tokens` 以及用户覆盖。既有配置的 input-limit / reserve 语义要显式迁移或适配，不把 input cap 偷换成 total window；不直接改用户本机配置/数据库。
