@@ -66,10 +66,15 @@ impl ContextUsageDisplay {
     pub(crate) fn tooltip_status(&self) -> String {
         match self.last_call_total.zip(self.model_input_limit) {
             Some((used, limit)) => {
-                let percent = ((u128::from(used) * 100 + u128::from(limit) / 2)
-                    / u128::from(limit))
-                .to_string();
-                vega_i18n::t_args("ui.context_window_full", &[("percent", &percent)])
+                let percent = (u128::from(used) * 100 + u128::from(limit) / 2) / u128::from(limit);
+                let remaining = 100_u128.saturating_sub(percent);
+                vega_i18n::t_args(
+                    "ui.context_window_used_remaining",
+                    &[
+                        ("percent", &percent.to_string()),
+                        ("remaining", &remaining.to_string()),
+                    ],
+                )
             }
             None if self.last_call_total.is_none() => vega_i18n::t("ui.no_data_yet").into(),
             None => vega_i18n::t("ui.capacity_not_configured").into(),

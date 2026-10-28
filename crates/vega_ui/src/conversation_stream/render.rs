@@ -988,7 +988,7 @@ impl ConversationStream {
             .gap_1()
             .children(
                 self.context_usage_visible()
-                    .then(|| self.render_context_usage_indicator(&display, colors, cx)),
+                    .then(|| self.render_context_usage_indicator(&display, colors, window, cx)),
             )
             .child(self.render_model_selector(window, cx))
             .into_any_element()
@@ -998,6 +998,7 @@ impl ConversationStream {
         &self,
         display: &ContextUsageDisplay,
         colors: ThemeColors,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         div()
@@ -1031,20 +1032,43 @@ impl ConversationStream {
                     ),
             )
             .children(self.context_usage_trigger_hovered.then(|| {
+                let lines = [
+                    vega_i18n::t("ui.context_window").to_string(),
+                    display.tooltip_status(),
+                    display.tooltip_usage(),
+                ];
+                let text_width = lines
+                    .iter()
+                    .map(|line| {
+                        window
+                            .text_system()
+                            .shape_line(
+                                line.clone().into(),
+                                px(Typography::BODY),
+                                &[window.text_style().to_run(line.len())],
+                                None,
+                            )
+                            .width()
+                    })
+                    .max()
+                    .unwrap_or_default();
+                let width = (text_width
+                    + px(2.0 * (Layout::CONTEXT_USAGE_PADDING + Layout::CONTEXT_USAGE_BORDER)))
+                .ceil()
+                .max(px(Layout::CONTEXT_USAGE_MIN_WIDTH));
                 div().absolute().top_0().left_0().size(px(0.0)).child(
                     div().relative().child(
                         anchored()
                             .anchor(Anchor::BottomLeft)
                             .position_mode(AnchoredPositionMode::Local)
                             .position(point(
-                                px((Layout::CONTEXT_USAGE_SIZE - Layout::CONTEXT_USAGE_WIDTH)
-                                    / 2.0),
+                                (px(Layout::CONTEXT_USAGE_SIZE) - width) / 2.0,
                                 px(-Layout::CONTEXT_USAGE_GAP),
                             ))
                             .snap_to_window()
                             .child(
                                 gpui_kit::deferred(Self::context_usage_tooltip_element(
-                                    display, colors,
+                                    &lines, width, colors,
                                 ))
                                 .with_priority(2),
                             ),
@@ -1098,12 +1122,15 @@ impl ConversationStream {
     }
 
     fn context_usage_tooltip_element(
-        display: &ContextUsageDisplay,
+        lines: &[String; 3],
+        width: gpui_kit::Pixels,
         colors: ThemeColors,
     ) -> impl IntoElement {
         div()
             .id("context-usage-tooltip")
-            .w(px(Layout::CONTEXT_USAGE_WIDTH))
+            .w(width)
+            .flex_shrink_0()
+            .whitespace_nowrap()
             .px(px(Layout::CONTEXT_USAGE_PADDING))
             .py(px(Layout::CONTEXT_USAGE_VERTICAL_PADDING))
             .flex()
@@ -1111,20 +1138,19 @@ impl ConversationStream {
             .items_center()
             .text_center()
             .rounded(px(Layout::CONTEXT_USAGE_RADIUS))
-            .border_1()
+            .border(px(Layout::CONTEXT_USAGE_BORDER))
             .border_color(colors.context_tooltip_border)
             .bg(colors.context_tooltip_bg)
             .shadow_md()
             .text_size(px(Typography::BODY))
             .line_height(px(Layout::CONTEXT_USAGE_LINE_HEIGHT))
             .text_color(colors.context_tooltip_secondary)
-            .child(div().child(vega_i18n::t("ui.context_window")))
-            .child(div().child(display.tooltip_status()))
-            .child(
+            .child(div().child(lines[0].clone()))
+            .children(lines[1..].iter().map(|line| {
                 div()
                     .text_color(colors.context_tooltip_primary)
-                    .child(display.tooltip_usage()),
-            )
+                    .child(line.clone())
+            }))
     }
 
     fn render_model_selector(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
