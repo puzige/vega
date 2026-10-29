@@ -112,7 +112,8 @@ async fn released(
     assert!(
         agents
             .iter()
-            .all(|s| s.state == SubagentState::Completed && s.release_state == "released")
+            .all(|s| s.state == SubagentState::Completed && s.release_state == "released"),
+        "terminal agents: {value}"
     );
     agents
 }
@@ -286,7 +287,14 @@ async fn cancellation_while_admission_is_waiting_cannot_commit_spawn_or_followup
         fixture.steer();
         fixture.steer();
         fixture.steer();
-        let coordination = crate::permission_contracts::coordinate().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let blocker = std::thread::spawn(move || {
+            let _coordination = crate::permission_contracts::coordinate().unwrap();
+            ready_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        ready_rx.recv().unwrap();
         let owner = DelegatedOwnership::acquire(&fixture.database, &snapshot.agent_id).unwrap();
         let admission = crate::thread_access::acquire(&fixture.store, &snapshot.agent_id).unwrap();
         let cancel = CancellationToken::new();
@@ -303,11 +311,12 @@ async fn cancellation_while_admission_is_waiting_cannot_commit_spawn_or_followup
             owner,
             admission,
         );
-        let task = tokio::spawn(pending);
-        tokio::task::yield_now().await;
+        tokio::pin!(pending);
+        assert!(futures::poll!(&mut pending).is_pending());
         cancel.cancel();
-        drop(coordination);
-        assert!(matches!(task.await.unwrap(), Err(VegaError::Cancelled)));
+        release_tx.send(()).unwrap();
+        blocker.join().unwrap();
+        assert!(matches!(pending.await, Err(VegaError::Cancelled)));
         assert_eq!(fixture.counts(), counts);
     }
 }

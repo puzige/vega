@@ -45,7 +45,7 @@ impl Fixture {
         store.migrate().unwrap();
         let project = projects::create(
             store.conn(),
-            directory.path().to_str().unwrap(),
+            directory.path().canonicalize().unwrap().to_str().unwrap(),
             "project",
             None,
         )
