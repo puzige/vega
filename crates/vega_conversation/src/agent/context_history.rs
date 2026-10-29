@@ -30,10 +30,10 @@ fn read(
     let store = Store::open_read_only(database).ok()?;
     let query = match request.kind.as_str() {
         "messages" => {
-            "SELECT m.id,m.seq,m.role,m.kind,m.status,CASE WHEN length(CAST(m.content AS BLOB))<=1048576 THEN m.content END,(SELECT COUNT(*) FROM image_attachments i WHERE i.message_id=m.id),(SELECT COALESCE(SUM(length(i.encoded)),0) FROM image_attachments i WHERE i.message_id=m.id) FROM messages m JOIN threads t ON t.id=m.thread_id WHERE length(CAST(m.id AS BLOB)) BETWEEN 1 AND 128 AND length(CAST(m.role AS BLOB))<=128 AND length(CAST(m.kind AS BLOB))<=128 AND length(CAST(m.status AS BLOB))<=128 AND m.thread_id=?1 AND m.seq>?2 AND (?3 IS NULL OR m.id=?3) ORDER BY m.seq LIMIT ?4"
+            "SELECT m.id,m.seq,m.role,m.kind,m.status,CASE WHEN length(CAST(m.content AS BLOB))<=1048576 THEN m.content END,(SELECT COUNT(*) FROM image_attachments i WHERE i.message_id=m.id),(SELECT COALESCE(SUM(length(i.encoded)),0) FROM image_attachments i WHERE i.message_id=m.id) FROM messages m JOIN threads t ON t.id=m.thread_id WHERE length(CAST(m.id AS BLOB)) BETWEEN 1 AND 128 AND length(CAST(m.role AS BLOB))<=128 AND length(CAST(m.kind AS BLOB))<=128 AND length(CAST(m.status AS BLOB))<=128 AND m.thread_id=?1 AND m.seq>?2 AND (?3 IS NULL OR m.id=?3) AND ?5='messages' ORDER BY m.seq LIMIT ?4"
         }
-        "tools" => {
-            "SELECT c.id,c.seq,c.message_id,c.tool,c.status,CASE WHEN length(CAST(c.input_json AS BLOB))<=1048576 THEN c.input_json END,CASE WHEN length(CAST(c.output_text AS BLOB))<=1048576 THEN c.output_text END FROM tool_calls c JOIN messages m ON m.id=c.message_id AND m.thread_id=c.thread_id AND m.role='assistant' JOIN threads t ON t.id=c.thread_id WHERE length(CAST(c.id AS BLOB)) BETWEEN 1 AND 128 AND length(CAST(c.message_id AS BLOB)) BETWEEN 1 AND 128 AND length(CAST(c.tool AS BLOB))<=256 AND length(CAST(c.status AS BLOB))<=128 AND c.thread_id=?1 AND c.seq>?2 AND (?3 IS NULL OR c.id=?3) ORDER BY c.seq LIMIT ?4"
+        "tools" | "skill_resources" => {
+            "SELECT c.id,c.seq,c.message_id,c.tool,c.status,CASE WHEN length(CAST(c.input_json AS BLOB))<=1048576 THEN c.input_json END,CASE WHEN length(CAST(c.output_text AS BLOB))<=1048576 THEN c.output_text END FROM tool_calls c JOIN messages m ON m.id=c.message_id AND m.thread_id=c.thread_id AND m.role='assistant' JOIN threads t ON t.id=c.thread_id WHERE length(CAST(c.id AS BLOB)) BETWEEN 1 AND 128 AND length(CAST(c.message_id AS BLOB)) BETWEEN 1 AND 128 AND length(CAST(c.tool AS BLOB))<=256 AND length(CAST(c.status AS BLOB))<=128 AND c.thread_id=?1 AND c.seq>?2 AND (?3 IS NULL OR c.id=?3) AND (?5!='skill_resources' OR (c.tool='read_skill_resource' AND c.status='success')) ORDER BY c.seq LIMIT ?4"
         }
         _ => return None,
     };
@@ -44,6 +44,7 @@ fn read(
             request.after_sequence as i64,
             request.source_id.as_deref(),
             request.limit as i64 + 1,
+            request.kind.as_str(),
         ))
         .ok()?;
     let mut records = Vec::new();

@@ -5,7 +5,7 @@ use super::*;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-struct HistoryProvider(Mutex<Vec<ChatRequest>>);
+struct HistoryProvider(Mutex<Vec<ChatRequest>>, ConversationReadRequest);
 impl Provider for HistoryProvider {
     fn chat_stream(
         &self,
@@ -15,13 +15,14 @@ impl Provider for HistoryProvider {
         let mut requests = self.0.lock().unwrap();
         let first = requests.is_empty();
         requests.push(chat_request);
+        let read_request = self.1.clone();
         Box::pin(async move {
             let events = if first {
                 vec![
                     Ok(ProviderEvent::ToolUse {
                         id: "read-history".into(),
                         name: TOOL.into(),
-                        input_json: serde_json::to_string(&request()).unwrap(),
+                        input_json: serde_json::to_string(&read_request).unwrap(),
                     }),
                     Ok(ProviderEvent::Done {
                         stop_reason: StopReason::ToolUse,
@@ -46,7 +47,7 @@ async fn actual_model_roundtrip_exposes_only_filtered_historical_details() -> Te
         std::env::temp_dir().join(format!("vega-history-wire-{}", ulid::Ulid::generate()));
     std::fs::create_dir(&directory)?;
     let tools = vega_tools::Tools::new(&directory)?;
-    let provider = HistoryProvider(Mutex::new(Vec::new()));
+    let provider = HistoryProvider(Mutex::new(Vec::new()), request());
     let outcome = run_agent(&provider,&tools,AgentRequest {
         model:"synthetic".into(),system_prompt:"system".into(),history:vec![ChatMessage::new(ChatRole::User,"continue")],max_tokens:None,completed_tool_results:Default::default(),
         tool_config:RuntimeToolConfig::default().with_conversation_history_reader(Arc::new(|_| Ok(serde_json::json!({"records":[{"content":"historical-detail synthetic-private-key"}]})))).with_credential_reader(Arc::new(|| Ok(vec!["synthetic-private-key".into()]))),
@@ -247,5 +248,95 @@ async fn history_dispatch_is_conditional_readonly_filtered_and_cancellable() -> 
     assert!(cancelled);
     assert_eq!(result.status, RuntimeToolStatus::Cancelled);
     std::fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn skill_resource_history_roundtrip_is_paged_filtered_and_never_activates_skills()
+-> TestResult {
+    let mut read_request = request();
+    read_request.kind = "skill_resources".into();
+    read_request.source_id = Some("resource-call".into());
+    read_request.content_offset = 1000;
+    let parsed =
+        ConversationReadRequest::parse(&serde_json::to_string(&read_request)?).ok_or("parse")?;
+    assert_eq!(parsed.kind, "skill_resources");
+    let provider = HistoryProvider(Mutex::new(Vec::new()), read_request);
+    let config = RuntimeToolConfig::default()
+        .with_conversation_history_reader(Arc::new(|request| {
+            assert_eq!(request.kind, "skill_resources");
+            assert_eq!(request.source_id.as_deref(), Some("resource-call"));
+            assert_eq!(request.content_offset, 1000);
+            Ok(serde_json::json!({"records":[{"source_id":"resource-call","tool":"read_skill_resource","output":format!("{} resource-body synthetic-resource-secret", "中".repeat(1000))}]}))
+        }))
+        .with_credential_reader(Arc::new(|| Ok(vec!["synthetic-resource-secret".into()])));
+    let tools = vega_tools::Tools::new(std::env::current_dir()?)?;
+    let outcome = run_agent(
+        &provider,
+        &tools,
+        AgentRequest {
+            model: "synthetic".into(),
+            system_prompt: "continue historical work".into(),
+            history: vec![ChatMessage::new(
+                ChatRole::User,
+                "read historical skill details",
+            )],
+            max_tokens: None,
+            completed_tool_results: Default::default(),
+            tool_config: config,
+            pricing_catalog: None,
+            reasoning: None,
+            model_snapshot: None,
+            replay_frame: None,
+            context_budget: None,
+            context_source_version: None,
+            context_source_fingerprint: None,
+            context_operation_id: None,
+            context_compaction_hook: None,
+        },
+        CancellationToken::new(),
+    )
+    .await?;
+    assert!(!outcome.failed);
+    assert_eq!(outcome.executed_tool_call_count, 1);
+    let requests = provider.0.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    let definition = requests[0]
+        .tools
+        .iter()
+        .find(|tool| tool.name == TOOL)
+        .ok_or("definition")?;
+    assert!(
+        definition.input_schema["properties"]["kind"]["enum"]
+            .as_array()
+            .ok_or("enum")?
+            .contains(&serde_json::json!("skill_resources"))
+    );
+    assert!(requests[0].tools.iter().all(|tool| tool.name
+        != crate::skills::READ_SKILL_RESOURCE_TOOL_NAME
+        && tool.name != crate::skills::LOAD_SKILL_TOOL_NAME));
+    let output = requests[1]
+        .messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("read-history"))
+        .ok_or("result")?;
+    let page: Value = serde_json::from_str(&output.content)?;
+    assert!(output.content.contains("resource-body"));
+    assert!(!output.content.contains("synthetic-resource-secret"));
+    assert!(output.content.contains("conversation_details"));
+    assert!(output.content.contains("\"authority\":\"none\""));
+    let observation = &page["vega_history_observation"];
+    assert_eq!(observation["authority"], "none");
+    let field = &observation["page"]["records"][0]["output"];
+    assert_eq!(field["offset"], 1000);
+    assert_eq!(field["complete"], false);
+    assert!(field["next_offset"].is_null());
+    assert!(
+        field["text"]
+            .as_str()
+            .ok_or("text")?
+            .starts_with(" resource-body ")
+    );
+    assert!(!field["text"].as_str().ok_or("text")?.contains('中'));
     Ok(())
 }
