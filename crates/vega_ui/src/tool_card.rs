@@ -373,44 +373,37 @@ impl ToolCard {
             }
             let task = cx.spawn(async move |this, cx| {
                 loop {
-                    let delay =
-                        started_at
-                            .started_at()
-                            .map_or(Duration::from_millis(250), |started| {
-                                let elapsed = cx
-                                    .background_executor()
-                                    .now()
-                                    .saturating_duration_since(started);
-                                Duration::from_secs(elapsed.as_secs().saturating_add(1))
-                                    .saturating_sub(elapsed)
-                            });
-                    cx.background_executor().timer(delay).await;
-                    let keep_refreshing = this
+                    let delay = this
                         .update(cx, |card, cx| {
                             if card.status != ToolCallStatus::Running
                                 || !card.is_bash()
                                 || card.running_started_at.is_none()
                             {
-                                return false;
+                                return None;
                             }
-                            if let Some(started) = started_at.started_at() {
-                                let elapsed = cx
-                                    .background_executor()
-                                    .now()
-                                    .saturating_duration_since(started)
-                                    .as_secs();
-                                if card.running_elapsed_seconds != Some(elapsed) {
-                                    card.running_elapsed_seconds = Some(elapsed);
-                                    card.refresh_summary();
-                                    cx.notify();
-                                }
+                            let Some(started) = started_at.started_at() else {
+                                return Some(Duration::from_millis(250));
+                            };
+                            let elapsed = cx
+                                .background_executor()
+                                .now()
+                                .saturating_duration_since(started);
+                            if card.running_elapsed_seconds != Some(elapsed.as_secs()) {
+                                card.running_elapsed_seconds = Some(elapsed.as_secs());
+                                card.refresh_summary();
+                                cx.notify();
                             }
-                            true
+                            Some(
+                                Duration::from_secs(elapsed.as_secs().saturating_add(1))
+                                    .saturating_sub(elapsed),
+                            )
                         })
-                        .unwrap_or(false);
-                    if !keep_refreshing {
+                        .ok()
+                        .flatten();
+                    let Some(delay) = delay else {
                         break;
-                    }
+                    };
+                    cx.background_executor().timer(delay).await;
                 }
             });
             self.elapsed_refresh_task = Some(task);
@@ -1398,6 +1391,12 @@ impl ToolCard {
             "ui.command_action",
             &[("action", action), ("command", &compact_object(command))],
         )
+    }
+
+    pub(crate) fn cancel_pending_bash_clock(&mut self) {
+        if self.is_bash() && self.running_elapsed_seconds.is_none() {
+            self.stop_live_elapsed();
+        }
     }
 
     pub(crate) fn release_presentation(&mut self) {

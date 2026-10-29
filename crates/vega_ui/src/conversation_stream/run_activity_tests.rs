@@ -928,3 +928,351 @@ fn failed_or_cancelled_shell_does_not_invent_elapsed_time(cx: &mut TestAppContex
         visual.run_until_parked();
     }
 }
+
+#[gpui_kit::test]
+fn process_start_published_before_the_first_clock_poll_paints_without_advancing_time(
+    cx: &mut TestAppContext,
+) {
+    assert_eq!(vega_i18n::language(), "en");
+    let (stream, cx) = open_stream(cx);
+    propose(&stream, cx, bash("shell", Some("Inspect the working tree")));
+    apply(
+        &stream,
+        cx,
+        ConversationEvent::ToolCallApproved {
+            call_id: "shell".into(),
+            approval: Approval::Once,
+        },
+    );
+    let id = tool_id(&stream, cx, "shell");
+    click(cx, id.clone());
+    let _ = shimmer::take_painted_text();
+    let clock = Arc::new(OnceLock::new());
+    let now = cx.executor().now();
+    let notifications = watch_notifications(&stream, cx, "shell");
+
+    stream.update(cx, |stream, cx| {
+        assert!(clock.get().is_none());
+        stream.apply_event(
+            ConversationEvent::ToolCallRunning {
+                call_id: "shell".into(),
+                bash_started_at: Some(BashStartClock::from_test_start(clock.clone())),
+            },
+            cx,
+        );
+        let card = stream.tool_cards["shell"].read(cx);
+        assert!(card.is_running());
+        assert!(card.is_expanded());
+        assert_eq!(card.compact_title(), "Inspect the working tree");
+        assert!(clock.get().is_none());
+        assert!(clock.set(now).is_ok());
+    });
+    let before = std::array::from_fn(|index| notifications[index].get());
+    cx.run_until_parked();
+
+    assert_eq!(cx.executor().now(), now);
+    assert_notifications_advance(&notifications, before);
+    assert_painted("Running command for 0s");
+    assert_row(
+        cx,
+        id.clone(),
+        "Running command for 0s, Collapse tool details",
+        true,
+    );
+    advance(cx, Duration::from_secs(1));
+    assert_painted("Running command for 1s");
+    assert_row(
+        cx,
+        id,
+        "Running command for 1s, Collapse tool details",
+        true,
+    );
+}
+
+#[gpui_kit::test]
+fn stop_before_observing_process_start_preserves_running_until_a_real_terminal(
+    cx: &mut TestAppContext,
+) {
+    #[derive(Clone, Copy)]
+    enum Publication {
+        BeforeStop,
+        AfterStop,
+        AfterTerminal,
+    }
+
+    assert_eq!(vega_i18n::language(), "en");
+    for publication in [
+        Publication::BeforeStop,
+        Publication::AfterStop,
+        Publication::AfterTerminal,
+    ] {
+        for (status, terminal_label) in [
+            (
+                ToolCallStatus::Success,
+                "Ran command in 7s, Collapse tool details",
+            ),
+            (
+                ToolCallStatus::Cancelled,
+                "Command cancelled, Collapse tool details",
+            ),
+        ] {
+            let (stream, visual) = open_stream(cx);
+            propose(
+                &stream,
+                visual,
+                bash("shell", Some("Inspect the working tree")),
+            );
+            let clock = start_waiting_bash(&stream, visual, "shell");
+            let id = tool_id(&stream, visual, "shell");
+            click(visual, id.clone());
+            assert_waiting_shell(visual, id.clone(), true);
+            assert!(clock.get().is_none());
+            let _ = shimmer::take_painted_text();
+
+            if matches!(publication, Publication::BeforeStop) {
+                publish_bash_start(&clock, visual);
+            }
+            stream.update(visual, |stream, cx| stream.cancel_live_bash_clocks(cx));
+            visual.run_until_parked();
+            visual.update(|_, cx| {
+                assert!(
+                    stream.read(cx).tool_cards["shell"].read(cx).is_running(),
+                    "stopping must not fabricate a terminal tool status"
+                );
+            });
+            assert_no_running_shell_title_painted();
+            assert_waiting_shell(visual, id.clone(), true);
+            assert_row(
+                visual,
+                id.clone(),
+                "Inspect the working tree, Collapse tool details",
+                true,
+            );
+            let notifications = watch_notifications(&stream, visual, "shell");
+            let before = notifications[0].get();
+
+            if matches!(publication, Publication::AfterStop) {
+                advance(visual, Duration::from_millis(500));
+                assert!(clock.get().is_none());
+                publish_bash_start(&clock, visual);
+            }
+            advance(visual, Duration::from_secs(3));
+            assert_eq!(notifications[0].get(), before);
+            assert_no_running_shell_title_painted();
+            assert_waiting_shell(visual, id.clone(), true);
+            assert_row(
+                visual,
+                id.clone(),
+                "Inspect the working tree, Collapse tool details",
+                true,
+            );
+            visual.update(|_, cx| {
+                assert!(stream.read(cx).tool_cards["shell"].read(cx).is_running());
+            });
+            click(visual, id.clone());
+            assert_waiting_shell(visual, id.clone(), false);
+            assert_row(
+                visual,
+                id.clone(),
+                "Inspect the working tree, expand tool details",
+                false,
+            );
+            click(visual, id.clone());
+            assert_no_running_shell_title_painted();
+            assert_waiting_shell(visual, id.clone(), true);
+            assert_row(
+                visual,
+                id.clone(),
+                "Inspect the working tree, Collapse tool details",
+                true,
+            );
+
+            finish(&stream, visual, "shell", shell_result(status));
+            assert_row(visual, id.clone(), terminal_label, true);
+            visual.update(|_, cx| {
+                assert!(!stream.read(cx).tool_cards["shell"].read(cx).is_running());
+            });
+            let before = notifications[0].get();
+            let _ = shimmer::take_painted_text();
+            if matches!(publication, Publication::AfterTerminal) {
+                assert!(clock.get().is_none());
+                publish_bash_start(&clock, visual);
+            }
+            advance(visual, Duration::from_secs(3));
+            assert_eq!(notifications[0].get(), before);
+            assert_no_running_shell_title_painted();
+            assert_row(visual, id.clone(), terminal_label, true);
+            click(visual, id.clone());
+            click(visual, id.clone());
+            assert_no_running_shell_title_painted();
+            assert_row(visual, id, terminal_label, true);
+            visual.update(|window, _| window.remove_window());
+            visual.run_until_parked();
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn stop_before_running_suppresses_old_clock_without_poisoning_the_next_run(
+    cx: &mut TestAppContext,
+) {
+    assert_eq!(vega_i18n::language(), "en");
+    for publish_before_running in [false, true] {
+        let (stream, visual) = open_stream(cx);
+        propose(
+            &stream,
+            visual,
+            bash("old", Some("Inspect the working tree")),
+        );
+        apply(
+            &stream,
+            visual,
+            ConversationEvent::ToolCallApproved {
+                call_id: "old".into(),
+                approval: Approval::Once,
+            },
+        );
+        stream.update(visual, |stream, cx| stream.cancel_live_bash_clocks(cx));
+        visual.run_until_parked();
+        let clock = Arc::new(OnceLock::new());
+        if publish_before_running {
+            publish_bash_start(&clock, visual);
+        }
+        apply(
+            &stream,
+            visual,
+            ConversationEvent::ToolCallRunning {
+                call_id: "old".into(),
+                bash_started_at: Some(BashStartClock::from_test_start(clock.clone())),
+            },
+        );
+        let old = tool_id(&stream, visual, "old");
+        click(visual, old.clone());
+        assert_no_running_shell_title_painted();
+        assert_waiting_shell(visual, old.clone(), true);
+        assert_row(
+            visual,
+            old.clone(),
+            "Inspect the working tree, Collapse tool details",
+            true,
+        );
+        visual.update(|_, cx| {
+            assert!(
+                stream.read(cx).tool_cards["old"].read(cx).is_running(),
+                "a late Running event must remain Running until its real terminal"
+            );
+        });
+        if !publish_before_running {
+            assert!(clock.get().is_none());
+            publish_bash_start(&clock, visual);
+        }
+        advance(visual, Duration::from_secs(3));
+        assert_no_running_shell_title_painted();
+        assert_waiting_shell(visual, old.clone(), true);
+        assert_row(
+            visual,
+            old.clone(),
+            "Inspect the working tree, Collapse tool details",
+            true,
+        );
+        visual.update(|_, cx| {
+            assert!(stream.read(cx).tool_cards["old"].read(cx).is_running());
+        });
+        finish(
+            &stream,
+            visual,
+            "old",
+            shell_result(ToolCallStatus::Cancelled),
+        );
+        assert_row(
+            visual,
+            old.clone(),
+            "Command cancelled, Collapse tool details",
+            true,
+        );
+        let notifications = watch_notifications(&stream, visual, "old");
+        let before = notifications[0].get();
+        let _ = shimmer::take_painted_text();
+        advance(visual, Duration::from_secs(3));
+        assert_eq!(notifications[0].get(), before);
+        assert_no_running_shell_title_painted();
+        assert_row(
+            visual,
+            old.clone(),
+            "Command cancelled, Collapse tool details",
+            true,
+        );
+        click(visual, old);
+        apply(
+            &stream,
+            visual,
+            ConversationEvent::Interrupted {
+                message_id: MESSAGE.into(),
+                execution_duration_ms: None,
+            },
+        );
+        stream.update(visual, |stream, cx| stream.begin_composer_run(cx));
+        apply(
+            &stream,
+            visual,
+            ConversationEvent::MessageStarted {
+                message_id: "next-assistant".into(),
+                seq: 2,
+            },
+        );
+        propose(&stream, visual, bash("new", Some("Review the next task")));
+        start_bash(&stream, visual, "new");
+        let new = tool_id(&stream, visual, "new");
+        let _ = shimmer::take_painted_text();
+        click(visual, new.clone());
+        assert_painted("Running command for 0s");
+        assert_row(
+            visual,
+            new.clone(),
+            "Running command for 0s, Collapse tool details",
+            true,
+        );
+        advance(visual, Duration::from_secs(1));
+        assert_painted("Running command for 1s");
+        assert_row(
+            visual,
+            new,
+            "Running command for 1s, Collapse tool details",
+            true,
+        );
+        visual.update(|window, _| window.remove_window());
+        visual.run_until_parked();
+    }
+}
+
+#[gpui_kit::test]
+fn stop_does_not_pause_an_already_observed_process_clock(cx: &mut TestAppContext) {
+    assert_eq!(vega_i18n::language(), "en");
+    let (stream, cx) = open_stream(cx);
+    propose(&stream, cx, bash("shell", Some("Inspect the working tree")));
+    start_bash(&stream, cx, "shell");
+    let id = tool_id(&stream, cx, "shell");
+    click(cx, id.clone());
+    assert_painted("Running command for 0s");
+    stream.update(cx, |stream, cx| stream.cancel_live_bash_clocks(cx));
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        assert!(stream.read(cx).tool_cards["shell"].read(cx).is_running());
+    });
+    let _ = shimmer::take_painted_text();
+    advance(cx, Duration::from_secs(1));
+    assert_painted("Running command for 1s");
+    assert_row(
+        cx,
+        id.clone(),
+        "Running command for 1s, Collapse tool details",
+        true,
+    );
+    finish(
+        &stream,
+        cx,
+        "shell",
+        shell_result(ToolCallStatus::Cancelled),
+    );
+    assert_row(cx, id, "Command cancelled, Collapse tool details", true);
+}

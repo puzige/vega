@@ -1398,6 +1398,13 @@ impl ConversationStream {
         cx.notify();
     }
 
+    pub fn cancel_live_bash_clocks(&mut self, cx: &mut Context<Self>) {
+        self.bash_clock_cancel_requested = true;
+        if let Some((_, group)) = &self.active_run_activity {
+            group.update(cx, |group, cx| group.cancel_pending_bash_clocks(cx));
+        }
+    }
+
     /// Applies an already-durable shared lifecycle event. The UI never reads
     /// SQLite and never consumes runtime-local events.
     pub fn apply_event(&mut self, event: ConversationEvent, cx: &mut Context<Self>) {
@@ -1755,9 +1762,14 @@ impl ConversationStream {
             } => {
                 if let Some(card) = self.tool_cards.get(&call_id) {
                     let card = card.clone();
+                    let started_at = if self.bash_clock_cancel_requested {
+                        None
+                    } else {
+                        bash_started_at
+                    };
                     let started = card.update(cx, |card, cx| {
                         let was_running = card.is_running();
-                        card.apply_running(bash_started_at, cx);
+                        card.apply_running(started_at, cx);
                         !was_running && card.is_running()
                     });
                     if started && let Some((_, group)) = &self.active_run_activity {

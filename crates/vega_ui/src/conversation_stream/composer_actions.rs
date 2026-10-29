@@ -304,6 +304,7 @@ impl ConversationStream {
 
     /// Projects worker ownership, including preparation before a durable message exists.
     pub fn begin_composer_run(&mut self, cx: &mut Context<Self>) {
+        self.bash_clock_cancel_requested = false;
         self.permissions_revoked = false;
         self.permission_editor.active_mode = Some(if self.thread.mode != ThreadMode::Execute {
             PermissionMode::ReadOnly
@@ -374,6 +375,7 @@ impl ConversationStream {
             return;
         }
         self.actions.stopping = true;
+        self.cancel_live_bash_clocks(cx);
         if !self.cancel_ordinary_pending(cx) {
             cx.emit(ComposerStopRequested {
                 thread_id: self.thread.id.clone(),

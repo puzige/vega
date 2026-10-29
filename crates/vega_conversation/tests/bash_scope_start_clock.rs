@@ -1,6 +1,7 @@
 use std::fs::{self, DirBuilder};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::FutureExt;
@@ -19,7 +20,7 @@ use vega_conversation::types::{
 };
 use vega_runtime::{ChatRequest, EventStream, Provider, ProviderEvent, StopReason, VegaError};
 use vega_store::{Store, permissions, projects, tool_calls};
-use vega_tools::{BashErrorCode, Tools};
+use vega_tools::{BashErrorCode, ToolCredentialPolicy, Tools};
 
 const CALL_ID: &str = "scope-clock-call";
 const TEST_TIMEOUT: Duration = Duration::from_secs(40);
@@ -86,6 +87,34 @@ impl Provider for OfflineProvider {
 enum Observation {
     Running(BashStartClock),
     Finished(ToolResult, Instant),
+}
+
+fn fail_early_observation(phase: &str, observation: Option<Observation>) -> ! {
+    match observation {
+        Some(Observation::Running(_)) => panic!("tool started running before {phase}"),
+        Some(Observation::Finished(result, _)) => {
+            let bash_error = [
+                BashErrorCode::InvalidInput,
+                BashErrorCode::ScopeMismatch,
+                BashErrorCode::ScopeDenied,
+                BashErrorCode::HardlinkPreflight,
+                BashErrorCode::SandboxUnavailable,
+                BashErrorCode::TempUnavailable,
+                BashErrorCode::CleanupFailed,
+                BashErrorCode::SpawnFailed,
+                BashErrorCode::ProcessControlFailed,
+                BashErrorCode::OutputFailed,
+                BashErrorCode::OutputIncomplete,
+                BashErrorCode::Cancelled,
+                BashErrorCode::TimedOut,
+            ]
+            .into_iter()
+            .find(|code| code.tool_output() == result.output)
+            .map(BashErrorCode::as_str);
+            panic!("tool finished before {phase}: result={result:?}, bash_error={bash_error:?}");
+        }
+        None => panic!("observation channel closed before {phase}"),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -165,8 +194,10 @@ async fn exercise_scope(action: ScopeAction) {
     let temp = TestDirectory::new();
     let workspace = temp.0.join("workspace");
     let scope = temp.0.join("scope");
+    let protected = temp.0.join("protected");
     fs::create_dir(&workspace).expect("workspace directory");
     fs::create_dir(&scope).expect("scope directory");
+    fs::create_dir(&protected).expect("protected directory");
     let workspace = workspace.canonicalize().expect("canonical workspace");
     let scope = scope.canonicalize().expect("canonical scope");
     let store = Store::open(temp.0.join("vega.db")).expect("open store");
@@ -181,7 +212,16 @@ async fn exercise_scope(action: ScopeAction) {
     let thread = threads::create_thread(&store, &project.id, "offline-model", "confirm")
         .expect("create thread");
     let original_rules = permissions::list_exact(store.conn(), &project.id).expect("exact rules");
-    let tools = Tools::new(&workspace).expect("workspace tools");
+    let policy = ToolCredentialPolicy::new(
+        protected,
+        vec![],
+        Arc::new(|_: &str| panic!("empty bindings must not read credentials")),
+    )
+    .expect("configure empty credential policy")
+    .with_bindings_reader(Arc::new(|| Ok(vec![])));
+    let tools = Tools::new(&workspace)
+        .expect("workspace tools")
+        .with_credential_policy(policy);
     let started_file = scope.join("started");
     let release_file = scope.join("release");
     let command = format!(
@@ -241,7 +281,13 @@ async fn exercise_scope(action: ScopeAction) {
     );
 
     let drive = async {
-        let pending = ordinary_request(&queue, &mut listener).await;
+        let pending = tokio::select! {
+            biased;
+            pending = ordinary_request(&queue, &mut listener) => pending,
+            observation = observed_rx.recv() => {
+                fail_early_observation("ordinary permission request", observation)
+            }
+        };
         let (request, mut lease) = pending.into_parts().expect("ordinary permission lease");
         assert_eq!(request.call_id, CALL_ID);
         assert_eq!(request.tool, "bash");
@@ -249,7 +295,19 @@ async fn exercise_scope(action: ScopeAction) {
         assert!(request.danger_rule_id.is_none());
         assert!(lease.respond(PermissionDecision::Once));
 
-        let pending = scope_request(&queue, &mut listener).await;
+        let mut early_clock = None;
+        let pending = loop {
+            tokio::select! {
+                biased;
+                pending = scope_request(&queue, &mut listener) => break pending,
+                observation = observed_rx.recv() => match observation {
+                    Some(Observation::Running(clock)) => {
+                        assert!(early_clock.replace(clock).is_none(), "duplicate running event");
+                    }
+                    other => fail_early_observation("scope permission request", other),
+                }
+            }
+        };
         let (request, mut lease) = pending.into_parts();
         assert_eq!(request.call_id(), CALL_ID);
         assert_eq!(request.command(), command);
@@ -264,9 +322,12 @@ async fn exercise_scope(action: ScopeAction) {
         assert!(request.bindings().is_empty());
         let request_id = request.request_id().to_string();
 
-        let clock = match observed_rx.recv().await.expect("running event") {
-            Observation::Running(clock) => clock,
-            Observation::Finished(_, _) => panic!("tool finished before scope approval"),
+        let clock = match early_clock {
+            Some(clock) => clock,
+            None => match observed_rx.recv().await {
+                Some(Observation::Running(clock)) => clock,
+                other => fail_early_observation("scope approval", other),
+            },
         };
         assert!(clock.started_at().is_none());
         assert!(!started_file.exists());
@@ -406,28 +467,49 @@ async fn exercise_scope(action: ScopeAction) {
     tokio::pin!(drive);
     let deadline = tokio::time::sleep(TEST_TIMEOUT);
     tokio::pin!(deadline);
-    let driven = tokio::select! {
-        biased;
-        result = std::panic::AssertUnwindSafe(drive.as_mut()).catch_unwind() => result,
-        _ = &mut deadline => {
-            cancel.cancel();
-            let _ = tokio::time::timeout(Duration::from_secs(5), run.as_mut()).await;
-            panic!("permission driver timed out");
+    let mut run_result = None;
+    let driven = loop {
+        tokio::select! {
+            biased;
+            result = std::panic::AssertUnwindSafe(drive.as_mut()).catch_unwind() => break result,
+            _ = &mut deadline => {
+                cancel.cancel();
+                if run_result.is_none() {
+                    let _ = tokio::time::timeout(Duration::from_secs(5), run.as_mut()).await;
+                }
+                if matches!(action, ScopeAction::Allow) {
+                    let _ = fs::write(&release_file, b"release");
+                }
+                panic!("permission driver timed out; conversation result: {run_result:?}");
+            }
+            result = run.as_mut(), if run_result.is_none() => {
+                run_result = Some(result);
+            }
         }
-        result = run.as_mut() => panic!("conversation ended before permission driver: {result:?}"),
     };
     if let Err(payload) = driven {
         cancel.cancel();
-        let _ = tokio::time::timeout(Duration::from_secs(5), run.as_mut()).await;
+        if run_result.is_none() {
+            let _ = tokio::time::timeout(Duration::from_secs(5), run.as_mut()).await;
+        }
+        if matches!(action, ScopeAction::Allow) {
+            let _ = fs::write(&release_file, b"release");
+        }
         std::panic::resume_unwind(payload);
     }
-    let run_result = match tokio::time::timeout_at(deadline.deadline(), run.as_mut()).await {
-        Ok(result) => result,
-        Err(_) => {
-            cancel.cancel();
-            let _ = tokio::time::timeout(Duration::from_secs(5), run.as_mut()).await;
-            panic!("conversation did not finish before the deadline");
-        }
+    let run_result = match run_result {
+        Some(result) => result,
+        None => match tokio::time::timeout_at(deadline.deadline(), run.as_mut()).await {
+            Ok(result) => result,
+            Err(_) => {
+                cancel.cancel();
+                let _ = tokio::time::timeout(Duration::from_secs(5), run.as_mut()).await;
+                if matches!(action, ScopeAction::Allow) {
+                    let _ = fs::write(&release_file, b"release");
+                }
+                panic!("conversation did not finish before the deadline");
+            }
+        },
     };
     let outcome = run_result.expect("conversation run");
     assert!(!outcome.failed);
