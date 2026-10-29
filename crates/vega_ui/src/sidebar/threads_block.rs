@@ -29,6 +29,7 @@ pub struct ThreadsBlock {
     /// Thread id currently under the mouse; drives the row hover background.
     pub(crate) hovered: Option<String>,
     hover_suppressed_until_move: bool,
+    selected_row: Option<(String, String)>,
     /// Project id currently under the mouse; reveals fixed project-row actions.
     pub(crate) hovered_project: Option<String>,
     /// Section header currently under the pointer; its fixed action rail is
@@ -63,7 +64,7 @@ pub struct ThreadsBlock {
     action_pending: bool,
     visit_pending: bool,
     visit_loading: Option<(String, std::time::Instant)>,
-    deferred_visit: Option<(String, u64)>,
+    deferred_visit: Option<(String, u64, Option<String>)>,
     visit_navigation_generation: u64,
     visit_route: (Option<String>, Option<String>, bool),
     project_generation: u64,
@@ -95,6 +96,7 @@ impl ThreadsBlock {
             loaded_project: None,
             hovered: None,
             hover_suppressed_until_move: false,
+            selected_row: None,
             hovered_project: None,
             hovered_section: None,
             projects_header_focus: cx.focus_handle(),
@@ -298,15 +300,57 @@ impl ThreadsBlock {
         .detach();
     }
 
+    fn thread_row_is_selected(
+        &self,
+        thread: &Thread,
+        opened_id: &Option<String>,
+        row_key: &str,
+    ) -> bool {
+        if opened_id.as_deref() != Some(thread.id.as_str()) {
+            return false;
+        }
+        if let Some((selected_thread, selected_row)) = &self.selected_row
+            && selected_thread == &thread.id
+        {
+            return selected_row == row_key;
+        }
+        let prefix = match self.organization.as_ref() {
+            None => "thread-row-",
+            Some(_) if thread.pinned => "pinned-thread-row-",
+            Some(organization)
+                if !thread.is_standalone()
+                    && organization.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot.preferences.hide_project_threads_from_recents
+                    }) =>
+            {
+                "project-thread-row-"
+            }
+            Some(_) => "standalone-thread-row-",
+        };
+        row_key == format!("{prefix}{}", thread.id)
+    }
+
     fn open_thread(&mut self, thread_id: &str, cx: &mut Context<Self>) {
+        self.open_thread_from_row(thread_id, None, cx);
+    }
+
+    fn open_thread_from_row(
+        &mut self,
+        thread_id: &str,
+        row_key: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         if cx.has_active_drag() {
             return;
         }
         self.observe_visit_route(cx);
         if self.visit_pending {
             if crate::navigation::allow_task_navigation(Some(thread_id), cx) {
-                self.deferred_visit =
-                    Some((thread_id.to_owned(), self.visit_navigation_generation));
+                self.deferred_visit = Some((
+                    thread_id.to_owned(),
+                    self.visit_navigation_generation,
+                    row_key,
+                ));
                 self.start_visit_loading(thread_id, cx);
             }
             return;
@@ -362,9 +406,9 @@ impl ThreadsBlock {
             let _ = this.update(cx, |this, cx| {
                 this.observe_visit_route(cx);
                 this.visit_pending = false;
-                if let Some((target, generation)) = this.deferred_visit.take() {
+                if let Some((target, generation, target_row)) = this.deferred_visit.take() {
                     if generation == this.visit_navigation_generation {
-                        this.open_thread(&target, cx);
+                        this.open_thread_from_row(&target, target_row, cx);
                     } else {
                         this.clear_visit_loading(cx);
                     }
@@ -393,6 +437,7 @@ impl ThreadsBlock {
                         }
                         this.error = None;
                         let thread_id = opened.id.clone();
+                        this.selected_row = row_key.map(|key| (thread_id.clone(), key));
                         cx.set_global(SelectedProject(opened.project_binding().map(str::to_owned)));
                         cx.set_global(OpenedThread(Some(opened)));
                         this.reload(cx);
@@ -1320,8 +1365,8 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        let selected = opened_id.as_deref() == Some(thread.id.as_str());
         let row_key = format!("{selector_prefix}{}", thread.id);
+        let selected = self.thread_row_is_selected(thread, opened_id, &row_key);
         let hovered = self.hovered.as_deref() == Some(row_key.as_str());
         let editing_session = self
             .editing
@@ -1435,7 +1480,11 @@ impl ThreadsBlock {
                                         cx,
                                     );
                                 } else {
-                                    this.open_thread(&row_thread.id, cx);
+                                    this.open_thread_from_row(
+                                        &row_thread.id,
+                                        Some(rename_row_key.clone()),
+                                        cx,
+                                    );
                                 }
                             }),
                         )

@@ -563,8 +563,9 @@ impl ThreadsBlock {
     ) -> AnyElement {
         let colors = theme(cx).colors;
         let opened = cx.global::<OpenedThread>().0.as_ref().map(|t| t.id.clone());
-        let selected = opened.as_deref() == Some(thread.id.as_str());
         let thread_id = thread.id.clone();
+        let row_key = format!("project-thread-row-{thread_id}");
+        let selected = self.thread_row_is_selected(thread, &opened, &row_key);
         let trailing = session_row_trailing(
             false,
             thread_is_running(&thread_id, cx),
@@ -595,7 +596,9 @@ impl ThreadsBlock {
             })
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(move |this, _, _, cx| this.open_thread(&thread_id, cx)),
+                cx.listener(move |this, _, _, cx| {
+                    this.open_thread_from_row(&thread_id, Some(row_key.clone()), cx);
+                }),
             )
             .children(thread.pinned.then(|| {
                 div()
