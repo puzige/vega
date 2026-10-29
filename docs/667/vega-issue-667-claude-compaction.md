@@ -264,6 +264,8 @@ Native composer 支持精确首 token `/compact`（区分大小写，前导空�
 
 #### 脱离前台的生成与逐阶段结算（2026-10-28）
 
+计量接线版本 `770bd68ce116c8a0f9660157d04579ca5f324f36`（tree `d706f19bddc601416b1e93087f5e6a565cffa5a3`）的 Actions [40870363352](https://github.com/puzige/vega/actions/runs/40870363352)：Clippy `123435552746` success，Nextest `123435552270` 实际 188 执行／186 通过／2 失败／0 跳过、20.048s，required `123437707521` failure；成功的独立发现计数未取得。两项归属回归均返回 Context(SourceChanged)：新增夹具在 registry.bind 后仍持有独占 admission，后续未绑定 admission 的 compact_with_replay 必须重新获取独占权而被拒绝。修正仅在绑定 lease 后释放该夹具 admission；不改生产准入、计量或原断言，修正版本待新 head 云端验证。用户恢复多子 Agent 尝试后，入口／历史资源及本计量增量分别冻结版本进行只读独审，结论未取得前不标 Clear。
+
 后台准备在当前 admission 下完成有界捕获：来源、append fence、前驱及引用摘要 digest 来自同一快照，拒绝 staged model change、来源不一致与不完整响应组。返回的 prepared job 不包含 admission、前台 actor、diagnostics channel 或任何 SQLite connection；只保存冻结请求、来源快照、摘要偏好、计价及凭据投影策略。前台生成仍全程持有原 admission 和同一 600 秒期限，不改变既有安装语义。
 
 provider 通过仅用于 compaction 的可选工厂显式声明后台能力，默认不支持。工厂在后台执行器内构造独立传输；OpenAI-compatible 实现使用新 HTTP client／连接池，保留冻结 endpoint、协议、model snapshot、重试策略和每次请求前的凭据 guard，不把前台池的 `Send + Sync` 当作跨 runtime 存活证明。OwnerCredentialProvider 必须重建完整保护包装，保留动态凭据读取及例外策略；借用式 child／观测包装不自动获得后台能力。没有此能力只跳过预计算，不影响前台压缩。

@@ -127,6 +127,7 @@ async fn verify_background_usage_attribution(delegated: bool) -> TestResult {
         let lease = registry
             .bind(store.database_identity(), "thread", &admission)?
             .ok_or("lease")?;
+        drop(admission);
         let task = lease.try_launch(prepared)?.ok_or("task")?;
         tokio::time::timeout(Duration::from_secs(10), lease.wait_for_pending_exit()).await??;
         let result = task.wait().await;
