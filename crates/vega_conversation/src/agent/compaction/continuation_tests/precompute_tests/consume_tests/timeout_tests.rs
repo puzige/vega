@@ -121,7 +121,7 @@ fn mutate_after_capture(path: &std::path::Path, mutation: &str) {
                 )
                 .unwrap();
         }
-        "predecessor" => {
+        "predecessor" | "retained_predecessor" => {
             let transaction = store.conn().unchecked_transaction().unwrap();
             let prepared = vega_store::context_precompute::consume::prepare_in_transaction(
                 &transaction,
@@ -140,11 +140,39 @@ fn mutate_after_capture(path: &std::path::Path, mutation: &str) {
                 )
                 .unwrap();
             transaction.commit().unwrap();
-            assert!(matches!(
-                vega_store::context_compaction::install_checkpoint(store.conn(), &checkpoint)
-                    .unwrap(),
-                ContextCheckpointInstall::Applied(_)
-            ));
+            if mutation == "predecessor" {
+                assert!(matches!(
+                    vega_store::context_compaction::install_checkpoint(store.conn(), &checkpoint)
+                        .unwrap(),
+                    ContextCheckpointInstall::Applied(_)
+                ));
+            } else {
+                store.conn().execute(
+                    "INSERT INTO context_checkpoints \
+                     (thread_id,model,source_version,covered_through_seq,source_fingerprint,summary,estimator_version,expected_previous_id,created_at,covered_assistant_id,covered_assistant_text_bytes,covered_assistant_tool_seq,projection_plan) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                    (
+                        checkpoint.thread_id.as_str(),
+                        checkpoint.model.as_str(),
+                        checkpoint.source_version as i64,
+                        checkpoint.covered_through_seq as i64,
+                        checkpoint.source_fingerprint.as_str(),
+                        checkpoint.summary.as_str(),
+                        checkpoint.estimator_version.as_str(),
+                        checkpoint.expected_previous_id,
+                        checkpoint.created_at,
+                        checkpoint.covered_assistant_id.as_deref(),
+                        checkpoint.covered_assistant_text_bytes as i64,
+                        checkpoint.covered_assistant_tool_seq as i64,
+                        checkpoint.projection_plan.as_ref().unwrap().encode().unwrap(),
+                    ),
+                ).unwrap();
+                assert!(
+                    ready::current_generation(store.conn(), "thread")
+                        .unwrap()
+                        .is_some()
+                );
+            }
         }
         _ => panic!("unknown mutation"),
     }
@@ -160,6 +188,7 @@ async fn ready_timeout_revalidates_the_complete_snapshot_before_primary_recovery
         "model",
         "pending_model",
         "predecessor",
+        "retained_predecessor",
     ] {
         let (_directory, path, store) = source_fixture()?;
         let mut request = input(&store)?;
@@ -292,15 +321,27 @@ async fn ready_timeout_revalidates_the_complete_snapshot_before_primary_recovery
         assert_eq!(provider.0.requests.lock().unwrap().len(), 1, "{mutation}");
         assert_eq!(
             count(&store, "context_checkpoints")?,
-            i64::from(mutation == "predecessor")
+            i64::from(matches!(mutation, "predecessor" | "retained_predecessor")),
+            "{mutation}"
         );
-        assert_eq!(count(&store, "token_usage")?, 1);
-        assert_eq!(count(&store, "context_precompute_stages")?, 1);
-        assert_eq!(count(&store, "context_precompute_ready")?, 1);
+        assert_eq!(count(&store, "token_usage")?, 1, "{mutation}");
+        assert_eq!(count(&store, "context_precompute_stages")?, 1, "{mutation}");
+        assert_eq!(
+            count(&store, "context_precompute_ready")?,
+            i64::from(mutation != "predecessor"),
+            "{mutation}"
+        );
         assert_eq!(
             ready::current_generation(store.conn(), "thread")?,
-            Some(candidate.generation)
+            (mutation != "predecessor").then_some(candidate.generation.clone()),
+            "{mutation}"
         );
+        let retired: bool = store.conn().query_row(
+            "SELECT retired FROM context_precompute_accounting WHERE generation=?1",
+            [candidate.generation.as_str()],
+            |row| row.get(0),
+        )?;
+        assert_eq!(retired, mutation == "predecessor", "{mutation}");
         if matches!(mutation, "hidden_body" | "screenshot") {
             let current = load_source(store.conn(), "thread")?;
             assert_eq!(current.source_version, source.source_version);

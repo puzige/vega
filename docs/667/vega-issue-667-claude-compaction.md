@@ -188,7 +188,9 @@ precompute 的连续失败计数与前台 automatic／rapid-refill 独立；同 
 
 后台 begin 在同一事务核对准备时的 checkpoint 前驱与 slot，阻止“前台安装时尚未写入 slot”的迟到准备在新投影上启动。新投影的后续合法运行／steering 可使用原本仍有效的 lease 重新捕获；同一用户运行的 automatic／reactive arm suppression 保留，不把清理当作绕过 Stop 的重新授权。必要回归覆盖安装失败／取消回滚保留候选、成功原子退役、旧准备／晚发布拒绝、旧清理与 AlreadyCommitted 不误伤新候选、后台资源未释放仍占用、账单不丢失，以及更新后的投影可以重新准备。此合同不扩展通用生命周期或 fork 借用。
 
-本批新增真实 SQLite 回归覆盖 pending／Ready 两态、retire SQL 失败与退役后取消的事务回滚、AlreadyCommitted 重观察与迟到 begin；conversation 使用真实注册／worker／runtime，在前台安装后确认旧 worker 自行结算但物理资源未释放仍不得 re-arm，释放后原有效 lease 可重新准备，旧 generation 的取消不影响新 worker。既有偏好不匹配 fallback 用例原先保留旧 slot 的断言按本节新合同改为精确退役并拒绝重发布，原有请求／用量／checkpoint 断言保留。本地仅格式与差异静态检查；本增量行为待 Actions。
+本批新增真实 SQLite 回归覆盖 pending／Ready 两态、retire SQL 失败与退役后取消的事务回滚、AlreadyCommitted 重观察与迟到 begin；conversation 使用真实注册／worker／runtime，在前台安装后确认旧 worker 自行结算但物理资源未释放仍不得 re-arm，释放后原有效 lease 可重新准备，旧 generation 的取消不影响新 worker。既有偏好不匹配 fallback 用例原先保留旧 slot 的断言按本节新合同改为精确退役并拒绝重发布，原有请求／用量／checkpoint 断言保留。
+
+提交 `bd0facb38822128dfc964b4efeca2338f89b2fbf`（tree `4929eb9c868bd311619b38cdf12acade2ef920c1`）的 Actions [40796181508](https://github.com/puzige/vega/actions/runs/40796181508) 中 Clippy `123193093645` 成功，Nextest `123193093249` 与 required `123194398482` 失败；原始输出 145 执行／143 通过／2 失败／0 跳过、23 binaries、15.703s，独立 discovery 计数未取得。新增协调回归均通过，独立静态审查 Clear。两处旧消费／超时回归已先确认拒绝旧来源、禁止 primary 发送旧请求及账单保留，随后仍按旧合同读取已由竞争前台安装退役的 slot／Ready，分别报 QueryReturnedNoRows 与 Ready 数量 0≠1。修正仅针对该场景，验证精确退役、候选删除和原账单／stage 保留；其他来源变更继续保留原候选。另保留候选仍在而前驱已变化的独立 fixture，使 generation 消失不能掩盖原前驱围栏回归。此修正不放宽消费／超时来源校验，不改生产实现；本地仅格式与差异静态检查，修正后的完整行为待 Actions。
 
 #### 生命周期与自动入口接线（2026-10-28）
 

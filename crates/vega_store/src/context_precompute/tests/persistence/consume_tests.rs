@@ -159,6 +159,7 @@ fn ready_consumption_rejects_changed_identity_source_authority_and_payload() -> 
         "model",
         "pending",
         "predecessor",
+        "retained_predecessor",
         "payload",
         "checkpoint",
         "owner",
@@ -186,8 +187,25 @@ fn ready_consumption_rejects_changed_identity_source_authority_and_payload() -> 
                     [],
                 )?;
             }
-            "predecessor" => {
-                install_checkpoint(store.conn(), &checkpoint)?;
+            "predecessor" => assert!(matches!(
+                install_checkpoint(store.conn(), &checkpoint)?,
+                ContextCheckpointInstall::Applied(_)
+            )),
+            "retained_predecessor" => {
+                let transaction = store.conn().unchecked_transaction()?;
+                assert!(matches!(
+                    crate::context_compaction::install_checkpoint_in_transaction(
+                        &transaction,
+                        &checkpoint,
+                        &|| false,
+                    )?,
+                    ContextCheckpointInstall::Applied(_)
+                ));
+                transaction.commit()?;
+                assert_eq!(
+                    ready::current_generation(store.conn(), "thread")?.as_deref(),
+                    Some("generation")
+                );
             }
             "payload" => {
                 let mut changed = prepared.candidate().clone();
@@ -213,6 +231,7 @@ fn ready_consumption_rejects_changed_identity_source_authority_and_payload() -> 
         } else {
             1000
         };
+        let current_source = crate::context_compaction::load_source(store.conn(), "thread")?;
         let result =
             consume::install_with_guard(store.conn(), &prepared, &checkpoint, now, || false);
         assert!(
@@ -225,22 +244,44 @@ fn ready_consumption_rejects_changed_identity_source_authority_and_payload() -> 
         );
         assert_eq!(
             checkpoint_count(&store)?,
-            i64::from(mutation == "predecessor")
+            i64::from(matches!(mutation, "predecessor" | "retained_predecessor")),
+            "{mutation}"
         );
-        let generation: String = store.conn().query_row(
-            "SELECT generation FROM context_precompute_slots WHERE thread_id='thread'",
+        assert_eq!(
+            ready::current_generation(store.conn(), "thread")?.as_deref(),
+            match mutation {
+                "generation" => Some("next-generation"),
+                "predecessor" => None,
+                _ => Some("generation"),
+            },
+            "{mutation}"
+        );
+        let retired: bool = store.conn().query_row(
+            "SELECT retired FROM context_precompute_accounting WHERE generation='generation'",
             [],
             |row| row.get(0),
         )?;
         assert_eq!(
-            generation,
-            if mutation == "generation" {
-                "next-generation"
-            } else {
-                "generation"
-            }
+            retired,
+            matches!(mutation, "generation" | "predecessor"),
+            "{mutation}"
+        );
+        let ready_count: i64 = store.conn().query_row(
+            "SELECT COUNT(*) FROM context_precompute_ready WHERE thread_id='thread'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            ready_count,
+            i64::from(mutation != "predecessor"),
+            "{mutation}"
         );
         assert_eq!(bills(&store)?, if mutation == "generation" { 2 } else { 1 });
+        assert_eq!(
+            crate::context_compaction::load_source(store.conn(), "thread")?,
+            current_source,
+            "{mutation}"
+        );
     }
     Ok(())
 }
