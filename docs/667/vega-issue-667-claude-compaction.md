@@ -144,6 +144,8 @@
 
 首版提交 `2559a7299046844c676999e2ea7f5a2c66cf561b`（tree `67e4e3994ffe7e524cff97aa8be957712ab7d767`）的 Actions [40812130766](https://github.com/puzige/vega/actions/runs/40812130766) 在测试编译阶段失败：Nextest `123244654858`、Clippy `123244655138` 与 required `123245654438` failure。E0063 指向既有 GPUI `context_tests.rs` 的 `Thread` 构造缺少 master #744 新增 `reasoning_preferences`，未取得成功 discovery 或测试执行，不是 no Rust tests。修正仅补默认字段，不修改生产实现、测试断言或 CI。同步 master 后的修正须重新验证。
 
+字段补齐提交 `4801a74e39c992d16e08865a41bed74d84286b53`（tree `8468e12eb9bb778ba140c2038d6a960633b02320`）的 Actions [40812918319](https://github.com/puzige/vega/actions/runs/40812918319) 中 Clippy `123247215270` success；Nextest `123247215458` 实际 150 执行／144 通过／6 失败／0 跳过、22.410s，独立 discovery 数未取得，required `123248312133` failure。五项原 GPUI 生命周期回归因 `reasoning_preferences=None` 表示尚未加载，production submit gate 正确拒绝，worker 未启动而超时；fixture 改为已加载空列表 `Some(Vec::new())`，不改门槛或超时。新 fork 前缀回归揭示真实实现错误：构造器错误附加整段 cold replay frame，collector 的生产投影将父 assistant／tool 改写为历史记录，违反前缀保留合同。修复只取消该伪造 cold frame，保留原父消息的生产投影、安全过滤与工具禁用，原精确前缀断言不变。其余新增四项回归已执行通过；修复仍须新 head 云端验证。
+
 #### 脱离前台的生成与逐阶段结算（2026-10-28）
 
 后台准备在当前 admission 下完成有界捕获：来源、append fence、前驱及引用摘要 digest 来自同一快照，拒绝 staged model change、来源不一致与不完整响应组。返回的 prepared job 不包含 admission、前台 actor、diagnostics channel 或任何 SQLite connection；只保存冻结请求、来源快照、摘要偏好、计价及凭据投影策略。前台生成仍全程持有原 admission 和同一 600 秒期限，不改变既有安装语义。

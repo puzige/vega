@@ -44,7 +44,7 @@ fn thread() -> Thread {
         draft_authority_epoch: None,
         full_access_grant: None,
         default_permission: None,
-        reasoning_preferences: Default::default(),
+        reasoning_preferences: Some(Vec::new()),
         model: "gpt-4.1".into(),
         status: ThreadStatus::Active,
         pinned: false,

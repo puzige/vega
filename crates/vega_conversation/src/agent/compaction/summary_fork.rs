@@ -32,7 +32,8 @@ impl ConversationCompactionHook<'_> {
         {
             prefix = borrowed.messages;
         }
-        let mut messages = cold_context_messages(&parent.system_prompt, &prefix);
+        let mut messages = vec![ChatMessage::new(ChatRole::System, &parent.system_prompt)];
+        messages.extend(prefix);
         messages.push(ChatMessage::new(ChatRole::User, SUMMARY_SYSTEM_PROMPT));
         let Some(instruction) = direct.messages.last() else {
             return Ok(None);
