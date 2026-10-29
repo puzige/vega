@@ -72,6 +72,7 @@ tree-sitter-bash = "=0.25.1"
 tree-sitter-html = "=0.23.2"
 tree-sitter-css = "=0.25.0"
 tree-sitter-sequel = "=0.3.11"
+tree-sitter-yaml = "=0.7.2"
 # workspace 内部 crate
 vega_store = { path = "crates/vega_store" }
 vega_conversation = { path = "crates/vega_conversation" }

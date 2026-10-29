@@ -20,3 +20,4 @@ tree-sitter-bash = { workspace = true }
 tree-sitter-html = { workspace = true }
 tree-sitter-css = { workspace = true }
 tree-sitter-sequel = { workspace = true }
+tree-sitter-yaml = { workspace = true }
