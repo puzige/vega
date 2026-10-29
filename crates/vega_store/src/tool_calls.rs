@@ -74,6 +74,7 @@ pub struct NewToolCall<'a> {
     pub tool: &'a str,
     /// Raw JSON arguments.
     pub input_json: &'a str,
+    pub description: Option<&'a str>,
     /// Initial DDL status.
     pub status: &'a str,
     /// Unix milliseconds.
@@ -167,10 +168,10 @@ pub fn insert(conn: &Connection, call: NewToolCall<'_>) -> Result<(), rusqlite::
         crate::write_coordination::WriteCategory::ToolCalls,
     )?;
     let inserted = conn.execute(
-        "INSERT INTO tool_calls (id, thread_id, message_id, seq, tool, input_json, status, created_at, text_offset_bytes) \
-         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, length(CAST(content AS BLOB)) \
+        "INSERT INTO tool_calls (id, thread_id, message_id, seq, tool, input_json, status, created_at, description, text_offset_bytes) \
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, length(CAST(content AS BLOB)) \
          FROM messages WHERE id = ?3 AND thread_id = ?2 AND role = 'assistant'",
-        params![call.id, call.thread_id, call.message_id, call.seq, call.tool, call.input_json, call.status, call.created_at],
+        params![call.id, call.thread_id, call.message_id, call.seq, call.tool, call.input_json, call.status, call.created_at, call.description],
     )?;
     if inserted != 1 {
         return Err(rusqlite::Error::QueryReturnedNoRows);
@@ -199,8 +200,8 @@ pub fn insert_validation_rejected(
     )?;
     let inserted = conn.execute(
         "INSERT INTO tool_calls \
-         (id, thread_id, message_id, seq, tool, input_json, output_text, status, approval, created_at, finished_at, text_offset_bytes) \
-         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, 'rejected', ?8, ?9, ?10, length(CAST(content AS BLOB)) \
+         (id, thread_id, message_id, seq, tool, input_json, output_text, status, approval, created_at, finished_at, description, text_offset_bytes) \
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, 'rejected', ?8, ?9, ?10, ?11, length(CAST(content AS BLOB)) \
          FROM messages WHERE id = ?3 AND thread_id = ?2 AND role = 'assistant'",
         params![
             rejected.call.id,
@@ -213,6 +214,7 @@ pub fn insert_validation_rejected(
             rejected.approval_json,
             rejected.call.created_at,
             rejected.finished_at,
+            rejected.call.description,
         ],
     )?;
     if inserted != 1 {
