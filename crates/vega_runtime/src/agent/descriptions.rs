@@ -15,6 +15,7 @@ pub fn is_native_tool(tool: &str) -> bool {
             | USER_QUESTION_TOOL
             | "load_skill"
             | "read_skill_resource"
+            | "read_conversation"
     ) || is_subagent_tool(tool)
         || automation::is_tool(tool)
         || crate::computer_use::ComputerUseRun::tool_capability(tool).is_some()

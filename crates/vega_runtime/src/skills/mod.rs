@@ -2,6 +2,8 @@ mod catalog;
 mod frontmatter;
 mod source;
 
+pub type HistoricalSkillReader = dyn Fn(&str) -> Vec<(ActiveSkillSummary, String)> + Send + Sync;
+
 pub use catalog::{
     ActivationAudit, ActivationOrigin, ActivationOutcome, ActivationReceipt, ActiveSkillSummary,
     BatchPolicy, CatalogExclusion, FrozenReference, LOAD_SKILL_TOOL_NAME, MAX_CATALOG_BYTES,

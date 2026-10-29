@@ -11,6 +11,7 @@ use std::fmt;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
+use crate::context_projection::{ProjectionFragment, ProjectionPlan};
 use crate::image_attachments::ImageRow;
 use crate::messages::MessageRow;
 
@@ -516,9 +517,10 @@ pub struct ContextToolCallRow {
     /// UTF-8 byte offset within the owning assistant text, when known.
     pub text_offset_bytes: Option<i64>,
     pub response_id: Option<String>,
+    pub micro_compacted: bool,
     /// Digest of the optional full-output path. The raw path is not exposed,
     /// but mutations still participate in the source fence.
-    output_full_path_fingerprint: String,
+    pub(super) output_full_path_fingerprint: String,
 }
 
 impl fmt::Debug for ContextToolCallRow {
@@ -585,7 +587,8 @@ pub struct ContextSourceVersion {
 }
 
 /// A checkpoint waiting to be atomically installed.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NewContextCheckpoint {
     /// Conversation identity.
     pub thread_id: String,
@@ -607,6 +610,7 @@ pub struct NewContextCheckpoint {
     /// Expected latest checkpoint id, or `None` when no prior projection is
     /// expected.  This is the append-only compare-and-swap fence.
     pub expected_previous_id: Option<i64>,
+    pub projection_plan: Option<ProjectionPlan>,
     /// Unix-millisecond creation time.
     pub created_at: i64,
 }
@@ -629,7 +633,7 @@ impl fmt::Debug for NewContextCheckpoint {
 }
 
 impl NewContextCheckpoint {
-    fn validate(&self) -> Result<(), ContextCheckpointError> {
+    pub(super) fn validate(&self) -> Result<(), ContextCheckpointError> {
         if self.thread_id.trim().is_empty()
             || self.model.trim().is_empty()
             || self.source_version > i64::MAX as u64
@@ -671,6 +675,8 @@ pub struct ContextCheckpoint {
     pub estimator_version: String,
     /// Predecessor fence captured with this request for idempotent retries.
     pub expected_previous_id: Option<i64>,
+    pub projection_plan: Option<ProjectionPlan>,
+    pub referenced_summaries: std::collections::BTreeMap<i64, String>,
     /// Unix-millisecond creation time.
     pub created_at: i64,
 }
@@ -1016,15 +1022,19 @@ pub fn latest_checkpoint(
             "empty checkpoint identity".to_string(),
         ));
     }
-    conn.query_row(
+    let mut checkpoint = conn.query_row(
         "SELECT id, thread_id, model, source_version, covered_through_seq, \
-                source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq \
+                source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq, projection_plan \
          FROM context_checkpoints \
          WHERE thread_id = ?1 ORDER BY id DESC LIMIT 1",
         params![thread_id],
         checkpoint_from_row,
     )
-    .optional()
+    .optional()?;
+    if let Some(checkpoint) = &mut checkpoint {
+        load_referenced_summaries(conn, checkpoint)?;
+    }
+    Ok(checkpoint)
 }
 
 /// Loads the latest checkpoint using a caller-owned transaction snapshot.
@@ -1038,16 +1048,20 @@ pub fn latest_checkpoint_in_transaction(
             "empty checkpoint identity".to_string(),
         ));
     }
-    transaction
+    let mut checkpoint = transaction
         .query_row(
             "SELECT id, thread_id, model, source_version, covered_through_seq, \
-                    source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq \
+                    source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq, projection_plan \
              FROM context_checkpoints \
              WHERE thread_id = ?1 ORDER BY id DESC LIMIT 1",
             params![thread_id],
             checkpoint_from_row,
         )
-        .optional()
+        .optional()?;
+    if let Some(checkpoint) = &mut checkpoint {
+        load_referenced_summaries(transaction, checkpoint)?;
+    }
+    Ok(checkpoint)
 }
 
 /// Alias used when restoring the durable projection after restart.
@@ -1085,6 +1099,18 @@ pub fn install_checkpoint_with_guard<F>(
 where
     F: Fn() -> bool,
 {
+    install_checkpoint_and_retire_precompute_with_guard(conn, checkpoint, should_cancel)
+        .map(|(result, _)| result)
+}
+
+pub fn install_checkpoint_and_retire_precompute_with_guard<F>(
+    conn: &Connection,
+    checkpoint: &NewContextCheckpoint,
+    should_cancel: F,
+) -> Result<(ContextCheckpointInstall, Option<String>), ContextCheckpointError>
+where
+    F: Fn() -> bool,
+{
     checkpoint.validate()?;
     let transaction = crate::write_coordination::WriteTransaction::new_with_cancel(
         conn,
@@ -1099,71 +1125,113 @@ where
         }
         error => ContextCheckpointError::Store(error),
     })?;
-    if should_cancel() {
+    let result = install_checkpoint_in_transaction(&transaction, checkpoint, &should_cancel)?;
+    if matches!(result, ContextCheckpointInstall::Applied(_)) {
+        let generation = crate::context_precompute::ready::current_generation(
+            &transaction,
+            &checkpoint.thread_id,
+        )?;
+        if let Some(generation) = &generation {
+            crate::context_precompute::ready::retire_in_transaction(
+                &transaction,
+                &checkpoint.thread_id,
+                generation,
+            )?;
+        }
+        if should_cancel() {
+            return Err(ContextCheckpointError::Cancelled);
+        }
+        transaction.commit()?;
+        Ok((result, generation))
+    } else {
         transaction.rollback()?;
+        Ok((result, None))
+    }
+}
+
+pub(super) fn install_checkpoint_in_transaction<F>(
+    transaction: &Transaction<'_>,
+    checkpoint: &NewContextCheckpoint,
+    should_cancel: &F,
+) -> Result<ContextCheckpointInstall, ContextCheckpointError>
+where
+    F: Fn() -> bool,
+{
+    checkpoint.validate()?;
+    let projection_plan = checkpoint
+        .projection_plan
+        .as_ref()
+        .map(ProjectionPlan::encode)
+        .transpose()?;
+    if should_cancel() {
         return Err(ContextCheckpointError::Cancelled);
     }
 
-    let current = load_source_inner(&transaction, &checkpoint.thread_id, false)?;
+    let current = load_source_inner(transaction, &checkpoint.thread_id, false)?;
     if current.source_version != checkpoint.source_version
         || current.fingerprint != checkpoint.source_fingerprint
     {
-        transaction.rollback()?;
         return Ok(ContextCheckpointInstall::Stale);
     }
 
-    if let Some(owner) = checkpoint.covered_assistant_id.as_deref() {
-        let message = current
-            .messages
-            .iter()
-            .find(|message| message.id == owner)
-            .ok_or(ContextCheckpointError::IncompleteCoverage)?;
-        let cursor = usize::try_from(checkpoint.covered_assistant_text_bytes)
-            .map_err(|_| ContextCheckpointError::Invalid)?;
-        if message.role != "assistant"
-            || message.seq as u64 != checkpoint.covered_through_seq.saturating_add(1)
-            || !message.content.is_char_boundary(cursor)
+    if let Some(plan) = &checkpoint.projection_plan {
+        plan.validate_install(&current)?;
+        validate_summary_references(transaction, &checkpoint.thread_id, plan)?;
+    } else {
+        if let Some(owner) = checkpoint.covered_assistant_id.as_deref() {
+            let message = current
+                .messages
+                .iter()
+                .find(|message| message.id == owner)
+                .ok_or(ContextCheckpointError::IncompleteCoverage)?;
+            let cursor = usize::try_from(checkpoint.covered_assistant_text_bytes)
+                .map_err(|_| ContextCheckpointError::Invalid)?;
+            if message.role != "assistant"
+                || message.seq as u64 != checkpoint.covered_through_seq.saturating_add(1)
+                || !message.content.is_char_boundary(cursor)
+            {
+                return Err(ContextCheckpointError::IncompleteCoverage);
+            }
+            let calls = current
+                .tool_calls
+                .iter()
+                .filter(|call| {
+                    call.message_id == owner
+                        && call.seq as u64 <= checkpoint.covered_assistant_tool_seq
+                })
+                .collect::<Vec<_>>();
+            if calls.is_empty()
+                || calls.iter().any(|call| {
+                    !matches!(
+                        call.status.as_str(),
+                        "success" | "failed" | "cancelled" | "rejected"
+                    ) || call.output_text.is_none()
+                })
+            {
+                return Err(ContextCheckpointError::IncompleteCoverage);
+            }
+            let last = calls
+                .iter()
+                .max_by_key(|call| call.seq)
+                .ok_or(ContextCheckpointError::IncompleteCoverage)?;
+            if last.seq as u64 != checkpoint.covered_assistant_tool_seq
+                || last.text_offset_bytes != Some(cursor as i64)
+                || current.tool_calls.iter().any(|call| {
+                    call.message_id == owner
+                        && call.seq > last.seq
+                        && match (&call.response_id, &last.response_id) {
+                            (Some(left), Some(right)) => left == right,
+                            _ => call.text_offset_bytes == last.text_offset_bytes,
+                        }
+                })
+            {
+                return Err(ContextCheckpointError::IncompleteCoverage);
+            }
+        } else if checkpoint.covered_assistant_text_bytes != 0
+            || checkpoint.covered_assistant_tool_seq != 0
         {
-            return Err(ContextCheckpointError::IncompleteCoverage);
+            return Err(ContextCheckpointError::Invalid);
         }
-        let calls = current
-            .tool_calls
-            .iter()
-            .filter(|call| {
-                call.message_id == owner && call.seq as u64 <= checkpoint.covered_assistant_tool_seq
-            })
-            .collect::<Vec<_>>();
-        if calls.is_empty()
-            || calls.iter().any(|call| {
-                !matches!(
-                    call.status.as_str(),
-                    "success" | "failed" | "cancelled" | "rejected"
-                ) || call.output_text.is_none()
-            })
-        {
-            return Err(ContextCheckpointError::IncompleteCoverage);
-        }
-        let last = calls
-            .iter()
-            .max_by_key(|call| call.seq)
-            .ok_or(ContextCheckpointError::IncompleteCoverage)?;
-        if last.seq as u64 != checkpoint.covered_assistant_tool_seq
-            || last.text_offset_bytes != Some(cursor as i64)
-            || current.tool_calls.iter().any(|call| {
-                call.message_id == owner
-                    && call.seq > last.seq
-                    && match (&call.response_id, &last.response_id) {
-                        (Some(left), Some(right)) => left == right,
-                        _ => call.text_offset_bytes == last.text_offset_bytes,
-                    }
-            })
-        {
-            return Err(ContextCheckpointError::IncompleteCoverage);
-        }
-    } else if checkpoint.covered_assistant_text_bytes != 0
-        || checkpoint.covered_assistant_tool_seq != 0
-    {
-        return Err(ContextCheckpointError::Invalid);
     }
 
     let thread_model: Option<String> = transaction
@@ -1174,11 +1242,11 @@ where
         )
         .optional()?;
     if thread_model.as_deref() != Some(checkpoint.model.as_str()) {
-        transaction.rollback()?;
         return Ok(ContextCheckpointInstall::Stale);
     }
-    let incomplete: i64 = transaction.query_row(
-        "SELECT CASE WHEN EXISTS (\
+    if checkpoint.projection_plan.is_none() {
+        let incomplete: i64 = transaction.query_row(
+            "SELECT CASE WHEN EXISTS (\
             SELECT 1 FROM messages WHERE thread_id = ?1 AND seq <= ?2 \
               AND status NOT IN ('done', 'failed', 'interrupted')\
           ) OR EXISTS (\
@@ -1186,26 +1254,23 @@ where
              WHERE c.thread_id = ?1 AND m.thread_id = ?1 AND m.seq <= ?2 \
                AND c.status NOT IN ('success', 'failed', 'cancelled', 'rejected')\
           ) THEN 1 ELSE 0 END",
-        params![checkpoint.thread_id, checkpoint.covered_through_seq as i64],
-        |row| row.get(0),
-    )?;
-    if incomplete != 0 {
-        transaction.rollback()?;
-        return Err(ContextCheckpointError::IncompleteCoverage);
+            params![checkpoint.thread_id, checkpoint.covered_through_seq as i64],
+            |row| row.get(0),
+        )?;
+        if incomplete != 0 {
+            return Err(ContextCheckpointError::IncompleteCoverage);
+        }
     }
 
-    // Request identity includes the captured predecessor but is independent
-    // from whichever row is latest now. This makes a retry of a second append
-    // idempotent even when its original predecessor is no longer latest.
     let committed_same_request = transaction
         .query_row(
             "SELECT id, thread_id, model, source_version, covered_through_seq, \
-                    source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq \
+                    source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq, projection_plan \
              FROM context_checkpoints \
              WHERE thread_id = ?1 AND model = ?2 AND source_version = ?3 \
                AND covered_through_seq = ?4 AND source_fingerprint = ?5 \
                AND summary = ?6 AND estimator_version = ?7 \
-               AND expected_previous_id IS ?8 AND created_at = ?9 AND covered_assistant_id IS ?10 AND covered_assistant_text_bytes = ?11 AND covered_assistant_tool_seq = ?12 \
+               AND expected_previous_id IS ?8 AND created_at = ?9 AND covered_assistant_id IS ?10 AND covered_assistant_text_bytes = ?11 AND covered_assistant_tool_seq = ?12 AND projection_plan IS ?13 \
              ORDER BY id DESC LIMIT 1",
             params![
                 checkpoint.thread_id,
@@ -1220,19 +1285,20 @@ where
             checkpoint.covered_assistant_id,
             checkpoint.covered_assistant_text_bytes as i64,
             checkpoint.covered_assistant_tool_seq as i64,
+            projection_plan,
             ],
             checkpoint_from_row,
         )
         .optional()?;
-    if let Some(existing) = committed_same_request {
-        transaction.rollback()?;
+    if let Some(mut existing) = committed_same_request {
+        load_referenced_summaries(transaction, &mut existing)?;
         return Ok(ContextCheckpointInstall::AlreadyCommitted(existing));
     }
 
     let previous = transaction
         .query_row(
             "SELECT id, thread_id, model, source_version, covered_through_seq, \
-                    source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq \
+                    source_fingerprint, summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq, projection_plan \
              FROM context_checkpoints WHERE thread_id = ?1 \
              ORDER BY id DESC LIMIT 1",
             params![checkpoint.thread_id],
@@ -1243,32 +1309,27 @@ where
         if previous.model == checkpoint.model
             && previous.source_version == checkpoint.source_version
             && previous.source_fingerprint == checkpoint.source_fingerprint
+            && checkpoint.projection_plan.is_none()
         {
-            transaction.rollback()?;
             return Ok(ContextCheckpointInstall::Stale);
         }
         if checkpoint.expected_previous_id != Some(previous.id) {
-            transaction.rollback()?;
             return Ok(ContextCheckpointInstall::Stale);
         }
-        // The caller won the prior-row CAS and proposed a new append for a
-        // newer source/result. Continue to the INSERT below.
     }
     if previous.is_none() && checkpoint.expected_previous_id.is_some() {
-        transaction.rollback()?;
         return Ok(ContextCheckpointInstall::Stale);
     }
 
     if should_cancel() {
-        transaction.rollback()?;
         return Err(ContextCheckpointError::Cancelled);
     }
 
     transaction.execute(
         "INSERT INTO context_checkpoints \
             (thread_id, model, source_version, covered_through_seq, source_fingerprint, \
-             summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             summary, estimator_version, expected_previous_id, created_at, covered_assistant_id, covered_assistant_text_bytes, covered_assistant_tool_seq, projection_plan) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             checkpoint.thread_id,
             checkpoint.model,
@@ -1282,10 +1343,10 @@ where
             checkpoint.covered_assistant_id,
             checkpoint.covered_assistant_text_bytes as i64,
             checkpoint.covered_assistant_tool_seq as i64,
+            projection_plan,
         ],
     )?;
     if should_cancel() {
-        transaction.rollback()?;
         return Err(ContextCheckpointError::Cancelled);
     }
     let id = transaction.last_insert_rowid();
@@ -1302,10 +1363,67 @@ where
         summary: checkpoint.summary.clone(),
         estimator_version: checkpoint.estimator_version.clone(),
         expected_previous_id: checkpoint.expected_previous_id,
+        projection_plan: checkpoint.projection_plan.clone(),
+        referenced_summaries: std::collections::BTreeMap::new(),
         created_at: checkpoint.created_at,
     };
-    transaction.commit()?;
+    let mut committed = committed;
+    load_referenced_summaries(transaction, &mut committed)?;
     Ok(ContextCheckpointInstall::Applied(committed))
+}
+
+pub(super) fn validate_summary_references(
+    conn: &Connection,
+    thread_id: &str,
+    plan: &ProjectionPlan,
+) -> Result<(), ContextCheckpointError> {
+    for fragment in &plan.fragments {
+        if let ProjectionFragment::PreviousSummary { checkpoint_id } = fragment {
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM context_checkpoints WHERE id = ?1 AND thread_id = ?2)",
+                params![checkpoint_id, thread_id],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                return Err(ContextCheckpointError::Invalid);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn load_referenced_summaries(
+    conn: &Connection,
+    checkpoint: &mut ContextCheckpoint,
+) -> rusqlite::Result<()> {
+    let Some(plan) = &checkpoint.projection_plan else {
+        return Ok(());
+    };
+    let mut total = 0usize;
+    for fragment in &plan.fragments {
+        if let ProjectionFragment::PreviousSummary { checkpoint_id } = fragment {
+            if *checkpoint_id >= checkpoint.id {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "invalid summary reference".into(),
+                ));
+            }
+            let summary: String = conn.query_row(
+                "SELECT summary FROM context_checkpoints WHERE id = ?1 AND thread_id = ?2 AND length(CAST(summary AS BLOB)) <= 131072",
+                params![checkpoint_id, checkpoint.thread_id],
+                |row| row.get(0),
+            )?;
+            total = total.saturating_add(summary.len());
+            if total > 1024 * 1024 {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "summary references exceed bounded read".into(),
+                ));
+            }
+            checkpoint
+                .referenced_summaries
+                .insert(*checkpoint_id, summary);
+        }
+    }
+    Ok(())
 }
 
 fn context_settings_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContextSettings> {
@@ -1454,12 +1572,13 @@ fn load_tool_calls(
     let mut statement = conn.prepare(
         "SELECT id, thread_id, message_id, seq, tool, input_json, output_text, status, \
                 approval, exit_code, duration_ms, created_at, finished_at, text_offset_bytes, \
-                output_full_path, (SELECT response_id FROM tool_call_rounds r WHERE r.message_id = tool_calls.message_id AND r.call_id = tool_calls.id) \
+                output_full_path, (SELECT response_id FROM tool_call_rounds r WHERE r.message_id = tool_calls.message_id AND r.call_id = tool_calls.id), \
+                (SELECT source_digest FROM context_micro_compactions c WHERE c.call_id = tool_calls.id AND c.thread_id = tool_calls.thread_id) \
          FROM tool_calls WHERE thread_id = ?1 ORDER BY seq, id",
     )?;
     statement
         .query_map([thread_id], |row| {
-            Ok(ContextToolCallRow {
+            let mut call = ContextToolCallRow {
                 id: row.get(0)?,
                 thread_id: row.get(1)?,
                 message_id: row.get(2)?,
@@ -1475,8 +1594,14 @@ fn load_tool_calls(
                 finished_at: row.get(12)?,
                 text_offset_bytes: row.get(13)?,
                 response_id: row.get(15)?,
+                micro_compacted: false,
                 output_full_path_fingerprint: path_fingerprint(row.get(14)?),
-            })
+            };
+            let digest: Option<String> = row.get(16)?;
+            call.micro_compacted = digest.as_deref()
+                == Some(crate::context_micro::call_digest(&call).as_str())
+                && crate::context_micro::eligible(&call);
+            Ok(call)
         })?
         .collect()
 }
@@ -1507,6 +1632,19 @@ fn checkpoint_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContextCheck
         summary: row.get(6)?,
         estimator_version: row.get(7)?,
         expected_previous_id: row.get(8)?,
+        projection_plan: row
+            .get::<_, Option<String>>(13)?
+            .as_deref()
+            .map(ProjectionPlan::decode)
+            .transpose()
+            .map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    13,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?,
+        referenced_summaries: std::collections::BTreeMap::new(),
         created_at: row.get(9)?,
     })
 }
@@ -1522,19 +1660,89 @@ fn fingerprint_source(
     thread_id: &str,
     materialize_images: bool,
 ) -> rusqlite::Result<(String, Vec<ImageRow>)> {
-    // SHA-256 is a stable source revision, not an authorization primitive.
-    // Every field is length-delimited and Option discriminants are explicit,
-    // so same-seq content/status/tool/image mutations cannot be mistaken for
-    // an unchanged source.
+    fingerprint_source_with_scope(
+        conn,
+        messages,
+        tool_calls,
+        thread_id,
+        materialize_images,
+        false,
+    )
+}
+
+pub(super) fn fingerprint_selected_source(
+    conn: &Connection,
+    source: &ContextSource,
+) -> rusqlite::Result<String> {
+    fingerprint_source_with_scope(
+        conn,
+        &source.messages,
+        &source.tool_calls,
+        &source.thread_id,
+        false,
+        true,
+    )
+    .map(|(fingerprint, _)| fingerprint)
+}
+
+fn fingerprint_source_with_scope(
+    conn: &Connection,
+    messages: &[MessageRow],
+    tool_calls: &[ContextToolCallRow],
+    thread_id: &str,
+    materialize_images: bool,
+    selected_rows: bool,
+) -> rusqlite::Result<(String, Vec<ImageRow>)> {
     let mut hash = Sha256::new();
     let historical_bytes: i64 = conn.query_row("SELECT COALESCE((SELECT SUM(length(CAST(COALESCE(model_content,'') AS BLOB))) FROM historical_message_delivery WHERE thread_id=?1),0)+COALESCE((SELECT SUM(length(CAST(input_json AS BLOB))+length(CAST(COALESCE(output_text,'') AS BLOB))+length(CAST(references_json AS BLOB))) FROM historical_tool_receipts WHERE thread_id=?1),0)", [thread_id], |row| row.get(0))?;
     if historical_bytes > MAX_SOURCE_TEXT_BYTES {
         return Err(source_too_large());
     }
-    let mut historical = conn.prepare("SELECT message_id,json_array(model_content,previous_assistant_id) FROM historical_message_delivery WHERE thread_id=?1 UNION ALL SELECT call_id,json_array(kind,source_thread_id,source_message_id,source_call_id,input_json,output_text,references_json) FROM historical_tool_receipts WHERE thread_id=?1 ORDER BY 1,2")?;
+    let message_ids = messages
+        .iter()
+        .filter(|_| selected_rows)
+        .map(|row| row.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let call_ids = tool_calls
+        .iter()
+        .filter(|_| selected_rows)
+        .map(|row| row.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    if selected_rows {
+        let raw_bytes: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(length(CAST(content AS BLOB))),0) FROM messages WHERE thread_id=?1 AND role='user'",
+            [thread_id], |row| row.get(0),
+        )?;
+        if raw_bytes > MAX_SOURCE_TEXT_BYTES {
+            return Err(source_too_large());
+        }
+        let mut raw = conn.prepare(
+            "SELECT id,content FROM messages WHERE thread_id=?1 AND role='user' ORDER BY seq,id",
+        )?;
+        let mut rows = raw.query([thread_id])?;
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            if message_ids.contains(id.as_str()) {
+                let content = row.get_ref(1)?.as_str()?;
+                feed(&mut hash, b"raw-user-id", id.as_bytes());
+                feed(&mut hash, b"raw-user-content", content.as_bytes());
+            }
+        }
+    }
+    let mut historical = conn.prepare("SELECT message_id,json_array(model_content,previous_assistant_id),0 FROM historical_message_delivery WHERE thread_id=?1 UNION ALL SELECT call_id,json_array(kind,source_thread_id,source_message_id,source_call_id,input_json,output_text,references_json),1 FROM historical_tool_receipts WHERE thread_id=?1 ORDER BY 1,2")?;
     let mut rows = historical.query([thread_id])?;
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
+        let is_call: bool = row.get(2)?;
+        if selected_rows
+            && !if is_call {
+                call_ids.contains(id.as_str())
+            } else {
+                message_ids.contains(id.as_str())
+            }
+        {
+            continue;
+        }
         let value: String = row.get(1)?;
         feed(&mut hash, b"historical-id", id.as_bytes());
         feed(&mut hash, b"historical-value", value.as_bytes());
@@ -1568,6 +1776,9 @@ fn fingerprint_source(
         feed_optional_i64(&mut hash, b"finished", call.finished_at);
         feed_optional_i64(&mut hash, b"text-offset-bytes", call.text_offset_bytes);
         feed_optional_str(&mut hash, b"response-id", call.response_id.as_deref());
+        if call.micro_compacted {
+            feed(&mut hash, b"micro-compacted", b"1");
+        }
         feed(
             &mut hash,
             b"output-full-path",
@@ -1577,8 +1788,8 @@ fn fingerprint_source(
     let (image_count, image_bytes): (i64, i64) = conn.query_row(
         "SELECT COUNT(*), COALESCE(SUM(length(encoded)), 0) \
          FROM image_attachments a JOIN messages m ON m.id = a.message_id \
-         WHERE m.thread_id = ?1 AND m.role = 'user'",
-        [thread_id],
+         WHERE m.thread_id = ?1 AND (m.role = 'user' OR ?2)",
+        params![thread_id, selected_rows],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     if image_count > MAX_SOURCE_ROWS || image_bytes > MAX_SOURCE_IMAGE_BYTES {
@@ -1591,15 +1802,32 @@ fn fingerprint_source(
     };
     let mut images = Vec::with_capacity(image_capacity);
     let mut statement = conn.prepare(
-        "SELECT a.message_id, a.ordinal, a.encoded \
+        "SELECT a.message_id, a.ordinal, a.encoded, \
+         (SELECT s.call_id FROM computer_screenshot_artifacts s WHERE s.message_id=a.message_id AND s.ordinal=a.ordinal) \
          FROM image_attachments a JOIN messages m ON m.id = a.message_id \
-         WHERE m.thread_id = ?1 AND m.role = 'user' ORDER BY m.seq, a.ordinal",
+         WHERE m.thread_id = ?1 AND (m.role = 'user' OR ?2) ORDER BY m.seq, a.ordinal",
     )?;
-    let mut rows = statement.query([thread_id])?;
+    let mut rows = statement.query(params![thread_id, selected_rows])?;
     while let Some(row) = rows.next()? {
         let message_id: String = row.get(0)?;
+        let artifact_call_id: Option<String> = row.get(3)?;
+        if selected_rows
+            && (!message_ids.contains(message_id.as_str())
+                || artifact_call_id
+                    .as_ref()
+                    .is_some_and(|id| !call_ids.contains(id.as_str())))
+        {
+            continue;
+        }
         let ordinal: i64 = row.get(1)?;
         let encoded = row.get_ref(2)?.as_blob()?;
+        if selected_rows {
+            feed_optional_str(
+                &mut hash,
+                b"image-artifact-call",
+                artifact_call_id.as_deref(),
+            );
+        }
         feed(&mut hash, b"image-message", message_id.as_bytes());
         feed(&mut hash, b"image-ordinal", &ordinal.to_le_bytes());
         feed(&mut hash, b"image-bytes", encoded);

@@ -620,9 +620,33 @@ pub struct ChatMessage {
     live_tool_calls: Option<Vec<Option<LiveToolCall>>>,
     historical_tool_statuses: Option<Vec<HistoricalToolStatus>>,
     runtime_guidance: Option<RuntimeGuidance>,
+    context_files: Vec<ContextFile>,
+    context_skill_runs: Vec<String>,
+    context_skills: Vec<String>,
+    context_plan: Option<Box<ContextPlan>>,
+    context_tasks: Option<Box<ContextTasks>>,
     tool_context: Option<Box<crate::tool_context::ToolContext>>,
     model_projection: bool,
     replay_cold: bool,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ContextTasks {
+    sources: Vec<String>,
+    restored: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ContextPlan {
+    source: String,
+    restored: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ContextFile {
+    call_id: String,
+    path: String,
+    restored: Option<Option<String>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -732,6 +756,11 @@ impl PartialEq for ChatMessage {
             && self.replay_frame == other.replay_frame
             && self.live_tool_calls == other.live_tool_calls
             && self.runtime_guidance == other.runtime_guidance
+            && self.context_files == other.context_files
+            && self.context_skill_runs == other.context_skill_runs
+            && self.context_skills == other.context_skills
+            && self.context_plan == other.context_plan
+            && self.context_tasks == other.context_tasks
             && self.tool_context == other.tool_context
             && self.replay_cold == other.replay_cold
     }
@@ -823,7 +852,67 @@ impl ChatMessage {
         }
 
         let mut size = std::mem::size_of::<Self>()
+            .saturating_add(self.context_tasks.as_ref().map_or(0, |tasks| {
+                std::mem::size_of::<ContextTasks>()
+                    .saturating_add(
+                        tasks
+                            .sources
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<String>()),
+                    )
+                    .saturating_add(
+                        tasks
+                            .restored
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<String>()),
+                    )
+                    .saturating_add(
+                        tasks
+                            .sources
+                            .iter()
+                            .chain(&tasks.restored)
+                            .fold(0usize, |total, item| total.saturating_add(item.capacity())),
+                    )
+            }))
+            .saturating_add(self.context_plan.as_ref().map_or(0, |plan| {
+                std::mem::size_of::<ContextPlan>()
+                    .saturating_add(plan.source.capacity())
+                    .saturating_add(plan.restored.as_ref().map_or(0, String::capacity))
+            }))
+            .saturating_add(
+                self.context_skill_runs
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<String>()),
+            )
+            .saturating_add(
+                self.context_skills
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<String>()),
+            )
+            .saturating_add(
+                self.context_skill_runs
+                    .iter()
+                    .chain(&self.context_skills)
+                    .map(String::capacity)
+                    .sum::<usize>(),
+            )
             .saturating_add(string_size(&self.content))
+            .saturating_add(
+                self.context_files
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<ContextFile>()),
+            )
+            .saturating_add(self.context_files.iter().fold(0usize, |total, file| {
+                total
+                    .saturating_add(file.call_id.capacity())
+                    .saturating_add(file.path.capacity())
+                    .saturating_add(
+                        file.restored
+                            .as_ref()
+                            .and_then(Option::as_ref)
+                            .map_or(0, String::capacity),
+                    )
+            }))
             .saturating_add(self.tool_context.as_ref().map_or(0, |_| {
                 std::mem::size_of::<crate::tool_context::ToolContext>()
             }))
@@ -1030,8 +1119,151 @@ impl ChatMessage {
 
     pub fn without_runtime_metadata(&self) -> Self {
         let mut message = self.without_runtime_guidance();
+        for file in &mut message.context_files {
+            file.restored = None;
+        }
+        message.context_skills.clear();
+        message.restore_context_plan(None);
+        message.clear_context_tasks();
         message.tool_context = None;
         message
+    }
+
+    pub fn attach_context_task_sources(&mut self, sources: Vec<String>) {
+        if self.role == ChatRole::User && !sources.is_empty() {
+            self.context_tasks = Some(Box::new(ContextTasks {
+                sources: sources.into_iter().take(16).collect(),
+                restored: Vec::new(),
+            }));
+        }
+    }
+
+    pub(crate) fn context_task_sources(&self) -> &[String] {
+        self.context_tasks
+            .as_ref()
+            .map_or(&[], |tasks| tasks.sources.as_slice())
+    }
+
+    pub(crate) fn clear_context_tasks(&mut self) {
+        if let Some(tasks) = &mut self.context_tasks {
+            tasks.restored.clear();
+        }
+    }
+
+    pub(crate) fn restore_context_task(&mut self, observation: String) {
+        if let Some(tasks) = &mut self.context_tasks {
+            tasks.restored.push(observation);
+        }
+    }
+
+    pub(crate) fn trim_context_task(&mut self) -> bool {
+        self.context_tasks
+            .as_mut()
+            .is_some_and(|tasks| tasks.restored.pop().is_some())
+    }
+
+    pub fn attach_context_plan_source(&mut self, source: String) {
+        if self.role == ChatRole::User {
+            self.context_plan = Some(Box::new(ContextPlan {
+                source,
+                restored: None,
+            }));
+        }
+    }
+
+    pub(crate) fn context_plan_source(&self) -> Option<&str> {
+        self.context_plan.as_ref().map(|plan| plan.source.as_str())
+    }
+
+    pub(crate) fn restore_context_plan(&mut self, observation: Option<String>) {
+        if let Some(plan) = &mut self.context_plan {
+            plan.restored = observation;
+        }
+    }
+
+    pub(crate) fn trim_context_plan(&mut self) -> bool {
+        self.context_plan
+            .as_mut()
+            .is_some_and(|plan| plan.restored.take().is_some())
+    }
+
+    pub fn attach_context_skill_runs(&mut self, runs: Vec<String>) {
+        if self.role == ChatRole::User {
+            self.context_skill_runs = runs.into_iter().take(8).collect();
+            self.context_skills.clear();
+        }
+    }
+
+    pub(crate) fn context_skill_runs(&self) -> &[String] {
+        &self.context_skill_runs
+    }
+
+    pub(crate) fn clear_context_skills(&mut self) {
+        self.context_skills.clear();
+    }
+
+    pub(crate) fn restore_context_skill(&mut self, observation: String) {
+        self.context_skills.push(observation);
+    }
+
+    pub(crate) fn trim_context_skill(&mut self) -> bool {
+        self.context_skills.pop().is_some()
+    }
+
+    pub fn attach_context_file_references(&mut self, files: Vec<(String, String)>) {
+        if self.role == ChatRole::User {
+            self.context_files = files
+                .into_iter()
+                .take(5)
+                .map(|(call_id, path)| ContextFile {
+                    call_id,
+                    path,
+                    restored: None,
+                })
+                .collect();
+        }
+    }
+
+    pub(crate) fn reset_context_files(&mut self) {
+        self.clear_context_tasks();
+        self.restore_context_plan(None);
+        self.context_skills.clear();
+        for file in &mut self.context_files {
+            file.restored = None;
+        }
+    }
+
+    pub(crate) fn pending_context_files(&self) -> Vec<(usize, String, String)> {
+        self.context_files
+            .iter()
+            .enumerate()
+            .filter(|(_, file)| file.restored.is_none())
+            .map(|(index, file)| (index, file.call_id.clone(), file.path.clone()))
+            .collect()
+    }
+
+    pub(crate) fn restore_context_file(&mut self, index: usize, content: Option<String>) {
+        if let Some(file) = self.context_files.get_mut(index) {
+            file.restored = Some(content);
+        }
+    }
+
+    pub(crate) fn trim_context_file(&mut self) -> bool {
+        for file in self.context_files.iter_mut().rev() {
+            if let Some(Some(encoded)) = &mut file.restored {
+                if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(encoded)
+                    && value["vega_history_observation"]["content"].is_string()
+                {
+                    value["vega_history_observation"]["content"] = serde_json::Value::Null;
+                    value["vega_history_observation"]["kind"] = "compact_file_reference".into();
+                    *encoded = value.to_string();
+                    return true;
+                }
+                file.restored = Some(None);
+                return true;
+            }
+        }
+        false
     }
 
     pub(crate) fn attach_progress_reminder(&mut self) -> bool {
@@ -1139,6 +1371,11 @@ impl ChatMessage {
             live_tool_calls: None,
             historical_tool_statuses: None,
             runtime_guidance: None,
+            context_files: Vec::new(),
+            context_skill_runs: Vec::new(),
+            context_skills: Vec::new(),
+            context_plan: None,
+            context_tasks: None,
             tool_context: None,
             model_projection: false,
             replay_cold: false,
@@ -1162,6 +1399,11 @@ impl ChatMessage {
             live_tool_calls: None,
             historical_tool_statuses: None,
             runtime_guidance: None,
+            context_files: Vec::new(),
+            context_skill_runs: Vec::new(),
+            context_skills: Vec::new(),
+            context_plan: None,
+            context_tasks: None,
             tool_context: None,
             model_projection: false,
             replay_cold: false,
@@ -1189,11 +1431,24 @@ impl ChatMessage {
             live_tool_calls: None,
             historical_tool_statuses: None,
             runtime_guidance: None,
+            context_files: Vec::new(),
+            context_skill_runs: Vec::new(),
+            context_skills: Vec::new(),
+            context_plan: None,
+            context_tasks: None,
             tool_context: None,
             model_projection: false,
             replay_cold: false,
             images: Vec::new(),
         }
+    }
+
+    pub(crate) fn replace_micro_result(&mut self, content: String) {
+        self.content = content;
+        self.images.clear();
+        self.tool_context = None;
+        self.runtime_guidance = None;
+        self.model_projection = false;
     }
 
     pub fn projected_tool_result(call_id: impl Into<String>, tool: &str, content: &str) -> Self {
@@ -1249,6 +1504,11 @@ impl ChatMessage {
             live_tool_calls: None,
             historical_tool_statuses: None,
             runtime_guidance: None,
+            context_files: Vec::new(),
+            context_skill_runs: Vec::new(),
+            context_skills: Vec::new(),
+            context_plan: None,
+            context_tasks: None,
             tool_context: None,
             model_projection: false,
             replay_cold: false,
@@ -1331,6 +1591,29 @@ pub fn project_model_messages(messages: &[ChatMessage]) -> Result<Vec<ChatMessag
         }
     } else {
         cold_projected.extend(messages.iter().cloned());
+    }
+    for message in &mut cold_projected {
+        if let Some(tasks) = message.context_tasks.take() {
+            for observation in tasks.restored {
+                message.content.push('\n');
+                message.content.push_str(&observation);
+            }
+        }
+        if let Some(observation) = message.context_plan.take().and_then(|plan| plan.restored) {
+            message.content.push('\n');
+            message.content.push_str(&observation);
+        }
+        message.context_skill_runs.clear();
+        for observation in std::mem::take(&mut message.context_skills) {
+            message.content.push('\n');
+            message.content.push_str(&observation);
+        }
+        for file in std::mem::take(&mut message.context_files) {
+            if let Some(Some(observation)) = file.restored {
+                message.content.push('\n');
+                message.content.push_str(&observation);
+            }
+        }
     }
     let mut historical = std::collections::HashMap::<
         String,
@@ -1876,7 +2159,45 @@ impl std::fmt::Debug for ProviderEvent {
 /// `chat_stream` returns a `BoxFuture` resolving to an [`EventStream`] so
 /// that connection setup, retries, and cancellation all happen inside the
 /// future while the loop only polls events afterwards.
+#[allow(missing_docs)]
+pub type CompactionProviderFactory =
+    Box<dyn FnOnce() -> Result<std::sync::Arc<dyn Provider>, VegaError> + Send + 'static>;
+
+#[derive(Clone, Default)]
+#[allow(missing_docs)]
+pub struct ProviderRequestSubmission(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+#[allow(missing_docs)]
+impl ProviderRequestSubmission {
+    pub fn mark_possible_submission(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn may_have_been_submitted(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
 pub trait Provider: Send + Sync {
+    #[allow(missing_docs)]
+    fn chat_stream_with_submission(
+        &self,
+        req: ChatRequest,
+        cancel: CancellationToken,
+        submission: ProviderRequestSubmission,
+    ) -> BoxFuture<'static, Result<ProviderStream, VegaError>> {
+        if cancel.is_cancelled() {
+            return Box::pin(async { Err(VegaError::Cancelled) });
+        }
+        submission.mark_possible_submission();
+        self.chat_stream_with_metadata(req, cancel)
+    }
+
+    #[allow(missing_docs)]
+    fn compaction_provider_factory(&self) -> Option<CompactionProviderFactory> {
+        None
+    }
+
     fn model_snapshot(&self) -> Option<crate::model_compat::ResolvedModel> {
         None
     }

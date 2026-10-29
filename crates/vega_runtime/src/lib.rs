@@ -3,6 +3,7 @@ mod chat_compat;
 mod chat_reasoning;
 pub use chat_reasoning::{ChatRawState, ChatReasoningSource};
 mod context;
+mod context_micro;
 mod error;
 pub mod model_compat;
 mod openai;
@@ -14,10 +15,11 @@ mod tool_context;
 pub use agent::{
     AgentOutcome, AgentRequest, BASH_INVALID_INPUT_OUTPUT, CALL_ID_CONFLICT_OUTPUT,
     CANCELLED_BEFORE_EXECUTION_OUTPUT, CompletedToolCall, ContextAccountingDecision,
-    ContextAccountingSource, ContextAccountingStage, CredentialConfidence,
-    CredentialExceptionFilter, CredentialFinding, CredentialReader, DANGER_DENIED_OUTPUT,
-    GREP_INVALID_INPUT_OUTPUT, INVALID_READ_INPUT_OUTPUT, InvalidBashAudit,
-    LEGACY_BASH_INVALID_INPUT_OUTPUT, McpReadyServer, McpRevocationLease,
+    ContextAccountingSource, ContextAccountingStage, ConversationHistoryReader,
+    ConversationReadRequest, CredentialConfidence, CredentialExceptionFilter, CredentialFinding,
+    CredentialReader, DANGER_DENIED_OUTPUT, GREP_INVALID_INPUT_OUTPUT, HistoricalPlan,
+    HistoricalPlanReader, HistoricalTask, HistoricalTaskReader, INVALID_READ_INPUT_OUTPUT,
+    InvalidBashAudit, LEGACY_BASH_INVALID_INPUT_OUTPUT, McpReadyServer, McpRevocationLease,
     PERMISSION_CANCELLED_OUTPUT, PERMISSION_DENIED_OUTPUT, PERMISSION_TIMEOUT,
     PERMISSION_TIMEOUT_OUTPUT, PERMISSION_UNAVAILABLE_OUTPUT, PROVIDER_CREDENTIAL_REDACTION_MARKER,
     RuntimeAssistantResponseKind, RuntimeAutomationHook, RuntimeDiagnosticAttempt,
@@ -40,9 +42,13 @@ pub use context::{
     CONTEXT_ESTIMATOR_VERSION, ContextBudget, ContextCheck, ContextCompactionFailure,
     ContextCompactionHook, ContextCompactionPhase, ContextCompactionRequest,
     ContextCompactionResult, ContextCompactionStatusFailure, ContextCompactionStatusUpdate,
-    ContextCompactionUsage, ContextCompactionUsageState, ContextEstimate, ContextEstimateError,
-    ContextRuntimeError, SharedContextCompactionHook, classify_context, estimate_chat_context,
-    estimate_wire_context,
+    ContextCompactionTrigger, ContextCompactionUsage, ContextCompactionUsageState, ContextEstimate,
+    ContextEstimateError, ContextRuntimeError, SharedContextCompactionHook, classify_context,
+    estimate_chat_context, estimate_wire_context, validate_compaction_replay,
+};
+pub use context_micro::{
+    MICRO_KEEP_RECENT, MICRO_MIN_SAVINGS, MicroCompactionRequest, MicroCompactionResult,
+    MicroCompactionTarget, apply_micro_compaction, micro_result_content,
 };
 pub use error::{
     ProviderProtocolReason, RuntimeFailureDetail, RuntimeFailureReason, RuntimeFailureStage,
@@ -60,11 +66,12 @@ pub use permission::{
     RuntimeToolClass, RuntimeUserDecision, decide_capability, decide_execute_permission,
 };
 pub use provider::{
-    ChatMessage, ChatReasoningPresence, ChatRequest, ChatRole, ChatToolCall, EventStream,
-    FrozenReasoning, Provider, ProviderEvent, ProviderFailureKind, ProviderResponseMetadata,
-    ProviderStream, ReasoningBudgetScope, ReasoningChoice, ReasoningDisabledWire,
-    ReasoningProtocol, ReasoningReplayPolicy, ReplayFrame, ResponseReplayLayout,
-    ResponseReplaySlot, StopReason, ToolChoice, ToolDefinition, project_model_messages,
+    ChatMessage, ChatReasoningPresence, ChatRequest, ChatRole, ChatToolCall,
+    CompactionProviderFactory, EventStream, FrozenReasoning, Provider, ProviderEvent,
+    ProviderFailureKind, ProviderRequestSubmission, ProviderResponseMetadata, ProviderStream,
+    ReasoningBudgetScope, ReasoningChoice, ReasoningDisabledWire, ReasoningProtocol,
+    ReasoningReplayPolicy, ReplayFrame, ResponseReplayLayout, ResponseReplaySlot, StopReason,
+    ToolChoice, ToolDefinition, project_model_messages,
 };
 pub use retry::RetryPolicy;
 

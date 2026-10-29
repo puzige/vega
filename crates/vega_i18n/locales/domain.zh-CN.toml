@@ -303,6 +303,7 @@
 "domain.usage.unavailable" = "用量数据库不可用"
 "domain.ordinary_send.access_unavailable" = "会话暂不可用，请稍后重试"
 "domain.ordinary_send.stop_before_change" = "请先停止当前任务再修改"
+"domain.context.cleanup_pending" = "后台工作正在停止，请稍后重试删除会话"
 "domain.ordinary_send.facts_unavailable" = "发送状态暂不可用；请先核实状态再重试"
 "domain.ordinary_send.history_changed" = "会话已变化；请打开历史后再发送"
 "domain.ordinary_send.submission_unavailable" = "本次发送已不可用；请先核实状态再重试"

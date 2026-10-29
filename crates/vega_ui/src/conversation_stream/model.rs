@@ -841,6 +841,8 @@ impl StreamModel {
 
 #[derive(Clone)]
 pub(crate) struct MessageCopy {
+    pub(super) compaction_menu:
+        std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<super::selection_menu::MenuBuilder>>>>,
     pub(super) id: u64,
     text: std::rc::Rc<std::cell::RefCell<String>>,
     live_projection_unavailable: bool,
@@ -922,6 +924,7 @@ impl MessageCopy {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
         Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            compaction_menu: Default::default(),
             text: std::rc::Rc::new(std::cell::RefCell::new(text.to_owned())),
             live_projection_unavailable: false,
             generated_notices: Default::default(),

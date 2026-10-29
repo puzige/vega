@@ -363,18 +363,30 @@ impl RunActivityGroup {
         })
     }
 
-    pub(crate) fn remove_compactions(&mut self, model: &str, through: u64, cx: &mut Context<Self>) {
+    pub(crate) fn remove_compactions(
+        &mut self,
+        model: &str,
+        generations: std::ops::RangeInclusive<u64>,
+        cx: &mut Context<Self>,
+    ) {
         let mut changed = false;
         for segment in &mut self.segments {
             let previous = segment.children.len();
             segment.children.retain(|child| {
                 !matches!(child, RunActivityChild::Compaction { model: owner, generation }
-                    if owner == model && *generation <= through)
+                    if owner == model && generations.contains(generation))
             });
             changed |= previous != segment.children.len();
         }
         if changed {
-            if self.phase == RunPhase::Compacting {
+            if self.phase == RunPhase::Compacting
+                && !self.segments.iter().any(|segment| {
+                    segment
+                        .children
+                        .iter()
+                        .any(|child| matches!(child, RunActivityChild::Compaction { .. }))
+                })
+            {
                 self.phase = RunPhase::Working;
             }
             self.sync_thinking_visibility(cx);

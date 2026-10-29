@@ -144,6 +144,7 @@ impl OpenAiProvider {
     async fn send_attempt(
         &self,
         body: &serde_json::Value,
+        submission: Option<&crate::ProviderRequestSubmission>,
     ) -> Result<reqwest::Response, reqwest::Error> {
         let path = if self.responses_api {
             "/responses"
@@ -161,6 +162,9 @@ impl OpenAiProvider {
             .json(body)
             .build()?;
 
+        if let Some(submission) = submission {
+            submission.mark_possible_submission();
+        }
         self.http.execute(request).await
     }
 
@@ -214,6 +218,16 @@ impl OpenAiProvider {
         req: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<ProviderStream, VegaError> {
+        self.stream_response_with_submission(req, cancel, None)
+            .await
+    }
+
+    async fn stream_response_with_submission(
+        self,
+        req: ChatRequest,
+        cancel: CancellationToken,
+        submission: Option<crate::ProviderRequestSubmission>,
+    ) -> Result<ProviderStream, VegaError> {
         if cancel.is_cancelled() {
             return Err(VegaError::Cancelled);
         }
@@ -229,7 +243,7 @@ impl OpenAiProvider {
             if let Some(guard) = &self.before_attempt {
                 guard(&req)?;
             }
-            let send = self.send_attempt(&body);
+            let send = self.send_attempt(&body, submission.as_ref());
             let outcome = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => return Err(VegaError::Cancelled),
@@ -312,6 +326,38 @@ impl OpenAiProvider {
 }
 
 impl Provider for OpenAiProvider {
+    fn chat_stream_with_submission(
+        &self,
+        req: ChatRequest,
+        cancel: CancellationToken,
+        submission: crate::ProviderRequestSubmission,
+    ) -> BoxFuture<'static, Result<ProviderStream, VegaError>> {
+        let this = self.clone();
+        Box::pin(async move {
+            this.stream_response_with_submission(req, cancel, Some(submission))
+                .await
+        })
+    }
+
+    fn compaction_provider_factory(&self) -> Option<crate::provider::CompactionProviderFactory> {
+        let base_url = self.base_url.clone();
+        let key = self.key.clone();
+        let responses_api = self.responses_api;
+        let model_snapshot = self.model_snapshot.clone();
+        let retry = self.retry.clone();
+        let recovery_retry = self.recovery_retry.clone();
+        let before_attempt = self.before_attempt.clone();
+        Some(Box::new(move || {
+            let mut provider = Self::new(base_url, key)?;
+            provider.responses_api = responses_api;
+            provider.model_snapshot = model_snapshot;
+            provider.retry = retry;
+            provider.recovery_retry = recovery_retry;
+            provider.before_attempt = before_attempt;
+            Ok(Arc::new(provider))
+        }))
+    }
+
     fn model_snapshot(&self) -> Option<crate::model_compat::ResolvedModel> {
         self.model_snapshot.as_deref().cloned()
     }

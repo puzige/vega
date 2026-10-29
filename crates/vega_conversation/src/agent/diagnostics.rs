@@ -16,6 +16,10 @@ const DIAGNOSTIC_CHANNEL_CAPACITY: usize = 64;
 enum DiagnosticsSink {
     Persistence(tokio::sync::mpsc::Sender<super::persistence::PersistenceCommand>),
     Buffered(VecDeque<NewDiagnosticEvent>),
+    Compaction {
+        events: VecDeque<NewDiagnosticEvent>,
+        capacity: usize,
+    },
 }
 
 #[derive(Clone)]
@@ -87,7 +91,16 @@ impl DiagnosticsWriter {
         }
     }
 
-    pub(crate) fn record(&self, event: NewDiagnosticEvent) {
+    pub(crate) fn for_background_compaction(max_stages: usize) -> Self {
+        Self {
+            sender: std::sync::Mutex::new(Some(DiagnosticsSink::Compaction {
+                events: VecDeque::new(),
+                capacity: max_stages.min(32).saturating_mul(2).saturating_add(2),
+            })),
+        }
+    }
+
+    pub(crate) fn record(&self, mut event: NewDiagnosticEvent) {
         let Ok(mut sender) = self.sender.lock() else {
             return;
         };
@@ -103,7 +116,11 @@ impl DiagnosticsWriter {
                 events.push_back(event);
             }
             Some(DiagnosticsSink::Buffered(_)) => {}
-            None => {}
+            Some(DiagnosticsSink::Compaction { events, capacity }) if events.len() < *capacity => {
+                event.metrics.request_id = None;
+                events.push_back(event);
+            }
+            Some(DiagnosticsSink::Compaction { .. }) | None => {}
         }
     }
 
@@ -114,6 +131,28 @@ impl DiagnosticsWriter {
                 let _ = vega_store::run_diagnostics::insert(store.conn(), &event);
             }
         }
+    }
+
+    pub(crate) fn flush_background_compaction(
+        &self,
+        store: &vega_store::Store,
+    ) -> Result<(), vega_store::run_diagnostics::DiagnosticError> {
+        use vega_store::run_diagnostics::DiagnosticError;
+        use vega_store::write_coordination::{WriteCategory, WriteTransaction};
+        let sink = self
+            .sender
+            .lock()
+            .map_err(|_| DiagnosticError::InvalidField { field: "writer" })?
+            .take();
+        let Some(DiagnosticsSink::Compaction { events, .. }) = sink else {
+            return Err(DiagnosticError::InvalidField { field: "writer" });
+        };
+        let transaction = WriteTransaction::new(store.conn(), WriteCategory::Diagnostics)?;
+        for event in events {
+            vega_store::run_diagnostics::insert(&transaction, &event)?;
+        }
+        transaction.commit()?;
+        Ok(())
     }
 
     pub(crate) async fn close(&self) {

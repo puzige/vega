@@ -515,6 +515,23 @@ impl SkillRun {
         self.binding.as_ref()
     }
 
+    pub fn historical_bodies(&self) -> Vec<(ActiveSkillSummary, String)> {
+        self.active
+            .iter()
+            .map(|active| {
+                (
+                    ActiveSkillSummary {
+                        name: active.candidate.name.clone(),
+                        source_label: active.label.clone(),
+                        content_sha256: active.candidate.sha256.clone(),
+                        source_scope: active.candidate.source.identity().scope(),
+                    },
+                    active.body.clone(),
+                )
+            })
+            .collect()
+    }
+
     pub fn active_summaries(&self) -> Vec<ActiveSkillSummary> {
         self.active
             .iter()
