@@ -119,6 +119,37 @@ async fn automation_entry_keeps_rolled_back_background_usage_visible_after_seali
 async fn verify_entry_sealing(mode: &'static str) -> TestResult {
     let (directory, _path, store) = source_fixture()?;
     let _request = input(&store)?;
+    let thread = ulid::Ulid::generate().to_string();
+    threads::create_standalone(
+        store.conn(),
+        threads::NewThread {
+            id: &thread,
+            project_id: "",
+            title: "Automation entry",
+            mode: "execute",
+            permission_mode: crate::types::PermissionMode::ReadOnly.as_str(),
+            permission_revision: 0,
+            full_access_grant: None,
+            reasoning_preferences: None,
+            model: "model",
+            status: "active",
+            pinned: false,
+            unread: false,
+            created_at: 1,
+            updated_at: 1,
+        },
+    )?;
+    let transaction = store.immediate_transaction()?;
+    transaction.execute(
+        "UPDATE messages SET thread_id=?1 WHERE thread_id='thread'",
+        [&thread],
+    )?;
+    transaction.execute(
+        "UPDATE tool_calls SET thread_id=?1 WHERE thread_id='thread'",
+        [&thread],
+    )?;
+    transaction.execute("DELETE FROM threads WHERE id='thread'", [])?;
+    transaction.commit()?;
     store.conn().execute(
         "UPDATE tool_calls SET output_text=?1 WHERE id='call-1'",
         ["older data ".repeat(123_000)],
@@ -136,7 +167,7 @@ async fn verify_entry_sealing(mode: &'static str) -> TestResult {
     )?;
     crate::automation::command(
         &store,
-        "thread",
+        &thread,
         &AutomationCommand::Create {
             kind: AutomationKind::Goal,
             instruction: "Continue the implementation.".into(),
@@ -153,9 +184,9 @@ async fn verify_entry_sealing(mode: &'static str) -> TestResult {
         )?;
     }
     let registry = crate::types::ContextPrecomputeRegistry::default();
-    let admission = crate::thread_access::acquire(&store, "thread")?;
+    let admission = crate::thread_access::acquire(&store, &thread)?;
     let lease = registry
-        .bind(store.database_identity(), "thread", &admission)?
+        .bind(store.database_identity(), &thread, &admission)?
         .ok_or("lease")?;
     let background = BackgroundProvider::new(
         if mode == "unknown" {
@@ -181,7 +212,7 @@ async fn verify_entry_sealing(mode: &'static str) -> TestResult {
         &store,
         &provider,
         &tools,
-        "thread",
+        &thread,
         "Continue the implementation.",
         "system",
         CancellationToken::new(),
@@ -225,11 +256,11 @@ async fn verify_entry_sealing(mode: &'static str) -> TestResult {
     }
     tokio::time::timeout(Duration::from_secs(10), exit.entered.notified()).await?;
     let task = registry
-        .pending(store.database_identity(), "thread", &admission)?
+        .pending(store.database_identity(), &thread, &admission)?
         .ok_or("background pending")?;
     let generation = task.generation().to_owned();
     let claim: crate::types::AutomationRunClaim = serde_json::from_str(
-        &vega_store::automation::active_run(store.conn(), "thread")?.ok_or("active claim")?,
+        &vega_store::automation::active_run(store.conn(), &thread)?.ok_or("active claim")?,
     )?;
     assert_eq!(claim.tokens, 10);
     assert_eq!(claim.usage_ids.len(), 1);
@@ -240,17 +271,17 @@ async fn verify_entry_sealing(mode: &'static str) -> TestResult {
         "{mode}: blocked provider must prevent sealing"
     );
     assert!(
-        !vega_store::automation::run(store.conn(), "thread", &claim.id)?
+        !vega_store::automation::run(store.conn(), &thread, &claim.id)?
             .ok_or("claim")?
             .0
     );
-    assert_eq!(crate::automation::load(&store, "thread")?[0].used_tokens, 0);
+    assert_eq!(crate::automation::load(&store, &thread)?[0].used_tokens, 0);
     assert_eq!(count(&store, "context_precompute_stages")?, 0);
     background.0.proceed.notify_one();
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let terminal =
-                vega_store::run_diagnostics::read_by_run(store.conn(), "thread", &generation)?
+                vega_store::run_diagnostics::read_by_run(store.conn(), &thread, &generation)?
                     .iter()
                     .any(|event| {
                         event.event.phase == vega_store::run_diagnostics::DiagnosticPhase::Run
@@ -275,7 +306,7 @@ async fn verify_entry_sealing(mode: &'static str) -> TestResult {
         "{mode}: settled accounting is not physical exit"
     );
     let (finished, data) =
-        vega_store::automation::run(store.conn(), "thread", &claim.id)?.ok_or("unsealed claim")?;
+        vega_store::automation::run(store.conn(), &thread, &claim.id)?.ok_or("unsealed claim")?;
     assert!(!finished);
     let settled: crate::types::AutomationRunClaim = serde_json::from_str(&data)?;
     let expected_tokens = if mode == "success" { 120 } else { 10 };
@@ -292,7 +323,7 @@ async fn verify_entry_sealing(mode: &'static str) -> TestResult {
         count(&store, "context_precompute_stages")?,
         i64::from(mode != "rollback")
     );
-    assert_eq!(crate::automation::load(&store, "thread")?[0].used_tokens, 0);
+    assert_eq!(crate::automation::load(&store, &thread)?[0].used_tokens, 0);
     exit.release();
     let outcome = tokio::time::timeout(Duration::from_secs(10), &mut run).await??;
     assert!(!outcome.failed);
@@ -306,15 +337,15 @@ async fn verify_entry_sealing(mode: &'static str) -> TestResult {
     );
     assert!(
         registry
-            .pending(store.database_identity(), "thread", &admission)?
+            .pending(store.database_identity(), &thread, &admission)?
             .is_none()
     );
     assert_eq!(count(&store, "context_checkpoints")?, 0);
     let sealed =
-        vega_store::automation::run(store.conn(), "thread", &claim.id)?.ok_or("sealed claim")?;
+        vega_store::automation::run(store.conn(), &thread, &claim.id)?.ok_or("sealed claim")?;
     assert!(sealed.0);
     assert_eq!(sealed.1, data);
-    let tasks = crate::automation::load(&store, "thread")?;
+    let tasks = crate::automation::load(&store, &thread)?;
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].used_tokens, expected_tokens);
     assert_eq!(tasks[0].usage_complete, mode == "success");
@@ -334,7 +365,7 @@ async fn verify_entry_sealing(mode: &'static str) -> TestResult {
             Some(AutomationReason::UsageUnverified)
         }
     );
-    let ready = ready::recover(store.conn(), "thread", now_ms())?;
+    let ready = ready::recover(store.conn(), &thread, now_ms())?;
     if mode == "rollback" {
         assert!(ready.is_none());
     } else {
@@ -352,9 +383,9 @@ async fn verify_entry_sealing(mode: &'static str) -> TestResult {
             9_999,
             crate::automation::now_ms(),
         )?;
-        assert_eq!(crate::automation::load(&store, "thread")?, tasks);
+        assert_eq!(crate::automation::load(&store, &thread)?, tasks);
         assert_eq!(
-            vega_store::automation::run(store.conn(), "thread", &claim.id)?,
+            vega_store::automation::run(store.conn(), &thread, &claim.id)?,
             Some(sealed.clone())
         );
         assert_eq!(

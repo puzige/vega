@@ -489,12 +489,18 @@ Full 首批 `2a5fa2ad209aef326dad1e06444791a3f15acf9a` 独立审查发现 `Persi
 |---|---|
 | session／cwd／项目规则 | 宿主 agent_context.rs 构造当前 system；runtime loop_.rs 每轮重建，不从摘要复制或覆盖当前权限。既有 48eaf19d 实际出站回归已验证。 |
 | Ask／Plan 与显式 goal／loop | RuntimeToolConfig／冻结能力及 automation::system_context 独立装配；实际压缩后 write 拒绝回归已通过，不新增“恢复权限”附件。 |
-| 阶段 handoff／旧执行结果 | 当前 wait_agent 能读已注册精确执行，但新父运行只加载 child 最新执行；历史恢复引用仍可指 E1，E2 出现后 E1 结果缺少可靠取回。按新 delegated_results 合同补只读通道，当前未完成。 |
+| 阶段 handoff／旧执行结果 | 当前 wait_agent 能读已注册精确执行，但新父运行只加载 child 最新执行。`2a670c6f92c02074e252c02fb00995de533713b9` 已按 delegated_results 合同补精确历史 E1 结果与安全阶段声明只读取回，非写入者固定内容静态审查 Clear；新增开发回归尚待该增量云端验证，不以旧版绿色结果替代。 |
 | 后台 shell | 当前 bash 是等待退出／超时／取消的进程执行，无可恢复后台任务身份；不新增虚构 shell 注册表，不将命令中的 & 等同原生后台任务能力。 |
 | 历史删除／脱敏 | 真实永久凭据清理已有原文与衍生状态事务退役、pause/drain、暖 replay 失效；线程删除有物理排空。未发现任意已提交消息自由编辑／删除／脱敏的产品入口，待发队列删除不是历史删除；不把直接 SQL 变更冒充产品入口。未来新增历史修改入口须先定义传播合同。 |
 | idle-cache | 当前 provider 只返回缓存读写计数，无可信到期时间；本地 Ready 七天期限不是远端 cache TTL。维持本卡已声明“不伪造调度”适配，不造 1h timer，也不与 3900s idle micro 混淆。 |
 
 此表只澄清适用性和已确认缺口，不表示整卡交付完成；旧记录中的待实现描述保留为历史，不反向抹除后续已验证增量。外层自动化封存回归、历史委派结果取回、必要跨路径核对、开发 Rust 证据归档／清理、最终 0 发现／0 执行 required CI、完整最终版本独审和用户真实验收仍按各自门禁推进。
+
+### 自动化外层入口 fixture 修复（2026-10-29）
+
+开发 head `2f141493bdd9e4cc9bbb82ea54d7fdbee0a88e86` 的 Actions [40876047594](https://github.com/puzige/vega/actions/runs/40876047594)：Clippy `123455002791` 成功，Nextest `123455003186` 与 required `123457583978` 失败。Nextest 原始汇总为 191 执行、188 通过、3 失败、0 跳过（22.531s）；独立发现清点数本次未取得。三项新增 `automation_entry_*` 全部在后台启动前返回 `CorruptRow("Could not save the automation. Please retry.")`，不能据此宣称已验证物理退出后的封账行为。
+
+责任链为真实外层入口 → `automation::claim` → `capture_fence` → `PermissionFence::is_valid`：共享 fixture 的线程 ID `thread` 不是合法 ULID。修复仅在 `attribution_entry_tests.rs` 创建合法 ULID 线程，将既有 messages/tool_calls 在事务中迁入并移除旧 fixture 线程，所有入口、注册表与持久化观察统一使用该 ID；不修改生产权限校验、计费生命周期或断言。成功／未知用量／事务回滚、provider 返回后仍等待真实 runtime 退出、Ready 保留、重复 finish 不重复计费等原断言保持。修复文件 SHA-256 为 `fa6ef7bdbec41855e4aeafeb2fdc2f0744cf02ef3bd6599aaf3eb3a5b37b0753`。本地 rustfmt 与 `git diff --check` 通过，未执行 Vega、编译或测试；行为结果待新 head 的既有 Actions，入口测试非写入者独审另行记录。
 
 ### 局部压缩开发云端记录（2026-10-28）
 
