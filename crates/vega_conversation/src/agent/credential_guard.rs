@@ -296,14 +296,14 @@ fn protected_stream(
                     };
                     if let Some((index, text)) = part {
                         pending[index].push_str(text);
-                        pending[index] = vega_runtime::redact_sensitive_credential_text_with_policy(
-                            &pending[index],
-                            &known,
-                            exceptions.as_ref(),
-                        );
                         let end = vega_runtime::credential_stream_safe_end(&pending[index], &known);
                         if end > 0 {
-                            let output: String = pending[index].drain(..end).collect();
+                            let raw: String = pending[index].drain(..end).collect();
+                            let output = vega_runtime::redact_sensitive_credential_text_with_policy(
+                                &raw,
+                                &known,
+                                exceptions.as_ref(),
+                            );
                             ready.push_back(Ok(match index {
                                 0 => ProviderEvent::TextDelta(output),
                                 1 => ProviderEvent::ThinkingDelta(output),
