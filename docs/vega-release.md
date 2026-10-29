@@ -87,9 +87,18 @@ Developer ID Application 签名、公证和 staple 是额外系统身份保障�
 
 ## 发布队列与限制
 
-共享发布 job 使用 `vega-stable-publication` 并发组，`queue: max`、不取消正在运行的发布。
-master 调用方没有同组锁，避免 reusable workflow 等待自身。GitHub 最多保留 100 个 pending
-任务，超额会取消；FIFO 按进入等待队列时间，不保证事件时间顺序，代码祖先检查负责拒绝倒序。
+master 入口使用独立的 `vega-master-pipeline` 并发组，设置 `cancel-in-progress: true`，
+不设置 `queue: max`。新 master 运行取消该组旧运行，默认单 pending 规则替换旧等待任务，
+只保留最新运行，不再保证每次合并都产生 Release。取消会传递到该运行调用的发布流程，
+但不撤回已完成的发布；若已保留 tag 或建立 draft，可能留下未发布版本或版本号间隔，
+按既有恢复规则处理，不自动删除、不覆盖正式资产。
+
+共享发布 job 保留 `vega-stable-publication` 组、`queue: max` 和 `cancel-in-progress: false`，
+串行保护人工 tag、手动重跑及仍有效的自动发布。内部锁不阻止 master 调用方取消自身；
+两组名称必须不同，避免 reusable workflow 等待自身，新 master 运行不会按该组取消独立人工发布。
+PR Check 保持 `${{ github.workflow }}-${{ github.ref }}` 与 `cancel-in-progress: true`，
+同一 PR 只保留最新检查，不同 PR（含 fork 同名分支）互不影响。GitHub 不保证按提交时间排序，
+取消也有收尾延迟；固定 SHA 与代码祖先检查继续防止发布身份错配和倒序发布。
 参见 [GitHub concurrency 文档](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)。
 
 版本必须三段数字，各段不允许前导零（单独 `0` 除外），不超过 `18446744073709551615`。
