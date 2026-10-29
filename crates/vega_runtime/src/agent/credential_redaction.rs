@@ -42,11 +42,7 @@ pub fn credential_stream_safe_end(text: &str, known: &[String]) -> usize {
         }
     }
     let lowercase = text.to_ascii_lowercase();
-    let lower_bound = text.len().saturating_sub(256);
-    for (start, _) in text
-        .char_indices()
-        .filter(|(start, _)| *start >= lower_bound)
-    {
+    for (start, _) in text.char_indices() {
         if !has_token_boundary_before(text.as_bytes(), start) {
             continue;
         }
@@ -66,7 +62,21 @@ pub fn credential_stream_safe_end(text: &str, known: &[String]) -> usize {
             safe_end = safe_end.min(start);
         }
     }
-    safe_end
+    let findings = inspect_credential_text(text, known);
+    loop {
+        let previous_end = safe_end;
+        for finding in &findings {
+            if finding.start < safe_end && safe_end < finding.end {
+                safe_end = finding.start;
+            }
+        }
+        while safe_end > 0 && is_credential_token_byte(text.as_bytes()[safe_end - 1]) {
+            safe_end -= 1;
+        }
+        if safe_end == previous_end {
+            return safe_end;
+        }
+    }
 }
 
 pub fn inspect_credential_text(text: &str, known: &[String]) -> Vec<CredentialFinding> {
@@ -488,13 +498,18 @@ fn assignment_value_end(bytes: &[u8], start: usize) -> usize {
 
 fn credential_token_end(bytes: &[u8], start: usize) -> usize {
     let mut end = start;
-    while bytes.get(end).is_some_and(|byte| {
-        byte.is_ascii_alphanumeric()
-            || matches!(*byte, b'_' | b'-' | b'.' | b'+' | b'/' | b'=' | b'~')
-    }) {
+    while bytes
+        .get(end)
+        .copied()
+        .is_some_and(is_credential_token_byte)
+    {
         end += 1;
     }
     end
+}
+
+fn is_credential_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'+' | b'/' | b'=' | b'~')
 }
 
 fn has_token_boundary_before(bytes: &[u8], index: usize) -> bool {
