@@ -21,3 +21,13 @@
 本地仅格式、差异、依赖与静态核对，不运行 Vega、不构建、不执行测试。通过独立审查及最终 head required Actions 验证编译/格式/lint/既有 Python 回归；最终 head 无 Rust 测试。新语法 query 接线与跨度行为风险通过临时开发 Rust 测试在 Actions 验证并留痕，合并前移除并重新验证最终 head。
 
 用户手测：浅/深色下检查 Rust 示例的 fn/let、i32、main/map/sum、数字与字符串均可区分；检查五种新增语言关键语法，Text 不着色；标题与复制按钮在窄窗口不重叠；复制原文、拖选与横向滚动保持正常。CI 与合并不冒充像素验收或已安装。
+
+## 开发验证留痕
+
+- 开发版本：`5a102e61e1393d8fd2cbcb6e2d92190297f03430`。
+- [可恢复原始测试源码](https://github.com/puzige/vega/blob/5a102e61e1393d8fd2cbcb6e2d92190297f03430/crates/vega_markdown/tests/code_presentation.rs)，已通过 GitHub contents API 读回，blob `3a43d49448aefbafae8e3a05dabe7e73ffb261c4`。
+- [Actions 40829280966](https://github.com/puzige/vega/actions/runs/40829280966)：fmt、全目标 Clippy、Python 三组（5/15/40）、Nextest 成功；Rust 4 发现 / 4 执行 / 4 通过 / 0 跳过。
+- 首轮失败揭示 JSON 键被通用字符串覆盖及 Rust 宏符号被运算符覆盖；修正查询优先级。次轮失败揭示 SQL 上游 `%d` 模式与 Rust 正则不匹配；追加整数/小数/指数查询。未放宽或移除失败断言；上述成功版本保留全部开发断言。
+- 本地 `cargo fmt --all -- --check`、`git diff --check` 成功；未本地构建、运行或测试。语法色与背景静态对比度浅色最低 5.28:1、深色最低 6.23:1，不代表像素验收。
+- 按仓库规则，本轮第三提交只移除临时 Rust 测试并记录证据，无生产行为变化；最终完整 required Actions 待结果，不能把开发版本成功代替最终 head 门禁。
+- 独立审查任务创建失败：`delegated permission source changed`；`list_agents` 确认空列表，无审查者实际运行。门禁未满足，不合并；恢复委派或由另一非实现者 Agent 审查精确最终版本后继续。
