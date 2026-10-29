@@ -724,3 +724,460 @@ fn zero_usage_invalid_projection_and_arithmetic_overflow_do_not_bypass_safety() 
         .is_err()
     );
 }
+
+mod openai_wire_anchor_regressions {
+    use super::*;
+    use crate::model_compat::{
+        ModelApi, ModelCapabilityOverride, ModelIdentity, ModelRoute, freeze_choice,
+        lookup_model_definition, resolve_model,
+    };
+    use crate::{ResponseReplayLayout, ResponseReplaySlot};
+    use serde_json::{Value, json};
+
+    const BASE_URL: &str = "https://api.openai.com/v1";
+    const WIRE_MODEL: &str = "gpt-4.1";
+    const INPUT: u64 = 40_000;
+
+    #[derive(Clone, Copy, Debug)]
+    enum WireApi {
+        Chat,
+        Responses,
+    }
+
+    impl WireApi {
+        fn model_api(self) -> ModelApi {
+            match self {
+                Self::Chat => ModelApi::ChatCompletions,
+                Self::Responses => ModelApi::Responses,
+            }
+        }
+
+        fn replay_policy(self) -> ReasoningReplayPolicy {
+            match self {
+                Self::Chat => ReasoningReplayPolicy::StandardChat,
+                Self::Responses => ReasoningReplayPolicy::ResponsesItems,
+            }
+        }
+
+        fn sequence_key(self) -> &'static str {
+            match self {
+                Self::Chat => "messages",
+                Self::Responses => "input",
+            }
+        }
+
+        fn body(self, request: &ChatRequest) -> Value {
+            crate::openai::encode_request(BASE_URL, request, matches!(self, Self::Responses))
+                .unwrap()
+        }
+    }
+
+    fn initial_messages(api: WireApi) -> Vec<ChatMessage> {
+        let mut system = ChatMessage::new(ChatRole::System, "system instructions");
+        system.attach_replay_frame(ReplayFrame::new(2, api.replay_policy()));
+        vec![system, ChatMessage::new(ChatRole::User, "request")]
+    }
+
+    fn request(api: WireApi, messages: &[ChatMessage]) -> ChatRequest {
+        let route = ModelRoute::new(api.model_api(), BASE_URL).unwrap();
+        let identity = ModelIdentity {
+            provider: "openai".into(),
+            model: WIRE_MODEL.into(),
+        };
+        let definition = lookup_model_definition(&route, &identity).unwrap();
+        let capabilities = ModelCapabilityOverride {
+            identity,
+            allowed_efforts: None,
+            image_input: Some(true),
+        };
+        let model = resolve_model(&definition, Some(&capabilities)).unwrap();
+        let reasoning = freeze_choice(&model, ReasoningChoice::ProviderDefault).unwrap();
+        assert_eq!(reasoning.replay_policy, api.replay_policy());
+        let mut definitions = tools();
+        definitions.push(ToolDefinition {
+            name: "ComputerScreenshot".into(),
+            description: "Capture a window screenshot".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {"target_id": {"type": "string"}},
+                "required": ["target_id"],
+                "additionalProperties": false,
+            }),
+            strict: true,
+        });
+        ChatRequest {
+            model: WIRE_MODEL.into(),
+            messages: project_model_messages(messages).unwrap(),
+            tools: definitions,
+            max_tokens: Some(OUTPUT_CAP),
+            reasoning: Some(reasoning),
+            model_snapshot: Some(Box::new(model)),
+            ..Default::default()
+        }
+    }
+
+    fn live_assistant(api: WireApi, ids: &[&str]) -> ChatMessage {
+        let calls = ids
+            .iter()
+            .map(|id| tool_call(id, "read", r#"{"path":"source.txt"}"#))
+            .collect();
+        live_assistant_with_calls(api, calls)
+    }
+
+    fn screenshot_call(id: &str) -> ChatToolCall {
+        tool_call(
+            id,
+            "ComputerScreenshot",
+            &json!({"target_id": format!("window-{id}")}).to_string(),
+        )
+    }
+
+    fn live_assistant_with_calls(api: WireApi, calls: Vec<ChatToolCall>) -> ChatMessage {
+        let audit_calls = calls
+            .iter()
+            .map(|call| {
+                let mut audit = call.clone();
+                if call.name == "ComputerScreenshot" {
+                    audit.input_json = crate::computer_use::ComputerUseAudit::for_tool(
+                        &call.name,
+                        &call.input_json,
+                    );
+                }
+                audit
+            })
+            .collect();
+        let mut assistant = ChatMessage::assistant_with_tools("", audit_calls);
+        if matches!(api, WireApi::Responses) {
+            let slots = calls
+                .iter()
+                .map(|call| ResponseReplaySlot::FunctionCall {
+                    item: json!({
+                        "type": "function_call",
+                        "call_id": call.id,
+                        "name": call.name,
+                        "arguments": call.input_json,
+                    }),
+                    call_id: call.id.clone(),
+                    name: call.name.clone(),
+                    arguments: call.input_json.clone(),
+                })
+                .collect();
+            assistant.response_replay_layout = Some(ResponseReplayLayout {
+                response_id: Some("response-id".into()),
+                slots,
+            });
+        }
+        assistant
+            .bind_live_tool_calls(calls.into_iter().map(Some).collect())
+            .unwrap();
+        assistant
+    }
+
+    fn append_live_round(api: WireApi, messages: &mut Vec<ChatMessage>, id: &str) {
+        messages.push(live_assistant(api, &[id]));
+        messages.push(runtime_read_result(id, "later result"));
+    }
+
+    fn sequence(api: WireApi, body: &Value) -> &[Value] {
+        body[api.sequence_key()].as_array().unwrap()
+    }
+
+    fn call_ids(api: WireApi, body: &Value) -> Vec<&str> {
+        match api {
+            WireApi::Chat => sequence(api, body)
+                .iter()
+                .flat_map(|item| {
+                    item.get("tool_calls")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                })
+                .map(|call| call["id"].as_str().unwrap())
+                .collect(),
+            WireApi::Responses => sequence(api, body)
+                .iter()
+                .filter(|item| item["type"] == "function_call")
+                .map(|call| call["call_id"].as_str().unwrap())
+                .collect(),
+        }
+    }
+
+    fn result_ids(api: WireApi, body: &Value) -> Vec<&str> {
+        sequence(api, body)
+            .iter()
+            .filter_map(|item| match api {
+                WireApi::Chat if item["role"] == "tool" => item["tool_call_id"].as_str(),
+                WireApi::Responses if item["type"] == "function_call_output" => {
+                    item["call_id"].as_str()
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn assert_wire_prefix(api: WireApi, before: &Value, after: &Value) {
+        let before_items = sequence(api, before);
+        let after_items = sequence(api, after);
+        assert!(after_items.len() > before_items.len(), "{api:?}");
+        assert_eq!(before_items, &after_items[..before_items.len()], "{api:?}");
+        let mut truncated = after.clone();
+        truncated[api.sequence_key()]
+            .as_array_mut()
+            .unwrap()
+            .truncate(before_items.len());
+        assert_eq!(&truncated, before, "{api:?}");
+    }
+
+    #[test]
+    fn live_wire_ids_keep_real_serialized_prefix_and_reuse_usage() {
+        let long_id = format!("provider-{}", "long".repeat(20));
+        let long_pipe_id = format!("provider|{}", "long".repeat(20));
+        for api in [WireApi::Chat, WireApi::Responses] {
+            for id in ["provider|live", long_id.as_str(), long_pipe_id.as_str()] {
+                let mut messages = initial_messages(api);
+                messages.push(live_assistant(api, &[id]));
+                messages.push(runtime_read_result(id, "first result"));
+                let before_request = request(api, &messages);
+                assert!(before_request.messages[2].preserves_live_wire_ids());
+                let before = api.body(&before_request);
+                assert_eq!(call_ids(api, &before), vec![id]);
+                assert_eq!(result_ids(api, &before), vec![id]);
+                let usage_anchor = anchor(&before_request, INPUT);
+
+                append_live_round(api, &mut messages, "later-live-call");
+                let after_request = request(api, &messages);
+                assert_eq!(
+                    &after_request.messages[..before_request.messages.len()],
+                    before_request.messages.as_slice()
+                );
+                let after = api.body(&after_request);
+                assert_wire_prefix(api, &before, &after);
+                assert_eq!(call_ids(api, &after), vec![id, "later-live-call"]);
+                assert_eq!(result_ids(api, &after), vec![id, "later-live-call"]);
+                assert_anchored(
+                    decide(Some(&usage_anchor), &messages, &before_request),
+                    &before_request,
+                    &messages,
+                    INPUT,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn colliding_with_real_mapped_id_changes_wire_prefix_and_rejects_usage() {
+        let long_id = format!("non-live-{}", "long".repeat(20));
+        for api in [WireApi::Chat, WireApi::Responses] {
+            for id in ["provider|non-live", long_id.as_str()] {
+                for rebased_cold_projection in [false, true] {
+                    let mut messages = initial_messages(api);
+                    let assistant = if rebased_cold_projection {
+                        live_assistant(api, &[id])
+                    } else {
+                        ChatMessage::assistant_with_tools(
+                            "",
+                            vec![tool_call(id, "read", r#"{"path":"source.txt"}"#)],
+                        )
+                    };
+                    messages.push(assistant);
+                    messages.push(runtime_read_result(id, "first result"));
+                    if rebased_cold_projection {
+                        messages = project_model_messages(&messages).unwrap();
+                        assert!(messages[2].preserves_live_wire_ids());
+                        let cold_boundary = messages.len();
+                        messages[0].update_replay_cold_prefix(cold_boundary);
+                    }
+                    let before_request = request(api, &messages);
+                    assert!(!before_request.messages[2].preserves_live_wire_ids());
+                    let before = api.body(&before_request);
+                    let mapped = call_ids(api, &before)[0].to_owned();
+                    assert_ne!(mapped, id, "{api:?}");
+                    assert_eq!(result_ids(api, &before), vec![mapped.as_str()]);
+                    let usage_anchor = anchor(&before_request, INPUT);
+                    assert_anchored(
+                        decide(Some(&usage_anchor), &messages, &before_request),
+                        &before_request,
+                        &messages,
+                        INPUT,
+                    );
+
+                    append_live_round(api, &mut messages, &mapped);
+                    let after_request = request(api, &messages);
+                    assert_eq!(
+                        &after_request.messages[..before_request.messages.len()],
+                        before_request.messages.as_slice()
+                    );
+                    assert!(
+                        after_request.messages[before_request.messages.len()]
+                            .preserves_live_wire_ids()
+                    );
+                    let after = api.body(&after_request);
+                    let after_calls = call_ids(api, &after);
+                    assert_eq!(after_calls.len(), 2);
+                    assert_ne!(after_calls[0], mapped, "{api:?}");
+                    assert_ne!(after_calls[0], id, "{api:?}");
+                    assert_eq!(after_calls[1], mapped);
+                    assert_eq!(result_ids(api, &after), after_calls);
+                    assert_ne!(
+                        sequence(api, &before),
+                        &sequence(api, &after)[..sequence(api, &before).len()],
+                        "{api:?}"
+                    );
+                    let mut restored_prefix = after.clone();
+                    let items = restored_prefix[api.sequence_key()].as_array_mut().unwrap();
+                    items.truncate(sequence(api, &before).len());
+                    for item in items {
+                        match api {
+                            WireApi::Chat if item["role"] == "assistant" => {
+                                item["tool_calls"][0]["id"] = json!(mapped);
+                            }
+                            WireApi::Chat if item["role"] == "tool" => {
+                                item["tool_call_id"] = json!(mapped);
+                            }
+                            WireApi::Responses if item["type"] == "function_call" => {
+                                item["call_id"] = json!(mapped);
+                            }
+                            WireApi::Responses if item["type"] == "function_call_output" => {
+                                item["call_id"] = json!(mapped);
+                            }
+                            _ => {}
+                        }
+                    }
+                    assert_eq!(restored_prefix, before, "{api:?}");
+                    assert_estimated(
+                        decide(Some(&usage_anchor), &messages, &before_request),
+                        &messages,
+                        &before_request.tools,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn adjacent_tool_images_change_chat_grouping_and_force_conservative_fallback() {
+        for api in [WireApi::Chat, WireApi::Responses] {
+            for image_index in [0, 1] {
+                for appended_image in [false, true] {
+                    let mut messages = initial_messages(api);
+                    let calls = ["first", "second", "third"]
+                        .into_iter()
+                        .map(screenshot_call)
+                        .collect();
+                    messages.push(live_assistant_with_calls(api, calls));
+                    for (index, id) in ["first", "second"].into_iter().enumerate() {
+                        let mut result = ChatMessage::tool_result(id, "covered result");
+                        if index == image_index {
+                            result.images.push(image([255, 0, 0]));
+                        }
+                        messages.push(result);
+                    }
+                    let before_request = request(api, &messages);
+                    let before = api.body(&before_request);
+                    let usage_anchor = anchor(&before_request, INPUT);
+                    assert_anchored(
+                        decide(Some(&usage_anchor), &messages, &before_request),
+                        &before_request,
+                        &messages,
+                        INPUT,
+                    );
+
+                    let mut appended = ChatMessage::tool_result("third", "appended result");
+                    if appended_image {
+                        appended.images.push(image([0, 0, 255]));
+                    }
+                    messages.push(appended);
+                    let after_request = request(api, &messages);
+                    assert_eq!(
+                        &after_request.messages[..before_request.messages.len()],
+                        before_request.messages.as_slice()
+                    );
+                    let after = api.body(&after_request);
+                    let before_items = sequence(api, &before);
+                    let after_items = sequence(api, &after);
+                    match api {
+                        WireApi::Chat => {
+                            let pending_index = before_items.len() - 1;
+                            assert_eq!(
+                                &before_items[..pending_index],
+                                &after_items[..pending_index]
+                            );
+                            assert_eq!(after_items.len(), before_items.len() + 1);
+                            assert_eq!(before_items[pending_index]["role"], "user");
+                            assert_eq!(after_items[pending_index]["role"], "tool");
+                            assert_eq!(after_items[pending_index]["tool_call_id"], "third");
+                            assert_eq!(after_items[pending_index + 1]["role"], "user");
+                            let old_parts =
+                                before_items[pending_index]["content"].as_array().unwrap();
+                            let new_parts = after_items[pending_index + 1]["content"]
+                                .as_array()
+                                .unwrap();
+                            assert_eq!(old_parts.len(), 2);
+                            assert_eq!(old_parts.as_slice(), &new_parts[..old_parts.len()]);
+                            assert_eq!(old_parts[1]["type"], "image_url");
+                            if appended_image {
+                                assert_eq!(new_parts.len(), 4);
+                                assert_eq!(new_parts[3]["type"], "image_url");
+                                assert_ne!(old_parts[1], new_parts[3]);
+                            } else {
+                                assert_eq!(new_parts.len(), 2);
+                            }
+                            let mut restored_pending = after_items[pending_index + 1].clone();
+                            restored_pending["content"]
+                                .as_array_mut()
+                                .unwrap()
+                                .truncate(old_parts.len());
+                            assert_eq!(restored_pending, before_items[pending_index]);
+                        }
+                        WireApi::Responses => {
+                            assert_wire_prefix(api, &before, &after);
+                            assert_eq!(after_items.len(), before_items.len() + 1);
+                            let added = after_items.last().unwrap();
+                            assert_eq!(added["type"], "function_call_output");
+                            assert_eq!(added["call_id"], "third");
+                            if appended_image {
+                                assert_eq!(added["output"][0]["text"], "appended result");
+                                assert_eq!(added["output"][1]["type"], "input_image");
+                            } else {
+                                assert_eq!(added["output"], "appended result");
+                            }
+                        }
+                    }
+                    assert_estimated(
+                        decide(Some(&usage_anchor), &messages, &before_request),
+                        &messages,
+                        &before_request.tools,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn image_group_followed_by_a_new_tool_round_keeps_wire_prefix_and_usage() {
+        for api in [WireApi::Chat, WireApi::Responses] {
+            let mut messages = initial_messages(api);
+            messages.push(live_assistant_with_calls(
+                api,
+                vec![screenshot_call("image-call")],
+            ));
+            let mut result = ChatMessage::tool_result("image-call", "image result");
+            result.images.push(image([255, 0, 0]));
+            messages.push(result);
+            let before_request = request(api, &messages);
+            let before = api.body(&before_request);
+            let usage_anchor = anchor(&before_request, INPUT);
+
+            append_live_round(api, &mut messages, "next-call");
+            let after_request = request(api, &messages);
+            let after = api.body(&after_request);
+            assert_wire_prefix(api, &before, &after);
+            assert_anchored(
+                decide(Some(&usage_anchor), &messages, &before_request),
+                &before_request,
+                &messages,
+                INPUT,
+            );
+        }
+    }
+}

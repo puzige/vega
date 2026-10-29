@@ -7,11 +7,12 @@ use crate::{
     AgentOutcome, AgentRequest, ChatMessage, ChatRequest, ChatRole, ChatToolCall,
     ContextAccountingDecision, ContextAccountingSource, ContextAccountingStage, ContextBudget,
     ContextCompactionFailure, ContextCompactionHook, ContextCompactionRequest,
-    ContextCompactionResult, ContextRuntimeError, EventStream, MICRO_MIN_SAVINGS,
-    MicroCompactionRequest, MicroCompactionResult, MicroCompactionTarget, Provider, ProviderEvent,
-    ReasoningReplayPolicy, ReplayFrame, RuntimeEvent, RuntimePermissionMode, RuntimeRunMode,
-    RuntimeToolConfig, RuntimeToolStatus, StopReason, VegaError, apply_micro_compaction,
-    estimate_wire_context, project_model_messages, run_agent, tool_definitions,
+    ContextCompactionResult, ContextRuntimeError, EventStream, MICRO_KEEP_RECENT,
+    MICRO_MIN_SAVINGS, MicroCompactionRequest, MicroCompactionResult, MicroCompactionTarget,
+    Provider, ProviderEvent, ReasoningReplayPolicy, ReplayFrame, RuntimeEvent,
+    RuntimePermissionMode, RuntimeRunMode, RuntimeToolConfig, RuntimeToolStatus, StopReason,
+    VegaError, apply_micro_compaction, estimate_wire_context, project_model_messages, run_agent,
+    tool_definitions,
 };
 
 const MODEL: &str = "micro-usage-model";
@@ -157,7 +158,7 @@ impl ContextCompactionHook for RecordingHook {
             let target_count = if matches!(self.reply, MicroReply::InsufficientSavings) {
                 1
             } else {
-                OLD_CALL_COUNT
+                OLD_CALL_COUNT + 1 - MICRO_KEEP_RECENT
             };
             let targets = (0..target_count)
                 .map(|index| MicroCompactionTarget {
@@ -376,9 +377,8 @@ fn raw_tokens(request: &ChatRequest) -> u64 {
         .input_tokens
 }
 
-fn assert_raw_micro_request(request: &MicroCompactionRequest) {
-    let raw = estimate_wire_context(&request.wire_messages(), &request.context.tools).unwrap();
-    assert_eq!(request.context.estimate, raw);
+fn assert_micro_request(request: &MicroCompactionRequest) {
+    assert!(request.context.estimate.input_tokens >= budget().precompute_tokens().unwrap());
     assert_eq!(request.context.source_version, SOURCE_VERSION);
     assert_eq!(
         request.context.source_fingerprint.as_deref(),
@@ -456,7 +456,7 @@ async fn calibrated_prediction_below_precompute_skips_micro_and_sends_next_prima
 }
 
 #[tokio::test]
-async fn calibrated_prediction_above_precompute_calls_micro_with_raw_estimate() {
+async fn calibrated_prediction_above_precompute_calls_micro_with_predicted_estimate() {
     let input = budget().precompute_tokens().unwrap() - 5_000;
     let (outcome, trace) = run_case(UsageMode::Input(input), MicroReply::None).await;
     let outcome = outcome.unwrap();
@@ -465,15 +465,7 @@ async fn calibrated_prediction_above_precompute_calls_micro_with_raw_estimate() 
     assert_eq!(trace.compact_calls, 0);
     assert_eq!(trace.micro_calls.len(), 1);
     assert_eq!(trace.micro_calls[0].0, 1);
-    assert_raw_micro_request(&trace.micro_calls[0].1);
-    assert!(
-        trace.micro_calls[0].1.context.estimate.input_tokens
-            >= budget().precompute_tokens().unwrap()
-    );
-    assert_eq!(
-        trace.micro_calls[0].1.context.estimate.input_tokens,
-        raw_tokens(&trace.requests[1])
-    );
+    assert_micro_request(&trace.micro_calls[0].1);
     let decisions = primary_decisions(&outcome);
     assert_eq!(decisions.len(), 2);
     let next = decisions[1];
@@ -484,6 +476,10 @@ async fn calibrated_prediction_above_precompute_calls_micro_with_raw_estimate() 
         raw_tokens(&trace.requests[1]) - raw_tokens(&trace.requests[0])
     );
     assert_eq!(next.predicted_input, input + next.incremental_estimate);
+    assert_eq!(
+        trace.micro_calls[0].1.context.estimate.input_tokens,
+        next.predicted_input
+    );
     assert!(next.predicted_input >= budget().precompute_tokens().unwrap());
     assert!(next.predicted_input < budget().trigger_tokens().unwrap());
 }
@@ -501,12 +497,11 @@ async fn provider_usage_can_trigger_micro_when_raw_remains_below_precompute() {
     assert_eq!(trace.micro_calls.len(), 1);
     assert_eq!(trace.micro_calls[0].0, 1);
     let request = &trace.micro_calls[0].1;
-    assert_raw_micro_request(request);
+    assert_micro_request(request);
     let first_raw = raw_tokens(&trace.requests[0]);
     let second_raw = raw_tokens(&trace.requests[1]);
     assert!(first_raw < threshold);
     assert!(second_raw < threshold);
-    assert_eq!(request.context.estimate.input_tokens, second_raw);
     let decisions = primary_decisions(&outcome);
     assert_eq!(decisions.len(), 2);
     let next = decisions[1];
@@ -517,6 +512,7 @@ async fn provider_usage_can_trigger_micro_when_raw_remains_below_precompute() {
         second_raw.checked_sub(first_raw).unwrap()
     );
     assert_eq!(next.predicted_input, input + next.incremental_estimate);
+    assert_eq!(request.context.estimate.input_tokens, next.predicted_input);
     assert!(next.predicted_input >= threshold);
     assert!(next.predicted_input < budget().trigger_tokens().unwrap());
 }
@@ -526,14 +522,15 @@ async fn calibrated_prediction_at_precompute_calls_micro() {
     let threshold = budget().precompute_tokens().unwrap();
     let (probe, trace) = run_case(UsageMode::Input(1_000), MicroReply::None).await;
     let probe = probe.unwrap();
-    let trace = trace.lock().unwrap();
-    assert_completed_tool_round(&probe, &trace.requests);
-    assert!(trace.micro_calls.is_empty());
-    let decisions = primary_decisions(&probe);
-    assert_eq!(decisions.len(), 2);
-    assert_eq!(decisions[1].source, ContextAccountingSource::UsageAnchored);
-    let tail = decisions[1].incremental_estimate;
-    drop(trace);
+    let tail = {
+        let trace = trace.lock().unwrap();
+        assert_completed_tool_round(&probe, &trace.requests);
+        assert!(trace.micro_calls.is_empty());
+        let decisions = primary_decisions(&probe);
+        assert_eq!(decisions.len(), 2);
+        assert_eq!(decisions[1].source, ContextAccountingSource::UsageAnchored);
+        decisions[1].incremental_estimate
+    };
     let input = threshold.checked_sub(tail).unwrap();
     assert!(input > 0);
     let (outcome, trace) = run_case(UsageMode::Input(input), MicroReply::None).await;
@@ -543,7 +540,11 @@ async fn calibrated_prediction_at_precompute_calls_micro() {
     assert_eq!(trace.micro_calls.len(), 1);
     assert_eq!(trace.micro_calls[0].0, 1);
     assert_eq!(trace.compact_calls, 0);
-    assert_raw_micro_request(&trace.micro_calls[0].1);
+    assert_micro_request(&trace.micro_calls[0].1);
+    assert_eq!(
+        trace.micro_calls[0].1.context.estimate.input_tokens,
+        threshold
+    );
     let decisions = primary_decisions(&outcome);
     assert_eq!(decisions.len(), 2);
     let next = decisions[1];
@@ -564,8 +565,10 @@ async fn successful_micro_result_uses_raw_savings_and_invalidates_anchor() {
     assert_eq!(trace.micro_calls.len(), 1);
     assert_eq!(trace.micro_calls[0].0, 1);
     let request = &trace.micro_calls[0].1;
-    assert_raw_micro_request(request);
-    let raw_before = request.context.estimate.input_tokens;
+    assert_micro_request(request);
+    let raw_before = estimate_wire_context(&request.wire_messages(), &request.context.tools)
+        .unwrap()
+        .input_tokens;
     let raw_after = raw_tokens(&trace.requests[1]);
     assert!(raw_before.checked_sub(raw_after).unwrap() >= MICRO_MIN_SAVINGS);
     let decisions = primary_decisions(&outcome);
@@ -601,7 +604,7 @@ async fn untrusted_micro_results_and_hook_errors_stop_before_the_next_request() 
         assert_eq!(trace.micro_calls.len(), 1, "reply: {reply:?}");
         assert_eq!(trace.micro_calls[0].0, 1);
         assert_eq!(trace.compact_calls, 0);
-        assert_raw_micro_request(&trace.micro_calls[0].1);
+        assert_micro_request(&trace.micro_calls[0].1);
     }
 }
 
@@ -615,7 +618,11 @@ async fn invalid_usage_falls_back_to_raw_micro_gate() {
         assert_eq!(trace.micro_calls.len(), 1);
         assert_eq!(trace.micro_calls[0].0, 1);
         assert_eq!(trace.compact_calls, 0);
-        assert_raw_micro_request(&trace.micro_calls[0].1);
+        assert_micro_request(&trace.micro_calls[0].1);
+        assert_eq!(
+            trace.micro_calls[0].1.context.estimate.input_tokens,
+            raw_tokens(&trace.requests[1])
+        );
         let decisions = primary_decisions(&outcome);
         assert_eq!(decisions.len(), 2);
         assert_eq!(decisions[1].source, ContextAccountingSource::Estimated);

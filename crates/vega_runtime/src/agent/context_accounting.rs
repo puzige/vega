@@ -124,6 +124,17 @@ impl InputAnchor {
 
 fn wire_prefix_stable(messages: &[ChatMessage], covered_messages: usize) -> bool {
     let (prefix, tail) = messages.split_at(covered_messages);
+    if prefix
+        .iter()
+        .rev()
+        .take_while(|message| message.role == crate::ChatRole::Tool)
+        .any(|message| !message.images.is_empty())
+        && tail
+            .first()
+            .is_some_and(|message| message.role == crate::ChatRole::Tool)
+    {
+        return false;
+    }
     if !tail
         .iter()
         .any(|message| !message.tool_calls.is_empty() || message.tool_call_id.is_some())

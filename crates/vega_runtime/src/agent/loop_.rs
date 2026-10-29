@@ -1504,7 +1504,7 @@ where
                                 messages: messages[1..].to_vec(),
                                 tools: tool_definitions.clone(),
                                 budget,
-                                estimate: before,
+                                estimate: predicted,
                                 target_tokens: budget
                                     .target_tokens()
                                     .map_err(|error| VegaError::Context(error.into()))?,

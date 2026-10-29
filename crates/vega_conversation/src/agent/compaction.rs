@@ -6,6 +6,8 @@
 
 mod consume;
 mod micro;
+#[cfg(test)]
+mod micro_usage_tests;
 pub(crate) mod precompute;
 mod projection;
 mod reactive;
