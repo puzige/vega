@@ -232,6 +232,8 @@ Vega 现有运行在开始时冻结已批准的完整 MCP 定义与精确 dispat
 
 每轮预算、技能回填／压缩输入与主模型请求使用当前未撤销的定义子集；压缩或等待期间撤销后，发送前再次移除相关定义。保留冻结 alias→执行身份映射作为拒绝旧调用的边界，已有执行前和等待期间撤销检查不放宽。暖 replay 环境指纹只纳入当前有效候选；撤销改变能力指纹，不能因旧已撤销条目导致指纹构造失败或把旧 schema 留在暖缓存请求。未知 provider 不发送 Claude-only deferred/context-edit 字段。开发回归覆盖当前定义／环境指纹收缩、原 alias 拒绝且零 transport 调用，以及实际 reactive compaction 期间撤销后 provider 出站 schema 消失而原生工具保留；仅交 Actions。此增量不声称实现不存在的后台 shell 或完整 idle/cache 能力。
 
+`57ed8d1ce9e4ed2f2d5750391343d7a3056b498c` 的 Actions [40849945527](https://github.com/puzige/vega/actions/runs/40849945527) 为 177 发现／177 执行通过／0 跳过；独立静态审查发现预检事件 sink 的等待窗口仍可将旧 schema 传入 precompute，因此该版本不是 Clear。补充合同：PrimaryPreflight 回执后重新读取当前定义并重算 estimate、foreground/precompute eligibility；开发回归在该 sink 内撤销 MCP，核对实际 arm 请求的 schema 和估算一致且保留原生 read。
+
 #### 脱离前台的生成与逐阶段结算（2026-10-28）
 
 后台准备在当前 admission 下完成有界捕获：来源、append fence、前驱及引用摘要 digest 来自同一快照，拒绝 staged model change、来源不一致与不完整响应组。返回的 prepared job 不包含 admission、前台 actor、diagnostics channel 或任何 SQLite connection；只保存冻结请求、来源快照、摘要偏好、计价及凭据投影策略。前台生成仍全程持有原 admission 和同一 600 秒期限，不改变既有安装语义。

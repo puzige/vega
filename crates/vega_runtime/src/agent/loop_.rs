@@ -1547,12 +1547,22 @@ where
                 request_output_cap(request.max_tokens, context_budget),
                 primary_revision,
             )?;
-            let estimate = decision.estimate;
             emit!(
                 events,
                 sink,
                 accounting_event(decision, budget, ContextAccountingStage::PrimaryPreflight)?
             );
+            tool_definitions = capabilities.current_definitions();
+            let estimate = input_decision(
+                input_anchor.as_ref(),
+                &messages,
+                &tool_definitions,
+                &request.model,
+                request.reasoning.as_ref(),
+                request_output_cap(request.max_tokens, context_budget),
+                primary_revision,
+            )?
+            .estimate;
             if cancel.is_cancelled() {
                 emit!(events, sink, RuntimeEvent::Interrupted);
                 return Ok(outcome(

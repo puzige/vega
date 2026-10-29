@@ -282,3 +282,138 @@ async fn reactive_compaction_revocation_removes_schema_from_actual_continuation(
     );
     Ok(())
 }
+
+struct PrecomputeHook(Mutex<Vec<crate::ContextCompactionRequest>>);
+
+impl crate::ContextCompactionHook for PrecomputeHook {
+    fn arm_precompute<'a>(
+        &'a self,
+        request: crate::ContextCompactionRequest,
+        _: CancellationToken,
+    ) -> BoxFuture<'a, ()> {
+        self.0.lock().unwrap().push(request);
+        Box::pin(async {})
+    }
+
+    fn compact<'a>(
+        &'a self,
+        _: crate::ContextCompactionRequest,
+        _: CancellationToken,
+    ) -> BoxFuture<'a, Result<crate::ContextCompactionResult, crate::ContextCompactionFailure>>
+    {
+        Box::pin(async { panic!("foreground compaction must not run") })
+    }
+}
+
+#[tokio::test]
+async fn preflight_await_revocation_refreshes_precompute_schema_and_estimate() -> TestResult {
+    let revoked = CancellationToken::new();
+    let config = config(candidate(revoked.clone(), Arc::new(AtomicUsize::new(0))));
+    let native =
+        RunCapabilitySnapshot::freeze(config.run_mode, config.permission_mode, Vec::new())?
+            .current_definitions();
+    let budget = crate::ContextBudget::new(100_000, 10_000, true)?;
+    let history = |padding| {
+        vec![
+            ChatMessage::new(ChatRole::System, "system"),
+            ChatMessage::new(ChatRole::User, "Original task"),
+            ChatMessage::new(ChatRole::Assistant, "a".repeat(padding)),
+            ChatMessage::new(ChatRole::User, "Continue"),
+        ]
+    };
+    let (mut low, mut high) = (0, 300_000);
+    while low < high {
+        let middle = (low + high) / 2;
+        if crate::estimate_wire_context(&history(middle), &native)?.input_tokens < 74_500 {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    let mut messages = history(low);
+    let current_estimate = crate::estimate_wire_context(&messages, &native)?;
+    assert!(current_estimate.input_tokens >= budget.precompute_tokens()?);
+    let frozen = RunCapabilitySnapshot::freeze(
+        config.run_mode,
+        config.permission_mode,
+        config.mcp_candidates.clone(),
+    )?;
+    assert!(
+        crate::estimate_wire_context(&messages, &frozen.current_definitions())?.input_tokens
+            < budget.trigger_tokens()?
+    );
+    messages.remove(0);
+    let hook = Arc::new(PrecomputeHook(Mutex::new(Vec::new())));
+    let provider = OverflowProvider(Mutex::new(vec![ChatRequest {
+        model: "prior".into(),
+        messages: Vec::new(),
+        tools: Vec::new(),
+        max_tokens: None,
+        reasoning: None,
+        model_snapshot: None,
+        tool_choice: None,
+    }]));
+    let tools = vega_tools::Tools::new(std::env::current_dir()?)?;
+    let outcome = crate::run_agent_with_sink(
+        &provider,
+        &tools,
+        AgentRequest {
+            model: "synthetic".into(),
+            system_prompt: "system".into(),
+            history: messages,
+            max_tokens: None,
+            completed_tool_results: Default::default(),
+            tool_config: config,
+            pricing_catalog: None,
+            reasoning: None,
+            model_snapshot: None,
+            replay_frame: None,
+            context_budget: Some(budget),
+            context_source_version: Some(1),
+            context_source_fingerprint: Some("before".into()),
+            context_operation_id: Some("operation".into()),
+            context_compaction_hook: Some(hook.clone()),
+        },
+        CancellationToken::new(),
+        move |event| {
+            let revoked = revoked.clone();
+            async move {
+                if matches!(
+                    event,
+                    RuntimeEvent::ContextAccountingUpdated(ContextAccountingDecision {
+                        stage: ContextAccountingStage::PrimaryPreflight,
+                        ..
+                    })
+                ) {
+                    tokio::task::yield_now().await;
+                    revoked.cancel();
+                }
+                Ok(())
+            }
+        },
+    )
+    .await?;
+    assert_eq!(outcome.final_text, "continued");
+    let armed = hook.0.lock().unwrap();
+    assert!(!armed.is_empty());
+    for request in armed.iter() {
+        assert!(
+            request
+                .tools
+                .iter()
+                .all(|tool| !tool.name.starts_with("mcp_"))
+        );
+        assert!(request.tools.iter().any(|tool| tool.name == "read"));
+        let mut projected = vec![ChatMessage::new(
+            ChatRole::System,
+            request.system_prompt.clone(),
+        )];
+        projected.extend(request.messages.clone());
+        assert_eq!(
+            request.estimate,
+            crate::estimate_wire_context(&projected, &request.tools)?
+        );
+    }
+    assert_eq!(armed[0].estimate, current_estimate);
+    Ok(())
+}
