@@ -27,6 +27,9 @@ impl VegaWindow {
         let request = request.clone();
         let thread_id = request.thread_id.clone();
         let generation = self.agent_controller.next_generation;
+        let replay = cx
+            .try_global::<crate::app_agent::AppReplaySessions>()
+            .map(|sessions| sessions.0.clone());
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -49,10 +52,11 @@ impl VegaWindow {
                         )
                         .map_err(|error| error.to_string())?,
                         PrivacyAction::Clean { snapshot } => {
-                            vega_conversation::privacy::permanently_clean(
+                            vega_conversation::privacy::permanently_clean_with_replay(
                                 &store,
                                 &request.thread_id,
                                 &snapshot,
+                                replay.as_ref(),
                             )
                             .map_err(|error| error.to_string())?
                         }

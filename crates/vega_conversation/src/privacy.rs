@@ -5,6 +5,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use vega_runtime::{CredentialConfidence, CredentialExceptionFilter};
 use vega_store::Store;
 
+#[cfg(test)]
+mod tests;
+
 const KEY_REF: &str = "vega-privacy-fingerprint-v1";
 const RULE_VERSION: &str = "credential-rules-v1";
 static ROOTS: OnceLock<Mutex<HashMap<PathBuf, PathBuf>>> = OnceLock::new();
@@ -475,6 +478,31 @@ pub fn permanently_clean(
     thread: &str,
     snapshot: &PrivacyReview,
 ) -> Result<(), ConversationError> {
+    permanently_clean_with_replay(store, thread, snapshot, None)
+}
+
+pub fn permanently_clean_with_replay(
+    store: &Store,
+    thread: &str,
+    snapshot: &PrivacyReview,
+    replay: Option<&crate::agent::ReplaySessionRegistry>,
+) -> Result<(), ConversationError> {
+    let _coordination = crate::permission_contracts::coordinate().map_err(|_| unavailable())?;
+    let admission = vega_store::thread_admission::try_pause_database(store.database_identity())
+        .map_err(|_| unavailable())?
+        .ok_or(ConversationError::ContextCleanupPending)?;
+    crate::ordinary_submissions::require_database_settled(store.database_identity(), &admission)
+        .map_err(|_| ConversationError::ContextCleanupPending)?;
+    let precompute = crate::types::ContextPrecomputeRegistry::global()
+        .pause_database(store.database_identity())
+        .map_err(|error| ConversationError::Runtime(Arc::new(error)))?;
+    if !precompute
+        .drain()
+        .is_finished()
+        .map_err(|error| ConversationError::Runtime(Arc::new(error)))?
+    {
+        return Err(ConversationError::ContextCleanupPending);
+    }
     let current = review(store, thread)?;
     if !current.findings.iter().any(|finding| finding.cleanable) {
         return Err(ConversationError::Store(
@@ -487,6 +515,11 @@ pub fn permanently_clean(
         ));
     }
     let projection = DisplayProjection::load(store, thread)?;
+    if let Some(replay) = replay {
+        replay
+            .invalidate_all_acknowledged()
+            .map_err(|_| unavailable())?;
+    }
     vega_store::credential_privacy::clean(
         store.conn(),
         thread,

@@ -216,6 +216,14 @@ lint 修复版本 `d7c18c442c9488b488aa9937e57d6d8907576dec`（tree `902b5ff2a32
 
 首版 `3e4716bc22d33e0e11148d81765435bc5ff2832d`（tree `52e356d82c2d1d551b75ca973a9ac19ec8bc0021`）的 Actions [40841209263](https://github.com/puzige/vega/actions/runs/40841209263) 因会话模块直接引用未声明的 rusqlite 编译失败，未完成 Rust 发现／执行；改用已有 Store 接口与 tuple 参数，不新增依赖。独立静态审查发现元数据物化前未限长及运行中取消缺少回归，两项随修正处理；不重跑旧 head 换绿或放宽断言。
 
+回读修正版 `871f1bdf919463c549d1a56811067b50a1a2e89e`（tree `897449ee9722f4672557f9b6d6f88408c8e1ba01`）的 Actions [40842430335](https://github.com/puzige/vega/actions/runs/40842430335) 全部成功：Nextest `123341786482` 原始输出 173 发现／173 执行通过／0 跳过、28.610s，五项回读回归实际 PASS；Clippy `123341786142`、required `123343992961` success。修正增量独立静态审查 Clear。
+
+#### 永久隐私清理的压缩状态失效（2026-10-29）
+
+永久清理在复核快照之前取得数据库 admission pause，要求普通提交与既有运行全部排空；再暂停数据库预计算，确认真实 worker 已退出。任一未排空返回既有待处理错误，不阻塞 UI 或伪称清理完成；持有暂停直至清理结束，阻止旧 lease 再发布。应用侧在同一围栏内显式清除暖 replay 缓存；无缓存调用方仍受来源指纹校验。
+
+原文脱敏与衍生状态退役在同一事务中完成。范围包含当前线程、其直接子线程，以及涉及当前线程的委派执行父／子线程；这些线程的 checkpoint 删除，全部预计算 accounting 标记 retired，Ready／slot 删除。不解析候选旧正文，不删除 stages、token_usage 或已有诊断，不重复计费；同库无关线程的持久化候选不受影响。范围覆盖现有隐私清理会更新的委派 task/result/stage 元数据，不把历史摘要当作恢复权限。事务失败必须回滚原文与退役，快照不符不得清理。开发回归使用真实 Ready/账目，覆盖相关线程失效、无关线程保留、失败原子性与活跃 admission 拒绝；继续复用已验证的 worker pause/drain 机制。此增量不宣称实现了任意历史内容删除传播或全恢复矩阵。
+
 #### 脱离前台的生成与逐阶段结算（2026-10-28）
 
 后台准备在当前 admission 下完成有界捕获：来源、append fence、前驱及引用摘要 digest 来自同一快照，拒绝 staged model change、来源不一致与不完整响应组。返回的 prepared job 不包含 admission、前台 actor、diagnostics channel 或任何 SQLite connection；只保存冻结请求、来源快照、摘要偏好、计价及凭据投影策略。前台生成仍全程持有原 admission 和同一 600 秒期限，不改变既有安装语义。
