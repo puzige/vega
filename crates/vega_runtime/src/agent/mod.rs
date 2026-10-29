@@ -41,6 +41,8 @@ mod progress;
 mod progress_recovery;
 
 mod mcp_registry;
+#[cfg(test)]
+mod mcp_registry_tests;
 use mcp_registry::{KnownCredentials, McpCandidate, RunCapabilitySnapshot};
 mod credential_redaction;
 pub use credential_redaction::{
@@ -497,7 +499,11 @@ impl RuntimeToolConfig {
                 add(9, format!("{:?}", rule.tool).as_bytes());
                 add(10, rule.pattern.as_bytes());
             }
-            let mut candidates = self.mcp_candidates.iter().collect::<Vec<_>>();
+            let mut candidates = self
+                .mcp_candidates
+                .iter()
+                .filter(|candidate| !candidate.revoked.is_cancelled())
+                .collect::<Vec<_>>();
             candidates.sort_by(|left, right| {
                 left.server_id
                     .cmp(&right.server_id)
@@ -548,7 +554,7 @@ impl RuntimeToolConfig {
             } else {
                 add(28, &[]);
             }
-            let definitions = RunCapabilitySnapshot::freeze(
+            let definitions = RunCapabilitySnapshot::freeze_current(
                 self.run_mode,
                 self.permission_mode,
                 self.mcp_candidates.clone(),
@@ -558,8 +564,7 @@ impl RuntimeToolConfig {
             .with_automation(self.automation.as_ref())
             .with_subagents(self.subagents.is_some())
             .with_conversation_history(self.conversation_history_reader.is_some())
-            .definitions()
-            .to_vec();
+            .current_definitions();
             if let Some(hook) = &self.automation {
                 add(30, hook.context().to_string().as_bytes());
             }

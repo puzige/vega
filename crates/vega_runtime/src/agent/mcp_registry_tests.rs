@@ -1,0 +1,284 @@
+use super::mcp_registry::{McpDispatchFailure, McpDispatchOutput, McpToolDispatcher};
+use super::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+struct CountingDispatcher(Arc<AtomicUsize>);
+
+impl McpToolDispatcher for CountingDispatcher {
+    fn call(
+        &self,
+        _: String,
+        _: Value,
+        _: CancellationToken,
+    ) -> BoxFuture<'static, Result<McpDispatchOutput, McpDispatchFailure>> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            Ok(McpDispatchOutput {
+                text: "unexpected dispatch".into(),
+                structured_content: None,
+                is_error: false,
+            })
+        })
+    }
+}
+
+fn candidate(cancel: CancellationToken, calls: Arc<AtomicUsize>) -> McpCandidate {
+    McpCandidate::new(
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
+        1,
+        "lookup".into(),
+        ToolDefinition {
+            name: "lookup".into(),
+            description: "External lookup".into(),
+            input_schema: serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),
+            strict: true,
+        },
+        Arc::new(CountingDispatcher(calls)),
+        cancel,
+    )
+}
+
+fn config(candidate: McpCandidate) -> RuntimeToolConfig {
+    let mut config = RuntimeToolConfig::new(
+        RuntimeRunMode::Execute,
+        RuntimePermissionMode::Confirm,
+        "project".into(),
+        "thread".into(),
+        std::env::temp_dir(),
+        Vec::new(),
+    );
+    config.mcp_candidates.push(candidate);
+    config
+}
+
+#[tokio::test]
+async fn revocation_shrinks_definitions_and_digest_without_reviving_old_alias() -> TestResult {
+    let revoked = CancellationToken::new();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let config = config(candidate(revoked.clone(), calls.clone()));
+    let snapshot = RunCapabilitySnapshot::freeze(
+        config.run_mode,
+        config.permission_mode,
+        config.mcp_candidates.clone(),
+    )?;
+    let alias = snapshot
+        .current_definitions()
+        .into_iter()
+        .find(|definition| definition.name.starts_with("mcp_"))
+        .ok_or("missing MCP alias")?
+        .name;
+    let before = config.replay_capability_digest()?;
+    revoked.cancel();
+    assert!(
+        snapshot
+            .current_definitions()
+            .iter()
+            .all(|item| item.name != alias)
+    );
+    assert!(
+        snapshot
+            .current_definitions()
+            .iter()
+            .any(|item| item.name == "read")
+    );
+    assert!(
+        snapshot
+            .mcp_tool(&alias)
+            .is_some_and(|tool| tool.is_revoked())
+    );
+    assert_ne!(before, config.replay_capability_digest()?);
+    let mut without = config.clone();
+    without.mcp_candidates.clear();
+    assert_eq!(
+        without.replay_capability_digest()?,
+        config.replay_capability_digest()?
+    );
+    assert!(
+        RunCapabilitySnapshot::freeze(
+            config.run_mode,
+            config.permission_mode,
+            config.mcp_candidates.clone()
+        )
+        .is_err()
+    );
+    let tools = vega_tools::Tools::new(std::env::current_dir()?)?;
+    let prepared = tools_exec::prepare_runtime_call(
+        &tools,
+        &config,
+        &snapshot,
+        RuntimeToolCall {
+            id: "old-call".into(),
+            name: alias.clone(),
+            input_json: "{}".into(),
+            description: None,
+        },
+    )?;
+    match tools_exec::authorize_call(
+        &prepared,
+        &config,
+        &HashSet::new(),
+        &RejectPermissionHook,
+        &CancellationToken::new(),
+    )
+    .await?
+    {
+        tools_exec::Authorization::Terminal(result) => {
+            assert_eq!(result.status, RuntimeToolStatus::Rejected)
+        }
+        _ => panic!("revoked alias approved"),
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let mut replacement = candidate(CancellationToken::new(), calls);
+    replacement.config_revision = 2;
+    replacement.definition.description = "Replacement definition".into();
+    let next =
+        RunCapabilitySnapshot::freeze(config.run_mode, config.permission_mode, vec![replacement])?;
+    assert!(
+        next.current_definitions()
+            .iter()
+            .any(|item| item.name == alias && item.description.contains("Replacement definition"))
+    );
+    assert!(
+        snapshot
+            .current_definitions()
+            .iter()
+            .all(|item| item.name != alias)
+    );
+    Ok(())
+}
+
+struct RevokingHook {
+    revoked: CancellationToken,
+    requests: Mutex<Vec<crate::ContextCompactionRequest>>,
+}
+
+impl crate::ContextCompactionHook for RevokingHook {
+    fn compact<'a>(
+        &'a self,
+        request: crate::ContextCompactionRequest,
+        _: CancellationToken,
+    ) -> BoxFuture<'a, Result<crate::ContextCompactionResult, crate::ContextCompactionFailure>>
+    {
+        self.requests.lock().unwrap().push(request);
+        Box::pin(async move {
+            self.revoked.cancel();
+            tokio::task::yield_now().await;
+            Ok(crate::ContextCompactionResult {
+                messages: vec![
+                    ChatMessage::new(ChatRole::User, "Historical summary"),
+                    ChatMessage::new(ChatRole::Assistant, "Retained response"),
+                    ChatMessage::new(ChatRole::User, "Continue the task"),
+                ],
+                source_version: 2,
+                source_fingerprint: Some("after-compaction".into()),
+                replay_cold_prefix_messages: Some(2),
+                replay_interleaved_user_boundary: None,
+                reactive_retained_groups: Some(2),
+                usages: Vec::new(),
+                usage_complete: true,
+                settled_usage: None,
+            })
+        })
+    }
+}
+
+struct OverflowProvider(Mutex<Vec<ChatRequest>>);
+
+impl Provider for OverflowProvider {
+    fn chat_stream(
+        &self,
+        request: ChatRequest,
+        _: CancellationToken,
+    ) -> BoxFuture<'static, Result<crate::EventStream, VegaError>> {
+        let mut requests = self.0.lock().unwrap();
+        let first = requests.is_empty();
+        requests.push(request);
+        Box::pin(async move {
+            if first {
+                return Err(VegaError::Provider {
+                    status: Some(400),
+                    message: r#"{"error":{"code":"prompt_too_long"}}"#.into(),
+                    retryable: false,
+                });
+            }
+            Ok(Box::pin(futures::stream::iter(vec![
+                Ok(ProviderEvent::TextDelta("continued".into())),
+                Ok(ProviderEvent::Done {
+                    stop_reason: StopReason::End,
+                }),
+            ])) as crate::EventStream)
+        })
+    }
+}
+
+#[tokio::test]
+async fn reactive_compaction_revocation_removes_schema_from_actual_continuation() -> TestResult {
+    let revoked = CancellationToken::new();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let hook = Arc::new(RevokingHook {
+        revoked: revoked.clone(),
+        requests: Mutex::new(Vec::new()),
+    });
+    let provider = OverflowProvider(Mutex::new(Vec::new()));
+    let tools = vega_tools::Tools::new(std::env::current_dir()?)?;
+    let outcome = run_agent(
+        &provider,
+        &tools,
+        AgentRequest {
+            model: "synthetic".into(),
+            system_prompt: "Continue without repeating tool calls".into(),
+            history: vec![
+                ChatMessage::new(ChatRole::User, "Original task"),
+                ChatMessage::new(ChatRole::Assistant, "old context ".repeat(4_000)),
+                ChatMessage::new(ChatRole::User, "Continue the task"),
+            ],
+            max_tokens: None,
+            completed_tool_results: Default::default(),
+            tool_config: config(candidate(revoked, calls.clone())),
+            pricing_catalog: None,
+            reasoning: None,
+            model_snapshot: None,
+            replay_frame: None,
+            context_budget: Some(crate::ContextBudget::new(100_000, 10_000, true)?),
+            context_source_version: Some(1),
+            context_source_fingerprint: Some("before".into()),
+            context_operation_id: Some("operation".into()),
+            context_compaction_hook: Some(hook.clone()),
+        },
+        CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(outcome.final_text, "continued");
+    assert_eq!(outcome.executed_tool_call_count, 0);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let requests = provider.0.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[0]
+            .tools
+            .iter()
+            .any(|tool| tool.name.starts_with("mcp_"))
+    );
+    assert!(
+        requests[1]
+            .tools
+            .iter()
+            .all(|tool| !tool.name.starts_with("mcp_"))
+    );
+    assert!(requests[1].tools.iter().any(|tool| tool.name == "read"));
+    let compactions = hook.requests.lock().unwrap();
+    assert_eq!(compactions.len(), 1);
+    assert!(matches!(
+        compactions[0].trigger,
+        crate::ContextCompactionTrigger::InputOverflow { .. }
+    ));
+    assert!(
+        compactions[0]
+            .tools
+            .iter()
+            .any(|tool| tool.name.starts_with("mcp_"))
+    );
+    Ok(())
+}

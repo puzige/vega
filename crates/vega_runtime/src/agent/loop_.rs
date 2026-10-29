@@ -400,7 +400,7 @@ async fn compact_before_skill_rejection<F, Fut>(
     catalog: &str,
     messages: &mut Vec<ChatMessage>,
     pending_result: Option<&ChatMessage>,
-    tools: &[ToolDefinition],
+    capabilities: &RunCapabilitySnapshot,
     budget: Option<crate::ContextBudget>,
     anchor: Option<&InputAnchor>,
     model: &str,
@@ -472,8 +472,9 @@ where
         system_message.attach_replay_frame(frame);
     }
     projected[0] = system_message;
+    let tools = capabilities.current_definitions();
     let decision = input_decision(
-        anchor, &projected, tools, model, reasoning, max_tokens, revision,
+        anchor, &projected, &tools, model, reasoning, max_tokens, revision,
     )?;
     let estimate = decision.estimate;
     let event = accounting_event(decision, budget, ContextAccountingStage::SkillProspect)?;
@@ -518,6 +519,7 @@ where
         crate::computer_use::redact_ephemeral_messages(messages);
         crate::computer_use::redact_ephemeral_messages(&mut projected);
     }
+    let tools = capabilities.current_definitions();
     let compacted = hook
         .compact_with_replay(
             ContextCompactionRequest {
@@ -620,9 +622,10 @@ where
     super::context_skills::restore_context_skills(&mut next_projected, tool_config, cancel).await?;
     super::context_plan::restore_context_plan(&mut next_projected, tool_config, cancel).await?;
     super::context_tasks::restore_context_tasks(&mut next_projected, tool_config, cancel).await?;
-    super::context_files::fit_context_files(&mut next_projected, tools, target_tokens)?;
+    let tools = capabilities.current_definitions();
+    super::context_files::fit_context_files(&mut next_projected, &tools, target_tokens)?;
     let compacted_estimate =
-        crate::estimate_wire_context(&next_projected, tools).map_err(|error| {
+        crate::estimate_wire_context(&next_projected, &tools).map_err(|error| {
             VegaError::Context(error.into())
                 .at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation)
         })?;
@@ -1191,7 +1194,7 @@ where
                             &skill_catalog,
                             prospective,
                             &messages,
-                            capabilities.definitions(),
+                            &capabilities.current_definitions(),
                             context_budget,
                             InputAccounting {
                                 anchor: input_anchor.as_ref(),
@@ -1230,7 +1233,7 @@ where
                         &skill_catalog,
                         &mut messages,
                         None,
-                        capabilities.definitions(),
+                        &capabilities,
                         context_budget,
                         input_anchor.as_ref(),
                         &request.model,
@@ -1386,7 +1389,8 @@ where
             }
             run.trim_messages(&mut messages);
         }
-        let tool_definitions = capabilities.definitions().to_vec();
+        let mut tool_definitions = capabilities.current_definitions();
+        let replay_tool_definitions = tool_definitions.clone();
         if let Some(route_fingerprint) = replay_route_fingerprint {
             let current_environment = crate::agent::replay_environment_fingerprint(
                 (
@@ -1463,6 +1467,7 @@ where
         super::context_skills::restore_context_skills(&mut messages, &tool_config, &cancel).await?;
         super::context_plan::restore_context_plan(&mut messages, &tool_config, &cancel).await?;
         super::context_tasks::restore_context_tasks(&mut messages, &tool_config, &cancel).await?;
+        tool_definitions = capabilities.current_definitions();
         if let Some(budget) = context_budget {
             super::context_files::fit_context_files(
                 &mut messages,
@@ -1528,6 +1533,7 @@ where
                 context_source_fingerprint = Some(compacted.source_fingerprint);
             }
         }
+        tool_definitions = capabilities.current_definitions();
         'compaction: {
             let Some(budget) = context_budget else {
                 break 'compaction;
@@ -1670,6 +1676,7 @@ where
                     run.trim_messages(&mut messages);
                     crate::computer_use::redact_ephemeral_messages(&mut messages);
                 }
+                tool_definitions = capabilities.current_definitions();
                 let compacted = hook
                     .compact_with_replay(
                         ContextCompactionRequest {
@@ -1881,6 +1888,7 @@ where
                     &cancel,
                 )
                 .await?;
+                tool_definitions = capabilities.current_definitions();
                 super::context_files::fit_context_files(
                     &mut next_messages,
                     &tool_definitions,
@@ -2107,6 +2115,13 @@ where
         } else {
             None
         };
+        let current_definitions = capabilities.current_definitions();
+        if current_definitions != replay_tool_definitions {
+            messages[0].mark_replay_unsealable();
+            replay_candidate = None;
+            input_anchor = None;
+        }
+        tool_definitions = current_definitions;
         let chat_request = ChatRequest {
             model: request.model.clone(),
             messages: crate::project_model_messages(&messages)?,
@@ -2943,6 +2958,7 @@ where
                 continue;
             }
             emit!(events, sink, RuntimeEvent::Finished(finish));
+            tool_definitions = capabilities.current_definitions();
             if normal_terminal
                 && !tool_config.delegated_compaction
                 && anchor_protocol_valid
@@ -3476,7 +3492,7 @@ where
                                     action.clone(),
                                     &base_system_prompt,
                                     &messages,
-                                    capabilities.definitions(),
+                                    &capabilities.current_definitions(),
                                     context_budget,
                                     input_anchor.as_ref(),
                                     &request.model,
@@ -3506,7 +3522,7 @@ where
                                         &skill_catalog,
                                         &mut messages,
                                         pending_result.as_ref(),
-                                        capabilities.definitions(),
+                                        &capabilities,
                                         context_budget,
                                         input_anchor.as_ref(),
                                         &request.model,
@@ -3536,7 +3552,7 @@ where
                                             action,
                                             &base_system_prompt,
                                             &messages,
-                                            capabilities.definitions(),
+                                            &capabilities.current_definitions(),
                                             context_budget,
                                             input_anchor.as_ref(),
                                             &request.model,
@@ -3784,6 +3800,7 @@ where
             final_text.clear();
             input_anchor = None;
         }
+        tool_definitions = capabilities.current_definitions();
         if tool_config.delegated_compaction
             && !steered
             && !cancel.is_cancelled()

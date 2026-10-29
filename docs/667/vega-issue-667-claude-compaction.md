@@ -224,6 +224,14 @@ lint 修复版本 `d7c18c442c9488b488aa9937e57d6d8907576dec`（tree `902b5ff2a32
 
 原文脱敏与衍生状态退役在同一事务中完成。范围包含当前线程、其直接子线程，以及涉及当前线程的委派执行父／子线程；这些线程的 checkpoint 删除，全部预计算 accounting 标记 retired，Ready／slot 删除。不解析候选旧正文，不删除 stages、token_usage 或已有诊断，不重复计费；同库无关线程的持久化候选不受影响。范围覆盖现有隐私清理会更新的委派 task/result/stage 元数据，不把历史摘要当作恢复权限。事务失败必须回滚原文与退役，快照不符不得清理。开发回归使用真实 Ready/账目，覆盖相关线程失效、无关线程保留、失败原子性与活跃 admission 拒绝；继续复用已验证的 worker pause/drain 机制。此增量不宣称实现了任意历史内容删除传播或全恢复矩阵。
 
+隐私退役版本 `43224cbfe4aade02784fa52210bf57c89c1cde67`（tree `2a5c74b3c65a67f7c48a1c38eb4e9b6ee6f3474c`）的 Actions [40845332829](https://github.com/puzige/vega/actions/runs/40845332829) 全部成功：Nextest `123351306543` 原始输出 175 发现／175 执行通过／0 跳过、17.462s，两项新增回归实际 PASS；Clippy `123351306178`、required `123353553262` success；冻结增量独立静态审查 Clear。
+
+#### 当前动态工具定义与撤销（2026-10-29）
+
+Vega 现有运行在开始时冻结已批准的完整 MCP 定义与精确 dispatch 身份，无 deferred ToolSearch 池；压缩后继续保留这份原生运行能力，不从摘要或旧发现回执重新建授权。同一运行只允许撤销使能力收缩，不静默替换同名工具或添加新定义；重连／重加／定义变化由新运行重新冻结。
+
+每轮预算、技能回填／压缩输入与主模型请求使用当前未撤销的定义子集；压缩或等待期间撤销后，发送前再次移除相关定义。保留冻结 alias→执行身份映射作为拒绝旧调用的边界，已有执行前和等待期间撤销检查不放宽。暖 replay 环境指纹只纳入当前有效候选；撤销改变能力指纹，不能因旧已撤销条目导致指纹构造失败或把旧 schema 留在暖缓存请求。未知 provider 不发送 Claude-only deferred/context-edit 字段。开发回归覆盖当前定义／环境指纹收缩、原 alias 拒绝且零 transport 调用，以及实际 reactive compaction 期间撤销后 provider 出站 schema 消失而原生工具保留；仅交 Actions。此增量不声称实现不存在的后台 shell 或完整 idle/cache 能力。
+
 #### 脱离前台的生成与逐阶段结算（2026-10-28）
 
 后台准备在当前 admission 下完成有界捕获：来源、append fence、前驱及引用摘要 digest 来自同一快照，拒绝 staged model change、来源不一致与不完整响应组。返回的 prepared job 不包含 admission、前台 actor、diagnostics channel 或任何 SQLite connection；只保存冻结请求、来源快照、摘要偏好、计价及凭据投影策略。前台生成仍全程持有原 admission 和同一 600 秒期限，不改变既有安装语义。

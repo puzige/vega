@@ -693,7 +693,24 @@ impl RunCapabilitySnapshot {
     pub(crate) fn freeze(
         run_mode: RuntimeRunMode,
         permission_mode: RuntimePermissionMode,
+        candidates: Vec<McpCandidate>,
+    ) -> Result<Self, VegaError> {
+        Self::freeze_inner(run_mode, permission_mode, candidates, false)
+    }
+
+    pub(crate) fn freeze_current(
+        run_mode: RuntimeRunMode,
+        permission_mode: RuntimePermissionMode,
+        candidates: Vec<McpCandidate>,
+    ) -> Result<Self, VegaError> {
+        Self::freeze_inner(run_mode, permission_mode, candidates, true)
+    }
+
+    fn freeze_inner(
+        run_mode: RuntimeRunMode,
+        permission_mode: RuntimePermissionMode,
         mut candidates: Vec<McpCandidate>,
+        skip_revoked: bool,
     ) -> Result<Self, VegaError> {
         let mut definitions = tool_definitions(run_mode);
         let mut mcp_by_alias = HashMap::new();
@@ -718,6 +735,9 @@ impl RunCapabilitySnapshot {
         // Cache its owner-only read once for the entire catalog projection.
         let mut credential_snapshots = HashMap::<usize, CredentialSnapshot>::new();
         for candidate in candidates {
+            if skip_revoked && candidate.revoked.is_cancelled() {
+                continue;
+            }
             // Description and schema are server-controlled provider inputs.
             // Reject the entire run before any request if either echoes a
             // credential held by Vega, including one from another server.
@@ -743,7 +763,7 @@ impl RunCapabilitySnapshot {
             {
                 return Err(invalid_catalog());
             }
-            if candidate.revoked.is_cancelled()
+            if (!skip_revoked && candidate.revoked.is_cancelled())
                 || candidate.exact_tool_name.is_empty()
                 || candidate.exact_tool_name != candidate.definition.name
                 || candidate.definition.description.len() > MAX_DESCRIPTION_BYTES
@@ -901,6 +921,18 @@ impl RunCapabilitySnapshot {
             );
         }
         self
+    }
+
+    pub(crate) fn current_definitions(&self) -> Vec<ToolDefinition> {
+        self.definitions
+            .iter()
+            .filter(|definition| {
+                self.mcp_by_alias
+                    .get(&definition.name)
+                    .is_none_or(|tool| !tool.is_revoked())
+            })
+            .cloned()
+            .collect()
     }
 
     pub(crate) fn definitions(&self) -> &[ToolDefinition] {
