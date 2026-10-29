@@ -12,6 +12,8 @@ Issue #760；基线 `50106310837ebbd5cc29902a24c473eabdc93a90`。修复一次及
 
 capture_delegated_fence 在既有准入事务中读取上述来源，并将父线程当前 capture_fence 与已接受快照完整比对，拒绝 epoch/reset、模式/revision、规则、项目/工作区、数据库身份变化。不会刷新或扩大旧权限。原始快照仍须精确相等、有效，保留父子归属及 previous delegated fence 检查。停止使用既有 cancellation token；准入等待事务后及提交前检查，提交前取消拒绝并回滚，提交后取消走既有生命周期收敛。取消检查为准入线性化点；不声称 SQLite commit 与 token.cancel 可原子化。
 
+独立审查指出受限 Bash 的 command_scope 仍校验旧父回复。委派分支复用 capture_delegated_fence 完整证明，保留子执行自身 streaming、精确 delegated fence、held/running 和父子身份检查；普通分支不变。补充作用域请求/批准/消费及失效拒绝回归。
+
 禁止接受任意 done 消息、最近 fence 兜底、复制当前权限覆盖旧快照；不改并行上限、嵌套委派、续派终态与所有权要求。不加 schema、UI 文案或无关重构。
 
 ## 验证
@@ -24,4 +26,6 @@ capture_delegated_fence 在既有准入事务中读取上述来源，并将父�
 
 ## 当前状态
 
-实现与云端验证进行中；未取得测试或用户手测结果。
+开发版本 `5cfad84033983249faea06e5a4487540a31c81f2` 的 [Actions 40860145280](https://github.com/puzige/vega/actions/runs/40860145280) required check 成功：Rust 6 发现/6 执行/6 通过/0 跳过，Python 5/15/40 通过，Clippy/fmt 通过。该版本独立审查发现上述 command_scope 缺口，已修订，不以首轮通过作为完整交付。
+
+增量补充真实 Supervisor/hook 派发、回执确认、结果读取、usage、释放和多次 followup，隔离外部模型与 App host；停止后拒绝及取消等待准入行为回归。增量 CI 与复审待结果；未合并、未取得用户手测结果。

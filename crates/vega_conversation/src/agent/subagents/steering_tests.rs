@@ -710,3 +710,9 @@ async fn new_execution_can_delegate_after_old_permission_authority_is_invalidate
         .unwrap();
     fixture.assert_admitted(&next);
 }
+
+#[path = "steering_scope_tests.rs"]
+mod steering_scope_tests;
+
+#[path = "steering_lifecycle_tests.rs"]
+mod steering_lifecycle_tests;
