@@ -142,6 +142,8 @@
 
 开发回归覆盖真实生成入口的父前缀／schema／model snapshot 保留、错误／空白／工具响应回退及逐请求用量、取消／凭据错误不回退、改写前缀与超大 schema 拒绝；真实 SQLite／worker 覆盖重复借用后仍可正常消费、取消等待不取消后台，以及实际摘要入口借用后候选／账单／checkpoint 不变。无实际 replay frame 的借用不接受活跃 owner，不制造 replay 权限。本地仅 `cargo fmt --all -- --check` 和 `git diff --check`；编译、Clippy 与行为执行待现有 Actions。
 
+首版提交 `2559a7299046844c676999e2ea7f5a2c66cf561b`（tree `67e4e3994ffe7e524cff97aa8be957712ab7d767`）的 Actions [40812130766](https://github.com/puzige/vega/actions/runs/40812130766) 在测试编译阶段失败：Nextest `123244654858`、Clippy `123244655138` 与 required `123245654438` failure。E0063 指向既有 GPUI `context_tests.rs` 的 `Thread` 构造缺少 master #744 新增 `reasoning_preferences`，未取得成功 discovery 或测试执行，不是 no Rust tests。修正仅补默认字段，不修改生产实现、测试断言或 CI。同步 master 后的修正须重新验证。
+
 #### 脱离前台的生成与逐阶段结算（2026-10-28）
 
 后台准备在当前 admission 下完成有界捕获：来源、append fence、前驱及引用摘要 digest 来自同一快照，拒绝 staged model change、来源不一致与不完整响应组。返回的 prepared job 不包含 admission、前台 actor、diagnostics channel 或任何 SQLite connection；只保存冻结请求、来源快照、摘要偏好、计价及凭据投影策略。前台生成仍全程持有原 admission 和同一 600 秒期限，不改变既有安装语义。
