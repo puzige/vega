@@ -1,6 +1,7 @@
 use super::*;
 
 mod arming_tests;
+mod attribution_tests;
 mod consume_tests;
 mod diagnostics_tests;
 mod registry_tests;

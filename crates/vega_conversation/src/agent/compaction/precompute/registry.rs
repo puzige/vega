@@ -45,6 +45,9 @@ impl Drop for RegistryState {
     fn drop(&mut self) {
         for entry in self.entries.values() {
             entry.epoch.cancel();
+            if let Some(flight) = &entry.pending {
+                flight.cancel.cancel();
+            }
         }
     }
 }
@@ -142,6 +145,13 @@ impl ContextPrecomputeRegistry {
         ContextPrecomputeOwner {
             registry: self.clone(),
             cancel: Arc::new(CancellationToken::new()),
+        }
+    }
+
+    pub(crate) fn owner_for_execution(&self, cancel: &CancellationToken) -> ContextPrecomputeOwner {
+        ContextPrecomputeOwner {
+            registry: self.clone(),
+            cancel: Arc::new(cancel.child_token()),
         }
     }
 
@@ -403,7 +413,10 @@ impl ContextPrecomputeLease {
                 key: self.key.clone(),
                 epoch: self.epoch.clone(),
                 generation: prepared.generation().to_owned(),
-                cancel: self.epoch.child_token(),
+                cancel: self
+                    .owner
+                    .as_ref()
+                    .map_or_else(|| self.epoch.child_token(), |owner| owner.child_token()),
                 owner: self.owner.clone(),
                 state: Mutex::new(FlightState::default()),
             });

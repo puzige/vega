@@ -1,4 +1,4 @@
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 
 use crate::context_compaction::ContextCheckpointError;
@@ -54,6 +54,21 @@ pub fn record_stage(
     stage: u32,
     usage: Option<&ReportedUsage>,
 ) -> Result<Option<i64>, ContextCheckpointError> {
+    let transaction = WriteTransaction::new(conn, WriteCategory::Usage)?;
+    let result =
+        record_stage_in_transaction(&transaction, generation, thread_id, model, stage, usage)?;
+    transaction.commit()?;
+    Ok(result)
+}
+
+pub fn record_stage_in_transaction(
+    transaction: &Transaction<'_>,
+    generation: &str,
+    thread_id: &str,
+    model: &str,
+    stage: u32,
+    usage: Option<&ReportedUsage>,
+) -> Result<Option<i64>, ContextCheckpointError> {
     validate_identity(generation, thread_id, model)?;
     if !(1..=32).contains(&stage) {
         return Err(ContextCheckpointError::Invalid);
@@ -65,8 +80,7 @@ pub fn record_stage(
     if payload.len() > 16384 {
         return Err(ContextCheckpointError::Invalid);
     }
-    let transaction = WriteTransaction::new(conn, WriteCategory::Usage)?;
-    let finished = ensure_identity(&transaction, generation, thread_id, model)?;
+    let finished = ensure_identity(transaction, generation, thread_id, model)?;
     let previous: Option<(String, Option<i64>)> = transaction.query_row(
         "SELECT payload,usage_id FROM context_precompute_stages WHERE generation=?1 AND stage=?2",
         params![generation, stage], |row| Ok((row.get(0)?, row.get(1)?)),
@@ -75,7 +89,6 @@ pub fn record_stage(
         if previous != payload {
             return Err(ContextCheckpointError::Invalid);
         }
-        transaction.commit()?;
         return Ok(id);
     }
     if finished {
@@ -84,7 +97,7 @@ pub fn record_stage(
     let usage_id = usage
         .map(|usage| {
             crate::token_usage::insert(
-                &transaction,
+                transaction,
                 crate::token_usage::NewTokenUsage {
                     thread_id,
                     message_id: None,
@@ -106,7 +119,6 @@ pub fn record_stage(
         "INSERT INTO context_precompute_stages(generation,stage,payload,usage_id) VALUES(?1,?2,?3,?4)",
         params![generation, stage, payload, usage_id],
     )?;
-    transaction.commit()?;
     Ok(usage_id)
 }
 

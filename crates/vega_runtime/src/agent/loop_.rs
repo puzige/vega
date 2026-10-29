@@ -1525,6 +1525,7 @@ where
                     || (matches!(check, ContextCheck::Triggered | ContextCheck::OverLimit)
                         && !is_initial_user_input(&messages)));
             if !should_compact
+                && !tool_config.delegated_compaction
                 && !precompute_suppressed
                 && !is_initial_user_input(&messages)
                 && budget.automatic_compaction()
@@ -2868,6 +2869,7 @@ where
             }
             emit!(events, sink, RuntimeEvent::Finished(finish));
             if normal_terminal
+                && !tool_config.delegated_compaction
                 && anchor_protocol_valid
                 && !precompute_suppressed
                 && let Some(budget) = context_budget.filter(|budget| budget.automatic_compaction())
@@ -3702,6 +3704,46 @@ where
             messages.push(input.message);
             final_text.clear();
             input_anchor = None;
+        }
+        if tool_config.delegated_compaction
+            && !steered
+            && !cancel.is_cancelled()
+            && normal_terminal
+            && anchor_protocol_valid
+            && !precompute_suppressed
+            && (tool_config.turn_limit == 0 || turn_index < tool_config.turn_limit)
+            && let Some(budget) = context_budget.filter(|budget| budget.automatic_compaction())
+            && let Some(hook) = external_context_hook.or(request_context_hook.as_deref())
+            && let Ok(decision) = input_decision(
+                input_anchor.as_ref(),
+                &messages,
+                &tool_definitions,
+                &request.model,
+                request.reasoning.as_ref(),
+                request_output_cap(request.max_tokens, context_budget),
+                primary_revision,
+            )
+            && let Ok(threshold) = budget.precompute_tokens()
+            && let Ok(target_tokens) = budget.target_tokens()
+            && decision.estimate.input_tokens >= threshold
+        {
+            hook.arm_precompute(
+                ContextCompactionRequest {
+                    trigger: crate::ContextCompactionTrigger::Threshold,
+                    system_prompt: system_prompt.clone(),
+                    messages: messages[1..].to_vec(),
+                    tools: tool_definitions.clone(),
+                    budget,
+                    estimate: decision.estimate,
+                    target_tokens,
+                    source_version: context_source_version.unwrap_or_default(),
+                    source_fingerprint: context_source_fingerprint.clone(),
+                    require_source_fence: false,
+                    source_owner_id: Some(context_operation_id.clone()),
+                },
+                cancel.clone(),
+            )
+            .await;
         }
         if !steered && !cancel.is_cancelled() {
             progress.after_tool_batch(messages.last_mut());

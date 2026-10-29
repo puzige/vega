@@ -198,6 +198,7 @@ pub struct ConversationCompactionHook<'a> {
     full_on_threshold: bool,
     stage_accounting: Option<precompute::StageAccounting>,
     precompute_lease: Option<crate::types::ContextPrecomputeLease>,
+    precompute_attribution: precompute::PrecomputeUsageAttribution,
 }
 
 impl<'a> ConversationCompactionHook<'a> {
@@ -227,6 +228,7 @@ impl<'a> ConversationCompactionHook<'a> {
             full_on_threshold: false,
             stage_accounting: None,
             precompute_lease: None,
+            precompute_attribution: Default::default(),
         }
     }
 
@@ -235,6 +237,14 @@ impl<'a> ConversationCompactionHook<'a> {
         lease: Option<crate::types::ContextPrecomputeLease>,
     ) -> Self {
         self.precompute_lease = lease;
+        self
+    }
+
+    pub(crate) fn with_precompute_attribution(
+        mut self,
+        attribution: precompute::PrecomputeUsageAttribution,
+    ) -> Self {
+        self.precompute_attribution = attribution;
         self
     }
 

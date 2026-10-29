@@ -13,6 +13,21 @@ pub(super) struct CapturedPrecompute {
     pub database_identity: vega_store::thread_admission::DatabaseIdentity,
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct PrecomputeUsageAttribution {
+    pub(crate) parent: Option<(String, String)>,
+    pub(crate) claim: Option<crate::types::AutomationRunClaim>,
+    pub(crate) observer: Option<Arc<dyn vega_runtime::RuntimeAutomationHook>>,
+}
+
+impl PrecomputeUsageAttribution {
+    fn missing_usage(&self) {
+        if let Some(observer) = &self.observer {
+            observer.missing_usage();
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct StageAccounting {
     database_path: PathBuf,
@@ -22,6 +37,7 @@ pub(super) struct StageAccounting {
     generation: String,
     stages: Arc<AtomicU32>,
     complete: Arc<AtomicBool>,
+    attribution: PrecomputeUsageAttribution,
 }
 
 impl StageAccounting {
@@ -67,10 +83,15 @@ impl StageAccounting {
                     .map(|pricing| pricing.call_started_at),
             });
         let this = self.clone();
-        tokio::task::spawn_blocking(move || {
+        let result = tokio::task::spawn_blocking(move || {
             let store = this.open()?;
-            accounting::record_stage(
+            let transaction = vega_store::write_coordination::WriteTransaction::new(
                 store.conn(),
+                vega_store::write_coordination::WriteCategory::Usage,
+            )
+            .map_err(VegaError::Store)?;
+            let id = accounting::record_stage_in_transaction(
+                &transaction,
                 &this.generation,
                 &this.thread_id,
                 &this.model,
@@ -78,14 +99,44 @@ impl StageAccounting {
                 reported.as_ref(),
             )
             .map_err(store_error)?;
+            if let (Some(id), Some(usage)) = (id, reported.as_ref()) {
+                if let Some((parent_thread, parent_message)) = &this.attribution.parent {
+                    vega_store::subagents::attribute_usage(
+                        &transaction,
+                        id,
+                        &this.thread_id,
+                        parent_thread,
+                        parent_message,
+                        usage.cache_read_tokens.is_some() && usage.cache_write_tokens.is_some(),
+                    )
+                    .map_err(VegaError::Store)?;
+                }
+                if let Some(claim) = &this.attribution.claim {
+                    crate::automation::record_usage(
+                        &transaction,
+                        claim,
+                        id,
+                        usage.input_tokens,
+                        usage.output_tokens,
+                    )
+                    .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?;
+                }
+            }
+            transaction.commit().map_err(VegaError::Store)?;
             if reported.is_none() {
                 this.complete.store(false, Ordering::Release);
+                this.attribution.missing_usage();
             }
             this.stages.store(stage, Ordering::Release);
             Ok(())
         })
         .await
-        .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?
+        .map_err(|_| context_error(ContextRuntimeError::SourceChanged))
+        .and_then(|result| result);
+        if result.is_err() {
+            self.attribution.missing_usage();
+        }
+        result
     }
 
     async fn finish(&self) -> Result<(), VegaError> {
@@ -466,6 +517,7 @@ impl ConversationCompactionHook<'_> {
                 generation: ulid::Ulid::generate().to_string(),
                 stages: Arc::new(AtomicU32::new(0)),
                 complete: Arc::new(AtomicBool::new(true)),
+                attribution: self.precompute_attribution.clone(),
             },
             request,
             captured,

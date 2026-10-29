@@ -222,6 +222,7 @@ pub struct RuntimeToolConfig {
     automation: Option<Arc<dyn automation::RuntimeAutomationHook>>,
     subagents: Option<Arc<dyn RuntimeSubagentHook>>,
     stage: Option<Arc<dyn RuntimeSubagentHook>>,
+    delegated_compaction: bool,
     usage_observer: Option<Arc<dyn automation::RuntimeAutomationHook>>,
     steering_source: Option<Arc<dyn RuntimeSteeringSource>>,
     user_questions: Option<Arc<dyn RuntimeUserQuestionHook>>,
@@ -256,6 +257,7 @@ impl RuntimeToolConfig {
             automation: None,
             subagents: None,
             stage: None,
+            delegated_compaction: false,
             usage_observer: None,
             steering_source: None,
             user_questions: None,
@@ -305,6 +307,11 @@ impl RuntimeToolConfig {
 
     pub fn with_stage(mut self, hook: Option<Arc<dyn RuntimeSubagentHook>>) -> Self {
         self.stage = hook;
+        self
+    }
+
+    pub fn with_delegated_compaction(mut self, delegated: bool) -> Self {
+        self.delegated_compaction = delegated;
         self
     }
 

@@ -196,6 +196,18 @@ runtime 在完整持久化响应／工具结果边界、micro 之后用完整 fr
 
 本批启用自动 arm／pending 消费并补回归：完整最终响应 ack、可信 usage 与保守 framed-wire 阈值、micro 后重新估算、初始单用户不启动、工具结果完整后启动、普通／reactive／两种技能预检尝试后抑制、steering 重置，以及真实 SQLite／后台 worker 的 pending／ready 去重、等待取消独立、失败后前台 fallback、来源变化拒绝及完整 owner suffix。提交 `678bffda48fc04996a114b74fd6db4253228e26d`（tree `de7f845f082844773e5848b4771b3f0ac1a0f4ad`）增量独立静态审查 Clear。Actions [40779807646](https://github.com/puzige/vega/actions/runs/40779807646) 的 Clippy `123138298945` 通过；Nextest `123138298498` 实际 134 执行／131 通过／3 失败／0 跳过、23 binaries、21.523s，独立 discovery 数未取得，required `123140897112` 失败。三项新 runtime fixture 忽略完整 wire 的 4/3 安全系数、schema 与 framing，导致 micro 后实际触发 foreground auto、技能路径提前普通压缩，以及预期可恢复超时实际已越硬上限；生产 estimator 与恢复判断未改。本批改用公开 framed-wire estimator 配置并断言预算区间，技能案例下调合成历史并断言实际 SkillProspect 超限、普通 preflight 低于提前阈值，保留原有时序／数量／抑制断言。修复与新后台诊断仍待云端验证；fork 借用、子 agent 等后续仍未交付，不以本批宣称整卡完成。
 
+#### 子 agent 原生压缩接线（2026-10-28）
+
+子 agent 继承父运行的 ContextBudget 自动策略，不再无条件关闭；这取代旧委派阶段的临时禁用，不改变冻结权限、工具集、StageHook、credential reader、turn limit 或父子执行占用。runtime 用独立的 delegated-compaction 标志识别子运行，不能把“父运行具有委派工具”当作子 agent 身份。子 agent 的估算 preflight 与最终响应均不 arm；仅正常非最终响应的完整工具组持久化 ack 后、仍有下一回合、未接收新 steering／未试 foreground compact、可信 usage／完整 wire 达提前阈值时尝试。前台 threshold 继续走该子线程的 full 策略，reactive 与技能路径保留原边界。
+
+ChildProvider 显式重建 owned compaction provider，只有内层工厂可用才提供能力；后台保留原 child 凭据拒绝和内层保护，metadata／submission／once／recovering 路径都按原协议转发，不借用父 runtime／transport、不跳过发送前检查、不制造未发送账单。后台 usage 使用独立 Store 的同一短事务写 stage、token_usage、delegated parent 归属与已冻结 automation claim，按 usage ID 幂等；未知用量／落库失败传递现有 observer 的 missing_usage，不计入虚构用量、不在消费时重记。observer 只保存计量状态，不复制前台 actor 或诊断 sender。
+
+每个子执行在验证 admission 后、调用 entry 前绑定固定 compaction owner／lease；取消 token 只作为该子执行显式取消边界，直接取消其后台 worker，绝不从普通等待者取消继承。正常、失败、取消和阶段 handoff 返回后均先撤销自己的 owner，暂停该子线程、等待真实 runtime／结算／诊断退出，再在同一 admission 下精确退役当前 generation；账单和诊断保留。完成上述步骤后才持久化／释放子执行终态；失败关闭并保持 quarantine，不把“请求了取消”当作已释放。丢弃 lifecycle future 也撤销自己的 worker，原执行占用继续按已有 quarantine 规则保留。其他线程／父运行／新执行不被旧 owner 清理。
+
+开发回归验证子 agent estimate／final／turn-limit／继承 auto-off 不 arm、完整非最终工具组后 arm、steering／foreground suppression 及持久化 ack 失败；真实 SQLite＋后台 worker 验证直接取消子执行即完成计量封存与诊断、资源未释放仍不得报告退出，退出 drain 只清本子线程候选、账单／父预算归属幂等、unknown 保持未知。owned provider 回归覆盖借用 wrapper 销毁后仍可构造独立 provider、动态凭据拒绝与内层拒绝发生在发送标记之前、metadata 转发、内层输出过滤保留，以及不支持独立 transport 时不声明能力；外部 provider 合成，其余使用生产路径。本地仅格式和差异检查，行为结果待本增量 Actions；此增量不冒充 fork 借用、恢复附件或整卡交付。
+
+后台诊断修复提交 `c0e6dfad1332fd1ee1a5f8496cd8847a8e21735b`（tree `cc7279c576df4b513d90e55f0fde883a1a79cea4`）的 Actions [40784163692](https://github.com/puzige/vega/actions/runs/40784163692) 已成功：Clippy `123153076122`、Nextest `123153075674`、required `123154894342` 均 success；原始输出 136 发现／136 执行通过／0 跳过、15.851s，含六种后台诊断终态与容量回归。该结果只覆盖修复提交，子 agent 新增量待验证。
+
 ### 4.4 provider 与本机能力
 
 - 使用实际冻结模型定义中的 `context_window`、`max_output_tokens` 以及用户覆盖。既有配置的 input-limit / reserve 语义要显式迁移或适配，不把 input cap 偷换成 total window；不直接改用户本机配置/数据库。

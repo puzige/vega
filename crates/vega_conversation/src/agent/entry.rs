@@ -813,19 +813,14 @@ where
     if actor_config.delegated_authority.is_some() {
         prepared.request.context_budget = actor_config.delegated_context_budget;
     }
-    if actor_config.delegated {
-        prepared.request.context_budget = prepared
-            .request
-            .context_budget
-            .map(vega_runtime::ContextBudget::without_automatic_compaction);
-    }
     let subagent_mcp = mcp_servers.clone();
     prepared.request.tool_config = prepared
         .request
         .tool_config
         .with_mcp_servers(mcp_servers)
         .with_computer_use(actor_config.computer_use.clone())
-        .with_stage(actor_config.stage_hook.clone());
+        .with_stage(actor_config.stage_hook.clone())
+        .with_delegated_compaction(actor_config.delegated);
     let skill_launch = super::skills::prepare_skill_run(
         store,
         &prepared.project_id,
@@ -931,6 +926,15 @@ where
     let work_time_source = actor_config.work_time_source.clone();
     let user_questions = actor_config.user_questions.clone();
     let full_on_threshold = actor_config.delegated;
+    let precompute_attribution = if actor_config.delegated {
+        super::compaction::precompute::PrecomputeUsageAttribution {
+            parent: actor_config.delegated_parent.clone(),
+            claim: actor_config.automation_claim.clone(),
+            observer: actor_config.automation_hook.clone(),
+        }
+    } else {
+        Default::default()
+    };
     let actor = match PersistenceActor::start(PersistenceActorStart {
         database_path: prepared.database_path.clone(),
         project_id: prepared.project_id.clone(),
@@ -1102,6 +1106,7 @@ where
             prepared.request.pricing_catalog.clone(),
         )
         .with_full_on_threshold(full_on_threshold)
+        .with_precompute_attribution(precompute_attribution)
         .with_precompute_lease(precompute_lease)
         .with_thread_admission(admission.clone())
         .with_credential_reader(prepared.request.tool_config.credential_reader())

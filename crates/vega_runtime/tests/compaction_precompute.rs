@@ -12,6 +12,8 @@ use vega_runtime::{
     VegaError, apply_micro_compaction, estimate_wire_context, run_agent_with_sink,
 };
 
+#[path = "compaction_precompute/delegated_tests.rs"]
+mod delegated_tests;
 #[path = "compaction_precompute/skill_tests.rs"]
 mod skill_tests;
 
