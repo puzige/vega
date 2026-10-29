@@ -51,6 +51,7 @@ pub(crate) struct ContextControl {
     save_pending: Option<u64>,
     saving_values: Option<(String, String, bool)>,
     compact_pending: Option<u64>,
+    command_draft: Option<(u64, String, u64)>,
     cancel_pending: bool,
     error: Option<&'static str>,
     records: Vec<ContextCompactionStatusRecord>,
@@ -84,6 +85,7 @@ impl ContextControl {
             save_pending: None,
             saving_values: None,
             compact_pending: None,
+            command_draft: None,
             cancel_pending: false,
             error: None,
             records: Vec::new(),
@@ -100,6 +102,76 @@ impl ContextControl {
 }
 
 impl ConversationStream {
+    pub(crate) fn submit_compact_command(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.thread.backend != TaskBackend::Native {
+            return false;
+        }
+        let original = self.input.read(cx).text().to_owned();
+        let Some(requirements) = compact_requirements(&original) else {
+            return false;
+        };
+        if self.input.read(cx).is_composing() {
+            return true;
+        }
+        let error = if requirements.len() > 8192 {
+            Some("ui.compact_requirements_too_long")
+        } else if !self.attachments.is_empty()
+            || !self.input.read(cx).reference_mentions().is_empty()
+            || self.skill_intent.is_some()
+        {
+            Some("ui.compact_remove_attachments")
+        } else if !self.can_submit_message(cx)
+            || self.actions.running
+            || self.permissions_revoked
+            || !self.context_control.compactable
+            || self.context_control.source_fingerprint.is_none()
+        {
+            Some("ui.compact_unavailable")
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(error));
+            cx.notify();
+            return true;
+        }
+        let Some(request_id) = self.reserve_context_operation_id(cx) else {
+            return true;
+        };
+        let summary_requirements = requirements.to_owned();
+        self.invalidate_composer_prediction(cx);
+        self.close_composer_popovers(cx);
+        self.controller_error = None;
+        self.input.update(cx, |input, cx| input.set_text("", cx));
+        self.context_control.command_draft =
+            Some((request_id, original, self.input.read(cx).content_revision()));
+        self.context_control.compact_pending = Some(request_id);
+        cx.emit(ContextCompactionRequested {
+            thread_id: self.thread.id.clone(),
+            model: self.thread.model.clone(),
+            request_id,
+            selection: None,
+            summary_requirements,
+        });
+        cx.notify();
+        true
+    }
+
+    fn finish_compact_command(&mut self, request_id: u64, restore: bool, cx: &mut Context<Self>) {
+        if self
+            .context_control
+            .command_draft
+            .as_ref()
+            .is_some_and(|(id, _, _)| *id == request_id)
+            && let Some((_, text, revision)) = self.context_control.command_draft.take()
+            && restore
+            && self.input.read(cx).content_revision() == revision
+            && self.input.read(cx).text().is_empty()
+        {
+            self.input.update(cx, |input, cx| input.set_text(&text, cx));
+        }
+    }
+
     pub(crate) fn context_usage_visible(&self) -> bool {
         !self.entries.is_empty() && self.context_control.last_call_total.is_some()
     }
@@ -227,6 +299,7 @@ impl ConversationStream {
             self.context_control.records.clear();
         }
         if owns_pending {
+            self.finish_compact_command(request_id, true, cx);
             self.context_control.compact_pending = None;
         }
         if owns_pending || (owns_record && self.context_control.compact_pending.is_none()) {
@@ -453,6 +526,7 @@ impl ConversationStream {
             });
         }
         if record.status != Status::Compacting {
+            self.finish_compact_command(record.generation, record.status != Status::Succeeded, cx);
             self.context_control.compact_pending = None;
             self.context_control.cancel_pending = false;
         }
@@ -844,3 +918,11 @@ pub(super) fn status_label_for(status: Status, failure: Option<Failure>) -> &'st
         Status::Failed => failure.unwrap_or(Failure::Unavailable).message(),
     }
 }
+
+fn compact_requirements(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix("/compact")?;
+    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| rest.trim())
+}
+
+#[cfg(test)]
+mod compact_command_tests;

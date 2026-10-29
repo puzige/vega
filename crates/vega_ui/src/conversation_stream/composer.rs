@@ -297,6 +297,9 @@ impl ConversationStream {
     }
 
     pub(crate) fn submit_message(&mut self, cx: &mut Context<Self>) {
+        if self.submit_compact_command(cx) {
+            return;
+        }
         if !self.can_submit_message(cx) {
             return;
         }

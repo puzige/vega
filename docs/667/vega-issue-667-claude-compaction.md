@@ -234,6 +234,14 @@ Vega 现有运行在开始时冻结已批准的完整 MCP 定义与精确 dispat
 
 `57ed8d1ce9e4ed2f2d5750391343d7a3056b498c` 的 Actions [40849945527](https://github.com/puzige/vega/actions/runs/40849945527) 为 177 发现／177 执行通过／0 跳过；独立静态审查发现预检事件 sink 的等待窗口仍可将旧 schema 传入 precompute，因此该版本不是 Clear。补充合同：PrimaryPreflight 回执后重新读取当前定义并重算 estimate、foreground/precompute eligibility；开发回归在该 sink 内撤销 MCP，核对实际 arm 请求的 schema 和估算一致且保留原生 read。
 
+修复 `e09aa4f2775a280b40f4aa66517194c04ce8bc09`（tree `dd59c9fed9c3ac4e3f934b7c3ec38fcf5cb76a14`）独立静态复审 Clear，关闭该 P2。Actions [40852148640](https://github.com/puzige/vega/actions/runs/40852148640)：Clippy `123374016044` success，Nextest `123374015680` 执行 178 项、177 通过／1 失败／0 跳过，14.291s，required `123376552890` failure。失败回归重建 payload 时漏掉 runtime 的 cold ReplayFrame，历史 assistant 来源包装差 31 tokens（74531 vs 74500）；`40564b5a90efd3a994c63d6fd85f887a81cde3ef` 补相同冷投影边界，严格 schema／估算相等断言不变，待新 Actions，未将静态 Clear 当行为通过。
+
+#### 原生 `/compact` 与摘要要求（2026-10-29）
+
+Native composer 支持精确首 token `/compact`（区分大小写，前导空白不解释为命令）；后续空白分隔的文本为摘要要求，去除两端空白，最大 8192 UTF-8 bytes。`/compactness` 等相似普通消息不拦截，ACP 不解释此原生命令。菜单／slash 建议提供 `/compact`，选择只填入命令与现有草稿供编辑，提交（现有键盘／发送入口）才运行。要求只传 `ContextCompactionRequested.summary_requirements`，selection=None；不落普通用户／assistant 消息、不启动普通运行、不带图片／文件引用或 skill intent。
+
+仅空闲、权限有效、来源可压缩且模型／权限／其他提交或受信动作未占用时接受；运行中不可排队或 steering 为普通消息。过长参数、附件／引用／skill intent 和不可用状态显示就近可恢复错误，草稿不丢。成功派发后清空原命令，保留 owner request id 与清空时输入版本；失败／取消只在同 owner 且草稿仍未改动时恢复原命令，不覆盖新输入；成功不加额外成功文案。现有 controller 再次验证 owner/route/admission，现有状态／取消保持。开发回归验证实际 composer 事件（无普通提交）、参数字节边界／精确识别、菜单投影、占用／重复提交拒绝、失败／取消恢复与不覆盖新草稿；复用已验证的底层摘要要求隔离与 controller 生命周期。真实窗口键盘／点击待用户手测，不把 GPUI 状态回归当原生输入验收。
+
 #### 脱离前台的生成与逐阶段结算（2026-10-28）
 
 后台准备在当前 admission 下完成有界捕获：来源、append fence、前驱及引用摘要 digest 来自同一快照，拒绝 staged model change、来源不一致与不完整响应组。返回的 prepared job 不包含 admission、前台 actor、diagnostics channel 或任何 SQLite connection；只保存冻结请求、来源快照、摘要偏好、计价及凭据投影策略。前台生成仍全程持有原 admission 和同一 600 秒期限，不改变既有安装语义。

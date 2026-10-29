@@ -792,3 +792,7 @@
 
 "ui.compact_before_message" = "压缩此消息之前的上下文"
 "ui.compact_from_message" = "从此消息开始压缩"
+
+"ui.compact_requirements_too_long" = "请将摘要要求缩短到 8192 个 UTF-8 字节以内。"
+"ui.compact_remove_attachments" = "请移除图片、文件引用和所选技能后再压缩。"
+"ui.compact_unavailable" = "当前无法压缩上下文，请等待当前操作结束，并确认已有可压缩的历史消息。"
