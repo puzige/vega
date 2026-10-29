@@ -78,7 +78,7 @@ async fn history_skills_are_bounded_filtered_and_do_not_activate_execution() -> 
     );
     let unavailable = RuntimeToolConfig::default()
         .with_context_skill_reader(Arc::new(|_| vec![(skill("private"), "body".into())]))
-        .with_credential_reader(Arc::new(|| Err(VegaError::Cancelled)));
+        .with_credential_reader(Arc::new(|| Err(())));
     assert!(
         restore_context_skills(&mut messages, &unavailable, &CancellationToken::new())
             .await

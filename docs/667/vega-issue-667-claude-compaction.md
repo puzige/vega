@@ -174,6 +174,10 @@ lint 修复版本 `d7c18c442c9488b488aa9937e57d6d8907576dec`（tree `902b5ff2a32
 
 模型附件使用 authority:none 的 restored_skill／compact_skill_reference JSON，保留 source_run_id、技能名、source label 和内容 hash；正文仅来自已校验冻结 snapshot。按技能名去重，最近优先；当前运行已激活的同名技能不再重复历史正文。每技能 UTF-8 bytes/4 上取整最多 5000 tokens，总正文最多 25000；超限保留无正文引用，不发送不完整正文冒充完整技能。所有字段经过当前凭据过滤，检查不可用 fail closed。附件不改原消息正文或来源比较，不进入历史审批或 read-before-edit；暖缓存不能沿用上一请求正文，每轮重新验证。附件进入实际 production projection 与 wire estimator，预算不足时可移除可选历史附件，不放宽主请求预算。
 
+完整保留判断须同时核对正文行、该 assistant 的完整工具调用及图片来源，不能仅以 MessageRow 相等判断：空正文的不同工具 response 被部分压缩时，行本身仍可能相等。开发回归须覆盖零文本工具边界的来源保留、真正完整保留的排除和即时／重载一致。
+
+首版 `133afcb61f80fe839b9425b6cad721662a4f3ece`（tree `4cecc637fa891d2511e8316385858b8c08563f12`）的 Actions [40826881638](https://github.com/puzige/vega/actions/runs/40826881638) 在测试编译阶段失败：Nextest `123291846907`、Clippy `123291847241`、required `123293391893` failure。新 SQLite fixture 误访问 SkillRunSnapshot 的私有 bytes／sha256 字段（E0616），runtime fixture 向 Result<_, ()> 传入 VegaError（E0308）；修正使用现有 bytes()／sha256() 与 Err(())，不扩大生产 API 或削弱断言。未取得成功 discovery／执行结果，不是 no Rust tests。独立静态审查另确认上述工具边界遗漏，修复需同时覆盖工具／图片来源并补回归，新 head 仍待 CI 和增量复核。
+
 开发回归覆盖实际 SQLite 快照的来源／绑定／digest、当前世代变更、同名去重与正文限额，以及实际 runtime provider 观测、暖缓存旧正文清除、凭据过滤和预算；只由 Actions 执行。技能资源原文读取、动态工具、任务／计划与其他恢复仍单独续接，不以本节声称完成全部恢复矩阵。
 
 #### 脱离前台的生成与逐阶段结算（2026-10-28）

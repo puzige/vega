@@ -107,7 +107,24 @@ fn context_skill_runs(
                 ConversationError::CorruptRow("invalid retained skill source range".into())
             })?;
             for message in selected.messages {
-                if source.messages.iter().any(|original| original == &message) {
+                if source.messages.iter().any(|original| original == &message)
+                    && source
+                        .tool_calls
+                        .iter()
+                        .filter(|call| call.message_id == message.id)
+                        .eq(selected
+                            .tool_calls
+                            .iter()
+                            .filter(|call| call.message_id == message.id))
+                    && source
+                        .images
+                        .iter()
+                        .filter(|image| image.message_id == message.id)
+                        .eq(selected
+                            .images
+                            .iter()
+                            .filter(|image| image.message_id == message.id))
+                {
                     covered.remove(&message.id);
                 }
             }
