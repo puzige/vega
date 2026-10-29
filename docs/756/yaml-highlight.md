@@ -16,3 +16,10 @@
 在 Actions 用临时开发 Rust 测试验证两种别名/大小写与显示名称、块/流式映射键、Unicode 值、字符串/数字/布尔/null/注释/块字符串/锚点/标签、span UTF-8 边界/非重叠，以及既有语言与安全降级。测试通过后固定完整 SHA 和可恢复源码，删除开发测试；最终 head 经独立审查及 required CI，Rust 应为 no Rust tests（0 发现/0 执行），不是 Rust 测试通过。
 
 用户手测：更新后检查 yaml/yml 标题、键名和值的色差、浅深色可读性；复制与拖选不受影响。合并不代表已安装或手测通过。
+
+## 开发验证与审查证据
+
+- 开发提交：`091ca9d456dc5d36a675b922a37ebbeda88ce8ce`；[Actions 40848147142](https://github.com/puzige/vega/actions/runs/40848147142) 成功，fmt/Clippy、Python 三组（5+15+40）成功，Nextest 3 发现/3 执行/3 通过/0 跳过。既有语言用例只证明加载与非空高亮，不冒充全量语义覆盖。
+- [原始开发测试源码](https://github.com/puzige/vega/blob/091ca9d456dc5d36a675b922a37ebbeda88ce8ce/crates/vega_markdown/tests/yaml_highlight.rs) 已通过 GitHub API 核验（blob `c6b137e5292b14e316e176fbed1b727a2d5b6e5f`），随后删除，未引入独占支持/fixture/dev dependency。
+- 非实现者独立只读审查绑定该开发提交：无发现，核对 YAML query 优先级、别名与标题、capture 映射、唯一 core、pending 与降级契约；未运行代码或验证像素。最终增量只删开发测试及补充本节，生产代码不变。
+- 本地 `cargo fmt --all`、`git diff --check` 通过，未本地运行/构建/测试。最终 head required CI 仍待运行；用户手测未进行，规格偏离无。
