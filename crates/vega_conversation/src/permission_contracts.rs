@@ -481,7 +481,7 @@ pub(crate) fn capture_delegated_fence(
     require_admission_open(store)?;
     let state =
         vega_store::permission_contracts::load_state(store.conn()).map_err(storage_error)?;
-    let encoded = vega_store::permission_contracts::load_run_fence(
+    let encoded = vega_store::permission_contracts::load_delegating_run_fence(
         store.conn(),
         parent_message,
         parent_thread,
@@ -490,7 +490,14 @@ pub(crate) fn capture_delegated_fence(
     .ok_or(ConversationError::InvalidTaskIdentity)?;
     let saved: crate::types::PermissionFence =
         serde_json::from_str(&encoded).map_err(|_| ConversationError::InvalidTaskIdentity)?;
+    let parent = vega_store::threads::find(store.conn(), parent_thread)
+        .map_err(storage_error)?
+        .ok_or(ConversationError::InvalidTaskIdentity)?;
     if state.reset_pending
+        || parent.backend != "native"
+        || parent.status != "active"
+        || parent.parent_thread_id.is_some()
+        || capture_fence(store, &parent)? != *accepted
         || &saved != accepted
         || !accepted.is_valid()
         || accepted.delegation.is_some()

@@ -1362,6 +1362,9 @@ async fn create_child(
         let tx = store
             .immediate_transaction()
             .map_err(|_| failure("storage unavailable"))?;
+        if cancel.is_cancelled() {
+            return Err(VegaError::Cancelled);
+        }
         if let Some(claim) = &settings.automation_claim {
             crate::automation::check_subagent_budget(&tx, claim)
                 .map_err(|message| failure(&message))?;

@@ -397,14 +397,21 @@ impl LiveScopeRun {
                 permission_contracts::load_delegated_fence(conn, &self.fence.thread_id, &self.run)
                     .map_err(unavailable)?;
             require_fence(&saved, &self.fence)?;
-            let parent = permission_contracts::load_run_fence(
-                conn,
-                &source.parent_message_id,
+            let child = vega_store::threads::find(conn, &self.fence.thread_id)
+                .map_err(unavailable)?
+                .ok_or(CommandScopeError::StaleAuthority)?;
+            let current = crate::permission_contracts::capture_delegated_fence(
+                store,
+                &child,
                 &source.parent_fence.thread_id,
+                &source.parent_message_id,
+                &self.run,
+                &source.parent_fence,
             )
-            .map_err(unavailable)?
-            .ok_or(CommandScopeError::StaleAuthority)?;
-            require_fence(&parent, &source.parent_fence)?;
+            .map_err(|_| CommandScopeError::StaleAuthority)?;
+            if current != self.fence {
+                return Err(CommandScopeError::StaleAuthority);
+            }
             let execution =
                 vega_store::subagents::execution(conn, &self.fence.thread_id, &self.run)
                     .map_err(unavailable)?
