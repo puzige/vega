@@ -182,6 +182,14 @@ precompute 的连续失败计数与前台 automatic／rapid-refill 独立；同 
 
 注册原语提交 `318f71cc0e169338e3f0e47c1fe32291aa498310`（tree `e9ca2a9b14bbc1e7bbfac85bb42bad996e54c6cf`）的 Actions [40763908020](https://github.com/puzige/vega/actions/runs/40763908020) 未执行构建或测试：Clippy `123082813541`、Nextest `123082814274` 均 cancelled 且 steps 为空，annotation 明确 hosted macOS arm64 runner 容量不足；required `123090610049` 失败，Rust 发现／执行计数未取得，不是 no Rust tests。独立审查指出缺少旧 epoch 的实际 counted failure 迟到回归，生产 epoch 比较未发现确定缺陷。本批补齐真实失败已结算但 runtime 仍未退出时失效的场景，并保留新 epoch 三次失败／第四次拒绝和旧结果重观察不重复计费的断言。
 
+#### 前台安装后的候选协调（2026-10-29）
+
+前台自行生成（含 full／manual／partial／reactive 与不适用 Ready 的 fallback）成功安装新 checkpoint 时，在同一写事务读取当时 slot 的 generation 并精确退役，保留所有已报告账单与诊断；不在事务外按线程盲删。失败、取消、来源失效或 AlreadyCommitted 重观察均不得删除此后候选。事务提交后只请求取消该 generation 的在途 worker，不撤销当前运行的 lease／owner、不清 pending 槽或伪造 drain；同键仍须等真实退出才能启动另一 worker。消费 Ready 保留现有精确消费与幂等安装合同。
+
+后台 begin 在同一事务核对准备时的 checkpoint 前驱与 slot，阻止“前台安装时尚未写入 slot”的迟到准备在新投影上启动。新投影的后续合法运行／steering 可使用原本仍有效的 lease 重新捕获；同一用户运行的 automatic／reactive arm suppression 保留，不把清理当作绕过 Stop 的重新授权。必要回归覆盖安装失败／取消回滚保留候选、成功原子退役、旧准备／晚发布拒绝、旧清理与 AlreadyCommitted 不误伤新候选、后台资源未释放仍占用、账单不丢失，以及更新后的投影可以重新准备。此合同不扩展通用生命周期或 fork 借用。
+
+本批新增真实 SQLite 回归覆盖 pending／Ready 两态、retire SQL 失败与退役后取消的事务回滚、AlreadyCommitted 重观察与迟到 begin；conversation 使用真实注册／worker／runtime，在前台安装后确认旧 worker 自行结算但物理资源未释放仍不得 re-arm，释放后原有效 lease 可重新准备，旧 generation 的取消不影响新 worker。既有偏好不匹配 fallback 用例原先保留旧 slot 的断言按本节新合同改为精确退役并拒绝重发布，原有请求／用量／checkpoint 断言保留。本地仅格式与差异静态检查；本增量行为待 Actions。
+
 #### 生命周期与自动入口接线（2026-10-28）
 
 自动生成启用前先接破坏性边界。显式 Stop 在前台或准备阶段是否存在均撤销该线程的旧 lease；仅导航、等待取消或交接不等同 Stop。模型 set／stage／promote 在写入期间暂停该键并撤销 pending，已完成 ready 不删除；新的运行在窗口启动边界、当前 admission 下绑定一次 lease，沿四种运行配置传至 conversation；不能推迟到工作线程或 hook 首次调用时重新绑定，使 Stop 之后的迟到准备取得新 epoch。权限重置 session 同时持有数据库 admission pause 与 precompute pause，完成／恢复原语在持有 precompute pause 且真实 drain 完成后才能修改配置／权限；超时保持 Busy，不假报完成。删除同时暂停父／子线程并检查真实 drain，未退出时返回明确的“正在停止，请稍后重试”，不在 UI 同步等待、不先删除 transcript 或账单。
@@ -208,7 +216,7 @@ ChildProvider 显式重建 owned compaction provider，只有内层工厂可用�
 
 后台诊断修复提交 `c0e6dfad1332fd1ee1a5f8496cd8847a8e21735b`（tree `cc7279c576df4b513d90e55f0fde883a1a79cea4`）的 Actions [40784163692](https://github.com/puzige/vega/actions/runs/40784163692) 已成功：Clippy `123153076122`、Nextest `123153075674`、required `123154894342` 均 success；原始输出 136 发现／136 执行通过／0 跳过、15.851s，含六种后台诊断终态与容量回归。该结果只覆盖修复提交，子 agent 新增量待验证。
 
-子 agent 初版 `4afb1b76e1d1b72b379b23c1be83d19d4b3c9cb3`（tree `0a75ed1c81ca6e8874fb3689df372458e1c2b552`）普通推送后的 Actions [40792164092](https://github.com/puzige/vega/actions/runs/40792164092) 失败：Clippy `123179761648`、Nextest `123179761872`、required `123181283080` 均 failure；format 与 Python release-script 检查通过。Rust 编译阶段发现新增 child cleanup 直接引用 conversation 未依赖的 `rusqlite`、测试同样引用该 crate、计量 observer 未实现 trait 必需方法及未使用导入，未取得成功 discovery 或测试执行，不能记成 no Rust tests。修复使用现有 `ready::current_generation`、既有 `VegaError::Store` 映射，不增加依赖；observer 对不应发生的前台 dispatch/completion 回调显式失败，原有业务断言保留。修复版本待 Actions。
+子 agent 初版 `4afb1b76e1d1b72b379b23c1be83d19d4b3c9cb3`（tree `0a75ed1c81ca6e8874fb3689df372458e1c2b552`）普通推送后的 Actions [40792164092](https://github.com/puzige/vega/actions/runs/40792164092) 失败：Clippy `123179761648`、Nextest `123179761872`、required `123181283080` 均 failure；format 与 Python release-script 检查通过。Rust 编译阶段发现新增 child cleanup 直接引用 conversation 未依赖的 `rusqlite`、测试同样引用该 crate、计量 observer 未实现 trait 必需方法及未使用导入，未取得成功 discovery 或测试执行，不能记成 no Rust tests。修复使用现有 `ready::current_generation`、既有 `VegaError::Store` 映射，不增加依赖；observer 对不应发生的前台 dispatch/completion 回调显式失败，原有业务断言保留。修复提交 `f1dd0feb73a34571d3c5a96f635e6c0f49a0c364`（tree `3cdf2bb388c5ce741641ef9ad81a56500f4e00d5`）的 Actions [40793229259](https://github.com/puzige/vega/actions/runs/40793229259) 成功：Nextest `123183300541` 原始输出 142 发现／142 执行通过／0 跳过、6.618s，Clippy `123183300793`、required `123184220402` 均 success。子 agent 增量独立审查只发现上述未使用导入，修复增量复核 Clear；此证据不覆盖后续候选协调或整卡其他剩余机制。
 
 ### 4.4 provider 与本机能力
 

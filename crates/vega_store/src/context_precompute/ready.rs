@@ -200,8 +200,54 @@ pub fn begin_generation(
     model: &str,
     expected_generation: Option<&str>,
 ) -> Result<(), ContextCheckpointError> {
+    begin_generation_in_snapshot(
+        conn,
+        generation,
+        thread_id,
+        model,
+        expected_generation,
+        None,
+    )
+}
+
+pub fn begin_generation_after_checkpoint(
+    conn: &Connection,
+    generation: &str,
+    thread_id: &str,
+    model: &str,
+    expected_generation: Option<&str>,
+    expected_checkpoint: Option<i64>,
+) -> Result<(), ContextCheckpointError> {
+    begin_generation_in_snapshot(
+        conn,
+        generation,
+        thread_id,
+        model,
+        expected_generation,
+        Some(expected_checkpoint),
+    )
+}
+
+fn begin_generation_in_snapshot(
+    conn: &Connection,
+    generation: &str,
+    thread_id: &str,
+    model: &str,
+    expected_generation: Option<&str>,
+    expected_checkpoint: Option<Option<i64>>,
+) -> Result<(), ContextCheckpointError> {
     accounting::validate_identity(generation, thread_id, model)?;
     let transaction = WriteTransaction::new(conn, WriteCategory::ContextCompaction)?;
+    if let Some(expected) = expected_checkpoint {
+        let current: Option<i64> = transaction.query_row(
+            "SELECT MAX(id) FROM context_checkpoints WHERE thread_id=?1",
+            [thread_id],
+            |row| row.get(0),
+        )?;
+        if current != expected {
+            return Err(ContextCheckpointError::Stale);
+        }
+    }
     let current: Option<String> = transaction
         .query_row(
             "SELECT generation FROM context_precompute_slots WHERE thread_id=?1",

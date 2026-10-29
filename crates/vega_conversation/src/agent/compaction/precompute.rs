@@ -345,18 +345,24 @@ impl PreparedContextPrecompute {
             .ok_or_else(|| context_error(ContextRuntimeError::InvalidProjection))?;
         let accounting = self.accounting.clone();
         let expected_generation = captured.expected_generation.clone();
+        let expected_checkpoint = self
+            .captured
+            .checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.id);
         let begin = accounting.clone();
         if cancel.is_cancelled() {
             return Err(VegaError::Cancelled);
         }
         tokio::task::spawn_blocking(move || {
             let store = begin.open()?;
-            ready::begin_generation(
+            ready::begin_generation_after_checkpoint(
                 store.conn(),
                 &begin.generation,
                 &begin.thread_id,
                 &begin.model,
                 expected_generation.as_deref(),
+                expected_checkpoint,
             )
             .map_err(store_error)
         })

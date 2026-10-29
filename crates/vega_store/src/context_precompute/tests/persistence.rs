@@ -1,6 +1,7 @@
 use super::*;
 
 mod consume_tests;
+mod coordination_tests;
 use crate::context_compaction::{
     ContextCheckpointInstall, NewContextCheckpoint, install_checkpoint,
 };

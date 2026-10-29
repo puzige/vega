@@ -379,10 +379,14 @@ async fn incompatible_ready_preferences_fall_back_to_foreground_generation() -> 
         assert!(result.settled_usage.is_none());
         assert_eq!(count(&store, "token_usage")?, 1);
         assert_eq!(count(&store, "context_checkpoints")?, 1);
-        assert_eq!(
-            ready::current_generation(store.conn(), "thread")?,
-            Some(candidate.generation)
-        );
+        assert!(ready::current_generation(store.conn(), "thread")?.is_none());
+        let retired: bool = store.conn().query_row(
+            "SELECT retired FROM context_precompute_accounting WHERE generation=?1",
+            [&candidate.generation],
+            |row| row.get(0),
+        )?;
+        assert!(retired);
+        assert!(ready::publish(store.conn(), &candidate, now_ms()).is_err());
     }
     Ok(())
 }

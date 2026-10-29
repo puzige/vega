@@ -1099,6 +1099,18 @@ pub fn install_checkpoint_with_guard<F>(
 where
     F: Fn() -> bool,
 {
+    install_checkpoint_and_retire_precompute_with_guard(conn, checkpoint, should_cancel)
+        .map(|(result, _)| result)
+}
+
+pub fn install_checkpoint_and_retire_precompute_with_guard<F>(
+    conn: &Connection,
+    checkpoint: &NewContextCheckpoint,
+    should_cancel: F,
+) -> Result<(ContextCheckpointInstall, Option<String>), ContextCheckpointError>
+where
+    F: Fn() -> bool,
+{
     checkpoint.validate()?;
     let transaction = crate::write_coordination::WriteTransaction::new_with_cancel(
         conn,
@@ -1115,11 +1127,26 @@ where
     })?;
     let result = install_checkpoint_in_transaction(&transaction, checkpoint, &should_cancel)?;
     if matches!(result, ContextCheckpointInstall::Applied(_)) {
+        let generation = crate::context_precompute::ready::current_generation(
+            &transaction,
+            &checkpoint.thread_id,
+        )?;
+        if let Some(generation) = &generation {
+            crate::context_precompute::ready::retire_in_transaction(
+                &transaction,
+                &checkpoint.thread_id,
+                generation,
+            )?;
+        }
+        if should_cancel() {
+            return Err(ContextCheckpointError::Cancelled);
+        }
         transaction.commit()?;
+        Ok((result, generation))
     } else {
         transaction.rollback()?;
+        Ok((result, None))
     }
-    Ok(result)
 }
 
 pub(super) fn install_checkpoint_in_transaction<F>(

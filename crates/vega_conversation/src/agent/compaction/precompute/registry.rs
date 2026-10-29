@@ -235,6 +235,34 @@ impl ContextPrecomputeRegistry {
         Ok(self.invalidate_matching(&mut state, |key| scope.contains(key)))
     }
 
+    pub(crate) fn cancel_generation(
+        &self,
+        database: DatabaseIdentity,
+        thread: &str,
+        generation: &str,
+    ) -> Result<ContextPrecomputeDrain, VegaError> {
+        let state = self.inner.lock().map_err(|_| unavailable())?;
+        let key = Key {
+            database,
+            thread: thread.to_owned(),
+        };
+        let flights = state
+            .entries
+            .get(&key)
+            .and_then(|entry| entry.pending.as_ref())
+            .filter(|flight| flight.generation == generation)
+            .map(|flight| {
+                flight.cancel.cancel();
+                flight.clone()
+            })
+            .into_iter()
+            .collect();
+        Ok(ContextPrecomputeDrain {
+            registry: self.clone(),
+            flights,
+        })
+    }
+
     pub fn pause_database(
         &self,
         database: DatabaseIdentity,

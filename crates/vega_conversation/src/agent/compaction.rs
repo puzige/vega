@@ -2529,7 +2529,7 @@ impl ConversationCompactionHook<'_> {
                 let store = Store::open(path).map_err(VegaError::Store)?;
                 crate::thread_access::verify(&store, &checkpoint.thread_id, &admission)
                     .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?;
-                vega_store::context_compaction::install_checkpoint_with_guard(
+                let (install, retired_generation) = vega_store::context_compaction::install_checkpoint_and_retire_precompute_with_guard(
                     store.conn(),
                     &checkpoint,
                     || install_cancel.is_cancelled() || tokio::time::Instant::now() >= deadline,
@@ -2554,7 +2554,15 @@ impl ConversationCompactionHook<'_> {
                     vega_store::context_compaction::ContextCheckpointError::Store(error) => {
                         VegaError::Store(error)
                     }
-                })
+                })?;
+                if let Some(generation) = retired_generation
+                    && crate::types::ContextPrecomputeRegistry::global()
+                        .cancel_generation(store.database_identity(), &checkpoint.thread_id, &generation)
+                        .is_err()
+                {
+                    tracing::error!("superseded context precompute cancellation could not be confirmed");
+                }
+                Ok::<_, VegaError>(install)
             }
         })
         .await

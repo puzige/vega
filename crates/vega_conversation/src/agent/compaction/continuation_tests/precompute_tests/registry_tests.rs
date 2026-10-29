@@ -1,4 +1,5 @@
 use super::*;
+mod coordination_tests;
 mod lifecycle_tests;
 use crate::types::{ContextPrecomputeLease, ContextPrecomputeRegistry, PreparedContextPrecompute};
 use std::sync::atomic::{AtomicBool, Ordering};
