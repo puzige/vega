@@ -160,6 +160,16 @@ fn render_numbered(content: &str, offset: usize, limit: Option<usize>) -> ToolOu
     }
 }
 
+fn truncate_line(line: &str) -> (String, bool) {
+    let mut chars = line.chars();
+    let head: String = chars.by_ref().take(MAX_LINE_CHARS).collect();
+    if chars.next().is_some() {
+        (format!("{head}{LINE_TRUNCATION_MARKER}"), true)
+    } else {
+        (head, false)
+    }
+}
+
 #[cfg(test)]
 mod context_tests {
     use super::*;
@@ -181,17 +191,5 @@ mod context_tests {
         assert!(tools.reads.validate(&path.canonicalize()?, b"old").is_ok());
         std::fs::remove_dir_all(root)?;
         Ok(())
-    }
-}
-
-/// Cut `line` to [`MAX_LINE_CHARS`] chars, appending the truncation marker
-/// when a cut happened (char-based, CJK-safe).
-fn truncate_line(line: &str) -> (String, bool) {
-    let mut chars = line.chars();
-    let head: String = chars.by_ref().take(MAX_LINE_CHARS).collect();
-    if chars.next().is_some() {
-        (format!("{head}{LINE_TRUNCATION_MARKER}"), true)
-    } else {
-        (head, false)
     }
 }

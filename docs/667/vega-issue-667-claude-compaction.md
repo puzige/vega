@@ -158,6 +158,8 @@
 
 每文件内容以保守 UTF-8 bytes/4 上取整计 tokens，上限 5000，总内容上限 50000；文本截断或超过预算只发送 compact_file_reference，不发送伪称完整的半份文件。文件读取还设置独立 1 MiB 输入上限，避免恢复阶段沿用普通 Read 的 1 GiB 最大分配；二进制／不支持编码不恢复。所有附件进入生产 projection 和 framed-wire estimator；最终请求仍受当前模型预算约束。开发回归须覆盖真实临时文件的更新／缺失、外部权限拒绝、超限引用、凭据脱敏、读版本不变，以及来源投影不变与实际 provider 观测。技能、动态工具、任务／计划等恢复另续，不以本节冒充完成。
 
+文件恢复首版 `bd2915cd44d4604dfa5191539034cfb72d0dcd88`（tree `8cbcb90cfda589c088c28efa99144050583e1cd0`）的 Actions [40820445411](https://github.com/puzige/vega/actions/runs/40820445411)：Nextest `123271422684` success，原始输出 155 发现／155 执行通过／0 跳过、18.943s；Clippy `123271422404` failure，`vega_tools/src/read.rs:164` 新增测试模块之后仍有 `truncate_line`，触发 `items_after_test_module`；required `123272882215` failure。修正只将原函数移至测试模块前，不改函数行为、测试断言或 CI，不加 lint 豁免。独立审查因用户暂停中断，恢复后继续针对冻结首版；尚无结论，不把测试成功当作整项完成。同时普通合并 master `0df693835a290caf3e655ef30138a734253df428`（#747 工具操作描述），不重写任务历史；新 head 须重新完整云端验证。
+
 #### 脱离前台的生成与逐阶段结算（2026-10-28）
 
 后台准备在当前 admission 下完成有界捕获：来源、append fence、前驱及引用摘要 digest 来自同一快照，拒绝 staged model change、来源不一致与不完整响应组。返回的 prepared job 不包含 admission、前台 actor、diagnostics channel 或任何 SQLite connection；只保存冻结请求、来源快照、摘要偏好、计价及凭据投影策略。前台生成仍全程持有原 admission 和同一 600 秒期限，不改变既有安装语义。
