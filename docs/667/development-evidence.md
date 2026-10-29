@@ -188,11 +188,23 @@ crates/vega_store/src/context_precompute.rs
 - 三项 `automation_entry_*` 在后台启动前因非法 fixture 线程 ID 返回 `CorruptRow(...)`，未达到封存断言。d404 修复该 fixture 为合法 ULID，未放宽断言；冻结 `attribution_entry_tests.rs` SHA-256：`fa6ef7bdbec41855e4aeafeb2fdc2f0744cf02ef3bd6599aaf3eb3a5b37b0753`。
 - 主会话已读取 d404 [run 40892550296](https://github.com/puzige/vega/actions/runs/40892550296) 终态及原始失败日志：Clippy `123512939446` success，Nextest `123512939243` 与 required `123518160679` failure，Python successful。原始汇总 **195 执行、192 通过、3 失败、0 跳过（28.013s）**；独立发现清点与忽略数本次未取得。四项 delegated-history／checkpoint／stage 新增回归实际 PASS。三项 automation_entry 现为 `RunPreparation / Io / io_kind Other`，已越过旧 ULID 错误，但仍未达到后台封存断言；准备链路的责任层正在诊断，不能删测或冒充整轮通过，也不覆盖此后新增组合回归。
 
+### 后续集成增量与真实结果
+
+`4dcf71cf11f560fbe0a58bc38b87839e03fed0c8`（tree `4068fa7443d8306c38957b979ecbba6b6f4cf93e`）新增两条组合回归及其模块接线，补入口历史 read 审计：
+
+- `crates/vega_runtime/tests/compaction_precompute/skill_refill_tests.rs`，SHA-256 `2f32493cefde9d156511470e5bbcda2c7a1a5cc5e5c6deefd430fc873a066f47`。
+- `crates/vega_conversation/src/agent/compaction/continuation_tests/precompute_tests/consume_tests/partial_ready_tests.rs`，SHA-256 `38c0cc510cbeef466c06d8bce73f5c66d0ea5896feff3f7acac00ec7635e40b7`。
+- 入口 read ApprovalAudit 修复 SHA-256 `d5920d2acd414d17382dd5ee8bfbe0f0344ceaf6a06368231ba5fb72f4ef96de`；责任层为终态历史 read 缺少审批审计，保留当前权限与全部生命周期断言。以上增量固定非写入者静态 Clear，不是行为通过。
+
+4dcf 未产生 Actions：当时上游更新导致 PR 冲突。普通合并 master `988dd1f6ba3526a9879250ca591ee9f80c2ae850` 为 `8acebed1a7b60dfc56d7cf9cf7226343ab2765ae`（tree `aa7e29979eb422b01e13a3a872d25821a7bc5e34`），只保留上游原样诊断增量与本卡历史只读函数；合并增量非写入者静态 Clear。
+
+合并 head 的 [run 40899879965](https://github.com/puzige/vega/actions/runs/40899879965)：Clippy `123538925881` success，Nextest `123538926646` 与 required `123541592835` failure。原始汇总 **197 执行、194 通过、3 失败、0 跳过（18.362s）**；独立发现清点未取得。两条组合回归及四条 delegated-history 回归实际 PASS。三条入口测试越过准备期后，在实际 primary 请求的 `estimate.input_tokens >= budget.precompute_tokens()` 前提断言失败；真实出站投影与 fixture 阈值校准正在诊断，不降低断言、不改生产估算器或先删失败项。恢复集合须包含上面两个新增文件与模块接线；不能将旧 49 文件清单当最新全量。
+
 ## 6. 主会话最小安全交付顺序（未完成项）
 
 1. **固定完整开发版本并闭环失败。** 集成两条组合回归，记录完整 SHA/tree 和相对本冻结清单的新增/变化路径；对该精确版本运行现有完整 Actions，取得三项入口修复、四项历史委派结果增量及新组合回归的实际结果。失败先保留原日志并修责任层；不放宽断言、ignore、删除未决失败或重跑旧 head 换绿。
 2. **删前固定可恢复原始证据。** 在 PR/持久证据历史保存原始测试源码链接及完整恢复 patch 链接，记录源提交 SHA/tree、patch 应用基准 SHA/tree、每个归档/patch 的 SHA-256 内容标识。范围须包含全套测试、混合文件内测试、helper、manifest/lock 接线及后续新增回归；核实下载与恢复可行，清理/squash/任务分支删除后仍可访问。不只依赖本机文件、过期 artifact 或未经可达性核实的 SHA。`claude-2.1.292-*` 是参考取证，不是 Vega 测试归档。**原始源码/patch 可恢复链接与归档身份：待主会话填写。**
-3. **固定实际开发验证账。** 保存实际命令、开发完整 SHA/tree、run URL、各 job ID/结论、发现/执行/通过/失败/忽略/跳过数及原始输出/summary 的可访问位置。当前 d404 run 已固定失败终态和四项新增历史取回 PASS，新入口失败须闭环，新组合回归尚待完整版本 CI；历史 188-pass 与静态 Clear 不能补齐。**发现 JSON 的可恢复证据位置：未取得。**
+3. **固定实际开发验证账。** 保存实际命令、开发完整 SHA/tree、run URL、各 job ID/结论、发现/执行/通过/失败/忽略/跳过数及原始输出/summary 的可访问位置。当前 d404 run 已固定失败终态和四项新增历史取回 PASS，8ace 合并版本两条组合回归已 PASS，入口阈值前提失败仍须闭环；历史 188-pass 与静态 Clear 不能补齐。**发现 JSON 的可恢复证据位置：未取得。**
 4. **之后才做限定清理。** 基于本清单加已固定增量，删除 Rust 测试、可执行 doctest 及独占支持；混合文件只动测试部分，锁文件只删独占闭包。保护第 3/4 节生产、Python、benchmark、打包和通用 CI，禁止改名/移目录/复制源码留在最终树。
 5. **清理后固定最终版本并静态清点。** 记录完整最终 SHA/tree、清理 diff、无测试/独占接线残留的清点和保护范围核对。**最终版本、最终静态零残留结果：未取得。** 不能把本冻结清单当作未来最终 head 的验证。
 6. **对最终精确 head 跑完整 required CI。** 取得 fmt、全目标 Clippy、Python、Nextest 和 required 汇总全部成功，明确 **0 discovered / 0 executed**、`no Rust tests`；记录实际 run/job/命令/结果，不缩小 discovery 或跳过 job。**最终 0/0 与完整 required CI：未取得。** 空集门禁与开发功能验证分账，不消解旧失败。

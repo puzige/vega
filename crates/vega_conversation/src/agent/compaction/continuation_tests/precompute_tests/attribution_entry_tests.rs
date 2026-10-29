@@ -167,8 +167,8 @@ async fn verify_entry_sealing(mode: &'static str) -> TestResult {
     transaction.execute("DELETE FROM threads WHERE id='thread'", [])?;
     transaction.commit()?;
     store.conn().execute(
-        "UPDATE tool_calls SET output_text=?1 WHERE id='call-1'",
-        ["older data ".repeat(123_000)],
+        "UPDATE messages SET content=?1 WHERE id='owner'",
+        ["Implementation detail. ".repeat(54_000)],
     )?;
     vega_store::context_compaction::save_model_policy(
         store.conn(),
