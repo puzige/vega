@@ -10,6 +10,7 @@ use crate::tool_card::{ToolActivityCategory, ToolActivityState, ToolCard, senten
 
 pub(crate) struct ToolActivityGroup {
     children: Vec<Entity<ToolCard>>,
+    latest_tool: Option<Entity<ToolCard>>,
     expanded: bool,
     scroll: ScrollHandle,
 }
@@ -17,6 +18,7 @@ pub(crate) struct ToolActivityGroup {
 impl ToolActivityGroup {
     pub(crate) fn new(first: Entity<ToolCard>, second: Entity<ToolCard>) -> Self {
         Self {
+            latest_tool: Some(second.clone()),
             children: vec![first, second],
             expanded: false,
             scroll: ScrollHandle::new(),
@@ -26,6 +28,7 @@ impl ToolActivityGroup {
     pub(crate) fn from_children(children: Vec<Entity<ToolCard>>, expanded: bool) -> Self {
         debug_assert!(children.len() >= 2);
         Self {
+            latest_tool: children.last().cloned(),
             children,
             expanded,
             scroll: ScrollHandle::new(),
@@ -33,6 +36,7 @@ impl ToolActivityGroup {
     }
 
     pub(crate) fn append(&mut self, card: Entity<ToolCard>, cx: &mut Context<Self>) {
+        self.latest_tool = Some(card.clone());
         self.children.push(card);
         cx.notify();
     }
@@ -43,6 +47,13 @@ impl ToolActivityGroup {
         cx: &mut Context<Self>,
     ) {
         if self.children != children {
+            if !self
+                .latest_tool
+                .as_ref()
+                .is_some_and(|card| children.contains(card))
+            {
+                self.latest_tool = children.last().cloned();
+            }
             self.children = children;
             cx.notify();
         }
@@ -54,9 +65,24 @@ impl ToolActivityGroup {
         expanded: bool,
         cx: &mut Context<Self>,
     ) {
+        let cards: Vec<_> = cards.into_iter().collect();
+        if let Some(card) = cards.last() {
+            self.latest_tool = Some(card.clone());
+        }
         self.children.extend(cards);
         self.expanded |= expanded;
         cx.notify();
+    }
+
+    pub(crate) fn tool_event(&mut self, card: &Entity<ToolCard>, cx: &mut Context<Self>) {
+        if self.contains(card) {
+            self.latest_tool = Some(card.clone());
+            cx.notify();
+        }
+    }
+
+    fn description_headline(&self, cx: &App) -> Option<(String, Icon)> {
+        self.latest_tool.as_ref()?.read(cx).description_headline()
     }
 
     pub(crate) fn contains(&self, card: &Entity<ToolCard>) -> bool {
@@ -137,6 +163,9 @@ impl ToolActivityGroup {
     }
 
     pub(crate) fn aggregate_summary(&self, cx: &App) -> String {
+        if let Some((title, _)) = self.description_headline(cx) {
+            return title;
+        }
         let categories = self.categories(cx);
         let actions = categories
             .iter()
@@ -172,6 +201,9 @@ impl ToolActivityGroup {
     }
 
     pub(crate) fn leading_icon(&self, cx: &App) -> Icon {
+        if let Some((_, icon)) = self.description_headline(cx) {
+            return icon;
+        }
         let mut icons = self
             .children
             .iter()

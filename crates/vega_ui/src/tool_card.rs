@@ -622,6 +622,11 @@ impl ToolCard {
         }
     }
 
+    pub(crate) fn description_headline(&self) -> Option<(String, Icon)> {
+        self.description_title()
+            .map(|title| (title, self.leading_icon()))
+    }
+
     pub(crate) fn completed_command_headline(&self) -> Option<String> {
         (!self.presentation_released
             && self.is_bash()
