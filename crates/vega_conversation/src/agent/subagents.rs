@@ -1641,7 +1641,3 @@ async fn persist_child_terminal(
     .await
     .map_err(|_| failure("storage unavailable"))?
 }
-
-#[cfg(test)]
-#[path = "subagents/continuation_diagnostics_tests.rs"]
-mod continuation_diagnostics_tests;

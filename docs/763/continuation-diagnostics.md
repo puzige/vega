@@ -12,4 +12,6 @@ Issue #763，基线 7a91c122。仅拆分 Supervisor::reserve 的资格拒绝与�
 
 临时 Rust 行为测试验证实际资格判断函数的状态/占用/父归属矩阵、busy 优先、归属优先、具体终态及交接引导。不将这组定向决策测试冒充完整 Supervisor、暂停恢复或真实 App E2E；#760 接续证明及其已留档回归未修改。独立审查核对 reserve 接线和后续安全检查不变。自动测试仅 Actions，本地仅格式/差异检查。开发测试通过留档后按仓库政策移除，再检查最终 head。
 
-当前实现中，测试及 CI 待执行，未合并、未用户手测。
+开发版本 `c8f39d4b53d44cd40e253f82bb0a33a78e33b889`：[Actions 40893161501](https://github.com/puzige/vega/actions/runs/40893161501) 全部成功；Rust 3 发现/3 执行/3 通过/0 跳过，Python 5/15/40 通过，fmt/Clippy 通过。独立审查无发现。本地仅 cargo fmt、git diff --check，未编译/运行/测试。
+
+[可恢复原始测试](https://github.com/puzige/vega/blob/c8f39d4b53d44cd40e253f82bb0a33a78e33b889/crates/vega_conversation/src/agent/subagents/continuation_diagnostics_tests.rs)，GitHub API 读回 blob `1778f3ed67c102147252945fe9b74f6a51a40414`。随后仅移除临时测试文件及模块接线，无独占依赖、无生产行为变化。最终 head required CI 待验证；空集不称行为回归通过。未用户手测。
