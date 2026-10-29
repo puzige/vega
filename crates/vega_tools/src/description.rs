@@ -35,19 +35,26 @@ pub fn tool_description_title(text: &str) -> Option<String> {
             }
         })
         .collect();
-    let title = text.trim().trim_end_matches('。').trim_end();
-    let title = match title.strip_suffix('.') {
-        Some(prefix)
-            if prefix.chars().next_back().is_some_and(|character| {
-                !character.is_whitespace() && !matches!(character, '.' | '/' | '\\')
-            }) =>
-        {
-            prefix
+    let limited: String = text.trim().chars().take(120).collect();
+    let mut title = limited.trim_end();
+    loop {
+        let trimmed = title.trim_end_matches('。').trim_end();
+        let trimmed = match trimmed.strip_suffix('.') {
+            Some(prefix)
+                if prefix.chars().next_back().is_some_and(|character| {
+                    !character.is_whitespace() && !matches!(character, '.' | '/' | '\\')
+                }) =>
+            {
+                prefix
+            }
+            _ => trimmed,
+        };
+        if title == trimmed {
+            break;
         }
-        _ => title,
-    };
-    let title: String = title.chars().take(120).collect();
-    (!title.trim().is_empty()).then_some(title)
+        title = trimmed;
+    }
+    (!title.is_empty()).then(|| title.to_owned())
 }
 
 pub fn description_field_schema() -> Value {
