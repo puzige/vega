@@ -1560,6 +1560,7 @@ impl VegaWindow {
             &failed_thread.model,
             failed_thread.permission_mode.as_str(),
         );
+        draft.reasoning_preferences = failed_thread.reasoning_preferences.clone();
         draft.backend = TaskBackend::Codex;
         let project_id = draft.project_id.clone();
         let stream = cx.new(|cx| ConversationStream::new(draft.clone(), cx));

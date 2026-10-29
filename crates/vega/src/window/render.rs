@@ -385,13 +385,13 @@ impl Render for VegaWindow {
                                     stream.restore_next_turn_model(pending_model, cx);
                                     stream.apply_model_options(model_options, cx);
                                 });
+                                if let Some(initial) = initial {
+                                    view.update(cx, |stream, cx| (initial.apply)(stream, cx));
+                                }
                                 self.apply_reasoning_profile_to_stream(&view, &thread.model, cx);
                                 self.agent_controller.delegated_unbound.remove(&thread.id);
                                 self.bind_conversation_stream(&view, window, cx);
 
-                                if let Some(initial) = initial {
-                                    view.update(cx, |stream, cx| (initial.apply)(stream, cx));
-                                }
                                 self.conversation_loading.clear();
                                 self.rehydrate_ordinary(&view, &thread.id, cx);
                                 self.stream_view = Some((thread.id.clone(), view.clone()));

@@ -644,11 +644,12 @@ impl ThreadsBlock {
             .try_global::<crate::sidebar::NewTaskDefaults>()
             .cloned()
             .unwrap_or_default();
-        let draft = vega_conversation::threads::draft_thread_from_defaults(
+        let mut draft = vega_conversation::threads::draft_thread_from_defaults(
             Some(&project_id),
             &defaults.model,
             defaults.permission,
         );
+        draft.reasoning_preferences = defaults.reasoning_preferences;
         self.submit_organization(
             SidebarOrganizationAction::CreateThreadInGroup {
                 group_id,

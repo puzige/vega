@@ -72,6 +72,7 @@ impl VegaWindow {
         self.conversation_loading.worker_started = true;
         let generation = self.conversation_loading.generation;
         let path = self.file_backed_store_path(cx);
+        let reasoning_path = self.reasoning_config_path();
         let (sender, receiver) = mpsc::sync_channel(1);
         let worker_thread = thread_id.clone();
         let spawned = std::thread::Builder::new()
@@ -79,9 +80,12 @@ impl VegaWindow {
             .spawn(move || {
                 let result = path.ok_or(()).and_then(|path| {
                     let started = Instant::now();
-                    let initial =
-                        vega_conversation::threads::load_conversation(&path, &worker_thread)
-                            .map_err(|_| ())?;
+                    let initial = vega_conversation::threads::load_conversation(
+                        &path,
+                        &worker_thread,
+                        &reasoning_path.ok_or(())?,
+                    )
+                    .map_err(|_| ())?;
                     tracing::debug!(
                         elapsed_ms = started.elapsed().as_millis(),
                         "conversation history read"

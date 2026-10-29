@@ -345,6 +345,7 @@ fn preseed_profile(home: &Path) -> Result<()> {
     vega_store::threads::create(
         store.conn(),
         vega_store::threads::NewThread {
+            reasoning_preferences: None,
             id: "vega-bench-fixture-thread",
             project_id: &project.id,
             title: "vega bench fixture",
