@@ -1,6 +1,9 @@
 use super::*;
 use vega_runtime::skills::{SkillApproval, SkillCatalog, SkillRun, SkillSelection, SkillSource};
 
+#[path = "skill_refill_tests.rs"]
+mod skill_refill_tests;
+
 struct SkillDirectory(std::path::PathBuf);
 
 impl Drop for SkillDirectory {

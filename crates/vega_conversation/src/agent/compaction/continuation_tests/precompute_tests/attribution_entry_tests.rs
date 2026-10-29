@@ -1,6 +1,9 @@
 use super::*;
 use crate::agent::{PermissionQueue, PersistenceActorConfig};
-use crate::types::{AutomationCommand, AutomationKind, AutomationReason, AutomationStatus};
+use crate::types::{
+    Approval, ApprovalAudit, ApprovalSource, AutomationCommand, AutomationKind, AutomationReason,
+    AutomationStatus,
+};
 
 #[derive(Default)]
 struct ExitGate {
@@ -119,6 +122,19 @@ async fn automation_entry_keeps_rolled_back_background_usage_visible_after_seali
 async fn verify_entry_sealing(mode: &'static str) -> TestResult {
     let (directory, _path, store) = source_fixture()?;
     let _request = input(&store)?;
+    let approval = ApprovalAudit {
+        decision: Approval::Once,
+        note: None,
+        source: ApprovalSource::ReadonlyTool,
+        danger: None,
+    }
+    .to_json()?;
+    for call in ["call-1", "call-2"] {
+        assert_eq!(
+            tool_calls::update(store.conn(), call, "success", Some(&approval), None, None)?,
+            1
+        );
+    }
     let thread = ulid::Ulid::generate().to_string();
     threads::create_standalone(
         store.conn(),

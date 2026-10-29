@@ -496,11 +496,19 @@ Full 首批 `2a5fa2ad209aef326dad1e06444791a3f15acf9a` 独立审查发现 `Persi
 
 此表只澄清适用性和已确认缺口，不表示整卡交付完成；旧记录中的待实现描述保留为历史，不反向抹除后续已验证增量。外层自动化封存回归、历史委派结果取回、必要跨路径核对、开发 Rust 证据归档／清理、最终 0 发现／0 执行 required CI、完整最终版本独审和用户真实验收仍按各自门禁推进。
 
+### 跨路径验收补齐（2026-10-29）
+
+固定 `2a670c6f92c02074e252c02fb00995de533713b9` 内容（后续 `d404cb891909504f252f5e1a6913a4f47ce27729` 未改变本次核查生产路径）的独立只读核查未确认新的生产缺陷。A01/A02 任务身份与 later-stop 顺序、partial→reactive 的输入／投影／reload 顺序、恢复拒绝、删除与退出排空已有回归；静态核查不冒充 CI 或真实模型手测。
+
+仍需两条直接组合回归：A17 在同一运行交替经过技能预检与普通自动入口，覆盖显式／模型加载技能，验证第三次快速回填在下一次摘要调用前被拒绝，主请求与 hook 计数精确；A08/A11/A12/A19 从带既有局部摘要及保留原文的 checkpoint 生成 Ready，合法追加后消费，验证摘要输入与最终投影标记顺序、原始任务 ID／ContinueExistingRun、即时与 reload 相同、原始审计不变、已结算用量不重复计费。复用真实 runtime／SQLite／规划与消费路径，只隔离外部 provider；若发现真实缺陷，先记录具体证据再修改责任层，不修改期望迁就实现。
+
+两条开发回归已补齐并分别固定非写入者静态审查 Clear：runtime `explicit_and_model_skill_refills_share_the_ordinary_rapid_refill_limit` 走真实技能发现／审批／激活与共享 runtime，断言 skill→ordinary→skill→ordinary 拒绝、3 次 hook、显式 3／模型 4 次 primary；conversation `partial_summaries_feed_ready_in_order_and_consumption_preserves_task_without_rebilling` 覆盖两段不连续 partial、真实 background／Ready、追加／消费、task／continuation、reload、审计与 known／unknown usage 不重复计费。集成静态检查修正后者账单闭包不应直接引用未依赖的 `rusqlite::Error`，改用通用错误传播及推断行错误类型，不增加依赖、不改 SQL 或断言；该最小增量已由原非写入者复核 Clear（最终测试文件 SHA-256 `38c0cc510cbeef466c06d8bce73f5c66d0ea5896feff3f7acac00ec7635e40b7`）。两条新增测试均未本地执行，行为结果待完整新 head Actions，静态 Clear 不替代类型／运行验证。
+
 ### 自动化外层入口 fixture 修复（2026-10-29）
 
 开发 head `2f141493bdd9e4cc9bbb82ea54d7fdbee0a88e86` 的 Actions [40876047594](https://github.com/puzige/vega/actions/runs/40876047594)：Clippy `123455002791` 成功，Nextest `123455003186` 与 required `123457583978` 失败。Nextest 原始汇总为 191 执行、188 通过、3 失败、0 跳过（22.531s）；独立发现清点数本次未取得。三项新增 `automation_entry_*` 全部在后台启动前返回 `CorruptRow("Could not save the automation. Please retry.")`，不能据此宣称已验证物理退出后的封账行为。
 
-责任链为真实外层入口 → `automation::claim` → `capture_fence` → `PermissionFence::is_valid`：共享 fixture 的线程 ID `thread` 不是合法 ULID。修复仅在 `attribution_entry_tests.rs` 创建合法 ULID 线程，将既有 messages/tool_calls 在事务中迁入并移除旧 fixture 线程，所有入口、注册表与持久化观察统一使用该 ID；不修改生产权限校验、计费生命周期或断言。成功／未知用量／事务回滚、provider 返回后仍等待真实 runtime 退出、Ready 保留、重复 finish 不重复计费等原断言保持。修复文件 SHA-256 为 `fa6ef7bdbec41855e4aeafeb2fdc2f0744cf02ef3bd6599aaf3eb3a5b37b0753`。本地 rustfmt 与 `git diff --check` 通过，未执行 Vega、编译或测试；行为结果待新 head 的既有 Actions，入口测试非写入者独审另行记录。
+责任链为真实外层入口 → `automation::claim` → `capture_fence` → `PermissionFence::is_valid`：共享 fixture 的线程 ID `thread` 不是合法 ULID。修复仅在 `attribution_entry_tests.rs` 创建合法 ULID 线程，将既有 messages/tool_calls 在事务中迁入并移除旧 fixture 线程，所有入口、注册表与持久化观察统一使用该 ID；不修改生产权限校验、计费生命周期或断言。成功／未知用量／事务回滚、provider 返回后仍等待真实 runtime 退出、Ready 保留、重复 finish 不重复计费等原断言保持。修复文件 SHA-256 为 `fa6ef7bdbec41855e4aeafeb2fdc2f0744cf02ef3bd6599aaf3eb3a5b37b0753`。本地 rustfmt 与 `git diff --check` 通过，未执行 Vega、编译或测试；修复已普通提交／推送为 `d404cb891909504f252f5e1a6913a4f47ce27729`（tree `31ae775d2bbd66c68cb8ce10834336963af82028`）。非写入者对该固定文件及接线内容静态独审 Clear，确认真实入口、事务迁移、120／10／10 tokens、物理退出后封账、Ready 和重复 finish 断言均保留；审查仅覆盖此增量，不是整卡或行为通过。该 head 的既有 Actions [40892550296](https://github.com/puzige/vega/actions/runs/40892550296) 已失败：Clippy `123512939446` 成功，Nextest `123512939243` 与 required `123518160679` 失败；原始汇总 195 执行、192 通过、3 失败、0 跳过（28.013s），独立发现清点未取得。四项新增 delegated-history／checkpoint／stage 回归实际通过；三项入口测试的新错误为 `RunPreparation / Io / io_kind Other`，不再是旧 ULID 错误，但仍在后台启动前结束。静态责任链已定位为共享 fixture 的两个成功历史 read 未保存 approval；`tool_calls::terminal_results` 拒绝缺少审计，pipeline 包装为 `std::io::Error::other`，入口标记 RunPreparation。修复仅以既有严格 ApprovalAudit（Once／ReadonlyTool／无 note／无 danger）为 call-1、call-2 补历史只读审计，并逐项断言更新一行；不触碰当前权限、真实 claim 或生产恢复校验。修复文件 SHA-256 `d5920d2acd414d17382dd5ee8bfbe0f0344ceaf6a06368231ba5fb72f4ef96de`，本地仅格式／diff／静态检查；该 17+/1− 修复非写入者静态独审 Clear，确认只补合法历史审计且全部原有断言保持；行为验证待后续完整版本。新失败闭环与两条跨路径回归仍待后续完整版本云端验证，不重跑旧 head 或放宽封账断言。开发测试恢复与清理边界见 [证据清单](development-evidence.md)。
 
 ### 局部压缩开发云端记录（2026-10-28）
 
