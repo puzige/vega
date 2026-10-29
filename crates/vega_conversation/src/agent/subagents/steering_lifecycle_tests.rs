@@ -94,26 +94,28 @@ async fn released(
     hook: &Arc<dyn RuntimeSubagentHook>,
     snapshots: &[SubagentSnapshot],
 ) -> Vec<SubagentSnapshot> {
-    let targets: Vec<_> = snapshots
-        .iter()
-        .map(|s| serde_json::json!({"agent_id":s.agent_id,"message_id":s.message_id}))
-        .collect();
-    let value = hook
-        .call(
-            id(),
-            "wait_agent".into(),
-            serde_json::json!({"targets":targets}),
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(value["wake_reason"], "terminal");
-    let agents: Vec<SubagentSnapshot> = serde_json::from_value(value["agents"].clone()).unwrap();
+    let mut agents = Vec::new();
+    for snapshot in snapshots {
+        let value = hook
+            .call(
+                id(),
+                "wait_agent".into(),
+                serde_json::json!({"targets":[{"agent_id":snapshot.agent_id,"message_id":snapshot.message_id}]}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(value["wake_reason"], "terminal");
+        let mut released: Vec<SubagentSnapshot> =
+            serde_json::from_value(value["agents"].clone()).unwrap();
+        assert_eq!(released.len(), 1);
+        agents.append(&mut released);
+    }
     assert!(
         agents
             .iter()
             .all(|s| s.state == SubagentState::Completed && s.release_state == "released"),
-        "terminal agents: {value}"
+        "terminal agents: {agents:?}"
     );
     agents
 }
