@@ -90,6 +90,7 @@ pub struct PersistenceActorConfig {
     pub(crate) credential_exceptions: Option<vega_runtime::CredentialExceptionFilter>,
     pub(crate) owner_credential_reader: Option<vega_runtime::CredentialReader>,
     pub(crate) run_credential_reader: Option<crate::types::RunCredentialReader>,
+    pub(crate) precompute_lease: Option<crate::types::ContextPrecomputeLease>,
     pub(crate) replay_registry: Option<super::ReplaySessionRegistry>,
     pub(crate) replay_route_fingerprint: Option<[u8; 32]>,
 }
@@ -142,6 +143,14 @@ impl PersistenceActorConfig {
         claim: Option<crate::types::AutomationRunClaim>,
     ) -> Self {
         self.automation_claim = claim;
+        self
+    }
+
+    pub fn with_context_precompute_lease(
+        mut self,
+        lease: Option<crate::types::ContextPrecomputeLease>,
+    ) -> Self {
+        self.precompute_lease = lease;
         self
     }
 

@@ -67,6 +67,7 @@ enum ComposerActionRow {
     Loop,
     AddImages,
     CredentialReview,
+    Compact,
     ComputerTakeover,
     /// `@` project-file reference (menu only).
     FileReference,
@@ -79,6 +80,7 @@ enum ComposerActionRow {
 impl ComposerActionRow {
     fn label(self) -> &'static str {
         match self {
+            Self::Compact => "/compact",
             Self::Goal => vega_i18n::t("ui.ongoing_goal"),
             Self::Loop => vega_i18n::t("ui.recurring_task"),
             Self::AddImages => vega_i18n::t("ui.add_images"),
@@ -93,7 +95,8 @@ impl ComposerActionRow {
     /// Whether this row shows the thread's current authoritative value.
     fn is_selected(self, thread: &Thread) -> bool {
         match self {
-            Self::Goal
+            Self::Compact
+            | Self::Goal
             | Self::Loop
             | Self::AddImages
             | Self::ComputerTakeover
@@ -179,6 +182,14 @@ impl ComposerActions {
                     .into_iter()
                     .map(|(_, mode)| ComposerActionRow::Mode(mode)),
             );
+        }
+        if backend == TaskBackend::Native
+            && self
+                .slash
+                .as_ref()
+                .is_none_or(|query| "/compact".starts_with(query))
+        {
+            rows.push(ComposerActionRow::Compact);
         }
         if self.menu && backend == TaskBackend::Native {
             rows.extend(
@@ -400,9 +411,13 @@ impl ConversationStream {
         let text = input.read(cx).text();
         let token = text.split_whitespace().next().unwrap_or("");
         let slash = if text.starts_with('/')
-            && MODE_ORDER
+            && (MODE_ORDER
                 .into_iter()
                 .any(|mode| mode_command(mode).starts_with(token))
+                || (self.thread.backend == TaskBackend::Native
+                    && text == token
+                    && token != "/compact"
+                    && "/compact".starts_with(token)))
             && self.actions.dismissed.as_deref() != Some(text)
             && !self.actions.menu
             && self.actions.pending_mode.is_none()
@@ -653,6 +668,26 @@ impl ConversationStream {
             return;
         }
         match row {
+            ComposerActionRow::Compact => {
+                let original = self.input.read(cx).text().to_owned();
+                let prefix = self.actions.slash.as_deref().or_else(|| {
+                    (original == "/compact"
+                        || original
+                            .strip_prefix("/compact")
+                            .is_some_and(|rest| rest.starts_with(char::is_whitespace)))
+                    .then_some("/compact")
+                });
+                let remainder = prefix
+                    .and_then(|prefix| original.strip_prefix(prefix))
+                    .unwrap_or(&original)
+                    .trim_start();
+                let command = format!("/compact {remainder}");
+                self.close_composer_popovers(cx);
+                self.input
+                    .update(cx, |input, cx| input.set_text(&command, cx));
+                self.focus_composer(window, cx);
+                cx.notify();
+            }
             ComposerActionRow::Goal | ComposerActionRow::Loop => {
                 let command = if row == ComposerActionRow::Goal {
                     "/goal"

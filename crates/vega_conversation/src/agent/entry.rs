@@ -586,6 +586,7 @@ where
     actor_config.automation_hook = binding
         .clone()
         .map(|hook| hook as Arc<dyn vega_runtime::RuntimeAutomationHook>);
+    let precompute_lease = actor_config.precompute_lease.clone();
     let started = std::time::Instant::now();
     let result = run_thread_task_with_automation_inner(
         store,
@@ -606,6 +607,10 @@ where
     )
     .await;
     if let Some(binding) = binding {
+        let background_settled = match precompute_lease {
+            Some(lease) => lease.wait_for_pending_exit().await.is_ok(),
+            None => true,
+        };
         let success = result.as_ref().is_ok_and(|run| {
             !run.failed
                 && !run.interrupted
@@ -614,7 +619,7 @@ where
                     _ => None,
                 }) == Some(crate::types::ConversationStopReason::End)
         });
-        let complete = binding.usage_complete();
+        let complete = background_settled && binding.usage_complete();
         let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         if let Some(path) = store.database_path() {
             let path = path.to_path_buf();
@@ -700,6 +705,11 @@ where
     }
     let admission =
         super::ordinary::verified_admission(store, thread_id, actor_config.admission.as_ref())?;
+    let precompute_lease = actor_config.precompute_lease.take().filter(|lease| {
+        lease
+            .verifies(store.database_identity(), thread_id, &admission)
+            .unwrap_or(false)
+    });
     actor_config.admission = Some(admission.clone());
     actor_config.steering_cancel = Some(cancel.clone());
     crate::attachments::validate_images(&images)
@@ -808,19 +818,30 @@ where
     if actor_config.delegated_authority.is_some() {
         prepared.request.context_budget = actor_config.delegated_context_budget;
     }
-    if actor_config.delegated {
-        prepared.request.context_budget = prepared
-            .request
-            .context_budget
-            .map(vega_runtime::ContextBudget::without_automatic_compaction);
-    }
     let subagent_mcp = mcp_servers.clone();
     prepared.request.tool_config = prepared
         .request
         .tool_config
         .with_mcp_servers(mcp_servers)
         .with_computer_use(actor_config.computer_use.clone())
-        .with_stage(actor_config.stage_hook.clone());
+        .with_stage(actor_config.stage_hook.clone())
+        .with_delegated_compaction(actor_config.delegated)
+        .with_conversation_history_reader(super::context_history::reader(
+            database_path.clone(),
+            thread_id.to_string(),
+        ))
+        .with_context_task_reader(super::subagents::context_task_reader(
+            database_path.clone(),
+            thread_id.to_string(),
+        ))
+        .with_context_plan_reader(crate::plans::context_plan_reader(
+            database_path.clone(),
+            thread_id.to_string(),
+        ))
+        .with_context_skill_reader(super::skills::context_skill_reader(
+            database_path.clone(),
+            thread_id.to_string(),
+        ));
     let skill_launch = super::skills::prepare_skill_run(
         store,
         &prepared.project_id,
@@ -925,6 +946,9 @@ where
 
     let work_time_source = actor_config.work_time_source.clone();
     let user_questions = actor_config.user_questions.clone();
+    let full_on_threshold = actor_config.delegated;
+    let precompute_attribution =
+        super::compaction::precompute::PrecomputeUsageAttribution::from_actor(&actor_config);
     let actor = match PersistenceActor::start(PersistenceActorStart {
         database_path: prepared.database_path.clone(),
         project_id: prepared.project_id.clone(),
@@ -1095,6 +1119,9 @@ where
             prepared.request.reasoning.clone(),
             prepared.request.pricing_catalog.clone(),
         )
+        .with_full_on_threshold(full_on_threshold)
+        .with_precompute_attribution(precompute_attribution)
+        .with_precompute_lease(precompute_lease)
         .with_thread_admission(admission.clone())
         .with_credential_reader(prepared.request.tool_config.credential_reader())
         .with_credential_exceptions(prepared.request.tool_config.credential_exceptions())

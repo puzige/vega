@@ -385,10 +385,30 @@ where
         }
     }
     clean_delegations(&tx, thread, &mut redact)?;
-    tx.execute(
-        "DELETE FROM context_checkpoints WHERE thread_id=?1",
-        [thread],
-    )?;
+    let affected = {
+        let mut query = tx.prepare("SELECT ?1 UNION SELECT id FROM threads WHERE parent_thread_id=?1 UNION SELECT parent_thread_id FROM delegated_executions WHERE parent_thread_id=?1 OR child_thread_id=?1 UNION SELECT child_thread_id FROM delegated_executions WHERE parent_thread_id=?1 OR child_thread_id=?1")?;
+        query
+            .query_map([thread], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for affected in affected {
+        tx.execute(
+            "DELETE FROM context_checkpoints WHERE thread_id=?1",
+            [&affected],
+        )?;
+        tx.execute(
+            "UPDATE context_precompute_accounting SET retired=1 WHERE thread_id=?1 AND retired=0",
+            [&affected],
+        )?;
+        tx.execute(
+            "DELETE FROM context_precompute_ready WHERE thread_id=?1",
+            [&affected],
+        )?;
+        tx.execute(
+            "DELETE FROM context_precompute_slots WHERE thread_id=?1",
+            [&affected],
+        )?;
+    }
     tx.execute("UPDATE credential_continuations SET state='unknown',reason='source_changed' WHERE thread_id=?1 AND state IN ('ready','claimed')", [thread])?;
     tx.commit()
 }

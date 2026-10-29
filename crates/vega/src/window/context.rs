@@ -13,6 +13,7 @@ pub(crate) struct ContextOwner {
     stream: Entity<ConversationStream>,
 }
 
+#[derive(Clone)]
 pub(crate) struct ManualContextRun {
     owner: ContextOwner,
     request_id: u64,
@@ -69,6 +70,31 @@ fn context_record(id: u64, status: ContextCompactionStatus) -> ContextCompaction
 }
 
 impl VegaWindow {
+    fn context_config_path(&self) -> Option<PathBuf> {
+        self.composer_config_path()
+    }
+
+    pub(crate) fn bind_context_compaction(
+        &mut self,
+        view: &Entity<ConversationStream>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.subscribe(
+            view,
+            |this, stream, request: &ContextCompactionRequested, cx| {
+                this.start_context_compaction(stream.clone(), request, cx);
+            },
+        )
+        .detach();
+        cx.subscribe(
+            view,
+            |this, stream, request: &ContextCompactionCancelRequested, cx| {
+                this.cancel_context_operation(stream.clone(), request, cx);
+            },
+        )
+        .detach();
+    }
+
     pub(crate) fn begin_context_primary_owner(&mut self, generation: u64, cx: &mut Context<Self>) {
         let Some((thread_id, stream, model)) = self
             .agent_controller
@@ -147,7 +173,7 @@ impl VegaWindow {
             .context_controller
             .manual
             .as_ref()
-            .is_some_and(|active| active.owner == owner && active.request_id == request.request_id)
+            .is_some_and(|active| active.owner == owner)
         {
             return;
         }
@@ -181,6 +207,8 @@ impl VegaWindow {
             });
             return;
         };
+        let selection = request.selection.clone();
+        let summary_requirements = request.summary_requirements.clone();
         let request_id = request.request_id;
         let cancel = CancellationToken::new();
         self.context_controller.manual = Some(ManualContextRun {
@@ -199,7 +227,7 @@ impl VegaWindow {
                 cx,
             );
         });
-        let config = self.composer_config_path();
+        let config = self.context_config_path();
         let pricing = self.pricing_controller.catalog_for_run(&owner.model);
         let thread_id = owner.thread_id.clone();
         let model = owner.model.clone();
@@ -210,7 +238,12 @@ impl VegaWindow {
             .map(|thread| thread.project_id.clone())
             .unwrap_or_default();
         let activity = vega_ui::sidebar::register_project_worker(&project_id, cx);
-        let completion_cancel = cancel.clone();
+        let completion = ManualContextRun {
+            owner: owner.clone(),
+            request_id,
+            lease,
+            cancel: cancel.clone(),
+        };
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         // A dedicated thread mirrors the primary worker. In particular, a
         // blocking Tokio runtime must not occupy GPUI's cooperative executor.
@@ -219,7 +252,16 @@ impl VegaWindow {
             .spawn(move || {
                 let _activity = activity;
                 let events = run_manual_context_worker(
-                    database, config, thread_id, model, request_id, cancel, reasoning, pricing,
+                    database,
+                    config,
+                    thread_id,
+                    model,
+                    request_id,
+                    cancel,
+                    reasoning,
+                    pricing,
+                    selection,
+                    summary_requirements,
                 );
                 let _ = sender.send(events);
             });
@@ -237,67 +279,89 @@ impl VegaWindow {
                 }
             };
             let _ = this.update(cx, |this, cx| {
-                let matches = this
-                    .context_controller
-                    .manual
-                    .as_ref()
-                    .is_some_and(|active| {
-                        active.owner == owner
-                            && active.request_id == request_id
-                            && active.lease == lease
-                    });
-                if !matches {
-                    return;
-                }
-                this.context_controller.manual = None;
-                if !this.trusted_actions.release(lease) {
-                    return;
-                }
-                stream.update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
-                if !this.context_owner_matches(&owner, cx) {
-                    return;
-                }
-                match events {
-                    Ok(events) => stream.update(cx, |stream, cx| {
-                        for event in events {
-                            if let ConversationEvent::ContextCompactionStatus { mut record } = event
-                            {
-                                record.generation = request_id;
-                                stream.apply_context_status(
-                                    &owner.thread_id,
-                                    &owner.model,
-                                    record,
-                                    cx,
-                                );
-                            } else {
-                                stream.apply_event(event, cx);
-                            }
-                        }
-                    }),
-                    Err(()) => stream.update(cx, |stream, cx| {
-                        let cancelled = completion_cancel.is_cancelled();
-                        let mut record = context_record(
-                            request_id,
-                            if cancelled {
-                                ContextCompactionStatus::Cancelled
-                            } else {
-                                ContextCompactionStatus::Failed
-                            },
-                        );
-                        record.usage = ContextCompactionUsageState::Unknown;
-                        record.failure = Some(if cancelled {
-                            ContextCompactionFailureCode::Cancelled
-                        } else {
-                            ContextCompactionFailureCode::Unavailable
-                        });
-                        stream.apply_context_status(&owner.thread_id, &owner.model, record, cx);
-                    }),
-                }
-                this.refresh_context_projection(false, cx);
-                cx.notify();
+                this.finish_context_compaction(completion, events, cx);
             });
         })
         .detach();
+    }
+
+    fn finish_context_compaction(
+        &mut self,
+        completion: ManualContextRun,
+        events: Result<Vec<ConversationEvent>, ()>,
+        cx: &mut Context<Self>,
+    ) {
+        let ManualContextRun {
+            owner,
+            request_id,
+            lease,
+            cancel,
+        } = completion;
+        let matches = self
+            .context_controller
+            .manual
+            .as_ref()
+            .is_some_and(|active| {
+                active.owner == owner && active.request_id == request_id && active.lease == lease
+            });
+        if !matches {
+            return;
+        }
+        self.context_controller.manual = None;
+        if !self.trusted_actions.release(lease) {
+            return;
+        }
+        let stream = &owner.stream;
+        stream.update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+        if !self.context_owner_matches(&owner, cx) {
+            stream.update(cx, |stream, cx| {
+                stream.retire_context_operation(&owner.thread_id, &owner.model, request_id, cx);
+            });
+            if self
+                .context_controller
+                .owner
+                .as_ref()
+                .is_some_and(|current| {
+                    current.stream == *stream && self.context_owner_matches(current, cx)
+                })
+            {
+                self.refresh_context_projection(true, cx);
+            }
+            cx.notify();
+            return;
+        }
+        match events {
+            Ok(events) => stream.update(cx, |stream, cx| {
+                for event in events {
+                    if let ConversationEvent::ContextCompactionStatus { mut record } = event {
+                        record.generation = request_id;
+                        stream.apply_context_status(&owner.thread_id, &owner.model, record, cx);
+                    } else {
+                        stream.apply_event(event, cx);
+                    }
+                }
+            }),
+            Err(()) => stream.update(cx, |stream, cx| {
+                let cancelled = cancel.is_cancelled();
+                let mut record = context_record(
+                    request_id,
+                    if cancelled {
+                        ContextCompactionStatus::Cancelled
+                    } else {
+                        ContextCompactionStatus::Failed
+                    },
+                );
+                record.usage = ContextCompactionUsageState::Unknown;
+                record.failure = Some(if cancelled {
+                    ContextCompactionFailureCode::Cancelled
+                } else {
+                    ContextCompactionFailureCode::Unavailable
+                });
+                stream.apply_context_status(&owner.thread_id, &owner.model, record, cx);
+            }),
+        }
+        self.refresh_context_projection(false, cx);
+        cx.notify();
     }
 
     pub(crate) fn invalidate_context_load(&mut self) {
@@ -391,7 +455,7 @@ impl VegaWindow {
         let Some(database) = self.context_database(cx) else {
             return;
         };
-        let config_path = self.composer_config_path();
+        let config_path = self.context_config_path();
         self.context_controller.load_sequence =
             self.context_controller.load_sequence.saturating_add(1);
         let sequence = self.context_controller.load_sequence;
@@ -436,6 +500,7 @@ impl VegaWindow {
                                 projection.unknown_usage,
                                 cx,
                             );
+                            stream.set_compaction_source(projection.source_fingerprint.clone());
                             stream.apply_context_projection(
                                 &owner.thread_id,
                                 &owner.model,
@@ -683,6 +748,8 @@ pub(crate) fn run_manual_context_worker(
     cancel: CancellationToken,
     reasoning: Option<vega_runtime::FrozenReasoning>,
     pricing: Option<vega_conversation::PricingCatalog>,
+    selection: Option<vega_conversation::types::PartialCompactionSelection>,
+    summary_requirements: String,
 ) -> Result<Vec<ConversationEvent>, ()> {
     let config_path = config_path.ok_or(())?;
     let config = vega_store::config::read_from(&config_path).map_err(|_| ())?;
@@ -770,7 +837,7 @@ pub(crate) fn run_manual_context_worker(
         .map_err(|_| ())?;
     runtime
         .block_on(
-            vega_conversation::agent::compact_thread_manually_accounted_with_credential_reader(
+            vega_conversation::agent::compact_thread_selection_accounted_with_credential_reader(
                 &store,
                 &provider,
                 &thread_id,
@@ -781,6 +848,8 @@ pub(crate) fn run_manual_context_worker(
                 pricing,
                 generation,
                 Some(provider_credential_reader),
+                selection,
+                summary_requirements,
             ),
         )
         .map_err(|_| ())

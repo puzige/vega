@@ -20,7 +20,11 @@ fn request_output_cap(
     max_tokens: Option<u32>,
     budget: Option<crate::ContextBudget>,
 ) -> Option<u32> {
-    max_tokens.map(|cap| budget.map_or(cap, |budget| cap.min(budget.output_reserve() as u32)))
+    match (max_tokens, budget) {
+        (Some(cap), Some(budget)) => Some(cap.min(budget.output_reserve() as u32)),
+        (None, Some(budget)) => Some(budget.output_reserve() as u32),
+        (cap, None) => cap,
+    }
 }
 
 fn is_initial_user_input(messages: &[ChatMessage]) -> bool {
@@ -31,42 +35,6 @@ fn is_initial_user_input(messages: &[ChatMessage]) -> bool {
             && system.tool_call_id.is_none()
             && user.tool_calls.is_empty()
             && user.tool_call_id.is_none())
-}
-
-fn replay_user_boundary_follows_complete_tool_groups(
-    messages: &[ChatMessage],
-    boundary: usize,
-) -> bool {
-    if boundary >= messages.len() || messages[boundary].role != ChatRole::User {
-        return false;
-    }
-    let mut pending = std::collections::HashSet::new();
-    for message in &messages[..boundary] {
-        match message.role {
-            ChatRole::Assistant => {
-                if !pending.is_empty() {
-                    return false;
-                }
-                for call in &message.tool_calls {
-                    if !pending.insert(call.id.as_str()) {
-                        return false;
-                    }
-                }
-            }
-            ChatRole::Tool => {
-                let Some(call_id) = message.tool_call_id.as_deref() else {
-                    return false;
-                };
-                if !pending.remove(call_id) {
-                    return false;
-                }
-            }
-            ChatRole::User if !pending.is_empty() => return false,
-            ChatRole::System => return false,
-            ChatRole::User => {}
-        }
-    }
-    pending.is_empty()
 }
 
 fn input_decision(
@@ -187,17 +155,10 @@ fn install_compacted_replay_frame(
     let invalid = || VegaError::Context(ContextRuntimeError::InvalidProjection);
     let history_len = messages.len().checked_sub(1).ok_or_else(invalid)?;
     let cold_prefix = cold_prefix.unwrap_or(history_len);
-    if cold_prefix == 0 || cold_prefix > history_len {
-        return Err(invalid());
-    }
-    if messages[0]
+    let interleaved = messages[0]
         .replay_frame()
-        .is_some_and(|frame| frame.policy() == crate::ReasoningReplayPolicy::GlmInterleaved)
-        && !user_boundary.is_some_and(|boundary| {
-            boundary >= cold_prefix
-                && replay_user_boundary_follows_complete_tool_groups(&messages[1..], boundary)
-        })
-    {
+        .is_some_and(|frame| frame.policy() == crate::ReasoningReplayPolicy::GlmInterleaved);
+    if !crate::validate_compaction_replay(&messages[1..], cold_prefix, user_boundary, interleaved) {
         return Err(invalid());
     }
     messages[0].update_replay_cold_prefix(cold_prefix + 1);
@@ -431,12 +392,15 @@ fn skill_fits(
 #[allow(clippy::too_many_arguments)]
 async fn compact_before_skill_rejection<F, Fut>(
     computer_use: Option<&crate::computer_use::ComputerUseRun>,
+    file_tools: &vega_tools::Tools,
+    tool_config: &RuntimeToolConfig,
+    permission_hook: &dyn RuntimePermissionHook,
     prospective: &str,
     base: &str,
     catalog: &str,
     messages: &mut Vec<ChatMessage>,
     pending_result: Option<&ChatMessage>,
-    tools: &[ToolDefinition],
+    capabilities: &RunCapabilitySnapshot,
     budget: Option<crate::ContextBudget>,
     anchor: Option<&InputAnchor>,
     model: &str,
@@ -450,6 +414,8 @@ async fn compact_before_skill_rejection<F, Fut>(
     projection_revision: &mut u64,
     attempted_source: &mut Option<(u64, Option<String>, u64)>,
     automatic_failures: &mut u8,
+    precompute_suppressed: &mut bool,
+    refill: &mut super::compaction_refill::CompactionRefill,
     cancel: &CancellationToken,
     events: &mut Vec<RuntimeEvent>,
     sink: &mut F,
@@ -506,8 +472,9 @@ where
         system_message.attach_replay_frame(frame);
     }
     projected[0] = system_message;
+    let tools = capabilities.current_definitions();
     let decision = input_decision(
-        anchor, &projected, tools, model, reasoning, max_tokens, revision,
+        anchor, &projected, &tools, model, reasoning, max_tokens, revision,
     )?;
     let estimate = decision.estimate;
     let event = accounting_event(decision, budget, ContextAccountingStage::SkillProspect)?;
@@ -517,6 +484,12 @@ where
         VegaError::Context(error.into())
             .at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation)
     })?;
+    if !refill.admit() {
+        return Err(VegaError::Context(ContextRuntimeError::OverLimit {
+            estimated_tokens: estimate.input_tokens,
+            input_budget: budget.input_budget(),
+        }));
+    }
     let generation = projection_revision.saturating_add(1);
     let operation_key = format!(
         "{operation_id}:context-generation-{generation}:attempt-{}",
@@ -538,6 +511,7 @@ where
     sink(started.clone()).await?;
     events.push(started);
     *attempted_source = Some((source, fingerprint.clone(), *projection_revision));
+    *precompute_suppressed = true;
     if let Some(run) = computer_use {
         run.invalidate_observations();
         run.trim_messages(messages);
@@ -545,9 +519,11 @@ where
         crate::computer_use::redact_ephemeral_messages(messages);
         crate::computer_use::redact_ephemeral_messages(&mut projected);
     }
+    let tools = capabilities.current_definitions();
     let compacted = hook
-        .compact(
+        .compact_with_replay(
             ContextCompactionRequest {
+                trigger: crate::ContextCompactionTrigger::Threshold,
                 system_prompt: system,
                 messages: projected.iter().skip(1).cloned().collect(),
                 tools: tools.to_vec(),
@@ -559,12 +535,13 @@ where
                 require_source_fence: false,
                 source_owner_id: Some(operation_id.to_string()),
             },
+            projected[0].replay_frame().cloned(),
             cancel.clone(),
         )
         .await;
     let (compacted, usage_state) = match compacted {
         Ok(compacted) => {
-            let usage_state = compaction_usage_state(&compacted.usages, compacted.usage_complete);
+            let usage_state = compacted.usage_state();
             for usage in compacted.usages.iter().cloned() {
                 let event = RuntimeEvent::ContextCompactionUsageUpdated { usage };
                 sink(event.clone()).await?;
@@ -634,8 +611,21 @@ where
         compacted.replay_cold_prefix_messages,
         compacted.replay_interleaved_user_boundary,
     )?;
+    super::context_files::restore_context_files(
+        &mut next_projected,
+        file_tools,
+        tool_config,
+        permission_hook,
+        cancel,
+    )
+    .await?;
+    super::context_skills::restore_context_skills(&mut next_projected, tool_config, cancel).await?;
+    super::context_plan::restore_context_plan(&mut next_projected, tool_config, cancel).await?;
+    super::context_tasks::restore_context_tasks(&mut next_projected, tool_config, cancel).await?;
+    let tools = capabilities.current_definitions();
+    super::context_files::fit_context_files(&mut next_projected, &tools, target_tokens)?;
     let compacted_estimate =
-        crate::estimate_wire_context(&next_projected, tools).map_err(|error| {
+        crate::estimate_wire_context(&next_projected, &tools).map_err(|error| {
             VegaError::Context(error.into())
                 .at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation)
         })?;
@@ -667,6 +657,7 @@ where
         return Ok(false);
     }
     *automatic_failures = 0;
+    refill.installed();
     // The candidate is not active yet; preserve the old system authority
     // until the same hash is rechecked and activation succeeds below.
     next_projected[0].content.clone_from(&messages[0].content);
@@ -1004,8 +995,21 @@ where
     Fut: Future<Output = Result<(), VegaError>>,
 {
     let mut request = request;
+    for message in &mut request.history {
+        message.reset_context_files();
+    }
     if request.model_snapshot.is_none() {
         request.model_snapshot = provider.model_snapshot().map(Box::new);
+    }
+    if let (Some(budget), Some(model)) = (request.context_budget, &request.model_snapshot) {
+        request.context_budget = Some(
+            budget
+                .with_model_limits(
+                    model.definition.context_window,
+                    model.definition.max_output_tokens,
+                )
+                .map_err(|error| VegaError::Context(error.into()))?,
+        );
     }
     if request.reasoning.is_none()
         && let Some(model) = &request.model_snapshot
@@ -1088,8 +1092,13 @@ where
     let mut live_projection_revision = 0_u64;
     let mut attempted_context_source = None::<(u64, Option<String>, u64)>;
     let mut automatic_compaction_failures = 0_u8;
+    let mut precompute_suppressed = false;
+    let mut compaction_refill = super::compaction_refill::CompactionRefill::default();
     let mut provider_overflow_recovered = false;
+    let mut provider_overflow_deeper_eligible = false;
     let mut force_provider_compaction = false;
+    let mut provider_compaction_deeper = false;
+    let mut provider_overflow_gap = None;
     let mut completed = request.completed_tool_results;
     let tool_config = request.tool_config;
     let skill_config = tool_config.skills.clone();
@@ -1112,6 +1121,7 @@ where
     .with_computer_use(tool_config.computer_use.as_ref())
     .with_automation(tool_config.automation.as_ref())
     .with_subagents(tool_config.subagents.is_some())
+    .with_conversation_history(tool_config.conversation_history_reader.is_some())
     .with_stage(tool_config.stage.is_some());
     let mut exact_rules: HashSet<RuntimeExactRule> =
         tool_config.exact_rules.iter().cloned().collect();
@@ -1184,7 +1194,7 @@ where
                             &skill_catalog,
                             prospective,
                             &messages,
-                            capabilities.definitions(),
+                            &capabilities.current_definitions(),
                             context_budget,
                             InputAccounting {
                                 anchor: input_anchor.as_ref(),
@@ -1215,12 +1225,15 @@ where
                     let hook = external_context_hook.or(request_context_hook.as_deref());
                     if compact_before_skill_rejection(
                         tool_config.computer_use.as_ref(),
+                        tools,
+                        &tool_config,
+                        permission_hook,
                         &prospective,
                         &base_system_prompt,
                         &skill_catalog,
                         &mut messages,
                         None,
-                        capabilities.definitions(),
+                        &capabilities,
                         context_budget,
                         input_anchor.as_ref(),
                         &request.model,
@@ -1234,6 +1247,8 @@ where
                         &mut live_projection_revision,
                         &mut attempted_context_source,
                         &mut automatic_compaction_failures,
+                        &mut precompute_suppressed,
+                        &mut compaction_refill,
                         &cancel,
                         &mut events,
                         &mut sink,
@@ -1374,7 +1389,8 @@ where
             }
             run.trim_messages(&mut messages);
         }
-        let tool_definitions = capabilities.definitions().to_vec();
+        let mut tool_definitions = capabilities.current_definitions();
+        let replay_tool_definitions = tool_definitions.clone();
         if let Some(route_fingerprint) = replay_route_fingerprint {
             let current_environment = crate::agent::replay_environment_fingerprint(
                 (
@@ -1421,6 +1437,9 @@ where
                             && candidate_frame.cold_prefix_len() <= candidate.messages.len()
                         {
                             let mut warm = candidate.messages;
+                            for message in &mut warm {
+                                message.reset_context_files();
+                            }
                             let mut warm_system =
                                 ChatMessage::new(ChatRole::System, system_prompt.clone());
                             warm_system.attach_replay_frame(candidate_frame);
@@ -1437,6 +1456,84 @@ where
                 run.trim_messages(&mut messages);
             }
         }
+        super::context_files::restore_context_files(
+            &mut messages,
+            tools,
+            &tool_config,
+            permission_hook,
+            &cancel,
+        )
+        .await?;
+        super::context_skills::restore_context_skills(&mut messages, &tool_config, &cancel).await?;
+        super::context_plan::restore_context_plan(&mut messages, &tool_config, &cancel).await?;
+        super::context_tasks::restore_context_tasks(&mut messages, &tool_config, &cancel).await?;
+        tool_definitions = capabilities.current_definitions();
+        if let Some(budget) = context_budget {
+            super::context_files::fit_context_files(
+                &mut messages,
+                &tool_definitions,
+                budget.input_budget(),
+            )?;
+        }
+        if !force_provider_compaction
+            && let Some(budget) = context_budget.filter(|budget| budget.automatic_compaction())
+            && let Some(hook) = external_context_hook.or(request_context_hook.as_deref())
+        {
+            let before = crate::estimate_wire_context(&messages, &tool_definitions)
+                .map_err(|error| VegaError::Context(error.into()))?;
+            if before.input_tokens
+                >= budget
+                    .precompute_tokens()
+                    .map_err(|error| VegaError::Context(error.into()))?
+                && let Some(compacted) = hook
+                    .micro_compact(
+                        crate::MicroCompactionRequest {
+                            context: crate::ContextCompactionRequest {
+                                trigger: crate::ContextCompactionTrigger::Threshold,
+                                system_prompt: system_prompt.clone(),
+                                messages: messages[1..].to_vec(),
+                                tools: tool_definitions.clone(),
+                                budget,
+                                estimate: before,
+                                target_tokens: budget
+                                    .target_tokens()
+                                    .map_err(|error| VegaError::Context(error.into()))?,
+                                source_version: context_source_version.unwrap_or_default(),
+                                source_fingerprint: context_source_fingerprint.clone(),
+                                require_source_fence: false,
+                                source_owner_id: Some(context_operation_id.clone()),
+                            },
+                            replay_frame: messages[0].replay_frame().cloned(),
+                        },
+                        cancel.clone(),
+                    )
+                    .await?
+            {
+                let mut next = messages.clone();
+                crate::apply_micro_compaction(&mut next[1..], &compacted.targets)?;
+                let after = crate::estimate_wire_context(&next, &tool_definitions)
+                    .map_err(|error| VegaError::Context(error.into()))?;
+                let savings = before.input_tokens.saturating_sub(after.input_tokens);
+                if compacted.source_version < context_source_version.unwrap_or_default()
+                    || compacted.source_fingerprint.is_empty()
+                    || savings < crate::MICRO_MIN_SAVINGS
+                    || savings != compacted.estimated_savings
+                {
+                    return Err(VegaError::Context(ContextRuntimeError::InvalidProjection));
+                }
+                if cancel.is_cancelled() {
+                    return Err(VegaError::Cancelled);
+                }
+                messages = next;
+                messages[0].mark_replay_unsealable();
+                replay_candidate = None;
+                drop(input_anchor.take());
+                live_projection_revision = live_projection_revision.saturating_add(1);
+                context_source_version = Some(compacted.source_version);
+                context_source_fingerprint = Some(compacted.source_fingerprint);
+            }
+        }
+        tool_definitions = capabilities.current_definitions();
         'compaction: {
             let Some(budget) = context_budget else {
                 break 'compaction;
@@ -1450,12 +1547,22 @@ where
                 request_output_cap(request.max_tokens, context_budget),
                 primary_revision,
             )?;
-            let estimate = decision.estimate;
             emit!(
                 events,
                 sink,
                 accounting_event(decision, budget, ContextAccountingStage::PrimaryPreflight)?
             );
+            tool_definitions = capabilities.current_definitions();
+            let estimate = input_decision(
+                input_anchor.as_ref(),
+                &messages,
+                &tool_definitions,
+                &request.model,
+                request.reasoning.as_ref(),
+                request_output_cap(request.max_tokens, context_budget),
+                primary_revision,
+            )?
+            .estimate;
             if cancel.is_cancelled() {
                 emit!(events, sink, RuntimeEvent::Interrupted);
                 return Ok(outcome(
@@ -1476,7 +1583,39 @@ where
                 && (force_provider_compaction
                     || (matches!(check, ContextCheck::Triggered | ContextCheck::OverLimit)
                         && !is_initial_user_input(&messages)));
+            if !should_compact
+                && !tool_config.delegated_compaction
+                && !precompute_suppressed
+                && !is_initial_user_input(&messages)
+                && budget.automatic_compaction()
+                && estimate.input_tokens
+                    >= budget
+                        .precompute_tokens()
+                        .map_err(|error| VegaError::Context(error.into()))?
+                && let Some(hook) = external_context_hook.or(request_context_hook.as_deref())
+            {
+                hook.arm_precompute(
+                    ContextCompactionRequest {
+                        trigger: crate::ContextCompactionTrigger::Threshold,
+                        system_prompt: system_prompt.clone(),
+                        messages: messages[1..].to_vec(),
+                        tools: tool_definitions.clone(),
+                        budget,
+                        estimate,
+                        target_tokens: budget
+                            .target_tokens()
+                            .map_err(|error| VegaError::Context(error.into()))?,
+                        source_version: context_source_version.unwrap_or_default(),
+                        source_fingerprint: context_source_fingerprint.clone(),
+                        require_source_fence: false,
+                        source_owner_id: Some(context_operation_id.clone()),
+                    },
+                    cancel.clone(),
+                )
+                .await;
+            }
             if should_compact {
+                precompute_suppressed = true;
                 let source_version = context_source_version.unwrap_or_default();
                 let source_fingerprint = context_source_fingerprint.clone();
                 if automatic_compaction_failures >= 3
@@ -1503,6 +1642,12 @@ where
                     VegaError::Context(error.into())
                         .at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation)
                 })?;
+                if !compaction_refill.admit() {
+                    return Err(VegaError::Context(ContextRuntimeError::OverLimit {
+                        estimated_tokens: estimate.input_tokens,
+                        input_budget: budget.input_budget(),
+                    }));
+                }
                 let generation = live_projection_revision.saturating_add(1);
                 // The source fence is deliberately not the operation
                 // identity: a retry can observe the same source fingerprint
@@ -1541,9 +1686,20 @@ where
                     run.trim_messages(&mut messages);
                     crate::computer_use::redact_ephemeral_messages(&mut messages);
                 }
+                tool_definitions = capabilities.current_definitions();
                 let compacted = hook
-                    .compact(
+                    .compact_with_replay(
                         ContextCompactionRequest {
+                            trigger: if force_provider_compaction {
+                                crate::ContextCompactionTrigger::InputOverflow {
+                                    token_gap: provider_overflow_gap,
+                                    deeper: provider_compaction_deeper,
+                                }
+                            } else if matches!(check, ContextCheck::OverLimit) {
+                                crate::ContextCompactionTrigger::HardLimit
+                            } else {
+                                crate::ContextCompactionTrigger::Threshold
+                            },
                             system_prompt: system_prompt.clone(),
                             messages: messages.iter().skip(1).cloned().collect(),
                             tools: tool_definitions.clone(),
@@ -1555,6 +1711,7 @@ where
                             require_source_fence: false,
                             source_owner_id: Some(context_operation_id.clone()),
                         },
+                        messages[0].replay_frame().cloned(),
                         cancel.clone(),
                     )
                     .await;
@@ -1635,8 +1792,7 @@ where
                         return Err(*failure.error);
                     }
                 };
-                let usage_state =
-                    compaction_usage_state(&compacted.usages, compacted.usage_complete);
+                let usage_state = compacted.usage_state();
                 for usage in compacted.usages.iter().cloned() {
                     emit!(
                         events,
@@ -1680,23 +1836,12 @@ where
                 let interleaved_policy = system.replay_frame().is_some_and(|frame| {
                     frame.policy() == crate::ReasoningReplayPolicy::GlmInterleaved
                 });
-                let replay_boundaries_valid = match replay_cold_prefix_messages {
-                    Some(cold_prefix) => cold_prefix > 0 && cold_prefix <= compacted.messages.len(),
-                    None => !interleaved_policy,
-                } && (!interleaved_policy
-                    || match (
-                        replay_cold_prefix_messages,
-                        replay_interleaved_user_boundary,
-                    ) {
-                        (Some(cold_prefix), Some(user_boundary)) => {
-                            user_boundary >= cold_prefix
-                                && replay_user_boundary_follows_complete_tool_groups(
-                                    &compacted.messages,
-                                    user_boundary,
-                                )
-                        }
-                        _ => false,
-                    });
+                let replay_boundaries_valid = crate::validate_compaction_replay(
+                    &compacted.messages,
+                    replay_cold_prefix_messages.unwrap_or(compacted.messages.len()),
+                    replay_interleaved_user_boundary,
+                    interleaved_policy,
+                );
                 if !replay_boundaries_valid {
                     emit!(
                         events,
@@ -1726,6 +1871,38 @@ where
                     &mut next_messages,
                     replay_cold_prefix_messages,
                     replay_interleaved_user_boundary,
+                )?;
+                super::context_files::restore_context_files(
+                    &mut next_messages,
+                    tools,
+                    &tool_config,
+                    permission_hook,
+                    &cancel,
+                )
+                .await?;
+                super::context_skills::restore_context_skills(
+                    &mut next_messages,
+                    &tool_config,
+                    &cancel,
+                )
+                .await?;
+                super::context_plan::restore_context_plan(
+                    &mut next_messages,
+                    &tool_config,
+                    &cancel,
+                )
+                .await?;
+                super::context_tasks::restore_context_tasks(
+                    &mut next_messages,
+                    &tool_config,
+                    &cancel,
+                )
+                .await?;
+                tool_definitions = capabilities.current_definitions();
+                super::context_files::fit_context_files(
+                    &mut next_messages,
+                    &tool_definitions,
+                    target_tokens,
                 )?;
                 let compacted_estimate =
                     crate::estimate_wire_context(&next_messages, &tool_definitions).map_err(
@@ -1819,8 +1996,8 @@ where
                 if force_provider_compaction && next_messages == messages {
                     return Err(VegaError::Context(ContextRuntimeError::NoCompactablePrefix));
                 }
-                force_provider_compaction = false;
                 automatic_compaction_failures = 0;
+                compaction_refill.installed();
                 messages = next_messages;
                 recovery = progress_recovery::ProgressRecovery::default();
                 discard_reasoning_events(&mut events, 0);
@@ -1833,6 +2010,12 @@ where
                 live_projection_revision = generation;
                 context_source_version = Some(compacted.source_version);
                 context_source_fingerprint = compacted.source_fingerprint;
+                provider_overflow_deeper_eligible = force_provider_compaction
+                    && !provider_compaction_deeper
+                    && compacted
+                        .reactive_retained_groups
+                        .is_some_and(|retained| retained >= 2);
+                force_provider_compaction = false;
                 emit!(
                     events,
                     sink,
@@ -1942,10 +2125,17 @@ where
         } else {
             None
         };
+        let current_definitions = capabilities.current_definitions();
+        if current_definitions != replay_tool_definitions {
+            messages[0].mark_replay_unsealable();
+            replay_candidate = None;
+            input_anchor = None;
+        }
+        tool_definitions = current_definitions;
         let chat_request = ChatRequest {
             model: request.model.clone(),
             messages: crate::project_model_messages(&messages)?,
-            tools: tool_definitions,
+            tools: tool_definitions.clone(),
             max_tokens: request_output_cap(request.max_tokens, context_budget),
             reasoning: request.reasoning.clone(),
             model_snapshot: request.model_snapshot.clone(),
@@ -1966,12 +2156,15 @@ where
         if let Some(run) = &tool_config.computer_use {
             run.consume_model_batch(&mut messages);
         }
+        let mut adjacent_provider_overflow_deeper =
+            std::mem::take(&mut provider_overflow_deeper_eligible);
         let call = match if cancel.is_cancelled() {
             Err(VegaError::Cancelled)
         } else {
             if let Some(hook) = tool_config.usage_hook() {
                 hook.provider_started();
             }
+            compaction_refill.primary_started();
             provider
                 .chat_stream_recovering(chat_request, cancel.clone())
                 .await
@@ -2014,8 +2207,8 @@ where
                         Some(&error),
                     )
                 );
-                if !provider_overflow_recovered
-                    && error.context_input_overflow().is_some()
+                if (!provider_overflow_recovered || adjacent_provider_overflow_deeper)
+                    && let Some(token_gap) = error.context_input_overflow()
                     && !is_initial_user_input(&messages)
                     && context_budget.is_some_and(|budget| budget.automatic_compaction())
                     && external_context_hook
@@ -2024,6 +2217,8 @@ where
                 {
                     provider_overflow_recovered = true;
                     force_provider_compaction = true;
+                    provider_compaction_deeper = adjacent_provider_overflow_deeper;
+                    provider_overflow_gap = token_gap;
                     attempted_context_source = None;
                     drop(input_anchor.take());
                     turn_index = turn_index.saturating_sub(1);
@@ -2097,6 +2292,7 @@ where
                     attempt,
                     max_retries,
                 }) => {
+                    adjacent_provider_overflow_deeper = false;
                     if let Some(hook) = tool_config.usage_hook() {
                         if !usage_seen {
                             hook.missing_usage();
@@ -2131,6 +2327,9 @@ where
                     );
                 }
                 Ok(ProviderEvent::TextDelta(delta)) => {
+                    if !delta.is_empty() {
+                        adjacent_provider_overflow_deeper = false;
+                    }
                     if delta.chars().any(|character| !character.is_whitespace()) {
                         response_last_visible = Some(tokio::time::Instant::now());
                     }
@@ -2145,6 +2344,9 @@ where
                     emit!(events, sink, RuntimeEvent::TextDelta(delta));
                 }
                 Ok(ProviderEvent::ReasoningReplay(items)) => {
+                    if !items.is_empty() {
+                        adjacent_provider_overflow_deeper = false;
+                    }
                     let error = if !response_reasoning.is_empty() {
                         Some(VegaError::ProviderDiagnostic {
                             kind: crate::ProviderFailureKind::Protocol,
@@ -2273,6 +2475,9 @@ where
                     }
                 }
                 Ok(ProviderEvent::ThinkingDelta(delta) | ProviderEvent::SummaryDelta(delta)) => {
+                    if !delta.is_empty() {
+                        adjacent_provider_overflow_deeper = false;
+                    }
                     reasoning_turn_bytes = reasoning_turn_bytes.saturating_add(delta.len());
                     let event = if is_summary {
                         RuntimeEvent::SummaryDelta(delta)
@@ -2287,6 +2492,7 @@ where
                     name,
                     input_json,
                 }) => {
+                    adjacent_provider_overflow_deeper = false;
                     calls.push(RuntimeToolCall {
                         id,
                         name,
@@ -2446,6 +2652,7 @@ where
                 Ok(ProviderEvent::Done {
                     stop_reason: reason,
                 }) => {
+                    adjacent_provider_overflow_deeper = false;
                     diagnostic_metrics.stop_reason = Some(reason);
                     stop_reason = Some(reason);
                 }
@@ -2486,8 +2693,8 @@ where
                             Some(&error),
                         )
                     );
-                    if !provider_overflow_recovered
-                        && error.context_input_overflow().is_some()
+                    if (!provider_overflow_recovered || adjacent_provider_overflow_deeper)
+                        && let Some(token_gap) = error.context_input_overflow()
                         && !is_initial_user_input(&messages)
                         && context_budget.is_some_and(|budget| budget.automatic_compaction())
                         && external_context_hook
@@ -2501,6 +2708,8 @@ where
                     {
                         provider_overflow_recovered = true;
                         force_provider_compaction = true;
+                        provider_compaction_deeper = adjacent_provider_overflow_deeper;
+                        provider_overflow_gap = token_gap;
                         attempted_context_source = None;
                         drop(input_anchor.take());
                         turn_index = turn_index.saturating_sub(1);
@@ -2749,6 +2958,7 @@ where
                 progress = progress::ProgressReporter::new();
                 recovery = progress_recovery::ProgressRecovery::default();
                 context_operation_id = input.assistant_message_id.clone();
+                precompute_suppressed = false;
                 let interleaved_user_boundary = messages.len();
                 messages[0].begin_interleaved_user_round(interleaved_user_boundary);
                 messages.push(input.message);
@@ -2758,6 +2968,44 @@ where
                 continue;
             }
             emit!(events, sink, RuntimeEvent::Finished(finish));
+            tool_definitions = capabilities.current_definitions();
+            if normal_terminal
+                && !tool_config.delegated_compaction
+                && anchor_protocol_valid
+                && !precompute_suppressed
+                && let Some(budget) = context_budget.filter(|budget| budget.automatic_compaction())
+                && let Some(hook) = external_context_hook.or(request_context_hook.as_deref())
+                && let Ok(decision) = input_decision(
+                    input_anchor.as_ref(),
+                    &messages,
+                    &tool_definitions,
+                    &request.model,
+                    request.reasoning.as_ref(),
+                    request_output_cap(request.max_tokens, context_budget),
+                    primary_revision,
+                )
+                && let Ok(threshold) = budget.precompute_tokens()
+                && let Ok(target_tokens) = budget.target_tokens()
+                && decision.estimate.input_tokens >= threshold
+            {
+                hook.arm_precompute(
+                    ContextCompactionRequest {
+                        trigger: crate::ContextCompactionTrigger::Threshold,
+                        system_prompt: system_prompt.clone(),
+                        messages: messages[1..].to_vec(),
+                        tools: tool_definitions.clone(),
+                        budget,
+                        estimate: decision.estimate,
+                        target_tokens,
+                        source_version: context_source_version.unwrap_or_default(),
+                        source_fingerprint: context_source_fingerprint.clone(),
+                        require_source_fence: false,
+                        source_owner_id: Some(context_operation_id.clone()),
+                    },
+                    cancel.clone(),
+                )
+                .await;
+            }
             return Ok(outcome(
                 events,
                 messages,
@@ -3254,7 +3502,7 @@ where
                                     action.clone(),
                                     &base_system_prompt,
                                     &messages,
-                                    capabilities.definitions(),
+                                    &capabilities.current_definitions(),
                                     context_budget,
                                     input_anchor.as_ref(),
                                     &request.model,
@@ -3276,12 +3524,15 @@ where
                                         external_context_hook.or(request_context_hook.as_deref());
                                     if compact_before_skill_rejection(
                                         tool_config.computer_use.as_ref(),
+                                        tools,
+                                        &tool_config,
+                                        permission_hook,
                                         prospective,
                                         &base_system_prompt,
                                         &skill_catalog,
                                         &mut messages,
                                         pending_result.as_ref(),
-                                        capabilities.definitions(),
+                                        &capabilities,
                                         context_budget,
                                         input_anchor.as_ref(),
                                         &request.model,
@@ -3295,6 +3546,8 @@ where
                                         &mut live_projection_revision,
                                         &mut attempted_context_source,
                                         &mut automatic_compaction_failures,
+                                        &mut precompute_suppressed,
+                                        &mut compaction_refill,
                                         &cancel,
                                         &mut events,
                                         &mut sink,
@@ -3309,7 +3562,7 @@ where
                                             action,
                                             &base_system_prompt,
                                             &messages,
-                                            capabilities.definitions(),
+                                            &capabilities.current_definitions(),
                                             context_budget,
                                             input_anchor.as_ref(),
                                             &request.model,
@@ -3550,11 +3803,53 @@ where
             recovery = progress_recovery::ProgressRecovery::default();
             steered = true;
             context_operation_id = input.assistant_message_id.clone();
+            precompute_suppressed = false;
             let interleaved_user_boundary = messages.len();
             messages[0].begin_interleaved_user_round(interleaved_user_boundary);
             messages.push(input.message);
             final_text.clear();
             input_anchor = None;
+        }
+        tool_definitions = capabilities.current_definitions();
+        if tool_config.delegated_compaction
+            && !steered
+            && !cancel.is_cancelled()
+            && normal_terminal
+            && anchor_protocol_valid
+            && !precompute_suppressed
+            && (tool_config.turn_limit == 0 || turn_index < tool_config.turn_limit)
+            && let Some(budget) = context_budget.filter(|budget| budget.automatic_compaction())
+            && let Some(hook) = external_context_hook.or(request_context_hook.as_deref())
+            && let Ok(decision) = input_decision(
+                input_anchor.as_ref(),
+                &messages,
+                &tool_definitions,
+                &request.model,
+                request.reasoning.as_ref(),
+                request_output_cap(request.max_tokens, context_budget),
+                primary_revision,
+            )
+            && let Ok(threshold) = budget.precompute_tokens()
+            && let Ok(target_tokens) = budget.target_tokens()
+            && decision.estimate.input_tokens >= threshold
+        {
+            hook.arm_precompute(
+                ContextCompactionRequest {
+                    trigger: crate::ContextCompactionTrigger::Threshold,
+                    system_prompt: system_prompt.clone(),
+                    messages: messages[1..].to_vec(),
+                    tools: tool_definitions.clone(),
+                    budget,
+                    estimate: decision.estimate,
+                    target_tokens,
+                    source_version: context_source_version.unwrap_or_default(),
+                    source_fingerprint: context_source_fingerprint.clone(),
+                    require_source_fence: false,
+                    source_owner_id: Some(context_operation_id.clone()),
+                },
+                cancel.clone(),
+            )
+            .await;
         }
         if !steered && !cancel.is_cancelled() {
             progress.after_tool_batch(messages.last_mut());

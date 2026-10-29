@@ -12,6 +12,9 @@ mod lifecycle_ownership;
 #[path = "subagents/stage_recovery.rs"]
 mod stage_recovery;
 use lifecycle_ownership::LifecycleOwnership;
+mod precompute;
+mod provider;
+use provider::{ChildProvider, ChildTransport};
 use vega_store::delegated_ownership::DelegatedOwnership;
 
 fn failure(message: &str) -> VegaError {
@@ -19,6 +22,33 @@ fn failure(message: &str) -> VegaError {
         tool: "subagent".into(),
         message: message.into(),
     }
+}
+
+pub(super) fn context_task_reader(
+    database: PathBuf,
+    parent: String,
+) -> Arc<vega_runtime::HistoricalTaskReader> {
+    Arc::new(move |call_id| {
+        let store = Store::open_read_only(&database).ok()?;
+        store.conn().query_row(
+            "SELECT e.child_thread_id,e.child_message_id,e.state,COALESCE(r.release_state,'unknown') \
+             FROM delegated_executions e \
+             JOIN tool_calls c ON c.id=e.request_call_id AND c.thread_id=e.parent_thread_id AND c.message_id=e.parent_message_id \
+             JOIN messages m ON m.id=e.parent_message_id AND m.thread_id=e.parent_thread_id AND m.role='assistant' \
+             JOIN messages child ON child.id=e.child_message_id AND child.thread_id=e.child_thread_id AND child.role='assistant' \
+             LEFT JOIN delegated_execution_recovery r ON r.child_thread_id=e.child_thread_id AND r.child_message_id=e.child_message_id \
+             WHERE e.parent_thread_id=?1 AND e.request_call_id=?2 AND c.status='success' \
+             AND c.tool IN ('spawn_agent','followup_agent','resume_agent') \
+             AND length(e.child_thread_id) BETWEEN 1 AND 128 AND length(e.child_message_id) BETWEEN 1 AND 128 \
+             AND e.state IN ('running','cancelling','completed','failed','interrupted') \
+             AND COALESCE(r.release_state,'unknown') IN ('held','released','recovered_abandoned','quarantined','unknown')",
+            (&parent, call_id),
+            |row| Ok(vega_runtime::HistoricalTask {
+                agent_id: row.get(0)?, message_id: row.get(1)?,
+                state: row.get(2)?, release_state: row.get(3)?,
+            }),
+        ).ok()
+    })
 }
 
 fn verify_continuation(
@@ -888,56 +918,6 @@ impl Supervisor {
     }
 }
 
-struct ChildProvider<'a> {
-    inner: &'a dyn Provider,
-    reader: Option<vega_runtime::CredentialReader>,
-}
-impl Provider for ChildProvider<'_> {
-    fn model_snapshot(&self) -> Option<vega_runtime::model_compat::ResolvedModel> {
-        self.inner.model_snapshot()
-    }
-
-    fn chat_stream(
-        &self,
-        request: vega_runtime::ChatRequest,
-        cancel: CancellationToken,
-    ) -> BoxFuture<'static, Result<vega_runtime::EventStream, VegaError>> {
-        if let Some(reader) = &self.reader
-            && let Err(error) =
-                super::credential_guard::reject_owner_secret(&request, reader.as_ref())
-        {
-            return async move { Err(error) }.boxed();
-        }
-        self.inner.chat_stream(request, cancel)
-    }
-    fn chat_stream_recovering(
-        &self,
-        request: vega_runtime::ChatRequest,
-        cancel: CancellationToken,
-    ) -> BoxFuture<'static, Result<vega_runtime::ProviderStream, VegaError>> {
-        if let Some(reader) = &self.reader
-            && let Err(error) =
-                super::credential_guard::reject_owner_secret(&request, reader.as_ref())
-        {
-            return async move { Err(error) }.boxed();
-        }
-        self.inner.chat_stream_recovering(request, cancel)
-    }
-    fn chat_stream_once(
-        &self,
-        request: vega_runtime::ChatRequest,
-        cancel: CancellationToken,
-    ) -> BoxFuture<'static, Result<vega_runtime::EventStream, VegaError>> {
-        if let Some(reader) = &self.reader
-            && let Err(error) =
-                super::credential_guard::reject_owner_secret(&request, reader.as_ref())
-        {
-            return async move { Err(error) }.boxed();
-        }
-        self.inner.chat_stream_once(request, cancel)
-    }
-}
-
 struct ChildUsage {
     pending: std::sync::atomic::AtomicUsize,
     complete: std::sync::atomic::AtomicBool,
@@ -1162,6 +1142,7 @@ fn child_lifecycle_inner<'a>(
             }
         });
         let usage_observer = ChildUsage::new(settings.automation_hook.clone());
+        let mut background_released = true;
         let result = match admitted {
             Err(error) => {
                 if matches!(&error, VegaError::Cancelled) {
@@ -1217,13 +1198,17 @@ fn child_lifecycle_inner<'a>(
                         ..Default::default()
                     };
                     let scoped_provider = ChildProvider {
-                        inner: provider,
+                        inner: ChildTransport::Borrowed(provider),
                         reader: config.owner_credential_reader.clone(),
                     };
                     match Store::open(&database) {
                         Ok(store) => async {
                             crate::thread_access::verify(&store, &snapshot.agent_id, &admission)?;
                             config.admission = Some(admission.clone());
+                            let (background, lease) = precompute::ChildPrecompute::begin(
+                                &store, database.clone(), &snapshot.agent_id, &admission, &cancel,
+                            ).map_err(|error| ConversationError::Runtime(Arc::new(error)))?;
+                            config.precompute_lease = lease;
                             if let Some(reader) = config.owner_credential_reader.clone() {
                                 config = config.with_pending_input(None, Some(Arc::new(crate::pending_messages::QueueSteeringSource::new(
                                     database.clone(), tools.root().to_path_buf(), snapshot.agent_id.clone(), queue_generation,
@@ -1233,7 +1218,7 @@ fn child_lifecycle_inner<'a>(
                             let child_host = host.clone();
                             let id = snapshot.agent_id.clone();
                             let run = snapshot.message_id.clone();
-                            super::entry::run_thread_task_with_automation_inner(
+                            let result = super::entry::run_thread_task_with_automation_inner(
                                 &store,
                                 &scoped_provider,
                                 &tools,
@@ -1250,7 +1235,14 @@ fn child_lifecycle_inner<'a>(
                                 Vec::new(),
                                 mcp,
                             )
-                            .await
+                            .await;
+                            if let Err(error) = background.finish(&admission).await {
+                                background_released = false;
+                                ownership.quarantine("Subagent background context cleanup failed; ownership remains occupied");
+                                Err(ConversationError::Runtime(Arc::new(error)))
+                            } else {
+                                result
+                            }
                         }.await,
                         Err(_) => Err(ConversationError::Store("child storage unavailable".into())),
                     }
@@ -1260,6 +1252,7 @@ fn child_lifecycle_inner<'a>(
         activity.finish();
         questions.cancel_active();
         permissions.finish_active(&cancel);
+        if !background_released { return; }
         let handoff = Store::open(&database).and_then(|store| vega_store::delegated_stages::handoff(store.conn(),&snapshot.agent_id,&snapshot.message_id)).ok().flatten().is_some();
         snapshot.state = match &result {
             Ok(_) if handoff => SubagentState::Completed,

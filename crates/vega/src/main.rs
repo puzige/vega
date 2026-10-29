@@ -156,6 +156,7 @@ fn open_workspace(
         });
     cx.set_global(app_agent::AppMcpSettings(mcp_settings));
     cx.set_global(app_agent::AppReplaySessions::default());
+    app_agent::install_context_precompute_shutdown(cx);
     let root = window.replace_root(cx, |window, cx| {
         vega_ui::interaction::observe_system_motion(window, cx);
         VegaWindow::new(cx)
