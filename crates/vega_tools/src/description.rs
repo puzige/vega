@@ -61,6 +61,6 @@ pub fn description_field_schema() -> Value {
     serde_json::json!({
         "type": ["string", "null"],
         "maxLength": 200,
-        "description": "Write a concise action title using active voice and the user's language, without sentence-ending punctuation; use 5–10 words for simple actions. For read, use 'Read project instructions'. Display only; never substitutes for actual arguments or approval."
+        "description": "Describe this call's actual operation and relevant target or purpose in the user's language. Use a concise active-voice action title without sentence-ending punctuation; use 5–10 words for simple actions. Do not reuse a fixed title across calls or claim an outcome before it is known. Display only; never substitutes for actual arguments or approval."
     })
 }
