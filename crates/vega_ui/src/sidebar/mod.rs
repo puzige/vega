@@ -174,6 +174,11 @@ impl Global for PendingDeleteConfirm {}
 
 pub enum SidebarEvent {
     ThreadDeleted(String),
+    ThreadOpened {
+        thread_id: String,
+        started: std::time::Instant,
+    },
+    OpeningChanged,
 }
 
 impl EventEmitter<SidebarEvent> for Sidebar {}
@@ -202,6 +207,7 @@ impl Global for StoreInitializationError {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewTaskDefaults {
+    pub reasoning_preferences: Option<Vec<vega_conversation::types::SessionReasoningPreference>>,
     /// `defaults.model` (empty until a provider is configured).
     pub model: String,
     pub permission: vega_conversation::types::DefaultPermissionSnapshot,
@@ -217,6 +223,7 @@ impl Default for NewTaskDefaults {
 impl NewTaskDefaults {
     pub fn from_config(path: Option<&std::path::Path>, defaults: &config::Defaults) -> Self {
         Self {
+            reasoning_preferences: None,
             model: defaults.model.clone(),
             permission: vega_conversation::permission_contracts::default_permission_snapshot(
                 path, defaults,
@@ -226,7 +233,15 @@ impl NewTaskDefaults {
 
     pub fn load() -> Self {
         match config::config_path().and_then(|path| {
-            config::load_from(&path).map(|config| Self::from_config(Some(&path), &config.defaults))
+            config::load_from(&path).map(|config| {
+                let mut defaults = Self::from_config(Some(&path), &config.defaults);
+                defaults.reasoning_preferences = vega_store::reasoning::read_authority_from(
+                    &path.with_file_name(vega_store::reasoning::REASONING_FILE_NAME),
+                )
+                .ok()
+                .map(|(config, _)| config.profiles);
+                defaults
+            })
         }) {
             Ok(defaults) => defaults,
             Err(error) => {
@@ -390,11 +405,29 @@ impl Sidebar {
     fn on_sessions_event(
         &mut self,
         _: Entity<ThreadsBlock>,
-        _: &ThreadsBlockEvent,
+        event: &ThreadsBlockEvent,
         cx: &mut Context<Self>,
     ) {
-        self.projects_block.update(cx, ProjectsBlock::reload);
-        cx.refresh_windows();
+        match event {
+            ThreadsBlockEvent::Opened { thread_id, started } => {
+                self.projects_block
+                    .update(cx, ProjectsBlock::reload_background);
+                cx.emit(SidebarEvent::ThreadOpened {
+                    thread_id: thread_id.clone(),
+                    started: *started,
+                });
+            }
+            ThreadsBlockEvent::OpeningChanged => cx.emit(SidebarEvent::OpeningChanged),
+            ThreadsBlockEvent::DraftOpened => {
+                self.projects_block.update(cx, ProjectsBlock::reload);
+                cx.refresh_windows();
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn opening_thread(&self, cx: &App) -> Option<(String, std::time::Instant)> {
+        self.sessions_block.read(cx).opening_thread(cx)
     }
 
     pub fn confirm_pending_delete(&mut self, cx: &mut Context<Self>) {

@@ -41,6 +41,7 @@ pub struct PreparedBash {
     command: String,
     timeout_ms: u64,
     requested_scope: Option<BashScopeRequest>,
+    description: Option<String>,
 }
 
 impl PreparedBash {
@@ -64,6 +65,10 @@ impl PreparedBash {
 
     pub fn requested_scope(&self) -> Option<&BashScopeRequest> {
         self.requested_scope.as_ref()
+    }
+
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
     }
 
     pub fn input_json(&self) -> String {
@@ -96,6 +101,7 @@ pub enum BashInputError {
     InputNotObject,
     MissingCommand,
     WrongCommandType,
+    InvalidDescription,
     EmptyCommand,
     UnexpectedField,
     ConflictingFields,
@@ -110,11 +116,12 @@ impl fmt::Display for BashInputError {
 }
 
 impl BashInputError {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::MalformedJson,
         Self::InputNotObject,
         Self::MissingCommand,
         Self::WrongCommandType,
+        Self::InvalidDescription,
         Self::EmptyCommand,
         Self::UnexpectedField,
         Self::ConflictingFields,
@@ -128,6 +135,7 @@ impl BashInputError {
             Self::InputNotObject => "input_not_object",
             Self::MissingCommand => "missing_command",
             Self::WrongCommandType => "wrong_command_type",
+            Self::InvalidDescription => "invalid_description",
             Self::EmptyCommand => "empty_command",
             Self::UnexpectedField => "unexpected_field",
             Self::ConflictingFields => "conflicting_fields",
@@ -146,14 +154,15 @@ impl BashInputError {
 
 impl Tools {
     pub fn prepare_bash_json(&self, raw_input: &str) -> Result<PreparedBash, BashError> {
-        let (command, timeout_ms, requested_scope) =
+        let input =
             parse_bash_input(raw_input).map_err(|_| BashError::new(BashErrorCode::InvalidInput))?;
         Ok(PreparedBash {
             instance_id: self.instance_id,
             project_root: self.root.clone(),
-            command,
-            timeout_ms,
-            requested_scope,
+            command: input.command,
+            timeout_ms: input.timeout_ms,
+            requested_scope: input.requested_scope,
+            description: input.description,
         })
     }
 
@@ -502,7 +511,7 @@ impl Tools {
 /// execution capability. Conversation uses this to validate persisted rules.
 pub fn bash_permission_signature(raw_input: &str) -> Result<String, BashError> {
     parse_bash_input(raw_input)
-        .map(|(command, _, _)| command)
+        .map(|input| input.command)
         .map_err(|_| BashError::new(BashErrorCode::InvalidInput))
 }
 
@@ -525,14 +534,23 @@ pub fn bash_input_error(raw_input: &str) -> Option<BashInputError> {
 
 pub fn bash_inputs_semantically_equal(left: &str, right: &str) -> bool {
     match (parse_bash_input(left), parse_bash_input(right)) {
-        (Ok(left), Ok(right)) => left == right,
+        (Ok(left), Ok(right)) => {
+            left.command == right.command
+                && left.timeout_ms == right.timeout_ms
+                && left.requested_scope == right.requested_scope
+        }
         _ => false,
     }
 }
 
-fn parse_bash_input(
-    raw_input: &str,
-) -> Result<(String, u64, Option<BashScopeRequest>), BashInputError> {
+struct ParsedBashInput {
+    command: String,
+    timeout_ms: u64,
+    requested_scope: Option<BashScopeRequest>,
+    description: Option<String>,
+}
+
+fn parse_bash_input(raw_input: &str) -> Result<ParsedBashInput, BashInputError> {
     let value =
         crate::json::parse_unique_value(raw_input).map_err(|_| BashInputError::MalformedJson)?;
     let input = value.as_object().ok_or(BashInputError::InputNotObject)?;
@@ -546,7 +564,7 @@ fn parse_bash_input(
     if input.keys().any(|key| {
         !matches!(
             key.as_str(),
-            "command" | "cmd" | "timeout" | "timeout_ms" | "requested_scope"
+            "command" | "cmd" | "timeout" | "timeout_ms" | "requested_scope" | "description"
         )
     }) {
         return Err(BashInputError::UnexpectedField);
@@ -582,7 +600,21 @@ fn parse_bash_input(
             serde_json::from_value(value.clone()).map_err(|_| BashInputError::InvalidScope)
         })
         .transpose()?;
-    Ok((command.to_owned(), timeout_ms, requested_scope))
+    let description = input
+        .get("description")
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or(BashInputError::InvalidDescription)
+        })
+        .transpose()?;
+    Ok(ParsedBashInput {
+        command: command.to_owned(),
+        timeout_ms,
+        requested_scope,
+        description,
+    })
 }
 
 struct BashLaunch {

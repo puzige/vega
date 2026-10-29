@@ -119,8 +119,8 @@ pub fn materialize_codex_thread(
     )?;
     tx.execute(
         "INSERT INTO threads (id, project_id, title, mode, permission_mode, model, backend, \
-         status, pinned, unread, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'codex', ?7, ?8, ?9, ?10, ?11)",
+         status, pinned, unread, created_at, updated_at, reasoning_preferences) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'codex', ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             thread.id,
             project_id,
@@ -133,6 +133,7 @@ pub fn materialize_codex_thread(
             thread.unread,
             thread.created_at,
             thread.updated_at,
+            thread.reasoning_preferences,
         ],
     )?;
     insert_snapshot(&tx, thread.id, snapshot, created_at)?;

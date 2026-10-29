@@ -454,6 +454,7 @@ pub struct PageToolCall {
     pub seq: i64,
     pub text_offset_bytes: Option<i64>,
     pub codex_display: Option<crate::tool_calls::StoredCodexDisplayMetadata>,
+    pub description: Option<String>,
     pub tool: String,
     pub input_json: String,
     pub output_text: Option<String>,
@@ -465,7 +466,7 @@ pub struct PageToolCall {
 
 const PAGE_TOOL_COLUMNS: &str = "t.id, t.message_id, t.seq, t.tool, t.input_json, t.output_text, \
                                  t.status, t.approval, t.exit_code, t.duration_ms, t.text_offset_bytes, \
-                                 d.preview_kind, d.preview_count, d.terminal_reason";
+                                 d.preview_kind, d.preview_count, d.terminal_reason, t.description";
 
 /// Reads one keyset page of durable history ending at `cursor`, oldest→newest.
 ///
@@ -746,6 +747,7 @@ fn page_tool_calls(
                 exit_code: row.get(8)?,
                 duration_ms: row.get(9)?,
                 text_offset_bytes: row.get(10)?,
+                description: row.get(14)?,
                 codex_display: row
                     .get::<_, Option<String>>(11)?
                     .map(|preview_kind| {

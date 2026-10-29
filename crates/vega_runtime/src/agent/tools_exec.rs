@@ -709,7 +709,7 @@ fn prepare_grep_call(tools: &vega_tools::Tools, raw_call: RuntimeToolCall) -> Pr
         raw_call.input_json.clone()
     };
     PreparedRuntimeCall::Grep {
-        model_input: raw_call.input_json,
+        model_input: raw_call.input_json.clone(),
         call: RuntimeToolCall {
             input_json,
             ..raw_call
@@ -1359,6 +1359,7 @@ pub(crate) fn permission_outcome(
                     id: target.call_id.clone(),
                     name: target.tool.as_str().to_string(),
                     input_json: String::new(),
+                    description: None,
                 },
                 output.to_string(),
                 RuntimeToolStatus::Rejected,
@@ -1507,7 +1508,9 @@ pub(crate) fn runtime_inputs_semantically_equal(tool: &str, left: &str, right: &
         return vega_tools::bash_inputs_semantically_equal(left, right);
     }
     if !matches!(tool, "Write" | "Edit" | "write" | "edit") {
-        return left == right;
+        return left == right
+            || (is_native_tool(tool)
+                && vega_tools::tool_inputs_equal_ignoring_description(left, right));
     }
     if let (Ok(left), Ok(right)) = (
         vega_tools::WriteEditAudit::from_json(left),
@@ -2357,11 +2360,11 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
     }
     definitions.push(ToolDefinition {
         name: "bash".into(),
-        description: "Run a non-empty command at the project root. Ask/Plan and ReadOnly use a read-only sandbox; Confirm/Auto permit workspace writes after approval. Sandboxed commands are offline and ignore user shell startup files by default. Optional requested_scope asks for one-command network access and/or extra writable directories with a reason; it requires separate explicit approval, never changes the permission mode, and cannot bypass danger checks. Extra writable directories require Execute Confirm/Auto. Network access with credential bindings uses only their HTTPS destinations; otherwise approval permits any network destination including local services. Full access uses current-user permissions without sandbox restrictions. timeout is positive seconds; null uses 120 seconds. A cd affects only this command. Filter large output; do not automatically retry side effects. Example: {\"command\":\"pwd\",\"timeout\":null}.".into(),
-        input_schema: serde_json::json!({"type":"object","properties":{"command":{"type":"string","minLength":1},"timeout":{"type":["integer","null"],"minimum":1,"maximum":18446744073709551u64},"requested_scope":{"type":"object","properties":{"network":{"type":"boolean","default":false},"write_roots":{"type":"array","items":{"type":"string"},"default":[]},"reason":{"type":"string","minLength":1,"maxLength":512}},"required":["reason"],"additionalProperties":false}},"required":["command","timeout"],"additionalProperties":false}),
+        description: "Run a non-empty command at the project root. Provide a concise action title in the user's language, without sentence-ending punctuation. Ask/Plan and ReadOnly use a read-only sandbox; Confirm/Auto permit workspace writes after approval. Sandboxed commands are offline and ignore user shell startup files by default. Optional requested_scope asks for one-command network access and/or extra writable directories with a reason; it requires separate explicit approval, never changes the permission mode, and cannot bypass danger checks. Extra writable directories require Execute Confirm/Auto. Network access with credential bindings uses only their HTTPS destinations; otherwise approval permits any network destination including local services. Full access uses current-user permissions without sandbox restrictions. timeout is positive seconds; null uses 120 seconds. A cd affects only this command. Filter large output; do not automatically retry side effects. Example: {\"command\":\"pwd\",\"timeout\":null}.".into(),
+        input_schema: serde_json::json!({"type":"object","properties":{"command":{"type":"string","minLength":1},"description":{"type":"string","maxLength":200,"description":"Write a concise action title using active voice and the user's language, without sentence-ending punctuation; use 5–10 words for simple commands. For ls, use 'List files in current directory'. Display only; never substitutes for the command or approval."},"timeout":{"type":["integer","null"],"minimum":1,"maximum":18446744073709551u64},"requested_scope":{"type":"object","properties":{"network":{"type":"boolean","default":false},"write_roots":{"type":"array","items":{"type":"string"},"default":[]},"reason":{"type":"string","minLength":1,"maxLength":512}},"required":["reason"],"additionalProperties":false}},"required":["command","timeout"],"additionalProperties":false}),
         strict: false,
     });
-    definitions
+    definitions.into_iter().map(describe_definition).collect()
 }
 
 fn prepare_read_call(
@@ -2414,6 +2417,7 @@ pub async fn read_identity_with_permission(
         id: ulid::Ulid::generate().to_string(),
         name: "Read".into(),
         input_json: serde_json::json!({"file_path":path}).to_string(),
+        description: None,
     };
     let prepared = prepare_read_call(tools, call)?;
     let rules = config.exact_rules.iter().cloned().collect();

@@ -239,6 +239,11 @@ impl VegaWindow {
         request: &ComposerSubmitted,
         cx: &mut Context<Self>,
     ) {
+        if self.reasoning_save_pending.is_some() || stream.read(cx).reasoning_unavailable() {
+            stream.update(cx, ConversationStream::reject_composer_submission);
+            stream.update(cx, ConversationStream::apply_controller_error);
+            return;
+        }
         let cached = match &cx.global::<VegaStore>().0 {
             Ok(store) => store
                 .database_path()

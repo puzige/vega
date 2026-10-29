@@ -69,6 +69,7 @@ fn valid_mixed_skill_rejection_input(tool: &str, input_json: &str) -> bool {
                 id: "mixed-batch".to_string(),
                 tool: tool.to_string(),
                 input_json: input_json.to_string(),
+                description: None,
                 codex_display: None,
             };
             crate::types::McpCallIdentity::from_tool_call(&call).is_some()
@@ -1924,6 +1925,7 @@ pub(crate) fn validate_recovered_projection(
                 id: call_id.to_string(),
                 tool: tool.to_string(),
                 input_json: input_json.to_string(),
+                description: None,
                 codex_display: None,
             };
             if crate::types::McpCallIdentity::from_tool_call(&projected).is_none()
@@ -2333,6 +2335,11 @@ pub(crate) fn bash_danger_audit_matches(input_json: &str, approval: &ApprovalAud
     let Some(danger) = danger else {
         return approval.source != ApprovalSource::Danger && approval.danger.is_none();
     };
+    if approval.source == ApprovalSource::FullAccess {
+        return approval.decision == Approval::Once
+            && approval.note.is_none()
+            && approval.danger.is_none();
+    }
     if matches!(
         approval.source,
         ApprovalSource::RunMode | ApprovalSource::Recovery

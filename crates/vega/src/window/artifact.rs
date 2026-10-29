@@ -37,10 +37,18 @@ impl VegaWindow {
                         )
                     }) || route.terminal_in_flight.is_some()
                         || !route.terminal_queue.is_empty()
+                        || self
+                            .stream_view
+                            .as_ref()
+                            .is_some_and(|(_, stream)| *stream == route.identity.stream)
                 });
         if retain {
             if let Some(mut route) = self.artifact_controller.active.take() {
                 Self::cancel_artifact_interactions(&mut route, cx);
+                route.retain_while_cached = self
+                    .stream_view
+                    .as_ref()
+                    .is_some_and(|(_, stream)| *stream == route.identity.stream);
                 for key in route.cards.keys() {
                     self.workspace.close(&workspace::TabKey::Artifact(*key));
                 }
@@ -143,6 +151,10 @@ impl VegaWindow {
             self.close_artifact_route(GitWorkspaceErrorCode::InvalidRoot, cx);
             return;
         }
+        for route in self.artifact_controller.retained.values_mut() {
+            route.retain_while_cached = route.identity.stream == stream;
+        }
+        self.artifact_controller.retire_drained();
         let current = self
             .artifact_controller
             .active
@@ -166,6 +178,7 @@ impl VegaWindow {
             .map(|(epoch, _)| *epoch);
         if let Some(epoch) = retained_epoch {
             self.artifact_controller.active = self.artifact_controller.retained.remove(&epoch);
+            self.enqueue_artifact_workspace_reconcile(&thread.project_id, cx);
             return;
         }
         let result = Self::artifact_project_root(thread, cx).and_then(|root| {
@@ -759,18 +772,17 @@ impl VegaWindow {
                 self.artifact_controller.retire_drained();
                 return;
             }
-            for projection in result.cards {
-                let card = self
-                    .artifact_controller
-                    .route(identity)
-                    .and_then(|active| active.cards.get(&projection.id).cloned());
-                if let Some(card) = card {
-                    card.update(cx, |card, cx| {
-                        let _ = card.apply_metadata(projection, cx);
-                    });
-                }
-            }
-            if let Some((call_id, projection)) = result.captured {
+            self.sync_artifact_metadata(identity, cx);
+            if let Some((call_id, captured)) = result.captured
+                && let Some(projection) =
+                    self.artifact_controller.route(identity).and_then(|active| {
+                        active
+                            .service
+                            .cards()
+                            .into_iter()
+                            .find(|card| card.id == captured.id)
+                    })
+            {
                 let existing = self
                     .artifact_controller
                     .route(identity)
@@ -925,7 +937,7 @@ impl VegaWindow {
     pub(crate) fn finish_artifact_preview(
         &mut self,
         fence: ArtifactPreviewFence,
-        result: Result<ArtifactPreviewProjection, GitWorkspaceErrorCode>,
+        result: Result<ArtifactInteractionResult<ArtifactPreviewProjection>, GitWorkspaceErrorCode>,
         cx: &mut Context<Self>,
     ) {
         if !Self::artifact_route_is_current(&fence.route, cx) {
@@ -946,11 +958,9 @@ impl VegaWindow {
             return;
         };
         if card.read(cx).projection().current_file_id != Some(fence.file_id) {
-            card.update(cx, |card, cx| {
-                card.invalidate(GitWorkspaceErrorCode::StaleGeneration, cx)
-            });
             return;
         }
+        let result = self.apply_artifact_interaction_result(&fence.route, result, cx);
         match result {
             Ok(preview) => {
                 card.update(cx, |card, cx| {
@@ -960,7 +970,7 @@ impl VegaWindow {
             Err(GitWorkspaceErrorCode::Cancelled | GitWorkspaceErrorCode::StaleGeneration) => {}
             Err(code) => {
                 card.update(cx, |card, cx| {
-                    let _ = card.apply_preview_error(fence.card_id, fence.file_id, code, cx);
+                    card.fail_request(code, cx);
                 });
             }
         }
@@ -1137,7 +1147,7 @@ impl VegaWindow {
     pub(crate) fn finish_artifact_open(
         &mut self,
         fence: ArtifactOpenFence,
-        result: Result<OpenInOutcome, GitWorkspaceErrorCode>,
+        result: Result<ArtifactInteractionResult<OpenInOutcome>, GitWorkspaceErrorCode>,
         cx: &mut Context<Self>,
     ) {
         let released = self.trusted_actions.release(fence.lease);
@@ -1165,11 +1175,11 @@ impl VegaWindow {
             return;
         };
         if card.read(cx).projection().current_file_id != Some(fence.file_id) {
-            card.update(cx, |card, cx| {
-                card.invalidate(GitWorkspaceErrorCode::StaleGeneration, cx)
-            });
+            card.update(cx, |card, cx| card.set_opening(None, cx));
             return;
         }
+        let result = self.apply_artifact_interaction_result(&fence.route, result, cx);
+        card.update(cx, |card, cx| card.set_opening(Some(fence.target), cx));
         match result {
             Ok(outcome) => {
                 card.update(cx, |card, cx| {
@@ -1183,6 +1193,28 @@ impl VegaWindow {
                 card.update(cx, |card, cx| {
                     let _ = card.apply_open_error(fence.card_id, fence.target, code, cx);
                 });
+            }
+        }
+    }
+
+    fn apply_artifact_interaction_result<T>(
+        &mut self,
+        identity: &ArtifactRouteIdentity,
+        result: Result<ArtifactInteractionResult<T>, GitWorkspaceErrorCode>,
+        cx: &mut Context<Self>,
+    ) -> Result<T, GitWorkspaceErrorCode> {
+        self.sync_artifact_metadata(identity, cx);
+        result?.result
+    }
+
+    fn sync_artifact_metadata(&self, identity: &ArtifactRouteIdentity, cx: &mut Context<Self>) {
+        if let Some(active) = self.artifact_controller.route(identity) {
+            for projection in active.service.cards() {
+                if let Some(card) = active.cards.get(&projection.id) {
+                    card.update(cx, |card, cx| {
+                        let _ = card.apply_metadata(projection, cx);
+                    });
+                }
             }
         }
     }

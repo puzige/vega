@@ -81,11 +81,11 @@ impl VegaWindow {
         {
             Self::cancel_artifact_interactions(active, cx);
             match cards {
-                Ok(cards) => {
-                    for projection in cards {
+                Ok(_) => {
+                    for projection in service.cards() {
                         if let Some(card) = active.cards.get(&projection.id) {
                             card.update(cx, |card, cx| {
-                                let _ = card.apply_metadata(projection.clone(), cx);
+                                let _ = card.apply_metadata(projection, cx);
                             });
                         }
                     }

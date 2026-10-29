@@ -176,7 +176,8 @@ pub(crate) struct VegaWindow {
     /// Settings entity and still blocks a new run until the exact ack lands.
     pub(crate) reasoning_save_pending: Option<(u64, u64)>,
     pub(crate) composer_reasoning_operation: u64,
-    pub(crate) pending_composer_thinking: Option<(String, ComposerDefaults)>,
+    pub(crate) pending_composer_thinking:
+        Vec<(Entity<ConversationStream>, ComposerDefaultsRequested)>,
     /// Provider Settings saves request a model catalog reload. If a reasoning
     /// save owns the catalog authority, defer that reload until its ack so the
     /// two workers cannot regress each other's projections.
@@ -305,6 +306,19 @@ impl VegaWindow {
                 this.cancel_composer_prediction_for_thread(thread_id, cx);
                 this.cancel_agent_for_thread(thread_id, cx);
             }
+            SidebarEvent::ThreadOpened { thread_id, started } => {
+                if !cx.global::<SettingsOpen>().0
+                    && cx
+                        .global::<OpenedThread>()
+                        .0
+                        .as_ref()
+                        .is_some_and(|thread| &thread.id == thread_id)
+                {
+                    this.conversation_loading.opened(thread_id, *started);
+                }
+                cx.notify();
+            }
+            SidebarEvent::OpeningChanged => cx.notify(),
         })
         .detach();
         let mut window = Self {
@@ -361,7 +375,7 @@ impl VegaWindow {
             loaded_replay_config: None,
             reasoning_save_pending: None,
             composer_reasoning_operation: 0,
-            pending_composer_thinking: None,
+            pending_composer_thinking: Vec::new(),
             model_catalog_refresh_pending: false,
             reasoning_error_hold: None,
             model_catalog_loading: false,

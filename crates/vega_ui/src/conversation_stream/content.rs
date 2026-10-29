@@ -100,7 +100,20 @@ impl ConversationStream {
         cx.notify();
     }
 
-    pub fn apply_history_page(&mut self, page: HistoryPage, cx: &mut Context<Self>) {
+    pub fn apply_history_page(&mut self, mut page: HistoryPage, cx: &mut Context<Self>) {
+        let prepared = history_preparation::PreparedHistoryEntries::new(
+            std::mem::take(&mut page.entries),
+            &self.counters,
+        );
+        self.apply_prepared_history_page(page, prepared, cx);
+    }
+
+    pub(super) fn apply_prepared_history_page(
+        &mut self,
+        page: HistoryPage,
+        prepared: history_preparation::PreparedHistoryEntries,
+        cx: &mut Context<Self>,
+    ) {
         self.interrupted_tail = page.interrupted_tail.clone();
         let subagents = page.subagents.clone();
         let was_empty = self.entries.is_empty();
@@ -108,7 +121,7 @@ impl ConversationStream {
         let previous_stage_top_insets = self.stage_top_insets(cx);
         let anchor = self.scroll_anchor_snapshot();
         let (mut hydrated, mut hydrated_identities) =
-            self.hydrate_history_entries(page.entries, cx);
+            self.hydrate_prepared_history_entries(prepared, cx);
         let prepended_entries = hydrated.len();
         hydrated.append(&mut self.entries);
         self.entries = hydrated;
@@ -188,9 +201,23 @@ impl ConversationStream {
         history_entries: Vec<HistoryEntry>,
         cx: &mut Context<Self>,
     ) -> (Vec<StreamEntry>, Vec<StreamEntryIdentity>) {
+        let prepared =
+            history_preparation::PreparedHistoryEntries::new(history_entries, &self.counters);
+        self.hydrate_prepared_history_entries(prepared, cx)
+    }
+
+    fn hydrate_prepared_history_entries(
+        &mut self,
+        prepared: history_preparation::PreparedHistoryEntries,
+        cx: &mut Context<Self>,
+    ) -> (Vec<StreamEntry>, Vec<StreamEntryIdentity>) {
+        let history_preparation::PreparedHistoryEntries {
+            entries: history_entries,
+            mut assistants,
+            generated_notices,
+        } = prepared;
         let mut hydrated: Vec<StreamEntry> = Vec::new();
         let mut hydrated_identities: Vec<StreamEntryIdentity> = Vec::new();
-        let mut assistant_segments: HashMap<String, usize> = HashMap::new();
         for entry in &history_entries {
             if let HistoryEntry::RunContinuation {
                 previous_assistant_id,
@@ -213,9 +240,6 @@ impl ConversationStream {
             .values()
             .flat_map(|relation| [&relation.previous_assistant_id, &relation.next_assistant_id])
             .collect::<HashSet<_>>();
-        let response_boundaries = phase::history_response_boundaries(&history_entries);
-        let generated_notices = generated_notice::history_notices(&history_entries);
-        let mut assistant_offsets = HashMap::<String, usize>::new();
         let activity_runs: HashSet<_> = history_entries
             .iter()
             .filter_map(|entry| match entry {
@@ -245,7 +269,7 @@ impl ConversationStream {
             })
             .collect();
         let mut restored_responses: HashMap<String, phase::RunResponses> = HashMap::new();
-        for entry in history_entries {
+        for (entry_index, entry) in history_entries.into_iter().enumerate() {
             match entry {
                 HistoryEntry::RunContinuation { .. } | HistoryEntry::GeneratedNotice { .. } => {}
                 HistoryEntry::CredentialContinuation {
@@ -349,9 +373,8 @@ impl ConversationStream {
                 HistoryEntry::AssistantText {
                     seq,
                     message_id,
-                    content,
                     status,
-                    execution_duration_ms,
+                    ..
                 } => {
                     if let Some((terminal_status, duration)) = terminal_runs.get(&message_id) {
                         self.ensure_hydrated_run_activity_group(
@@ -363,67 +386,21 @@ impl ConversationStream {
                             cx,
                         );
                     }
-                    if status == vega_conversation::history::AssistantStatus::Done
-                        && content.is_empty()
-                        && execution_duration_ms.is_some()
-                    {
-                        continue;
-                    }
-                    let segment = assistant_segments.entry(message_id.clone()).or_default();
-                    let segment_ordinal = *segment;
-                    *segment += 1;
-                    let offset = assistant_offsets.entry(message_id.clone()).or_default();
-                    let start = *offset;
-                    *offset += content.len();
-                    let mut boundaries = response_boundaries
-                        .get(&message_id)
-                        .into_iter()
-                        .flatten()
-                        .copied()
-                        .filter(|boundary| *boundary > start && *boundary < *offset)
-                        .map(|boundary| boundary - start)
-                        .collect::<Vec<_>>();
-                    boundaries.push(content.len());
-                    let mut part_start = 0;
-                    for part_end in boundaries {
-                        let part = &content[part_start..part_end];
-                        let mut stream = MarkdownStream::new();
-                        stream.append(part);
-                        let copy = MessageCopy::new(part);
-                        if let Some(notices) = generated_notices.get(&(message_id.clone(), seq)) {
-                            copy.set_generated_notices(
-                                notices
-                                    .iter()
-                                    .filter_map(|span| {
-                                        span.fragments(start + part_start..start + part_end)
-                                    })
-                                    .collect(),
-                            );
-                        }
-                        let mut model = StreamModel::default();
-                        copy.finish_model(&mut stream, &mut model, &self.counters);
+                    for part in assistants.remove(&entry_index).into_iter().flatten() {
+                        let (copy, stream, model) = part.body.into_message(&self.counters);
                         hydrated.push(StreamEntry::Assistant {
                             copy,
-                            stream: Box::new(stream),
+                            stream,
                             model,
                             failure: (status
                                 == vega_conversation::history::AssistantStatus::Failed)
                                 .then_some(RunFailureKind::Persisted),
                         });
-                        let key = if part_start == 0 {
-                            format!("assistant-text-{segment_ordinal}")
-                        } else {
-                            format!(
-                                "assistant-text-{segment_ordinal}-response-{}",
-                                start + part_start
-                            )
-                        };
                         hydrated_identities.push(self.durable_entry_identity(
                             &message_id,
-                            &key,
+                            &part.key,
                             Some(seq),
                         ));
-                        part_start = part_end;
                     }
                 }
                 HistoryEntry::Plan {
@@ -487,6 +464,7 @@ impl ConversationStream {
                     seq,
                     message_id,
                     call_id,
+                    description,
                     input,
                     status,
                     approval,
@@ -496,7 +474,8 @@ impl ConversationStream {
                     if self.tool_cards.contains_key(&call_id) {
                         continue;
                     }
-                    let card = cx.new(|_| ToolCard::hydrated(input, status, approval, result));
+                    let card = cx
+                        .new(|_| ToolCard::hydrated(input, status, approval, result, description));
                     self.observe_tool_card(&card, cx);
                     self.tool_cards.insert(call_id.clone(), card.clone());
                     self.refresh_subagent_card(&card, cx);

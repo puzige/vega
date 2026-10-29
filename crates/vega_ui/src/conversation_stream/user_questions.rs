@@ -65,6 +65,7 @@ impl ConversationStream {
             id: call_id.clone(),
             tool: USER_QUESTION_TOOL.into(),
             input_json,
+            description: None,
             codex_display: None,
         }) {
             return;

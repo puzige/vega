@@ -894,6 +894,7 @@ pub struct RuntimeToolCall {
     pub name: String,
     /// Complete raw JSON input.
     pub input_json: String,
+    pub description: Option<String>,
 }
 
 impl fmt::Debug for RuntimeToolCall {
@@ -1381,6 +1382,9 @@ impl fmt::Debug for AgentOutcome {
 }
 
 mod context_accounting;
+mod descriptions;
+pub use descriptions::is_native_tool;
+use descriptions::{describe_definition, extract_call_description};
 mod loop_;
 mod tools_exec;
 

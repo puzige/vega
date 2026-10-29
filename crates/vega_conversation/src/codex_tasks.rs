@@ -359,7 +359,19 @@ pub fn materialize_codex_draft(
         default_permission: None,
         ..draft.clone()
     };
+    if let Some(preferences) = &materialized.reasoning_preferences {
+        for preference in preferences {
+            preference.validate().map_err(store_error)?;
+        }
+    }
+    let reasoning = materialized
+        .reasoning_preferences
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(store_error)?;
     let values = store::NewThread {
+        reasoning_preferences: reasoning.as_deref(),
         id: &materialized.id,
         project_id: &materialized.project_id,
         title: &materialized.title,
