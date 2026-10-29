@@ -26,7 +26,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::{
     AbsoluteLength, AnyElement, App, Context, DefiniteLength, Entity, EventEmitter, FocusHandle,
     FontStyle, FontWeight, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Render, Rgba,
-    ScrollHandle, StrikethroughStyle, TextRun, TextStyle, Window, actions, div, list, px,
+    ScrollHandle, StrikethroughStyle, StyledText, TextRun, TextStyle, Window, actions, div, list,
+    px,
 };
 use vega_conversation::agent::{PendingPermission, PermissionQueue};
 use vega_conversation::history::{HistoryEntry, HistoryPage};

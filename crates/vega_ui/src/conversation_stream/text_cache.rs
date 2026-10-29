@@ -7,13 +7,6 @@ const RECORD_PAYLOAD_LIMIT: usize = 4 * 1024;
 const READING_LIMIT: usize = 1792;
 const TAIL_LIMIT: usize = 256;
 
-#[derive(PartialEq)]
-pub(super) struct ReadingLayoutEnvironment {
-    font: gpui_kit::Font,
-    rem_size: Pixels,
-    scale: f32,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum TextVariant {
     User,
@@ -274,31 +267,6 @@ pub(super) fn compose_text_height(entry: &StreamEntry, raw: f32, owned: bool) ->
 }
 
 impl ConversationStream {
-    pub(super) fn refresh_reading_layout_environment(&mut self, window: &Window) {
-        let environment = ReadingLayoutEnvironment {
-            font: window.text_style().font(),
-            rem_size: window.rem_size(),
-            scale: window.scale_factor(),
-        };
-        let changed = self
-            .reading_layout_environment
-            .replace(environment)
-            .zip(self.reading_layout_environment.as_ref())
-            .is_some_and(|(previous, current)| previous != *current);
-        if !changed {
-            return;
-        }
-        self.text_cache.get_mut().clear();
-        self.measured_entry_heights.clear();
-        if !self.entries.is_empty() {
-            self.ensure_entry_identities();
-            let top = self.list.logical_scroll_top();
-            let anchor = self.scroll_anchor_snapshot();
-            self.list.remeasure_items(0..self.list.item_count());
-            self.restore_scroll_anchor_at(&anchor, top.item_ix);
-        }
-    }
-
     pub(crate) fn prepare_text_cache(&mut self) {
         self.ensure_entry_identities();
         self.text_cache.get_mut().prepare(
