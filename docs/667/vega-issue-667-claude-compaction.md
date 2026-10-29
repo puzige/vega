@@ -226,6 +226,8 @@ read_conversation 增加 kind=skill_resources，沿用 tools 的身份、序号�
 
 开发验证记录：0016f6287ef325dcf176f9d9aecbc1656d0307dc 的 Actions run 40863438238 中 Clippy 成功，Nextest 实际执行 186、通过 184、失败 2、跳过 0（18.072 秒），尚非通过版本。原始失败分别为 QueryReturnedNoRows 和 JSON trailing characters。前者由夹具试图通过仅允许 assistant 父消息的正常插入 API 构造 user 父消息引起，修为合法插入后仅在测试中显式改写父消息；后者由模型侧结果合法附加运行提示引起，修为解析完整首个 JSON 值并严格校验余量只能为空或精确的现有进度提示。生产插入限制、运行提示行为及原身份／分页／脱敏／不激活断言均保持，修复版本行为待新 head 云端验证。
 
+修复版本 `c9e45b8546f58a6568fe587814eb91224104c2af`（tree `c0fcbe86c1acc326203a163cfd85570c1da8aa58`）的 Actions [40866184524](https://github.com/puzige/vega/actions/runs/40866184524) 全部成功：Clippy `123421437850`、Nextest `123421438366`、required `123423966648` success。原始日志确认 186 发现／186 执行通过／0 跳过、27.749s，两项新资源回归均实际 PASS；增量独立审查仍未完成，不以行为通过代替审查或整卡交付。
+
 #### 永久隐私清理的压缩状态失效（2026-10-29）
 
 永久清理在复核快照之前取得数据库 admission pause，要求普通提交与既有运行全部排空；再暂停数据库预计算，确认真实 worker 已退出。任一未排空返回既有待处理错误，不阻塞 UI 或伪称清理完成；持有暂停直至清理结束，阻止旧 lease 再发布。应用侧在同一围栏内显式清除暖 replay 缓存；无缓存调用方仍受来源指纹校验。
@@ -243,6 +245,12 @@ Vega 现有运行在开始时冻结已批准的完整 MCP 定义与精确 dispat
 `57ed8d1ce9e4ed2f2d5750391343d7a3056b498c` 的 Actions [40849945527](https://github.com/puzige/vega/actions/runs/40849945527) 为 177 发现／177 执行通过／0 跳过；独立静态审查发现预检事件 sink 的等待窗口仍可将旧 schema 传入 precompute，因此该版本不是 Clear。补充合同：PrimaryPreflight 回执后重新读取当前定义并重算 estimate、foreground/precompute eligibility；开发回归在该 sink 内撤销 MCP，核对实际 arm 请求的 schema 和估算一致且保留原生 read。
 
 修复 `e09aa4f2775a280b40f4aa66517194c04ce8bc09`（tree `dd59c9fed9c3ac4e3f934b7c3ec38fcf5cb76a14`）独立静态复审 Clear，关闭该 P2。Actions [40852148640](https://github.com/puzige/vega/actions/runs/40852148640)：Clippy `123374016044` success，Nextest `123374015680` 执行 178 项、177 通过／1 失败／0 跳过，14.291s，required `123376552890` failure。失败回归重建 payload 时漏掉 runtime 的 cold ReplayFrame，历史 assistant 来源包装差 31 tokens（74531 vs 74500）；`40564b5a90efd3a994c63d6fd85f887a81cde3ef` 补相同冷投影边界，严格 schema／估算相等断言不变，待新 Actions，未将静态 Clear 当行为通过。
+
+#### 会话环境、模式与显式目标的独立保留（2026-10-29）
+
+cwd 与冻结项目规则来自 compose_agent_system_prompt，当前运行的 Ask／Plan／Execute 和权限模式来自 RuntimeToolConfig，不从摘要还原或升级。runtime 每轮从本次运行冻结的 base system 重建系统消息；显式启用的 automation hook 将当前运行的目标／循环数据纳入该系统上下文，并通过冻结的原生定义保持 get_goal／update_goal／schedule_wakeup 的可用范围。普通压缩安装与 reactive 续接不得以摘要内容替换该系统上下文或扩展模式工具；跨运行由当前任务工作区及配置重新装配，不保留旧运行的权限身份。
+
+开发回归须经过实际 run_agent 的阈值和 typed overflow 续接，在 Ask／Plan 下核对压缩前后出站系统环境／项目规则／目标数据相同、原生工具定义相同，并让摘要包含无权限的模式升级声称后实际尝试 write：必须被拒绝且不产生文件，不能仅检查配置对象。fixture 仅隔离 provider 与摘要生成，保留生产预算、安装、投影、工具注册和 dispatch 决策。本增量不新增通用会话生命周期，不虚构 Claude-only handback／后台 shell；显式阶段 handoff／委派结果仍沿原持久化身份与读取机制单独评估，缓存期限未知的路由仍不启动 idle-cache 定时器。行为结果待云端，不以静态装配证据代替回归。
 
 #### 原生 `/compact` 与摘要要求（2026-10-29）
 

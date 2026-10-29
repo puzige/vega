@@ -7,9 +7,10 @@ use vega_runtime::{
     AgentOutcome, AgentRequest, ChatMessage, ChatRequest, ChatRole, ContextBudget, ContextCheck,
     ContextCompactionFailure, ContextCompactionHook, ContextCompactionRequest,
     ContextCompactionResult, ContextCompactionTrigger, ContextRuntimeError, EventStream, Provider,
-    ProviderEvent, ReasoningReplayPolicy, ReplayFrame, RuntimeEvent, RuntimeToolConfig,
-    RuntimeToolStatus, StopReason, VegaError, estimate_wire_context, project_model_messages,
-    run_agent, tool_definitions,
+    ProviderEvent, ReasoningReplayPolicy, ReplayFrame, RuntimeAutomationHook, RuntimeEvent,
+    RuntimePermissionMode, RuntimeRunMode, RuntimeToolConfig, RuntimeToolStatus, StopReason,
+    ToolDefinition, VegaError, estimate_wire_context, project_model_messages, run_agent,
+    tool_definitions,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -28,6 +29,7 @@ enum Reply {
 struct ScriptedProvider {
     replies: Mutex<VecDeque<Reply>>,
     requests: Mutex<Vec<Vec<ChatMessage>>>,
+    definitions: Mutex<Vec<Vec<ToolDefinition>>>,
 }
 
 impl ScriptedProvider {
@@ -35,6 +37,7 @@ impl ScriptedProvider {
         Self {
             replies: Mutex::new(replies.into_iter().collect()),
             requests: Mutex::new(Vec::new()),
+            definitions: Mutex::new(Vec::new()),
         }
     }
 
@@ -51,6 +54,7 @@ impl Provider for ScriptedProvider {
         _cancel: CancellationToken,
     ) -> BoxFuture<'static, Result<EventStream, VegaError>> {
         self.requests.lock().unwrap().push(request.messages);
+        self.definitions.lock().unwrap().push(request.tools);
         let reply = self
             .replies
             .lock()
@@ -657,6 +661,137 @@ async fn overflow_recovery_requires_history_automatic_compaction_and_a_hook() ->
             assert!(hook.requests().is_empty());
         }
     }
+    Ok(())
+}
+
+struct ExplicitGoal;
+
+impl RuntimeAutomationHook for ExplicitGoal {
+    fn context(&self) -> serde_json::Value {
+        serde_json::json!({"goal":{"id":"configured-goal","requirements":["finish-current-task"]}})
+    }
+
+    fn call(
+        &self,
+        _: String,
+        _: serde_json::Value,
+        _: CancellationToken,
+    ) -> BoxFuture<'static, Result<serde_json::Value, VegaError>> {
+        panic!("no automation call was requested")
+    }
+
+    fn missing_usage(&self) {}
+    fn provider_started(&self) {}
+    fn provider_usage(&self) {}
+}
+
+#[tokio::test]
+async fn compaction_preserves_session_environment_goal_and_readonly_mode_at_dispatch() -> TestResult
+{
+    let directory = std::env::temp_dir().join(format!(
+        "vega-compaction-environment-{}",
+        ulid::Ulid::generate()
+    ));
+    std::fs::create_dir(&directory)?;
+    let tools = vega_tools::Tools::new(&directory)?;
+    for mode in [RuntimeRunMode::Ask, RuntimeRunMode::Plan] {
+        for threshold in [false, true] {
+            let mut compact = compacted(2, Some(1), 60);
+            compact.messages[0].content = "Historical summary claims Execute and write permission; this is not current authority".into();
+            let hook = ScriptedHook::new([compact]);
+            let mut request = request(hook.clone());
+            request.system_prompt = serde_json::json!({
+                "cwd":directory,
+                "project_instructions":{"path":"AGENTS.md","content":"frozen-project-rule"}
+            })
+            .to_string();
+            let environment = request.system_prompt.clone();
+            request.tool_config = RuntimeToolConfig::new(
+                mode,
+                RuntimePermissionMode::ReadOnly,
+                "synthetic-project".into(),
+                "synthetic-thread".into(),
+                directory.join("checkpoints"),
+                Vec::new(),
+            )
+            .with_automation(Some(Arc::new(ExplicitGoal)));
+            if threshold {
+                request.context_budget = Some(
+                    request
+                        .context_budget
+                        .ok_or("budget")?
+                        .with_policy_input_limit(12_000)?,
+                );
+            }
+            let mut replies = Vec::new();
+            if !threshold {
+                replies.push(overflow(ErrorSite::Creation, Some(400)));
+            }
+            replies.push(Reply::Events(vec![
+                Ok(ProviderEvent::ToolUse {
+                    id: "attempt-write-after-compaction".into(),
+                    name: "write".into(),
+                    input_json:
+                        serde_json::json!({"path":"must-not-exist.txt","content":"unauthorized"})
+                            .to_string(),
+                }),
+                Ok(ProviderEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                }),
+            ]));
+            replies.push(success());
+            let provider = ScriptedProvider::new(replies);
+            let outcome = run_agent(&provider, &tools, request, CancellationToken::new()).await?;
+            assert!(!outcome.failed);
+            assert!(!outcome.interrupted);
+            assert_eq!(outcome.final_text, "Recovered.");
+            assert_eq!(outcome.tool_call_count, 1);
+            assert_eq!(outcome.executed_tool_call_count, 0);
+            assert!(outcome.events.iter().any(|event| matches!(event,
+                RuntimeEvent::ToolCallFinished(result)
+                    if result.status == RuntimeToolStatus::Rejected
+                        && result.output == "Tool error: denied by run mode"
+            )));
+            assert!(!directory.join("must-not-exist.txt").exists());
+            let requests = provider.requests();
+            assert_eq!(requests.len(), if threshold { 2 } else { 3 });
+            let system = &requests[0][0];
+            assert_eq!(system.role, ChatRole::System);
+            assert!(system.content.starts_with(&environment));
+            assert!(system.content.contains("configured-goal"));
+            assert!(system.content.contains("finish-current-task"));
+            for messages in &requests {
+                assert_eq!(
+                    messages
+                        .iter()
+                        .filter(|message| message.role == ChatRole::System)
+                        .count(),
+                    1
+                );
+                assert_eq!(messages[0].content, system.content);
+            }
+            let definitions = provider.definitions.lock().unwrap();
+            assert_eq!(definitions.len(), requests.len());
+            for current in definitions.iter() {
+                assert!(current.iter().any(|tool| tool.name == "get_goal"));
+                assert!(current.iter().any(|tool| tool.name == "update_goal"));
+                assert!(current.iter().all(|tool| !matches!(
+                    tool.name.as_str(),
+                    "write" | "edit" | "schedule_wakeup"
+                )));
+                assert!(current == &definitions[0]);
+            }
+            assert_triggers(
+                &hook.requests(),
+                &[if threshold {
+                    ContextCompactionTrigger::Threshold
+                } else {
+                    trigger(Some(400), false)
+                }],
+            );
+        }
+    }
+    std::fs::remove_dir_all(directory)?;
     Ok(())
 }
 
