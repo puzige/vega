@@ -229,6 +229,7 @@ pub struct RuntimeToolConfig {
     mcp_candidates: Vec<McpCandidate>,
     skills: Option<RuntimeSkillConfig>,
     context_skill_reader: Option<Arc<crate::skills::HistoricalSkillReader>>,
+    context_plan_reader: Option<Arc<HistoricalPlanReader>>,
     computer_use: Option<crate::computer_use::ComputerUseRun>,
     foreign_call_ids: HashSet<String>,
     permission_timeout: Duration,
@@ -265,6 +266,7 @@ impl RuntimeToolConfig {
             mcp_candidates: Vec::new(),
             skills: None,
             context_skill_reader: None,
+            context_plan_reader: None,
             computer_use: None,
             foreign_call_ids: HashSet::new(),
             permission_timeout: PERMISSION_TIMEOUT,
@@ -393,6 +395,11 @@ impl RuntimeToolConfig {
             .flat_map(McpReadyServer::candidates)
             .map(|candidate| candidate.with_known_credentials(credentials.clone()))
             .collect();
+        self
+    }
+
+    pub fn with_context_plan_reader(mut self, reader: Arc<HistoricalPlanReader>) -> Self {
+        self.context_plan_reader = Some(reader);
         self
     }
 
@@ -1399,7 +1406,9 @@ impl fmt::Debug for AgentOutcome {
 
 mod context_accounting;
 mod context_files;
+mod context_plan;
 mod context_skills;
+pub use context_plan::{HistoricalPlan, HistoricalPlanReader};
 mod descriptions;
 pub use descriptions::is_native_tool;
 use descriptions::{describe_definition, extract_call_description};

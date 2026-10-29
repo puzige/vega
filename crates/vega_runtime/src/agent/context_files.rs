@@ -104,11 +104,11 @@ pub(super) fn fit_context_files(
         .input_tokens
         > target
     {
-        if !messages
-            .iter_mut()
-            .rev()
-            .any(|message| message.trim_context_skill() || message.trim_context_file())
-        {
+        if !messages.iter_mut().rev().any(|message| {
+            message.trim_context_plan()
+                || message.trim_context_skill()
+                || message.trim_context_file()
+        }) {
             break;
         }
     }

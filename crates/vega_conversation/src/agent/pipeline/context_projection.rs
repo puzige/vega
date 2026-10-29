@@ -71,6 +71,9 @@ pub(crate) fn interpret_projection_with_live(
                 summary_message
                     .attach_context_file_references(context_file_references(source, plan)?);
                 summary_message.attach_context_skill_runs(context_skill_runs(source, plan)?);
+                if let Some(id) = context_plan_source(source, plan)? {
+                    summary_message.attach_context_plan_source(id);
+                }
                 messages.push(summary_message);
             }
             ProjectionFragment::PreviousSummary { checkpoint_id } => {
@@ -88,6 +91,58 @@ pub(crate) fn interpret_projection_with_live(
         }
     }
     Ok(messages)
+}
+
+fn context_plan_source(
+    source: &vega_store::context_compaction::ContextSource,
+    plan: &ProjectionPlan,
+) -> Result<Option<String>, ConversationError> {
+    let Some(latest) = source.messages.iter().rev().find(|message| {
+        message.role == "assistant" && message.kind == "plan" && message.status == "done"
+    }) else {
+        return Ok(None);
+    };
+    let mut covered = false;
+    for range in &plan.covered {
+        let selected = range
+            .project(source)
+            .map_err(|_| ConversationError::CorruptRow("invalid plan source range".into()))?;
+        covered |= selected
+            .messages
+            .iter()
+            .any(|message| message.id == latest.id);
+    }
+    if !covered {
+        return Ok(None);
+    }
+    for fragment in &plan.fragments {
+        if let ProjectionFragment::Source { range } = fragment {
+            let selected = range
+                .project(source)
+                .map_err(|_| ConversationError::CorruptRow("invalid retained plan range".into()))?;
+            if selected.messages.iter().any(|message| message == latest)
+                && source
+                    .tool_calls
+                    .iter()
+                    .filter(|call| call.message_id == latest.id)
+                    .eq(selected
+                        .tool_calls
+                        .iter()
+                        .filter(|call| call.message_id == latest.id))
+                && source
+                    .images
+                    .iter()
+                    .filter(|image| image.message_id == latest.id)
+                    .eq(selected
+                        .images
+                        .iter()
+                        .filter(|image| image.message_id == latest.id))
+            {
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some(latest.id.clone()))
 }
 
 fn context_skill_runs(

@@ -180,6 +180,18 @@ lint 修复版本 `d7c18c442c9488b488aa9937e57d6d8907576dec`（tree `902b5ff2a32
 
 开发回归覆盖实际 SQLite 快照的来源／绑定／digest、当前世代变更、同名去重与正文限额，以及实际 runtime provider 观测、暖缓存旧正文清除、凭据过滤和预算；只由 Actions 执行。技能资源原文读取、动态工具、任务／计划与其他恢复仍单独续接，不以本节声称完成全部恢复矩阵。
 
+技能恢复修复与普通主线整合版本 `d610be934bbfdfd791f3e7e5a10fa59d48acde7c`（tree `af1de81acbe3ce60f8dc098746eb09d2fb709e8e`）的 Actions [40828520701](https://github.com/puzige/vega/actions/runs/40828520701) 全部成功：Nextest `123297056928` 原始输出 160 发现／160 执行通过／0 跳过、22.871s，四项新增技能回归均实际 PASS；Clippy `123297057204`、required `123299046330` success。原审查者对首版至本修复的冻结增量独立静态复核 Clear，部分工具边界遗漏闭环；整卡后续恢复及交付门禁仍未完成。
+
+#### 当前计划历史恢复（2026-10-29）
+
+压缩后保留最新真实完成计划的来源 ID：只取 ContextSource 中同线程 assistant／kind=plan／status=done 的最新一条，且它确实被本次 covered 范围覆盖、未在 Source 中完整保留；有更新计划已保留时不恢复旧计划。即时安装与重启由同一解释器选取，不从摘要文字推断计划或批准。
+
+每轮最终冷／暖历史选择后，以及前台压缩后的预算检查前，专用只读读取器按 ID／线程重新检查真实计划行、有效 plan_status 与 review 元数据。只读取有界正文（最多 UTF-8 20000 bytes，即约 5000 tokens）和最多 4096 bytes 复审备注；超限正文返回 compact_plan_reference，无正文的引用不伪称完整恢复。已删除、来源变化、无效状态或不可用读取器不发送旧正文；每轮清除上次恢复结果，暖缓存不能保留过期 approved／pending 状态。SQLite 连接不跨 await，读取不写入计划、审批或消息。
+
+附件为 authority:none 的 restored_plan／compact_plan_reference，标明 source_message_id、当前计划复审状态及必要备注；它只是历史状态，不是当前执行许可，不产生批准指令、不切换 Plan／Execute 模式、不绕过原 approved_authority 与用户确认流程。所有字段经过当前凭据过滤，检查不可用 fail closed；实际 wire estimator 纳入附件，预算不足可移除，不放宽主请求预算。开发回归覆盖真实计划状态变化／缺失／线程隔离／超限、生成安装重载来源一致、暖命中去旧状态及生产 provider 观测，保留既有审批回归与安全断言。
+
+该增量不代替未取回 agent task／阶段交接、后台 shell、动态工具、原始详情读取或 idle/cache 的后续评估与实现。
+
 #### 脱离前台的生成与逐阶段结算（2026-10-28）
 
 后台准备在当前 admission 下完成有界捕获：来源、append fence、前驱及引用摘要 digest 来自同一快照，拒绝 staged model change、来源不一致与不完整响应组。返回的 prepared job 不包含 admission、前台 actor、diagnostics channel 或任何 SQLite connection；只保存冻结请求、来源快照、摘要偏好、计价及凭据投影策略。前台生成仍全程持有原 admission 和同一 600 秒期限，不改变既有安装语义。

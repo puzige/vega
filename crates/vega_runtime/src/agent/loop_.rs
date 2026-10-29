@@ -618,6 +618,7 @@ where
     )
     .await?;
     super::context_skills::restore_context_skills(&mut next_projected, tool_config, cancel).await?;
+    super::context_plan::restore_context_plan(&mut next_projected, tool_config, cancel).await?;
     super::context_files::fit_context_files(&mut next_projected, tools, target_tokens)?;
     let compacted_estimate =
         crate::estimate_wire_context(&next_projected, tools).map_err(|error| {
@@ -1458,6 +1459,7 @@ where
         )
         .await?;
         super::context_skills::restore_context_skills(&mut messages, &tool_config, &cancel).await?;
+        super::context_plan::restore_context_plan(&mut messages, &tool_config, &cancel).await?;
         if let Some(budget) = context_budget {
             super::context_files::fit_context_files(
                 &mut messages,
@@ -1859,6 +1861,12 @@ where
                 )
                 .await?;
                 super::context_skills::restore_context_skills(
+                    &mut next_messages,
+                    &tool_config,
+                    &cancel,
+                )
+                .await?;
+                super::context_plan::restore_context_plan(
                     &mut next_messages,
                     &tool_config,
                     &cancel,
