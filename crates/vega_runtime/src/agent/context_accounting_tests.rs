@@ -568,6 +568,34 @@ fn appending_a_live_id_collision_must_not_reuse_an_unsafe_prefix() {
 }
 
 #[test]
+fn preserved_live_ids_reuse_usage_across_later_tool_rounds() {
+    for id in [
+        "provider|live",
+        "provider-with-a-live-tool-id-that-is-longer-than-forty",
+    ] {
+        let mut messages = vec![
+            ChatMessage::new(ChatRole::System, "system instructions"),
+            ChatMessage::new(ChatRole::User, "request"),
+        ];
+        let first = tool_call(id, "read", r#"{"path":"source.txt"}"#);
+        let mut assistant = ChatMessage::assistant_with_tools("checking", vec![first.clone()]);
+        assistant.bind_live_tool_calls(vec![Some(first)]).unwrap();
+        messages.push(assistant);
+        messages.push(runtime_read_result(id, "first result"));
+        let request = projected_request(&messages, &tools());
+        assert!(request.messages[2].preserves_live_wire_ids());
+        let anchor = anchor(&request, 40_000);
+        append_tool_round(&mut messages, &["next result"], None);
+        assert_anchored(
+            decide(Some(&anchor), &messages, &request),
+            &request,
+            &messages,
+            40_000,
+        );
+    }
+}
+
+#[test]
 fn changed_live_tool_wire_identity_falls_back_even_with_the_same_visible_call() {
     let mut messages = vec![
         ChatMessage::new(ChatRole::System, "system instructions"),

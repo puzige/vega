@@ -1481,7 +1481,17 @@ where
         {
             let before = crate::estimate_wire_context(&messages, &tool_definitions)
                 .map_err(|error| VegaError::Context(error.into()))?;
-            if before.input_tokens
+            let predicted = input_decision(
+                input_anchor.as_ref(),
+                &messages,
+                &tool_definitions,
+                &request.model,
+                request.reasoning.as_ref(),
+                request_output_cap(request.max_tokens, context_budget),
+                primary_revision,
+            )?
+            .estimate;
+            if predicted.input_tokens
                 >= budget
                     .precompute_tokens()
                     .map_err(|error| VegaError::Context(error.into()))?

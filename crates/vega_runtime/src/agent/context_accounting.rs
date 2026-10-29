@@ -130,6 +130,11 @@ fn wire_prefix_stable(messages: &[ChatMessage], covered_messages: usize) -> bool
     {
         return true;
     }
+    let live_ids = prefix
+        .iter()
+        .filter(|message| message.preserves_live_wire_ids())
+        .flat_map(|message| message.tool_calls.iter().map(|call| call.id.as_str()))
+        .collect::<std::collections::HashSet<_>>();
     prefix
         .iter()
         .flat_map(|message| {
@@ -139,7 +144,7 @@ fn wire_prefix_stable(messages: &[ChatMessage], covered_messages: usize) -> bool
                 .map(|call| call.id.as_str())
                 .chain(message.tool_call_id.as_deref())
         })
-        .all(|id| !id.contains('|') && id.len() <= 40)
+        .all(|id| live_ids.contains(id) || (!id.contains('|') && id.len() <= 40))
 }
 
 fn tagged(hasher: &mut Sha256, tag: u8, bytes: &[u8]) {
