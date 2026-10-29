@@ -1362,6 +1362,9 @@ async fn create_child(
         let tx = store
             .immediate_transaction()
             .map_err(|_| failure("storage unavailable"))?;
+        if cancel.is_cancelled() {
+            return Err(VegaError::Cancelled);
+        }
         if let Some(claim) = &settings.automation_claim {
             crate::automation::check_subagent_budget(&tx, claim)
                 .map_err(|message| failure(&message))?;
@@ -1618,3 +1621,7 @@ async fn persist_child_terminal(
     .await
     .map_err(|_| failure("storage unavailable"))?
 }
+
+#[cfg(test)]
+#[path = "subagents/steering_tests.rs"]
+mod steering_tests;
