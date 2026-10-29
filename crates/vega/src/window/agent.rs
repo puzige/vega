@@ -7,6 +7,14 @@ const AGENT_PREFLIGHT_POLL: std::time::Duration = std::time::Duration::from_mill
 
 impl VegaWindow {
     pub(crate) fn update_message_location_route(&mut self, thread_id: Option<&str>) {
+        if self
+            .completion_attention
+            .pending_tail_thread
+            .as_deref()
+            .is_some_and(|target| Some(target) != thread_id)
+        {
+            self.completion_attention.pending_tail_thread = None;
+        }
         if self.message_location_route_thread_id.as_deref() == thread_id {
             return;
         }
