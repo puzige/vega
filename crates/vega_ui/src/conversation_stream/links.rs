@@ -22,6 +22,7 @@ pub(crate) struct LinkRange {
     pub owner: String,
     pub starts_here: bool,
     pub text_identity: u64,
+    pub assistant_code_padding: bool,
 }
 
 const MULTI_CLICK_DELAY: Duration = Duration::from_millis(500);
@@ -96,6 +97,7 @@ pub(crate) fn link_ranges(spans: &[StreamSpan]) -> Vec<LinkRange> {
                     owner: String::new(),
                     starts_here: true,
                     text_identity,
+                    assistant_code_padding: false,
                 });
             }
         }

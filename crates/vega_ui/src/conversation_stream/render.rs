@@ -1444,6 +1444,7 @@ impl ConversationStream {
 
 impl Render for ConversationStream {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.refresh_reading_layout_environment(window);
         if !self.reading_preview {
             self.reconcile_pending_focus(window, cx);
             self.prepare_thread_permission_focus(window, cx);
