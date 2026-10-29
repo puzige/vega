@@ -346,6 +346,7 @@ fn build_mixed_entries(
                         Some(ToolCardInputProjection::ReadOnly {
                             tool: ReadOnlyToolKind::Read,
                             display_target: None,
+                            detail_target: None,
                             permission_path: None,
                         }),
                         ToolCallStatus::Success,
@@ -355,6 +356,7 @@ fn build_mixed_entries(
                             output: source,
                             reused: false,
                         }),
+                        None,
                     )
                 });
                 entries.push(StreamEntry::Tool { card });

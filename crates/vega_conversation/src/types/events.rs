@@ -1202,6 +1202,7 @@ pub(crate) fn safe_runtime_tool_call(call: &vega_runtime::RuntimeToolCall) -> Op
         id: call.id.clone(),
         tool: call.name.clone(),
         input_json: call.input_json.clone(),
+        description: call.description.clone(),
         codex_display: None,
     };
     if vega_runtime::is_subagent_tool(&call.name) {
@@ -1220,6 +1221,13 @@ pub(crate) fn safe_runtime_tool_call(call: &vega_runtime::RuntimeToolCall) -> Op
     }
     if vega_runtime::computer_use::ComputerUseRun::tool_capability(&call.name).is_some() {
         return vega_runtime::computer_use::ComputerUseAudit::valid(&call.input_json)
+            .then_some(projected);
+    }
+    if matches!(
+        call.name.as_str(),
+        "get_goal" | "update_goal" | "schedule_wakeup"
+    ) {
+        return crate::agent::valid_automation_call_projection(&call.name, &call.input_json)
             .then_some(projected);
     }
     if call.name.starts_with("mcp_") {

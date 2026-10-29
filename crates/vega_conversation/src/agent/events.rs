@@ -797,6 +797,7 @@ pub(crate) fn persist_runtime_event(
                         seq: *next_tool_seq,
                         tool: &call.name,
                         input_json: &call.input_json,
+                        description: call.description.as_deref(),
                         status: "pending_approval",
                         created_at: now_ms(),
                     },
@@ -829,6 +830,7 @@ pub(crate) fn persist_runtime_event(
                             seq: *next_tool_seq,
                             tool: &call.name,
                             input_json: &call.input_json,
+                            description: call.description.as_deref(),
                             status: "rejected",
                             created_at: now_ms(),
                         },
@@ -1322,6 +1324,7 @@ pub(crate) fn validate_runtime_proposal(
             id: call.id.clone(),
             tool: call.name.clone(),
             input_json: call.input_json.clone(),
+            description: None,
             codex_display: None,
         };
         return crate::types::McpCallIdentity::from_tool_call(&projected)
@@ -1357,7 +1360,9 @@ pub(crate) fn tool_inputs_semantically_equal(tool: &str, left: &str, right: &str
         return vega_tools::bash_inputs_semantically_equal(left, right);
     }
     if !matches!(tool, "Write" | "Edit" | "write" | "edit") {
-        return left == right;
+        return left == right
+            || (vega_runtime::is_native_tool(tool)
+                && vega_tools::tool_inputs_equal_ignoring_description(left, right));
     }
     if let (Ok(left), Ok(right)) = (
         vega_tools::WriteEditAudit::from_json(left),

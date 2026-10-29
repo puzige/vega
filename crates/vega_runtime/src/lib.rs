@@ -27,7 +27,7 @@ pub use agent::{
     RuntimeSubagentHook, RuntimeTokenUsage, RuntimeToolCall, RuntimeToolConfig, RuntimeToolResult,
     RuntimeToolStatus, RuntimeUsagePricing, STAGE_BATCH_REJECTED, SUBAGENT_CANCELLED_OUTPUT,
     SUBAGENT_RESULT_BYTES, contains_sensitive_credential, credential_stream_safe_end,
-    inspect_credential_text, is_invalid_bash_feedback, is_subagent_tool,
+    inspect_credential_text, is_invalid_bash_feedback, is_native_tool, is_subagent_tool,
     read_identity_with_permission, redact_sensitive_credential_text,
     redact_sensitive_credential_text_with_offsets,
     redact_sensitive_credential_text_with_offsets_and_policy,

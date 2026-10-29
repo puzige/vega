@@ -464,6 +464,7 @@ impl ConversationStream {
                     seq,
                     message_id,
                     call_id,
+                    description,
                     input,
                     status,
                     approval,
@@ -473,7 +474,8 @@ impl ConversationStream {
                     if self.tool_cards.contains_key(&call_id) {
                         continue;
                     }
-                    let card = cx.new(|_| ToolCard::hydrated(input, status, approval, result));
+                    let card = cx
+                        .new(|_| ToolCard::hydrated(input, status, approval, result, description));
                     self.observe_tool_card(&card, cx);
                     self.tool_cards.insert(call_id.clone(), card.clone());
                     self.refresh_subagent_card(&card, cx);

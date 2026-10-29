@@ -9,7 +9,7 @@ use vega_conversation::types::{
     Approval, CodexAcpActivityIdentity, CodexArgumentPreview, CodexDisplayMetadata,
     InvalidToolKind, ReadOnlyToolKind, SkillCardOutcome, SubagentOpenRequested, SubagentSnapshot,
     SubagentState, ToolCall, ToolCallStatus, ToolCardInputProjection, ToolCardResultProjection,
-    ToolResult, tool_card_input_projection, tool_card_result_projection,
+    ToolResult, tool_card_description, tool_card_input_projection, tool_card_result_projection,
 };
 use vega_theme::{Layout, ThemeColors, Typography, theme};
 
@@ -138,6 +138,7 @@ impl ToolDetail {
 /// write/edit input, fingerprint, checkpoint reference, or checkpoint path.
 pub struct ToolCard {
     input: Option<ToolCardInputProjection>,
+    description: Option<String>,
     status: ToolCallStatus,
     approval: Option<Approval>,
     result: Option<ToolCardResultProjection>,
@@ -162,6 +163,7 @@ impl ToolCard {
         let corrupt = matches!(input, ToolCardInputProjection::Corrupt);
         let mut card = Self {
             input: Some(input),
+            description: tool_card_description(call),
             status: if corrupt {
                 ToolCallStatus::Failed
             } else {
@@ -193,6 +195,7 @@ impl ToolCard {
         };
         let mut card = Self {
             input: None,
+            description: None,
             status,
             approval: None,
             result: Some(projection),
@@ -215,6 +218,7 @@ impl ToolCard {
     pub fn corrupt() -> Self {
         let mut card = Self {
             input: None,
+            description: None,
             status: ToolCallStatus::Failed,
             approval: None,
             result: Some(ToolCardResultProjection::Corrupt),
@@ -239,6 +243,7 @@ impl ToolCard {
         status: ToolCallStatus,
         approval: Option<Approval>,
         result: Option<ToolCardResultProjection>,
+        description: Option<String>,
     ) -> Self {
         let mut card = Self {
             output_rows: result
@@ -246,6 +251,7 @@ impl ToolCard {
                 .map(projection_output_rows)
                 .unwrap_or_default(),
             input,
+            description,
             status,
             approval,
             result,
@@ -295,6 +301,7 @@ impl ToolCard {
     fn set_corrupt(&mut self) {
         self.stop_live_elapsed();
         self.input = None;
+        self.description = None;
         self.status = ToolCallStatus::Failed;
         self.approval = None;
         self.result = Some(ToolCardResultProjection::Corrupt);
@@ -553,6 +560,7 @@ impl ToolCard {
                 _ => ToolActivityCategory::Other,
             },
             Some(ToolCardInputProjection::Subagent { .. })
+            | Some(ToolCardInputProjection::Automation { .. })
             | Some(ToolCardInputProjection::Corrupt) => ToolActivityCategory::Other,
         }
     }
@@ -860,26 +868,28 @@ impl ToolCard {
         let colors = theme(cx).colors;
         let current = card.read(cx);
         let agent = current.subagent().cloned();
-        let title = match (&current.input, &agent) {
-            (Some(ToolCardInputProjection::Subagent { tool, .. }), Some(agent)) => {
-                vega_i18n::t_args(
-                    "ui.action_name",
-                    &[
-                        (
-                            "action",
-                            if tool == "spawn_agent" {
-                                vega_i18n::t("ui.delegate")
-                            } else {
-                                vega_i18n::t("ui.continue")
-                            },
-                        ),
-                        ("name", &agent.name),
-                    ],
-                )
-            }
-            (Some(ToolCardInputProjection::Subagent { title, .. }), _) => title.clone(),
-            _ => vega_i18n::t("ui.delegate_task").into(),
-        };
+        let title = current
+            .description_title()
+            .unwrap_or_else(|| match (&current.input, &agent) {
+                (Some(ToolCardInputProjection::Subagent { tool, .. }), Some(agent)) => {
+                    vega_i18n::t_args(
+                        "ui.action_name",
+                        &[
+                            (
+                                "action",
+                                if tool == "spawn_agent" {
+                                    vega_i18n::t("ui.delegate")
+                                } else {
+                                    vega_i18n::t("ui.continue")
+                                },
+                            ),
+                            ("name", &agent.name),
+                        ],
+                    )
+                }
+                (Some(ToolCardInputProjection::Subagent { title, .. }), _) => title.clone(),
+                _ => vega_i18n::t("ui.delegate_task").into(),
+            });
         let (title, title_element) =
             headline.unwrap_or_else(|| (title.clone(), div().child(title).into_any_element()));
         let status = agent.as_ref().map_or_else(
@@ -1034,12 +1044,48 @@ impl ToolCard {
             .into_any_element()
     }
 
+    fn description_title(&self) -> Option<String> {
+        if matches!(self.input, None | Some(ToolCardInputProjection::Corrupt))
+            || matches!(
+                self.result,
+                Some(
+                    ToolCardResultProjection::Corrupt
+                        | ToolCardResultProjection::InvalidRejected { .. }
+                )
+            )
+        {
+            return None;
+        }
+        let description = self.description.as_deref()?;
+        let status_key = match self.activity_state() {
+            ToolActivityState::Success => return Some(description.to_string()),
+            ToolActivityState::Active if self.status != ToolCallStatus::PendingApproval => {
+                return Some(description.to_string());
+            }
+            ToolActivityState::Active => "ui.awaiting_approval",
+            ToolActivityState::Failed => "ui.failed",
+            ToolActivityState::Cancelled => "ui.cancelled",
+            ToolActivityState::Rejected => "ui.rejected",
+            ToolActivityState::Superseded => "ui.not_run_after_takeover",
+        };
+        Some(vega_i18n::t_args(
+            "ui.command_status_description",
+            &[
+                ("status", vega_i18n::t(status_key)),
+                ("description", description),
+            ],
+        ))
+    }
+
     fn refresh_summary(&mut self) {
         self.summary = self.build_summary();
         self.summary_language = vega_i18n::language();
     }
 
     fn build_summary(&self) -> String {
+        if let Some(title) = self.description_title() {
+            return title;
+        }
         match (&self.input, &self.result) {
             (_, Some(ToolCardResultProjection::Corrupt)) => vega_i18n::t(CORRUPT_LABEL).to_string(),
             (
@@ -1250,6 +1296,14 @@ impl ToolCard {
                 ],
             ),
             (Some(ToolCardInputProjection::Subagent { title, .. }), _) => title.clone(),
+            (Some(ToolCardInputProjection::Automation { tool }), _) => {
+                vega_i18n::t(match tool.as_str() {
+                    "get_goal" => "ui.read_task_goal",
+                    "update_goal" => "ui.update_task_goal",
+                    _ => "ui.schedule_next_run",
+                })
+                .to_string()
+            }
             (Some(ToolCardInputProjection::CodexAcp { identity, .. }), _) => vega_i18n::t_args(
                 "ui.codex_action",
                 &[
@@ -1293,33 +1347,9 @@ impl ToolCard {
             ToolActivityState::Cancelled => vega_i18n::t("ui.command_cancelled_en"),
             ToolActivityState::Failed => vega_i18n::t("ui.command_failed_en"),
         };
-        let Some(ToolCardInputProjection::Bash {
-            command,
-            description,
-        }) = &self.input
-        else {
+        let Some(ToolCardInputProjection::Bash { command }) = &self.input else {
             return action.into();
         };
-        if let Some(description) = description {
-            let status_key = match self.activity_state() {
-                ToolActivityState::Success => return description.clone(),
-                ToolActivityState::Active if self.status != ToolCallStatus::PendingApproval => {
-                    return description.clone();
-                }
-                ToolActivityState::Active => "ui.awaiting_approval_to_run",
-                ToolActivityState::Failed => "ui.command_failed",
-                ToolActivityState::Cancelled => "ui.command_cancelled",
-                ToolActivityState::Rejected => "ui.command_rejected",
-                ToolActivityState::Superseded => "ui.not_run_after_takeover",
-            };
-            return vega_i18n::t_args(
-                "ui.command_status_description",
-                &[
-                    ("status", vega_i18n::t(status_key)),
-                    ("description", description),
-                ],
-            );
-        }
         vega_i18n::t_args(
             "ui.command_action",
             &[("action", action), ("command", &compact_object(command))],
@@ -1372,6 +1402,9 @@ impl ToolCard {
     }
 
     fn has_detail(&self) -> bool {
+        if self.description.is_some() && self.description_detail().is_some() {
+            return true;
+        }
         match &self.input {
             Some(ToolCardInputProjection::Bash { .. }) => true,
             Some(ToolCardInputProjection::Subagent { .. })
@@ -1379,12 +1412,18 @@ impl ToolCard {
             | Some(ToolCardInputProjection::ReadOnly { .. })
             | Some(ToolCardInputProjection::Mcp { .. })
             | Some(ToolCardInputProjection::ComputerUse { .. })
-            | Some(ToolCardInputProjection::CodexAcp { .. }) => !self.output_rows.is_empty(),
+            | Some(ToolCardInputProjection::CodexAcp { .. })
+            | Some(ToolCardInputProjection::Automation { .. }) => !self.output_rows.is_empty(),
             _ => false,
         }
     }
 
     fn detail_row_count(&self) -> usize {
+        if self.description.is_some()
+            && let Some(detail) = self.description_detail()
+        {
+            return detail.logical_rows();
+        }
         match &self.input {
             Some(ToolCardInputProjection::Bash { .. }) => 3 + self.output_rows.len(),
             Some(ToolCardInputProjection::Subagent { .. })
@@ -1392,12 +1431,37 @@ impl ToolCard {
             | Some(ToolCardInputProjection::ReadOnly { .. })
             | Some(ToolCardInputProjection::Mcp { .. })
             | Some(ToolCardInputProjection::ComputerUse { .. })
-            | Some(ToolCardInputProjection::CodexAcp { .. }) => self.output_rows.len(),
+            | Some(ToolCardInputProjection::CodexAcp { .. })
+            | Some(ToolCardInputProjection::Automation { .. }) => self.output_rows.len(),
             _ => 0,
         }
     }
 
+    fn description_detail(&self) -> Option<ToolDetail> {
+        let target = match &self.input {
+            Some(ToolCardInputProjection::ReadOnly { detail_target, .. }) => detail_target.clone(),
+            Some(
+                ToolCardInputProjection::Write { path, .. }
+                | ToolCardInputProjection::Edit { path, .. },
+            ) => Some(path.clone()),
+            Some(ToolCardInputProjection::Skill { name, .. }) => name.clone(),
+            _ => None,
+        }?;
+        Some(ToolDetail {
+            title: None,
+            command: Some(target),
+            output: self.output_rows.clone(),
+            output_copy: None,
+            footer: Some((self.terminal_footer(), self.activity_state())),
+        })
+    }
+
     fn detail(&self) -> Option<ToolDetail> {
+        if self.description.is_some()
+            && let Some(detail) = self.description_detail()
+        {
+            return Some(detail);
+        }
         match &self.input {
             Some(ToolCardInputProjection::Bash { command, .. }) => Some(ToolDetail {
                 title: Some(self.bash_detail_title()),
@@ -1419,7 +1483,8 @@ impl ToolCard {
             }),
             Some(
                 ToolCardInputProjection::UserQuestion { .. }
-                | ToolCardInputProjection::ReadOnly { .. },
+                | ToolCardInputProjection::ReadOnly { .. }
+                | ToolCardInputProjection::Automation { .. },
             ) if !self.output_rows.is_empty() => Some(ToolDetail {
                 title: None,
                 command: None,

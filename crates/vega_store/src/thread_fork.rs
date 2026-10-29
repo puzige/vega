@@ -159,7 +159,7 @@ pub fn clone_prefix(
         tx.execute("INSERT INTO messages(id,thread_id,seq,role,kind,content,status,created_at,plan_status,plan_review_note,plan_reviewed_at) SELECT ?1,?2,seq,role,kind,content,status,created_at,plan_status,plan_review_note,plan_reviewed_at FROM messages WHERE id=?3",params![new_id,destination,id])?;
     }
     for (id, owner, _, _, _) in &calls {
-        tx.execute("INSERT INTO tool_calls(id,thread_id,message_id,seq,tool,input_json,output_text,output_full_path,status,approval,exit_code,duration_ms,created_at,finished_at,text_offset_bytes) SELECT ?1,?2,?3,seq,tool,input_json,output_text,output_full_path,status,approval,exit_code,duration_ms,created_at,finished_at,text_offset_bytes FROM tool_calls WHERE id=?4",params![mapped(&call_map,id)?,destination,mapped(&messages,owner)?,id])?;
+        tx.execute("INSERT INTO tool_calls(id,thread_id,message_id,seq,tool,input_json,output_text,output_full_path,status,approval,exit_code,duration_ms,created_at,finished_at,text_offset_bytes,description) SELECT ?1,?2,?3,seq,tool,input_json,output_text,output_full_path,status,approval,exit_code,duration_ms,created_at,finished_at,text_offset_bytes,description FROM tool_calls WHERE id=?4",params![mapped(&call_map,id)?,destination,mapped(&messages,owner)?,id])?;
     }
     for id in &owners {
         let new_id = mapped(&messages, id)?;
