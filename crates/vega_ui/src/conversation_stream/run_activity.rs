@@ -2,6 +2,8 @@ use super::sticky_disclosure::{StickyDisclosure, StickySection, StickyState};
 use super::*;
 use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use crate::tool_card::{ToolActivityCategory, sentence_initial};
+#[cfg(test)]
+use gpui_kit::test::TestSupportExt;
 use gpui_kit::{AnyElement, MouseButton, MouseUpEvent, ScrollHandle, div, px};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1887,11 +1889,13 @@ impl RunActivityGroup {
             let toggle = group.clone();
             let click_focus = header_focus.clone();
             let keyboard = group.clone();
+            let row = div()
+                .id(("run-stage-toggle", segment_index))
+                .group(disclosure_group.clone());
+            #[cfg(test)]
+            let row = row.test_support();
             header = Some(
-                div()
-                    .id(("run-stage-toggle", segment_index))
-                    .group(disclosure_group.clone())
-                    .track_focus(&header_focus)
+                row.track_focus(&header_focus)
                     .tab_stop(can_expand)
                     .when(can_expand, |row| row.aria_expanded(expanded))
                     .aria_label(if can_expand {

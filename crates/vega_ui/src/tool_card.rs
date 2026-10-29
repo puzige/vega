@@ -4,6 +4,8 @@ use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::*;
+#[cfg(test)]
+use gpui_kit::test::TestSupportExt;
 use gpui_kit::{AnyElement, App, Entity, MouseButton, MouseUpEvent, ScrollHandle, Task, div, px};
 use vega_conversation::types::{
     Approval, CodexAcpActivityIdentity, CodexArgumentPreview, CodexDisplayMetadata,
@@ -746,6 +748,8 @@ impl ToolCard {
         let row = div()
             .id(("tool-activity-toggle", card.entity_id()))
             .group(disclosure_group.clone());
+        #[cfg(test)]
+        let row = row.test_support();
         let row = row
             .track_focus(&focus)
             .aria_expanded(expanded)
