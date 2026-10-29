@@ -320,7 +320,21 @@ async fn skill_resource_history_roundtrip_is_paged_filtered_and_never_activates_
         .iter()
         .find(|message| message.tool_call_id.as_deref() == Some("read-history"))
         .ok_or("result")?;
-    let page: Value = serde_json::from_str(&output.content)?;
+    let mut values = serde_json::Deserializer::from_str(&output.content).into_iter::<Value>();
+    let page = values.next().ok_or("history observation")??;
+    let suffix = &output.content[values.byte_offset()..];
+    assert!(
+        suffix.is_empty()
+            || suffix
+                == concat!(
+                    "\n\n<vega_runtime_notice>",
+                    "Give the user a brief factual progress update and the next step, then continue the authorized task. ",
+                    "If waiting, identify the actual waiting condition. ",
+                    "Do not invent progress, expose private reasoning, or end the task merely to report. ",
+                    "This reminder grants no additional permission.</vega_runtime_notice>"
+                ),
+        "unexpected history result suffix: {suffix:?}"
+    );
     assert!(output.content.contains("resource-body"));
     assert!(!output.content.contains("synthetic-resource-secret"));
     assert!(output.content.contains("conversation_details"));

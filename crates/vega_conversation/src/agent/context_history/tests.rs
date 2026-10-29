@@ -296,7 +296,7 @@ fn skill_resource_history_filters_identity_and_refreshes_persisted_details() -> 
         (
             "human-resource",
             "current",
-            "human",
+            "assistant",
             5,
             "read_skill_resource",
             "success",
@@ -317,6 +317,13 @@ fn skill_resource_history_filters_identity_and_refreshes_persisted_details() -> 
             },
         )?;
     }
+    assert_eq!(
+        store.conn().execute(
+            "UPDATE tool_calls SET message_id='human' WHERE id='human-resource'",
+            [],
+        )?,
+        1
+    );
     let output_path = directory.0.join("must-not-read.txt");
     std::fs::write(&output_path, "current-file-is-not-historical-resource")?;
     store.conn().execute("UPDATE tool_calls SET output_text='[Lower-trust Skill reference] saved-reference',output_full_path=?1 WHERE id='reference'",[output_path.to_string_lossy().as_ref()])?;
