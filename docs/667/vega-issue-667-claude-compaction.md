@@ -272,6 +272,8 @@ Native composer 支持精确首 token `/compact`（区分大小写，前导空�
 
 #### 脱离前台的生成与逐阶段结算（2026-10-28）
 
+外层封存回归与 Markdown 主线整合版本 `2f141493bdd9e4cc9bbb82ea54d7fdbee0a88e86` 的 Actions [40876047594](https://github.com/puzige/vega/actions/runs/40876047594)：Clippy `123455002791` success，Nextest `123455003186` 实际 191 执行／188 通过／3 失败／0 跳过、22.531s，required `123457583978` failure；成功的独立发现计数未取得。三项新增外层回归均在后台释放前返回 `CorruptRow("Could not save the automation. Please retry.")`，未到达封存断言，不能将其记为物理退出行为失败或成功。恢复后保留原实现，按原始日志定位责任层，不删回归或重跑旧 head。另以普通 merge 同步主线 `7a91c122` 的 Markdown 集成回退，未重写任务历史。
+
 计量接线版本 `770bd68ce116c8a0f9660157d04579ca5f324f36`（tree `d706f19bddc601416b1e93087f5e6a565cffa5a3`）的 Actions [40870363352](https://github.com/puzige/vega/actions/runs/40870363352)：Clippy `123435552746` success，Nextest `123435552270` 实际 188 执行／186 通过／2 失败／0 跳过、20.048s，required `123437707521` failure；成功的独立发现计数未取得。两项归属回归均返回 Context(SourceChanged)：新增夹具在 registry.bind 后仍持有独占 admission，后续未绑定 admission 的 compact_with_replay 必须重新获取独占权而被拒绝。修正仅在绑定 lease 后释放该夹具 admission；不改生产准入、计量或原断言。
 
 修正版 `0e6ddc1f18f92db2a1e5a8346d8f23238009912e`（tree `ca67879ee15a18590467a2e783ddaf862d14a694`）的 Actions [40872431282](https://github.com/puzige/vega/actions/runs/40872431282) 全部成功：Clippy `123442622390`、Nextest `123442622755`、required `123444504509` success；原始输出 188 发现／188 执行通过／0 跳过、11.699s，两项计量与物理退出回归均实际 PASS。两个非写入者只读审查分别绑定 `770bd68ce116c8a0f9660157d04579ca5f324f36`：Compact 键盘修复与历史资源回读生产增量 Clear；后台计量生产增量 Clear，并独立定位相同 admission 夹具冲突。审查不代表整个 head 或真实原生键盘行为通过；新外层 automation 封存回归仍待实现／Actions，Rust 开发留痕清理及整卡最终门禁未完成。

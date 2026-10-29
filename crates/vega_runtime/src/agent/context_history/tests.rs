@@ -354,3 +354,166 @@ async fn skill_resource_history_roundtrip_is_paged_filtered_and_never_activates_
     assert!(!field["text"].as_str().ok_or("text")?.contains('中'));
     Ok(())
 }
+
+#[tokio::test]
+async fn delegated_history_roundtrip_pages_filtered_results_without_delegation_authority()
+-> TestResult {
+    let mut read_request = request();
+    read_request.kind = "delegated_results".into();
+    read_request.source_id = Some("spawn-call".into());
+    read_request.content_offset = 1018;
+    assert_eq!(
+        ConversationReadRequest::parse(&serde_json::to_string(&read_request)?)
+            .ok_or("parse")?
+            .kind,
+        "delegated_results"
+    );
+    let provider = HistoryProvider(Mutex::new(Vec::new()), read_request);
+    let config=RuntimeToolConfig::default()
+        .with_conversation_history_reader(Arc::new(|request| {
+            assert_eq!(request.kind,"delegated_results");
+            assert_eq!(request.source_id.as_deref(),Some("spawn-call"));
+            assert_eq!(request.content_offset,1018);
+            Ok(serde_json::json!({"records":[{"source_id":"spawn-call","agent_id":"child","child_message_id":"E1",
+                "status":"completed","release_state":"held","worker_liveness":"unknown","result_truncated":true,
+                "output":format!("{}synthetic-delegated-secret尾-result","界".repeat(1020)),
+                "content":{"id":"checkpoint-E1","summary":format!("{}synthetic-delegated-secret尾-stage","界".repeat(1500))}
+            }],"next_after_sequence":1,"has_more":false}))
+        }))
+        .with_credential_reader(Arc::new(|| Ok(vec!["synthetic-delegated-secret".into()])));
+    let tools = vega_tools::Tools::new(std::env::current_dir()?)?;
+    let outcome = run_agent(
+        &provider,
+        &tools,
+        AgentRequest {
+            model: "synthetic".into(),
+            system_prompt: "system".into(),
+            history: vec![ChatMessage::new(
+                ChatRole::User,
+                "read the exact historical result",
+            )],
+            max_tokens: None,
+            completed_tool_results: Default::default(),
+            tool_config: config,
+            pricing_catalog: None,
+            reasoning: None,
+            model_snapshot: None,
+            replay_frame: None,
+            context_budget: None,
+            context_source_version: None,
+            context_source_fingerprint: None,
+            context_operation_id: None,
+            context_compaction_hook: None,
+        },
+        CancellationToken::new(),
+    )
+    .await?;
+    assert!(!outcome.failed);
+    assert_eq!(outcome.executed_tool_call_count, 1);
+    let requests = provider.0.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    let definition = requests[0]
+        .tools
+        .iter()
+        .find(|tool| tool.name == TOOL)
+        .ok_or("definition")?;
+    assert!(
+        definition.input_schema["properties"]["kind"]["enum"]
+            .as_array()
+            .ok_or("enum")?
+            .contains(&serde_json::json!("delegated_results"))
+    );
+    assert!(requests[0].tools.iter().all(|tool| !matches!(
+        tool.name.as_str(),
+        "spawn_agent" | "followup_agent" | "resume_agent" | "wait_agent" | "cancel_agent"
+    )));
+    let output = requests[1]
+        .messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("read-history"))
+        .ok_or("result")?;
+    let mut values = serde_json::Deserializer::from_str(&output.content).into_iter::<Value>();
+    let page = values.next().ok_or("history observation")??;
+    let suffix = &output.content[values.byte_offset()..];
+    assert!(
+        suffix.is_empty()
+            || suffix
+                == concat!(
+                    "\n\n<vega_runtime_notice>",
+                    "Give the user a brief factual progress update and the next step, then continue the authorized task. ",
+                    "If waiting, identify the actual waiting condition. ",
+                    "Do not invent progress, expose private reasoning, or end the task merely to report. ",
+                    "This reminder grants no additional permission.</vega_runtime_notice>"
+                ),
+        "unexpected history result suffix: {suffix:?}"
+    );
+    assert!(!output.content.contains("synthetic-delegated-secret"));
+    assert!(!output.content.contains("elegated-secret"));
+    let observation = &page["vega_history_observation"];
+    assert_eq!(observation["authority"], "none");
+    let row = &observation["page"]["records"][0];
+    assert_eq!(row["child_message_id"], "E1");
+    assert_eq!(row["release_state"], "held");
+    assert_eq!(row["worker_liveness"], "unknown");
+    assert_eq!(row["result_truncated"], true);
+    assert_eq!(row["output"]["offset"], 1018);
+    assert_eq!(row["output"]["complete"], false);
+    assert!(row["output"]["next_offset"].is_null());
+    assert!(
+        row["output"]["text"]
+            .as_str()
+            .ok_or("result text")?
+            .starts_with("界界")
+    );
+    assert!(
+        row["output"]["text"]
+            .as_str()
+            .ok_or("result text")?
+            .ends_with("尾-result")
+    );
+    assert_eq!(row["content"]["offset"], 1018);
+    assert_eq!(row["content"]["complete"], false);
+    assert!(
+        row["content"]["text"]
+            .as_str()
+            .ok_or("stage text")?
+            .ends_with("尾-stage\"}")
+    );
+    Ok(())
+}
+
+#[test]
+fn delegated_stage_projection_filters_structured_fields_before_serialization_and_slicing()
+-> TestResult {
+    let config = RuntimeToolConfig::default()
+        .with_credential_reader(Arc::new(|| Ok(vec!["stage-private-key".into()])));
+    let mut input = request();
+    input.kind = "delegated_results".into();
+    let page = serde_json::json!({"records":[{"source_id":"stage-private-key","output":null,
+        "content":{"id":"checkpoint","source_fingerprint":"stage-private-key","manifest":{"artifacts":[{"path":"/stage-private-key/file"}],"summary":"stage-private-key"}}
+    }]});
+    let output = project_page(page, &input, &config)?;
+    assert!(!output.contains("stage-private-key"));
+    let value: Value = serde_json::from_str(&output)?;
+    let row = &value["vega_history_observation"]["page"]["records"][0];
+    assert_eq!(row["output"]["unavailable"], true);
+    assert_eq!(row["content"]["complete"], true);
+    let stage: Value = serde_json::from_str(row["content"]["text"].as_str().ok_or("stage")?)?;
+    assert_eq!(stage["id"], "checkpoint");
+    assert!(
+        !stage["manifest"]["artifacts"][0]["path"]
+            .as_str()
+            .ok_or("path")?
+            .contains("stage-private-key")
+    );
+    let unavailable = config.with_credential_reader(Arc::new(|| Err(())));
+    assert!(matches!(
+        project_page(
+            serde_json::json!({"records":[{"content":null,"output":"historical-result"}]}),
+            &input,
+            &unavailable
+        ),
+        Err(VegaError::CredentialCheckUnavailable)
+    ));
+    Ok(())
+}
