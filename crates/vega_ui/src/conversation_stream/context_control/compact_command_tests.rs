@@ -211,3 +211,119 @@ fn compact_terminal_status_restores_cancelled_or_failed_but_not_successful_draft
         });
     }
 }
+
+#[gpui_kit::test]
+fn compact_suggestion_selection_and_requirement_edits_release_enter(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        crate::init(cx);
+        cx.set_global(vega_theme::Theme::light());
+    });
+    let (stream, cx) = cx.add_window_view(|window, cx| {
+        let mut stream = ConversationStream::new(thread(), cx);
+        stream.context_control.compactable = true;
+        stream.set_compaction_source("source".into());
+        stream.focus_composer(window, cx);
+        stream
+    });
+    let requests = Arc::new(Mutex::new(Vec::<ContextCompactionRequested>::new()));
+    let ordinary = Arc::new(Mutex::new(Vec::<String>::new()));
+    let _observer = cx.new(|cx| {
+        let requests = requests.clone();
+        cx.subscribe(
+            &stream,
+            move |_: &mut (), _, request: &ContextCompactionRequested, _| {
+                requests.lock().unwrap().push(request.clone());
+            },
+        )
+        .detach();
+        let ordinary = ordinary.clone();
+        cx.subscribe(
+            &stream,
+            move |_: &mut (), _, request: &ComposerSubmitted, _| {
+                ordinary.lock().unwrap().push(request.content.clone());
+            },
+        )
+        .detach();
+    });
+    stream.update(cx, |stream, cx| {
+        stream
+            .input
+            .update(cx, |input, cx| input.set_text("/com", cx));
+    });
+    cx.run_until_parked();
+    assert!(stream.read_with(cx, |stream, _| stream.actions.visible()));
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    stream.read_with(cx, |stream, cx| {
+        assert_eq!(stream.input.read(cx).text(), "/compact ");
+        assert!(!stream.actions.visible());
+    });
+    assert!(requests.lock().unwrap().is_empty());
+    assert!(ordinary.lock().unwrap().is_empty());
+    stream.update(cx, |stream, cx| {
+        stream.input.update(cx, |input, cx| {
+            input.set_text("/compact 保留未完成任务", cx)
+        });
+    });
+    cx.run_until_parked();
+    assert!(!stream.read_with(cx, |stream, _| stream.actions.visible()));
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].summary_requirements, "保留未完成任务");
+    assert!(ordinary.lock().unwrap().is_empty());
+}
+
+#[gpui_kit::test]
+fn acp_compact_text_never_activates_native_suggestions_and_enter_submits(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        crate::init(cx);
+        cx.set_global(vega_theme::Theme::light());
+    });
+    let (stream, cx) = cx.add_window_view(|window, cx| {
+        let mut thread = thread();
+        thread.backend = TaskBackend::Codex;
+        let stream = ConversationStream::new(thread, cx);
+        stream.focus_composer(window, cx);
+        stream
+    });
+    let ordinary = Arc::new(Mutex::new(Vec::<String>::new()));
+    let compact = Arc::new(Mutex::new(0));
+    let _observer = cx.new(|cx| {
+        let ordinary = ordinary.clone();
+        cx.subscribe(
+            &stream,
+            move |_: &mut (), _, request: &ComposerSubmitted, _| {
+                ordinary.lock().unwrap().push(request.content.clone());
+            },
+        )
+        .detach();
+        let compact = compact.clone();
+        cx.subscribe(
+            &stream,
+            move |_: &mut (), _, _: &ContextCompactionRequested, _| {
+                *compact.lock().unwrap() += 1;
+            },
+        )
+        .detach();
+    });
+    for text in ["/com", "/compact", "/compact retain goal"] {
+        stream.update(cx, |stream, cx| {
+            stream
+                .input
+                .update(cx, |input, cx| input.set_text(text, cx));
+        });
+        cx.run_until_parked();
+        assert!(!stream.read_with(cx, |stream, _| stream.actions.visible()));
+    }
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(
+        *ordinary.lock().unwrap(),
+        vec!["/compact retain goal".to_owned()]
+    );
+    assert_eq!(*compact.lock().unwrap(), 0);
+}

@@ -414,7 +414,10 @@ impl ConversationStream {
             && (MODE_ORDER
                 .into_iter()
                 .any(|mode| mode_command(mode).starts_with(token))
-                || "/compact".starts_with(token))
+                || (self.thread.backend == TaskBackend::Native
+                    && text == token
+                    && token != "/compact"
+                    && "/compact".starts_with(token)))
             && self.actions.dismissed.as_deref() != Some(text)
             && !self.actions.menu
             && self.actions.pending_mode.is_none()

@@ -242,6 +242,8 @@ Native composer 支持精确首 token `/compact`（区分大小写，前导空�
 
 仅空闲、权限有效、来源可压缩且模型／权限／其他提交或受信动作未占用时接受；运行中不可排队或 steering 为普通消息。过长参数、附件／引用／skill intent 和不可用状态显示就近可恢复错误，草稿不丢。成功派发后清空原命令，保留 owner request id 与清空时输入版本；失败／取消只在同 owner 且草稿仍未改动时恢复原命令，不覆盖新输入；成功不加额外成功文案。现有 controller 再次验证 owner/route/admission，现有状态／取消保持。开发回归验证实际 composer 事件（无普通提交）、参数字节边界／精确识别、菜单投影、占用／重复提交拒绝、失败／取消恢复与不覆盖新草稿；复用已验证的底层摘要要求隔离与 controller 生命周期。真实窗口键盘／点击待用户手测，不把 GPUI 状态回归当原生输入验收。
 
+`89a94de7665b2ca8689dc77cd406256d38970dd0` 的 Actions [40854577657](https://github.com/puzige/vega/actions/runs/40854577657) 全部成功，182 发现／182 执行通过／0 跳过、16.858s，包含修复后的 preflight 回归；独立审查仍发现完整命令重新激活建议和 ACP 空建议截获 Enter 两项 P2。补充键盘合同：新增 compact 建议仅在 Native 的未完成首 token（无参数）上激活；完整 `/compact`、选择后的命令和后续参数编辑均退出建议上下文，普通 Enter 提交；ACP 的相同文本不激活该原生建议。开发回归使用输入观察器与 GPUI 测试窗口按键，验证建议选择仅插入、参数编辑后 Enter 恰好发出一次压缩事件、无普通提交，以及 ACP 普通提交保留。此类进程内事件路由不冒充真实原生窗口验收。
+
 #### 脱离前台的生成与逐阶段结算（2026-10-28）
 
 后台准备在当前 admission 下完成有界捕获：来源、append fence、前驱及引用摘要 digest 来自同一快照，拒绝 staged model change、来源不一致与不完整响应组。返回的 prepared job 不包含 admission、前台 actor、diagnostics channel 或任何 SQLite connection；只保存冻结请求、来源快照、摘要偏好、计价及凭据投影策略。前台生成仍全程持有原 admission 和同一 600 秒期限，不改变既有安装语义。
