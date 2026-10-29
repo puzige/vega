@@ -623,11 +623,16 @@ pub struct ChatMessage {
     context_files: Vec<ContextFile>,
     context_skill_runs: Vec<String>,
     context_skills: Vec<String>,
-    context_plan_source: Option<String>,
-    context_plan: Option<String>,
+    context_plan: Option<Box<ContextPlan>>,
     tool_context: Option<Box<crate::tool_context::ToolContext>>,
     model_projection: bool,
     replay_cold: bool,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ContextPlan {
+    source: String,
+    restored: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -747,7 +752,6 @@ impl PartialEq for ChatMessage {
             && self.context_files == other.context_files
             && self.context_skill_runs == other.context_skill_runs
             && self.context_skills == other.context_skills
-            && self.context_plan_source == other.context_plan_source
             && self.context_plan == other.context_plan
             && self.tool_context == other.tool_context
             && self.replay_cold == other.replay_cold
@@ -840,12 +844,11 @@ impl ChatMessage {
         }
 
         let mut size = std::mem::size_of::<Self>()
-            .saturating_add(
-                self.context_plan_source
-                    .as_ref()
-                    .map_or(0, String::capacity),
-            )
-            .saturating_add(self.context_plan.as_ref().map_or(0, String::capacity))
+            .saturating_add(self.context_plan.as_ref().map_or(0, |plan| {
+                std::mem::size_of::<ContextPlan>()
+                    .saturating_add(plan.source.capacity())
+                    .saturating_add(plan.restored.as_ref().map_or(0, String::capacity))
+            }))
             .saturating_add(
                 self.context_skill_runs
                     .capacity()
@@ -1090,28 +1093,34 @@ impl ChatMessage {
             file.restored = None;
         }
         message.context_skills.clear();
-        message.context_plan = None;
+        message.restore_context_plan(None);
         message.tool_context = None;
         message
     }
 
     pub fn attach_context_plan_source(&mut self, source: String) {
         if self.role == ChatRole::User {
-            self.context_plan_source = Some(source);
-            self.context_plan = None;
+            self.context_plan = Some(Box::new(ContextPlan {
+                source,
+                restored: None,
+            }));
         }
     }
 
     pub(crate) fn context_plan_source(&self) -> Option<&str> {
-        self.context_plan_source.as_deref()
+        self.context_plan.as_ref().map(|plan| plan.source.as_str())
     }
 
     pub(crate) fn restore_context_plan(&mut self, observation: Option<String>) {
-        self.context_plan = observation;
+        if let Some(plan) = &mut self.context_plan {
+            plan.restored = observation;
+        }
     }
 
     pub(crate) fn trim_context_plan(&mut self) -> bool {
-        self.context_plan.take().is_some()
+        self.context_plan
+            .as_mut()
+            .is_some_and(|plan| plan.restored.take().is_some())
     }
 
     pub fn attach_context_skill_runs(&mut self, runs: Vec<String>) {
@@ -1152,7 +1161,7 @@ impl ChatMessage {
     }
 
     pub(crate) fn reset_context_files(&mut self) {
-        self.context_plan = None;
+        self.restore_context_plan(None);
         self.context_skills.clear();
         for file in &mut self.context_files {
             file.restored = None;
@@ -1300,7 +1309,6 @@ impl ChatMessage {
             context_files: Vec::new(),
             context_skill_runs: Vec::new(),
             context_skills: Vec::new(),
-            context_plan_source: None,
             context_plan: None,
             tool_context: None,
             model_projection: false,
@@ -1328,7 +1336,6 @@ impl ChatMessage {
             context_files: Vec::new(),
             context_skill_runs: Vec::new(),
             context_skills: Vec::new(),
-            context_plan_source: None,
             context_plan: None,
             tool_context: None,
             model_projection: false,
@@ -1360,7 +1367,6 @@ impl ChatMessage {
             context_files: Vec::new(),
             context_skill_runs: Vec::new(),
             context_skills: Vec::new(),
-            context_plan_source: None,
             context_plan: None,
             tool_context: None,
             model_projection: false,
@@ -1433,7 +1439,6 @@ impl ChatMessage {
             context_files: Vec::new(),
             context_skill_runs: Vec::new(),
             context_skills: Vec::new(),
-            context_plan_source: None,
             context_plan: None,
             tool_context: None,
             model_projection: false,
@@ -1519,8 +1524,7 @@ pub fn project_model_messages(messages: &[ChatMessage]) -> Result<Vec<ChatMessag
         cold_projected.extend(messages.iter().cloned());
     }
     for message in &mut cold_projected {
-        message.context_plan_source = None;
-        if let Some(observation) = message.context_plan.take() {
+        if let Some(observation) = message.context_plan.take().and_then(|plan| plan.restored) {
             message.content.push('\n');
             message.content.push_str(&observation);
         }

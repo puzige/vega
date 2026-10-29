@@ -190,6 +190,8 @@ lint 修复版本 `d7c18c442c9488b488aa9937e57d6d8907576dec`（tree `902b5ff2a32
 
 附件为 authority:none 的 restored_plan／compact_plan_reference，标明 source_message_id、当前计划复审状态及必要备注；它只是历史状态，不是当前执行许可，不产生批准指令、不切换 Plan／Execute 模式、不绕过原 approved_authority 与用户确认流程。所有字段经过当前凭据过滤，检查不可用 fail closed；实际 wire estimator 纳入附件，预算不足可移除，不放宽主请求预算。开发回归覆盖真实计划状态变化／缺失／线程隔离／超限、生成安装重载来源一致、暖命中去旧状态及生产 provider 观测，保留既有审批回归与安全断言。
 
+首版 `636e09ea87f217496716d10e9cde87e15e0f6438`（tree `fd9611dd39da5073ed73a90fb6a451df9c6e4636`）的 Actions [40831022418](https://github.com/puzige/vega/actions/runs/40831022418)：Nextest `123305020016` success，原始输出 164 发现／164 执行通过／0 跳过、13.142s，四项计划回归实际 PASS；Clippy `123305019797` 与 required `123306121707` failure。两个新增 Option<String> 扩大 ChatMessage，导致 RuntimeEvent::SteeringAccepted 变体至少 616 bytes、次大变体 400 bytes，触发 large_enum_variant。修正将计划来源与正文合并至 Option<Box<ContextPlan>>，完整计入驻留内存，保持原附件行为与断言；不豁免 lint 或改 CI。首版独立增量静态审查 Clear，体积修正后仍须新 head 验证及增量复核。
+
 该增量不代替未取回 agent task／阶段交接、后台 shell、动态工具、原始详情读取或 idle/cache 的后续评估与实现。
 
 #### 脱离前台的生成与逐阶段结算（2026-10-28）
