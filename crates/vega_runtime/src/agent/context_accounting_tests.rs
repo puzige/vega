@@ -233,14 +233,15 @@ fn unchanged_cold_and_warm_requests_reuse_exactly_the_provider_input() {
 #[test]
 fn conservative_estimate_does_not_trigger_when_usage_and_tail_fit() {
     let mut messages = cold_history(1);
-    messages.last_mut().unwrap().content = "H".repeat(720_000);
+    messages.last_mut().unwrap().content = "H".repeat(870_000);
     let request = projected_request(&messages, &tools());
     let input = 132_000;
     let anchor = anchor(&request, input);
     append_tool_round(&mut messages, &["small result"], None);
     let budget = ContextBudget::new(320_000, 20_000, true).unwrap();
     assert_eq!(budget.input_budget(), 300_000);
-    assert_eq!(budget.trigger_tokens().unwrap(), 240_000);
+    assert_eq!(budget.trigger_tokens().unwrap(), 287_000);
+    assert_eq!(budget.blocking_tokens().unwrap(), 297_000);
     let raw = decide(None, &messages, &request);
     assert_estimated(raw, &messages, &request.tools);
     assert_eq!(budget.check(raw.estimate).unwrap(), ContextCheck::Triggered);
@@ -268,11 +269,15 @@ fn calibrated_trigger_and_input_limit_remain_enforced() {
         .input_tokens;
     let incremental = full.checked_sub(prefix).unwrap();
     assert!(incremental > 0 && incremental < trigger);
+    let blocking = budget.blocking_tokens().unwrap();
+    assert_eq!(trigger, 287_000);
+    assert_eq!(blocking, 297_000);
     for (predicted, expected) in [
         (trigger - 1, ContextCheck::Within),
         (trigger, ContextCheck::Triggered),
-        (budget.input_budget(), ContextCheck::Triggered),
-        (budget.input_budget() + 1, ContextCheck::OverLimit),
+        (blocking - 1, ContextCheck::Triggered),
+        (blocking, ContextCheck::OverLimit),
+        (budget.input_budget(), ContextCheck::OverLimit),
     ] {
         let input = predicted - incremental;
         let anchor = anchor(&request, input);
