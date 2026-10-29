@@ -146,6 +146,8 @@
 
 字段补齐提交 `4801a74e39c992d16e08865a41bed74d84286b53`（tree `8468e12eb9bb778ba140c2038d6a960633b02320`）的 Actions [40812918319](https://github.com/puzige/vega/actions/runs/40812918319) 中 Clippy `123247215270` success；Nextest `123247215458` 实际 150 执行／144 通过／6 失败／0 跳过、22.410s，独立 discovery 数未取得，required `123248312133` failure。五项原 GPUI 生命周期回归因 `reasoning_preferences=None` 表示尚未加载，production submit gate 正确拒绝，worker 未启动而超时；fixture 改为已加载空列表 `Some(Vec::new())`，不改门槛或超时。新 fork 前缀回归揭示真实实现错误：构造器错误附加整段 cold replay frame，collector 的生产投影将父 assistant／tool 改写为历史记录，违反前缀保留合同。修复只取消该伪造 cold frame，保留原父消息的生产投影、安全过滤与工具禁用，原精确前缀断言不变。其余新增四项回归已执行通过；修复仍须新 head 云端验证。
 
+修复提交 `7a88f001e256d2c0d9dcd4664f050288457d6efd`（tree `df5cc1d41105af1214f823bc3bf0e5ab020a9d2b`）的 Actions [40813921199](https://github.com/puzige/vega/actions/runs/40813921199) 中 Clippy `123250432186` success，Nextest `123250432371` 150 执行／149 通过／1 失败／0 跳过、22.096s，required `123252284374` failure，独立 discovery 数未取得。五项 GPUI 已恢复通过。剩余 fork 断言错误比较 provider 观测值和未投影 durable 消息：正常父请求也必须经过 `project_model_messages`，历史工具的 `live_tool_calls=None` 保护会将其转为无权限审计记录，不能为前缀相等绕过。回归改为严格比较正常父请求生产投影的完整前缀，并额外在投影前断言 fork 构造器保留原父消息，既检测伪造 cold frame，也保留历史工具安全语义；不改生产投影或工具权限。前述 cold frame 缺陷修复仍保留，不能据此把原始历史工具身份强行发送为活跃调用。
+
 #### 脱离前台的生成与逐阶段结算（2026-10-28）
 
 后台准备在当前 admission 下完成有界捕获：来源、append fence、前驱及引用摘要 digest 来自同一快照，拒绝 staged model change、来源不一致与不完整响应组。返回的 prepared job 不包含 admission、前台 actor、diagnostics channel 或任何 SQLite connection；只保存冻结请求、来源快照、摘要偏好、计价及凭据投影策略。前台生成仍全程持有原 admission 和同一 600 秒期限，不改变既有安装语义。

@@ -105,6 +105,38 @@ async fn summary_fork_preserves_parent_prefix_and_accounts_each_fallback_attempt
         let hook =
             ConversationCompactionHook::new(&provider, path, "thread", "gpt-4.1", None, None)
                 .with_full_on_threshold(true);
+        let stage = vec![request.messages.clone()];
+        let task = ChatMessage::new(ChatRole::User, "Task");
+        let cancel = CancellationToken::new();
+        let execution = SummaryExecution {
+            request: &request,
+            task: &task,
+            cancel: &cancel,
+            deadline: tokio::time::Instant::now() + SUMMARY_OPERATION_TIMEOUT,
+            attempts: 0,
+            usages: Vec::new(),
+            usage_complete: true,
+            rejected_inputs: Vec::new(),
+        };
+        let direct = direct_summary_request(
+            &request,
+            "gpt-4.1",
+            None,
+            &stage,
+            Some(&task),
+            SummaryVariant::from_environment(),
+        );
+        let fork = hook
+            .summary_fork_request(&stage, &direct, &execution)
+            .await?
+            .ok_or("expected eligible fork")?;
+        let mut parent_messages = vec![ChatMessage::new(ChatRole::System, &request.system_prompt)];
+        parent_messages.extend(request.messages.clone());
+        assert_eq!(
+            &fork.messages[..parent_messages.len()],
+            parent_messages.as_slice()
+        );
+        let parent_wire = vega_runtime::project_model_messages(&parent_messages)?;
         let generated = hook
             .generate_compaction(request.clone(), CancellationToken::new(), &mut None)
             .await;
@@ -126,10 +158,7 @@ async fn summary_fork_preserves_parent_prefix_and_accounts_each_fallback_attempt
         let requests = provider.requests.lock().unwrap();
         let first = &requests[0];
         assert_eq!(first.messages[0].content, request.system_prompt);
-        assert_eq!(
-            &first.messages[1..1 + request.messages.len()],
-            request.messages.as_slice()
-        );
+        assert_eq!(&first.messages[..parent_wire.len()], parent_wire.as_slice());
         assert_eq!(first.tools, request.tools);
         assert_eq!(first.tool_choice, Some(vega_runtime::ToolChoice::None));
         assert_eq!(first.model_snapshot.as_deref(), Some(&provider.snapshot));
