@@ -21,6 +21,34 @@ fn failure(message: &str) -> VegaError {
     }
 }
 
+fn verify_continuation(
+    tool: &str,
+    state: SubagentState,
+    occupied: bool,
+    parent: &str,
+    current_parent: &str,
+) -> Result<(), VegaError> {
+    if occupied || matches!(state, SubagentState::Running | SubagentState::Cancelling) {
+        return Err(failure("agent_busy"));
+    }
+    if tool == "followup_agent" {
+        if parent != current_parent {
+            return Err(failure(
+                "followup_parent_mismatch: this child belongs to a previous parent execution. If further delegation is needed, call spawn_agent with the task goal, existing artifacts (accessible links, exact versions, completed and remaining work), and necessary context (constraints, evidence, next steps). A new Agent does not automatically inherit this child's history. Do not retry this followup_agent or use resume_agent to bypass parent ownership. No new Agent has been created.",
+            ));
+        }
+        if state != SubagentState::Completed {
+            return Err(failure(&format!(
+                "followup_state_not_completed: child execution is {}; followup_agent requires a normally completed execution. Do not retry the same followup or assume resume_agent is permitted.",
+                state.as_str()
+            )));
+        }
+    } else if state != SubagentState::Interrupted {
+        return Err(failure("agent state does not permit this continuation"));
+    }
+    Ok(())
+}
+
 type ExecutionKey = (String, String);
 type AdmissionReply = oneshot::Sender<Result<serde_json::Value, VegaError>>;
 
@@ -686,21 +714,13 @@ impl Supervisor {
                 .executions
                 .get(&(id.into(), message.into()))
                 .ok_or_else(|| failure("unknown_agent"))?;
-            if old.occupied
-                || matches!(
-                    old.snapshot.state,
-                    SubagentState::Running | SubagentState::Cancelling
-                )
-            {
-                return Err(failure("agent_busy"));
-            }
-            if (tool == "followup_agent"
-                && (old.snapshot.state != SubagentState::Completed
-                    || old.snapshot.parent_message_id != launch.parent_message))
-                || (tool == "resume_agent" && old.snapshot.state != SubagentState::Interrupted)
-            {
-                return Err(failure("agent state does not permit this continuation"));
-            }
+            verify_continuation(
+                tool,
+                old.snapshot.state,
+                old.occupied,
+                &old.snapshot.parent_message_id,
+                &launch.parent_message,
+            )?;
             let previous = old
                 .boundary
                 .clone()
@@ -1621,3 +1641,7 @@ async fn persist_child_terminal(
     .await
     .map_err(|_| failure("storage unavailable"))?
 }
+
+#[cfg(test)]
+#[path = "subagents/continuation_diagnostics_tests.rs"]
+mod continuation_diagnostics_tests;
