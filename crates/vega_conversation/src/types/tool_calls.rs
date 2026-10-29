@@ -653,23 +653,8 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
                         input
                             .get("description")
                             .and_then(serde_json::Value::as_str)
-                            .map(|text| {
-                                let text: String = text
-                                    .chars()
-                                    .map(|character| {
-                                        if character.is_control()
-                                            || matches!(character, '\u{2028}' | '\u{2029}')
-                                        {
-                                            ' '
-                                        } else {
-                                            character
-                                        }
-                                    })
-                                    .collect();
-                                text.trim().chars().take(120).collect::<String>()
-                            })
-                    })
-                    .filter(|text| !text.trim().is_empty());
+                            .and_then(bash_description_title)
+                    });
                 ToolCardInputProjection::Bash {
                     command,
                     description,
@@ -708,6 +693,32 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
         }
         _ => ToolCardInputProjection::Corrupt,
     }
+}
+
+fn bash_description_title(text: &str) -> Option<String> {
+    let text: String = text
+        .chars()
+        .map(|character| {
+            if character.is_control() || matches!(character, '\u{2028}' | '\u{2029}') {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect();
+    let title = text.trim().trim_end_matches('。').trim_end();
+    let title = match title.strip_suffix('.') {
+        Some(prefix)
+            if prefix.chars().next_back().is_some_and(|character| {
+                !character.is_whitespace() && !matches!(character, '.' | '/' | '\\')
+            }) =>
+        {
+            prefix
+        }
+        _ => title,
+    };
+    let title: String = title.chars().take(120).collect();
+    (!title.trim().is_empty()).then_some(title)
 }
 
 fn skill_card_input_projection(tool: &str, input_json: &str) -> ToolCardInputProjection {
