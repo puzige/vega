@@ -132,7 +132,7 @@ impl Grammar {
     fn highlights_query(self) -> String {
         match self {
             Self::Rust => format!(
-                "{}\n[\"=\" \"+\" \"-\" \"/\" \"%\" \"==\" \"!=\" \"<=\" \">=\" \"&&\" \"||\" \"^\" \"|\" \"!\"] @operator",
+                "[\"=\" \"+\" \"-\" \"/\" \"%\" \"==\" \"!=\" \"<=\" \">=\" \"&&\" \"||\" \"^\" \"|\" \"!\"] @operator\n{}",
                 tree_sitter_rust::HIGHLIGHTS_QUERY
             ),
             Self::TypeScript | Self::Tsx => format!(
@@ -142,11 +142,17 @@ impl Grammar {
             ),
             Self::JavaScript => tree_sitter_javascript::HIGHLIGHT_QUERY.to_string(),
             Self::Python => tree_sitter_python::HIGHLIGHTS_QUERY.to_string(),
-            Self::Json => tree_sitter_json::HIGHLIGHTS_QUERY.to_string(),
+            Self::Json => format!(
+                "{}\n(pair key: (string) @property)",
+                tree_sitter_json::HIGHLIGHTS_QUERY
+            ),
             Self::Bash => tree_sitter_bash::HIGHLIGHT_QUERY.to_string(),
             Self::Html => tree_sitter_html::HIGHLIGHTS_QUERY.to_string(),
             Self::Css => tree_sitter_css::HIGHLIGHTS_QUERY.to_string(),
-            Self::Sql => tree_sitter_sequel::HIGHLIGHTS_QUERY.to_string(),
+            Self::Sql => format!(
+                "{}\n((literal) @number (#match? @number \"^[-+]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][-+]?[0-9]+)?$\"))",
+                tree_sitter_sequel::HIGHLIGHTS_QUERY
+            ),
         }
     }
 }
