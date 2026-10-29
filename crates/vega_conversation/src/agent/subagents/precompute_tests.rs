@@ -2,8 +2,8 @@ use super::*;
 use crate::agent::ConversationCompactionHook;
 use std::sync::atomic::{AtomicBool, Ordering};
 use vega_runtime::{
-    ChatMessage, ChatRequest, ChatRole, ContextBudget, ContextCompactionRequest,
-    ContextCompactionTrigger, ProviderEvent, StopReason,
+    ChatRequest, ContextBudget, ContextCompactionRequest, ContextCompactionTrigger, ProviderEvent,
+    StopReason,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -225,14 +225,14 @@ async fn child_exit_waits_for_real_runtime_exit_and_retires_only_its_candidate()
                         "SELECT EXISTS(SELECT 1 FROM context_precompute_accounting WHERE generation=?1 AND stage_count=1 AND usage_complete=1)",
                         [task.generation()],
                         |row| row.get(0),
-                    )?;
+                    ).map_err(VegaError::Store)?;
                     let diagnostics: i64 = store.conn().query_row(
                         "SELECT COUNT(*) FROM run_diagnostic_events WHERE thread_id='child'",
                         [],
                         |row| row.get(0),
-                    )?;
+                    ).map_err(VegaError::Store)?;
                     if sealed && diagnostics == 4 {
-                        break Ok::<(), rusqlite::Error>(());
+                        break Ok::<(), VegaError>(());
                     }
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }

@@ -208,6 +208,8 @@ ChildProvider 显式重建 owned compaction provider，只有内层工厂可用�
 
 后台诊断修复提交 `c0e6dfad1332fd1ee1a5f8496cd8847a8e21735b`（tree `cc7279c576df4b513d90e55f0fde883a1a79cea4`）的 Actions [40784163692](https://github.com/puzige/vega/actions/runs/40784163692) 已成功：Clippy `123153076122`、Nextest `123153075674`、required `123154894342` 均 success；原始输出 136 发现／136 执行通过／0 跳过、15.851s，含六种后台诊断终态与容量回归。该结果只覆盖修复提交，子 agent 新增量待验证。
 
+子 agent 初版 `4afb1b76e1d1b72b379b23c1be83d19d4b3c9cb3`（tree `0a75ed1c81ca6e8874fb3689df372458e1c2b552`）普通推送后的 Actions [40792164092](https://github.com/puzige/vega/actions/runs/40792164092) 失败：Clippy `123179761648`、Nextest `123179761872`、required `123181283080` 均 failure；format 与 Python release-script 检查通过。Rust 编译阶段发现新增 child cleanup 直接引用 conversation 未依赖的 `rusqlite`、测试同样引用该 crate、计量 observer 未实现 trait 必需方法及未使用导入，未取得成功 discovery 或测试执行，不能记成 no Rust tests。修复使用现有 `ready::current_generation`、既有 `VegaError::Store` 映射，不增加依赖；observer 对不应发生的前台 dispatch/completion 回调显式失败，原有业务断言保留。修复版本待 Actions。
+
 ### 4.4 provider 与本机能力
 
 - 使用实际冻结模型定义中的 `context_window`、`max_output_tokens` 以及用户覆盖。既有配置的 input-limit / reserve 语义要显式迁移或适配，不把 input cap 偷换成 total window；不直接改用户本机配置/数据库。

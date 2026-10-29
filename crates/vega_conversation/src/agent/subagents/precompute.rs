@@ -1,6 +1,5 @@
 use super::*;
 use crate::types::{ContextPrecomputeLease, ContextPrecomputeOwner, ContextPrecomputeRegistry};
-use rusqlite::OptionalExtension;
 
 #[cfg(test)]
 #[path = "precompute_tests.rs"]
@@ -71,14 +70,9 @@ impl ChildPrecompute {
                 vega_store::write_coordination::WriteCategory::ContextCompaction,
             )
             .map_err(VegaError::Store)?;
-            let generation: Option<String> = transaction
-                .query_row(
-                    "SELECT generation FROM context_precompute_slots WHERE thread_id=?1",
-                    [&thread],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(VegaError::Store)?;
+            let generation =
+                vega_store::context_precompute::ready::current_generation(&transaction, &thread)
+                    .map_err(|_| failure("child context cleanup unavailable"))?;
             if let Some(generation) = generation {
                 vega_store::context_precompute::ready::retire_in_transaction(
                     &transaction,

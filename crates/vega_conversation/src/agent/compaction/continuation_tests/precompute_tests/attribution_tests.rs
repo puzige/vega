@@ -20,6 +20,12 @@ impl vega_runtime::RuntimeAutomationHook for UsageObserver {
     fn missing_usage(&self) {
         self.0.store(true, Ordering::Release);
     }
+    fn provider_started(&self) {
+        panic!("background accounting must not report foreground provider dispatch");
+    }
+    fn provider_usage(&self) {
+        panic!("background accounting must not report foreground provider completion");
+    }
 }
 
 #[tokio::test]
