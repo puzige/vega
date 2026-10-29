@@ -838,6 +838,7 @@ async fn ordinary_compaction_retains_legacy_unsplittable_tail_but_full_rejects_c
                 seq: 12,
                 tool: "read",
                 input_json: "{\"path\":\"notes.txt\",\"offset\":null,\"limit\":null}",
+                description: None,
                 status: "success",
                 created_at: 12,
             },

@@ -1,4 +1,6 @@
 use super::*;
+
+mod fork_tests;
 use reactive_tests::{ScriptedSummaryProvider, SummaryReply};
 use vega_store::context_compaction::{ContextSource, latest_checkpoint, load_source};
 

@@ -9,6 +9,7 @@ mod micro;
 pub(crate) mod precompute;
 mod projection;
 mod reactive;
+mod summary_fork;
 mod summary_variant;
 
 use crate::types::ContextCompactionTrigger;
@@ -1853,9 +1854,9 @@ impl ConversationCompactionHook<'_> {
                 if estimate_tokens > execution.request.budget.input_budget() {
                     break;
                 }
-                selected = Some((cursor + offset + 1, direct));
+                selected = Some((cursor + offset + 1, direct, stage.clone()));
             }
-            let Some((end, direct)) = selected else {
+            let Some((end, direct, stage)) = selected else {
                 return Err(execution.input_limit(estimate_tokens));
             };
             let input = vega_runtime::project_model_messages(&direct.messages)
@@ -1865,18 +1866,44 @@ impl ConversationCompactionHook<'_> {
             {
                 return Err(execution.input_limit(estimate_tokens));
             }
+            let fork = self
+                .summary_fork_request(&stage, &direct, execution)
+                .await
+                .map_err(|error| execution.failure(error))?;
+            let first = fork.clone().unwrap_or_else(|| direct.clone());
             execution.attempts += 1;
-            match self
+            let mut outcome = self
                 .run_summary_stage(
-                    direct,
+                    first,
                     execution.attempts,
                     &mut execution.usages,
                     &mut execution.usage_complete,
                     execution.cancel,
                     execution.deadline,
                 )
-                .await
+                .await;
+            if fork.is_some()
+                && outcome
+                    .as_ref()
+                    .err()
+                    .is_some_and(|failure| summary_fork::allows_standalone_fallback(&failure.error))
+                && execution.attempts < SUMMARY_MAX_STAGES
+                && !execution.cancel.is_cancelled()
+                && tokio::time::Instant::now() < execution.deadline
             {
+                execution.attempts += 1;
+                outcome = self
+                    .run_summary_stage(
+                        direct,
+                        execution.attempts,
+                        &mut execution.usages,
+                        &mut execution.usage_complete,
+                        execution.cancel,
+                        execution.deadline,
+                    )
+                    .await;
+            }
+            match outcome {
                 Ok(summary) => {
                     aggregate = summary;
                     cursor = end;

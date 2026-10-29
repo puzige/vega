@@ -112,6 +112,7 @@ fn seed(store: &Store, thread: &str) -> TestResult {
             permission_mode: "readonly",
             permission_revision: 0,
             full_access_grant: None,
+            reasoning_preferences: None,
             model: "model",
             status: "active",
             pinned: false,

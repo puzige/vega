@@ -134,6 +134,14 @@
 
 开发回归覆盖重开数据库后的 ready 读取、合法追加、过期／未来／超限／错 schema／错线程／来源修改、旧 generation 不能替换或删除新候选；计量重复／冲突／unknown／跨线程／取消后丢弃及删除后的账单保留。本批仅交付持久化边界，不把存储 API 当作完整后台调度或产品 UI 接线。
 
+#### 临时摘要查询分支（2026-10-29）
+
+真实摘要生成入口优先尝试继承父请求前缀的单响应临时分支，不新建持久化对话或通用 agent fork 平台。仅当本次摘要历史与父投影前缀逐项一致、无媒体剥离或聚合改写、存在冻结 provider model snapshot，且完整 framed wire（含原工具 schema）装入摘要输入预算时使用；继承父 system／工具／冻结模型与 reasoning，附加有界摘要指令，tool_choice=None 且 collector 拒绝任何工具调用，不进入工具执行循环。独立摘要仍是范围不相容／超预算时的路径；临时分支空白、格式失败或 provider 错误可在剩余阶段／期限内回退独立摘要，取消、凭据检查失败等安全错误不得被回退吞掉。每次实际请求独立结算，失败尝试的用量不丢失；不宣称 provider 缓存命中或账单节省。
+
+完整父历史均纳入本次摘要且没有活跃 source owner 时，临时分支可在已有当前 admission 下只读借用兼容 Ready：同一快照验证候选、来源、前驱、偏好和当前模型，使用生产 projection interpreter 保留未覆盖后缀；借用不安装、不退役、不新记原候选账单。范围不完全匹配、partial、后台生成自身或不适用候选不借用，不能将摘要范围之外的后缀偷偷纳入摘要。借用保留完整请求预算与当前凭据过滤；原始源／候选／账单须保持不变，最终前台安装仍走独立的当前来源 CAS。此增量不冒充任意业务查询 fork、状态恢复附件或整卡完成。
+
+开发回归覆盖真实生成入口的父前缀／schema／model snapshot 保留、错误／空白／工具响应回退及逐请求用量、取消／凭据错误不回退、改写前缀与超大 schema 拒绝；真实 SQLite／worker 覆盖重复借用后仍可正常消费、取消等待不取消后台，以及实际摘要入口借用后候选／账单／checkpoint 不变。无实际 replay frame 的借用不接受活跃 owner，不制造 replay 权限。本地仅 `cargo fmt --all -- --check` 和 `git diff --check`；编译、Clippy 与行为执行待现有 Actions。
+
 #### 脱离前台的生成与逐阶段结算（2026-10-28）
 
 后台准备在当前 admission 下完成有界捕获：来源、append fence、前驱及引用摘要 digest 来自同一快照，拒绝 staged model change、来源不一致与不完整响应组。返回的 prepared job 不包含 admission、前台 actor、diagnostics channel 或任何 SQLite connection；只保存冻结请求、来源快照、摘要偏好、计价及凭据投影策略。前台生成仍全程持有原 admission 和同一 600 秒期限，不改变既有安装语义。

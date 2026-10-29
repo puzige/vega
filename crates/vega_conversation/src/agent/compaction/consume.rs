@@ -60,6 +60,29 @@ impl ConversationCompactionHook<'_> {
         cancel: &CancellationToken,
         deadline: tokio::time::Instant,
     ) -> Result<Option<ContextCompactionResult>, VegaError> {
+        self.project_precompute_until(request, replay_frame, cancel, deadline, false)
+            .await
+    }
+
+    pub(super) async fn borrow_precompute_until(
+        &self,
+        request: &ContextCompactionRequest,
+        replay_frame: Option<&vega_runtime::ReplayFrame>,
+        cancel: &CancellationToken,
+        deadline: tokio::time::Instant,
+    ) -> Result<Option<ContextCompactionResult>, VegaError> {
+        self.project_precompute_until(request, replay_frame, cancel, deadline, true)
+            .await
+    }
+
+    async fn project_precompute_until(
+        &self,
+        request: &ContextCompactionRequest,
+        replay_frame: Option<&vega_runtime::ReplayFrame>,
+        cancel: &CancellationToken,
+        deadline: tokio::time::Instant,
+        borrow: bool,
+    ) -> Result<Option<ContextCompactionResult>, VegaError> {
         if cancel.is_cancelled() {
             return Err(VegaError::Cancelled);
         }
@@ -266,6 +289,30 @@ impl ConversationCompactionHook<'_> {
             let store = Store::open(path).map_err(VegaError::Store)?;
             crate::thread_access::verify(&store, &checkpoint.thread_id, &admission)
                 .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?;
+            if borrow {
+                let transaction = store
+                    .conn()
+                    .unchecked_transaction()
+                    .map_err(VegaError::Store)?;
+                if !consume::validate_for_install_in_transaction(
+                    &transaction,
+                    &prepared,
+                    &checkpoint.model,
+                    now_ms(),
+                )
+                .map_err(precompute::store_error)?
+                {
+                    return Err(context_error(ContextRuntimeError::SourceChanged));
+                }
+                transaction.commit().map_err(VegaError::Store)?;
+                if install_cancel.is_cancelled() {
+                    return Err(VegaError::Cancelled);
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(context_error(ContextRuntimeError::SourceChanged));
+                }
+                return Ok(None);
+            }
             match consume::install_with_guard(
                 store.conn(),
                 &prepared,
@@ -297,12 +344,12 @@ impl ConversationCompactionHook<'_> {
                     }
                     Err(context_error(ContextRuntimeError::SummaryTimedOut))
                 }
-                result => result.map_err(precompute::store_error),
+                result => result.map(Some).map_err(precompute::store_error),
             }
         })
         .await
         .map_err(|_| context_error(ContextRuntimeError::SourceChanged))??;
-        if matches!(install, ContextCheckpointInstall::Stale) {
+        if matches!(install, Some(ContextCheckpointInstall::Stale)) {
             return Err(context_error(ContextRuntimeError::SourceChanged));
         }
         Ok(Some(result))

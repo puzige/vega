@@ -42,6 +42,7 @@ impl Fixture {
                 permission_mode: "read_only",
                 permission_revision: 0,
                 full_access_grant: None,
+                reasoning_preferences: None,
                 model: "gpt-4.1",
                 status: "active",
                 pinned: false,

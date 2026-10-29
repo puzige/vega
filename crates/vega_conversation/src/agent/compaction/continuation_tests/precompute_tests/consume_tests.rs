@@ -1,6 +1,7 @@
 use super::*;
 use vega_runtime::{ContextCompactionUsageState, ReasoningReplayPolicy, ReplayFrame};
 
+mod borrow_tests;
 mod timeout_tests;
 
 async fn publish(

@@ -355,6 +355,7 @@ async fn micro_accepts_partial_retained_prefix_and_disjoint_history_with_a_live_
                 seq: 103,
                 tool: "read",
                 input_json: "{\"path\":\"live.txt\",\"offset\":null,\"limit\":null}",
+                description: None,
                 status: "success",
                 created_at: 103,
             },
