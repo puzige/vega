@@ -1076,6 +1076,12 @@ impl ChatMessage {
         }
     }
 
+    pub(crate) fn reset_context_files(&mut self) {
+        for file in &mut self.context_files {
+            file.restored = None;
+        }
+    }
+
     pub(crate) fn pending_context_files(&self) -> Vec<(usize, String, String)> {
         self.context_files
             .iter()

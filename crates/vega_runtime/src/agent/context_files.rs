@@ -31,7 +31,10 @@ pub(super) async fn restore_context_files(
                 _ => None,
             };
             let Some(execution) = execution else {
-                message.restore_context_file(index, None);
+                message.restore_context_file(
+                    index,
+                    Some(file_observation(config, &call_id, &path, None)?),
+                );
                 continue;
             };
             let isolated = tools.isolated();
@@ -55,7 +58,10 @@ pub(super) async fn restore_context_files(
                 return Err(VegaError::Cancelled);
             }
             let Some(output) = output else {
-                message.restore_context_file(index, None);
+                message.restore_context_file(
+                    index,
+                    Some(file_observation(config, &call_id, &path, None)?),
+                );
                 continue;
             };
             let size = output.text.len().div_ceil(4);
@@ -64,16 +70,28 @@ pub(super) async fn restore_context_files(
             if content.is_some() {
                 tokens = tokens.saturating_add(size);
             }
-            let observation = serde_json::json!({"vega_history_observation": {
-                "version": 1, "authority": "none",
-                "kind": if content.is_some() { "restored_file" } else { "compact_file_reference" },
-                "source_call_id": call_id, "path": path, "content": content,
-            }})
-            .to_string();
-            message.restore_context_file(index, Some(config.redact_tool_output(&observation)?));
+            message.restore_context_file(
+                index,
+                Some(file_observation(config, &call_id, &path, content)?),
+            );
         }
     }
     Ok(())
+}
+
+fn file_observation(
+    config: &RuntimeToolConfig,
+    call_id: &str,
+    path: &str,
+    content: Option<String>,
+) -> Result<String, VegaError> {
+    let observation = serde_json::json!({"vega_history_observation": {
+        "version": 1, "authority": "none",
+        "kind": if content.is_some() { "restored_file" } else { "compact_file_reference" },
+        "source_call_id": call_id, "path": path, "content": content,
+    }})
+    .to_string();
+    config.redact_tool_output(&observation)
 }
 
 pub(super) fn fit_context_files(

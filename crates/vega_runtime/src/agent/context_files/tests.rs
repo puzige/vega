@@ -80,6 +80,136 @@ async fn current_file_content_is_filtered_without_changing_durable_messages() ->
     Ok(())
 }
 
+struct OnceThenDeny(AtomicUsize);
+
+impl RuntimePermissionHook for OnceThenDeny {
+    fn request(
+        &self,
+        _: RuntimePermissionPrompt,
+        _: CancellationToken,
+    ) -> BoxFuture<'static, Result<RuntimeUserDecision, VegaError>> {
+        let decision = if self.0.fetch_add(1, Ordering::Relaxed) == 0 {
+            RuntimeUserDecision::Once
+        } else {
+            RuntimeUserDecision::Deny { note: None }
+        };
+        Box::pin(async move { Ok(decision) })
+    }
+}
+
+#[tokio::test]
+async fn warm_candidates_recheck_current_files_and_once_permissions() -> TestResult {
+    for mode in ["updated", "deleted", "denied"] {
+        let directory = Directory::new()?;
+        let external = Directory::new()?;
+        let path = if mode == "denied" {
+            external.0.join("notes.txt")
+        } else {
+            directory.0.join("notes.txt")
+        };
+        std::fs::write(&path, "old cached file detail")?;
+        let tools = vega_tools::Tools::new(&directory.0)?;
+        let provider = CapturingProvider(std::sync::Mutex::new(Vec::new()));
+        let hook = OnceThenDeny(AtomicUsize::new(0));
+        let route = [7; 32];
+        let build_request =
+            |history: Vec<ChatMessage>, replay_frame: crate::ReplayFrame| AgentRequest {
+                model: "synthetic".into(),
+                system_prompt: "system".into(),
+                history,
+                max_tokens: None,
+                completed_tool_results: Default::default(),
+                tool_config: RuntimeToolConfig::default(),
+                pricing_catalog: None,
+                reasoning: None,
+                model_snapshot: None,
+                replay_frame: Some(replay_frame),
+                context_budget: Some(crate::ContextBudget::new(100000, 10000, true).unwrap()),
+                context_source_version: Some(1),
+                context_source_fingerprint: Some("source".into()),
+                context_operation_id: Some("owner".into()),
+                context_compaction_hook: None,
+            };
+        let mut frame = crate::ReplayFrame::new(2, crate::ReasoningReplayPolicy::Unknown);
+        frame.attach_route_fingerprint(route);
+        let history = reference(path.to_str().ok_or("path")?)
+            .into_iter()
+            .skip(1)
+            .collect();
+        let first = run_agent_with_permission_sink_and_context(
+            &provider,
+            &tools,
+            build_request(history, frame),
+            CancellationToken::new(),
+            &hook,
+            None,
+            |_| async { Ok(()) },
+        )
+        .await?;
+        assert!(!first.failed);
+        let environment = first.messages[0]
+            .replay_frame()
+            .and_then(crate::ReplayFrame::environment_fingerprint)
+            .ok_or("environment")?;
+        let mut warm = first.messages;
+        warm.push(ChatMessage::new(ChatRole::Assistant, "warm-only-marker"));
+        if mode == "updated" {
+            std::fs::write(&path, "new current file detail")?;
+        } else if mode == "deleted" {
+            std::fs::remove_file(&path)?;
+        }
+        let mut frame = crate::ReplayFrame::new(2, crate::ReasoningReplayPolicy::Unknown);
+        frame.attach_route_fingerprint(route);
+        frame.attach_candidate(warm, environment);
+        let mut history = reference(path.to_str().ok_or("path")?)
+            .into_iter()
+            .skip(1)
+            .collect::<Vec<_>>();
+        history.push(ChatMessage::new(ChatRole::User, "Continue now"));
+        let second = run_agent_with_permission_sink_and_context(
+            &provider,
+            &tools,
+            build_request(history, frame),
+            CancellationToken::new(),
+            &hook,
+            None,
+            |_| async { Ok(()) },
+        )
+        .await?;
+        assert!(!second.failed);
+        let requests = provider.0.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        let first_wire = requests[0]
+            .messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let wire = requests[1]
+            .messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(first_wire.contains("old cached file detail"));
+        assert!(wire.contains("warm-only-marker"));
+        assert!(!wire.contains("old cached file detail"));
+        assert!(wire.contains("source-read"));
+        if mode == "updated" {
+            assert!(wire.contains("new current file detail"));
+            assert!(wire.contains("restored_file"));
+        } else {
+            assert!(wire.contains("compact_file_reference"));
+            assert!(!wire.contains("restored_file"));
+        }
+        assert_eq!(
+            hook.0.load(Ordering::Relaxed),
+            if mode == "denied" { 2 } else { 0 }
+        );
+    }
+    Ok(())
+}
+
 struct CapturingProvider(std::sync::Mutex<Vec<ChatRequest>>);
 
 impl Provider for CapturingProvider {
@@ -175,11 +305,8 @@ async fn denied_missing_and_oversized_files_never_claim_full_restoration() -> Te
         let wire = crate::project_model_messages(&messages)?;
         assert!(!wire[1].content.contains("restored_file"));
         assert!(!wire[1].content.contains("must not be exposed"));
-        if matches!(path, "large.txt" | "huge.txt") {
-            assert!(wire[1].content.contains("compact_file_reference"));
-        } else {
-            assert_eq!(wire[1].content, "Historical summary");
-        }
+        assert!(wire[1].content.contains("compact_file_reference"));
+        assert!(wire[1].content.contains("source-read"));
         restore_context_files(
             &mut messages,
             &tools,

@@ -989,6 +989,9 @@ where
     Fut: Future<Output = Result<(), VegaError>>,
 {
     let mut request = request;
+    for message in &mut request.history {
+        message.reset_context_files();
+    }
     if request.model_snapshot.is_none() {
         request.model_snapshot = provider.model_snapshot().map(Box::new);
     }
@@ -1357,14 +1360,6 @@ where
             system_message.attach_replay_frame(frame);
         }
         messages[0] = system_message;
-        super::context_files::restore_context_files(
-            &mut messages,
-            tools,
-            &tool_config,
-            permission_hook,
-            &cancel,
-        )
-        .await?;
         if cancel.is_cancelled() {
             emit!(events, sink, RuntimeEvent::Interrupted);
             return Ok(outcome(
@@ -1388,13 +1383,6 @@ where
             run.trim_messages(&mut messages);
         }
         let tool_definitions = capabilities.definitions().to_vec();
-        if let Some(budget) = context_budget {
-            super::context_files::fit_context_files(
-                &mut messages,
-                &tool_definitions,
-                budget.input_budget(),
-            )?;
-        }
         if let Some(route_fingerprint) = replay_route_fingerprint {
             let current_environment = crate::agent::replay_environment_fingerprint(
                 (
@@ -1441,6 +1429,9 @@ where
                             && candidate_frame.cold_prefix_len() <= candidate.messages.len()
                         {
                             let mut warm = candidate.messages;
+                            for message in &mut warm {
+                                message.reset_context_files();
+                            }
                             let mut warm_system =
                                 ChatMessage::new(ChatRole::System, system_prompt.clone());
                             warm_system.attach_replay_frame(candidate_frame);
@@ -1456,6 +1447,21 @@ where
             if let Some(run) = &tool_config.computer_use {
                 run.trim_messages(&mut messages);
             }
+        }
+        super::context_files::restore_context_files(
+            &mut messages,
+            tools,
+            &tool_config,
+            permission_hook,
+            &cancel,
+        )
+        .await?;
+        if let Some(budget) = context_budget {
+            super::context_files::fit_context_files(
+                &mut messages,
+                &tool_definitions,
+                budget.input_budget(),
+            )?;
         }
         if !force_provider_compaction
             && let Some(budget) = context_budget.filter(|budget| budget.automatic_compaction())
