@@ -1362,6 +1362,8 @@ async fn create_child(
         let tx = store
             .immediate_transaction()
             .map_err(|_| failure("storage unavailable"))?;
+        #[cfg(test)]
+        steering_tests::steering_lifecycle_tests::admission_checkpoint(&snapshot.message_id);
         if cancel.is_cancelled() {
             return Err(VegaError::Cancelled);
         }

@@ -3,6 +3,29 @@ use vega_runtime::{
     ChatRequest, EventStream, ProviderEvent, RuntimeSubagentHook, RuntimeToolResult, StopReason,
 };
 
+struct AdmissionCheckpoint {
+    reached: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+static ADMISSION_CHECKPOINTS: std::sync::OnceLock<Mutex<BTreeMap<String, AdmissionCheckpoint>>> =
+    std::sync::OnceLock::new();
+
+pub(in crate::agent::subagents) fn admission_checkpoint(message: &str) {
+    let checkpoint = ADMISSION_CHECKPOINTS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .remove(message);
+    if let Some(checkpoint) = checkpoint {
+        checkpoint.reached.send(()).unwrap();
+        checkpoint
+            .release
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+    }
+}
+
 struct Model {
     calls: std::sync::atomic::AtomicUsize,
     block: bool,
@@ -291,12 +314,17 @@ async fn cancellation_while_admission_is_waiting_cannot_commit_spawn_or_followup
         fixture.steer();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let blocker = std::thread::spawn(move || {
-            let _coordination = crate::permission_contracts::coordinate().unwrap();
-            ready_tx.send(()).unwrap();
-            release_rx.recv().unwrap();
-        });
-        ready_rx.recv().unwrap();
+        ADMISSION_CHECKPOINTS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap()
+            .insert(
+                snapshot.message_id.clone(),
+                AdmissionCheckpoint {
+                    reached: ready_tx,
+                    release: release_rx,
+                },
+            );
         let owner = DelegatedOwnership::acquire(&fixture.database, &snapshot.agent_id).unwrap();
         let admission = crate::thread_access::acquire(&fixture.store, &snapshot.agent_id).unwrap();
         let cancel = CancellationToken::new();
@@ -315,9 +343,9 @@ async fn cancellation_while_admission_is_waiting_cannot_commit_spawn_or_followup
         );
         tokio::pin!(pending);
         assert!(futures::poll!(&mut pending).is_pending());
+        ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
         cancel.cancel();
         release_tx.send(()).unwrap();
-        blocker.join().unwrap();
         assert!(matches!(pending.await, Err(VegaError::Cancelled)));
         assert_eq!(fixture.counts(), counts);
     }

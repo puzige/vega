@@ -715,4 +715,4 @@ async fn new_execution_can_delegate_after_old_permission_authority_is_invalidate
 mod steering_scope_tests;
 
 #[path = "steering_lifecycle_tests.rs"]
-mod steering_lifecycle_tests;
+pub(super) mod steering_lifecycle_tests;
