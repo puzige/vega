@@ -1630,6 +1630,20 @@ impl RunActivityGroup {
                 summary: None,
             };
         }
+        if let Some(StageProgress::Thinking { card, .. }) = progress {
+            let thinking = owns_progress && !card.read(cx).progress_finished;
+            return StageHeadline {
+                title: vega_i18n::t(if thinking {
+                    "ui.thinking"
+                } else {
+                    "ui.thought"
+                })
+                .into(),
+                icon: None,
+                live: live && thinking,
+                summary: None,
+            };
+        }
         if let Some(StageProgress::Tool(card)) = progress
             && let Some((title, icon)) = card.read(cx).description_headline()
         {
