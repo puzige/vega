@@ -40,6 +40,41 @@ impl Tools {
             .map(|(output, _)| output)
     }
 
+    pub fn read_context_file(&self, path: &str) -> Result<ToolOutput, ToolError> {
+        use std::io::Read;
+        const MAX_BYTES: u64 = 1024 * 1024;
+        let canonical = self.file_path(path)?;
+        if Path::new(path).is_absolute() && canonical != Path::new(path) {
+            return Err(crate::MutationError::new(crate::MutationErrorCode::TargetChanged).into());
+        }
+        let file = crate::text_file::open_regular(&canonical, self.credential_policy.is_some())?;
+        if file.metadata()?.len() > MAX_BYTES {
+            return Ok(ToolOutput {
+                text: String::new(),
+                truncated: true,
+            });
+        }
+        let mut bytes = Vec::new();
+        file.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_BYTES {
+            return Ok(ToolOutput {
+                text: String::new(),
+                truncated: true,
+            });
+        }
+        let text = TextFile::decode(&bytes)?;
+        if text.content.len().div_ceil(4) > 5000 {
+            return Ok(ToolOutput {
+                text: String::new(),
+                truncated: true,
+            });
+        }
+        Ok(ToolOutput {
+            text: text.content,
+            truncated: false,
+        })
+    }
+
     pub fn read_with_identity(
         &self,
         path: &str,
@@ -122,6 +157,30 @@ fn render_numbered(content: &str, offset: usize, limit: Option<usize>) -> ToolOu
     ToolOutput {
         text: parts.join("\n"),
         truncated,
+    }
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+
+    #[test]
+    fn context_read_does_not_create_or_refresh_edit_read_versions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!("vega-context-read-{}", std::process::id()));
+        std::fs::create_dir_all(&root)?;
+        let path = root.join("notes.txt");
+        std::fs::write(&path, "old")?;
+        let tools = Tools::new(&root)?;
+        assert_eq!(tools.read_context_file("notes.txt")?.text, "old");
+        assert!(tools.reads.validate(&path.canonicalize()?, b"old").is_err());
+        tools.read("notes.txt", None, None)?;
+        std::fs::write(&path, "new")?;
+        assert_eq!(tools.read_context_file("notes.txt")?.text, "new");
+        assert!(tools.reads.validate(&path.canonicalize()?, b"new").is_err());
+        assert!(tools.reads.validate(&path.canonicalize()?, b"old").is_ok());
+        std::fs::remove_dir_all(root)?;
+        Ok(())
     }
 }
 

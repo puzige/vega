@@ -392,6 +392,9 @@ fn skill_fits(
 #[allow(clippy::too_many_arguments)]
 async fn compact_before_skill_rejection<F, Fut>(
     computer_use: Option<&crate::computer_use::ComputerUseRun>,
+    file_tools: &vega_tools::Tools,
+    tool_config: &RuntimeToolConfig,
+    permission_hook: &dyn RuntimePermissionHook,
     prospective: &str,
     base: &str,
     catalog: &str,
@@ -606,6 +609,15 @@ where
         compacted.replay_cold_prefix_messages,
         compacted.replay_interleaved_user_boundary,
     )?;
+    super::context_files::restore_context_files(
+        &mut next_projected,
+        file_tools,
+        tool_config,
+        permission_hook,
+        cancel,
+    )
+    .await?;
+    super::context_files::fit_context_files(&mut next_projected, tools, target_tokens)?;
     let compacted_estimate =
         crate::estimate_wire_context(&next_projected, tools).map_err(|error| {
             VegaError::Context(error.into())
@@ -1203,6 +1215,9 @@ where
                     let hook = external_context_hook.or(request_context_hook.as_deref());
                     if compact_before_skill_rejection(
                         tool_config.computer_use.as_ref(),
+                        tools,
+                        &tool_config,
+                        permission_hook,
                         &prospective,
                         &base_system_prompt,
                         &skill_catalog,
@@ -1342,6 +1357,14 @@ where
             system_message.attach_replay_frame(frame);
         }
         messages[0] = system_message;
+        super::context_files::restore_context_files(
+            &mut messages,
+            tools,
+            &tool_config,
+            permission_hook,
+            &cancel,
+        )
+        .await?;
         if cancel.is_cancelled() {
             emit!(events, sink, RuntimeEvent::Interrupted);
             return Ok(outcome(
@@ -1365,6 +1388,13 @@ where
             run.trim_messages(&mut messages);
         }
         let tool_definitions = capabilities.definitions().to_vec();
+        if let Some(budget) = context_budget {
+            super::context_files::fit_context_files(
+                &mut messages,
+                &tool_definitions,
+                budget.input_budget(),
+            )?;
+        }
         if let Some(route_fingerprint) = replay_route_fingerprint {
             let current_environment = crate::agent::replay_environment_fingerprint(
                 (
@@ -1811,6 +1841,19 @@ where
                     &mut next_messages,
                     replay_cold_prefix_messages,
                     replay_interleaved_user_boundary,
+                )?;
+                super::context_files::restore_context_files(
+                    &mut next_messages,
+                    tools,
+                    &tool_config,
+                    permission_hook,
+                    &cancel,
+                )
+                .await?;
+                super::context_files::fit_context_files(
+                    &mut next_messages,
+                    &tool_definitions,
+                    target_tokens,
                 )?;
                 let compacted_estimate =
                     crate::estimate_wire_context(&next_messages, &tool_definitions).map_err(
@@ -3424,6 +3467,9 @@ where
                                         external_context_hook.or(request_context_hook.as_deref());
                                     if compact_before_skill_rejection(
                                         tool_config.computer_use.as_ref(),
+                                        tools,
+                                        &tool_config,
+                                        permission_hook,
                                         prospective,
                                         &base_system_prompt,
                                         &skill_catalog,

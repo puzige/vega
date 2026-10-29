@@ -204,6 +204,38 @@ async fn delayed_install_rejects_changed_authority_and_preserves_generated_usage
 }
 
 #[tokio::test]
+async fn compacted_read_references_survive_install_and_database_reload() -> TestResult {
+    let (_directory, path, store) = source_fixture()?;
+    let (source, request) = input(&store)?;
+    let provider = ScriptedSummaryProvider::new([SummaryReply::Text("FILE_SUMMARY".into())]);
+    let hook =
+        ConversationCompactionHook::new(&provider, path.clone(), "thread", "model", None, None)
+            .with_full_on_threshold(true);
+    let (generated, guard) = hook
+        .generate_compaction(request, CancellationToken::new(), &mut None)
+        .await
+        .map_err(|failure| *failure.error)?;
+    let mut expected = crate::agent::pipeline::historical_summary_message("FILE_SUMMARY");
+    expected.attach_context_file_references(vec![("call-2".into(), "notes.txt".into())]);
+    assert_eq!(generated.result.messages[0], expected);
+    let installed = hook
+        .install_generated(generated, guard, CancellationToken::new())
+        .await
+        .map_err(|failure| *failure.error)?;
+    let reopened = Store::open(path)?;
+    let checkpoint = latest_checkpoint(reopened.conn(), "thread", "model")?.ok_or("checkpoint")?;
+    let reloaded = crate::agent::pipeline::history_from_context_source_with_checkpoint(
+        &load_source(reopened.conn(), "thread")?,
+        Some(&checkpoint),
+        "__none__",
+    )?;
+    assert_eq!(installed.messages, reloaded);
+    assert_eq!(reloaded[0], expected);
+    assert_eq!(load_source(reopened.conn(), "thread")?, source);
+    Ok(())
+}
+
+#[tokio::test]
 async fn discarding_generated_summary_releases_admission_without_installing() -> TestResult {
     let (_directory, path, store) = source_fixture()?;
     let (source, request) = input(&store)?;

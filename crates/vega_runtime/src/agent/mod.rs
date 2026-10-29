@@ -1390,6 +1390,7 @@ impl fmt::Debug for AgentOutcome {
 }
 
 mod context_accounting;
+mod context_files;
 mod descriptions;
 pub use descriptions::is_native_tool;
 use descriptions::{describe_definition, extract_call_description};

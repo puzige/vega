@@ -148,6 +148,16 @@
 
 修复提交 `7a88f001e256d2c0d9dcd4664f050288457d6efd`（tree `df5cc1d41105af1214f823bc3bf0e5ab020a9d2b`）的 Actions [40813921199](https://github.com/puzige/vega/actions/runs/40813921199) 中 Clippy `123250432186` success，Nextest `123250432371` 150 执行／149 通过／1 失败／0 跳过、22.096s，required `123252284374` failure，独立 discovery 数未取得。五项 GPUI 已恢复通过。剩余 fork 断言错误比较 provider 观测值和未投影 durable 消息：正常父请求也必须经过 `project_model_messages`，历史工具的 `live_tool_calls=None` 保护会将其转为无权限审计记录，不能为前缀相等绕过。回归改为严格比较正常父请求生产投影的完整前缀，并额外在投影前断言 fork 构造器保留原父消息，既检测伪造 cold frame，也保留历史工具安全语义；不改生产投影或工具权限。前述 cold frame 缺陷修复仍保留，不能据此把原始历史工具身份强行发送为活跃调用。
 
+摘要分支验证提交 `e362fcf5d64a6702a83ec18e8d4e6f2f07e84a11`（tree `eeb15c7a5a7a4da3ba7b7301313f42e070a003b0`）的 Actions [40815811270](https://github.com/puzige/vega/actions/runs/40815811270) 全部成功：Nextest `123256469404` 原始输出 150 发现／150 执行通过／0 跳过、19.654s，Clippy `123256469907`、required `123257969822` success；两层前缀回归的增量独立静态审查 Clear。该结果不代表整卡完成。
+
+#### 文件上下文恢复（2026-10-29）
+
+验收：压缩覆盖成功的 read／Read 后，即时续接和重启投影均提供有工具调用来源的文件引用；排除仍在 Source 保留段中的调用，按调用 seq 最近优先、路径去重，最多 5 文件。路径只能从持久化成功读调用的 JSON 输入取得，不从摘要解析；引用本身不提供读权限或编辑凭据。恢复只读取当前文件，不重放旧工具或信任旧输出；删除、不可读、路径变化、权限拒绝和取消不得显示为已恢复。
+
+运行态在主请求预算检查之前，经现有 prepare_read_call／authorize_call 路径重新校验路径与当前权限，使用独立 ReadState 的工具副本读取，不能更新本会话 read-before-edit 版本。恢复结果仅存在 ChatMessage 的运行态附件，原始正文、审计和来源比较保持不变；重启重新读取，不持久化文件正文。provider 投影以无权限 JSON observation 表达文件来源及当前内容，按当前凭据策略过滤路径和内容，凭据检查不可用时 fail closed。普通权限拒绝保留引用，不循环弹窗或假报成功；取消遵守原运行取消边界。
+
+每文件内容以保守 UTF-8 bytes/4 上取整计 tokens，上限 5000，总内容上限 50000；文本截断或超过预算只发送 compact_file_reference，不发送伪称完整的半份文件。文件读取还设置独立 1 MiB 输入上限，避免恢复阶段沿用普通 Read 的 1 GiB 最大分配；二进制／不支持编码不恢复。所有附件进入生产 projection 和 framed-wire estimator；最终请求仍受当前模型预算约束。开发回归须覆盖真实临时文件的更新／缺失、外部权限拒绝、超限引用、凭据脱敏、读版本不变，以及来源投影不变与实际 provider 观测。技能、动态工具、任务／计划等恢复另续，不以本节冒充完成。
+
 #### 脱离前台的生成与逐阶段结算（2026-10-28）
 
 后台准备在当前 admission 下完成有界捕获：来源、append fence、前驱及引用摘要 digest 来自同一快照，拒绝 staged model change、来源不一致与不完整响应组。返回的 prepared job 不包含 admission、前台 actor、diagnostics channel 或任何 SQLite connection；只保存冻结请求、来源快照、摘要偏好、计价及凭据投影策略。前台生成仍全程持有原 admission 和同一 600 秒期限，不改变既有安装语义。

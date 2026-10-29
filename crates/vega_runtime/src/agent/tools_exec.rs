@@ -2367,7 +2367,7 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
     definitions.into_iter().map(describe_definition).collect()
 }
 
-fn prepare_read_call(
+pub(super) fn prepare_read_call(
     base_tools: &vega_tools::Tools,
     raw_call: RuntimeToolCall,
 ) -> Result<PreparedRuntimeCall, VegaError> {

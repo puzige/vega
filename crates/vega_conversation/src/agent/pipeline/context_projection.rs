@@ -67,7 +67,10 @@ pub(crate) fn interpret_projection_with_live(
                         ),
                     ));
                 }
-                messages.push(historical_summary_message(summary));
+                let mut summary_message = historical_summary_message(summary);
+                summary_message
+                    .attach_context_file_references(context_file_references(source, plan)?);
+                messages.push(summary_message);
             }
             ProjectionFragment::PreviousSummary { checkpoint_id } => {
                 let previous = previous.get(checkpoint_id).ok_or_else(|| {
@@ -84,6 +87,53 @@ pub(crate) fn interpret_projection_with_live(
         }
     }
     Ok(messages)
+}
+
+fn context_file_references(
+    source: &vega_store::context_compaction::ContextSource,
+    plan: &ProjectionPlan,
+) -> Result<Vec<(String, String)>, ConversationError> {
+    let mut retained = std::collections::HashSet::new();
+    for fragment in &plan.fragments {
+        if let ProjectionFragment::Source { range } = fragment {
+            let selected = range.project(source).map_err(|_| {
+                ConversationError::CorruptRow("invalid context file source range".into())
+            })?;
+            retained.extend(selected.tool_calls.into_iter().map(|call| call.id));
+        }
+    }
+    let mut calls = source
+        .tool_calls
+        .iter()
+        .filter(|call| {
+            matches!(call.tool.as_str(), "read" | "Read")
+                && call.status == "success"
+                && !retained.contains(&call.id)
+        })
+        .collect::<Vec<_>>();
+    calls.sort_by_key(|call| std::cmp::Reverse(call.seq));
+    let mut paths = std::collections::HashSet::new();
+    let mut files = Vec::new();
+    for call in calls {
+        let Ok(input) = serde_json::from_str::<serde_json::Value>(&call.input_json) else {
+            continue;
+        };
+        let Some(path) = input
+            .get("path")
+            .or_else(|| input.get("file_path"))
+            .and_then(serde_json::Value::as_str)
+            .filter(|path| !path.is_empty() && path.len() <= 4096)
+        else {
+            continue;
+        };
+        if paths.insert(path.to_owned()) {
+            files.push((call.id.clone(), path.to_owned()));
+        }
+        if files.len() == 5 {
+            break;
+        }
+    }
+    Ok(files)
 }
 
 fn source_range_history(

@@ -620,9 +620,17 @@ pub struct ChatMessage {
     live_tool_calls: Option<Vec<Option<LiveToolCall>>>,
     historical_tool_statuses: Option<Vec<HistoricalToolStatus>>,
     runtime_guidance: Option<RuntimeGuidance>,
+    context_files: Vec<ContextFile>,
     tool_context: Option<Box<crate::tool_context::ToolContext>>,
     model_projection: bool,
     replay_cold: bool,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ContextFile {
+    call_id: String,
+    path: String,
+    restored: Option<Option<String>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -732,6 +740,7 @@ impl PartialEq for ChatMessage {
             && self.replay_frame == other.replay_frame
             && self.live_tool_calls == other.live_tool_calls
             && self.runtime_guidance == other.runtime_guidance
+            && self.context_files == other.context_files
             && self.tool_context == other.tool_context
             && self.replay_cold == other.replay_cold
     }
@@ -824,6 +833,22 @@ impl ChatMessage {
 
         let mut size = std::mem::size_of::<Self>()
             .saturating_add(string_size(&self.content))
+            .saturating_add(
+                self.context_files
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<ContextFile>()),
+            )
+            .saturating_add(self.context_files.iter().fold(0usize, |total, file| {
+                total
+                    .saturating_add(file.call_id.capacity())
+                    .saturating_add(file.path.capacity())
+                    .saturating_add(
+                        file.restored
+                            .as_ref()
+                            .and_then(Option::as_ref)
+                            .map_or(0, String::capacity),
+                    )
+            }))
             .saturating_add(self.tool_context.as_ref().map_or(0, |_| {
                 std::mem::size_of::<crate::tool_context::ToolContext>()
             }))
@@ -1030,8 +1055,58 @@ impl ChatMessage {
 
     pub fn without_runtime_metadata(&self) -> Self {
         let mut message = self.without_runtime_guidance();
+        for file in &mut message.context_files {
+            file.restored = None;
+        }
         message.tool_context = None;
         message
+    }
+
+    pub fn attach_context_file_references(&mut self, files: Vec<(String, String)>) {
+        if self.role == ChatRole::User {
+            self.context_files = files
+                .into_iter()
+                .take(5)
+                .map(|(call_id, path)| ContextFile {
+                    call_id,
+                    path,
+                    restored: None,
+                })
+                .collect();
+        }
+    }
+
+    pub(crate) fn pending_context_files(&self) -> Vec<(usize, String, String)> {
+        self.context_files
+            .iter()
+            .enumerate()
+            .filter(|(_, file)| file.restored.is_none())
+            .map(|(index, file)| (index, file.call_id.clone(), file.path.clone()))
+            .collect()
+    }
+
+    pub(crate) fn restore_context_file(&mut self, index: usize, content: Option<String>) {
+        if let Some(file) = self.context_files.get_mut(index) {
+            file.restored = Some(content);
+        }
+    }
+
+    pub(crate) fn trim_context_file(&mut self) -> bool {
+        for file in self.context_files.iter_mut().rev() {
+            if let Some(Some(encoded)) = &mut file.restored {
+                if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(encoded)
+                    && value["vega_history_observation"]["content"].is_string()
+                {
+                    value["vega_history_observation"]["content"] = serde_json::Value::Null;
+                    value["vega_history_observation"]["kind"] = "compact_file_reference".into();
+                    *encoded = value.to_string();
+                    return true;
+                }
+                file.restored = Some(None);
+                return true;
+            }
+        }
+        false
     }
 
     pub(crate) fn attach_progress_reminder(&mut self) -> bool {
@@ -1139,6 +1214,7 @@ impl ChatMessage {
             live_tool_calls: None,
             historical_tool_statuses: None,
             runtime_guidance: None,
+            context_files: Vec::new(),
             tool_context: None,
             model_projection: false,
             replay_cold: false,
@@ -1162,6 +1238,7 @@ impl ChatMessage {
             live_tool_calls: None,
             historical_tool_statuses: None,
             runtime_guidance: None,
+            context_files: Vec::new(),
             tool_context: None,
             model_projection: false,
             replay_cold: false,
@@ -1189,6 +1266,7 @@ impl ChatMessage {
             live_tool_calls: None,
             historical_tool_statuses: None,
             runtime_guidance: None,
+            context_files: Vec::new(),
             tool_context: None,
             model_projection: false,
             replay_cold: false,
@@ -1257,6 +1335,7 @@ impl ChatMessage {
             live_tool_calls: None,
             historical_tool_statuses: None,
             runtime_guidance: None,
+            context_files: Vec::new(),
             tool_context: None,
             model_projection: false,
             replay_cold: false,
@@ -1339,6 +1418,14 @@ pub fn project_model_messages(messages: &[ChatMessage]) -> Result<Vec<ChatMessag
         }
     } else {
         cold_projected.extend(messages.iter().cloned());
+    }
+    for message in &mut cold_projected {
+        for file in std::mem::take(&mut message.context_files) {
+            if let Some(Some(observation)) = file.restored {
+                message.content.push('\n');
+                message.content.push_str(&observation);
+            }
+        }
     }
     let mut historical = std::collections::HashMap::<
         String,
