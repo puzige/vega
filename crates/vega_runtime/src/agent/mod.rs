@@ -1382,6 +1382,8 @@ impl fmt::Debug for AgentOutcome {
 }
 
 mod context_accounting;
+#[cfg(test)]
+mod context_accounting_tests;
 mod descriptions;
 pub use descriptions::is_native_tool;
 use descriptions::{describe_definition, extract_call_description};

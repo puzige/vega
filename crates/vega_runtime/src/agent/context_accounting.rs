@@ -80,11 +80,13 @@ impl InputAnchor {
     ) -> Result<InputDecision, ContextEstimateError> {
         let raw = crate::estimate_wire_context(messages, tools)?;
         if let Some(anchor) = anchor
-            && messages.len() >= anchor.covered_messages
             && model == anchor.model
             && reasoning == anchor.reasoning.as_ref()
             && max_tokens == anchor.max_tokens
-            && fingerprint(&messages[..anchor.covered_messages], tools)
+            && let Ok(projected) = crate::project_model_messages(messages)
+            && projected.len() >= anchor.covered_messages
+            && wire_prefix_stable(&projected, anchor.covered_messages)
+            && fingerprint(&projected[..anchor.covered_messages], tools)
                 == Some(anchor.prefix_digest)
         {
             let incremental = raw
@@ -120,6 +122,26 @@ impl InputAnchor {
     }
 }
 
+fn wire_prefix_stable(messages: &[ChatMessage], covered_messages: usize) -> bool {
+    let (prefix, tail) = messages.split_at(covered_messages);
+    if !tail
+        .iter()
+        .any(|message| !message.tool_calls.is_empty() || message.tool_call_id.is_some())
+    {
+        return true;
+    }
+    prefix
+        .iter()
+        .flat_map(|message| {
+            message
+                .tool_calls
+                .iter()
+                .map(|call| call.id.as_str())
+                .chain(message.tool_call_id.as_deref())
+        })
+        .all(|id| !id.contains('|') && id.len() <= 40)
+}
+
 fn tagged(hasher: &mut Sha256, tag: u8, bytes: &[u8]) {
     hasher.update([tag]);
     hasher.update((bytes.len() as u64).to_le_bytes());
@@ -129,9 +151,13 @@ fn tagged(hasher: &mut Sha256, tag: u8, bytes: &[u8]) {
 fn fingerprint(messages: &[ChatMessage], tools: &[ToolDefinition]) -> Option<[u8; 32]> {
     let mut hasher = Sha256::new();
     tagged(&mut hasher, 1, &(messages.len() as u64).to_le_bytes());
-    let projected = crate::project_model_messages(messages).ok()?;
-    for message in &projected {
+    for message in messages {
         tagged(&mut hasher, 2, message.role.as_str().as_bytes());
+        tagged(
+            &mut hasher,
+            42,
+            &[u8::from(message.preserves_live_wire_ids())],
+        );
         tagged(&mut hasher, 3, message.content.as_bytes());
         match &message.reasoning_content {
             Some(value) => tagged(&mut hasher, 4, value.as_bytes()),
