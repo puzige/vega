@@ -96,9 +96,9 @@ async fn arbitrary_splits_preserve_paths_and_redact_complete_credentials() {
                     output[channel], expected,
                     "channel {channel}, split {split}"
                 );
-                for other in 0..3 {
+                for (other, text) in output.iter().enumerate() {
                     if other != channel {
-                        assert!(output[other].is_empty());
+                        assert!(text.is_empty());
                     }
                 }
             }
