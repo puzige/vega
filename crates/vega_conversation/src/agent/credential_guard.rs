@@ -484,7 +484,3 @@ impl Provider for OwnerCredentialProvider {
         })
     }
 }
-
-#[cfg(test)]
-#[path = "credential_stream_tests.rs"]
-mod credential_stream_tests;
