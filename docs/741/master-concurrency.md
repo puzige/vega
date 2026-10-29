@@ -1,32 +1,37 @@
-# master 流水线单并发
+# master 流水线只保留最新运行
 
-关联：[Issue #741](https://github.com/puzige/vega/issues/741)。基线：`3589d43245537a50d43f3fd3b7423577e024416b`。
+关联：[Issue #741](https://github.com/puzige/vega/issues/741)、[PR #742](https://github.com/puzige/vega/pull/742)。基线：`3589d43245537a50d43f3fd3b7423577e024416b`。
 
 ## 范围与验收
 
-用户要求 master 流水线同时只运行 1 条，不改变不同 PR 的检查并发。本次仅调整 master 入口，保留已有发布实现与门禁。
+2026-10-29 用户澄清并确认：master 只跑最新一条，不逐条排队；PR Check 保持现有 PR ref 分组。本节取代最初“排队且不取消”的验收。
 
 | 场景 | 预期结果 | 验证方式 |
 |---|---|---|
-| 多个 master push 触发 workflow | 同一固定并发组至多运行 1 条，其余排队，不取消正在运行的任务 | YAML 静态检查；实际调度待后续正常 Actions 观察 |
-| 多条 master 任务等待 | `queue: max` 保留等待任务，而非默认替换已有 pending；仍受 GitHub 100 条 pending 上限约束 | 配置与官方契约核对 |
-| master 调用共用发布 workflow | 入口组与发布 job 组不同，不发生调用方等待自身；原发布共享锁、固定 SHA 和防倒序保护不变 | 差异及分组静态核对、独立审查 |
-| 不同 PR 以不同速度完成检查 | PR Check 配置逐字不变，不因 master 锁互相阻塞或取消；不承诺按 PR 创建或检查完成顺序发布 | 基线字节比较 |
-| 合并本次 CI 配置 PR | 分支正常执行 required checks，通过并完成独立审查后，在 squash 提交标题中添加 `[skip ci]`，跳过该次 master push 的自动构建/发布 | PR 检查及最终合并提交读回 |
+| master 旧运行尚未结束，又有新 push 触发运行 | 固定组 `vega-master-pipeline` 取消旧运行，保留新运行；不累积逐条发布队列 | YAML 结构与 GitHub 并发契约核对；真实调度待后续正常 Actions 观察 |
+| master 已有等待运行，又有新运行进入该组 | 使用默认单 pending 规则，新的等待运行替换旧 pending；不使用 `queue: max` | 配置静态检查 |
+| master 调用共用发布 workflow | 入口组与发布 job 的 `vega-stable-publication` 组不同，避免自锁；调用方取消会传递给其调用的发布流程 | workflow 调用关系静态审查 |
+| 同一 PR 连续推送 | 保持 `${{ github.workflow }}-${{ github.ref }}` 与 `cancel-in-progress: true`，新检查取消同一 PR 的旧检查 | PR Check 与基线逐字比较 |
+| 不同 PR 或 fork 同名分支各自更新 | PR ref 分组隔离，不因 master 组或来源分支同名而互相取消；不按来源分支合并分组 | PR Check 基线与分组核对 |
+| 自动发布在取消前已保留 tag 或建立 draft | 不删除 tag/draft，不覆盖正式资产；允许跳过未完成版本，后续正常 master 运行仍按原版本与防倒序保护发布 | 保留 release workflow 和 scripts 的原始实现；静态风险核对 |
+| 合并本次 CI 配置 PR | 最新 head 正常完成 required checks 和非实现者独立审查，再用标题含 `[skip ci]` 的 squash 提交合并，跳过本次 master 构建/发布 | PR 检查与合并提交读回 |
 
 ## 最小实施
 
-1. 在 `.github/workflows/cicd.yml` 顶层新增固定 `vega-master-pipeline` 并发组，设置 `cancel-in-progress: false` 和 `queue: max`。GitHub 的并发组本身将运行数量限制为 1；不是使用 `concurrency: 1` 字面值作为数量。
-2. 保留 `.github/workflows/release.yml` 的 `vega-stable-publication` 组，避免 reusable workflow 与调用方共用锁；`.github/workflows/pr-check.yml` 完全不变。
-3. 同步 `docs/vega-release.md` 的队列说明。GitHub FIFO 按开始等待该组的时间，不保证 push 事件顺序，已有代码祖先检查继续拒绝倒序发布。
+1. `.github/workflows/cicd.yml` 顶层使用固定 `vega-master-pipeline` 组，设置 `cancel-in-progress: true`，移除 `queue: max`；GitHub 并发组本身限制同时运行一条，不使用数值 `concurrency: 1`。
+2. `.github/workflows/pr-check.yml` 完全不变：保留 PR ref 分组，不同 PR 独立检查；required check、权限和任务拓扑均不改。
+3. `.github/workflows/release.yml` 完全不变：保留人工 tag、手动重跑及自动发布共用的串行锁和原有 `queue: max`、`cancel-in-progress: false`。该内部锁不能阻止 master 调用方取消其自身发布流程；不让新 master 运行取消独立的人工发布。
+4. 同步发布指南与入口规范。保留固定事件 SHA、缓存、版本保留、幂等、资产完整性和防倒序保护；不承诺 GitHub 按提交时间排序，不撤回已完成的发布。
 
 ## 验证与限制
 
-- 本地仅快速 YAML 解析、结构与差异静态检查，不运行 Vega、编译、打包或测试。
-- 交由非实现者独立审查，并确认本次最终 head 的 required check `check (fmt, clippy, test)`；不更改或跳过 PR 门禁。
-- 不新增 Rust 测试或依赖，不触发人为发布、空提交或多 push 来制造排队。真实调度未验证时不标记为通过。
-- 不改权限、缓存、发布资产、版本分配及安全保护；无产品界面文案变化。
-- 本次合并按用户要求跳过 CI，因此不以该次 merge 声称已验证 master 调度。后续正常 master push 使用新配置；用户确认前 Issue 保持开放。
+- 本地只做快速 YAML 解析、配置结构与差异静态检查，不运行 Vega、编译、打包或测试。
+- 独立审查绑定停写的精确 head；最新 head 的完整 required check `check (fmt, clippy, test)` 必须通过。旧排队版本的 CI 不代表本轮通过。
+- 不新增 Rust 测试、依赖或 CI 阶段；不制造空提交、多 push 或真实发布来验证取消。并发取消有收尾延迟，不等同于原子中断，也不撤销已完成的外部副作用。
+- 取消可能留下保留版本、未发布 tag 或 draft。按既有恢复流程处理，不自动清理或冒充已发布；旧 SHA 在新版本发布后仍受防倒序保护约束。
+- 仅最终 squash 提交使用 `[skip ci]`；开发提交正常触发 PR checks。本次 merge 不用于证明实际 master 调度，后续正常 push 使用新配置。Issue 保持开放，等待用户观察确认。
 - 回滚：撤回 master 入口并发块及对应说明，恢复仅发布 job 串行的原行为。规格偏离：无。
+
+变更记录：2026-10-29，依据用户澄清将原排队验收改为 latest-only；PR Check 不改为来源分支分组，仍按 PR ref 隔离。原排队版本保留在提交 `23022f5dc8795066a80360dc4ab28e53b6918198`。
 
 参考：[GitHub workflow concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)。
