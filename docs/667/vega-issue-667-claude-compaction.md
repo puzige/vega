@@ -204,6 +204,14 @@ lint 修复版本 `d7c18c442c9488b488aa9937e57d6d8907576dec`（tree `902b5ff2a32
 
 此增量不代替完整阶段 handoff／结果取回、后台 shell、动态工具、原始详情读取或 idle/cache 的后续评估与实现。
 
+#### 精确历史委派结果与阶段声明取回（2026-10-29）
+
+read_conversation 增加 kind=delegated_results，source_id 仍为当前父线程原成功 spawn_agent／followup_agent／resume_agent 调用 ID，分页仍按父调用 seq；不接受任意子线程路径或将历史执行加入活跃注册表。按该调用精确绑定 delegated_executions 的 parent thread/message、request call、child thread/message，核对父子真实 assistant 消息存在；E2 已存在也必须返回 E1 的持久化结果，不能回落 latest。仅暴露 completed／failed／interrupted 的历史结果，状态与 release_state 分别呈现，worker_liveness=unknown；不标记已释放、成功验收或可续派，也不执行 wait/resume/cancel。
+
+output 为持久化 result，result_truncated 保留原执行截断事实；content 为该精确执行的 handoff checkpoint（若有）或最新阶段声明的安全历史投影，仅白名单返回 id、agent_id、message_id、origin、source_version、source_fingerprint、manifest、unknown_effects、previous_checkpoint_id，不返回 permission_fence、authority、审批或 read-receipt 数据，不据此制造恢复权限。checkpoint 仍属历史数据，未取得或超限时 unavailable，不能作为完整阶段声明；不读取 artifact 路径或输出文件。result 和 checkpoint 各在 SQL 物化前限制 1 MiB，所有身份／状态元数据沿既有限长，全部字符串经当前凭据过滤后才以既有 1024 Unicode 字符页返回；页面上限、取消与只读连接合同不变。删除、跨父线程、归属不符、缺失子消息或非终态返回空。
+
+必要开发回归：真实 SQLite 同一 child 的 E1／E2 结果与 checkpoint 不混淆，父调用分页、精确定位、跨父／缺失／删除、权限字段剔除、零路径跟随、超限 unavailable；实际 runtime/provider 回合核对工具注册、低信任包装、当前凭据过滤和字符分页，不激活委派动作。通用取消、完整字段过滤和 wire 限额回归继续保留。此增量仅补历史结果取回，不重造委派生命周期。
+
 #### 当前线程原始详情回读（2026-10-29）
 
 新增只读原生工具 read_conversation，只在当前运行配置具备绑定读取器时提供。输入 kind 为 messages／tools，source_id 可空（指定消息或调用 ID），after_sequence 为非负游标，limit 为 1–8，content_offset 为非负 Unicode 字符偏移。source_id 与 after_sequence 均约束同一查询，不接收数据库路径或线程 ID。返回来源身份／序号／状态，消息正文或工具 input／output，以及消息附件数量与已编码总字节数；不读取图片正文，不跟随 output_full_path，不读审批／凭据／checkpoint 表，不重跑旧工具或制造 ReadState 凭据。历史内容统一包在 authority:none 的 observation 内，不是当前用户命令或权限。
@@ -264,7 +272,9 @@ Native composer 支持精确首 token `/compact`（区分大小写，前导空�
 
 #### 脱离前台的生成与逐阶段结算（2026-10-28）
 
-计量接线版本 `770bd68ce116c8a0f9660157d04579ca5f324f36`（tree `d706f19bddc601416b1e93087f5e6a565cffa5a3`）的 Actions [40870363352](https://github.com/puzige/vega/actions/runs/40870363352)：Clippy `123435552746` success，Nextest `123435552270` 实际 188 执行／186 通过／2 失败／0 跳过、20.048s，required `123437707521` failure；成功的独立发现计数未取得。两项归属回归均返回 Context(SourceChanged)：新增夹具在 registry.bind 后仍持有独占 admission，后续未绑定 admission 的 compact_with_replay 必须重新获取独占权而被拒绝。修正仅在绑定 lease 后释放该夹具 admission；不改生产准入、计量或原断言，修正版本待新 head 云端验证。用户恢复多子 Agent 尝试后，入口／历史资源及本计量增量分别冻结版本进行只读独审，结论未取得前不标 Clear。
+计量接线版本 `770bd68ce116c8a0f9660157d04579ca5f324f36`（tree `d706f19bddc601416b1e93087f5e6a565cffa5a3`）的 Actions [40870363352](https://github.com/puzige/vega/actions/runs/40870363352)：Clippy `123435552746` success，Nextest `123435552270` 实际 188 执行／186 通过／2 失败／0 跳过、20.048s，required `123437707521` failure；成功的独立发现计数未取得。两项归属回归均返回 Context(SourceChanged)：新增夹具在 registry.bind 后仍持有独占 admission，后续未绑定 admission 的 compact_with_replay 必须重新获取独占权而被拒绝。修正仅在绑定 lease 后释放该夹具 admission；不改生产准入、计量或原断言。
+
+修正版 `0e6ddc1f18f92db2a1e5a8346d8f23238009912e`（tree `ca67879ee15a18590467a2e783ddaf862d14a694`）的 Actions [40872431282](https://github.com/puzige/vega/actions/runs/40872431282) 全部成功：Clippy `123442622390`、Nextest `123442622755`、required `123444504509` success；原始输出 188 发现／188 执行通过／0 跳过、11.699s，两项计量与物理退出回归均实际 PASS。两个非写入者只读审查分别绑定 `770bd68ce116c8a0f9660157d04579ca5f324f36`：Compact 键盘修复与历史资源回读生产增量 Clear；后台计量生产增量 Clear，并独立定位相同 admission 夹具冲突。审查不代表整个 head 或真实原生键盘行为通过；新外层 automation 封存回归仍待实现／Actions，Rust 开发留痕清理及整卡最终门禁未完成。
 
 后台准备在当前 admission 下完成有界捕获：来源、append fence、前驱及引用摘要 digest 来自同一快照，拒绝 staged model change、来源不一致与不完整响应组。返回的 prepared job 不包含 admission、前台 actor、diagnostics channel 或任何 SQLite connection；只保存冻结请求、来源快照、摘要偏好、计价及凭据投影策略。前台生成仍全程持有原 admission 和同一 600 秒期限，不改变既有安装语义。
 
@@ -272,7 +282,7 @@ provider 通过仅用于 compaction 的可选工厂显式声明后台能力，�
 
 生成复用同一 planner、tool-free 摘要和 projection interpreter，但采用显式 Precompute policy：保留完整尾组，超限可退让完整组／缩小摘要批次，不得进入 summarize-all／head omission 兜底；保留前驱已有 omission，不新增 omission，不授予 reactive deeper-pass。600 秒生成期限从实际启动开始计算，不能作为 ready 消费期限。
 
-普通父运行和 delegated 运行均须从当前 PersistenceActorConfig 冻结真实 automation claim 与 missing-usage observer，不能只为 delegated 传递预算归属；仅 delegated 携带真实 parent thread/message，普通运行不得伪造父归属。逐 stage 的 token_usage 与目标预算更新保持同一事务、usage ID 幂等；未知用量通知 observer、不填零，目标预算写失败回滚该 stage 和用量，消费 Ready 不重复计费。目标运行封存前须等待其 lease 同 epoch 的 pending 物理退出，再读取 usage completeness；等待不取消正常候选、不占 registry 锁跨 await、不等待后来世代，后台已完成的 Ready 保留。等待失败将目标用量标为不完整，而非伪称全部结算。开发回归通过生产归属构造入口与真实 SQLite／后台 worker 覆盖两种运行的成功／unknown／rollback，不能手工拼出正确归属而漏测实际接线。
+普通父运行和 delegated 运行均须从当前 PersistenceActorConfig 冻结真实 automation claim 与 missing-usage observer，不能只为 delegated 传递预算归属；仅 delegated 携带真实 parent thread/message，普通运行不得伪造父归属。逐 stage 的 token_usage 与目标预算更新保持同一事务、usage ID 幂等；未知用量通知 observer、不填零，目标预算写失败回滚该 stage 和用量，消费 Ready 不重复计费。目标运行封存前须等待其 lease 同 epoch 的 pending 物理退出，再读取 usage completeness；等待不取消正常候选、不占 registry 锁跨 await、不等待后来世代，后台已完成的 Ready 保留。等待失败将目标用量标为不完整，而非伪称全部结算。开发回归通过生产归属构造入口与真实 SQLite／后台 worker 覆盖两种运行的成功／unknown／rollback，不能手工拼出正确归属而漏测实际接线。另须经 automation 外层真实运行入口验证封存顺序：后台尚未物理退出时 run 不得 finished，释放后目标 used_tokens 包含已结算用量，unknown／rollback 将目标用量保持为不完整，重复 finish 不得重复累计；直接检查尚未 finished 的 claim 不能代替此回归。
 
 每个实际 provider stage 返回后（包括失败／取消／未知 usage）先独立结算再进行下一阶段。ledger 只记录本阶段而非累计 usage，完成或失败均封存已结算阶段；无实际请求的取消不制造账单或 unknown stage。发送状态必须独立于 provider 方法调用：OpenAI 在请求校验、凭据 guard 和请求构造之后、首次可能执行 HTTP 的位置置位；取消先于该位置或 guard 拒绝时不置位。同一阶段重试共享只增不减的状态，已经可能发送后发生 guard 失败／取消仍保留 unknown，不根据最终错误反推未发送。Owner 凭据包装在预检完成后转发同一状态并保留出入站过滤；未提供传输证据的 provider 保守地以调用作为可能发送边界，不猜测未收费。prepared job 的执行只产生已结算 ready 或失败，不返回可被前台重复入账的累计 usage，不安装 checkpoint；发布仍受当前 generation、来源／依赖／模型及取消围栏限制，失败按精确 generation 退役，不触碰新候选。
 
@@ -468,6 +478,21 @@ Full 首批 `2a5fa2ad209aef326dad1e06444791a3f15acf9a` 独立审查发现 `Persi
 一次卡默认不超过三次提交：规格基线；实现与必要开发测试；留痕后的最终测试清理。实际验证失败必须修责任层，不因提交数量而放宽断言或忽略失败；若确需超出提交策略，先记录原因并按项目规则处理，不继承其他卡的特殊许可。
 
 ## 6. 当前证据、未知与下一步
+
+### 当前恢复适配核对（2026-10-29）
+
+按固定版本 `0e6ddc1f18f92db2a1e5a8346d8f23238009912e` 的独立只读核对与主线程复核：
+
+| 状态 | 当前适配与证据边界 |
+|---|---|
+| session／cwd／项目规则 | 宿主 agent_context.rs 构造当前 system；runtime loop_.rs 每轮重建，不从摘要复制或覆盖当前权限。既有 48eaf19d 实际出站回归已验证。 |
+| Ask／Plan 与显式 goal／loop | RuntimeToolConfig／冻结能力及 automation::system_context 独立装配；实际压缩后 write 拒绝回归已通过，不新增“恢复权限”附件。 |
+| 阶段 handoff／旧执行结果 | 当前 wait_agent 能读已注册精确执行，但新父运行只加载 child 最新执行；历史恢复引用仍可指 E1，E2 出现后 E1 结果缺少可靠取回。按新 delegated_results 合同补只读通道，当前未完成。 |
+| 后台 shell | 当前 bash 是等待退出／超时／取消的进程执行，无可恢复后台任务身份；不新增虚构 shell 注册表，不将命令中的 & 等同原生后台任务能力。 |
+| 历史删除／脱敏 | 真实永久凭据清理已有原文与衍生状态事务退役、pause/drain、暖 replay 失效；线程删除有物理排空。未发现任意已提交消息自由编辑／删除／脱敏的产品入口，待发队列删除不是历史删除；不把直接 SQL 变更冒充产品入口。未来新增历史修改入口须先定义传播合同。 |
+| idle-cache | 当前 provider 只返回缓存读写计数，无可信到期时间；本地 Ready 七天期限不是远端 cache TTL。维持本卡已声明“不伪造调度”适配，不造 1h timer，也不与 3900s idle micro 混淆。 |
+
+此表只澄清适用性和已确认缺口，不表示整卡交付完成；旧记录中的待实现描述保留为历史，不反向抹除后续已验证增量。外层自动化封存回归、历史委派结果取回、必要跨路径核对、开发 Rust 证据归档／清理、最终 0 发现／0 执行 required CI、完整最终版本独审和用户真实验收仍按各自门禁推进。
 
 ### 局部压缩开发云端记录（2026-10-28）
 

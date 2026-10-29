@@ -2,6 +2,9 @@ use super::*;
 use crate::agent::compaction::precompute::PrecomputeUsageAttribution;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[path = "attribution_entry_tests.rs"]
+mod attribution_entry_tests;
+
 #[derive(Default)]
 struct UsageObserver(AtomicBool);
 
