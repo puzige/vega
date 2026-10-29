@@ -314,12 +314,17 @@ async fn preflight_await_revocation_refreshes_precompute_schema_and_estimate() -
             .current_definitions();
     let budget = crate::ContextBudget::new(100_000, 10_000, true)?;
     let history = |padding| {
-        vec![
+        let mut messages = vec![
             ChatMessage::new(ChatRole::System, "system"),
             ChatMessage::new(ChatRole::User, "Original task"),
             ChatMessage::new(ChatRole::Assistant, "a".repeat(padding)),
             ChatMessage::new(ChatRole::User, "Continue"),
-        ]
+        ];
+        messages[0].attach_replay_frame(crate::ReplayFrame::new(
+            4,
+            crate::ReasoningReplayPolicy::Unknown,
+        ));
+        messages
     };
     let (mut low, mut high) = (0, 300_000);
     while low < high {
@@ -409,6 +414,10 @@ async fn preflight_await_revocation_refreshes_precompute_schema_and_estimate() -
             request.system_prompt.clone(),
         )];
         projected.extend(request.messages.clone());
+        projected[0].attach_replay_frame(crate::ReplayFrame::new(
+            4,
+            crate::ReasoningReplayPolicy::Unknown,
+        ));
         assert_eq!(
             request.estimate,
             crate::estimate_wire_context(&projected, &request.tools)?
