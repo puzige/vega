@@ -87,9 +87,12 @@ Developer ID Application 签名、公证和 staple 是额外系统身份保障�
 
 ## 发布队列与限制
 
-共享发布 job 使用 `vega-stable-publication` 并发组，`queue: max`、不取消正在运行的发布。
-master 调用方没有同组锁，避免 reusable workflow 等待自身。GitHub 最多保留 100 个 pending
-任务，超额会取消；FIFO 按进入等待队列时间，不保证事件时间顺序，代码祖先检查负责拒绝倒序。
+master 入口使用独立的 `vega-master-pipeline` 并发组，整条 workflow 同时只运行 1 条，
+`queue: max`、`cancel-in-progress: false`，后续 master push 排队而不取消正在运行的任务。
+共享发布 job 保留 `vega-stable-publication` 并发组，同样排队且不取消正在运行的发布；
+两组名称必须不同，避免 reusable workflow 等待自身。PR Check 不使用 master 入口组，
+不同 PR 仍可独立检查。GitHub 每组最多保留 100 个 pending 任务，超额会取消；FIFO 按进入
+等待队列时间，不保证事件时间顺序，代码祖先检查负责拒绝倒序。
 参见 [GitHub concurrency 文档](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)。
 
 版本必须三段数字，各段不允许前导零（单独 `0` 除外），不超过 `18446744073709551615`。
