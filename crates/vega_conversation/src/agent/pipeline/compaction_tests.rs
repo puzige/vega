@@ -150,7 +150,9 @@ fn versioned_range_projection_keeps_both_directions_and_future_corrections()
     let projected =
         interpret_projection(&source, &up_to, summary, &Default::default(), "__none__")?;
     assert_eq!(projected.len(), 4);
-    assert_eq!(projected[0], historical_summary_message(summary));
+    let mut expected = historical_summary_message(summary);
+    expected.attach_context_skill_runs(vec!["old-answer".into()]);
+    assert_eq!(projected[0], expected);
     assert_eq!(projected[1].content, source.messages[2].content);
     assert_eq!(projected.last().ok_or("tail absent")?.content, "Stop now");
     let from = ProjectionPlan {
@@ -181,7 +183,9 @@ fn versioned_range_projection_keeps_both_directions_and_future_corrections()
     assert_eq!(projected.len(), 3);
     assert_eq!(projected[0].content, "Earlier completed task");
     assert_eq!(projected[1].content, "Completed");
-    assert_eq!(projected[2], historical_summary_message(summary));
+    let mut expected = historical_summary_message(summary);
+    expected.attach_context_skill_runs(vec!["owner".into()]);
+    assert_eq!(projected[2], expected);
     let checkpoint = vega_store::context_compaction::ContextCheckpoint {
         id: 10,
         thread_id: "thread".into(),

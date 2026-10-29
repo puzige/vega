@@ -1,6 +1,7 @@
 use super::*;
 
 mod fork_tests;
+mod skill_restore_tests;
 use reactive_tests::{ScriptedSummaryProvider, SummaryReply};
 use vega_store::context_compaction::{ContextSource, latest_checkpoint, load_source};
 
@@ -217,6 +218,7 @@ async fn compacted_read_references_survive_install_and_database_reload() -> Test
         .map_err(|failure| *failure.error)?;
     let mut expected = crate::agent::pipeline::historical_summary_message("FILE_SUMMARY");
     expected.attach_context_file_references(vec![("call-2".into(), "notes.txt".into())]);
+    expected.attach_context_skill_runs(vec!["owner".into()]);
     assert_eq!(generated.result.messages[0], expected);
     let installed = hook
         .install_generated(generated, guard, CancellationToken::new())

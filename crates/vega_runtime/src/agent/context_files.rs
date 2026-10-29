@@ -107,7 +107,7 @@ pub(super) fn fit_context_files(
         if !messages
             .iter_mut()
             .rev()
-            .any(ChatMessage::trim_context_file)
+            .any(|message| message.trim_context_skill() || message.trim_context_file())
         {
             break;
         }

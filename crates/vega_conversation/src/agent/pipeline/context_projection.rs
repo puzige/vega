@@ -70,6 +70,7 @@ pub(crate) fn interpret_projection_with_live(
                 let mut summary_message = historical_summary_message(summary);
                 summary_message
                     .attach_context_file_references(context_file_references(source, plan)?);
+                summary_message.attach_context_skill_runs(context_skill_runs(source, plan)?);
                 messages.push(summary_message);
             }
             ProjectionFragment::PreviousSummary { checkpoint_id } => {
@@ -87,6 +88,39 @@ pub(crate) fn interpret_projection_with_live(
         }
     }
     Ok(messages)
+}
+
+fn context_skill_runs(
+    source: &vega_store::context_compaction::ContextSource,
+    plan: &ProjectionPlan,
+) -> Result<Vec<String>, ConversationError> {
+    let mut covered = std::collections::HashSet::new();
+    for range in &plan.covered {
+        let selected = range.project(source).map_err(|_| {
+            ConversationError::CorruptRow("invalid context skill source range".into())
+        })?;
+        covered.extend(selected.messages.into_iter().map(|message| message.id));
+    }
+    for fragment in &plan.fragments {
+        if let ProjectionFragment::Source { range } = fragment {
+            let selected = range.project(source).map_err(|_| {
+                ConversationError::CorruptRow("invalid retained skill source range".into())
+            })?;
+            for message in selected.messages {
+                if source.messages.iter().any(|original| original == &message) {
+                    covered.remove(&message.id);
+                }
+            }
+        }
+    }
+    Ok(source
+        .messages
+        .iter()
+        .rev()
+        .filter(|message| message.role == "assistant" && covered.contains(&message.id))
+        .take(8)
+        .map(|message| message.id.clone())
+        .collect())
 }
 
 fn context_file_references(

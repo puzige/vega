@@ -621,6 +621,8 @@ pub struct ChatMessage {
     historical_tool_statuses: Option<Vec<HistoricalToolStatus>>,
     runtime_guidance: Option<RuntimeGuidance>,
     context_files: Vec<ContextFile>,
+    context_skill_runs: Vec<String>,
+    context_skills: Vec<String>,
     tool_context: Option<Box<crate::tool_context::ToolContext>>,
     model_projection: bool,
     replay_cold: bool,
@@ -741,6 +743,8 @@ impl PartialEq for ChatMessage {
             && self.live_tool_calls == other.live_tool_calls
             && self.runtime_guidance == other.runtime_guidance
             && self.context_files == other.context_files
+            && self.context_skill_runs == other.context_skill_runs
+            && self.context_skills == other.context_skills
             && self.tool_context == other.tool_context
             && self.replay_cold == other.replay_cold
     }
@@ -832,6 +836,23 @@ impl ChatMessage {
         }
 
         let mut size = std::mem::size_of::<Self>()
+            .saturating_add(
+                self.context_skill_runs
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<String>()),
+            )
+            .saturating_add(
+                self.context_skills
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<String>()),
+            )
+            .saturating_add(
+                self.context_skill_runs
+                    .iter()
+                    .chain(&self.context_skills)
+                    .map(String::capacity)
+                    .sum::<usize>(),
+            )
             .saturating_add(string_size(&self.content))
             .saturating_add(
                 self.context_files
@@ -1058,8 +1079,32 @@ impl ChatMessage {
         for file in &mut message.context_files {
             file.restored = None;
         }
+        message.context_skills.clear();
         message.tool_context = None;
         message
+    }
+
+    pub fn attach_context_skill_runs(&mut self, runs: Vec<String>) {
+        if self.role == ChatRole::User {
+            self.context_skill_runs = runs.into_iter().take(8).collect();
+            self.context_skills.clear();
+        }
+    }
+
+    pub(crate) fn context_skill_runs(&self) -> &[String] {
+        &self.context_skill_runs
+    }
+
+    pub(crate) fn clear_context_skills(&mut self) {
+        self.context_skills.clear();
+    }
+
+    pub(crate) fn restore_context_skill(&mut self, observation: String) {
+        self.context_skills.push(observation);
+    }
+
+    pub(crate) fn trim_context_skill(&mut self) -> bool {
+        self.context_skills.pop().is_some()
     }
 
     pub fn attach_context_file_references(&mut self, files: Vec<(String, String)>) {
@@ -1077,6 +1122,7 @@ impl ChatMessage {
     }
 
     pub(crate) fn reset_context_files(&mut self) {
+        self.context_skills.clear();
         for file in &mut self.context_files {
             file.restored = None;
         }
@@ -1221,6 +1267,8 @@ impl ChatMessage {
             historical_tool_statuses: None,
             runtime_guidance: None,
             context_files: Vec::new(),
+            context_skill_runs: Vec::new(),
+            context_skills: Vec::new(),
             tool_context: None,
             model_projection: false,
             replay_cold: false,
@@ -1245,6 +1293,8 @@ impl ChatMessage {
             historical_tool_statuses: None,
             runtime_guidance: None,
             context_files: Vec::new(),
+            context_skill_runs: Vec::new(),
+            context_skills: Vec::new(),
             tool_context: None,
             model_projection: false,
             replay_cold: false,
@@ -1273,6 +1323,8 @@ impl ChatMessage {
             historical_tool_statuses: None,
             runtime_guidance: None,
             context_files: Vec::new(),
+            context_skill_runs: Vec::new(),
+            context_skills: Vec::new(),
             tool_context: None,
             model_projection: false,
             replay_cold: false,
@@ -1342,6 +1394,8 @@ impl ChatMessage {
             historical_tool_statuses: None,
             runtime_guidance: None,
             context_files: Vec::new(),
+            context_skill_runs: Vec::new(),
+            context_skills: Vec::new(),
             tool_context: None,
             model_projection: false,
             replay_cold: false,
@@ -1426,6 +1480,11 @@ pub fn project_model_messages(messages: &[ChatMessage]) -> Result<Vec<ChatMessag
         cold_projected.extend(messages.iter().cloned());
     }
     for message in &mut cold_projected {
+        message.context_skill_runs.clear();
+        for observation in std::mem::take(&mut message.context_skills) {
+            message.content.push('\n');
+            message.content.push_str(&observation);
+        }
         for file in std::mem::take(&mut message.context_files) {
             if let Some(Some(observation)) = file.restored {
                 message.content.push('\n');

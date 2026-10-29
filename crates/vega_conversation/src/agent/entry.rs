@@ -820,7 +820,11 @@ where
         .with_mcp_servers(mcp_servers)
         .with_computer_use(actor_config.computer_use.clone())
         .with_stage(actor_config.stage_hook.clone())
-        .with_delegated_compaction(actor_config.delegated);
+        .with_delegated_compaction(actor_config.delegated)
+        .with_context_skill_reader(super::skills::context_skill_reader(
+            database_path.clone(),
+            thread_id.to_string(),
+        ));
     let skill_launch = super::skills::prepare_skill_run(
         store,
         &prepared.project_id,

@@ -228,6 +228,7 @@ pub struct RuntimeToolConfig {
     user_questions: Option<Arc<dyn RuntimeUserQuestionHook>>,
     mcp_candidates: Vec<McpCandidate>,
     skills: Option<RuntimeSkillConfig>,
+    context_skill_reader: Option<Arc<crate::skills::HistoricalSkillReader>>,
     computer_use: Option<crate::computer_use::ComputerUseRun>,
     foreign_call_ids: HashSet<String>,
     permission_timeout: Duration,
@@ -263,6 +264,7 @@ impl RuntimeToolConfig {
             user_questions: None,
             mcp_candidates: Vec::new(),
             skills: None,
+            context_skill_reader: None,
             computer_use: None,
             foreign_call_ids: HashSet::new(),
             permission_timeout: PERMISSION_TIMEOUT,
@@ -394,8 +396,14 @@ impl RuntimeToolConfig {
         self
     }
 
-    /// Attach a trusted, consent-frozen Skills run and exact UI selections.
-    /// The model cannot construct or modify this configuration.
+    pub fn with_context_skill_reader(
+        mut self,
+        reader: Arc<crate::skills::HistoricalSkillReader>,
+    ) -> Self {
+        self.context_skill_reader = Some(reader);
+        self
+    }
+
     pub fn with_skill_run(mut self, run: SkillRun, explicit: Vec<SkillSelection>) -> Self {
         self.skills = Some(RuntimeSkillConfig {
             run: Arc::new(Mutex::new(run)),
@@ -1391,6 +1399,7 @@ impl fmt::Debug for AgentOutcome {
 
 mod context_accounting;
 mod context_files;
+mod context_skills;
 mod descriptions;
 pub use descriptions::is_native_tool;
 use descriptions::{describe_definition, extract_call_description};

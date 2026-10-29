@@ -101,6 +101,44 @@ pub(crate) fn validate_frozen_snapshot(
     Some(run.active_summaries())
 }
 
+pub(super) fn context_skill_reader(
+    database_path: PathBuf,
+    thread_id: String,
+) -> Arc<vega_runtime::skills::HistoricalSkillReader> {
+    Arc::new(move |run_id| {
+        let Ok(store) = vega_store::Store::open_read_only(&database_path) else {
+            return Vec::new();
+        };
+        historical_skill_bodies(&store, &thread_id, run_id).unwrap_or_default()
+    })
+}
+
+fn historical_skill_bodies(
+    store: &vega_store::Store,
+    thread_id: &str,
+    run_id: &str,
+) -> Option<Vec<(ActiveSkillSummary, String)>> {
+    let assistant = messages::find(store.conn(), run_id).ok()??;
+    if assistant.thread_id != thread_id || assistant.role != "assistant" {
+        return None;
+    }
+    let snapshot = skills::load_recoverable_snapshot(store.conn(), run_id).ok()??;
+    if snapshot.thread_id != thread_id || snapshot.run_id != run_id {
+        return None;
+    }
+    let binding = RunBinding::from_trusted_parts(
+        &snapshot.run_id,
+        &snapshot.thread_id,
+        snapshot.consent_generation,
+        snapshot.revocation_generation,
+        &snapshot.catalog_sha256,
+    )
+    .ok()?;
+    let run =
+        SkillRun::restore_snapshot(&snapshot.bytes, &binding, &snapshot.snapshot_sha256).ok()?;
+    Some(run.historical_bodies())
+}
+
 fn unavailable() -> ConversationError {
     ConversationError::Store("selected Skill is unavailable or changed".to_string())
 }

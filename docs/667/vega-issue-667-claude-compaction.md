@@ -164,6 +164,18 @@
 
 lint 修复版本 `d7c18c442c9488b488aa9937e57d6d8907576dec`（tree `902b5ff2a326c36a3678a1c78211b1c94717692f`）的 Actions [40822195895](https://github.com/puzige/vega/actions/runs/40822195895) 全部成功：Nextest `123276983450` 原始输出 155 发现／155 执行通过／0 跳过、19.263s，Clippy `123276983713`、required `123278312602` success。恢复后的独立审查并非 Clear，确认上述暖缓存旧正文与拒绝引用两项问题；本轮最小修复及新增实际暖命中回归仍待新 head 云端验证和增量复核，不以此绿色覆盖审查问题。
 
+文件恢复修复版本 `7cef43739e7ea727ef72d2163a033cd8a30c8e6b`（tree `6e8705c49ada48d6deb0fed17c30ed040fcd4260`）的 Actions [40823415559](https://github.com/puzige/vega/actions/runs/40823415559) 全部成功：Nextest `123280864615` 原始输出 156 发现／156 执行通过／0 跳过、12.967s，Clippy `123280864786`、required `123281747696` success。原审查者对 `bd2915cd44d4604dfa5191539034cfb72d0dcd88` → 本修复的冻结增量独立静态复核 Clear，两项发现闭环；不是整卡验收或合并许可。
+
+#### 已调用技能正文恢复（2026-10-29）
+
+同一运行的已激活 SkillRun 仍由当前权限探针保护，系统消息重建保留其冻结正文；本增量不改其激活、source 审批或工具执行规则。跨运行／重启只恢复历史可读上下文，不将旧 SkillRun 重新绑定或激活为新运行权限。
+
+来源只取共享投影解释器中压缩覆盖且未完整保留的真实 assistant 记录，最近优先，最多 8 个 run；不解析摘要或旧工具输出制造来源。每轮最终冷／暖选择后，使用 Conversation 提供的只读读取器重新查询同一线程的持久化快照，沿用当前 consent／revocation 世代、独立绑定、1 MiB 快照上限、整体 digest 和内部格式验证；失效、缺失、损坏或无权限快照不发送正文。读取器不可用则不假报恢复，取消等实际运行错误仍传播。查询期间不保留 SQLite 连接跨 await，不重放 provider／工具或更改 snapshot／审计／checkpoint。
+
+模型附件使用 authority:none 的 restored_skill／compact_skill_reference JSON，保留 source_run_id、技能名、source label 和内容 hash；正文仅来自已校验冻结 snapshot。按技能名去重，最近优先；当前运行已激活的同名技能不再重复历史正文。每技能 UTF-8 bytes/4 上取整最多 5000 tokens，总正文最多 25000；超限保留无正文引用，不发送不完整正文冒充完整技能。所有字段经过当前凭据过滤，检查不可用 fail closed。附件不改原消息正文或来源比较，不进入历史审批或 read-before-edit；暖缓存不能沿用上一请求正文，每轮重新验证。附件进入实际 production projection 与 wire estimator，预算不足时可移除可选历史附件，不放宽主请求预算。
+
+开发回归覆盖实际 SQLite 快照的来源／绑定／digest、当前世代变更、同名去重与正文限额，以及实际 runtime provider 观测、暖缓存旧正文清除、凭据过滤和预算；只由 Actions 执行。技能资源原文读取、动态工具、任务／计划与其他恢复仍单独续接，不以本节声称完成全部恢复矩阵。
+
 #### 脱离前台的生成与逐阶段结算（2026-10-28）
 
 后台准备在当前 admission 下完成有界捕获：来源、append fence、前驱及引用摘要 digest 来自同一快照，拒绝 staged model change、来源不一致与不完整响应组。返回的 prepared job 不包含 admission、前台 actor、diagnostics channel 或任何 SQLite connection；只保存冻结请求、来源快照、摘要偏好、计价及凭据投影策略。前台生成仍全程持有原 admission 和同一 600 秒期限，不改变既有安装语义。
