@@ -89,6 +89,7 @@ enum Grammar {
     Html,
     Css,
     Sql,
+    Yaml,
 }
 
 impl Grammar {
@@ -105,6 +106,7 @@ impl Grammar {
             "html" => Some(Self::Html),
             "css" => Some(Self::Css),
             "sql" => Some(Self::Sql),
+            "yaml" | "yml" => Some(Self::Yaml),
             _ => None,
         }
     }
@@ -122,6 +124,7 @@ impl Grammar {
             Self::Html => tree_sitter_html::LANGUAGE.into(),
             Self::Css => tree_sitter_css::LANGUAGE.into(),
             Self::Sql => tree_sitter_sequel::LANGUAGE.into(),
+            Self::Yaml => tree_sitter_yaml::LANGUAGE.into(),
         }
     }
 
@@ -149,6 +152,7 @@ impl Grammar {
             Self::Bash => tree_sitter_bash::HIGHLIGHT_QUERY.to_string(),
             Self::Html => tree_sitter_html::HIGHLIGHTS_QUERY.to_string(),
             Self::Css => tree_sitter_css::HIGHLIGHTS_QUERY.to_string(),
+            Self::Yaml => tree_sitter_yaml::HIGHLIGHTS_QUERY.to_string(),
             Self::Sql => format!(
                 "{}\n((literal) @number (#match? @number \"^[-+]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][-+]?[0-9]+)?$\"))",
                 tree_sitter_sequel::HIGHLIGHTS_QUERY
@@ -291,6 +295,7 @@ pub fn language_display_name(language: Option<&str>) -> &str {
         "html" => "HTML",
         "css" => "CSS",
         "sql" => "SQL",
+        "yaml" | "yml" => "YAML",
         _ => tag,
     }
 }
