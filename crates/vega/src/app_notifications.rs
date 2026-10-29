@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use gpui_kit::*;
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use vega_conversation::types::{NavigationRoute, UserQuestionId};
 
 use crate::app_agent::RunCompletionOutcome;
@@ -98,6 +99,46 @@ pub(crate) fn show_question(
     Some(tag)
 }
 
+fn notification_preview(markdown: &str) -> String {
+    let mut text = String::new();
+    let options = Options::ENABLE_TABLES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_FOOTNOTES;
+    for event in Parser::new_ext(markdown, options) {
+        match event {
+            Event::Text(content) | Event::Code(content) => text.push_str(&content),
+            Event::SoftBreak
+            | Event::HardBreak
+            | Event::Rule
+            | Event::Html(_)
+            | Event::InlineHtml(_) => text.push(' '),
+            Event::Start(
+                Tag::Paragraph
+                | Tag::Heading { .. }
+                | Tag::BlockQuote(_)
+                | Tag::CodeBlock(_)
+                | Tag::Item
+                | Tag::TableCell,
+            )
+            | Event::End(
+                TagEnd::Paragraph
+                | TagEnd::Heading(_)
+                | TagEnd::BlockQuote(_)
+                | TagEnd::CodeBlock
+                | TagEnd::Item
+                | TagEnd::TableCell,
+            ) => text.push(' '),
+            _ => {}
+        }
+    }
+    let clean = text
+        .chars()
+        .filter(|character| !character.is_control() || character.is_whitespace())
+        .collect::<String>();
+    clean.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 pub(crate) fn show(
     route: NavigationRoute,
     title: &str,
@@ -106,11 +147,7 @@ pub(crate) fn show(
     output: &str,
     cx: &mut App,
 ) {
-    let clean = output
-        .chars()
-        .filter(|character| !character.is_control() || character.is_whitespace())
-        .collect::<String>();
-    let summary = clean.split_whitespace().collect::<Vec<_>>().join(" ");
+    let summary = notification_preview(output);
     if summary.is_empty() {
         return;
     }
