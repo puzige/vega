@@ -502,8 +502,6 @@ async fn error_snippet(resp: reqwest::Response, cancel: &CancellationToken) -> S
 }
 
 mod chat;
-#[cfg(test)]
-mod compaction_tests;
 mod recovery;
 pub(crate) mod responses;
 mod sse;

@@ -204,6 +204,3 @@ fn checkpoint_projection(
     safe.insert("unknown_effects".into(), serde_json::json!(effects));
     Some(serde_json::Value::Object(safe))
 }
-
-#[cfg(test)]
-mod tests;

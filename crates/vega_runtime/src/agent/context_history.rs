@@ -154,6 +154,3 @@ pub(super) async fn execute(
     }
     Ok(output)
 }
-
-#[cfg(test)]
-mod tests;

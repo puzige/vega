@@ -41,8 +41,6 @@ mod progress;
 mod progress_recovery;
 
 mod mcp_registry;
-#[cfg(test)]
-mod mcp_registry_tests;
 use mcp_registry::{KnownCredentials, McpCandidate, RunCapabilitySnapshot};
 mod credential_redaction;
 pub use credential_redaction::{

@@ -6,8 +6,6 @@ mod context_projection;
 pub(crate) use context_projection::{
     interpret_projection, interpret_projection_with_live, match_live_ranges,
 };
-#[cfg(test)]
-mod compaction_tests;
 
 pub(crate) fn valid_automation_call_projection(tool: &str, input_json: &str) -> bool {
     matches!(tool, "get_goal" | "update_goal" | "schedule_wakeup")

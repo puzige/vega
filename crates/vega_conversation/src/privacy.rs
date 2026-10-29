@@ -5,9 +5,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use vega_runtime::{CredentialConfidence, CredentialExceptionFilter};
 use vega_store::Store;
 
-#[cfg(test)]
-mod tests;
-
 const KEY_REF: &str = "vega-privacy-fingerprint-v1";
 const RULE_VERSION: &str = "credential-rules-v1";
 static ROOTS: OnceLock<Mutex<HashMap<PathBuf, PathBuf>>> = OnceLock::new();

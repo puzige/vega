@@ -52,6 +52,3 @@ pub(super) async fn restore_context_plan(
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

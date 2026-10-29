@@ -55,6 +55,3 @@ pub(super) async fn restore_context_skills(
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

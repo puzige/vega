@@ -321,24 +321,6 @@ impl ConversationStream {
         cx.notify();
     }
 
-    #[cfg(feature = "context-test-support")]
-    pub fn context_status_snapshot(&self) -> Option<ContextCompactionStatusRecord> {
-        self.context_control.records.last().cloned()
-    }
-
-    #[cfg(feature = "context-test-support")]
-    pub fn context_status_rows(&self) -> Vec<(String, ContextCompactionStatusRecord)> {
-        self.entries
-            .iter()
-            .filter_map(|entry| match entry {
-                StreamEntry::ContextCompaction { model, record, .. } => {
-                    Some((model.clone(), record.clone()))
-                }
-                _ => None,
-            })
-            .collect()
-    }
-
     /// Restore durable uncertainty without re-adding tokens or clearing a latch.
     pub fn restore_context_unknown_usage(
         &mut self,
@@ -923,6 +905,3 @@ fn compact_requirements(text: &str) -> Option<&str> {
     let rest = text.strip_prefix("/compact")?;
     (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| rest.trim())
 }
-
-#[cfg(test)]
-mod compact_command_tests;

@@ -2,6 +2,23 @@
 
 本文件是可执行交付清单，不是完成证明或删测授权。依据 [规格 §6](vega-issue-667-claude-compaction.md#6-当前证据未知与下一步)、[测试交付政策](../vega-rust-test-delivery-lifecycle.md)及[执行指南 §7.2](../vega-exec-guide.md#72-快速交付与按风险验证当前规则)。只记录路径、内容身份和证据要求，不复制 Rust 源码、测试或恢复 patch 到最终仓库。
 
+## 已固定开发绿色与可恢复归档
+
+最终带测试开发提交 `11ae0fc1f8c12445c9003e317b1a061496f257f1`，tree `d0ea0178ba08f205581fc977ee7db1853c033463`。完整 [Actions 40904061105](https://github.com/puzige/vega/actions/runs/40904061105) 成功：Clippy `123553863454`、Nextest `123553864283`、required `123556101247`。原始输出明确 **197 发现、197 执行／通过、0 跳过（17.132s）**；3 条 automation_entry、2 条组合回归与 4 条历史委派回归均实际通过。开发已知失败按上述身份闭环，不删除失败项换绿；真实模型／应用验收仍待用户。
+
+持久 [恢复归档与原始 CI 日志](https://gist.github.com/puzige/025d492cf0374c893f3044694c96c21b) 已创建并远端读回：
+
+| 文件 | SHA-256 与用途 |
+|---|---|
+| `development.patch.gz.b64` | `609d560e2aaf61dbe2651a5e50588f012c27982530b3a095a5ebfa39babc331a`，gzip -n 后 base64 的完整 binary/full-index patch |
+| 解码后 `development.patch` | `4b5985a6b0a8786250db1be9914aeb35707eb01835fedd9b834408d6b246a303`，137 路径，包含原始 Rust 测试、独占支持、manifest/lock 及生产实现；不复制进最终 master 树 |
+| `actions-40904061105.log` | `e8d3c4f3a4ca1bfaff881105a1ffe9316f8243d0755a03efa1252c13ab81e9e9`，实际完整原始 Actions 输出 |
+| `manifest.txt` | 完整源 SHA/tree、应用基准、编码、实际命令与 run/job/计数及未完成门禁 |
+
+恢复基准 commit `988dd1f6ba3526a9879250ca591ee9f80c2ae850`、tree `c8ef205c0f3cca1c4f32cced66b1181686f38c21`。先 base64 解码、gzip 解压并校验原始 patch 哈希，再在隔离 checkout 对精确基准应用；源码提交亦已通过 GitHub API 核对远端 SHA/tree。远端编码文件、解码 patch、日志三个身份均与本地一致；不依赖短期 Actions artifact 或仅本机文件。
+
+限定清理已在工作区完成：51 个独占文件移除，23 个混合源码／manifest／lock 文件修改；Rust 范围只删除测试、独占支持及接线。静态扫描未见测试声明、cfg(test)、测试 support、fixture/mock 文件或可执行 doctest；stream.rs 的 text 围栏保留。三个写入范围均完成格式／diff 与生产内容保留检查；主会话核对受保护 .github/.config/scripts/vendor/xtask/benchmark 无差异。Cargo.lock 限定移除 8 个测试包及 gpui-pre 测试边，结果与主线 988dd1f6 锁文件逐字一致（SHA-256 `e4deb4f84bd29d60265f6d7e33e96612974173b8043eab2be12fd749d59eb1fa`）。冻结 `git diff --binary -- crates Cargo.lock` SHA-256 `2a3753eb05b3c84fd411e9a95c68da12f00f55452c86a4ca2199f8c96dc08d28`，已交非写入者独审；最终完整 required CI 的 no Rust tests（0 发现／0 执行）尚未取得。下文 d404 清单为历史冻结基线，需加后续两文件增量，不把开发绿色当最终空集或用户手测。
+
 ## 1. 冻结边界与已知状态
 
 | 身份 | 完整值与用途 |

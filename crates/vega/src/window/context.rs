@@ -5,10 +5,6 @@ use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 use vega_store::Store;
 
-#[cfg(test)]
-#[path = "context_tests.rs"]
-mod tests;
-
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct ContextOwner {
     epoch: u64,
@@ -25,10 +21,6 @@ pub(crate) struct ManualContextRun {
     cancel: CancellationToken,
 }
 
-#[cfg(test)]
-type ContextTestWorker =
-    Arc<dyn Fn(CancellationToken) -> Result<Vec<ConversationEvent>, ()> + Send + Sync>;
-
 #[derive(Default)]
 pub(crate) struct ContextController {
     epoch: u64,
@@ -40,10 +32,6 @@ pub(crate) struct ContextController {
     // reuse a UI operation id; it is never an app-level ownership fence.
     automatic: HashMap<u64, (u64, u64)>,
     primary_owner: HashMap<u64, ContextOwner>,
-    #[cfg(test)]
-    config_path: Option<PathBuf>,
-    #[cfg(test)]
-    worker: Option<ContextTestWorker>,
 }
 
 impl ContextController {
@@ -83,10 +71,6 @@ fn context_record(id: u64, status: ContextCompactionStatus) -> ContextCompaction
 
 impl VegaWindow {
     fn context_config_path(&self) -> Option<PathBuf> {
-        #[cfg(test)]
-        if let Some(path) = &self.context_controller.config_path {
-            return Some(path.clone());
-        }
         self.composer_config_path()
     }
 
@@ -261,19 +245,12 @@ impl VegaWindow {
             cancel: cancel.clone(),
         };
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-        #[cfg(test)]
-        let test_worker = self.context_controller.worker.clone();
         // A dedicated thread mirrors the primary worker. In particular, a
         // blocking Tokio runtime must not occupy GPUI's cooperative executor.
         let worker = std::thread::Builder::new()
             .name("vega-context".into())
             .spawn(move || {
                 let _activity = activity;
-                #[cfg(test)]
-                if let Some(worker) = test_worker {
-                    let _ = sender.send(worker(cancel));
-                    return;
-                }
                 let events = run_manual_context_worker(
                     database,
                     config,

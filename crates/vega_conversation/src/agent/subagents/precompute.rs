@@ -1,10 +1,6 @@
 use super::*;
 use crate::types::{ContextPrecomputeLease, ContextPrecomputeOwner, ContextPrecomputeRegistry};
 
-#[cfg(test)]
-#[path = "precompute_tests.rs"]
-mod tests;
-
 pub(super) struct ChildPrecompute {
     owner: ContextPrecomputeOwner,
     registry: ContextPrecomputeRegistry,

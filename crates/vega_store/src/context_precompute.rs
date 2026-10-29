@@ -10,9 +10,6 @@ use crate::context_compaction::{
 };
 use crate::context_projection::{AssistantCursor, SourceCursor};
 
-#[cfg(test)]
-mod tests;
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextAppendFence {

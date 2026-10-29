@@ -169,27 +169,3 @@ fn truncate_line(line: &str) -> (String, bool) {
         (head, false)
     }
 }
-
-#[cfg(test)]
-mod context_tests {
-    use super::*;
-
-    #[test]
-    fn context_read_does_not_create_or_refresh_edit_read_versions()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = std::env::temp_dir().join(format!("vega-context-read-{}", std::process::id()));
-        std::fs::create_dir_all(&root)?;
-        let path = root.join("notes.txt");
-        std::fs::write(&path, "old")?;
-        let tools = Tools::new(&root)?;
-        assert_eq!(tools.read_context_file("notes.txt")?.text, "old");
-        assert!(tools.reads.validate(&path.canonicalize()?, b"old").is_err());
-        tools.read("notes.txt", None, None)?;
-        std::fs::write(&path, "new")?;
-        assert_eq!(tools.read_context_file("notes.txt")?.text, "new");
-        assert!(tools.reads.validate(&path.canonicalize()?, b"new").is_err());
-        assert!(tools.reads.validate(&path.canonicalize()?, b"old").is_ok());
-        std::fs::remove_dir_all(root)?;
-        Ok(())
-    }
-}

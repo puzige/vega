@@ -19,11 +19,6 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use summary_variant::SummaryVariant;
 
-#[cfg(test)]
-mod continuation_tests;
-#[cfg(test)]
-mod service_tests;
-
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 use vega_runtime::{

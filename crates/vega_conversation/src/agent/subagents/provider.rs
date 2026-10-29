@@ -1,9 +1,5 @@
 use super::*;
 
-#[cfg(test)]
-#[path = "provider_tests.rs"]
-mod tests;
-
 pub(super) enum ChildTransport<'a> {
     Borrowed(&'a dyn Provider),
     Owned(Arc<dyn Provider>),

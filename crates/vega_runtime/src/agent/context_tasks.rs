@@ -62,6 +62,3 @@ pub(super) async fn restore_context_tasks(
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

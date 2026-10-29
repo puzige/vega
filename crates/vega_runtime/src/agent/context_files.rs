@@ -115,6 +115,3 @@ pub(super) fn fit_context_files(
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

@@ -968,36 +968,3 @@ impl ConversationStream {
             .into_any_element()
     }
 }
-
-#[cfg(test)]
-mod compact_menu_tests {
-    use super::*;
-
-    #[test]
-    fn compact_is_discoverable_only_for_native_matching_command_rows() {
-        let mut actions = ComposerActions {
-            slash: Some("/com".into()),
-            ..Default::default()
-        };
-        assert!(actions.rows(TaskBackend::Native) == vec![ComposerActionRow::Compact]);
-        assert!(actions.rows(TaskBackend::Codex).is_empty());
-        actions.slash = Some("/ask".into());
-        assert!(
-            !actions
-                .rows(TaskBackend::Native)
-                .contains(&ComposerActionRow::Compact)
-        );
-        actions.slash = None;
-        actions.menu = true;
-        assert!(
-            actions
-                .rows(TaskBackend::Native)
-                .contains(&ComposerActionRow::Compact)
-        );
-        assert!(
-            !actions
-                .rows(TaskBackend::Codex)
-                .contains(&ComposerActionRow::Compact)
-        );
-    }
-}
