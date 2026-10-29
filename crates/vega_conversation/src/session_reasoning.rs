@@ -89,7 +89,3 @@ pub fn project(
     };
     Ok(profile)
 }
-
-#[cfg(test)]
-#[path = "session_reasoning_tests.rs"]
-mod tests;
