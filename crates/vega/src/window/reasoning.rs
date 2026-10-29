@@ -361,16 +361,12 @@ impl VegaWindow {
         if stream.read(cx).thread_snapshot().id != request.thread_id {
             return;
         }
-        self.pending_composer_thinking
-            .retain(|(_, thread_id, defaults)| {
-                thread_id != &request.thread_id || defaults.model != request.defaults.model
-            });
+        self.pending_composer_thinking.retain(|(_, queued)| {
+            queued.thread_id != request.thread_id || queued.defaults.model != request.defaults.model
+        });
         if self.reasoning_save_pending.is_some() {
-            self.pending_composer_thinking.push((
-                stream,
-                request.thread_id.clone(),
-                request.defaults.clone(),
-            ));
+            self.pending_composer_thinking
+                .push((stream, request.clone()));
             return;
         }
         let choice = request.defaults.thinking.clone();
@@ -379,6 +375,9 @@ impl VegaWindow {
         let Some(profile) = self.reasoning_profile_for_model(&model) else {
             // A missing profile is provider-default with no controls. The
             // stream still re-projects so a stale slider cannot survive.
+            stream.update(cx, |stream, cx| {
+                stream.acknowledge_reasoning_intent(request, cx)
+            });
             self.apply_reasoning_profile_to_stream(&stream, &displayed_model, cx);
             return;
         };
@@ -386,12 +385,18 @@ impl VegaWindow {
             ReasoningChoice::ProviderDefault
         } else if choice == "enabled" {
             if !profile.supports_enabled {
+                stream.update(cx, |stream, cx| {
+                    stream.acknowledge_reasoning_intent(request, cx)
+                });
                 self.apply_reasoning_profile_to_stream(&stream, &displayed_model, cx);
                 return;
             }
             ReasoningChoice::Enabled
         } else if choice == OFF_CHOICE_NAME {
             if !(profile.supports_disabled && profile.disabled_wire.is_some()) {
+                stream.update(cx, |stream, cx| {
+                    stream.acknowledge_reasoning_intent(request, cx)
+                });
                 self.apply_reasoning_profile_to_stream(&stream, &displayed_model, cx);
                 return;
             }
@@ -402,6 +407,9 @@ impl VegaWindow {
             // surface as a generic I/O error, when it is really an invalid
             // intent.
             if !profile.efforts.iter().any(|effort| effort == &choice) {
+                stream.update(cx, |stream, cx| {
+                    stream.acknowledge_reasoning_intent(request, cx)
+                });
                 self.apply_reasoning_profile_to_stream(&stream, &displayed_model, cx);
                 return;
             }
@@ -423,6 +431,7 @@ impl VegaWindow {
         let database = self.file_backed_store_path(cx);
         let thread_id = request.thread_id.clone();
         let worker_thread = thread_id.clone();
+        let request = request.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
         let worker = std::thread::Builder::new()
             .name("vega-session-reasoning-save".into())
@@ -450,7 +459,7 @@ impl VegaWindow {
                 let _ = sender.send(result);
             });
         if worker.is_err() {
-            self.finish_session_reasoning_save(stream, thread_id, owner, Err(()), cx);
+            self.finish_session_reasoning_save(stream, request, owner, Err(()), cx);
             return;
         }
         cx.spawn(async move |this, cx| {
@@ -464,7 +473,7 @@ impl VegaWindow {
                     Err(mpsc::TryRecvError::Disconnected) => Err(()),
                 };
                 let _ = this.update(cx, |this, cx| {
-                    this.finish_session_reasoning_save(stream, thread_id, owner, result, cx);
+                    this.finish_session_reasoning_save(stream, request, owner, result, cx);
                 });
                 break;
             }
@@ -475,7 +484,7 @@ impl VegaWindow {
     fn finish_session_reasoning_save(
         &mut self,
         stream: Entity<ConversationStream>,
-        thread_id: String,
+        request: ComposerDefaultsRequested,
         owner: (u64, u64),
         result: Result<Vec<vega_conversation::types::SessionReasoningPreference>, ()>,
         cx: &mut Context<Self>,
@@ -484,6 +493,10 @@ impl VegaWindow {
             return;
         }
         self.reasoning_save_pending = None;
+        let thread_id = request.thread_id.clone();
+        stream.update(cx, |stream, cx| {
+            stream.acknowledge_reasoning_intent(&request, cx)
+        });
         if cx
             .global::<OpenedThread>()
             .0
@@ -773,11 +786,7 @@ impl VegaWindow {
         if self.reasoning_save_pending.is_some() || self.pending_composer_thinking.is_empty() {
             return;
         }
-        let (stream, thread_id, defaults) = self.pending_composer_thinking.remove(0);
-        let request = ComposerDefaultsRequested {
-            thread_id,
-            defaults,
-        };
+        let (stream, request) = self.pending_composer_thinking.remove(0);
         self.save_composer_thinking(stream, &request, cx);
     }
 

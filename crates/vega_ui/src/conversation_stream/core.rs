@@ -188,6 +188,8 @@ pub struct ConversationStream {
     /// Keyboard stop for the visible failed-index Retry action.
     pub(crate) file_retry_focus: FocusHandle,
     pub(crate) composer_defaults: ComposerDefaults,
+    pub(crate) reasoning_intent_revision: u64,
+    pub(crate) reasoning_intents: HashMap<String, (u64, ReasoningChoice)>,
     pub(crate) selector_reasoning: Option<ReasoningProfileProjection>,
     pub(crate) thinking_slider: Entity<ThinkingSlider>,
     pub(crate) model_options: Vec<ModelOption>,
@@ -613,6 +615,8 @@ impl ConversationStream {
             file_index_failure: None,
             file_retry_focus: cx.focus_handle().tab_stop(true),
 
+            reasoning_intent_revision: 0,
+            reasoning_intents: HashMap::new(),
             composer_defaults: ComposerDefaults {
                 model: initial_model,
                 thinking: "provider_default".to_string(),
@@ -1303,7 +1307,14 @@ impl ConversationStream {
         profile: Option<ReasoningProfileProjection>,
         cx: &mut Context<Self>,
     ) {
-        self.selector_reasoning = profile.filter(|profile| profile.model == self.selector_model());
+        self.selector_reasoning = profile
+            .filter(|profile| profile.model == self.selector_model())
+            .map(|mut profile| {
+                if let Some((_, choice)) = self.reasoning_intents.get(&profile.model) {
+                    profile.preference = choice.clone();
+                }
+                profile
+            });
         self.sync_thinking_slider(cx);
         cx.notify();
     }
@@ -1384,7 +1395,16 @@ impl ConversationStream {
         if let Some(profile) = self.selector_reasoning.as_mut() {
             profile.preference = reasoning_choice_for_name(&event.choice);
         }
+        self.reasoning_intent_revision = self.reasoning_intent_revision.wrapping_add(1);
+        self.reasoning_intents.insert(
+            event.model.clone(),
+            (
+                self.reasoning_intent_revision,
+                reasoning_choice_for_name(&event.choice),
+            ),
+        );
         cx.emit(ComposerDefaultsRequested {
+            revision: self.reasoning_intent_revision,
             thread_id: self.thread.id.clone(),
             defaults,
         });
@@ -1956,6 +1976,26 @@ impl ConversationStream {
     ) {
         self.thread.reasoning_preferences = Some(preferences);
         self.controller_error = None;
+        cx.notify();
+    }
+}
+
+impl ConversationStream {
+    pub fn acknowledge_reasoning_intent(
+        &mut self,
+        request: &ComposerDefaultsRequested,
+        cx: &mut Context<Self>,
+    ) {
+        if self.thread.id != request.thread_id {
+            return;
+        }
+        if self
+            .reasoning_intents
+            .get(&request.defaults.model)
+            .is_some_and(|(revision, _)| *revision == request.revision)
+        {
+            self.reasoning_intents.remove(&request.defaults.model);
+        }
         cx.notify();
     }
 }

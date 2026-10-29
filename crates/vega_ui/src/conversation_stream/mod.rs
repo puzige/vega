@@ -269,6 +269,7 @@ pub struct MessageLocationRequested {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComposerDefaultsRequested {
+    pub revision: u64,
     pub thread_id: String,
     pub defaults: ComposerDefaults,
 }

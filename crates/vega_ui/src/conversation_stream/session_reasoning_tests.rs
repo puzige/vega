@@ -163,3 +163,88 @@ fn uninitialized_and_illegal_session_values_cannot_be_submitted(cx: &mut TestApp
         assert!(stream.frozen_reasoning_for_submit().is_err());
     });
 }
+
+#[gpui::test]
+fn older_save_ack_does_not_replace_newer_slider_intent(cx: &mut TestAppContext) {
+    cx.update(|cx| cx.set_global(vega_theme::Theme::light()));
+    let a = stream("low", cx);
+    project(&a, cx);
+    let slider = a.read_with(cx, |stream, _| stream.thinking_slider.clone());
+    assert!(slider.update(cx, |slider, cx| slider.select_index(1, cx)));
+    let high = a.read_with(cx, |stream, _| {
+        let mut defaults = stream.composer_defaults.clone();
+        defaults.model = "model".into();
+        defaults.thinking = "high".into();
+        ComposerDefaultsRequested {
+            thread_id: stream.thread.id.clone(),
+            revision: stream.reasoning_intent_revision,
+            defaults,
+        }
+    });
+    assert!(slider.update(cx, |slider, cx| slider.select_index(0, cx)));
+    let low = a.read_with(cx, |stream, _| {
+        let mut request = high.clone();
+        request.revision = stream.reasoning_intent_revision;
+        request.defaults.thinking = "low".into();
+        request
+    });
+    a.update(cx, |stream, cx| {
+        stream.acknowledge_reasoning_intent(&high, cx);
+        stream.apply_session_reasoning_preferences(preferences("high"), cx);
+    });
+    project(&a, cx);
+    assert!(slider.update(cx, |slider, cx| slider.select_index(1, cx)));
+    a.update(cx, |stream, cx| {
+        stream.acknowledge_reasoning_intent(&low, cx);
+        stream.apply_session_reasoning_preferences(preferences("low"), cx);
+    });
+    project(&a, cx);
+    assert_eq!(
+        a.read_with(cx, |stream, _| stream
+            .selector_reasoning
+            .as_ref()
+            .unwrap()
+            .preference
+            .clone()),
+        ReasoningChoice::Effort("high".into())
+    );
+    assert!(!slider.update(cx, |slider, cx| slider.select_index(1, cx)));
+}
+
+#[gpui::test]
+fn unsupported_old_choice_has_no_false_selection_and_legal_tier_can_be_saved(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| cx.set_global(vega_theme::Theme::light()));
+    let a = stream("high", cx);
+    a.update(cx, |stream, cx| {
+        let mut profile = profile("model", "high");
+        profile.efforts = vec!["low".into()];
+        stream.apply_reasoning_profile(profile.clone(), cx);
+        stream.apply_selector_reasoning_profile(Some(profile), cx);
+        assert!(stream.frozen_reasoning_for_submit().is_err());
+    });
+    let slider = a.read_with(cx, |stream, _| stream.thinking_slider.clone());
+    assert!(slider.update(cx, |slider, cx| slider.select_index(0, cx)));
+    assert_eq!(
+        a.read_with(cx, |stream, _| stream
+            .selector_reasoning
+            .as_ref()
+            .unwrap()
+            .preference
+            .clone()),
+        ReasoningChoice::Effort("low".into())
+    );
+    a.update(cx, |stream, cx| {
+        stream.apply_session_reasoning_preferences(preferences("low"), cx);
+        stream.apply_reasoning_profile(profile("model", "low"), cx);
+        assert_eq!(
+            stream
+                .frozen_reasoning_for_submit()
+                .unwrap()
+                .unwrap()
+                .choice,
+            ReasoningChoice::Effort("low".into())
+        );
+    });
+}

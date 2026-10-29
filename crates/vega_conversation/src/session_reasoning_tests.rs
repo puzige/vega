@@ -38,6 +38,7 @@ fn choice(store: &Store, id: &str) -> ReasoningChoice {
 #[test]
 fn edits_are_isolated_in_storage_projection_and_frozen_requests() {
     let store = Store::open(":memory:").unwrap();
+    store.migrate().unwrap();
     let a = thread(&store);
     let b = thread(&store);
     let global = defaults("low");
@@ -68,6 +69,7 @@ fn edits_are_isolated_in_storage_projection_and_frozen_requests() {
 #[test]
 fn defaults_are_initialization_only_including_empty_snapshot() {
     let store = Store::open(":memory:").unwrap();
+    store.migrate().unwrap();
     let a = thread(&store);
     let b = thread(&store);
     initialize(&store, &a.id, &defaults("low")).unwrap();
@@ -91,6 +93,7 @@ fn drafts_materialize_exact_snapshot_and_reload_after_reopen() {
         ulid::Ulid::generate()
     ));
     let store = Store::open(&path).unwrap();
+    store.migrate().unwrap();
     let mut draft = crate::threads::draft_thread(None, "model", "confirm");
     let mut preferences = defaults("low");
     set_preference(&mut preferences, &profile("provider", "model", "high")).unwrap();
@@ -116,6 +119,7 @@ fn drafts_materialize_exact_snapshot_and_reload_after_reopen() {
 #[test]
 fn exact_provider_model_binding_survives_switching_and_staging() {
     let store = Store::open(":memory:").unwrap();
+    store.migrate().unwrap();
     let a = thread(&store);
     initialize(&store, &a.id, &defaults("low")).unwrap();
     let current = project(profile("provider", "model", "high"), &defaults("low"))
@@ -161,6 +165,7 @@ fn exact_provider_model_binding_survives_switching_and_staging() {
 #[test]
 fn invalid_choice_or_failed_write_keeps_confirmed_value() {
     let store = Store::open(":memory:").unwrap();
+    store.migrate().unwrap();
     let a = thread(&store);
     initialize(&store, &a.id, &defaults("low")).unwrap();
     assert!(save(&store, &a.id, &profile("provider", "model", "max")).is_err());
@@ -178,4 +183,53 @@ fn invalid_choice_or_failed_write_keeps_confirmed_value() {
         ReasoningChoice::Effort("high".into())
     );
     assert!(save(&store, "missing", &profile("provider", "model", "high")).is_err());
+}
+
+#[test]
+fn codex_draft_preserves_snapshot_including_initialized_empty_value() {
+    use crate::types::*;
+    let root =
+        std::env::temp_dir().join(format!("vega-codex-reasoning-{}", ulid::Ulid::generate()));
+    std::fs::create_dir(&root).unwrap();
+    let root = std::fs::canonicalize(root).unwrap();
+    let store = Store::open(":memory:").unwrap();
+    store.migrate().unwrap();
+    let snapshot = CodexExecutionSnapshot {
+        profile: CodexProfileReference {
+            id: "profile".into(),
+            display_name: "Profile".into(),
+        },
+        adapter: CodexAdapterKind::CodexAcp,
+        executable: "/usr/bin/true".into(),
+        arguments: Vec::new(),
+        adapter_version: "1.0.0".into(),
+        codex_version: "1.0.0".into(),
+        settings: CodexRunSettings {
+            model: None,
+            model_provider: None,
+            reasoning_effort: None,
+            sandbox_mode: CodexSandboxMode::ReadOnly,
+            approval_policy: CodexApprovalPolicy::OnRequest,
+        },
+        workspace: CodexWorkspaceSnapshot {
+            project_id: None,
+            worktree_id: Some("worktree".into()),
+            canonical_working_directory: root.to_str().unwrap().into(),
+            additional_directories: Vec::new(),
+        },
+    };
+    for preferences in [defaults("high"), Vec::new()] {
+        let mut draft = crate::threads::draft_thread(None, "model", "confirm");
+        draft.backend = TaskBackend::Codex;
+        draft.reasoning_preferences = Some(preferences.clone());
+        let materialized =
+            crate::codex_tasks::materialize_codex_draft(&store, &draft, &snapshot).unwrap();
+        assert_eq!(
+            crate::threads::get_thread(&store, &materialized.id)
+                .unwrap()
+                .reasoning_preferences,
+            Some(preferences)
+        );
+    }
+    std::fs::remove_dir(root).unwrap();
 }

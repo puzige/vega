@@ -177,7 +177,7 @@ pub(crate) struct VegaWindow {
     pub(crate) reasoning_save_pending: Option<(u64, u64)>,
     pub(crate) composer_reasoning_operation: u64,
     pub(crate) pending_composer_thinking:
-        Vec<(Entity<ConversationStream>, String, ComposerDefaults)>,
+        Vec<(Entity<ConversationStream>, ComposerDefaultsRequested)>,
     /// Provider Settings saves request a model catalog reload. If a reasoning
     /// save owns the catalog authority, defer that reload until its ack so the
     /// two workers cannot regress each other's projections.
