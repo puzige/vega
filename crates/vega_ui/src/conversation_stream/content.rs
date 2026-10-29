@@ -1717,6 +1717,7 @@ impl ConversationStream {
                 let card = cx.new(|_| ToolCard::proposed(&call));
                 self.observe_tool_card(&card, cx);
                 self.append_live_tool(card.clone(), true, cx);
+                self.record_tool_event(&card, cx);
                 if card.read(cx).is_subagent_invocation()
                     && let Some(index) = self.tool_entry_index(&card, cx)
                 {
@@ -1741,6 +1742,7 @@ impl ConversationStream {
                         card.apply_approved(approval);
                         cx.notify();
                     });
+                    self.record_tool_event(&card, cx);
                     self.invalidate_tool_card(&card, cx);
                 } else {
                     self.push_corrupt_tool(call_id, cx);
@@ -1758,6 +1760,7 @@ impl ConversationStream {
                     if started && let Some((_, group)) = &self.active_run_activity {
                         group.update(cx, |group, cx| group.tool_started(&card, cx));
                     }
+                    self.record_tool_event(&card, cx);
                     self.invalidate_tool_card(&card, cx);
                 } else {
                     self.push_corrupt_tool(call_id, cx);
@@ -1775,6 +1778,7 @@ impl ConversationStream {
                         cx.notify();
                     });
                     self.refresh_subagent_card(&card, cx);
+                    self.record_tool_event(&card, cx);
                     self.invalidate_tool_card(&card, cx);
                 } else {
                     // Validation rejection/conflict can be terminal without
@@ -2115,6 +2119,17 @@ impl ConversationStream {
             })
     }
 
+    fn record_tool_event(&mut self, card: &Entity<ToolCard>, cx: &mut Context<Self>) {
+        if let Some((_, group)) = &self.active_run_activity {
+            group.update(cx, |group, cx| group.tool_event(card, cx));
+        }
+        if let Some(index) = self.tool_entry_index(card, cx)
+            && let Some(StreamEntry::ToolGroup { group }) = self.entries.get(index)
+        {
+            group.update(cx, |group, cx| group.tool_event(card, cx));
+        }
+    }
+
     fn observe_tool_card(&mut self, card: &Entity<ToolCard>, cx: &mut Context<Self>) {
         cx.subscribe(
             card,
@@ -2318,6 +2333,7 @@ impl ConversationStream {
         let card = cx.new(|_| card);
         self.observe_tool_card(&card, cx);
         self.append_live_tool(card.clone(), false, cx);
+        self.record_tool_event(&card, cx);
         self.tool_cards.insert(call_id, card);
         cx.notify();
     }
