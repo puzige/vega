@@ -230,7 +230,6 @@ impl ThinkingSliderModel {
         // last-resort fallback.
         self.default =
             resolve_tier(&self.tiers, default, default).map(std::string::ToString::to_string);
-        let fallback = self.default.clone().unwrap_or_default();
 
         if current == OFF_CHOICE_NAME && supports_off {
             self.current = Some(Selection::Off);
@@ -243,8 +242,8 @@ impl ThinkingSliderModel {
             self.provider_default = true;
             return;
         }
-        self.current = resolve_tier(&self.tiers, current, &fallback)
-            .map(|tier| Selection::Tier(tier.to_string()));
+        self.current =
+            find_supported(&self.tiers, current).map(|tier| Selection::Tier(tier.to_string()));
         self.provider_default = false;
     }
 

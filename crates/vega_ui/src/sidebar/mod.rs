@@ -207,6 +207,7 @@ impl Global for StoreInitializationError {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewTaskDefaults {
+    pub reasoning_preferences: Option<Vec<vega_conversation::types::SessionReasoningPreference>>,
     /// `defaults.model` (empty until a provider is configured).
     pub model: String,
     pub permission: vega_conversation::types::DefaultPermissionSnapshot,
@@ -222,6 +223,7 @@ impl Default for NewTaskDefaults {
 impl NewTaskDefaults {
     pub fn from_config(path: Option<&std::path::Path>, defaults: &config::Defaults) -> Self {
         Self {
+            reasoning_preferences: None,
             model: defaults.model.clone(),
             permission: vega_conversation::permission_contracts::default_permission_snapshot(
                 path, defaults,
@@ -231,7 +233,15 @@ impl NewTaskDefaults {
 
     pub fn load() -> Self {
         match config::config_path().and_then(|path| {
-            config::load_from(&path).map(|config| Self::from_config(Some(&path), &config.defaults))
+            config::load_from(&path).map(|config| {
+                let mut defaults = Self::from_config(Some(&path), &config.defaults);
+                defaults.reasoning_preferences = vega_store::reasoning::read_authority_from(
+                    &path.with_file_name(vega_store::reasoning::REASONING_FILE_NAME),
+                )
+                .ok()
+                .map(|(config, _)| config.profiles);
+                defaults
+            })
         }) {
             Ok(defaults) => defaults,
             Err(error) => {

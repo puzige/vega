@@ -103,11 +103,13 @@ impl ConversationStream {
             usage,
             summary,
             pending_model,
+            reasoning_preferences,
         } = initial;
         let counters = StreamCounters::default();
         let prepared = PreparedHistoryEntries::new(std::mem::take(&mut history.entries), &counters);
         (pending_model, move |stream, cx| {
             let started = Instant::now();
+            stream.thread.reasoning_preferences = Some(reasoning_preferences);
             stream.counters.committed_materializations.fetch_add(
                 counters.committed_materializations.load(Ordering::Relaxed),
                 Ordering::Relaxed,
