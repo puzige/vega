@@ -84,6 +84,37 @@ fn original_details_are_current_thread_bound_paginated_and_never_follow_output_f
     std::fs::write(&file, "unreachable-file-private-content")?;
     store.conn().execute("UPDATE tool_calls SET output_text='persisted-output',output_full_path=?1 WHERE id='old-bash'",[file.to_string_lossy().as_ref()])?;
     let reader = reader(path, "current".into());
+    tool_calls::insert(
+        store.conn(),
+        tool_calls::NewToolCall {
+            id: "oversized-tool",
+            thread_id: "current",
+            message_id: "answer",
+            seq: 2,
+            tool: &"x".repeat(1048577),
+            input_json: "{}",
+            description: None,
+            status: "success",
+            created_at: 1,
+        },
+    )?;
+    let oversized_id = "y".repeat(1048577);
+    messages::insert(
+        store.conn(),
+        &messages::MessageRow {
+            id: oversized_id.clone(),
+            thread_id: "current".into(),
+            seq: 3,
+            role: "user".into(),
+            kind: "text".into(),
+            content: "oversized identity".into(),
+            status: "done".into(),
+            created_at: 3,
+            plan_status: None,
+            plan_review_note: None,
+            plan_reviewed_at: None,
+        },
+    )?;
     let mut request = ConversationReadRequest {
         kind: "messages".into(),
         source_id: None,
@@ -132,6 +163,28 @@ fn original_details_are_current_thread_bound_paginated_and_never_follow_output_f
     request.source_id = Some("old-bash".into());
     let tool = reader(&request)?;
     assert_eq!(tool["records"][0]["output"], "persisted-output");
+    let mut listed = request.clone();
+    listed.source_id = None;
+    listed.limit = 8;
+    let bounded = reader(&listed)?;
+    assert_eq!(
+        bounded["records"]
+            .as_array()
+            .ok_or("bounded records")?
+            .len(),
+        1
+    );
+    assert!(!bounded.to_string().contains("oversized-tool"));
+    listed.kind = "messages".into();
+    let bounded_messages = reader(&listed)?;
+    assert_eq!(
+        bounded_messages["records"]
+            .as_array()
+            .ok_or("bounded messages")?
+            .len(),
+        1
+    );
+    assert!(!bounded_messages.to_string().contains("oversized identity"));
     assert!(
         !tool
             .to_string()

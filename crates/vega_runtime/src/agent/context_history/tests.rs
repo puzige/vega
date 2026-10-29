@@ -74,6 +74,34 @@ async fn actual_model_roundtrip_exposes_only_filtered_historical_details() -> Te
     Ok(())
 }
 
+#[tokio::test]
+async fn cancellation_waits_for_started_history_reader_before_returning() -> TestResult {
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let entered = Mutex::new(Some(entered_tx));
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let release = Mutex::new(release_rx);
+    let reader: Arc<ConversationHistoryReader> = Arc::new(move |_| {
+        entered.lock().unwrap().take().unwrap().send(()).unwrap();
+        release.lock().unwrap().recv().unwrap();
+        Ok(serde_json::json!({"records":[{"content":"must-not-deliver"}]}))
+    });
+    let cancel = CancellationToken::new();
+    let pending = execute(
+        reader,
+        request(),
+        Arc::new(RuntimeToolConfig::default()),
+        &cancel,
+    );
+    tokio::pin!(pending);
+    assert!(futures::poll!(pending.as_mut()).is_pending());
+    entered_rx.await?;
+    cancel.cancel();
+    assert!(futures::poll!(pending.as_mut()).is_pending());
+    release_tx.send(())?;
+    assert!(matches!(pending.await, Err(VegaError::Cancelled)));
+    Ok(())
+}
+
 fn request() -> ConversationReadRequest {
     ConversationReadRequest {
         kind: "messages".into(),
