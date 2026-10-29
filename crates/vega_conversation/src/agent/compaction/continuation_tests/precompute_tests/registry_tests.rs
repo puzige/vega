@@ -197,7 +197,17 @@ async fn invalidation_keeps_slot_until_accounting_and_background_runtime_exit() 
             .await
             .is_err()
     );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), lease.wait_for_pending_exit())
+            .await
+            .is_err()
+    );
     let replacement_lease = bind(&registry, &store)?;
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        replacement_lease.wait_for_pending_exit(),
+    )
+    .await??;
     let replacement = BackgroundProvider::new("success", false);
     assert!(
         lease
@@ -212,6 +222,7 @@ async fn invalidation_keeps_slot_until_accounting_and_background_runtime_exit() 
     assert!(!state.released.load(Ordering::Acquire));
     release.release();
     tokio::time::timeout(Duration::from_secs(10), drain.wait()).await??;
+    tokio::time::timeout(Duration::from_secs(10), lease.wait_for_pending_exit()).await??;
     assert!(state.released.load(Ordering::Acquire));
     assert!(matches!(
         task.wait().await.as_ref().map_err(|error| error.as_ref()),

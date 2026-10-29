@@ -21,6 +21,17 @@ pub(crate) struct PrecomputeUsageAttribution {
 }
 
 impl PrecomputeUsageAttribution {
+    pub(crate) fn from_actor(config: &super::super::persistence::PersistenceActorConfig) -> Self {
+        Self {
+            parent: config
+                .delegated
+                .then(|| config.delegated_parent.clone())
+                .flatten(),
+            claim: config.automation_claim.clone(),
+            observer: config.automation_hook.clone(),
+        }
+    }
+
     fn missing_usage(&self) {
         if let Some(observer) = &self.observer {
             observer.missing_usage();

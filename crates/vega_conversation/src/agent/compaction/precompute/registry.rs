@@ -395,6 +395,28 @@ impl ContextPrecomputeLease {
             && self.is_current()?)
     }
 
+    pub(crate) async fn wait_for_pending_exit(&self) -> Result<(), VegaError> {
+        let flight = self
+            .registry
+            .inner
+            .lock()
+            .map_err(|_| unavailable())?
+            .entries
+            .get(&self.key)
+            .and_then(|entry| entry.pending.as_ref())
+            .filter(|flight| Arc::ptr_eq(&flight.epoch, &self.epoch))
+            .cloned();
+        if let Some(flight) = flight {
+            ContextPrecomputeTask {
+                registry: self.registry.clone(),
+                flight,
+            }
+            .wait_for_exit()
+            .await?;
+        }
+        Ok(())
+    }
+
     pub fn can_launch(&self) -> Result<bool, VegaError> {
         self.registry.refresh(&self.key)?;
         if !self.is_current()? {

@@ -252,6 +252,8 @@ cwd 与冻结项目规则来自 compose_agent_system_prompt，当前运行的 As
 
 开发回归须经过实际 run_agent 的阈值和 typed overflow 续接，在 Ask／Plan 下核对压缩前后出站系统环境／项目规则／目标数据相同、原生工具定义相同，并让摘要包含无权限的模式升级声称后实际尝试 write：必须被拒绝且不产生文件，不能仅检查配置对象。fixture 仅隔离 provider 与摘要生成，保留生产预算、安装、投影、工具注册和 dispatch 决策。本增量不新增通用会话生命周期，不虚构 Claude-only handback／后台 shell；显式阶段 handoff／委派结果仍沿原持久化身份与读取机制单独评估，缓存期限未知的路由仍不启动 idle-cache 定时器。行为结果待云端，不以静态装配证据代替回归。
 
+开发版本 `48eaf19db699fff02d2a7a86958d6334cb575507`（tree `a20b04e1f6db58c9964c5ce3005c3aff2d592244`）的 Actions [40867994119](https://github.com/puzige/vega/actions/runs/40867994119) 全部成功：Nextest `123427518505`、Clippy `123427518835`、required `123429834132` success，原始日志 187 发现／187 执行通过／0 跳过、20.152s，上述四路径实际回归 PASS。后续普通 master 合并 `a9261742e63e6136daa56194ee64efb55d8207ad` 纳入 #761 steering/delegation 修复，新增计量修复仍需独立的新 head 云端验证；本结果不覆盖该后续差异，独立审查仍未完成。
+
 #### 原生 `/compact` 与摘要要求（2026-10-29）
 
 Native composer 支持精确首 token `/compact`（区分大小写，前导空白不解释为命令）；后续空白分隔的文本为摘要要求，去除两端空白，最大 8192 UTF-8 bytes。`/compactness` 等相似普通消息不拦截，ACP 不解释此原生命令。菜单／slash 建议提供 `/compact`，选择只填入命令与现有草稿供编辑，提交（现有键盘／发送入口）才运行。要求只传 `ContextCompactionRequested.summary_requirements`，selection=None；不落普通用户／assistant 消息、不启动普通运行、不带图片／文件引用或 skill intent。
@@ -267,6 +269,8 @@ Native composer 支持精确首 token `/compact`（区分大小写，前导空�
 provider 通过仅用于 compaction 的可选工厂显式声明后台能力，默认不支持。工厂在后台执行器内构造独立传输；OpenAI-compatible 实现使用新 HTTP client／连接池，保留冻结 endpoint、协议、model snapshot、重试策略和每次请求前的凭据 guard，不把前台池的 `Send + Sync` 当作跨 runtime 存活证明。OwnerCredentialProvider 必须重建完整保护包装，保留动态凭据读取及例外策略；借用式 child／观测包装不自动获得后台能力。没有此能力只跳过预计算，不影响前台压缩。
 
 生成复用同一 planner、tool-free 摘要和 projection interpreter，但采用显式 Precompute policy：保留完整尾组，超限可退让完整组／缩小摘要批次，不得进入 summarize-all／head omission 兜底；保留前驱已有 omission，不新增 omission，不授予 reactive deeper-pass。600 秒生成期限从实际启动开始计算，不能作为 ready 消费期限。
+
+普通父运行和 delegated 运行均须从当前 PersistenceActorConfig 冻结真实 automation claim 与 missing-usage observer，不能只为 delegated 传递预算归属；仅 delegated 携带真实 parent thread/message，普通运行不得伪造父归属。逐 stage 的 token_usage 与目标预算更新保持同一事务、usage ID 幂等；未知用量通知 observer、不填零，目标预算写失败回滚该 stage 和用量，消费 Ready 不重复计费。目标运行封存前须等待其 lease 同 epoch 的 pending 物理退出，再读取 usage completeness；等待不取消正常候选、不占 registry 锁跨 await、不等待后来世代，后台已完成的 Ready 保留。等待失败将目标用量标为不完整，而非伪称全部结算。开发回归通过生产归属构造入口与真实 SQLite／后台 worker 覆盖两种运行的成功／unknown／rollback，不能手工拼出正确归属而漏测实际接线。
 
 每个实际 provider stage 返回后（包括失败／取消／未知 usage）先独立结算再进行下一阶段。ledger 只记录本阶段而非累计 usage，完成或失败均封存已结算阶段；无实际请求的取消不制造账单或 unknown stage。发送状态必须独立于 provider 方法调用：OpenAI 在请求校验、凭据 guard 和请求构造之后、首次可能执行 HTTP 的位置置位；取消先于该位置或 guard 拒绝时不置位。同一阶段重试共享只增不减的状态，已经可能发送后发生 guard 失败／取消仍保留 unknown，不根据最终错误反推未发送。Owner 凭据包装在预检完成后转发同一状态并保留出入站过滤；未提供传输证据的 provider 保守地以调用作为可能发送边界，不猜测未收费。prepared job 的执行只产生已结算 ready 或失败，不返回可被前台重复入账的累计 usage，不安装 checkpoint；发布仍受当前 generation、来源／依赖／模型及取消围栏限制，失败按精确 generation 退役，不触碰新候选。
 

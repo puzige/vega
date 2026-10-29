@@ -586,6 +586,7 @@ where
     actor_config.automation_hook = binding
         .clone()
         .map(|hook| hook as Arc<dyn vega_runtime::RuntimeAutomationHook>);
+    let precompute_lease = actor_config.precompute_lease.clone();
     let started = std::time::Instant::now();
     let result = run_thread_task_with_automation_inner(
         store,
@@ -606,6 +607,10 @@ where
     )
     .await;
     if let Some(binding) = binding {
+        let background_settled = match precompute_lease {
+            Some(lease) => lease.wait_for_pending_exit().await.is_ok(),
+            None => true,
+        };
         let success = result.as_ref().is_ok_and(|run| {
             !run.failed
                 && !run.interrupted
@@ -614,7 +619,7 @@ where
                     _ => None,
                 }) == Some(crate::types::ConversationStopReason::End)
         });
-        let complete = binding.usage_complete();
+        let complete = background_settled && binding.usage_complete();
         let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         if let Some(path) = store.database_path() {
             let path = path.to_path_buf();
@@ -942,15 +947,8 @@ where
     let work_time_source = actor_config.work_time_source.clone();
     let user_questions = actor_config.user_questions.clone();
     let full_on_threshold = actor_config.delegated;
-    let precompute_attribution = if actor_config.delegated {
-        super::compaction::precompute::PrecomputeUsageAttribution {
-            parent: actor_config.delegated_parent.clone(),
-            claim: actor_config.automation_claim.clone(),
-            observer: actor_config.automation_hook.clone(),
-        }
-    } else {
-        Default::default()
-    };
+    let precompute_attribution =
+        super::compaction::precompute::PrecomputeUsageAttribution::from_actor(&actor_config);
     let actor = match PersistenceActor::start(PersistenceActorStart {
         database_path: prepared.database_path.clone(),
         project_id: prepared.project_id.clone(),

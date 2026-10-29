@@ -30,6 +30,15 @@ impl vega_runtime::RuntimeAutomationHook for UsageObserver {
 
 #[tokio::test]
 async fn background_usage_attributes_parent_and_goal_atomically_without_rebilling() -> TestResult {
+    verify_background_usage_attribution(true).await
+}
+
+#[tokio::test]
+async fn primary_background_usage_keeps_goal_budget_without_delegated_attribution() -> TestResult {
+    verify_background_usage_attribution(false).await
+}
+
+async fn verify_background_usage_attribution(delegated: bool) -> TestResult {
     for mode in ["success", "unknown", "rollback"] {
         let (_directory, path, store) = source_fixture()?;
         let request = input(&store)?;
@@ -70,7 +79,7 @@ async fn background_usage_attributes_parent_and_goal_atomically_without_rebillin
         )?;
         let claim = crate::types::AutomationRunClaim {
             id: "goal-run".into(),
-            thread_id: "parent".into(),
+            thread_id: if delegated { "parent" } else { "thread" }.into(),
             source: None,
             started: true,
             tasks: Vec::new(),
@@ -82,7 +91,7 @@ async fn background_usage_attributes_parent_and_goal_atomically_without_rebillin
         };
         vega_store::automation::insert_run(
             store.conn(),
-            "parent",
+            &claim.thread_id,
             "goal-run",
             &serde_json::to_string(&claim)?,
         )?;
@@ -99,22 +108,33 @@ async fn background_usage_attributes_parent_and_goal_atomically_without_rebillin
         );
         let observer = Arc::new(UsageObserver::default());
         let hook = ConversationCompactionHook::new(&provider, path, "thread", "model", None, None)
-            .with_precompute_attribution(PrecomputeUsageAttribution {
-                parent: Some(("parent".into(), "parent-run".into())),
-                claim: Some(claim.clone()),
-                observer: Some(observer.clone()),
-            });
+            .with_precompute_attribution(PrecomputeUsageAttribution::from_actor(
+                &crate::agent::persistence::PersistenceActorConfig {
+                    delegated,
+                    delegated_parent: Some(("parent".into(), "parent-run".into())),
+                    automation_claim: Some(claim.clone()),
+                    automation_hook: Some(observer.clone()),
+                    ..Default::default()
+                },
+            ));
         let prepared = hook
             .prepare_precompute(request.clone(), CancellationToken::new())
             .await?
             .ok_or("prepared")?;
         let generation = prepared.generation().to_owned();
-        let mut worker = prepared.launch()?;
-        let result = tokio::time::timeout(Duration::from_secs(10), worker.wait()).await?;
+        let registry = crate::types::ContextPrecomputeRegistry::default();
+        let admission = crate::thread_access::acquire(&store, "thread")?;
+        let lease = registry
+            .bind(store.database_identity(), "thread", &admission)?
+            .ok_or("lease")?;
+        let task = lease.try_launch(prepared)?.ok_or("task")?;
+        tokio::time::timeout(Duration::from_secs(10), lease.wait_for_pending_exit()).await??;
+        let result = task.wait().await;
         assert_eq!(result.is_ok(), mode != "rollback", "{mode}: {result:?}");
         assert_eq!(observer.0.load(Ordering::Acquire), mode != "success");
         let (finished, data) =
-            vega_store::automation::run(store.conn(), "parent", "goal-run")?.ok_or("claim")?;
+            vega_store::automation::run(store.conn(), &claim.thread_id, "goal-run")?
+                .ok_or("claim")?;
         assert!(!finished);
         let saved: crate::types::AutomationRunClaim = serde_json::from_str(&data)?;
         assert_eq!(saved.tokens, if mode == "success" { 110 } else { 0 });
@@ -125,8 +145,19 @@ async fn background_usage_attributes_parent_and_goal_atomically_without_rebillin
             i64::from(mode != "rollback")
         );
         if mode == "success" {
-            let attributed: (String, String, bool) = store.conn().query_row("SELECT delegated_parent_thread_id,delegated_parent_message_id,delegated_cache_known FROM token_usage", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
-            assert_eq!(attributed, ("parent".into(), "parent-run".into(), false));
+            let attributed: (Option<String>, Option<String>, Option<bool>) = store.conn().query_row("SELECT delegated_parent_thread_id,delegated_parent_message_id,delegated_cache_known FROM token_usage", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+            assert_eq!(
+                attributed,
+                if delegated {
+                    (
+                        Some("parent".into()),
+                        Some("parent-run".into()),
+                        Some(false),
+                    )
+                } else {
+                    (None, None, None)
+                }
+            );
             let payload: String = store.conn().query_row(
                 "SELECT payload FROM context_precompute_stages",
                 [],
@@ -149,7 +180,7 @@ async fn background_usage_attributes_parent_and_goal_atomically_without_rebillin
             crate::automation::record_usage(&transaction, &claim, id, 100, 10)?;
             transaction.commit()?;
             let saved: crate::types::AutomationRunClaim = serde_json::from_str(
-                &vega_store::automation::run(store.conn(), "parent", "goal-run")?
+                &vega_store::automation::run(store.conn(), &claim.thread_id, "goal-run")?
                     .ok_or("claim")?
                     .1,
             )?;
