@@ -1820,6 +1820,10 @@ impl RunActivityGroup {
             .clone()
             .tab_stop(can_expand);
         let title_view = state.segments[segment_index].title_view.clone();
+        let latest_tool = match state.segments[segment_index].latest_progress.as_ref() {
+            Some(StageProgress::Tool(card)) => Some(card.clone()),
+            _ => None,
+        };
         let tool_ids = state
             .stage_tool_calls(segment_index, cx)
             .iter()
@@ -2020,7 +2024,19 @@ impl RunActivityGroup {
                         .map(|child| {
                             let element = match child {
                                 RunActivityChild::Tool(card) if !aggregate && shimmering => {
-                                    let title = headline.title.clone();
+                                    let title = {
+                                        let current = card.read(cx);
+                                        if latest_tool.as_ref() == Some(&card)
+                                            && current.is_running()
+                                            && current.is_expanded()
+                                            && current.stage_activity_category()
+                                                == ToolActivityCategory::Shell
+                                        {
+                                            current.compact_title()
+                                        } else {
+                                            headline.title.clone()
+                                        }
+                                    };
                                     title_view.update(cx, |view, cx| {
                                         view.set(title.clone(), Some(epoch), cx)
                                     });
