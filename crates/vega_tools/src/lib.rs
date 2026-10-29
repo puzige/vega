@@ -2,6 +2,7 @@ mod bash;
 mod checkpoint;
 mod codec;
 pub mod danger;
+mod description;
 mod error;
 mod fence;
 mod glob;
@@ -25,6 +26,10 @@ pub use bash::{
 pub use codec::{
     CheckpointIds, CheckpointRef, CreatedNewFileMetadata, EditSuccessOutput, InvalidWriteEditAudit,
     MutationTool, WriteEditAudit, WriteSuccessOutput,
+};
+pub use description::{
+    description_field_schema, split_tool_description, tool_description_title,
+    tool_inputs_equal_ignoring_description,
 };
 pub use error::{
     BashError, BashErrorCode, EditFailureContext, MutationError, MutationErrorCode, ToolError,

@@ -81,6 +81,7 @@ pub enum HistoryEntry {
         seq: i64,
         message_id: String,
         call_id: String,
+        description: Option<String>,
         status: ToolCallStatus,
         approval: Option<Approval>,
         input: Option<ToolCardInputProjection>,
@@ -825,6 +826,7 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
             seq: call.seq,
             message_id: call.message_id.clone(),
             call_id: call.id.clone(),
+            description: None,
             status,
             approval,
             input: None,
@@ -847,6 +849,7 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
         id: call.id.clone(),
         tool: call.tool.clone(),
         input_json: call.input_json.clone(),
+        description: call.description.clone(),
         codex_display: call
             .codex_display
             .as_ref()
@@ -874,6 +877,7 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
             seq: call.seq,
             message_id: call.message_id.clone(),
             call_id: call.id.clone(),
+            description: crate::types::tool_card_description(&proposal),
             status: ToolCallStatus::Cancelled,
             approval,
             result: Some(tool_card_result_projection(Some(&input), &result)),
@@ -984,6 +988,7 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
         seq: call.seq,
         message_id: call.message_id.clone(),
         call_id: call.id.clone(),
+        description: crate::types::tool_card_description(&proposal),
         status,
         approval,
         input,
@@ -1170,6 +1175,7 @@ fn assemble_historical(
                 seq: call.seq,
                 message_id: call.message_id.clone(),
                 call_id: call.id.clone(),
+                description: None,
                 status: ToolCallStatus::Success,
                 approval: None,
                 input: None,
@@ -1336,6 +1342,9 @@ fn project_page_privacy(
     }
     for call in &mut page.tool_calls {
         call.input_json = projection.json(&call.input_json);
+        if let Some(description) = &mut call.description {
+            *description = projection.text(description);
+        }
         if let Some(output) = &mut call.output_text {
             *output = projection.text(output);
         }

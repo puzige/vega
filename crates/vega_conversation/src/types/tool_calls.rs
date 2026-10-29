@@ -11,6 +11,7 @@ pub struct ToolCall {
     /// Safe complete JSON input. Write/edit bodies are replaced by strict
     /// content-free audit projections before this boundary.
     pub input_json: String,
+    pub description: Option<String>,
     pub codex_display: Option<CodexDisplayMetadata>,
 }
 
@@ -334,16 +335,19 @@ pub enum ToolCardInputProjection {
         tool: String,
         action: String,
     },
+    Automation {
+        tool: String,
+    },
     /// A read-only tool. Its raw JSON is intentionally not retained by UI.
     ReadOnly {
         tool: ReadOnlyToolKind,
         permission_path: Option<String>,
         display_target: Option<String>,
+        detail_target: Option<String>,
     },
     /// Full bash command, already strictly decoded by the tools boundary.
     Bash {
         command: String,
-        description: Option<String>,
     },
     /// Safe write audit summary; the body and fingerprint are discarded.
     Write {
@@ -386,7 +390,7 @@ impl ToolCardInputProjection {
         match self {
             Self::Subagent { tool, .. } => Some(tool),
             Self::UserQuestion { .. } => Some(USER_QUESTION_TOOL),
-            Self::ComputerUse { tool, .. } => Some(tool),
+            Self::ComputerUse { tool, .. } | Self::Automation { tool } => Some(tool),
             Self::ReadOnly { tool, .. } => Some(tool.as_str()),
             Self::Bash { .. } => Some("bash"),
             Self::Write { .. } => Some("write"),
@@ -415,6 +419,7 @@ impl ToolCardInputProjection {
             Self::Subagent { .. }
             | Self::UserQuestion { .. }
             | Self::ComputerUse { .. }
+            | Self::Automation { .. }
             | Self::Skill { .. }
             | Self::Corrupt => None,
         }
@@ -502,6 +507,22 @@ pub enum ToolCardResultProjection {
     Corrupt,
 }
 
+pub fn tool_card_description(call: &ToolCall) -> Option<String> {
+    if !vega_runtime::is_native_tool(&call.tool) {
+        return None;
+    }
+    call.description
+        .as_deref()
+        .and_then(vega_tools::tool_description_title)
+        .or_else(|| {
+            (call.tool == "bash")
+                .then(|| vega_tools::split_tool_description(&call.input_json).ok()?.1)
+                .flatten()
+                .as_deref()
+                .and_then(vega_tools::tool_description_title)
+        })
+}
+
 pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
     if vega_runtime::is_subagent_tool(&call.tool) {
         if call.input_json != "{}"
@@ -529,6 +550,18 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
         return ToolCardInputProjection::Subagent {
             tool: call.tool.clone(),
             title,
+        };
+    }
+    if matches!(
+        call.tool.as_str(),
+        "get_goal" | "update_goal" | "schedule_wakeup"
+    ) {
+        return if crate::agent::valid_automation_call_projection(&call.tool, &call.input_json) {
+            ToolCardInputProjection::Automation {
+                tool: call.tool.clone(),
+            }
+        } else {
+            ToolCardInputProjection::Corrupt
         };
     }
     if call.tool == USER_QUESTION_TOOL {
@@ -583,6 +616,7 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
             ToolCardInputProjection::ReadOnly {
                 tool: ReadOnlyToolKind::Grep,
                 display_target: None,
+                detail_target: None,
                 permission_path: None,
             }
         } else {
@@ -635,47 +669,38 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
                         }
                     })
                     .filter(|target| !target.trim().is_empty());
+                let detail_target = serde_json::from_str::<serde_json::Value>(&call.input_json)
+                    .ok()
+                    .map(|input| {
+                        let fields: &[&str] = match tool {
+                            ReadOnlyToolKind::Read if input.get("path").is_none() => &["file_path"],
+                            ReadOnlyToolKind::Read => &["path"],
+                            ReadOnlyToolKind::Glob => &["pattern"],
+                            ReadOnlyToolKind::Grep => &["pattern", "path"],
+                        };
+                        fields
+                            .iter()
+                            .filter_map(|field| {
+                                input.get(field).and_then(serde_json::Value::as_str)
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .filter(|target| !target.is_empty());
                 ToolCardInputProjection::ReadOnly {
                     tool,
                     display_target,
+                    detail_target,
                     permission_path,
                 }
             } else {
                 ToolCardInputProjection::Corrupt
             }
         }
-        "bash" => vega_tools::bash_permission_signature(&call.input_json).map_or(
-            ToolCardInputProjection::Corrupt,
-            |command| {
-                let description = serde_json::from_str::<serde_json::Value>(&call.input_json)
-                    .ok()
-                    .and_then(|input| {
-                        input
-                            .get("description")
-                            .and_then(serde_json::Value::as_str)
-                            .map(|text| {
-                                let text: String = text
-                                    .chars()
-                                    .map(|character| {
-                                        if character.is_control()
-                                            || matches!(character, '\u{2028}' | '\u{2029}')
-                                        {
-                                            ' '
-                                        } else {
-                                            character
-                                        }
-                                    })
-                                    .collect();
-                                text.trim().chars().take(120).collect::<String>()
-                            })
-                    })
-                    .filter(|text| !text.trim().is_empty());
-                ToolCardInputProjection::Bash {
-                    command,
-                    description,
-                }
-            },
-        ),
+        "bash" => vega_tools::bash_permission_signature(&call.input_json)
+            .map_or(ToolCardInputProjection::Corrupt, |command| {
+                ToolCardInputProjection::Bash { command }
+            }),
         "Write" | "Edit" | "write" | "edit" => {
             match vega_tools::WriteEditAudit::from_json(&call.input_json) {
                 Ok(vega_tools::WriteEditAudit::Write {
@@ -938,7 +963,7 @@ pub fn tool_card_result_projection(
                 reused: result.reused,
             }
         }
-        ToolCardInputProjection::ReadOnly { .. } => {
+        ToolCardInputProjection::ReadOnly { .. } | ToolCardInputProjection::Automation { .. } => {
             if !is_terminal(result.status)
                 || result.exit_code.is_some()
                 || result.duration_ms.is_some()

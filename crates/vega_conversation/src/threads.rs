@@ -21,11 +21,21 @@ pub enum ForkThreadError {
 pub fn load_conversation(
     database: &std::path::Path,
     thread_id: &str,
+    reasoning_path: &std::path::Path,
 ) -> Result<crate::types::ConversationLoad, ConversationError> {
     let store = Store::open_existing(database).map_err(store_error)?;
+    let reasoning_preferences = match get_thread(&store, thread_id)?.reasoning_preferences {
+        Some(preferences) => preferences,
+        None => {
+            let (defaults, _) =
+                vega_store::reasoning::read_authority_from(reasoning_path).map_err(store_error)?;
+            crate::session_reasoning::initialize(&store, thread_id, &defaults.profiles)?
+        }
+    };
     let history =
         crate::history::restart_history_page(&store, thread_id, vega_store::messages::PAGE_LIMIT)?;
     Ok(crate::types::ConversationLoad {
+        reasoning_preferences,
         history,
         plans: crate::plans::list_plans(&store, thread_id)?,
         composer_history: composer_history(&store, thread_id)?,
@@ -201,6 +211,7 @@ fn assemble_thread(
 ) -> Thread {
     let now = now_ms();
     Thread {
+        reasoning_preferences: None,
         parent_thread_id: None,
         forked_from_thread_id: None,
         forked_from_message_id: None,
@@ -228,13 +239,25 @@ fn insert_thread(
     project_id: Option<&str>,
     thread: &Thread,
 ) -> Result<(), ConversationError> {
+    if let Some(preferences) = &thread.reasoning_preferences {
+        for preference in preferences {
+            preference.validate().map_err(store_error)?;
+        }
+    }
     let grant = thread
         .full_access_grant
         .as_ref()
         .map(serde_json::to_string)
         .transpose()
         .map_err(store_error)?;
+    let reasoning = thread
+        .reasoning_preferences
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(store_error)?;
     let values = store::NewThread {
+        reasoning_preferences: reasoning.as_deref(),
         id: &thread.id,
         project_id: &thread.project_id,
         title: &thread.title,
@@ -681,6 +704,12 @@ pub(crate) fn thread_from_row(row: &store::ThreadRow) -> Result<Thread, Conversa
         ConversationError::CorruptRow(format!("permission_mode: {}", row.permission_mode))
     })?;
     Ok(Thread {
+        reasoning_preferences: row
+            .reasoning_preferences
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(store_error)?,
         parent_thread_id: row.parent_thread_id.clone(),
         forked_from_thread_id: row.forked_from_thread_id.clone(),
         forked_from_message_id: row.forked_from_message_id.clone(),

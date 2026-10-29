@@ -2398,6 +2398,7 @@ where
                         id,
                         name,
                         input_json,
+                        description: None,
                     });
                 }
                 Ok(ProviderEvent::Usage {
@@ -2944,7 +2945,8 @@ where
             })
             .collect::<Vec<_>>();
         let mut prepared_calls = Vec::with_capacity(calls.len());
-        for call in calls {
+        for mut call in calls {
+            extract_call_description(&mut call, &tool_config)?;
             // Compare completed mutations without re-reading today's target.
             let prior_mutation = completed
                 .get(&call.id)

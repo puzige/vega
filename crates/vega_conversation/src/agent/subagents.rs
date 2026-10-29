@@ -1393,6 +1393,7 @@ async fn create_child(
                 &settings.model,
                 permission_mode,
             );
+            draft.reasoning_preferences = parent.reasoning_preferences.clone();
             draft.id = snapshot.agent_id.clone();
             crate::threads::materialize_draft_in_transaction(&tx, &draft)
                 .map_err(|_| failure("admission_failed"))?;

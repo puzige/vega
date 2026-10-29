@@ -11,7 +11,9 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use vega_mcp::{Catalog, HttpClient, LocalServer, McpError, ScopeChallenge, StdioClient, Tool};
 
-use super::{RuntimePermissionMode, RuntimeRunMode, ToolDefinition, tool_definitions};
+use super::{
+    RuntimePermissionMode, RuntimeRunMode, ToolDefinition, describe_definition, tool_definitions,
+};
 use crate::VegaError;
 
 const MAX_SERVERS: usize = 8;
@@ -677,12 +679,12 @@ impl RunCapabilitySnapshot {
                 if self.definitions.iter().any(|item| item.name == name) {
                     return Err(invalid_catalog());
                 }
-                self.definitions.push(ToolDefinition {
+                self.definitions.push(describe_definition(ToolDefinition {
                     name: name.to_string(),
                     description: description.to_string(),
                     input_schema: schema,
                     strict: true,
-                });
+                }));
             }
         }
         Ok(self)
@@ -855,21 +857,27 @@ impl RunCapabilitySnapshot {
         run: Option<&crate::computer_use::ComputerUseRun>,
     ) -> Self {
         if let Some(run) = run {
-            self.definitions.extend(run.definitions());
+            self.definitions
+                .extend(run.definitions().into_iter().map(describe_definition));
         }
         self
     }
 
     pub(crate) fn with_subagents(mut self, enabled: bool) -> Self {
         if enabled {
-            self.definitions.extend(super::subagents::definitions());
+            self.definitions.extend(
+                super::subagents::definitions()
+                    .into_iter()
+                    .map(describe_definition),
+            );
         }
         self
     }
 
     pub(crate) fn with_stage(mut self, enabled: bool) -> Self {
         if enabled {
-            self.definitions.push(super::subagents::stage_definition());
+            self.definitions
+                .push(describe_definition(super::subagents::stage_definition()));
         }
         self
     }
@@ -879,8 +887,11 @@ impl RunCapabilitySnapshot {
         hook: Option<&Arc<dyn super::automation::RuntimeAutomationHook>>,
     ) -> Self {
         if let Some(hook) = hook {
-            self.definitions
-                .extend(super::automation::definitions(&hook.context()));
+            self.definitions.extend(
+                super::automation::definitions(&hook.context())
+                    .into_iter()
+                    .map(describe_definition),
+            );
         }
         self
     }

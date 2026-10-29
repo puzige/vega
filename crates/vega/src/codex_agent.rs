@@ -749,6 +749,7 @@ fn ensure_codex_tool_activity(
             seq,
             tool: "codex_acp",
             input_json: &input_json,
+            description: None,
             status: "pending_approval",
             created_at,
         },
@@ -763,6 +764,7 @@ fn ensure_codex_tool_activity(
         id: call_id.clone(),
         tool: "codex_acp".into(),
         input_json,
+        description: None,
         codex_display: Some(CodexDisplayMetadata {
             preview,
             reason: None,

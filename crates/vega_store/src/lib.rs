@@ -96,9 +96,11 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0044_permission_reset.sql"),
     include_str!("../migrations/0045_plan_instruction_authority.sql"),
     include_str!("../migrations/0046_provider_protocol_reason.sql"),
-    include_str!("../migrations/0047_context_projection.sql"),
-    include_str!("../migrations/0048_context_micro_compactions.sql"),
-    include_str!("../migrations/0049_context_precompute.sql"),
+    include_str!("../migrations/0047_thread_reasoning.sql"),
+    include_str!("../migrations/0048_native_tool_descriptions.sql"),
+    include_str!("../migrations/0049_context_projection.sql"),
+    include_str!("../migrations/0050_context_micro_compactions.sql"),
+    include_str!("../migrations/0051_context_precompute.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.

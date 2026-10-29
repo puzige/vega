@@ -192,6 +192,8 @@ precompute 的连续失败计数与前台 automatic／rapid-refill 独立；同 
 
 提交 `bd0facb38822128dfc964b4efeca2338f89b2fbf`（tree `4929eb9c868bd311619b38cdf12acade2ef920c1`）的 Actions [40796181508](https://github.com/puzige/vega/actions/runs/40796181508) 中 Clippy `123193093645` 成功，Nextest `123193093249` 与 required `123194398482` 失败；原始输出 145 执行／143 通过／2 失败／0 跳过、23 binaries、15.703s，独立 discovery 计数未取得。新增协调回归均通过，独立静态审查 Clear。两处旧消费／超时回归已先确认拒绝旧来源、禁止 primary 发送旧请求及账单保留，随后仍按旧合同读取已由竞争前台安装退役的 slot／Ready，分别报 QueryReturnedNoRows 与 Ready 数量 0≠1。修正仅针对该场景，验证精确退役、候选删除和原账单／stage 保留；其他来源变更继续保留原候选。另保留候选仍在而前驱已变化的独立 fixture，使 generation 消失不能掩盖原前驱围栏回归。此修正不放宽消费／超时来源校验，不改生产实现；本地仅格式与差异静态检查，修正后的完整行为待 Actions。
 
+协调修正提交 `ba4122d72825309b3993aa010c07baf9c60ba1f2`（tree `ba264f23da59d31a7410c4474b1a836685f14a63`）的 Actions [40798827553](https://github.com/puzige/vega/actions/runs/40798827553) 全部成功：Nextest `123201733190` 原始输出 145 发现／145 执行通过／0 跳过、19.196s；Clippy `123201733574` 与 required `123203206478` success，增量独立审查 Clear。随后同步 master #744／#745 时，保留已正式发布的 `0047_thread_reasoning.sql` 和 `0048_native_tool_descriptions.sql`；本卡未交付的 projection／micro／precompute 三项迁移依次顺延至 0049／0050／0051，不改正式迁移或用户数据库。开发夹具适配新增工具描述字段，不放宽原有业务断言。合并后仍须重新云端验证。
+
 #### 生命周期与自动入口接线（2026-10-28）
 
 自动生成启用前先接破坏性边界。显式 Stop 在前台或准备阶段是否存在均撤销该线程的旧 lease；仅导航、等待取消或交接不等同 Stop。模型 set／stage／promote 在写入期间暂停该键并撤销 pending，已完成 ready 不删除；新的运行在窗口启动边界、当前 admission 下绑定一次 lease，沿四种运行配置传至 conversation；不能推迟到工作线程或 hook 首次调用时重新绑定，使 Stop 之后的迟到准备取得新 epoch。权限重置 session 同时持有数据库 admission pause 与 precompute pause，完成／恢复原语在持有 precompute pause 且真实 drain 完成后才能修改配置／权限；超时保持 Busy，不假报完成。删除同时暂停父／子线程并检查真实 drain，未退出时返回明确的“正在停止，请稍后重试”，不在 UI 同步等待、不先删除 transcript 或账单。
