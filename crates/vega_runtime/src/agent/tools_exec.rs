@@ -28,6 +28,12 @@ pub(crate) enum PreparedRuntimeCall {
         arguments: Value,
         hook: Arc<dyn RuntimeSubagentHook>,
     },
+    ConversationHistory {
+        call: RuntimeToolCall,
+        request: super::context_history::ConversationReadRequest,
+        reader: Arc<super::context_history::ConversationHistoryReader>,
+        config: Arc<RuntimeToolConfig>,
+    },
     Automation {
         call: RuntimeToolCall,
         arguments: Value,
@@ -115,6 +121,7 @@ impl PreparedRuntimeCall {
             Self::UserQuestion { call, .. }
             | Self::InvalidUserQuestion { call, .. }
             | Self::Subagent { call, .. }
+            | Self::ConversationHistory { call, .. }
             | Self::Automation { call, .. }
             | Self::ComputerUse { call, .. }
             | Self::Readonly(call)
@@ -172,6 +179,7 @@ impl PreparedRuntimeCall {
         let call = self.call();
         let input_json = match self {
             Self::UserQuestion { input, .. } => input.to_json().ok()?,
+            Self::ConversationHistory { request, .. } => serde_json::to_string(request).ok()?,
             Self::Subagent { arguments, .. }
             | Self::Automation { arguments, .. }
             | Self::ComputerUse { arguments, .. }
@@ -345,6 +353,33 @@ pub(crate) fn prepare_runtime_call(
                 code: code.into(),
             },
         });
+    }
+    if raw_call.name == super::context_history::TOOL {
+        if let Some(reader) = config.conversation_history_reader.clone()
+            && capabilities
+                .definitions()
+                .iter()
+                .any(|definition| definition.name == raw_call.name)
+            && config.redact_tool_output(&raw_call.input_json)? == raw_call.input_json
+            && let Some(request) =
+                super::context_history::ConversationReadRequest::parse(&raw_call.input_json)
+            && config.redact_tool_output(
+                &serde_json::to_string(&request)
+                    .map_err(|_| super::context_history::unavailable())?,
+            )? == serde_json::to_string(&request)
+                .map_err(|_| super::context_history::unavailable())?
+        {
+            return Ok(PreparedRuntimeCall::ConversationHistory {
+                call: raw_call,
+                request,
+                reader,
+                config: Arc::new(config.clone()),
+            });
+        }
+        return Ok(PreparedRuntimeCall::Unknown(RuntimeToolCall {
+            input_json: "{}".into(),
+            ..raw_call
+        }));
     }
     if is_subagent_tool(&raw_call.name) {
         if let Some(hook) = if raw_call.name == "checkpoint_stage" {
@@ -1160,6 +1195,7 @@ pub(crate) async fn authorize_call(
             }
         }
         PreparedRuntimeCall::Subagent { .. }
+        | PreparedRuntimeCall::ConversationHistory { .. }
         | PreparedRuntimeCall::Automation { .. }
         | PreparedRuntimeCall::Readonly(_)
         | PreparedRuntimeCall::InvalidGrep(_)
@@ -1587,6 +1623,35 @@ pub(crate) async fn execute_prepared_waiting(
                 (result, cancelled)
             }
         }
+        PreparedRuntimeCall::ConversationHistory {
+            call,
+            request,
+            reader,
+            config,
+        } => match super::context_history::execute(reader, request, config, cancel).await {
+            Ok(output) => {
+                let mut result = terminal_result(&call, output, RuntimeToolStatus::Success, None);
+                result.truncated = Some(false);
+                (result, false)
+            }
+            Err(VegaError::Cancelled) => (
+                terminal_result(
+                    &call,
+                    CANCELLED_BEFORE_EXECUTION_OUTPUT.into(),
+                    RuntimeToolStatus::Cancelled,
+                    None,
+                ),
+                true,
+            ),
+            Err(_) => (
+                failed_tool_result(
+                    &call,
+                    "Tool error: conversation details unavailable; check the source or retry"
+                        .into(),
+                ),
+                false,
+            ),
+        },
         PreparedRuntimeCall::Subagent {
             call,
             arguments,

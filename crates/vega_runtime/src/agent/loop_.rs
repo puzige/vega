@@ -1118,6 +1118,7 @@ where
     .with_computer_use(tool_config.computer_use.as_ref())
     .with_automation(tool_config.automation.as_ref())
     .with_subagents(tool_config.subagents.is_some())
+    .with_conversation_history(tool_config.conversation_history_reader.is_some())
     .with_stage(tool_config.stage.is_some());
     let mut exact_rules: HashSet<RuntimeExactRule> =
         tool_config.exact_rules.iter().cloned().collect();

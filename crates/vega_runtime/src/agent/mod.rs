@@ -231,6 +231,7 @@ pub struct RuntimeToolConfig {
     context_skill_reader: Option<Arc<crate::skills::HistoricalSkillReader>>,
     context_plan_reader: Option<Arc<HistoricalPlanReader>>,
     context_task_reader: Option<Arc<HistoricalTaskReader>>,
+    conversation_history_reader: Option<Arc<ConversationHistoryReader>>,
     computer_use: Option<crate::computer_use::ComputerUseRun>,
     foreign_call_ids: HashSet<String>,
     permission_timeout: Duration,
@@ -269,6 +270,7 @@ impl RuntimeToolConfig {
             context_skill_reader: None,
             context_plan_reader: None,
             context_task_reader: None,
+            conversation_history_reader: None,
             computer_use: None,
             foreign_call_ids: HashSet::new(),
             permission_timeout: PERMISSION_TIMEOUT,
@@ -397,6 +399,14 @@ impl RuntimeToolConfig {
             .flat_map(McpReadyServer::candidates)
             .map(|candidate| candidate.with_known_credentials(credentials.clone()))
             .collect();
+        self
+    }
+
+    pub fn with_conversation_history_reader(
+        mut self,
+        reader: Arc<ConversationHistoryReader>,
+    ) -> Self {
+        self.conversation_history_reader = Some(reader);
         self
     }
 
@@ -547,6 +557,7 @@ impl RuntimeToolConfig {
             .with_computer_use(self.computer_use.as_ref())
             .with_automation(self.automation.as_ref())
             .with_subagents(self.subagents.is_some())
+            .with_conversation_history(self.conversation_history_reader.is_some())
             .definitions()
             .to_vec();
             if let Some(hook) = &self.automation {
@@ -1413,6 +1424,8 @@ impl fmt::Debug for AgentOutcome {
 
 mod context_accounting;
 mod context_files;
+mod context_history;
+pub use context_history::{ConversationHistoryReader, ConversationReadRequest};
 mod context_plan;
 mod context_skills;
 mod context_tasks;

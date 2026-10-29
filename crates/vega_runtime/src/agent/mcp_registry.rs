@@ -863,6 +863,13 @@ impl RunCapabilitySnapshot {
         self
     }
 
+    pub(crate) fn with_conversation_history(mut self, enabled: bool) -> Self {
+        if enabled {
+            self.definitions.push(super::context_history::definition());
+        }
+        self
+    }
+
     pub(crate) fn with_subagents(mut self, enabled: bool) -> Self {
         if enabled {
             self.definitions.extend(

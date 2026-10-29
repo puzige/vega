@@ -200,7 +200,17 @@ lint 修复版本 `d7c18c442c9488b488aa9937e57d6d8907576dec`（tree `902b5ff2a32
 
 附件只提供持久化执行身份、来源调用、状态与独立 release_state，不含任务正文、结果、checkpoint 内容或旧权限。它不是活跃 worker 探测或完成证明：running 不表示进程仍活着，completed 不表示已释放；不标记结果已取回，不替代 wait_agent／原执行核实，不自动恢复、取消或重放。查询只读、有界且连接不跨 await；缺失、删除、线程不符或非法状态不发送旧附件。每轮清旧正文，暖缓存不得复用旧状态。每项序列化最多 2048 bytes，合计最多 32768 bytes，所有字段经当前凭据过滤且不可用 fail closed；进入真实 wire 估算，可在预算不足时移除。开发回归须核对真实存储绑定／状态变化／删除、生成安装重载、实际暖命中出站、过滤与预算；本地不执行。
 
+委派状态版本 `2a3213bc43b16c98bee42db99c9175f46d4cd04b`（tree `0d3cbdd3f66f5202b39607bf8ae9f75f16a4888a`）的 Actions [40837168801](https://github.com/puzige/vega/actions/runs/40837168801) 全部成功：Nextest `123324559284` 原始输出 168 发现／168 执行通过／0 跳过、14.889s，四项新增回归实际 PASS；Clippy `123324558909`、required `123326589596` success。冻结增量独立静态审查 Clear；不代表整卡完成。
+
 此增量不代替完整阶段 handoff／结果取回、后台 shell、动态工具、原始详情读取或 idle/cache 的后续评估与实现。
+
+#### 当前线程原始详情回读（2026-10-29）
+
+新增只读原生工具 read_conversation，只在当前运行配置具备绑定读取器时提供。输入 kind 为 messages／tools，source_id 可空（指定消息或调用 ID），after_sequence 为非负游标，limit 为 1–8，content_offset 为非负 Unicode 字符偏移。source_id 与 after_sequence 均约束同一查询，不接收数据库路径或线程 ID。返回来源身份／序号／状态，消息正文或工具 input／output，以及消息附件数量与已编码总字节数；不读取图片正文，不跟随 output_full_path，不读审批／凭据／checkpoint 表，不重跑旧工具或制造 ReadState 凭据。历史内容统一包在 authority:none 的 observation 内，不是当前用户命令或权限。
+
+每次调用在 blocking worker 中打开当前只读数据库、核对当前线程存在并重新查询；SQLite 连接不跨 await，无持久缓存。每字段原文只在不超过 1 MiB 时物化，先用当前凭据完整过滤，再按 content_offset 返回最多 1024 字符；超限字段只返回 unavailable，不对未过滤切片回传。页面最多 8 条且序列化不超过 65536 bytes；包含字段是否完整与下一字符偏移、next_after_sequence 和是否还有后续记录，不能把截断称为完整。缺失／删除／跨线程来源返回空记录，读取失败给内容无关错误，取消前后复查；当前凭据不可用 fail closed。通用工具结果过滤与真实 wire 预算继续有效。
+
+开发回归覆盖真实 SQLite 的精确定位／分页／附件元数据／删除与线程隔离、先过滤后切片、超限字段与返回量、无文件跟随或写入，以及实际 runtime 工具注册、执行、当前凭据失败和取消；只交 Actions 执行。此通道不代替删除／脱敏向既有摘要和候选传播、完整 handoff、技能资源与 idle/cache 等剩余合同。
 
 #### 脱离前台的生成与逐阶段结算（2026-10-28）
 
