@@ -4,6 +4,10 @@ on:
   push:
     branches: [master]
 
+concurrency:
+  group: vega-master-pipeline
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
