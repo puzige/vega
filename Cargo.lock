@@ -7981,6 +7981,7 @@ dependencies = [
  "base64",
  "gpui-kit",
  "libc",
+ "pulldown-cmark",
  "reqwest",
  "ring",
  "serde",
