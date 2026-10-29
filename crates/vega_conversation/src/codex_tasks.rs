@@ -360,6 +360,7 @@ pub fn materialize_codex_draft(
         ..draft.clone()
     };
     let values = store::NewThread {
+        reasoning_preferences: None,
         id: &materialized.id,
         project_id: &materialized.project_id,
         title: &materialized.title,

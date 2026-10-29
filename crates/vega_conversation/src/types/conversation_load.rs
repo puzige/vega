@@ -1,4 +1,5 @@
 pub struct ConversationLoad {
+    pub reasoning_preferences: Vec<super::SessionReasoningPreference>,
     pub history: crate::history::HistoryPage,
     pub plans: Vec<super::Plan>,
     pub composer_history: Vec<String>,

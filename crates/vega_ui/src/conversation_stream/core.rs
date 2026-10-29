@@ -917,8 +917,11 @@ impl ConversationStream {
         cx.notify();
     }
 
-    pub fn apply_thread(&mut self, thread: Thread, cx: &mut Context<Self>) {
+    pub fn apply_thread(&mut self, mut thread: Thread, cx: &mut Context<Self>) {
         if thread.id == self.thread.id && thread.project_id == self.thread.project_id {
+            if thread.reasoning_preferences.is_none() {
+                thread.reasoning_preferences = self.thread.reasoning_preferences.clone();
+            }
             if thread.model != self.thread.model {
                 self.reset_context_control(cx);
             }
@@ -1148,6 +1151,7 @@ impl ConversationStream {
             return;
         }
         let mut projected = current_thread;
+        projected.reasoning_preferences = self.thread.reasoning_preferences.clone();
         projected.model = model.to_owned();
         if model != self.thread.model {
             self.reset_context_control(cx);
@@ -1393,7 +1397,9 @@ impl ConversationStream {
     pub fn frozen_reasoning_for_submit(
         &self,
     ) -> Result<Option<FrozenReasoning>, ReasoningSubmitError> {
-        if self.composer_defaults.reasoning_unavailable {
+        if self.composer_defaults.reasoning_unavailable
+            || self.thread.reasoning_preferences.is_none()
+        {
             return Err(ReasoningSubmitError::Unavailable);
         }
         let Some(profile) = self.composer_defaults.reasoning.as_ref() else {
@@ -1401,6 +1407,9 @@ impl ConversationStream {
         };
         let mut selected = profile.clone();
         selected.preference = reasoning_choice_for_name(&self.composer_defaults.thinking);
+        if !selected.supports_preference() {
+            return Err(ReasoningSubmitError::Invalid);
+        }
         let frozen = selected
             .freeze()
             .map_err(|_| ReasoningSubmitError::Invalid)?;
@@ -1490,6 +1499,7 @@ impl ConversationStream {
             return;
         }
         let mut projected = current_thread;
+        projected.reasoning_preferences = self.thread.reasoning_preferences.clone();
         projected.model = model.to_owned();
         if model != self.thread.model {
             self.reset_context_control(cx);
@@ -1937,3 +1947,15 @@ fn reasoning_choice_for_name(name: &str) -> ReasoningChoice {
 }
 
 impl EventEmitter<CredentialContinuationRequested> for ConversationStream {}
+
+impl ConversationStream {
+    pub fn apply_session_reasoning_preferences(
+        &mut self,
+        preferences: Vec<vega_conversation::types::SessionReasoningPreference>,
+        cx: &mut Context<Self>,
+    ) {
+        self.thread.reasoning_preferences = Some(preferences);
+        self.controller_error = None;
+        cx.notify();
+    }
+}

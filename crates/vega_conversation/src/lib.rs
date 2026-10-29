@@ -12,6 +12,7 @@ pub mod permission_contracts;
 pub mod permission_reset;
 pub mod plans;
 mod pricing;
+pub mod session_reasoning;
 pub mod startup;
 pub mod summary;
 mod thread_access;

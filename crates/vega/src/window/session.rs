@@ -116,6 +116,9 @@ fn finish_thread_model_selection(
                     });
                     return;
                 };
+                let mut current = current;
+                current.reasoning_preferences =
+                    stream.read(cx).thread_snapshot().reasoning_preferences;
                 cx.set_global(OpenedThread(Some(current.clone())));
 
                 window.mirror_draft(&current);
@@ -382,11 +385,13 @@ impl VegaWindow {
                     .try_global::<NewTaskDefaults>()
                     .cloned()
                     .unwrap_or_default();
-                vega_conversation::threads::draft_thread_from_defaults(
+                let mut draft = vega_conversation::threads::draft_thread_from_defaults(
                     bound,
                     &defaults.model,
                     defaults.permission,
-                )
+                );
+                draft.reasoning_preferences = defaults.reasoning_preferences;
+                draft
             }
         };
         let creating = self
@@ -402,6 +407,18 @@ impl VegaWindow {
                 .trusted_actions
                 .is_kind_active(TrustedActionKind::PermissionSelection);
         let mut draft = draft;
+        if draft.reasoning_preferences.is_none()
+            && let Some(profiles) = &self.configured_reasoning
+            && self.configured_reasoning_authority.is_some()
+        {
+            draft.reasoning_preferences = Some(super::reasoning::session_defaults(profiles));
+            if let Some((id, stream)) = &self.stream_view
+                && id == &draft.id
+            {
+                stream.update(cx, |stream, cx| stream.apply_thread(draft.clone(), cx));
+                self.apply_reasoning_profile_to_stream(stream, &draft.model, cx);
+            }
+        }
         if !creating
             && !self.trusted_actions.is_busy()
             && let Some(defaults) = cx.try_global::<NewTaskDefaults>()
@@ -913,7 +930,7 @@ impl VegaWindow {
             reasoning_profiles,
             reasoning_error,
             reasoning_authority,
-            defaults,
+            mut defaults,
             loaded_config,
         ) = match result {
             Ok(result) => result,
@@ -942,6 +959,10 @@ impl VegaWindow {
         }
         self.configured_models = Some(models);
 
+        if reasoning_authority.is_some() && reasoning_error.is_none() {
+            defaults.reasoning_preferences =
+                Some(super::reasoning::session_defaults(&reasoning_profiles));
+        }
         let defaults_changed = cx.try_global::<NewTaskDefaults>() != Some(&defaults);
         let default_model_changed = cx
             .try_global::<NewTaskDefaults>()

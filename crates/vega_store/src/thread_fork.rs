@@ -143,6 +143,9 @@ pub fn clone_prefix(
     }
     let destination = fresh_id();
     tx.execute("INSERT INTO threads(id,project_id,title,mode,permission_mode,model,backend,status,pinned,unread,created_at,updated_at,forked_from_thread_id,forked_from_message_id) VALUES(?1,?2,?3,?4,'confirm',?5,'native','active',0,0,?6,?6,?7,?8)",params![destination,source.project_id,source.title,source.mode,source.model,now,source_thread_id,through_message_id])?;
+    if let Some(preferences) = &source.reasoning_preferences {
+        crate::threads::set_reasoning_preferences(tx, &destination, preferences, false)?;
+    }
     for id in &owners {
         validate_responses(tx, id)?;
         let message =

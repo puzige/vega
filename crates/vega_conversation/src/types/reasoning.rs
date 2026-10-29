@@ -4,6 +4,7 @@ pub use vega_runtime::{
     chat_compatibility,
 };
 
+pub use vega_store::reasoning::ReasoningProfile as SessionReasoningPreference;
 use vega_store::reasoning::ReasoningProfile;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
