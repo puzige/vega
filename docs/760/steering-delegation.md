@@ -28,4 +28,22 @@ capture_delegated_fence 在既有准入事务中读取上述来源，并将父�
 
 开发版本 `5cfad84033983249faea06e5a4487540a31c81f2` 的 [Actions 40860145280](https://github.com/puzige/vega/actions/runs/40860145280) required check 成功：Rust 6 发现/6 执行/6 通过/0 跳过，Python 5/15/40 通过，Clippy/fmt 通过。该版本独立审查发现上述 command_scope 缺口，已修订，不以首轮通过作为完整交付。
 
-增量补充真实 Supervisor/hook 派发、回执确认、结果读取、usage、释放和多次 followup，隔离外部模型与 App host；停止后拒绝及取消等待准入行为回归。增量 CI 与复审待结果；未合并、未取得用户手测结果。
+完整开发版本 `366811aa5344d69baf41d864bea56fc1bd99d4c4` 的 [Actions 40865308527](https://github.com/puzige/vega/actions/runs/40865308527) 成功：Rust 11 发现 / 11 执行 / 11 通过 / 0 失败 / 0 跳过；Python 三组 5/15/40 通过，fmt、全目标 Clippy、required check 成功。真实 Supervisor/hook 派发、回执确认、结果读取、usage、释放、多次 followup、作用域批准/消费和停止收敛均在该开发版本验证；外部模型与 App host 被隔离，不代表用户真实 App 验收。
+
+### 可恢复回归源码
+
+已通过 GitHub contents API 读回并与本地 Git blob 身份一致，均固定于上述完整开发 SHA：
+
+- [准入与多跳回归](https://github.com/puzige/vega/blob/366811aa5344d69baf41d864bea56fc1bd99d4c4/crates/vega_conversation/src/agent/subagents/steering_tests.rs)，blob `368f775d65b43467449d27c05576ef21f656f081`。
+- [受限作用域回归](https://github.com/puzige/vega/blob/366811aa5344d69baf41d864bea56fc1bd99d4c4/crates/vega_conversation/src/agent/subagents/steering_scope_tests.rs)，blob `ab76e2eff831e987b9f2414d3a4c3a484674b322`。
+- [生命周期与确定性取消回归](https://github.com/puzige/vega/blob/366811aa5344d69baf41d864bea56fc1bd99d4c4/crates/vega_conversation/src/agent/subagents/steering_lifecycle_tests.rs)，blob `a2d5e240118e631ab3459bbd3ce890098c2c46d8`。
+
+### 失败与修正留痕
+
+- Actions 40862177599：Rust 11 执行，8 通过/3 失败；Clippy 报竞态测试持同步锁跨 await。测试项目路径未 canonicalize，与 Tools 的规范化路径不一致，导致作用域请求 StaleAuthority；修正夹具，不改断言。
+- Actions 40863654437：Clippy 通过；Rust 10 通过/1 失败。剩余失败为测试误认为多目标 wait_agent 必须全部结束才返回，实际契约为任一新终态唤醒；改为逐个精确目标等待，仍要求全部完成/释放及完整结果、usage 断言。
+- 独立审查要求取消回归证明已越过初始取消检查：临时 cfg(test) 握手在获取事务后通知，测试确认到达才取消；两种派发均断言 Cancelled 且无存储变化。最终开发 Actions 完整通过。审查对最终开发版本无发现，生产增量结论沿用，未以盲目重跑、跳过或放宽断言求通过。
+
+### 最终生产版本
+
+按仓库政策独立移除上述临时 Rust 测试、独占模块/依赖和握手；不改变已验证生产行为，不删除现有 Python、生产安全断言或 CI。最终 head 的 required CI 待结果，0 Rust 发现/执行只表示 no Rust tests，不代替上述 11 项行为验证。本地仅 fmt、metadata、diff 与静态清点；未编译、运行 Vega 或执行测试。未合并、未取得用户手测结果。
