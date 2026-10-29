@@ -8,6 +8,7 @@ pub struct PermissionResetSession {
     config_path: PathBuf,
     intent: PermissionResetIntent,
     pause: DatabaseAdmissionPause,
+    precompute_pause: crate::types::ContextPrecomputePause,
     scheduling_paused: bool,
     receipt: Option<PermissionResetReceipt>,
     threads: Vec<String>,
@@ -36,6 +37,9 @@ impl PermissionResetSession {
         {
             return Err(PermissionResetError::ConfigurationConflict);
         }
+        let precompute_pause = crate::types::ContextPrecomputeRegistry::global()
+            .pause_database(store.database_identity())
+            .map_err(unavailable)?;
         let mut statement = store
             .conn()
             .prepare("SELECT id FROM threads")
@@ -50,6 +54,7 @@ impl PermissionResetSession {
             config_path,
             intent,
             pause,
+            precompute_pause,
             scheduling_paused: false,
             receipt: None,
             threads,
@@ -74,7 +79,13 @@ impl PermissionResetSession {
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or(PermissionResetError::Unavailable)?;
-        while !self.pause.owners_released().map_err(unavailable)? {
+        while !self.pause.owners_released().map_err(unavailable)?
+            || !self
+                .precompute_pause
+                .drain()
+                .is_finished()
+                .map_err(unavailable)?
+        {
             if Instant::now() >= deadline {
                 return Err(PermissionResetError::Busy);
             }

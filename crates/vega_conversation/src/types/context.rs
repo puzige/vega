@@ -6,6 +6,14 @@
 //! payloads.
 
 use super::ThreadMode;
+pub use crate::agent::compaction::precompute::registry::{
+    ContextPrecomputeDrain, ContextPrecomputeLease, ContextPrecomputeOwner, ContextPrecomputePause,
+    ContextPrecomputeRegistry, ContextPrecomputeTask,
+};
+pub use crate::agent::compaction::precompute::{
+    ContextPrecomputeWorker, PreparedContextPrecompute,
+};
+pub use vega_runtime::ContextCompactionTrigger;
 
 /// Provenance of a live primary input decision; reload always starts Estimated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +150,19 @@ pub struct ContextSettingsRequested {
 }
 
 /// UI/application intent to start one manual compaction operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartialCompactionDirection {
+    UpTo,
+    From,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartialCompactionSelection {
+    pub message_id: String,
+    pub source_fingerprint: String,
+    pub direction: PartialCompactionDirection,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextCompactionRequested {
     /// Exact thread identity.
@@ -150,6 +171,8 @@ pub struct ContextCompactionRequested {
     pub model: String,
     /// Owner identity for the asynchronous operation.
     pub request_id: u64,
+    pub selection: Option<PartialCompactionSelection>,
+    pub summary_requirements: String,
 }
 
 /// UI/application intent to cancel one manual or automatic compaction owner.

@@ -36,6 +36,7 @@ pub use subagents::*;
 
 mod user_questions;
 pub use user_questions::*;
+mod compaction_refill;
 mod progress;
 mod progress_recovery;
 
@@ -221,11 +222,16 @@ pub struct RuntimeToolConfig {
     automation: Option<Arc<dyn automation::RuntimeAutomationHook>>,
     subagents: Option<Arc<dyn RuntimeSubagentHook>>,
     stage: Option<Arc<dyn RuntimeSubagentHook>>,
+    delegated_compaction: bool,
     usage_observer: Option<Arc<dyn automation::RuntimeAutomationHook>>,
     steering_source: Option<Arc<dyn RuntimeSteeringSource>>,
     user_questions: Option<Arc<dyn RuntimeUserQuestionHook>>,
     mcp_candidates: Vec<McpCandidate>,
     skills: Option<RuntimeSkillConfig>,
+    context_skill_reader: Option<Arc<crate::skills::HistoricalSkillReader>>,
+    context_plan_reader: Option<Arc<HistoricalPlanReader>>,
+    context_task_reader: Option<Arc<HistoricalTaskReader>>,
+    conversation_history_reader: Option<Arc<ConversationHistoryReader>>,
     computer_use: Option<crate::computer_use::ComputerUseRun>,
     foreign_call_ids: HashSet<String>,
     permission_timeout: Duration,
@@ -255,11 +261,16 @@ impl RuntimeToolConfig {
             automation: None,
             subagents: None,
             stage: None,
+            delegated_compaction: false,
             usage_observer: None,
             steering_source: None,
             user_questions: None,
             mcp_candidates: Vec::new(),
             skills: None,
+            context_skill_reader: None,
+            context_plan_reader: None,
+            context_task_reader: None,
+            conversation_history_reader: None,
             computer_use: None,
             foreign_call_ids: HashSet::new(),
             permission_timeout: PERMISSION_TIMEOUT,
@@ -304,6 +315,11 @@ impl RuntimeToolConfig {
 
     pub fn with_stage(mut self, hook: Option<Arc<dyn RuntimeSubagentHook>>) -> Self {
         self.stage = hook;
+        self
+    }
+
+    pub fn with_delegated_compaction(mut self, delegated: bool) -> Self {
+        self.delegated_compaction = delegated;
         self
     }
 
@@ -386,8 +402,32 @@ impl RuntimeToolConfig {
         self
     }
 
-    /// Attach a trusted, consent-frozen Skills run and exact UI selections.
-    /// The model cannot construct or modify this configuration.
+    pub fn with_conversation_history_reader(
+        mut self,
+        reader: Arc<ConversationHistoryReader>,
+    ) -> Self {
+        self.conversation_history_reader = Some(reader);
+        self
+    }
+
+    pub fn with_context_task_reader(mut self, reader: Arc<HistoricalTaskReader>) -> Self {
+        self.context_task_reader = Some(reader);
+        self
+    }
+
+    pub fn with_context_plan_reader(mut self, reader: Arc<HistoricalPlanReader>) -> Self {
+        self.context_plan_reader = Some(reader);
+        self
+    }
+
+    pub fn with_context_skill_reader(
+        mut self,
+        reader: Arc<crate::skills::HistoricalSkillReader>,
+    ) -> Self {
+        self.context_skill_reader = Some(reader);
+        self
+    }
+
     pub fn with_skill_run(mut self, run: SkillRun, explicit: Vec<SkillSelection>) -> Self {
         self.skills = Some(RuntimeSkillConfig {
             run: Arc::new(Mutex::new(run)),
@@ -457,7 +497,11 @@ impl RuntimeToolConfig {
                 add(9, format!("{:?}", rule.tool).as_bytes());
                 add(10, rule.pattern.as_bytes());
             }
-            let mut candidates = self.mcp_candidates.iter().collect::<Vec<_>>();
+            let mut candidates = self
+                .mcp_candidates
+                .iter()
+                .filter(|candidate| !candidate.revoked.is_cancelled())
+                .collect::<Vec<_>>();
             candidates.sort_by(|left, right| {
                 left.server_id
                     .cmp(&right.server_id)
@@ -508,7 +552,7 @@ impl RuntimeToolConfig {
             } else {
                 add(28, &[]);
             }
-            let definitions = RunCapabilitySnapshot::freeze(
+            let definitions = RunCapabilitySnapshot::freeze_current(
                 self.run_mode,
                 self.permission_mode,
                 self.mcp_candidates.clone(),
@@ -517,8 +561,8 @@ impl RuntimeToolConfig {
             .with_computer_use(self.computer_use.as_ref())
             .with_automation(self.automation.as_ref())
             .with_subagents(self.subagents.is_some())
-            .definitions()
-            .to_vec();
+            .with_conversation_history(self.conversation_history_reader.is_some())
+            .current_definitions();
             if let Some(hook) = &self.automation {
                 add(30, hook.context().to_string().as_bytes());
             }
@@ -1382,6 +1426,14 @@ impl fmt::Debug for AgentOutcome {
 }
 
 mod context_accounting;
+mod context_files;
+mod context_history;
+pub use context_history::{ConversationHistoryReader, ConversationReadRequest};
+mod context_plan;
+mod context_skills;
+mod context_tasks;
+pub use context_plan::{HistoricalPlan, HistoricalPlanReader};
+pub use context_tasks::{HistoricalTask, HistoricalTaskReader};
 mod descriptions;
 pub use descriptions::is_native_tool;
 use descriptions::{describe_definition, extract_call_description};

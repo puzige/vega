@@ -40,6 +40,41 @@ impl Tools {
             .map(|(output, _)| output)
     }
 
+    pub fn read_context_file(&self, path: &str) -> Result<ToolOutput, ToolError> {
+        use std::io::Read;
+        const MAX_BYTES: u64 = 1024 * 1024;
+        let canonical = self.file_path(path)?;
+        if Path::new(path).is_absolute() && canonical != Path::new(path) {
+            return Err(crate::MutationError::new(crate::MutationErrorCode::TargetChanged).into());
+        }
+        let file = crate::text_file::open_regular(&canonical, self.credential_policy.is_some())?;
+        if file.metadata()?.len() > MAX_BYTES {
+            return Ok(ToolOutput {
+                text: String::new(),
+                truncated: true,
+            });
+        }
+        let mut bytes = Vec::new();
+        file.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_BYTES {
+            return Ok(ToolOutput {
+                text: String::new(),
+                truncated: true,
+            });
+        }
+        let text = TextFile::decode(&bytes)?;
+        if text.content.len().div_ceil(4) > 5000 {
+            return Ok(ToolOutput {
+                text: String::new(),
+                truncated: true,
+            });
+        }
+        Ok(ToolOutput {
+            text: text.content,
+            truncated: false,
+        })
+    }
+
     pub fn read_with_identity(
         &self,
         path: &str,
@@ -125,8 +160,6 @@ fn render_numbered(content: &str, offset: usize, limit: Option<usize>) -> ToolOu
     }
 }
 
-/// Cut `line` to [`MAX_LINE_CHARS`] chars, appending the truncation marker
-/// when a cut happened (char-based, CJK-safe).
 fn truncate_line(line: &str) -> (String, bool) {
     let mut chars = line.chars();
     let head: String = chars.by_ref().take(MAX_LINE_CHARS).collect();

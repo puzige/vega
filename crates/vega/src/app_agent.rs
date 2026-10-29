@@ -29,6 +29,26 @@ pub(crate) struct AppReplaySessions(pub(crate) vega_conversation::agent::ReplayS
 
 impl Global for AppReplaySessions {}
 
+struct AppContextPrecompute;
+impl Global for AppContextPrecompute {}
+
+pub(crate) fn install_context_precompute_shutdown(cx: &mut App) {
+    if cx.has_global::<AppContextPrecompute>() {
+        return;
+    }
+    cx.set_global(AppContextPrecompute);
+    cx.on_app_quit(move |_| {
+        let result = ContextPrecomputeRegistry::global()
+            .close()
+            .and_then(|drain| drain.wait_blocking());
+        if result.is_err() {
+            tracing::error!("context precompute shutdown could not confirm settlement");
+        }
+        std::future::ready(())
+    })
+    .detach();
+}
+
 pub(crate) enum PendingAgentRun {
     Automation(Box<AutomationRunClaim>),
     UserMessage(UserSubmission),
@@ -824,9 +844,11 @@ fn replay_persistence_config(
     registry: Option<&vega_conversation::agent::ReplaySessionRegistry>,
     route_fingerprint: Option<[u8; 32]>,
     admission: ThreadAdmission,
+    precompute_lease: &Option<ContextPrecomputeLease>,
 ) -> vega_conversation::agent::PersistenceActorConfig {
     let config = vega_conversation::agent::PersistenceActorConfig::default()
-        .with_thread_admission(admission);
+        .with_thread_admission(admission)
+        .with_context_precompute_lease(precompute_lease.clone());
     if let (Some(registry), Some(route_fingerprint)) = (registry, route_fingerprint) {
         config.with_replay_session_registry(registry.clone(), route_fingerprint)
     } else {
@@ -1081,6 +1103,7 @@ pub(crate) fn run_agent_worker_with_mcp(
     queue_context: Option<PendingRunContext>,
     automation_pauses: Vec<AutomationTask>,
     replay_registry: Option<vega_conversation::agent::ReplaySessionRegistry>,
+    precompute_lease: Option<ContextPrecomputeLease>,
     admission: ThreadAdmission,
 ) {
     let ordinary = match &mut run {
@@ -1452,7 +1475,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         cancel,
                         &permission_queue,
                         event_sink,
-                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint, admission.clone())
+                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint, admission.clone(), &precompute_lease)
                             .with_subagent_host(subagent_host.clone())
                             .with_ordinary_submission(ordinary.clone())
                             .with_automation_claim(automation_claim.clone())
@@ -1534,7 +1557,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         pricing_catalog,
                         Some(reasoning),
                         mcp_servers,
-                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint, admission.clone())
+                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint, admission.clone(), &precompute_lease)
                             .with_subagent_host(subagent_host.clone())
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
@@ -1603,7 +1626,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         cancel,
                         &permission_queue,
                         event_sink,
-                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint, admission.clone())
+                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint, admission.clone(), &precompute_lease)
                             .with_subagent_host(subagent_host.clone())
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())
@@ -1675,7 +1698,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         cancel,
                         &permission_queue,
                         event_sink,
-                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint, admission.clone())
+                        replay_persistence_config(replay_registry.as_ref(), replay_route_fingerprint, admission.clone(), &precompute_lease)
                             .with_subagent_host(subagent_host.clone())
                             .with_turn_limit(turn_limit)
                             .with_computer_use(computer_use.clone())

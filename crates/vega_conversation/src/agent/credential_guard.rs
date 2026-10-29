@@ -143,7 +143,7 @@ fn contains_response_secret(
             })
 }
 
-fn reject_owner_secret_with_policy(
+pub(crate) fn reject_owner_secret_with_policy(
     request: &ChatRequest,
     reader: &(dyn Fn() -> Result<Vec<String>, ()> + Send + Sync),
     exceptions: Option<&vega_runtime::CredentialExceptionFilter>,
@@ -419,6 +419,48 @@ fn protected_stream(
 }
 
 impl Provider for OwnerCredentialProvider {
+    fn chat_stream_with_submission(
+        &self,
+        request: ChatRequest,
+        cancel: CancellationToken,
+        submission: vega_runtime::ProviderRequestSubmission,
+    ) -> BoxFuture<'static, Result<vega_runtime::ProviderStream, VegaError>> {
+        let provider = self.provider.clone();
+        let known = self.known.clone();
+        let exceptions = self.exceptions.clone();
+        Box::pin(async move {
+            let request =
+                project_owner_secrets_with_policy(request, known.as_ref(), exceptions.as_ref())?;
+            reject_owner_secret_with_policy(&request, known.as_ref(), exceptions.as_ref())?;
+            let credentials = known().map_err(|_| VegaError::CredentialCheckUnavailable)?;
+            let mut response = provider
+                .chat_stream_with_submission(request, cancel, submission)
+                .await?;
+            if let Some(id) = &mut response.metadata.request_id {
+                *id = vega_runtime::redact_sensitive_credential_text_with_policy(
+                    id,
+                    &credentials,
+                    exceptions.as_ref(),
+                );
+            }
+            response.events = protected_stream(response.events, credentials, exceptions);
+            Ok(response)
+        })
+    }
+
+    fn compaction_provider_factory(&self) -> Option<vega_runtime::CompactionProviderFactory> {
+        let factory = self.provider.compaction_provider_factory()?;
+        let known = self.known.clone();
+        let exceptions = self.exceptions.clone();
+        Some(Box::new(move || {
+            Ok(Arc::new(Self {
+                provider: factory()?,
+                known,
+                exceptions,
+            }))
+        }))
+    }
+
     fn model_snapshot(&self) -> Option<vega_runtime::model_compat::ResolvedModel> {
         self.provider.model_snapshot()
     }

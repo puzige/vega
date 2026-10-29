@@ -1,0 +1,1208 @@
+{
+  "reference_version": "2.1.292",
+  "binary_sha256": "97a01e5bc74a199e67189435d0331ea3a24eac2e07db4b76d9148c5b0386138f",
+  "binary_bytes": 235017328,
+  "extract_sha256": "25b7eeec8fc8ec9de0ee89a500ecc4b5ef64ea671991120eaea1f5d1ebed7374",
+  "offset_convention": "0-based byte offsets, end exclusive; lines 1-based",
+  "verification": "static byte comparisons only, not executed behavior",
+  "entries": [
+    {
+      "id": "E01-budget-auto",
+      "extract_range": [
+        22911700,
+        22922600
+      ],
+      "extract_lines": [
+        572741,
+        572741
+      ],
+      "extract_sha256": "12ada59628ec01074b5d6ca595ac87e1dc2d3988fd519914d3e05250a79960a8",
+      "verification": "full_range",
+      "verified_binary_range": [
+        191949365,
+        191960265
+      ],
+      "verified_sha256": "12ada59628ec01074b5d6ca595ac87e1dc2d3988fd519914d3e05250a79960a8",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E02-micro",
+      "extract_range": [
+        17986600,
+        17998500
+      ],
+      "extract_lines": [
+        568530,
+        568547
+      ],
+      "extract_sha256": "5d61b614c8638a6171b182d678a7ce8dac44e1f2b2077bd3cd6e81b230998fe4",
+      "verification": "prefix_only",
+      "verified_binary_range": [
+        187023004,
+        187023164
+      ],
+      "verified_sha256": "bf3d12202cf65a2b7faff021f1435531eae93ca1505c5ad4a78704040c61a2cc",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E03-full-a",
+      "extract_range": [
+        24570300,
+        24576700
+      ],
+      "extract_lines": [
+        574336,
+        574338
+      ],
+      "extract_sha256": "3f80fba97fc89ed32f1d72c5830451da783d6c90950da22d146075dade49fc60",
+      "verification": "unmapped_extract"
+    },
+    {
+      "id": "E04-partial",
+      "extract_range": [
+        24576400,
+        24582400
+      ],
+      "extract_lines": [
+        574338,
+        574338
+      ],
+      "extract_sha256": "09ab06033f870b72455e28158937a497deb934193bfe381176ae257bbb112973",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193614644,
+        193620644
+      ],
+      "verified_sha256": "09ab06033f870b72455e28158937a497deb934193bfe381176ae257bbb112973",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E05-attachments-a",
+      "extract_range": [
+        24581200,
+        24586100
+      ],
+      "extract_lines": [
+        574338,
+        574338
+      ],
+      "extract_sha256": "da558a2722cf017e58b6aff302389f0c7038d639391b38999a8d1f232e8ed502",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193619444,
+        193624344
+      ],
+      "verified_sha256": "da558a2722cf017e58b6aff302389f0c7038d639391b38999a8d1f232e8ed502",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E06-request-provider",
+      "extract_range": [
+        24585800,
+        24591500
+      ],
+      "extract_lines": [
+        574338,
+        574338
+      ],
+      "extract_sha256": "0a0c73d21d9fdd4f7698c3e969ba3f3cec55d0bbaf617eee2517278c7b59ea64",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193624044,
+        193629744
+      ],
+      "verified_sha256": "0a0c73d21d9fdd4f7698c3e969ba3f3cec55d0bbaf617eee2517278c7b59ea64",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E07-state-restore",
+      "extract_range": [
+        24590800,
+        24597100
+      ],
+      "extract_lines": [
+        574338,
+        574338
+      ],
+      "extract_sha256": "fe6dbbc18d984e0ecfa61494e130d6657ade2a8f9dfaa3ca5e086829a86f2e42",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193629044,
+        193635344
+      ],
+      "verified_sha256": "fe6dbbc18d984e0ecfa61494e130d6657ade2a8f9dfaa3ca5e086829a86f2e42",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E08-auto-controller",
+      "extract_range": [
+        24596700,
+        24602500
+      ],
+      "extract_lines": [
+        574338,
+        574338
+      ],
+      "extract_sha256": "cdb5b56f6ac5440014ab4d9ce4b9fd25a5434f4bafc7f90d10bf11e2504a1cf5",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193634944,
+        193640744
+      ],
+      "verified_sha256": "cdb5b56f6ac5440014ab4d9ce4b9fd25a5434f4bafc7f90d10bf11e2504a1cf5",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E09-auto-reactive-gates",
+      "extract_range": [
+        24602300,
+        24607500
+      ],
+      "extract_lines": [
+        574338,
+        574338
+      ],
+      "extract_sha256": "33c35b7e172b2e8380992beeed2622066132eaf1000fda1905cc6569e0e2b138",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193640544,
+        193645744
+      ],
+      "verified_sha256": "33c35b7e172b2e8380992beeed2622066132eaf1000fda1905cc6569e0e2b138",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E10-precompute-arm",
+      "extract_range": [
+        24614720,
+        24620699
+      ],
+      "extract_lines": [
+        574338,
+        574338
+      ],
+      "extract_sha256": "f00731b52956afa1a44b16d5df2d4656518ac176a664c01ed94db33ce2a81f88",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193652964,
+        193658943
+      ],
+      "verified_sha256": "f00731b52956afa1a44b16d5df2d4656518ac176a664c01ed94db33ce2a81f88",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E11-precompute-consume",
+      "extract_range": [
+        24620699,
+        24626400
+      ],
+      "extract_lines": [
+        574338,
+        574338
+      ],
+      "extract_sha256": "315fdef2233f2f0135848840cc47d4bb914c31208c9a65adb95c3ece61e26eba",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193658943,
+        193664644
+      ],
+      "verified_sha256": "315fdef2233f2f0135848840cc47d4bb914c31208c9a65adb95c3ece61e26eba",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E12-coverage-cas",
+      "extract_range": [
+        14054800,
+        14061000
+      ],
+      "extract_lines": [
+        564239,
+        564239
+      ],
+      "extract_sha256": "1ae7495400b5e8a6cf0b41f58288d6d5ba0ba11b1e689d1bb44831b4aec4e3d8",
+      "verification": "full_range",
+      "verified_binary_range": [
+        183090338,
+        183096538
+      ],
+      "verified_sha256": "1ae7495400b5e8a6cf0b41f58288d6d5ba0ba11b1e689d1bb44831b4aec4e3d8",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E13-rehydrate",
+      "extract_range": [
+        24610400,
+        24613490
+      ],
+      "extract_lines": [
+        574338,
+        574338
+      ],
+      "extract_sha256": "bc89785cb833fce98e2cb12f16ee8ebc2e77de09059b225cf130765f55dc9c7a",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193648644,
+        193651734
+      ],
+      "verified_sha256": "bc89785cb833fce98e2cb12f16ee8ebc2e77de09059b225cf130765f55dc9c7a",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E14-invalidation",
+      "extract_range": [
+        24626000,
+        24629000
+      ],
+      "extract_lines": [
+        574338,
+        574338
+      ],
+      "extract_sha256": "c8328dbe529addad26d85dd3b95a7cb38ec79c1f8c08085a66b08924955a4660",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193664244,
+        193667244
+      ],
+      "verified_sha256": "c8328dbe529addad26d85dd3b95a7cb38ec79c1f8c08085a66b08924955a4660",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E15-reactive-request",
+      "extract_range": [
+        24514500,
+        24519090
+      ],
+      "extract_lines": [
+        574331,
+        574331
+      ],
+      "extract_sha256": "bff044bf0195724f307d9f93d7e15442911191c1939c6635033254847e9d89ee",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193552743,
+        193557333
+      ],
+      "verified_sha256": "bff044bf0195724f307d9f93d7e15442911191c1939c6635033254847e9d89ee",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E16-reactive-split-retry",
+      "extract_range": [
+        24519107,
+        24524872
+      ],
+      "extract_lines": [
+        574331,
+        574331
+      ],
+      "extract_sha256": "6522385b6c16c2c82a6b7baf08382b0e14b7338c9acd0344e1f19f2ccdad3c6d",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193557350,
+        193563115
+      ],
+      "verified_sha256": "6522385b6c16c2c82a6b7baf08382b0e14b7338c9acd0344e1f19f2ccdad3c6d",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E17-reactive-hooks-swap",
+      "extract_range": [
+        24524872,
+        24530900
+      ],
+      "extract_lines": [
+        574331,
+        574332
+      ],
+      "extract_sha256": "60eb774ec5b653f3f266fa26101ae01b67a0f2d78fc0da4849b175814682200a",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193563115,
+        193569143
+      ],
+      "verified_sha256": "60eb774ec5b653f3f266fa26101ae01b67a0f2d78fc0da4849b175814682200a",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E18-reactive-rebuild",
+      "extract_range": [
+        24530570,
+        24536800
+      ],
+      "extract_lines": [
+        574332,
+        574332
+      ],
+      "extract_sha256": "b74f3ba064d539ed7678acb1dc271db8589088eb5ab8085513a16f0862c8c6a0",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193568813,
+        193575043
+      ],
+      "verified_sha256": "b74f3ba064d539ed7678acb1dc271db8589088eb5ab8085513a16f0862c8c6a0",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E19-global-gates",
+      "extract_range": [
+        22910200,
+        22911700
+      ],
+      "extract_lines": [
+        572741,
+        572741
+      ],
+      "extract_sha256": "a9009cf72111bdd87002e5ca2b23d6c90780a2e8fdb5845dfcf12067ee999667",
+      "verification": "full_range",
+      "verified_binary_range": [
+        191947865,
+        191949365
+      ],
+      "verified_sha256": "a9009cf72111bdd87002e5ca2b23d6c90780a2e8fdb5845dfcf12067ee999667",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E20-context-hint-gate",
+      "extract_range": [
+        37263100,
+        37268500
+      ],
+      "extract_lines": [
+        588522,
+        588532
+      ],
+      "extract_sha256": "5e6e8ee6ff593fdb6226c3a9c807f85b87423568b5b60f342a314142cbf32803",
+      "verification": "prefix_only",
+      "verified_binary_range": [
+        206305526,
+        206305686
+      ],
+      "verified_sha256": "d41aa9077e50829a202e7d73b7a803399eaee24fe10d4ed5e1c9e040c8879026",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E21-rebuild-truncate",
+      "extract_range": [
+        24567400,
+        24570320
+      ],
+      "extract_lines": [
+        574336,
+        574337
+      ],
+      "extract_sha256": "438dd6727f1bebd86eb91ebbd047ec255644d1b3c9d53f182e4136b7dc58933c",
+      "verification": "prefix_only",
+      "verified_binary_range": [
+        193605643,
+        193605803
+      ],
+      "verified_sha256": "4eb65f53702f96ddda7c8b1b232b18757cdadeca80047e007bbc933aab6b3d4f",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E22-grouping",
+      "extract_range": [
+        24494120,
+        24495450
+      ],
+      "extract_lines": [
+        574125,
+        574125
+      ],
+      "extract_sha256": "64ff39002517331534d988842da3f7e859a6db6c590267d5028ce7371084dd0e",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193532292,
+        193533622
+      ],
+      "verified_sha256": "64ff39002517331534d988842da3f7e859a6db6c590267d5028ce7371084dd0e",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E23-continuation",
+      "extract_range": [
+        24511300,
+        24513814
+      ],
+      "extract_lines": [
+        574320,
+        574331
+      ],
+      "extract_sha256": "5697ecfab58b8959ee09bb8663aa6dc77de7d383d69c620e3450ceb13d2e7185",
+      "verification": "unmapped_extract"
+    },
+    {
+      "id": "E24-manual-reuse",
+      "extract_range": [
+        36473000,
+        36478600
+      ],
+      "extract_lines": [
+        587549,
+        587560
+      ],
+      "extract_sha256": "a08a2f43c3a00d4ad4142cc0d1c0c9248ed42a8c26f26c6d96b8501b530743dc",
+      "verification": "prefix_only",
+      "verified_binary_range": [
+        205515169,
+        205515329
+      ],
+      "verified_sha256": "a5377854f716f2d2c735942a4a9ed3b5e19ea97e1646336edc6f4aa5eb675eba",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E25-manual-entry",
+      "extract_range": [
+        36468300,
+        36473300
+      ],
+      "extract_lines": [
+        587549,
+        587549
+      ],
+      "extract_sha256": "bedda1bfb4a5fb9163871393c48f704dba0f1647367bfe7a2a553ffba4fefa41",
+      "verification": "full_range",
+      "verified_binary_range": [
+        205510469,
+        205515469
+      ],
+      "verified_sha256": "bedda1bfb4a5fb9163871393c48f704dba0f1647367bfe7a2a553ffba4fefa41",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E26-function-hooks",
+      "extract_range": [
+        22568400,
+        22571500
+      ],
+      "extract_lines": [
+        572346,
+        572346
+      ],
+      "extract_sha256": "a88b6c0020968ca5605db1d281580e4d2c75ff73c0a245aaca492afbcaaead9b",
+      "verification": "full_range",
+      "verified_binary_range": [
+        191605970,
+        191609070
+      ],
+      "verified_sha256": "a88b6c0020968ca5605db1d281580e4d2c75ff73c0a245aaca492afbcaaead9b",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E27-manual-guard",
+      "extract_range": [
+        43445600,
+        43449100
+      ],
+      "extract_lines": [
+        594420,
+        594420
+      ],
+      "extract_sha256": "00b4f8c30b2ef7f16e3ff716db98cd5ac8eacb4fe0890e99849ab20b1ab3207b",
+      "verification": "full_range",
+      "verified_binary_range": [
+        212489578,
+        212493078
+      ],
+      "verified_sha256": "00b4f8c30b2ef7f16e3ff716db98cd5ac8eacb4fe0890e99849ab20b1ab3207b",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E28-controller-compact",
+      "extract_range": [
+        43448900,
+        43451600
+      ],
+      "extract_lines": [
+        594420,
+        594420
+      ],
+      "extract_sha256": "e358a111c3deb52df4199c468916e0666582c94a2c50bdcc333423b017bae815",
+      "verification": "full_range",
+      "verified_binary_range": [
+        212492878,
+        212495578
+      ],
+      "verified_sha256": "e358a111c3deb52df4199c468916e0666582c94a2c50bdcc333423b017bae815",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E29-query-auto-arm",
+      "extract_range": [
+        30525200,
+        30528750
+      ],
+      "extract_lines": [
+        579553,
+        579553
+      ],
+      "extract_sha256": "654719f8280353c78f03d10202548280782cbf680d96210eb3f34522b8c4d27d",
+      "verification": "full_range",
+      "verified_binary_range": [
+        199564869,
+        199568419
+      ],
+      "verified_sha256": "654719f8280353c78f03d10202548280782cbf680d96210eb3f34522b8c4d27d",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E30-query-ptl",
+      "extract_range": [
+        30569400,
+        30572700
+      ],
+      "extract_lines": [
+        579553,
+        579553
+      ],
+      "extract_sha256": "41326976f491ece18fb8bcd55001ea287f662741cbe90e51bd5110bde2cb52df",
+      "verification": "full_range",
+      "verified_binary_range": [
+        199609069,
+        199612369
+      ],
+      "verified_sha256": "41326976f491ece18fb8bcd55001ea287f662741cbe90e51bd5110bde2cb52df",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E31-idle-compaction",
+      "extract_range": [
+        23000000,
+        23003700
+      ],
+      "extract_lines": [
+        572750,
+        572750
+      ],
+      "extract_sha256": "43996821450f1a1fe5b2f89c5204560edccb115b6237c3a25bbba4edcfaf2ee0",
+      "verification": "full_range",
+      "verified_binary_range": [
+        192037672,
+        192041372
+      ],
+      "verified_sha256": "43996821450f1a1fe5b2f89c5204560edccb115b6237c3a25bbba4edcfaf2ee0",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E32-pre-post-hooks",
+      "extract_range": [
+        24920720,
+        24924050
+      ],
+      "extract_lines": [
+        574374,
+        574378
+      ],
+      "extract_sha256": "7d63c4b8b19fd0912b9cacb6802f96313e105858e6a5e04a632b3ad4b8f67b3d",
+      "verification": "prefix_only",
+      "verified_binary_range": [
+        193958974,
+        193959134
+      ],
+      "verified_sha256": "945cf0c7a29ad5d19b403b96bf1855cfc03f359045e9b44d948d1f73959cad51",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E33-transcript-relink",
+      "extract_range": [
+        26584600,
+        26588700
+      ],
+      "extract_lines": [
+        575168,
+        575169
+      ],
+      "extract_sha256": "ad26bb87ce0dd511fc5a1094aac33e0d46228cba301bccb63c9e765a9bbb3fdb",
+      "verification": "full_range",
+      "verified_binary_range": [
+        195623111,
+        195627211
+      ],
+      "verified_sha256": "ad26bb87ce0dd511fc5a1094aac33e0d46228cba301bccb63c9e765a9bbb3fdb",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E34-usage-reset",
+      "extract_range": [
+        24538070,
+        24539400
+      ],
+      "extract_lines": [
+        574332,
+        574332
+      ],
+      "extract_sha256": "f1b69e363ba4cfaa86ac8b60a31f8a1fecbd07625a8f23b77c40298903b03cf9",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193576313,
+        193577643
+      ],
+      "verified_sha256": "f1b69e363ba4cfaa86ac8b60a31f8a1fecbd07625a8f23b77c40298903b03cf9",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E35-server-micro-state",
+      "extract_range": [
+        17998540,
+        18000900
+      ],
+      "extract_lines": [
+        568547,
+        568547
+      ],
+      "extract_sha256": "0dd0442e67690a33c54d0210a702b86650a54062d0c606ba0c2f90b09eea2cf3",
+      "verification": "full_range",
+      "verified_binary_range": [
+        187034958,
+        187037318
+      ],
+      "verified_sha256": "0dd0442e67690a33c54d0210a702b86650a54062d0c606ba0c2f90b09eea2cf3",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E36-fork-contract",
+      "extract_range": [
+        24550180,
+        24554900
+      ],
+      "extract_lines": [
+        574336,
+        574336
+      ],
+      "extract_sha256": "247561f76081306b89e7d9efdf7de8c147f13f67757836b6a6e18243a58c1f88",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193588423,
+        193593143
+      ],
+      "verified_sha256": "247561f76081306b89e7d9efdf7de8c147f13f67757836b6a6e18243a58c1f88",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E37-deeper-pass",
+      "extract_range": [
+        30568100,
+        30569400
+      ],
+      "extract_lines": [
+        579553,
+        579553
+      ],
+      "extract_sha256": "4b5e0767812b4de6245730d7244137c559b74e58996c11a864e700952fe8c667",
+      "verification": "full_range",
+      "verified_binary_range": [
+        199607769,
+        199609069
+      ],
+      "verified_sha256": "4b5e0767812b4de6245730d7244137c559b74e58996c11a864e700952fe8c667",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E38-hook-replacement",
+      "extract_range": [
+        24536550,
+        24538150
+      ],
+      "extract_lines": [
+        574332,
+        574332
+      ],
+      "extract_sha256": "8f8a00ac291479100224de4abf417d604c4f77ec711bbfcd33912cd2dffb1c2c",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193574793,
+        193576393
+      ],
+      "verified_sha256": "8f8a00ac291479100224de4abf417d604c4f77ec711bbfcd33912cd2dffb1c2c",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E39-token-estimator",
+      "extract_range": [
+        22905000,
+        22908050
+      ],
+      "extract_lines": [
+        572741,
+        572741
+      ],
+      "extract_sha256": "2e458bb78b983f2419802e1f262e5a7362154eb9c9b485532f7ad981219d0df1",
+      "verification": "full_range",
+      "verified_binary_range": [
+        191942665,
+        191945715
+      ],
+      "verified_sha256": "2e458bb78b983f2419802e1f262e5a7362154eb9c9b485532f7ad981219d0df1",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E40-micro-apply",
+      "extract_range": [
+        30544800,
+        30545980
+      ],
+      "extract_lines": [
+        579553,
+        579553
+      ],
+      "extract_sha256": "7dcaeb19ddedffff69f0e2c938522de2360d1f9eeff69792a40c732f47bc89cd",
+      "verification": "full_range",
+      "verified_binary_range": [
+        199584469,
+        199585649
+      ],
+      "verified_sha256": "7dcaeb19ddedffff69f0e2c938522de2360d1f9eeff69792a40c732f47bc89cd",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E41-memory-attachments",
+      "extract_range": [
+        25634900,
+        25636250
+      ],
+      "extract_lines": [
+        574740,
+        574740
+      ],
+      "extract_sha256": "599d8e86dd5a908b994bff9037e7354329b7ccf9249c4a4cfc87ccd0785a27b0",
+      "verification": "full_range",
+      "verified_binary_range": [
+        194673240,
+        194674590
+      ],
+      "verified_sha256": "599d8e86dd5a908b994bff9037e7354329b7ccf9249c4a4cfc87ccd0785a27b0",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E42-tool-restore-gates",
+      "extract_range": [
+        25638449,
+        25643200
+      ],
+      "extract_lines": [
+        574740,
+        574740
+      ],
+      "extract_sha256": "0c9096d7396518e443f2cdbae4b6e44de2e2b2e983fb6c041048d40a40cc9ab8",
+      "verification": "full_range",
+      "verified_binary_range": [
+        194676789,
+        194681540
+      ],
+      "verified_sha256": "0c9096d7396518e443f2cdbae4b6e44de2e2b2e983fb6c041048d40a40cc9ab8",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E43-summary-variants",
+      "extract_range": [
+        24502850,
+        24506240
+      ],
+      "extract_lines": [
+        574222,
+        574233
+      ],
+      "extract_sha256": "0aaf7594b4b516bcee484dcd46a7e1daf9b9e7bca76d8a1eb1a7e0ca7906d6ea",
+      "verification": "prefix_only",
+      "verified_binary_range": [
+        193541045,
+        193541205
+      ],
+      "verified_sha256": "7fc6352491b6a172ff573a04b848c1f36089ee6c3cc9dbef9901adbc83d365fa",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E44-precompute-schema-gates",
+      "extract_range": [
+        24607600,
+        24609740
+      ],
+      "extract_lines": [
+        574338,
+        574338
+      ],
+      "extract_sha256": "62f86d73b6891356082064561fa2fa24376a626450d6ca13be8ec5e71b9d589d",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193645844,
+        193647984
+      ],
+      "verified_sha256": "62f86d73b6891356082064561fa2fa24376a626450d6ca13be8ec5e71b9d589d",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E45-provider-hint",
+      "extract_range": [
+        24782000,
+        24783100
+      ],
+      "extract_lines": [
+        574344,
+        574344
+      ],
+      "extract_sha256": "d1b1ddc2429e84e5ae734af50543783ba3090c89be02492703713a9ef378b718",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193820244,
+        193821344
+      ],
+      "verified_sha256": "d1b1ddc2429e84e5ae734af50543783ba3090c89be02492703713a9ef378b718",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E46-usage-arm",
+      "extract_range": [
+        30561530,
+        30562950
+      ],
+      "extract_lines": [
+        579553,
+        579553
+      ],
+      "extract_sha256": "7d13f8f3ed5c7355aa943863973483b07e533aae9fdab7af42001f1ee329cc98",
+      "verification": "full_range",
+      "verified_binary_range": [
+        199601199,
+        199602619
+      ],
+      "verified_sha256": "7d13f8f3ed5c7355aa943863973483b07e533aae9fdab7af42001f1ee329cc98",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E47-controller-apply",
+      "extract_range": [
+        43451330,
+        43453100
+      ],
+      "extract_lines": [
+        594420,
+        594422
+      ],
+      "extract_sha256": "a3c54b5e62242c577ab962a47da74183e4d2113671401c3cb7756d2e2f08ea34",
+      "verification": "full_range",
+      "verified_binary_range": [
+        212495308,
+        212497078
+      ],
+      "verified_sha256": "a3c54b5e62242c577ab962a47da74183e4d2113671401c3cb7756d2e2f08ea34",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E48-discovered-tools",
+      "extract_range": [
+        24147250,
+        24148900
+      ],
+      "extract_lines": [
+        574103,
+        574103
+      ],
+      "extract_sha256": "60fdcd607ffc3672e91b66a78749a3f8e889f519636c75209fb689acc53a8010",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193185418,
+        193187068
+      ],
+      "verified_sha256": "60fdcd607ffc3672e91b66a78749a3f8e889f519636c75209fb689acc53a8010",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E49-persistence-platform",
+      "extract_range": [
+        26509200,
+        26509980
+      ],
+      "extract_lines": [
+        575132,
+        575132
+      ],
+      "extract_sha256": "71a75cc5fd03c3ac3fe5cbe635171d807c936f72260dc4933837fb82bdf60e6e",
+      "verification": "full_range",
+      "verified_binary_range": [
+        195547711,
+        195548491
+      ],
+      "verified_sha256": "71a75cc5fd03c3ac3fe5cbe635171d807c936f72260dc4933837fb82bdf60e6e",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E50-file-restore",
+      "extract_range": [
+        25669087,
+        25672350
+      ],
+      "extract_lines": [
+        574742,
+        574744
+      ],
+      "extract_sha256": "e3d07bb08b243e90f90abde6f1e79053b820627328f9d64d393d5e7b3bca5d32",
+      "verification": "full_range",
+      "verified_binary_range": [
+        194707428,
+        194710691
+      ],
+      "verified_sha256": "e3d07bb08b243e90f90abde6f1e79053b820627328f9d64d393d5e7b3bca5d32",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E51-hook-uuid",
+      "extract_range": [
+        22567000,
+        22568600
+      ],
+      "extract_lines": [
+        572346,
+        572346
+      ],
+      "extract_sha256": "9d6efacc25f3de10958ca5777a8ec8ac6d7baee831aab2ea8669d4df9fb1536c",
+      "verification": "full_range",
+      "verified_binary_range": [
+        191604570,
+        191606170
+      ],
+      "verified_sha256": "9d6efacc25f3de10958ca5777a8ec8ac6d7baee831aab2ea8669d4df9fb1536c",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E52-full-other-entry",
+      "extract_range": [
+        47034400,
+        47037400
+      ],
+      "extract_lines": [
+        596619,
+        596619
+      ],
+      "extract_sha256": "e494f431dfb0f9d1f77925b02c03f82afd97975169107d75bdfdcb0ad9ca9651",
+      "verification": "full_range",
+      "verified_binary_range": [
+        216079020,
+        216082020
+      ],
+      "verified_sha256": "e494f431dfb0f9d1f77925b02c03f82afd97975169107d75bdfdcb0ad9ca9651",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E53-timeout",
+      "extract_range": [
+        16373350,
+        16374750
+      ],
+      "extract_lines": [
+        565434,
+        565444
+      ],
+      "extract_sha256": "77bde19014d86bba0b47700321351f87919ed150095bf526c4f3526c3e6d0d0e",
+      "verification": "prefix_only",
+      "verified_binary_range": [
+        185409234,
+        185409394
+      ],
+      "verified_sha256": "2b5b6c67e86c55e9845388567fe445d3f764ea24dff5b2b662cdbb19ef276f64",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E54-provider-beta",
+      "extract_range": [
+        16847850,
+        16849950
+      ],
+      "extract_lines": [
+        565561,
+        565561
+      ],
+      "extract_sha256": "a9fd614f0775f1b188dc4cfa7c9db42ccf4b4a0a19908535190d7f767c34c049",
+      "verification": "full_range",
+      "verified_binary_range": [
+        185883764,
+        185885864
+      ],
+      "verified_sha256": "a9fd614f0775f1b188dc4cfa7c9db42ccf4b4a0a19908535190d7f767c34c049",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E55-summary-origin",
+      "extract_range": [
+        26338600,
+        26339550
+      ],
+      "extract_lines": [
+        574882,
+        574882
+      ],
+      "extract_sha256": "6dde2ad3af4f22720dc854f0a03ac8ff1a43cc33dd70d3ff094e9c7a7e9061d1",
+      "verification": "full_range",
+      "verified_binary_range": [
+        195376996,
+        195377946
+      ],
+      "verified_sha256": "6dde2ad3af4f22720dc854f0a03ac8ff1a43cc33dd70d3ff094e9c7a7e9061d1",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E56-server-cleared-tokens",
+      "extract_range": [
+        17920636,
+        17921130
+      ],
+      "extract_lines": [
+        568437,
+        568437
+      ],
+      "extract_sha256": "4fe5184ed29fcaef023cf6f35c7d5a3e9b902b9423ed13e681db7f170e4511a2",
+      "verification": "full_range",
+      "verified_binary_range": [
+        186957027,
+        186957521
+      ],
+      "verified_sha256": "4fe5184ed29fcaef023cf6f35c7d5a3e9b902b9423ed13e681db7f170e4511a2",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E57-strip-media",
+      "extract_range": [
+        24564400,
+        24567400
+      ],
+      "extract_lines": [
+        574336,
+        574336
+      ],
+      "extract_sha256": "c70ba504dc98cbe89db549ec6194378d8bead340cfc1e58d2fa973eac61db286",
+      "verification": "full_range",
+      "verified_binary_range": [
+        193602643,
+        193605643
+      ],
+      "verified_sha256": "c70ba504dc98cbe89db549ec6194378d8bead340cfc1e58d2fa973eac61db286",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E58-turn-counter",
+      "extract_range": [
+        30580550,
+        30581070
+      ],
+      "extract_lines": [
+        579553,
+        579553
+      ],
+      "extract_sha256": "98680da6a70e21dceae07209b399ba58f0781da29f0656161eb17ba90928e20c",
+      "verification": "full_range",
+      "verified_binary_range": [
+        199620219,
+        199620739
+      ],
+      "verified_sha256": "98680da6a70e21dceae07209b399ba58f0781da29f0656161eb17ba90928e20c",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E59-version",
+      "extract_range": [
+        13809500,
+        13810000
+      ],
+      "extract_lines": [
+        563978,
+        563981
+      ],
+      "extract_sha256": "61c6ca8c657c4a94686d9bbb36dd8df18288a9b5966e989bc66cad8e7a3749ef",
+      "verification": "prefix_only",
+      "verified_binary_range": [
+        182844966,
+        182845126
+      ],
+      "verified_sha256": "e85583a3a4f3b0eb81ab9e2f90dc80b8bc45c907370b6e1fd503508bfe056076",
+      "original_match_count_capped2": 2
+    },
+    {
+      "id": "E60-toolsearch-gate",
+      "extract_range": [
+        18307500,
+        18308600
+      ],
+      "extract_lines": [
+        568800,
+        568800
+      ],
+      "extract_sha256": "9233c7282f450b550b3c510428d27430f26acb69fda6f1b458fb35e128fef627",
+      "verification": "full_range",
+      "verified_binary_range": [
+        187343985,
+        187345085
+      ],
+      "verified_sha256": "9233c7282f450b550b3c510428d27430f26acb69fda6f1b458fb35e128fef627",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E61-transcript-prune",
+      "extract_range": [
+        26488700,
+        26491200
+      ],
+      "extract_lines": [
+        575131,
+        575131
+      ],
+      "extract_sha256": "5c4aec8f1dfaa436d91a1c8a59c20bcd3219e1d6a50662ff9b80990b65782f33",
+      "verification": "full_range",
+      "verified_binary_range": [
+        195527211,
+        195529711
+      ],
+      "verified_sha256": "5c4aec8f1dfaa436d91a1c8a59c20bcd3219e1d6a50662ff9b80990b65782f33",
+      "original_match_count_capped2": 1
+    },
+    {
+      "id": "E62-kept-tail-announcement",
+      "extract_range": [
+        30430580,
+        30433450
+      ],
+      "extract_lines": [
+        579543,
+        579543
+      ],
+      "extract_sha256": "1848f880239f35996c86f72bf4a76a899a9da37c45b95492508a2dd324f11ada",
+      "verification": "full_range",
+      "verified_binary_range": [
+        199470241,
+        199473111
+      ],
+      "verified_sha256": "1848f880239f35996c86f72bf4a76a899a9da37c45b95492508a2dd324f11ada",
+      "original_match_count_capped2": 1
+    }
+  ],
+  "supplemental_anchors": [
+    {
+      "name": "full_return",
+      "ascii_anchor": "return{boundaryMarker:ln,summaryMessages:Yn,messagesToKeep:[],attachments:Vt",
+      "binary_range": [
+        193613328,
+        193613404
+      ],
+      "sha256": "1db57f2b6014aaf9a6a8f0866b83b5273fe89b3e2405d0070e32b2ca6ad4a08b",
+      "unique": true
+    },
+    {
+      "name": "continuation_wrapper",
+      "ascii_anchor": "function h3(e,n){let r=Qrr(e)",
+      "binary_range": [
+        193550007,
+        193550036
+      ],
+      "sha256": "0e1c01f377e66822b04c0452ca2fe99f2ba97dadb3fc44157ca720eb5a389ad1",
+      "unique": true
+    },
+    {
+      "name": "variant_selection",
+      "ascii_anchor": "var Jrr=[\"control\",\"lean\",\"short\",\"capped\"],Zrr=\"tengu_curried_trinket\"",
+      "binary_range": [
+        193552008,
+        193552079
+      ],
+      "sha256": "64c57582b88ed57c9f1cc9a3e3402c9d0c39af75fc66a12bedd0a3700f163be8",
+      "unique": true
+    }
+  ]
+}

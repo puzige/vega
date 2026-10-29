@@ -68,6 +68,7 @@ pub fn reset_quiescent(
         return Err(PermissionResetError::ConfigurationConflict);
     }
     crate::ordinary_submissions::require_database_settled(store.database_identity(), pause)?;
+    let _precompute = require_precompute_settled(store)?;
     let identity = configuration_identity(config_path)?;
     if identity != intent.source.configuration_id {
         return Err(PermissionResetError::ConfigurationConflict);
@@ -153,6 +154,18 @@ fn resume_record(
     finish_pending(store, config_path, pause, record, &mut edit, replay)
 }
 
+fn require_precompute_settled(
+    store: &Store,
+) -> Result<crate::types::ContextPrecomputePause, PermissionResetError> {
+    let pause = crate::types::ContextPrecomputeRegistry::global()
+        .pause_database(store.database_identity())
+        .map_err(unavailable)?;
+    if !pause.drain().is_finished().map_err(unavailable)? {
+        return Err(PermissionResetError::Busy);
+    }
+    Ok(pause)
+}
+
 fn finish_pending(
     store: &Store,
     config_path: &Path,
@@ -162,6 +175,7 @@ fn finish_pending(
     replay: Option<&ReplaySessionRegistry>,
 ) -> Result<PermissionResetReceipt, PermissionResetError> {
     crate::ordinary_submissions::require_database_settled(store.database_identity(), pause)?;
+    let _precompute = require_precompute_settled(store)?;
     let identity = configuration_identity(config_path)?;
     if identity != record.source.configuration_id {
         return Err(PermissionResetError::ConfigurationConflict);

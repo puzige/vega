@@ -5,6 +5,29 @@ use vega_store::messages as store_messages;
 
 use crate::types::{ConversationError, Plan, PlanReviewAction, PlanReviewOutcome, PlanStatus};
 
+pub(crate) fn context_plan_reader(
+    database_path: std::path::PathBuf,
+    thread_id: String,
+) -> std::sync::Arc<vega_runtime::HistoricalPlanReader> {
+    std::sync::Arc::new(move |message_id| {
+        let store = Store::open_read_only(&database_path).ok()?;
+        store.conn().query_row(
+            "SELECT plan_status, CASE WHEN length(CAST(plan_review_note AS BLOB)) <= 4096 THEN plan_review_note END, \
+             plan_reviewed_at, CASE WHEN length(CAST(content AS BLOB)) <= 20000 THEN content END \
+             FROM messages WHERE id=?1 AND thread_id=?2 AND role='assistant' AND kind='plan' AND status='done' \
+             AND id=(SELECT id FROM messages WHERE thread_id=?2 AND role='assistant' AND kind='plan' AND status='done' ORDER BY seq DESC LIMIT 1) \
+             AND ((plan_status='pending' AND plan_review_note IS NULL AND plan_reviewed_at IS NULL) \
+               OR (plan_status='approved' AND plan_review_note IS NULL AND plan_reviewed_at IS NOT NULL) \
+               OR (plan_status IN ('changes_requested','abandoned') AND plan_reviewed_at IS NOT NULL))",
+            (message_id, &thread_id),
+            |row| Ok(vega_runtime::HistoricalPlan {
+                status: row.get(0)?, review_note: row.get(1)?,
+                reviewed_at: row.get(2)?, content: row.get(3)?,
+            }),
+        ).ok()
+    })
+}
+
 const MAX_REVIEW_NOTE_BYTES: usize = 4 * 1024;
 pub(crate) const APPROVAL_INSTRUCTION: &str =
     "The plan was approved. Execute the approved plan from conversation history.";

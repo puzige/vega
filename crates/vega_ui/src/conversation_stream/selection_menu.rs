@@ -7,7 +7,7 @@ use gpui_kit::{
     prelude::*, px,
 };
 
-type MenuBuilder = dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu;
+pub(super) type MenuBuilder = dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu;
 
 #[derive(Default)]
 struct MenuState {
