@@ -1607,8 +1607,11 @@ impl RunActivityGroup {
 
     fn stage_headline(&self, segment: usize, cx: &App) -> StageHeadline {
         let tools = self.stage_tool_calls(segment, cx);
-        let owns_progress =
-            !self.terminal && !self.presentation_released && !self.process_in_details();
+        let owns_progress = !self.terminal
+            && !self.presentation_released
+            && !self.process_in_details()
+            && segment.checked_add(1) == Some(self.segments.len())
+            && self.phase != RunPhase::Responding;
         let progress = self
             .segments
             .get(segment)
@@ -1644,13 +1647,12 @@ impl RunActivityGroup {
                 summary: None,
             };
         }
-        if let Some(StageProgress::Tool(card)) = progress
-            && let Some((title, icon)) = card.read(cx).description_headline()
-        {
+        if let Some(StageProgress::Tool(card)) = progress {
+            let card = card.read(cx);
             return StageHeadline {
-                title,
-                icon: Some(icon),
-                live,
+                title: card.headline_title(),
+                icon: Some(card.leading_icon()),
+                live: live && card.is_running(),
                 summary: None,
             };
         }
