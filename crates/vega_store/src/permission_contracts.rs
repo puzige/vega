@@ -53,6 +53,32 @@ pub fn load_run_fence(
     ).optional()
 }
 
+pub fn load_delegating_run_fence(
+    conn: &Connection,
+    message_id: &str,
+    thread_id: &str,
+) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "WITH RECURSIVE segments(id,seq,status) AS ( \
+         SELECT id,seq,status FROM messages WHERE id=?1 AND thread_id=?2 AND role='assistant' \
+         UNION ALL \
+         SELECT reply.id,reply.seq,reply.status FROM segments previous \
+         JOIN pending_messages pending ON pending.thread_id=?2 \
+           AND pending.accepted_after_assistant_id=previous.id \
+           AND pending.behavior='steer' AND pending.state='delivered' AND pending.permission_invalidated=0 \
+         JOIN messages input ON input.id=pending.id AND input.thread_id=?2 \
+           AND input.role='user' AND input.status='done' AND input.seq=previous.seq+1 \
+         JOIN messages reply ON reply.thread_id=?2 AND reply.seq=input.seq+1 AND reply.role='assistant' \
+         WHERE previous.status='done' \
+           AND NOT EXISTS(SELECT 1 FROM run_permission_fences independent WHERE independent.message_id=reply.id) \
+         ) SELECT f.permission_fence FROM run_permission_fences f \
+         WHERE f.message_id=?1 AND f.thread_id=?2 \
+           AND EXISTS(SELECT 1 FROM segments WHERE status='streaming')",
+        params![message_id, thread_id],
+        |row| row.get(0),
+    ).optional()
+}
+
 pub fn load_interrupted_run_fence(
     conn: &Connection,
     message_id: &str,
