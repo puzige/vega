@@ -1013,6 +1013,7 @@ fn start_codex_tool(
         activity.status = ToolCallStatus::Running;
         let _ = sender.send(AgentUpdate::Event(ConversationEvent::ToolCallRunning {
             call_id: activity.call_id.clone(),
+            bash_started_at: None,
         }));
     }
 }

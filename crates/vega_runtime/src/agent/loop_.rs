@@ -3426,13 +3426,22 @@ where
                             pattern: target.exact_pattern,
                         });
                     }
-                    emit!(
-                        events,
-                        sink,
-                        RuntimeEvent::ToolCallRunning {
-                            call_id: call.id.clone(),
-                        }
-                    );
+                    let (bash_clock, bash_started_at) =
+                        if matches!(&prepared, PreparedRuntimeCall::Bash { .. }) {
+                            let (clock, writer) = BashStartClock::new();
+                            (Some(clock), Some(writer))
+                        } else {
+                            (None, None)
+                        };
+                    sink(RuntimeEvent::ToolCallRunning {
+                        call_id: call.id.clone(),
+                        bash_started_at: bash_clock,
+                    })
+                    .await?;
+                    events.push(RuntimeEvent::ToolCallRunning {
+                        call_id: call.id.clone(),
+                        bash_started_at: None,
+                    });
                     if cancel.is_cancelled() {
                         (
                             terminal_result(
@@ -3591,8 +3600,14 @@ where
                                 (executed.result, false)
                             }
                             other => {
-                                execute_prepared_waiting(other, tools, permission_hook, &cancel)
-                                    .await
+                                execute_prepared_waiting(
+                                    other,
+                                    tools,
+                                    permission_hook,
+                                    &cancel,
+                                    bash_started_at,
+                                )
+                                .await
                             }
                         };
                         if result.status == RuntimeToolStatus::Cancelled

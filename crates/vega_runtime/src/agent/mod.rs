@@ -3,7 +3,7 @@ use std::fmt;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -634,6 +634,25 @@ struct RuntimeSkillConfig {
     authority_probe: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
+#[derive(Clone)]
+pub struct BashStartClock(Arc<OnceLock<std::time::Instant>>);
+
+impl BashStartClock {
+    fn new() -> (Self, Arc<OnceLock<std::time::Instant>>) {
+        let started_at = Arc::new(OnceLock::new());
+        (Self(started_at.clone()), started_at)
+    }
+
+    pub fn started_at(&self) -> Option<std::time::Instant> {
+        self.0.get().copied()
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn from_test_start(started_at: Arc<OnceLock<std::time::Instant>>) -> Self {
+        Self(started_at)
+    }
+}
+
 /// Cancellable permission boundary implemented by conversation/UI.
 pub trait RuntimePermissionHook: Send + Sync {
     /// Requests one content-free decision.
@@ -650,6 +669,7 @@ pub trait RuntimePermissionHook: Send + Sync {
         _prepared: vega_tools::PreparedBash,
         _policy: vega_tools::BashLaunchPolicy,
         _cancel: CancellationToken,
+        _started_at: Option<Arc<std::sync::OnceLock<std::time::Instant>>>,
     ) -> BoxFuture<'a, Result<vega_tools::BashOutput, vega_tools::BashError>> {
         async {
             Err(vega_tools::BashError::new(
@@ -1176,6 +1196,8 @@ pub enum RuntimeEvent {
     ToolCallRunning {
         /// Provider call id.
         call_id: String,
+        #[allow(missing_docs)]
+        bash_started_at: Option<BashStartClock>,
     },
     /// Complete display chunk from a tool.
     ToolCallOutput {
@@ -1338,7 +1360,7 @@ impl fmt::Debug for RuntimeEvent {
                 .field("call_id_bytes", &call_id.len())
                 .field("has_remember_rule", &remember_rule.is_some())
                 .finish(),
-            Self::ToolCallRunning { call_id } => formatter
+            Self::ToolCallRunning { call_id, .. } => formatter
                 .debug_struct("ToolCallRunning")
                 .field("call_id_bytes", &call_id.len())
                 .finish(),

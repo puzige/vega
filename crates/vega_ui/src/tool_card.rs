@@ -1,14 +1,14 @@
 //! Audited tool-call activities over strict `vega_conversation` projections.
 
 use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use gpui_kit::prelude::*;
 #[cfg(test)]
 use gpui_kit::test::TestSupportExt;
 use gpui_kit::{AnyElement, App, Entity, MouseButton, MouseUpEvent, ScrollHandle, Task, div, px};
 use vega_conversation::types::{
-    Approval, CodexAcpActivityIdentity, CodexArgumentPreview, CodexDisplayMetadata,
+    Approval, BashStartClock, CodexAcpActivityIdentity, CodexArgumentPreview, CodexDisplayMetadata,
     InvalidToolKind, ReadOnlyToolKind, SkillCardOutcome, SubagentOpenRequested, SubagentSnapshot,
     SubagentState, ToolCall, ToolCallStatus, ToolCardInputProjection, ToolCardResultProjection,
     ToolResult, tool_card_description, tool_card_input_projection, tool_card_result_projection,
@@ -149,7 +149,7 @@ pub struct ToolCard {
     output_rows: Vec<String>,
     expanded: bool,
     detail_scroll: ScrollHandle,
-    running_started_at: Option<Instant>,
+    running_started_at: Option<BashStartClock>,
     running_elapsed_seconds: Option<u64>,
     elapsed_refresh_task: Option<Task<()>>,
     presentation_released: bool,
@@ -340,7 +340,11 @@ impl ToolCard {
     /// Applies the content-free runtime execution boundary. Only Bash owns a
     /// live elapsed clock; other tools still advance to the truthful Running
     /// lifecycle state without adding time copy.
-    pub fn apply_running(&mut self, cx: &mut gpui_kit::Context<Self>) -> bool {
+    pub fn apply_running(
+        &mut self,
+        started_at: Option<BashStartClock>,
+        cx: &mut gpui_kit::Context<Self>,
+    ) -> bool {
         if self.result.is_some()
             || self.approval.is_none()
             || !matches!(
@@ -353,37 +357,53 @@ impl ToolCard {
             return false;
         }
         self.status = ToolCallStatus::Running;
-        if !self.presentation_released && self.is_bash() && self.running_started_at.is_none() {
-            let started_at = cx.background_executor().now();
-            self.running_started_at = Some(started_at);
-            self.running_elapsed_seconds = Some(0);
+        if !self.presentation_released
+            && self.is_bash()
+            && self.running_started_at.is_none()
+            && let Some(started_at) = started_at
+        {
+            self.running_started_at = Some(started_at.clone());
+            if let Some(started) = started_at.started_at() {
+                self.running_elapsed_seconds = Some(
+                    cx.background_executor()
+                        .now()
+                        .saturating_duration_since(started)
+                        .as_secs(),
+                );
+            }
             let task = cx.spawn(async move |this, cx| {
                 loop {
-                    let elapsed = cx
-                        .background_executor()
-                        .now()
-                        .saturating_duration_since(started_at);
-                    let next_boundary = Duration::from_secs(elapsed.as_secs().saturating_add(1));
-                    cx.background_executor()
-                        .timer(next_boundary.saturating_sub(elapsed))
-                        .await;
+                    let delay =
+                        started_at
+                            .started_at()
+                            .map_or(Duration::from_millis(250), |started| {
+                                let elapsed = cx
+                                    .background_executor()
+                                    .now()
+                                    .saturating_duration_since(started);
+                                Duration::from_secs(elapsed.as_secs().saturating_add(1))
+                                    .saturating_sub(elapsed)
+                            });
+                    cx.background_executor().timer(delay).await;
                     let keep_refreshing = this
                         .update(cx, |card, cx| {
-                            let Some(started_at) = card.running_started_at else {
-                                return false;
-                            };
-                            if card.status != ToolCallStatus::Running || !card.is_bash() {
+                            if card.status != ToolCallStatus::Running
+                                || !card.is_bash()
+                                || card.running_started_at.is_none()
+                            {
                                 return false;
                             }
-                            let elapsed = cx
-                                .background_executor()
-                                .now()
-                                .saturating_duration_since(started_at)
-                                .as_secs();
-                            if card.running_elapsed_seconds != Some(elapsed) {
-                                card.running_elapsed_seconds = Some(elapsed);
-                                card.refresh_summary();
-                                cx.notify();
+                            if let Some(started) = started_at.started_at() {
+                                let elapsed = cx
+                                    .background_executor()
+                                    .now()
+                                    .saturating_duration_since(started)
+                                    .as_secs();
+                                if card.running_elapsed_seconds != Some(elapsed) {
+                                    card.running_elapsed_seconds = Some(elapsed);
+                                    card.refresh_summary();
+                                    cx.notify();
+                                }
                             }
                             true
                         })
@@ -658,6 +678,9 @@ impl ToolCard {
                 )
             )
         {
+            return self.headline_title();
+        }
+        if self.status == ToolCallStatus::Running && self.running_elapsed_seconds.is_none() {
             return self.headline_title();
         }
         let (label_key, duration_key) = match self.activity_state() {
@@ -1342,6 +1365,18 @@ impl ToolCard {
     }
 
     fn build_bash_summary(&self) -> String {
+        if self.status == ToolCallStatus::Running && self.running_elapsed_seconds.is_none() {
+            let Some(ToolCardInputProjection::Bash { command }) = &self.input else {
+                return vega_i18n::t("ui.shell").into();
+            };
+            return vega_i18n::t_args(
+                "ui.command_action",
+                &[
+                    ("action", vega_i18n::t("ui.shell")),
+                    ("command", &compact_object(command)),
+                ],
+            );
+        }
         let action = match self.activity_state() {
             ToolActivityState::Superseded => vega_i18n::t("ui.not_run_after_takeover"),
             ToolActivityState::Success => vega_i18n::t("ui.ran"),
@@ -1367,7 +1402,7 @@ impl ToolCard {
 
     pub(crate) fn release_presentation(&mut self) {
         self.presentation_released = true;
-        self.elapsed_refresh_task = None;
+        self.stop_live_elapsed();
     }
 
     fn stop_live_elapsed(&mut self) {
@@ -1401,6 +1436,11 @@ impl ToolCard {
             }
             ToolActivityState::Active if self.status == ToolCallStatus::Approved => {
                 vega_i18n::t("ui.ready_to_run")
+            }
+            ToolActivityState::Active
+                if self.is_bash() && self.running_elapsed_seconds.is_none() =>
+            {
+                vega_i18n::t("ui.pending")
             }
             ToolActivityState::Active => vega_i18n::t("ui.running"),
             ToolActivityState::Rejected => vega_i18n::t("ui.rejected"),

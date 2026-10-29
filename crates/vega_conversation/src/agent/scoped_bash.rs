@@ -18,6 +18,7 @@ impl ScopedBashAuthority {
         prepared: PreparedBash,
         policy: BashLaunchPolicy,
         cancel: CancellationToken,
+        started_at: Option<Arc<std::sync::OnceLock<std::time::Instant>>>,
     ) -> Result<BashOutput, BashError> {
         let path = self.database_path.clone();
         let fence = self.fence.clone();
@@ -87,7 +88,7 @@ impl ScopedBashAuthority {
             return Err(scope_mismatch());
         }
         tools
-            .execute_bash_scoped(prepared, policy, Some(scope), cancel)
+            .execute_bash_scoped_with_start(prepared, policy, Some(scope), cancel, started_at)
             .await
     }
 }

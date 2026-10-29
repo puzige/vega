@@ -1749,12 +1749,15 @@ impl ConversationStream {
                 }
                 self.install_pending_permission(cx);
             }
-            ConversationEvent::ToolCallRunning { call_id } => {
+            ConversationEvent::ToolCallRunning {
+                call_id,
+                bash_started_at,
+            } => {
                 if let Some(card) = self.tool_cards.get(&call_id) {
                     let card = card.clone();
                     let started = card.update(cx, |card, cx| {
                         let was_running = card.is_running();
-                        card.apply_running(cx);
+                        card.apply_running(bash_started_at, cx);
                         !was_running && card.is_running()
                     });
                     if started && let Some((_, group)) = &self.active_run_activity {
