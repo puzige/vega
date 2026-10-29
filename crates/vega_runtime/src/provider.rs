@@ -624,9 +624,16 @@ pub struct ChatMessage {
     context_skill_runs: Vec<String>,
     context_skills: Vec<String>,
     context_plan: Option<Box<ContextPlan>>,
+    context_tasks: Option<Box<ContextTasks>>,
     tool_context: Option<Box<crate::tool_context::ToolContext>>,
     model_projection: bool,
     replay_cold: bool,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ContextTasks {
+    sources: Vec<String>,
+    restored: Vec<String>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -753,6 +760,7 @@ impl PartialEq for ChatMessage {
             && self.context_skill_runs == other.context_skill_runs
             && self.context_skills == other.context_skills
             && self.context_plan == other.context_plan
+            && self.context_tasks == other.context_tasks
             && self.tool_context == other.tool_context
             && self.replay_cold == other.replay_cold
     }
@@ -844,6 +852,28 @@ impl ChatMessage {
         }
 
         let mut size = std::mem::size_of::<Self>()
+            .saturating_add(self.context_tasks.as_ref().map_or(0, |tasks| {
+                std::mem::size_of::<ContextTasks>()
+                    .saturating_add(
+                        tasks
+                            .sources
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<String>()),
+                    )
+                    .saturating_add(
+                        tasks
+                            .restored
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<String>()),
+                    )
+                    .saturating_add(
+                        tasks
+                            .sources
+                            .iter()
+                            .chain(&tasks.restored)
+                            .fold(0usize, |total, item| total.saturating_add(item.capacity())),
+                    )
+            }))
             .saturating_add(self.context_plan.as_ref().map_or(0, |plan| {
                 std::mem::size_of::<ContextPlan>()
                     .saturating_add(plan.source.capacity())
@@ -1094,8 +1124,42 @@ impl ChatMessage {
         }
         message.context_skills.clear();
         message.restore_context_plan(None);
+        message.clear_context_tasks();
         message.tool_context = None;
         message
+    }
+
+    pub fn attach_context_task_sources(&mut self, sources: Vec<String>) {
+        if self.role == ChatRole::User && !sources.is_empty() {
+            self.context_tasks = Some(Box::new(ContextTasks {
+                sources: sources.into_iter().take(16).collect(),
+                restored: Vec::new(),
+            }));
+        }
+    }
+
+    pub(crate) fn context_task_sources(&self) -> &[String] {
+        self.context_tasks
+            .as_ref()
+            .map_or(&[], |tasks| tasks.sources.as_slice())
+    }
+
+    pub(crate) fn clear_context_tasks(&mut self) {
+        if let Some(tasks) = &mut self.context_tasks {
+            tasks.restored.clear();
+        }
+    }
+
+    pub(crate) fn restore_context_task(&mut self, observation: String) {
+        if let Some(tasks) = &mut self.context_tasks {
+            tasks.restored.push(observation);
+        }
+    }
+
+    pub(crate) fn trim_context_task(&mut self) -> bool {
+        self.context_tasks
+            .as_mut()
+            .is_some_and(|tasks| tasks.restored.pop().is_some())
     }
 
     pub fn attach_context_plan_source(&mut self, source: String) {
@@ -1161,6 +1225,7 @@ impl ChatMessage {
     }
 
     pub(crate) fn reset_context_files(&mut self) {
+        self.clear_context_tasks();
         self.restore_context_plan(None);
         self.context_skills.clear();
         for file in &mut self.context_files {
@@ -1310,6 +1375,7 @@ impl ChatMessage {
             context_skill_runs: Vec::new(),
             context_skills: Vec::new(),
             context_plan: None,
+            context_tasks: None,
             tool_context: None,
             model_projection: false,
             replay_cold: false,
@@ -1337,6 +1403,7 @@ impl ChatMessage {
             context_skill_runs: Vec::new(),
             context_skills: Vec::new(),
             context_plan: None,
+            context_tasks: None,
             tool_context: None,
             model_projection: false,
             replay_cold: false,
@@ -1368,6 +1435,7 @@ impl ChatMessage {
             context_skill_runs: Vec::new(),
             context_skills: Vec::new(),
             context_plan: None,
+            context_tasks: None,
             tool_context: None,
             model_projection: false,
             replay_cold: false,
@@ -1440,6 +1508,7 @@ impl ChatMessage {
             context_skill_runs: Vec::new(),
             context_skills: Vec::new(),
             context_plan: None,
+            context_tasks: None,
             tool_context: None,
             model_projection: false,
             replay_cold: false,
@@ -1524,6 +1593,12 @@ pub fn project_model_messages(messages: &[ChatMessage]) -> Result<Vec<ChatMessag
         cold_projected.extend(messages.iter().cloned());
     }
     for message in &mut cold_projected {
+        if let Some(tasks) = message.context_tasks.take() {
+            for observation in tasks.restored {
+                message.content.push('\n');
+                message.content.push_str(&observation);
+            }
+        }
         if let Some(observation) = message.context_plan.take().and_then(|plan| plan.restored) {
             message.content.push('\n');
             message.content.push_str(&observation);

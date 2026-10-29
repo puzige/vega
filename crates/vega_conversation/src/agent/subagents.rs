@@ -24,6 +24,33 @@ fn failure(message: &str) -> VegaError {
     }
 }
 
+pub(super) fn context_task_reader(
+    database: PathBuf,
+    parent: String,
+) -> Arc<vega_runtime::HistoricalTaskReader> {
+    Arc::new(move |call_id| {
+        let store = Store::open_read_only(&database).ok()?;
+        store.conn().query_row(
+            "SELECT e.child_thread_id,e.child_message_id,e.state,COALESCE(r.release_state,'unknown') \
+             FROM delegated_executions e \
+             JOIN tool_calls c ON c.id=e.request_call_id AND c.thread_id=e.parent_thread_id AND c.message_id=e.parent_message_id \
+             JOIN messages m ON m.id=e.parent_message_id AND m.thread_id=e.parent_thread_id AND m.role='assistant' \
+             JOIN messages child ON child.id=e.child_message_id AND child.thread_id=e.child_thread_id AND child.role='assistant' \
+             LEFT JOIN delegated_execution_recovery r ON r.child_thread_id=e.child_thread_id AND r.child_message_id=e.child_message_id \
+             WHERE e.parent_thread_id=?1 AND e.request_call_id=?2 AND c.status='success' \
+             AND c.tool IN ('spawn_agent','followup_agent','resume_agent') \
+             AND length(e.child_thread_id) BETWEEN 1 AND 128 AND length(e.child_message_id) BETWEEN 1 AND 128 \
+             AND e.state IN ('running','cancelling','completed','failed','interrupted') \
+             AND COALESCE(r.release_state,'unknown') IN ('held','released','recovered_abandoned','quarantined','unknown')",
+            (&parent, call_id),
+            |row| Ok(vega_runtime::HistoricalTask {
+                agent_id: row.get(0)?, message_id: row.get(1)?,
+                state: row.get(2)?, release_state: row.get(3)?,
+            }),
+        ).ok()
+    })
+}
+
 type ExecutionKey = (String, String);
 type AdmissionReply = oneshot::Sender<Result<serde_json::Value, VegaError>>;
 

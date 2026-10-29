@@ -192,7 +192,15 @@ lint 修复版本 `d7c18c442c9488b488aa9937e57d6d8907576dec`（tree `902b5ff2a32
 
 首版 `636e09ea87f217496716d10e9cde87e15e0f6438`（tree `fd9611dd39da5073ed73a90fb6a451df9c6e4636`）的 Actions [40831022418](https://github.com/puzige/vega/actions/runs/40831022418)：Nextest `123305020016` success，原始输出 164 发现／164 执行通过／0 跳过、13.142s，四项计划回归实际 PASS；Clippy `123305019797` 与 required `123306121707` failure。两个新增 Option<String> 扩大 ChatMessage，导致 RuntimeEvent::SteeringAccepted 变体至少 616 bytes、次大变体 400 bytes，触发 large_enum_variant。修正将计划来源与正文合并至 Option<Box<ContextPlan>>，完整计入驻留内存，保持原附件行为与断言；不豁免 lint 或改 CI。首版独立增量静态审查 Clear，体积修正后仍须新 head 验证及增量复核。
 
-该增量不代替未取回 agent task／阶段交接、后台 shell、动态工具、原始详情读取或 idle/cache 的后续评估与实现。
+计划存储修正及普通主线整合版本 `137ff4d105e8475c81d3f50e586525dcdc7fd096`（tree `983f21ac76522d0b301e9a542d5a81965da0ac0b`）的 Actions [40832413257](https://github.com/puzige/vega/actions/runs/40832413257) 全部成功：Nextest `123309411018` 原始输出 164 发现／164 执行通过／0 跳过、19.763s；Clippy `123309411302`、required `123311202748` success。存储修正增量独立静态审查 Clear；不是整卡交付。
+
+#### 委派执行状态恢复（2026-10-29）
+
+共享解释器只从本次 covered 中成功的 spawn_agent／followup_agent／resume_agent 持久化调用取得来源，排除 Source 中保留的调用，最近优先、去重、最多 16 个；不解析摘要或旧回执制造 agent ID。即时安装与重载保留相同来源。每轮最终冷／暖选择及压缩后预算检查前，按来源调用 ID 和父线程重新查询对应精确委派执行；不能换成该子 agent 的其他执行。
+
+附件只提供持久化执行身份、来源调用、状态与独立 release_state，不含任务正文、结果、checkpoint 内容或旧权限。它不是活跃 worker 探测或完成证明：running 不表示进程仍活着，completed 不表示已释放；不标记结果已取回，不替代 wait_agent／原执行核实，不自动恢复、取消或重放。查询只读、有界且连接不跨 await；缺失、删除、线程不符或非法状态不发送旧附件。每轮清旧正文，暖缓存不得复用旧状态。每项序列化最多 2048 bytes，合计最多 32768 bytes，所有字段经当前凭据过滤且不可用 fail closed；进入真实 wire 估算，可在预算不足时移除。开发回归须核对真实存储绑定／状态变化／删除、生成安装重载、实际暖命中出站、过滤与预算；本地不执行。
+
+此增量不代替完整阶段 handoff／结果取回、后台 shell、动态工具、原始详情读取或 idle/cache 的后续评估与实现。
 
 #### 脱离前台的生成与逐阶段结算（2026-10-28）
 

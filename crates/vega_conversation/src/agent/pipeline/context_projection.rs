@@ -71,6 +71,7 @@ pub(crate) fn interpret_projection_with_live(
                 summary_message
                     .attach_context_file_references(context_file_references(source, plan)?);
                 summary_message.attach_context_skill_runs(context_skill_runs(source, plan)?);
+                summary_message.attach_context_task_sources(context_task_sources(source, plan)?);
                 if let Some(id) = context_plan_source(source, plan)? {
                     summary_message.attach_context_plan_source(id);
                 }
@@ -91,6 +92,44 @@ pub(crate) fn interpret_projection_with_live(
         }
     }
     Ok(messages)
+}
+
+fn context_task_sources(
+    source: &vega_store::context_compaction::ContextSource,
+    plan: &ProjectionPlan,
+) -> Result<Vec<String>, ConversationError> {
+    let mut covered = std::collections::HashSet::new();
+    for range in &plan.covered {
+        let selected = range
+            .project(source)
+            .map_err(|_| ConversationError::CorruptRow("invalid task source range".into()))?;
+        covered.extend(selected.tool_calls.into_iter().map(|call| call.id));
+    }
+    for fragment in &plan.fragments {
+        if let ProjectionFragment::Source { range } = fragment {
+            let selected = range
+                .project(source)
+                .map_err(|_| ConversationError::CorruptRow("invalid retained task range".into()))?;
+            for call in selected.tool_calls {
+                covered.remove(&call.id);
+            }
+        }
+    }
+    Ok(source
+        .tool_calls
+        .iter()
+        .rev()
+        .filter(|call| {
+            covered.contains(&call.id)
+                && call.status == "success"
+                && matches!(
+                    call.tool.as_str(),
+                    "spawn_agent" | "followup_agent" | "resume_agent"
+                )
+        })
+        .take(16)
+        .map(|call| call.id.clone())
+        .collect())
 }
 
 fn context_plan_source(

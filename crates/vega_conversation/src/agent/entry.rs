@@ -821,6 +821,10 @@ where
         .with_computer_use(actor_config.computer_use.clone())
         .with_stage(actor_config.stage_hook.clone())
         .with_delegated_compaction(actor_config.delegated)
+        .with_context_task_reader(super::subagents::context_task_reader(
+            database_path.clone(),
+            thread_id.to_string(),
+        ))
         .with_context_plan_reader(crate::plans::context_plan_reader(
             database_path.clone(),
             thread_id.to_string(),

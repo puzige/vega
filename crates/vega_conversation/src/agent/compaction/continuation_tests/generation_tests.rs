@@ -3,6 +3,7 @@ use super::*;
 mod fork_tests;
 mod plan_restore_tests;
 mod skill_restore_tests;
+mod task_restore_tests;
 use reactive_tests::{ScriptedSummaryProvider, SummaryReply};
 use vega_store::context_compaction::{ContextSource, latest_checkpoint, load_source};
 
