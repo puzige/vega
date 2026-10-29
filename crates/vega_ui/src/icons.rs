@@ -74,6 +74,7 @@ pub enum Icon {
     Hand,
     Shield,
     TextSelect,
+    Code,
 }
 
 /// Lucide's pin path is kept inline because gpui-kit 0.6.0 does not ship a
@@ -121,6 +122,8 @@ const SHIELD_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0
 /// ship a Git branch asset. It follows the shared 24px viewBox, stroke-2,
 /// round-cap/round-join convention used by the other inline functional icons.
 const GIT_BRANCH_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="7" x2="6" y2="17"/><circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><path d="M18 7v3a9 9 0 0 1-9 9H8"/></svg>"#;
+
+const CODE_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 6-6 6 6 6m8-12 6 6-6 6m-3-15-2 18"/></svg>"#;
 
 const TEXT_SELECT_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3a2 2 0 0 0-2 2"/><path d="M19 3a2 2 0 0 1 2 2"/><path d="M21 19a2 2 0 0 1-2 2"/><path d="M5 21a2 2 0 0 1-2-2"/><path d="M9 3h1"/><path d="M9 21h1"/><path d="M14 3h1"/><path d="M14 21h1"/><path d="M3 9v1"/><path d="M21 9v1"/><path d="M3 14v1"/><path d="M21 14v1"/><line x1="7" x2="15" y1="8" y2="8"/><line x1="7" x2="17" y1="12" y2="12"/><line x1="7" x2="13" y1="16" y2="16"/></svg>"#;
 
@@ -179,7 +182,8 @@ fn icon_name(kind: Icon) -> IconName {
         | Icon::Keyboard
         | Icon::Hand
         | Icon::Shield
-        | Icon::TextSelect => {
+        | Icon::TextSelect
+        | Icon::Code => {
             unreachable!("inline SVG icons are handled before mapping")
         }
         Icon::Queue | Icon::Steer | Icon::Trash | Icon::Goal | Icon::Pause | Icon::Play => {
@@ -213,6 +217,7 @@ pub fn icon(kind: Icon, color: Rgba) -> AnyElement {
 pub(crate) fn sized_icon(kind: Icon, color: Rgba, size: f32) -> AnyElement {
     let glyph = match kind {
         Icon::Copy => inline_icon(COPY_SVG, color, size),
+        Icon::Code => inline_icon(CODE_SVG, color, size),
         Icon::Chart => inline_icon(CHART_SVG, color, size),
         Icon::Plug => inline_icon(PLUG_SVG, color, size),
         Icon::Wifi => inline_icon(WIFI_SVG, color, size),

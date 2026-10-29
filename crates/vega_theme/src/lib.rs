@@ -96,6 +96,13 @@ pub struct ThemeColors {
     pub warning: Rgba,
     /// Code block background.
     pub code_bg: Rgba,
+    pub syntax_keyword: Rgba,
+    pub syntax_function: Rgba,
+    pub syntax_type: Rgba,
+    pub syntax_string: Rgba,
+    pub syntax_number: Rgba,
+    pub syntax_property: Rgba,
+    pub syntax_comment: Rgba,
     /// Sidebar custom group colors: gray, red, orange, yellow, green, blue, purple.
     pub sidebar_group_colors: [Rgba; 7],
 }
@@ -136,6 +143,13 @@ pub const LIGHT: ThemeColors = ThemeColors {
     danger: rgba(0xCF222EFF),
     warning: rgba(0x9A6700FF),
     code_bg: rgba(0xF6F6F6FF),
+    syntax_keyword: rgba(0xA6266AFF),
+    syntax_function: rgba(0x6F42C1FF),
+    syntax_type: rgba(0x0969A2FF),
+    syntax_string: rgba(0x187437FF),
+    syntax_number: rgba(0x9C4F00FF),
+    syntax_property: rgba(0x8A4B08FF),
+    syntax_comment: rgba(0x62676DFF),
     sidebar_group_colors: [
         rgba(0x8A8A8AFF),
         rgba(0xCF222EFF),
@@ -183,6 +197,13 @@ pub const DARK: ThemeColors = ThemeColors {
     danger: rgba(0xF85149FF),
     warning: rgba(0xD29922FF),
     code_bg: rgba(0x262626FF),
+    syntax_keyword: rgba(0xF08CB6FF),
+    syntax_function: rgba(0xC8A5F8FF),
+    syntax_type: rgba(0x82B9F4FF),
+    syntax_string: rgba(0x8ACD88FF),
+    syntax_number: rgba(0xF2B77CFF),
+    syntax_property: rgba(0xE5C07BFF),
+    syntax_comment: rgba(0xA0A7B0FF),
     sidebar_group_colors: [
         rgba(0xABABABFF),
         rgba(0xF85149FF),
