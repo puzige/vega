@@ -4,6 +4,7 @@ use super::*;
 pub(super) struct CompletionAttention {
     window: Option<AnyWindowHandle>,
     visible_thread: Option<String>,
+    pub(super) pending_tail_thread: Option<String>,
     activation_subscription: Option<Subscription>,
     question_subscriptions:
         std::collections::HashMap<EntityId, (WeakEntity<ConversationStream>, Subscription)>,
@@ -248,7 +249,14 @@ impl VegaWindow {
             vega_conversation::navigation::NavigationService::new(database).resolve(route);
         match resolved {
             Ok(Some(thread)) => {
+                let thread_id = thread.id.clone();
                 if self.accept_palette_thread(thread, cx) {
+                    self.update_message_location_route(Some(&thread_id));
+                    self.message_location_request_generation =
+                        self.message_location_request_generation.saturating_add(1);
+                    self.deferred_message_location = None;
+                    self.completion_attention.pending_tail_thread = Some(thread_id);
+                    cx.notify();
                     cx.activate(true);
                     window.activate_window();
                     crate::app_notifications::dismiss(tag, cx);

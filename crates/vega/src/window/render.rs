@@ -238,6 +238,8 @@ impl Render for VegaWindow {
 
             let thread = self.resolve_route_thread(cx);
             self.update_message_location_route(Some(&thread.id));
+            let notification_tail = self.completion_attention.pending_tail_thread.as_deref()
+                == Some(thread.id.as_str());
             let draft_route = self.is_draft_route(&thread.id);
             {
                 {
@@ -398,7 +400,9 @@ impl Render for VegaWindow {
                                 if !draft_route {
                                     self.load_pending_queue(view.clone(), thread.id.clone(), cx);
                                 }
-                                if let Some(anchor) = self.thread_scroll_states.get(&thread.id) {
+                                if !notification_tail
+                                    && let Some(anchor) = self.thread_scroll_states.get(&thread.id)
+                                {
                                     view.update(cx, |stream, cx| {
                                         if !stream.restore_scroll_anchor(&anchor)
                                             && let Some(message_id) = anchor.message_id.as_deref()
@@ -417,6 +421,10 @@ impl Render for VegaWindow {
                                 view
                             }
                         };
+                        if notification_tail {
+                            self.completion_attention.pending_tail_thread = None;
+                            stream.update(cx, ConversationStream::resume_tail);
+                        }
                         stream.update(cx, ConversationStream::refresh_ordinary_submissions);
                         self.sync_context_route(&stream, cx);
                         // Settings close invalidates the catalog even when this

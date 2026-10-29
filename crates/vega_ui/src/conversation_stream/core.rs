@@ -915,10 +915,7 @@ impl ConversationStream {
         self.list.is_following_tail()
     }
 
-    /// Re-engages the native list tail-follow mode after the user has scrolled
-    /// away from the live bottom. The list owns the scroll anchor and keeps the
-    /// next layout pinned to the newest entry.
-    pub(crate) fn resume_tail(&mut self, cx: &mut Context<Self>) {
+    pub fn resume_tail(&mut self, cx: &mut Context<Self>) {
         self.list.set_follow_mode(gpui_kit::FollowMode::Tail);
         cx.notify();
     }

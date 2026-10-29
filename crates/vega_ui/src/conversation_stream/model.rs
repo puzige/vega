@@ -108,39 +108,20 @@ pub(crate) struct TokenStyle {
 }
 
 pub(crate) fn code_token_style(kind: HighlightKind, colors: &ThemeColors) -> TokenStyle {
-    match kind {
-        HighlightKind::Keyword | HighlightKind::Type => TokenStyle {
-            color: colors.text_primary,
-            weight: FontWeight::BOLD,
-            italic: false,
+    TokenStyle {
+        color: match kind {
+            HighlightKind::Keyword | HighlightKind::Operator => colors.syntax_keyword,
+            HighlightKind::Function => colors.syntax_function,
+            HighlightKind::Type => colors.syntax_type,
+            HighlightKind::String => colors.syntax_string,
+            HighlightKind::Number | HighlightKind::Constant => colors.syntax_number,
+            HighlightKind::Property | HighlightKind::Attribute => colors.syntax_property,
+            HighlightKind::Escape => colors.syntax_keyword,
+            HighlightKind::Comment => colors.syntax_comment,
+            HighlightKind::Punctuation | HighlightKind::Variable => colors.text_primary,
         },
-        HighlightKind::String => TokenStyle {
-            color: colors.success,
-            weight: FontWeight::NORMAL,
-            italic: false,
-        },
-        HighlightKind::Comment => TokenStyle {
-            color: colors.text_tertiary,
-            weight: FontWeight::NORMAL,
-            italic: true,
-        },
-        HighlightKind::Number => TokenStyle {
-            color: colors.warning,
-            weight: FontWeight::NORMAL,
-            italic: false,
-        },
-        HighlightKind::Function
-        | HighlightKind::Operator
-        | HighlightKind::Punctuation
-        | HighlightKind::Variable
-        | HighlightKind::Property
-        | HighlightKind::Constant
-        | HighlightKind::Escape
-        | HighlightKind::Attribute => TokenStyle {
-            color: colors.text_primary,
-            weight: FontWeight::NORMAL,
-            italic: false,
-        },
+        weight: FontWeight::NORMAL,
+        italic: kind == HighlightKind::Comment,
     }
 }
 

@@ -62,11 +62,21 @@ const CAPTURE_KINDS: &[(&str, HighlightKind)] = &[
     ("property", HighlightKind::Property),
     ("escape", HighlightKind::Escape),
     ("attribute", HighlightKind::Attribute),
+    ("string.special.key", HighlightKind::Property),
+    ("tag", HighlightKind::Type),
+    ("tag.error", HighlightKind::Type),
+    ("boolean", HighlightKind::Constant),
+    ("conditional", HighlightKind::Keyword),
+    ("field", HighlightKind::Property),
+    ("float", HighlightKind::Number),
+    ("function.call", HighlightKind::Function),
+    ("keyword.operator", HighlightKind::Operator),
+    ("parameter", HighlightKind::Variable),
+    ("storageclass", HighlightKind::Keyword),
+    ("type.qualifier", HighlightKind::Type),
+    ("label", HighlightKind::Variable),
 ];
 
-/// Supported grammars（四语言方案，架构师 2026-08-29 裁决：rust / typescript /
-/// javascript / python；typescript crate 附带 tsx 语言，同 crate 零额外依赖。
-/// markdown grammar 因硬依赖 tree-sitter ^0.19 被砍掉，未来走 fork/vendor 另议）.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Grammar {
     Rust,
@@ -74,6 +84,12 @@ enum Grammar {
     Tsx,
     JavaScript,
     Python,
+    Json,
+    Bash,
+    Html,
+    Css,
+    Sql,
+    Yaml,
 }
 
 impl Grammar {
@@ -85,6 +101,12 @@ impl Grammar {
             "tsx" => Some(Self::Tsx),
             "javascript" | "js" => Some(Self::JavaScript),
             "python" | "py" => Some(Self::Python),
+            "json" => Some(Self::Json),
+            "bash" | "sh" | "shell" => Some(Self::Bash),
+            "html" => Some(Self::Html),
+            "css" => Some(Self::Css),
+            "sql" => Some(Self::Sql),
+            "yaml" | "yml" => Some(Self::Yaml),
             _ => None,
         }
     }
@@ -97,6 +119,12 @@ impl Grammar {
             Self::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
             Self::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
             Self::Python => tree_sitter_python::LANGUAGE.into(),
+            Self::Json => tree_sitter_json::LANGUAGE.into(),
+            Self::Bash => tree_sitter_bash::LANGUAGE.into(),
+            Self::Html => tree_sitter_html::LANGUAGE.into(),
+            Self::Css => tree_sitter_css::LANGUAGE.into(),
+            Self::Sql => tree_sitter_sequel::LANGUAGE.into(),
+            Self::Yaml => tree_sitter_yaml::LANGUAGE.into(),
         }
     }
 
@@ -106,7 +134,10 @@ impl Grammar {
     /// precedence over the generic JavaScript ones.
     fn highlights_query(self) -> String {
         match self {
-            Self::Rust => tree_sitter_rust::HIGHLIGHTS_QUERY.to_string(),
+            Self::Rust => format!(
+                "[\"=\" \"+\" \"-\" \"/\" \"%\" \"==\" \"!=\" \"<=\" \">=\" \"&&\" \"||\" \"^\" \"|\" \"!\"] @operator\n{}",
+                tree_sitter_rust::HIGHLIGHTS_QUERY
+            ),
             Self::TypeScript | Self::Tsx => format!(
                 "{}\n{}",
                 tree_sitter_javascript::HIGHLIGHT_QUERY,
@@ -114,6 +145,18 @@ impl Grammar {
             ),
             Self::JavaScript => tree_sitter_javascript::HIGHLIGHT_QUERY.to_string(),
             Self::Python => tree_sitter_python::HIGHLIGHTS_QUERY.to_string(),
+            Self::Json => format!(
+                "{}\n(pair key: (string) @property)",
+                tree_sitter_json::HIGHLIGHTS_QUERY
+            ),
+            Self::Bash => tree_sitter_bash::HIGHLIGHT_QUERY.to_string(),
+            Self::Html => tree_sitter_html::HIGHLIGHTS_QUERY.to_string(),
+            Self::Css => tree_sitter_css::HIGHLIGHTS_QUERY.to_string(),
+            Self::Yaml => tree_sitter_yaml::HIGHLIGHTS_QUERY.to_string(),
+            Self::Sql => format!(
+                "{}\n((literal) @number (#match? @number \"^[-+]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][-+]?[0-9]+)?$\"))",
+                tree_sitter_sequel::HIGHLIGHTS_QUERY
+            ),
         }
     }
 }
@@ -236,6 +279,25 @@ thread_local! {
     /// (ABI/query error) so per-block retries are not attempted.
     static CONTEXTS: RefCell<HashMap<Grammar, Option<GrammarContext>>> =
         RefCell::new(HashMap::new());
+}
+
+pub fn language_display_name(language: Option<&str>) -> &str {
+    let tag = language.unwrap_or_default();
+    match tag.to_ascii_lowercase().as_str() {
+        "" | "text" | "plaintext" => "Text",
+        "rust" | "rs" => "Rust",
+        "javascript" | "js" => "JavaScript",
+        "typescript" | "ts" => "TypeScript",
+        "tsx" => "TSX",
+        "python" | "py" => "Python",
+        "json" => "JSON",
+        "bash" | "sh" | "shell" => "Bash",
+        "html" => "HTML",
+        "css" => "CSS",
+        "sql" => "SQL",
+        "yaml" | "yml" => "YAML",
+        _ => tag,
+    }
 }
 
 pub fn highlight(code: &str, language: &str) -> Option<Vec<HighlightSpan>> {

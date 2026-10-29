@@ -1013,10 +1013,22 @@ fn code_header(
             div()
                 .min_w_0()
                 .flex_1()
-                .overflow_hidden()
-                .text_size(px(Typography::METADATA))
-                .text_color(colors.text_secondary)
-                .children(code.language.clone()),
+                .flex()
+                .items_center()
+                .gap(px(Layout::COPY_ACTION_GAP * 2.))
+                .child(icon(Icon::Code, colors.text_primary))
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(Typography::CONVERSATION))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(colors.text_primary)
+                        .child(
+                            vega_markdown::language_display_name(code.language.as_deref())
+                                .to_owned(),
+                        ),
+                ),
         )
         .when(actions_enabled, |header| {
             header.child(CopyReceiptButton::new(

@@ -10,9 +10,14 @@ vega_i18n.workspace = true
 mdstream = { workspace = true, features = ["pulldown"] }
 pulldown-cmark = { workspace = true }
 thiserror = { workspace = true }
-# 同 crate 提供；tree-sitter-language 为 grammar 侧传递依赖）
 tree-sitter = { workspace = true }
 tree-sitter-rust = { workspace = true }
 tree-sitter-typescript = { workspace = true }
 tree-sitter-javascript = { workspace = true }
 tree-sitter-python = { workspace = true }
+tree-sitter-json = { workspace = true }
+tree-sitter-bash = { workspace = true }
+tree-sitter-html = { workspace = true }
+tree-sitter-css = { workspace = true }
+tree-sitter-sequel = { workspace = true }
+tree-sitter-yaml = { workspace = true }
