@@ -476,6 +476,30 @@ impl RunActivityGroup {
         cx.notify();
     }
 
+    pub(crate) fn tool_event(&mut self, card: &Entity<ToolCard>, cx: &mut Context<Self>) {
+        if self.terminal || self.presentation_released {
+            return;
+        }
+        if let Some(segment) = self.segments.iter_mut().find(|segment| {
+            segment.children.iter().any(|child| match child {
+                RunActivityChild::Tool(owned) => owned == card,
+                RunActivityChild::ToolGroup(group) => group.read(cx).contains(card),
+                _ => false,
+            })
+        }) {
+            segment.latest_progress = Some(StageProgress::Tool(card.clone()));
+            for child in &segment.children {
+                if let RunActivityChild::ToolGroup(group) = child {
+                    group.update(cx, |group, cx| group.tool_event(card, cx));
+                }
+            }
+            for (_, group) in &segment.compact_tool_groups {
+                group.update(cx, |group, cx| group.tool_event(card, cx));
+            }
+            cx.notify();
+        }
+    }
+
     pub(crate) fn tool_started(&mut self, card: &Entity<ToolCard>, cx: &mut Context<Self>) {
         if self.terminal
             || self.presentation_released
@@ -516,7 +540,6 @@ impl RunActivityGroup {
         self.tool_starts.clear();
         self.finish_thinking(cx);
         for segment in &mut self.segments {
-            segment.latest_progress = None;
             segment
                 .children
                 .retain(|child| !matches!(child, RunActivityChild::Compaction { .. }));
@@ -847,6 +870,17 @@ impl RunActivityGroup {
     }
 
     fn stage_tool_title(&self, segment: usize, cx: &App) -> Option<(String, crate::icons::Icon)> {
+        let state = self.segments.get(segment)?;
+        let latest = match state.latest_progress.as_ref() {
+            Some(StageProgress::Tool(card)) => Some(card.clone()),
+            Some(StageProgress::Thinking { .. }) => None,
+            None => self.stage_tool_calls(segment, cx).last().cloned(),
+        };
+        if let Some(card) = latest
+            && let Some(headline) = card.read(cx).description_headline()
+        {
+            return Some(headline);
+        }
         let categories = self.stage_tool_categories(segment, cx);
         let icon = categories.first()?.icon();
         Some((format_stage_tool_categories(&categories), icon))
@@ -1592,6 +1626,30 @@ impl RunActivityGroup {
                 )
                 .to_owned(),
                 icon: Some(crate::icons::Icon::TextSelect),
+                live,
+                summary: None,
+            };
+        }
+        if let Some(StageProgress::Thinking { card, .. }) = progress {
+            let thinking = owns_progress && !card.read(cx).progress_finished;
+            return StageHeadline {
+                title: vega_i18n::t(if thinking {
+                    "ui.thinking"
+                } else {
+                    "ui.thought"
+                })
+                .into(),
+                icon: None,
+                live: live && thinking,
+                summary: None,
+            };
+        }
+        if let Some(StageProgress::Tool(card)) = progress
+            && let Some((title, icon)) = card.read(cx).description_headline()
+        {
+            return StageHeadline {
+                title,
+                icon: Some(icon),
                 live,
                 summary: None,
             };
