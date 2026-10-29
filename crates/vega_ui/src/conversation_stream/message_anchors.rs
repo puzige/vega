@@ -829,10 +829,7 @@ pub(super) fn estimate_compaction_activity_height(label: &str, width: f32) -> f3
 }
 
 pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
-    let list_layout = render_rows::AssistantListLayout::new(model, |marker| {
-        display_width(marker) as f32 * Typography::ASSISTANT_BODY * 0.56
-    });
-    let line_height = Typography::ASSISTANT_BODY * Typography::ASSISTANT_LINE_HEIGHT;
+    let line_height = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
     let lines = model
         .committed_lines
         .iter()
@@ -846,7 +843,12 @@ pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
             if previous.is_some_and(|previous| line.continues_code_block(previous)) {
                 return 0.;
             }
-            render_rows::assistant_block_gap(previous, line)
+            render_rows::markdown_block_gap(
+                previous,
+                line,
+                line.in_list,
+                previous.is_some_and(|line| line.in_list),
+            )
         })
         .sum::<f32>();
     let code_headers = lines
@@ -854,57 +856,42 @@ pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
         .enumerate()
         .filter(|(index, line)| {
             line.kind == LineKind::Code
+                && line.code_block.is_some()
                 && index
                     .checked_sub(1)
                     .is_none_or(|previous| !line.continues_code_block(lines[previous]))
         })
-        .map(|(_, line)| {
-            2.0 * Layout::MARKDOWN_CODE_PADDING
-                + 2.0
-                + if line.code_block.is_some() {
-                    Layout::COPY_ACTION_SIZE + Layout::COPY_ACTION_GAP
-                } else {
-                    0.0
-                }
-        })
-        .sum::<f32>();
+        .count() as f32
+        * (Layout::COPY_ACTION_SIZE
+            + Layout::COPY_ACTION_GAP
+            + 2.0 * Layout::MARKDOWN_CODE_PADDING);
     let content_height = model
         .committed_lines
         .iter()
         .chain(&model.pending_lines)
         .map(|line| {
             if line.kind == LineKind::Code {
-                return Typography::ASSISTANT_CODE * Typography::CODE_LINE_HEIGHT;
+                return Typography::CODE * Typography::CODE_LINE_HEIGHT;
             }
             if let Some(table) = &line.table {
                 let inset = if line.kind != LineKind::ListItem {
-                    list_layout.content_inset(line)
+                    line.list_content_inset()
                 } else {
                     0.0
                 };
                 let widths = table.column_widths(
-                    width
-                        - inset
-                        - line.quotes.len() as f32
-                            * (Layout::ASSISTANT_QUOTE_WIDTH + Layout::ASSISTANT_QUOTE_GAP),
+                    width - inset - line.quotes.len() as f32 * (2. + Layout::MARKDOWN_CODE_PADDING),
                 );
                 return table
                     .rows
                     .iter()
-                    .enumerate()
-                    .map(|(row_index, row)| {
+                    .map(|row| {
                         let rows = row
                             .iter()
                             .zip(&widths)
-                            .enumerate()
-                            .map(|(column, (spans, width))| {
-                                let capacity = ((width
-                                    - render_rows::assistant_table_right_padding(
-                                        row_index,
-                                        column,
-                                        table.alignments.len(),
-                                    ))
-                                    / (Typography::ASSISTANT_TABLE * 0.56))
+                            .map(|(spans, width)| {
+                                let capacity = ((width - 2.0 * Layout::MARKDOWN_TABLE_PADDING_X)
+                                    / (Typography::CONVERSATION * 0.56))
                                     .max(1.0)
                                     as usize;
                                 let text: String =
@@ -915,67 +902,25 @@ pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
                             })
                             .max()
                             .unwrap_or(1);
-                        rows as f32
-                            * Typography::ASSISTANT_TABLE
-                            * Typography::ASSISTANT_LINE_HEIGHT
-                            + render_rows::assistant_table_vertical_padding(
-                                row_index,
-                                table.rows.len(),
-                            )
-                            .0
-                            + render_rows::assistant_table_vertical_padding(
-                                row_index,
-                                table.rows.len(),
-                            )
-                            .1
-                            + if row_index == 0 || row_index + 1 < table.rows.len() {
-                                1.0
-                            } else {
-                                0.0
-                            }
+                        rows as f32 * line_height + 2.0 * Layout::MARKDOWN_TABLE_PADDING_Y + 1.0
                     })
                     .sum();
             }
-            let (font_size, row_height) = match line.kind {
-                LineKind::Heading(level) => render_rows::assistant_heading_metrics(level),
-                _ => (Typography::ASSISTANT_BODY, line_height),
-            };
             let chars = line
                 .spans
                 .iter()
                 .map(|span| display_width(&span.text))
                 .sum::<usize>();
-            let quote_inset = line.quotes.len() as f32
-                * (Layout::ASSISTANT_QUOTE_WIDTH + Layout::ASSISTANT_QUOTE_GAP);
-            let list_inset = list_layout.content_inset(line);
+            let quote_inset = line.quotes.len() as f32 * (2. + Layout::MARKDOWN_CODE_PADDING);
+            let list_inset = line.list_content_inset();
             let minimum_capacity = if line.quotes.is_empty() { 12. } else { 1. };
-            let chars_per_line = ((width - quote_inset - list_inset) / (font_size * 0.56))
+            let chars_per_line = ((width - quote_inset - list_inset)
+                / (Typography::CONVERSATION * 0.56))
                 .max(minimum_capacity) as usize;
-            let height = chars.div_ceil(chars_per_line).max(1) as f32 * row_height;
-            if line.starts_list_item() {
-                height.max(render_rows::assistant_list_marker_height())
-            } else {
-                height
-            }
+            chars.div_ceil(chars_per_line).max(1) as f32 * line_height
         })
         .sum::<f32>();
-    let quote_padding = lines
-        .iter()
-        .enumerate()
-        .map(|(index, line)| {
-            let previous = index.checked_sub(1).map(|index| lines[index]);
-            let shared = previous.map_or(0, |previous| {
-                previous
-                    .quotes
-                    .iter()
-                    .zip(&line.quotes)
-                    .take_while(|(a, b)| a == b)
-                    .count()
-            });
-            (line.quotes.len() - shared) as f32 * 2. * Layout::ASSISTANT_QUOTE_PADDING
-        })
-        .sum::<f32>();
-    content_height + gaps + code_headers + quote_padding
+    content_height + gaps + code_headers
 }
 
 pub(super) fn estimate_user_height(

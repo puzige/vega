@@ -4,7 +4,7 @@ use super::copy_receipt::{CopyReceiptButton, CopySource};
 use super::links::link_ranges;
 use super::selection::SelectionDocumentBuilder;
 use super::*;
-use crate::icons::{Icon, icon, sized_icon};
+use crate::icons::{Icon, icon};
 use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
 
 pub(crate) fn user_message_lines(block_id: u64, text: &str) -> Vec<StreamLine> {
@@ -425,7 +425,6 @@ fn markdown_message_item(
             code_owner,
             None,
             true,
-            None,
             |line, index| {
                 let id = format!("{id_prefix}-markdown-{message_id}-line-{index}");
                 let marker =
@@ -659,34 +658,16 @@ pub(crate) fn selectable_markdown_content(
 ) -> AnyElement {
     let selection_color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
     let mut document =
-        SelectionDocumentBuilder::new(copy.clone(), interaction.focus.clone(), selection_color)
-            .with_punctuation_rules();
+        SelectionDocumentBuilder::new(copy.clone(), interaction.focus.clone(), selection_color);
     let body = div().w_full().min_w_0().flex_shrink_0().flex().flex_col();
     let mut previous: Option<(u64, LineKind, Option<Arc<StreamCodeBlock>>)> = None;
     let selection = document.code_drag_selection(window, cx);
-    let mut marker_style = window.text_style();
-    marker_style.font_weight = FontWeight::SEMIBOLD;
-    let layout = AssistantListLayout::new(model, |marker| {
-        f32::from(
-            window
-                .text_system()
-                .shape_line(
-                    marker.to_owned().into(),
-                    px(Typography::ASSISTANT_BODY),
-                    &[marker_style.to_run(marker.len())],
-                    None,
-                )
-                .width(),
-        )
-        .ceil()
-    });
     let blocks = markdown_blocks(
         model,
         colors,
         Some(copy.id),
         Some(selection),
         interaction.actions_enabled,
-        Some(&layout),
         |line, index| {
             if !matches!(line.kind, LineKind::Rule)
                 && let Some((previous_block, previous_kind, previous_code)) = &previous
@@ -703,7 +684,7 @@ pub(crate) fn selectable_markdown_content(
                 document.append_literal(if same_multiline_block { "\n" } else { "\n\n" });
             }
             let marker = independent_list_marker(line).map(|marker| {
-                render_line_selectable(&marker, colors, &mut document, index, copy.id, &layout)
+                render_line_selectable(&marker, colors, &mut document, index, copy.id)
             });
             let content = list_item_content(line);
             let element = render_line_selectable(
@@ -712,7 +693,6 @@ pub(crate) fn selectable_markdown_content(
                 &mut document,
                 index,
                 copy.id,
-                &layout,
             );
             if !matches!(line.kind, LineKind::Rule) {
                 previous = Some((line.block_id, line.kind, line.code_block.clone()));
@@ -760,10 +740,8 @@ fn markdown_blocks(
     code_owner: Option<u64>,
     selection: Option<CodeDragSelection>,
     actions_enabled: bool,
-    list_layout: Option<&AssistantListLayout>,
     mut render: impl FnMut(&StreamLine, usize) -> (Option<AnyElement>, AnyElement),
 ) -> Vec<AnyElement> {
-    let assistant = list_layout.is_some();
     let lines: Vec<_> = model
         .committed_lines
         .iter()
@@ -779,11 +757,7 @@ fn markdown_blocks(
         let block_id = line.block_id;
         let in_list = line.in_list;
         let previous_in_list = previous.is_some_and(|line| line.in_list);
-        let gap = if assistant {
-            assistant_block_gap(previous, line)
-        } else {
-            markdown_block_gap(previous, line, in_list, previous_in_list)
-        };
+        let gap = markdown_block_gap(previous, line, in_list, previous_in_list);
         let (marker, element) = render(line, index);
         let mut content = vec![element];
         index += 1;
@@ -796,11 +770,9 @@ fn markdown_blocks(
         let body = div().w_full().min_w_0().flex_shrink_0().when(
             in_list && line.kind != LineKind::ListItem && marker.is_none(),
             |body| {
-                let inset = list_layout.map_or_else(
-                    || line.list_content_inset() - line.quote_list_inset(),
-                    |layout| layout.content_inset(line) - layout.quote_inset(line.quotes.last()),
-                );
-                body.pl(px(inset.max(0.)))
+                body.pl(px(
+                    (line.list_content_inset() - line.quote_list_inset()).max(0.)
+                ))
             },
         );
         let body = if line.kind == LineKind::Code {
@@ -814,19 +786,8 @@ fn markdown_blocks(
                     .w_full()
                     .min_w_0()
                     .bg(colors.code_bg)
-                    .rounded(px(if assistant {
-                        Layout::ASSISTANT_CODE_RADIUS
-                    } else {
-                        Layout::TOOL_DETAIL_RADIUS
-                    }))
-                    .when(assistant, |body| {
-                        body.border_1().border_color(colors.border_subtle)
-                    })
-                    .px(px(if assistant {
-                        Layout::ASSISTANT_CODE_PADDING_X
-                    } else {
-                        Layout::MARKDOWN_CODE_PADDING
-                    }))
+                    .rounded(px(Layout::TOOL_DETAIL_RADIUS))
+                    .px(px(Layout::MARKDOWN_CODE_PADDING))
                     .pt(px(Layout::MARKDOWN_CODE_PADDING))
                     .flex()
                     .flex_col()
@@ -879,13 +840,7 @@ fn markdown_blocks(
             body.into_any_element(),
         ));
     }
-    quote_blocks(
-        &mut blocks.into_iter().peekable(),
-        0,
-        None,
-        colors,
-        list_layout,
-    )
+    quote_blocks(&mut blocks.into_iter().peekable(), 0, None, colors)
 }
 
 type MarkdownBlock = (
@@ -900,9 +855,7 @@ fn quote_blocks(
     depth: usize,
     owner: Option<model::QuoteOwner>,
     colors: &ThemeColors,
-    list_layout: Option<&AssistantListLayout>,
 ) -> Vec<AnyElement> {
-    let assistant = list_layout.is_some();
     let mut result = Vec::new();
     while let Some((ancestry, gap, _, _)) = blocks.peek() {
         if depth > 0 && ancestry.get(depth - 1).copied() != owner {
@@ -921,16 +874,10 @@ fn quote_blocks(
                     None
                 }
             });
-            let list_inset = list_layout
-                .map_or_else(
-                    || identity.list_inset() - owner.map_or(0., |owner| owner.list_inset()),
-                    |layout| {
-                        layout.quote_inset(Some(&identity)) - layout.quote_inset(owner.as_ref())
-                    },
-                )
-                .max(0.);
+            let list_inset =
+                (identity.list_inset() - owner.map_or(0., |owner| owner.list_inset())).max(0.);
             let marker_inset = if marker.is_some() { list_inset } else { 0. };
-            let children = quote_blocks(blocks, depth + 1, Some(identity), colors, list_layout);
+            let children = quote_blocks(blocks, depth + 1, Some(identity), colors);
             result.push(
                 div()
                     .w_full()
@@ -938,9 +885,6 @@ fn quote_blocks(
                     .flex_shrink_0()
                     .mt(px(gap))
                     .pl(px((list_inset - marker_inset).max(0.)))
-                    .when(assistant, |item| {
-                        item.py(px(Layout::ASSISTANT_QUOTE_PADDING))
-                    })
                     .flex()
                     .children(
                         marker
@@ -948,20 +892,9 @@ fn quote_blocks(
                     )
                     .child(
                         div()
-                            .w(px(if assistant {
-                                Layout::ASSISTANT_QUOTE_WIDTH
-                            } else {
-                                2.
-                            }))
-                            .mr(px(if assistant {
-                                Layout::ASSISTANT_QUOTE_GAP
-                            } else {
-                                Layout::MARKDOWN_CODE_PADDING
-                            }))
+                            .w(px(2.))
+                            .mr(px(Layout::MARKDOWN_CODE_PADDING))
                             .flex_shrink_0()
-                            .when(assistant, |bar| {
-                                bar.rounded(px(Layout::ASSISTANT_QUOTE_WIDTH / 2.))
-                            })
                             .bg(colors.border_subtle),
                     )
                     .child(
@@ -1048,120 +981,6 @@ fn code_header(
         .into_any_element()
 }
 
-pub(super) struct AssistantListLayout {
-    widths: std::collections::HashMap<(u64, usize), f32>,
-    quotes: std::collections::HashMap<(u64, usize), f32>,
-}
-
-impl AssistantListLayout {
-    pub(super) fn new(model: &StreamModel, mut measure: impl FnMut(&str) -> f32) -> Self {
-        let mut layout = Self {
-            widths: std::collections::HashMap::new(),
-            quotes: std::collections::HashMap::new(),
-        };
-        for line in model.committed_lines.iter().chain(&model.pending_lines) {
-            if line.starts_list_item()
-                && let Some(owner) = line.lists.iter().find(|owner| owner.depth == line.depth)
-            {
-                let width = if line.checked.is_some() || line.marker == "•" {
-                    Layout::ASSISTANT_LIST_INDENT
-                } else {
-                    (measure(&line.marker) + Layout::ASSISTANT_LIST_MARKER_GAP)
-                        .max(Layout::ASSISTANT_LIST_INDENT)
-                };
-                let current = layout.widths.entry(owner.identity).or_insert(width);
-                *current = current.max(width);
-            }
-        }
-        for line in model.committed_lines.iter().chain(&model.pending_lines) {
-            for quote in &line.quotes {
-                let inset = quote
-                    .list_depth
-                    .map_or(0., |depth| layout.inset(line, depth + 1));
-                layout.quotes.entry(quote.identity).or_insert(inset);
-            }
-        }
-        layout
-    }
-
-    fn inset(&self, line: &StreamLine, levels: usize) -> f32 {
-        levels as f32 * Layout::ASSISTANT_LIST_INDENT
-            + line
-                .lists
-                .iter()
-                .filter(|owner| owner.depth < levels)
-                .map(|owner| {
-                    self.widths
-                        .get(&owner.identity)
-                        .copied()
-                        .unwrap_or(Layout::ASSISTANT_LIST_INDENT)
-                        - Layout::ASSISTANT_LIST_INDENT
-                })
-                .sum::<f32>()
-    }
-
-    pub(super) fn content_inset(&self, line: &StreamLine) -> f32 {
-        if line.in_list {
-            let depth = line.lists.last().map_or(line.depth, |owner| owner.depth);
-            self.inset(line, depth + 1)
-        } else {
-            0.
-        }
-    }
-
-    fn quote_inset(&self, quote: Option<&model::QuoteOwner>) -> f32 {
-        quote
-            .and_then(|quote| self.quotes.get(&quote.identity))
-            .copied()
-            .unwrap_or_default()
-    }
-
-    fn marker_width(&self, line: &StreamLine) -> f32 {
-        self.inset(line, line.depth + 1) - self.inset(line, line.depth)
-    }
-
-    fn marker_inset(&self, line: &StreamLine) -> f32 {
-        let parent = match line.list_marker_quote_depth() {
-            Some(depth) => depth
-                .checked_sub(1)
-                .and_then(|depth| line.quotes.get(depth)),
-            None => line.quotes.last(),
-        };
-        (self.inset(line, line.depth) - self.quote_inset(parent)).max(0.)
-    }
-}
-
-pub(crate) fn assistant_block_gap(previous: Option<&StreamLine>, current: &StreamLine) -> f32 {
-    let Some(previous) = previous else {
-        return 0.;
-    };
-    if previous.block_id == current.block_id
-        && previous.quotes == current.quotes
-        && previous.in_list
-        && current.in_list
-        && current.kind == LineKind::ListItem
-    {
-        return 0.;
-    }
-    let after = match previous.kind {
-        LineKind::Heading(1) => Layout::ASSISTANT_H1_AFTER,
-        LineKind::Heading(2 | 3) => Layout::ASSISTANT_HEADING_AFTER,
-        LineKind::Code => Layout::ASSISTANT_CODE_GAP,
-        LineKind::Table | LineKind::Rule => Layout::ASSISTANT_BLOCK_GAP,
-        _ => Layout::ASSISTANT_HEADING_AFTER,
-    };
-    let before = match current.kind {
-        LineKind::Heading(_) | LineKind::Table | LineKind::Rule => Layout::ASSISTANT_BLOCK_GAP,
-        LineKind::Code => Layout::ASSISTANT_CODE_GAP,
-        LineKind::Paragraph if matches!(previous.kind, LineKind::Heading(_)) => 0.,
-        LineKind::Paragraph if previous.kind == LineKind::Paragraph || current.in_list => {
-            Layout::ASSISTANT_BLOCK_GAP
-        }
-        _ => Layout::ASSISTANT_H1_AFTER,
-    };
-    after.max(before)
-}
-
 pub(crate) fn markdown_block_gap(
     previous: Option<&StreamLine>,
     current: &StreamLine,
@@ -1238,7 +1057,6 @@ fn render_line_selectable(
     document: &mut SelectionDocumentBuilder,
     line_index: usize,
     message_id: u64,
-    layout: &AssistantListLayout,
 ) -> AnyElement {
     let id_prefix = format!("assistant-{message_id}-line-{line_index}");
     if let Some(table) = &line.table {
@@ -1252,8 +1070,8 @@ fn render_line_selectable(
             |item| item.w_full(),
         )
         .flex_shrink_0()
-        .text_size(px(Typography::ASSISTANT_BODY))
-        .line_height(gpui_kit::relative(Typography::ASSISTANT_LINE_HEIGHT))
+        .text_size(px(Typography::CONVERSATION))
+        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
         .text_color(colors.text_primary);
     match line.kind {
         LineKind::Spacer => item.py(px(6.0)).into_any_element(),
@@ -1275,24 +1093,20 @@ fn render_line_selectable(
                 .into_any_element()
         }
         LineKind::Code => {
-            let style = TextStyle {
-                font_size: AbsoluteLength::Pixels(px(Typography::ASSISTANT_CODE)),
-                ..code_run_style(colors.text_primary)
-            };
-            let selected = document.append_code_runs(
+            let selected = document.append_styled_runs(
                 &text,
-                block_text_runs(&line.spans, style, colors),
+                block_text_runs(&line.spans, code_run_style(colors.text_primary), colors),
                 link_ranges(&line.spans),
                 &format!("{id_prefix}-code"),
             );
             let code = div()
-                .text_size(px(Typography::ASSISTANT_CODE))
+                .text_size(px(Typography::CODE))
                 .line_height(gpui_kit::relative(Typography::CODE_LINE_HEIGHT))
                 .whitespace_nowrap()
                 .text_color(colors.text_primary)
                 .child(selected);
             let code = if text.is_empty() {
-                code.h(px(Typography::ASSISTANT_CODE * Typography::CODE_LINE_HEIGHT))
+                code.h(px(Typography::CODE * Typography::CODE_LINE_HEIGHT))
             } else {
                 code
             };
@@ -1303,54 +1117,67 @@ fn render_line_selectable(
             .child(div().w_full().h(px(1.0)).bg(colors.border_subtle))
             .into_any_element(),
         LineKind::Heading(level) => {
-            let (size, height) = assistant_heading_metrics(level);
+            let (size, weight) = heading_style(level);
             let selected = document.append_styled_runs(
                 &text,
-                block_text_runs(
-                    &line.spans,
-                    assistant_heading_run_style(level, colors),
-                    colors,
-                ),
+                block_text_runs(&line.spans, heading_run_style(level, colors), colors),
                 link_ranges(&line.spans),
                 &format!("{id_prefix}-heading"),
             );
             item.text_size(px(size))
-                .line_height(gpui_kit::relative(height / size))
-                .font_weight(Typography::HEADING_PAGE_WEIGHT)
+                .font_weight(weight)
                 .child(selected)
                 .into_any_element()
         }
         LineKind::Table => item.into_any_element(),
         LineKind::ListItem => {
-            let mut marker_text = format!("{}{} ", "  ".repeat(line.depth), line.marker);
-            if let Some(checked) = line.checked {
-                marker_text.push_str(if checked { "[x] " } else { "[ ] " });
-            }
-            let marker = document.append_marker(
-                &marker_text,
-                assistant_list_marker(line, colors),
+            let marker = format!("{} ", line.marker);
+            document.append_literal(&"  ".repeat(line.depth));
+            let mut row = div().pl(px(line.list_marker_inset())).flex().flex_row();
+            let marker_text = document.append_styled(
+                &marker,
+                StyledText::new(marker.clone()),
                 &format!("{id_prefix}-list-marker"),
             );
-            let mut row = div()
-                .pl(px(layout.marker_inset(line)))
-                .flex()
-                .flex_row()
-                .child(
-                    div()
-                        .w(px(layout.marker_width(line)))
-                        .pr(px(Layout::ASSISTANT_LIST_MARKER_GAP))
-                        .flex_shrink_0()
-                        .flex()
-                        .justify_end()
-                        .child(marker),
+            row = row.child(
+                div()
+                    .flex_shrink_0()
+                    .w(px(Layout::MARKDOWN_LIST_INDENT))
+                    .text_color(if line.marker == "•" {
+                        colors.text_primary
+                    } else {
+                        colors.text_secondary
+                    })
+                    .font_weight(if line.marker == "•" {
+                        FontWeight::BOLD
+                    } else {
+                        FontWeight::NORMAL
+                    })
+                    .child(marker_text),
+            );
+            if let Some(checked) = line.checked {
+                let checkbox = if checked { "[x]" } else { "[ ]" };
+                let checkbox_text = document.append_styled(
+                    checkbox,
+                    StyledText::new(checkbox),
+                    &format!("{id_prefix}-list-checkbox"),
                 );
+                row = row.child(
+                    div()
+                        .flex_shrink_0()
+                        .mr_1()
+                        .text_color(if checked {
+                            colors.success
+                        } else {
+                            colors.text_tertiary
+                        })
+                        .child(checkbox_text),
+                );
+                document.append_literal(" ");
+            }
             let content = document.append_styled_runs(
                 &text,
-                block_text_runs(
-                    &line.spans,
-                    assistant_run_style(colors.text_primary),
-                    colors,
-                ),
+                block_text_runs(&line.spans, message_run_style(colors.text_primary), colors),
                 link_ranges(&line.spans),
                 &format!("{id_prefix}-list-content"),
             );
@@ -1360,66 +1187,13 @@ fn render_line_selectable(
         LineKind::Paragraph => {
             let selected = document.append_styled_runs(
                 &text,
-                block_text_runs(
-                    &line.spans,
-                    assistant_run_style(colors.text_primary),
-                    colors,
-                ),
+                block_text_runs(&line.spans, message_run_style(colors.text_primary), colors),
                 link_ranges(&line.spans),
                 &format!("{id_prefix}-paragraph"),
             );
             item.child(selected).into_any_element()
         }
     }
-}
-
-pub(super) fn assistant_list_marker_height() -> f32 {
-    Typography::ASSISTANT_BODY * Typography::ASSISTANT_LINE_HEIGHT
-}
-
-fn assistant_list_marker(line: &StreamLine, colors: &ThemeColors) -> AnyElement {
-    let body = div()
-        .h(px(assistant_list_marker_height()))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .text_color(colors.text_primary)
-        .font_weight(FontWeight::SEMIBOLD)
-        .whitespace_nowrap();
-    if let Some(checked) = line.checked {
-        return body
-            .child(
-                div()
-                    .size(px(Layout::ASSISTANT_LIST_TASK_SIZE))
-                    .rounded(px(Layout::ASSISTANT_LIST_TASK_RADIUS))
-                    .border_1()
-                    .border_color(colors.text_secondary)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .when(checked, |checkbox| {
-                        checkbox.bg(colors.text_primary).child(sized_icon(
-                            Icon::Check,
-                            colors.bg_base,
-                            Layout::ASSISTANT_LIST_TASK_SIZE,
-                        ))
-                    }),
-            )
-            .into_any_element();
-    }
-    if line.marker != "•" {
-        return body.child(line.marker.clone()).into_any_element();
-    }
-    let bullet = div().size(px(Layout::ASSISTANT_LIST_BULLET));
-    body.child(match line.depth {
-        0 => bullet.rounded_full().bg(colors.text_primary),
-        1 => bullet
-            .rounded_full()
-            .border_1()
-            .border_color(colors.text_primary),
-        _ => bullet.bg(colors.text_primary),
-    })
-    .into_any_element()
 }
 
 fn render_table_selectable(
@@ -1433,8 +1207,8 @@ fn render_table_selectable(
     let columns = table.alignments.len();
     let weights = table.column_weights();
     let mut body = div()
-        .text_size(px(Typography::ASSISTANT_TABLE))
-        .line_height(gpui_kit::relative(Typography::ASSISTANT_LINE_HEIGHT))
+        .text_size(px(Typography::CONVERSATION))
+        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
         .w_full()
         .min_w(px(Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH * columns as f32))
         .flex_shrink_0()
@@ -1444,24 +1218,19 @@ fn render_table_selectable(
         if row_index > 0 {
             document.append_literal("\n");
         }
-        let mut row = div().w_full().flex().flex_row().flex_shrink_0().when(
-            row_index == 0 || row_index + 1 < table.rows.len(),
-            |row| {
-                row.border_b_1().border_color(if row_index == 0 {
-                    colors.conversation_marker
-                } else {
-                    colors.border_subtle
-                })
-            },
-        );
+        let mut row = div()
+            .w_full()
+            .flex()
+            .flex_row()
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(colors.border_subtle)
+            .when(row_index == 0, |row| row.bg(colors.bg_hover));
         for (column, spans) in cells.iter().enumerate() {
             if column > 0 {
                 document.append_literal("\t");
             }
-            let mut style = TextStyle {
-                font_size: px(Typography::ASSISTANT_TABLE).into(),
-                ..assistant_run_style(colors.text_primary)
-            };
+            let mut style = message_run_style(colors.text_primary);
             if row_index == 0 {
                 style.font_weight = Typography::HEADING_CARD_WEIGHT;
             }
@@ -1483,19 +1252,8 @@ fn render_table_selectable(
                     .flex_grow(weights[column])
                     .flex_shrink_0()
                     .min_w_0()
-                    .pr(px(assistant_table_right_padding(
-                        row_index, column, columns,
-                    )))
-                    .pt(px(assistant_table_vertical_padding(
-                        row_index,
-                        table.rows.len(),
-                    )
-                    .0))
-                    .pb(px(assistant_table_vertical_padding(
-                        row_index,
-                        table.rows.len(),
-                    )
-                    .1))
+                    .px(px(Layout::MARKDOWN_TABLE_PADDING_X))
+                    .py(px(Layout::MARKDOWN_TABLE_PADDING_Y))
                     .text_align(alignment)
                     .child(selected),
             );
@@ -1513,63 +1271,6 @@ fn render_table_selectable(
         .child(body)
         .scroll_edge_fade(colors.bg_base, ScrollFade::compact())
         .into_any_element()
-}
-
-pub(crate) fn assistant_table_right_padding(row: usize, column: usize, columns: usize) -> f32 {
-    if row == 0 && column + 1 == columns {
-        Layout::ASSISTANT_TABLE_HEADER_RIGHT
-    } else {
-        Layout::ASSISTANT_TABLE_PADDING_RIGHT
-    }
-}
-
-pub(crate) fn assistant_table_vertical_padding(row: usize, rows: usize) -> (f32, f32) {
-    if row == 0 {
-        (
-            Layout::ASSISTANT_TABLE_HEADER_PADDING,
-            Layout::ASSISTANT_TABLE_HEADER_PADDING,
-        )
-    } else {
-        (
-            Layout::ASSISTANT_TABLE_BODY_PADDING,
-            if row + 1 == rows {
-                Layout::ASSISTANT_TABLE_LAST_PADDING
-            } else {
-                Layout::ASSISTANT_TABLE_BODY_PADDING
-            },
-        )
-    }
-}
-
-pub(crate) fn assistant_heading_metrics(level: u8) -> (f32, f32) {
-    match level {
-        1 => (Typography::ASSISTANT_H1, Typography::ASSISTANT_H1_HEIGHT),
-        2 => (Typography::ASSISTANT_H2, Typography::ASSISTANT_H2_HEIGHT),
-        3 => (Typography::ASSISTANT_H3, Typography::ASSISTANT_H3_HEIGHT),
-        4 => (Typography::ASSISTANT_BODY, Typography::ASSISTANT_H4_HEIGHT),
-        _ => (
-            Typography::ASSISTANT_BODY,
-            Typography::ASSISTANT_BODY * Typography::ASSISTANT_LINE_HEIGHT,
-        ),
-    }
-}
-
-fn assistant_run_style(color: Rgba) -> TextStyle {
-    TextStyle {
-        font_size: px(Typography::ASSISTANT_BODY).into(),
-        line_height: gpui_kit::relative(Typography::ASSISTANT_LINE_HEIGHT),
-        ..message_run_style(color)
-    }
-}
-
-fn assistant_heading_run_style(level: u8, colors: &ThemeColors) -> TextStyle {
-    let (font_size, line_height) = assistant_heading_metrics(level);
-    TextStyle {
-        font_size: px(font_size).into(),
-        line_height: gpui_kit::relative(line_height / font_size),
-        font_weight: Typography::HEADING_PAGE_WEIGHT,
-        ..assistant_run_style(colors.text_primary)
-    }
 }
 
 pub(crate) fn message_run_style(color: Rgba) -> TextStyle {
@@ -1659,6 +1360,7 @@ pub(crate) fn apply_span_style(style: &mut TextStyle, span: SpanStyle, colors: &
         SpanStyle::Token(kind) => {
             let token = code_token_style(kind, colors);
             style.font_family = MONOFONT.into();
+            style.font_size = AbsoluteLength::Pixels(px(Typography::CODE));
             style.color = token.color.into();
             style.font_weight = token.weight;
             if token.italic {

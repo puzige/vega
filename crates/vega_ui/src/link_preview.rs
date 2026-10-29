@@ -610,17 +610,8 @@ pub(crate) fn interactive_bounds(
     links: &[LinkRange],
 ) -> Bounds<Pixels> {
     if links.iter().any(|link| link.starts_here) {
-        let padding = links
-            .iter()
-            .any(|link| link.starts_here && link.assistant_code_padding);
-        let leading = px(Layout::MARKDOWN_LINK_LEADING_WIDTH
-            + if padding {
-                Layout::ASSISTANT_INLINE_CODE_PADDING_X
-            } else {
-                0.
-            });
-        bounds.origin.x -= leading;
-        bounds.size.width += leading;
+        bounds.origin.x -= px(Layout::MARKDOWN_LINK_LEADING_WIDTH);
+        bounds.size.width += px(Layout::MARKDOWN_LINK_LEADING_WIDTH);
     }
     bounds
 }
@@ -632,13 +623,7 @@ pub(crate) fn icon_bounds(layout: &TextLayout, link: &LinkRange) -> Option<Bound
     let start = layout.position_for_index(link.range.start)?;
     Some(Bounds::new(
         point(
-            start.x
-                - px(Layout::MARKDOWN_LINK_LEADING_WIDTH)
-                - if link.assistant_code_padding {
-                    px(Layout::ASSISTANT_INLINE_CODE_PADDING_X)
-                } else {
-                    px(0.)
-                },
+            start.x - px(Layout::MARKDOWN_LINK_LEADING_WIDTH),
             start.y + (layout.line_height() - px(Layout::ICON_SIZE)) / 2.,
         ),
         size(px(Layout::ICON_SIZE), px(Layout::ICON_SIZE)),
