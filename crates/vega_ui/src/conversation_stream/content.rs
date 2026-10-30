@@ -1452,6 +1452,9 @@ impl ConversationStream {
                     && !self.response_reasoning_completed
                 {
                     self.response_reasoning_completed = true;
+                    if let Some((_, group)) = &self.active_run_activity {
+                        group.update(cx, |group, cx| group.reasoning_completed(cx));
+                    }
                     self.finish_live_thinking(cx);
                 }
             }

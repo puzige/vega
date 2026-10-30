@@ -631,6 +631,17 @@ impl ToolCard {
             .map(|title| (title, self.leading_icon()))
     }
 
+    pub(crate) fn headline_notice(&self, title: &str) -> Option<String> {
+        let safety_title = self.headline_title();
+        (title != safety_title
+            && (self.status == ToolCallStatus::PendingApproval
+                || !matches!(
+                    self.activity_state(),
+                    ToolActivityState::Active | ToolActivityState::Success
+                )))
+        .then_some(safety_title)
+    }
+
     pub(crate) fn completed_command_headline(&self) -> Option<String> {
         (!self.presentation_released
             && self.is_bash()
@@ -716,12 +727,18 @@ impl ToolCard {
     pub(crate) fn render_with_title(
         card: Entity<Self>,
         indented: bool,
-        headline: Option<(String, AnyElement)>,
+        headline: Option<(String, Option<Icon>, AnyElement)>,
         window: &mut gpui_kit::Window,
         cx: &mut App,
     ) -> AnyElement {
         if card.read(cx).is_subagent_invocation() {
-            return Self::render_invocation(card, indented, headline, window, cx);
+            return Self::render_invocation(
+                card,
+                indented,
+                headline.map(|(title, _, element)| (title, element)),
+                window,
+                cx,
+            );
         }
         let colors = theme(cx).colors;
         let (title, leading_icon, leading_icon_color, expanded, expandable, detail) = {
@@ -737,8 +754,24 @@ impl ToolCard {
                 if expanded { card_ref.detail() } else { None },
             )
         };
-        let (title, title_element) =
-            headline.unwrap_or_else(|| (title.clone(), div().child(title).into_any_element()));
+        let notice = {
+            let card = card.read(cx);
+            headline.as_ref().and_then(|(title, _, _)| {
+                card.headline_notice(title)
+                    .map(|notice| (notice, card.activity_state().terminal_color(&colors)))
+            })
+        };
+        let (title, leading_icon, title_element) = headline.unwrap_or_else(|| {
+            (
+                title.clone(),
+                Some(leading_icon),
+                div().child(title).into_any_element(),
+            )
+        });
+        let accessible_title = notice.as_ref().map_or_else(
+            || title.clone(),
+            |(notice, _)| format!("{title} · {notice}"),
+        );
         let detail_scroll = card.read(cx).detail_scroll.clone();
         let detail_id = format!("tool-detail-{}", card.entity_id());
         let toggle_card = card.clone();
@@ -756,7 +789,7 @@ impl ToolCard {
             .aria_label(vega_i18n::t_args(
                 "ui.tool_disclosure",
                 &[
-                    ("title", &title),
+                    ("title", &accessible_title),
                     (
                         "action",
                         vega_i18n::t(if expanded { "ui.collapse" } else { "ui.expand" }),
@@ -800,11 +833,13 @@ impl ToolCard {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(crate::icons::sized_icon(
-                        leading_icon,
-                        leading_icon_color,
-                        Layout::ICON_SIZE,
-                    )),
+                    .when_some(leading_icon, |slot, icon| {
+                        slot.child(crate::icons::sized_icon(
+                            icon,
+                            leading_icon_color,
+                            Layout::ICON_SIZE,
+                        ))
+                    }),
             )
             .child(
                 div()
@@ -831,6 +866,18 @@ impl ToolCard {
             .flex_col()
             .when(indented, |card| card.pl_4())
             .child(row)
+            .when_some(notice, |card, (notice, color)| {
+                card.child(
+                    div()
+                        .h(px(Layout::CONVERSATION_TOOL_HEIGHT))
+                        .pl(px(Layout::ICON_SIZE + Layout::CONVERSATION_INLINE_GAP))
+                        .text_size(px(Typography::CONVERSATION))
+                        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
+                        .text_color(color)
+                        .truncate()
+                        .child(notice),
+                )
+            })
             .when_some(expanded.then_some(detail).flatten(), move |card, detail| {
                 card.child(render_detail(
                     detail,
