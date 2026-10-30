@@ -363,6 +363,13 @@ impl ThinkingBlock {
     }
 
     pub(crate) fn append(&mut self, delta: &str, summary: bool, _remaining: usize) -> usize {
+        let has_readable_summary = |text: &str| {
+            text.chars().any(|ch| {
+                !ch.is_whitespace()
+                    && !ch.is_control()
+                    && !matches!(ch, '*' | '_' | '#' | '~' | '`')
+            })
+        };
         let was_summary = self.summary_has_content;
         let previous_start = self.visible_window().start;
         let previous_len = self.visible_text().len();
@@ -381,9 +388,9 @@ impl ThinkingBlock {
                 THINKING_BLOCK_BYTES - self.text.len(),
             );
             self.summary_has_content = if removed {
-                self.summary.chars().any(|ch| !ch.is_whitespace())
+                has_readable_summary(&self.summary)
             } else {
-                self.summary_has_content || delta.chars().any(|ch| !ch.is_whitespace())
+                self.summary_has_content || has_readable_summary(delta)
             };
             removed
         } else {
