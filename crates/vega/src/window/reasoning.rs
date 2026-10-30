@@ -117,6 +117,7 @@ struct SessionReasoningSaveJob {
     defaults: Option<ReasoningDefaultsSaveJob>,
 }
 
+#[cfg(test)]
 fn reasoning_intent_pending(
     latest: &std::collections::HashMap<(String, String), ComposerDefaultsRequested>,
     thread_id: &str,
@@ -645,10 +646,6 @@ impl VegaWindow {
             },
             cx,
         );
-    }
-
-    pub(in crate::window) fn reasoning_intent_pending_for_thread(&self, thread_id: &str) -> bool {
-        reasoning_intent_pending(&self.reasoning_default_latest, thread_id)
     }
 
     pub(crate) fn persist_composer_thinking(
@@ -1183,14 +1180,13 @@ impl VegaWindow {
         {
             self.conversation_loading.clear();
         }
-        if let Some(preferences) = &preferences {
-            if let Some(current) = cx.global::<OpenedThread>().0.as_ref()
-                && current.id == thread_id
-            {
-                let mut current = current.clone();
-                current.reasoning_preferences = Some(preferences.clone());
-                cx.set_global(OpenedThread(Some(current)));
-            }
+        if let Some(preferences) = &preferences
+            && let Some(current) = cx.global::<OpenedThread>().0.as_ref()
+            && current.id == thread_id
+        {
+            let mut current = current.clone();
+            current.reasoning_preferences = Some(preferences.clone());
+            cx.set_global(OpenedThread(Some(current)));
         }
         if stream.read(cx).thread_snapshot().id == thread_id {
             if let Some(preferences) = &preferences {

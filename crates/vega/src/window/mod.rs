@@ -178,7 +178,7 @@ pub(crate) struct VegaWindow {
     /// Settings entity and still blocks a new run until the exact ack lands.
     pub(crate) reasoning_save_pending: Option<(u64, u64)>,
     pub(crate) composer_reasoning_operation: u64,
-    pub(crate) pending_composer_thinking: Vec<reasoning::PendingComposerThinking>,
+    pending_composer_thinking: Vec<reasoning::PendingComposerThinking>,
     pub(crate) reasoning_default_failures:
         std::collections::HashMap<(String, String), ReasoningDefaultFailure>,
     pub(crate) reasoning_default_latest:
