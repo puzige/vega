@@ -3,7 +3,9 @@ use super::*;
 use crate::interaction::InteractionExt;
 use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade, ScrollFadeTopGuards};
 use gpui_kit::component::Sizable as _;
-use gpui_kit::{Anchor, AnchoredPositionMode, PathBuilder, Role, anchored, canvas, point};
+use gpui_kit::{
+    Anchor, AnchoredPositionMode, Focusable, PathBuilder, Role, anchored, canvas, point,
+};
 // Re-exported so the permission picker's copy is testable from the suite the
 // same way `PICKER_EFFORT_LABEL`/`PICKER_LIST_HEADING` are.
 use super::composer_actions::{
