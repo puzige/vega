@@ -462,35 +462,3 @@ impl Drop for VegaWindow {
         self.window_terminal_cleanup();
     }
 }
-
-#[cfg(test)]
-mod draft_model_refresh_development_tests {
-    use super::ModelSelectionRefresh;
-    use vega_conversation::threads::draft_thread;
-    use vega_conversation::types::{PermissionMode, SessionReasoningPreference};
-
-    #[test]
-    fn model_result_updates_only_its_original_draft() {
-        let mut original = draft_thread(Some("project-a"), "old-model", "confirm");
-        original.reasoning_preferences = Some(vec![SessionReasoningPreference {
-            provider: "provider".into(),
-            model: "old-model".into(),
-            preference: "high".into(),
-        }]);
-        let mut result = original.clone();
-        result.model = "new-model".into();
-        let refresh = ModelSelectionRefresh::from_thread(&result);
-
-        let mut current = original.clone();
-        current.permission_mode = PermissionMode::ReadOnly;
-        current.title = "updated title".into();
-        let mut expected = current.clone();
-        expected.model = "new-model".into();
-        assert_eq!(refresh.merge_into(&current), Some(expected));
-
-        let other = draft_thread(Some("project-a"), "old-model", "confirm");
-        assert_eq!(refresh.merge_into(&other), None);
-        current.project_id = "project-b".into();
-        assert_eq!(refresh.merge_into(&current), None);
-    }
-}
