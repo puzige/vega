@@ -6,6 +6,9 @@ use vega_store::thread_admission::{
     self, AdmissionError, DatabaseAdmissionPause, DatabaseIdentity, ThreadAdmission,
 };
 
+use crate::submission_diagnostics::{
+    Journal, PreparationFailure, PreparationReason, PreparationStage, PreparationState,
+};
 use crate::types::{FrozenReasoning, ImageAttachment, ResolvedModel};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -256,6 +259,7 @@ pub enum CleanupFact {
 pub enum SubmissionFailure {
     PreflightRejected,
     PreparationFailed,
+    Preparation(PreparationFailure),
     SpawnFailed,
     CommitFailed,
     LaunchFailed,
@@ -492,6 +496,7 @@ struct SubmissionInner {
     thread_id: String,
     raw: Arc<RawSubmission>,
     state: Mutex<SubmissionState>,
+    diagnostics: Journal,
 }
 
 #[derive(Clone)]
@@ -623,6 +628,54 @@ pub fn invalidate_database_recovery(
 }
 
 impl OrdinarySubmission {
+    pub fn attach_preparation_diagnostics(&self, path: &std::path::Path) {
+        self.0.diagnostics.attach(path, self.0.database);
+    }
+
+    pub fn preparation_diagnostics(&self, attempt: AttemptId) -> Option<String> {
+        (attempt.submission == self.0.id).then(|| self.0.diagnostics.export(attempt.number))
+    }
+
+    fn record_preparation_terminal(&self, facts: &AttemptSnapshot) {
+        let failure = facts.failure.unwrap_or(SubmissionFailure::Unknown);
+        let detail = match failure {
+            SubmissionFailure::Preparation(detail) => detail,
+            SubmissionFailure::PreflightRejected => PreparationFailure::new(
+                PreparationStage::Preflight,
+                PreparationReason::ProviderUnavailable,
+            ),
+            SubmissionFailure::SpawnFailed => {
+                PreparationFailure::new(PreparationStage::Spawn, PreparationReason::Worker)
+            }
+            SubmissionFailure::CommitFailed => {
+                PreparationFailure::new(PreparationStage::Commit, PreparationReason::Database)
+            }
+            SubmissionFailure::LaunchFailed => {
+                PreparationFailure::new(PreparationStage::Launch, PreparationReason::Worker)
+            }
+            SubmissionFailure::Cancelled => {
+                PreparationFailure::new(PreparationStage::Worker, PreparationReason::State)
+            }
+            _ => PreparationFailure::new(PreparationStage::Worker, PreparationReason::Unknown),
+        };
+        let terminal = if facts.abnormal
+            || matches!(
+                failure,
+                SubmissionFailure::WorkerLost | SubmissionFailure::Unknown
+            ) {
+            PreparationState::Interrupted
+        } else if failure == SubmissionFailure::Cancelled {
+            PreparationState::Cancelled
+        } else {
+            PreparationState::Failed
+        };
+        self.0.diagnostics.record(
+            self.0.id.0.to_string(),
+            facts.id.number,
+            terminal,
+            Some(detail),
+        );
+    }
     pub fn begin(
         database: DatabaseIdentity,
         thread_id: String,
@@ -659,6 +712,7 @@ impl OrdinarySubmission {
             database,
             thread_id,
             raw: Arc::new(raw),
+            diagnostics: Journal::default(),
             state: Mutex::new(SubmissionState {
                 accepted: None,
                 authority: None,
@@ -669,6 +723,10 @@ impl OrdinarySubmission {
                 retired: false,
             }),
         }));
+        submission
+            .0
+            .diagnostics
+            .record(id.0.to_string(), 1, PreparationState::Started, None);
         registry.entry(key).or_default().push(submission.clone());
         let guard = OrdinaryWorker {
             submission: submission.clone(),
@@ -785,6 +843,9 @@ impl OrdinarySubmission {
         if !current.facts.abnormal && current.facts.primary == PrimaryFact::NotYetDriven {
             current.facts.primary = PrimaryFact::NotStarted;
         }
+        if current.facts.primary != PrimaryFact::Started {
+            self.record_preparation_terminal(&current.facts);
+        }
         current.facts.sealed = true;
         state.active = None;
         Ok(FactUpdate::Applied)
@@ -842,6 +903,12 @@ impl OrdinarySubmission {
             .attempts
             .push(AttemptState::new(attempt, kind, worker));
         state.active = Some(admission.clone());
+        self.0.diagnostics.record(
+            self.0.id.0.to_string(),
+            attempt.number,
+            PreparationState::Started,
+            None,
+        );
         Ok(OrdinaryWorker {
             submission: self.clone(),
             attempt,
@@ -1318,6 +1385,12 @@ impl OrdinaryWorker {
             return Err(SubmissionError::InvalidTransition);
         }
         current.facts.primary = PrimaryFact::Started;
+        self.submission.0.diagnostics.record(
+            self.attempt.submission.0.to_string(),
+            self.attempt.number,
+            PreparationState::Prepared,
+            None,
+        );
         Ok(FactUpdate::Applied)
     }
 
@@ -1332,7 +1405,18 @@ impl OrdinaryWorker {
                 .last_mut()
                 .ok_or(SubmissionError::InvalidTransition)?;
             if let Err(failure) = result {
-                current.facts.failure.get_or_insert(failure);
+                if current.facts.failure.is_none()
+                    || (matches!(
+                        current.facts.failure,
+                        Some(
+                            SubmissionFailure::PreparationFailed
+                                | SubmissionFailure::Unknown
+                                | SubmissionFailure::WorkerLost
+                        )
+                    ) && matches!(failure, SubmissionFailure::Preparation(_)))
+                {
+                    current.facts.failure = Some(failure);
+                }
                 if matches!(
                     failure,
                     SubmissionFailure::WorkerLost | SubmissionFailure::Unknown
@@ -1369,6 +1453,9 @@ impl Drop for OrdinaryWorker {
                 .failure
                 .get_or_insert(SubmissionFailure::WorkerLost);
             attempt.make_unknown();
+            if attempt.workers.is_empty() && attempt.facts.primary != PrimaryFact::Started {
+                self.submission.record_preparation_terminal(&attempt.facts);
+            }
         }
     }
 }

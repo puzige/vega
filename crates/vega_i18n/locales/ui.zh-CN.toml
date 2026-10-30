@@ -799,3 +799,11 @@
 "ui.compact_requirements_too_long" = "请将摘要要求缩短到 8192 个 UTF-8 字节以内。"
 "ui.compact_remove_attachments" = "请移除图片、文件引用和所选技能后再压缩。"
 "ui.compact_unavailable" = "当前无法压缩上下文，请等待当前操作结束，并确认已有可压缩的历史消息。"
+
+"ui.ordinary_send.database_failed" = "准备消息时无法访问本地存储。请检查磁盘空间和存储访问权限后重试。"
+"ui.ordinary_send.credential_failed" = "准备消息时无法使用所需凭据。请检查供应商凭据后重试。"
+"ui.ordinary_send.permission_failed" = "消息权限已变化或无法核验。请检查权限后重试。"
+"ui.ordinary_send.workspace_failed" = "无法准备工作目录。请确认目录存在且可访问后重试。"
+"ui.ordinary_send.skills_failed" = "无法准备所选技能。请检查技能选择后重试。"
+"ui.ordinary_send.model_failed" = "模型无法接受当前消息配置。请检查图片和思考设置后重试。"
+"ui.ordinary_send.copy_diagnostics" = "复制诊断"

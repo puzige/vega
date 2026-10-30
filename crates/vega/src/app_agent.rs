@@ -1129,6 +1129,13 @@ pub(crate) fn run_agent_worker_with_mcp(
         }
         other => other,
     };
+    use vega_conversation::submission_diagnostics::{
+        PreparationFailure, PreparationReason, PreparationStage, conversation_failure,
+        runtime_failure,
+    };
+    let mut preparation_failure =
+        PreparationFailure::new(PreparationStage::Launch, PreparationReason::State);
+    let preparation_cancel = cancel.clone();
     let mut reference_failure = None;
     let mut credential_failure = false;
     let mut computer_use: Option<ComputerUseRun> = None;
@@ -1151,14 +1158,19 @@ pub(crate) fn run_agent_worker_with_mcp(
                 execution_duration_ms: None,
             }));
         };
+        preparation_failure = PreparationFailure::new(PreparationStage::Workspace, PreparationReason::Capability);
         crate::agent_context::project_root_text(&project_path).map_err(project_failure)?;
         // Config and local credential storage are touched only after an explicit user submit
         // or committed Plan approval reaches this worker.
         let tools = vega_tools::Tools::new(&project_path)
-            .map_err(|_| ())?
+            .map_err(|error| { preparation_failure = match error {
+                vega_tools::ToolError::Io(error) => runtime_failure(PreparationStage::Workspace, &error.into()),
+                vega_tools::ToolError::NotFound(_) => PreparationFailure::new(PreparationStage::Workspace, PreparationReason::MissingWorkspace),
+                _ => PreparationFailure::new(PreparationStage::Workspace, PreparationReason::Capability),
+            }; })?
             .with_read_state(file_read_state);
-        let store = Store::open(&database_path).map_err(|_| ())?;
-        store.migrate().map_err(|_| ())?;
+        let store = Store::open(&database_path).map_err(|error| { preparation_failure = runtime_failure(PreparationStage::Database, &error.into()); })?;
+        store.migrate().map_err(|error| { preparation_failure = runtime_failure(PreparationStage::Database, &error.into()); })?;
         vega_conversation::automation::pause_matching(&store, &thread.id, &automation_pauses, "user_paused").map_err(|_| ())?;
         // Resolve provider identity once, before constructing the provider and
         // before entering the runtime. The resulting FrozenReasoning is moved
@@ -1268,6 +1280,7 @@ pub(crate) fn run_agent_worker_with_mcp(
         );
         let owner_credential_reader = run_credential_reader.reader();
         let credential_exceptions = run_credential_reader.exception_filter();
+        preparation_failure = PreparationFailure::new(PreparationStage::Preflight, PreparationReason::ProviderUnavailable);
         let mut make_provider = || -> Result<Arc<dyn vega_runtime::Provider>, ()> {
             let provider = configured_provider.clone().ok_or(())?;
             let root = config_path
@@ -1717,6 +1730,9 @@ pub(crate) fn run_agent_worker_with_mcp(
         if let Some(run) = &computer_use {
             runtime.block_on(run.shutdown());
         }
+        if let Err(error) = &result {
+            preparation_failure = conversation_failure(PreparationStage::Conversation, error);
+        }
         let success = result.is_ok_and(|run| !run.failed);
         if success && !prediction_parent_cancel.is_cancelled()
             && let Some(request) = composer_prediction
@@ -1760,7 +1776,21 @@ pub(crate) fn run_agent_worker_with_mcp(
             if success {
                 Ok(())
             } else {
-                Err(SubmissionFailure::PreparationFailed)
+                Err(if preparation_cancel.is_cancelled() {
+                    SubmissionFailure::Cancelled
+                } else if reference_failure.is_some() {
+                    SubmissionFailure::Preparation(PreparationFailure::new(
+                        PreparationStage::Conversation,
+                        PreparationReason::References,
+                    ))
+                } else if credential_failure {
+                    SubmissionFailure::Preparation(PreparationFailure::new(
+                        PreparationStage::Preflight,
+                        PreparationReason::CredentialUnavailable,
+                    ))
+                } else {
+                    SubmissionFailure::Preparation(preparation_failure)
+                })
             },
         );
     }

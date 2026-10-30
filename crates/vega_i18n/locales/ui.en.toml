@@ -799,3 +799,11 @@
 "ui.compact_requirements_too_long" = "Shorten the summary instructions to 8192 UTF-8 bytes or fewer."
 "ui.compact_remove_attachments" = "Remove images, file references and selected skills before compacting."
 "ui.compact_unavailable" = "Context cannot be compacted now. Wait for current work to finish and check that earlier messages are available."
+
+"ui.ordinary_send.database_failed" = "Message preparation could not access local storage. Check available disk space and storage access, then retry."
+"ui.ordinary_send.credential_failed" = "Message preparation could not use the required credentials. Check provider credentials and retry."
+"ui.ordinary_send.permission_failed" = "Message permissions changed or could not be verified. Review permissions and retry."
+"ui.ordinary_send.workspace_failed" = "The working directory could not be prepared. Check that it exists and is accessible, then retry."
+"ui.ordinary_send.skills_failed" = "The selected skill could not be prepared. Review the skill selection and retry."
+"ui.ordinary_send.model_failed" = "The model could not accept this message configuration. Check image and reasoning settings, then retry."
+"ui.ordinary_send.copy_diagnostics" = "Copy diagnostics"

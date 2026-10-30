@@ -82,7 +82,10 @@ impl DraftCreationGuard {
                 .config_path
                 .as_deref()
                 .ok_or(ConversationError::InvalidTaskIdentity)?;
-            let edit = vega_store::config::begin_edit(path).map_err(storage_error)?;
+            let edit = vega_store::config::begin_edit(path).map_err(|error| match error {
+                vega_store::config::ConfigError::Io(error) => storage_error(error),
+                _ => ConversationError::CorruptRow("permission configuration invalid".into()),
+            })?;
             if snapshot.configuration_id.as_deref() != Some(configuration_identity(path)?.as_str())
                 || snapshot.permission_revision < 0
                 || snapshot.permission_mode != draft.permission_mode.as_str()
@@ -554,6 +557,6 @@ pub(crate) fn capture_delegated_fence(
     Ok(fence)
 }
 
-fn storage_error(error: impl std::fmt::Display) -> ConversationError {
-    ConversationError::Store(error.to_string())
+fn storage_error(error: impl Into<vega_runtime::VegaError>) -> ConversationError {
+    ConversationError::Runtime(std::sync::Arc::new(error.into()))
 }

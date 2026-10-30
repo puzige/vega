@@ -167,12 +167,16 @@ impl OrdinaryPreparation {
         Ok(receipt)
     }
 
-    pub(crate) fn complete(self, success: bool) {
-        let _ = self.worker.complete(if success {
-            Ok(())
-        } else {
-            Err(SubmissionFailure::PreparationFailed)
-        });
+    pub(crate) fn complete(self, result: Result<(), &ConversationError>) {
+        let _ = self.worker.complete(result.map_err(|error| {
+            if matches!(error, ConversationError::Runtime(error) if matches!(error.as_ref(), vega_runtime::VegaError::Cancelled)) {
+                SubmissionFailure::Cancelled
+            } else {
+                SubmissionFailure::Preparation(crate::submission_diagnostics::conversation_failure(
+                    crate::submission_diagnostics::PreparationStage::Conversation, error,
+                ))
+            }
+        }));
     }
 }
 
