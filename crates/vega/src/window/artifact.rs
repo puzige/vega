@@ -294,6 +294,14 @@ impl VegaWindow {
             return AgentBatchIngress::Stale;
         }
         stream.update(cx, ConversationStream::refresh_ordinary_submissions);
+        if self
+            .agent_controller
+            .active
+            .get(thread_id)
+            .is_some_and(|active| active.cancel.is_cancelled())
+        {
+            stream.update(cx, ConversationStream::cancel_live_bash_clocks);
+        }
         if let Some(request) = batch.composer_prediction
             && let Some(active) = self.agent_controller.active.get_mut(thread_id)
         {

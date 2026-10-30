@@ -1572,6 +1572,7 @@ pub(crate) async fn execute_prepared_waiting(
     base_tools: &vega_tools::Tools,
     permission_hook: &dyn RuntimePermissionHook,
     cancel: &CancellationToken,
+    bash_started_at: Option<Arc<std::sync::OnceLock<std::time::Instant>>>,
 ) -> (RuntimeToolResult, bool) {
     match prepared {
         PreparedRuntimeCall::InvalidUserQuestion { call, code } => (
@@ -1985,11 +1986,18 @@ pub(crate) async fn execute_prepared_waiting(
                         prepared,
                         policy,
                         cancel.child_token(),
+                        bash_started_at,
                     )
                     .await
             } else {
                 tools
-                    .execute_bash(prepared, policy, cancel.child_token())
+                    .execute_bash_scoped_with_start(
+                        prepared,
+                        policy,
+                        None,
+                        cancel.child_token(),
+                        bash_started_at,
+                    )
                     .await
             };
             match result {

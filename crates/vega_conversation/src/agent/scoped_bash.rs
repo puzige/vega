@@ -9,6 +9,11 @@ pub(super) struct ScopedBashAuthority {
     pub run_id: String,
 }
 
+pub(super) struct ScopedBashExecution {
+    pub cancel: CancellationToken,
+    pub started_at: Option<Arc<std::sync::OnceLock<std::time::Instant>>>,
+}
+
 impl ScopedBashAuthority {
     pub(super) async fn execute(
         &self,
@@ -17,8 +22,9 @@ impl ScopedBashAuthority {
         tools: Tools,
         prepared: PreparedBash,
         policy: BashLaunchPolicy,
-        cancel: CancellationToken,
+        execution: ScopedBashExecution,
     ) -> Result<BashOutput, BashError> {
+        let ScopedBashExecution { cancel, started_at } = execution;
         let path = self.database_path.clone();
         let fence = self.fence.clone();
         let run_id = self.run_id.clone();
@@ -87,7 +93,7 @@ impl ScopedBashAuthority {
             return Err(scope_mismatch());
         }
         tools
-            .execute_bash_scoped(prepared, policy, Some(scope), cancel)
+            .execute_bash_scoped_with_start(prepared, policy, Some(scope), cancel, started_at)
             .await
     }
 }

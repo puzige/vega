@@ -270,7 +270,16 @@ where
                                     execution_duration_ms,
                                 );
                                 event_sink(&converted)?;
-                                events.push(converted);
+                                let stored = match converted {
+                                    ConversationEvent::ToolCallRunning { call_id, .. } => {
+                                        ConversationEvent::ToolCallRunning {
+                                            call_id,
+                                            bash_started_at: None,
+                                        }
+                                    }
+                                    other => other,
+                                };
+                                events.push(stored);
                             }
                             Ok(())
                         })(),
@@ -430,7 +439,7 @@ fn record_tool_persistence_failure(
     let call_id = match event {
         RuntimeEvent::ToolCallProposed(call) => &call.id,
         RuntimeEvent::ToolCallApproved { call_id, .. }
-        | RuntimeEvent::ToolCallRunning { call_id } => call_id,
+        | RuntimeEvent::ToolCallRunning { call_id, .. } => call_id,
         RuntimeEvent::ToolCallFinished(result)
         | RuntimeEvent::ToolReadFinished { result, .. }
         | RuntimeEvent::ToolCallValidationRejected { result, .. }
@@ -882,7 +891,7 @@ pub(crate) fn persist_runtime_event(
             tool_calls::approve(store.conn(), call_id, &approval_json, remember, now_ms())
                 .map_err(tool_transition_error)?;
         }
-        RuntimeEvent::ToolCallRunning { call_id } => {
+        RuntimeEvent::ToolCallRunning { call_id, .. } => {
             let state = required_tool_state(store, call_id, thread_id)?;
             if state.status != "approved" {
                 return Err(runtime_state_error());

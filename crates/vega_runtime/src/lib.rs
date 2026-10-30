@@ -13,7 +13,7 @@ mod retry;
 mod tool_context;
 
 pub use agent::{
-    AgentOutcome, AgentRequest, BASH_INVALID_INPUT_OUTPUT, CALL_ID_CONFLICT_OUTPUT,
+    AgentOutcome, AgentRequest, BASH_INVALID_INPUT_OUTPUT, BashStartClock, CALL_ID_CONFLICT_OUTPUT,
     CANCELLED_BEFORE_EXECUTION_OUTPUT, CONVERSATION_HISTORY_RETRY_OUTPUT, CompletedToolCall,
     ContextAccountingDecision, ContextAccountingSource, ContextAccountingStage,
     ConversationHistoryReader, ConversationReadRequest, CredentialConfidence,

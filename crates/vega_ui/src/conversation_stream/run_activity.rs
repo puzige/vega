@@ -549,6 +549,17 @@ impl RunActivityGroup {
         cx.notify();
     }
 
+    pub(crate) fn cancel_pending_bash_clocks(&self, cx: &mut Context<Self>) {
+        for segment in 0..self.segments.len() {
+            for card in self.stage_tool_calls(segment, cx) {
+                card.update(cx, |card, cx| {
+                    card.cancel_pending_bash_clock();
+                    cx.notify();
+                });
+            }
+        }
+    }
+
     pub(crate) fn release_presentation(&mut self, cx: &mut Context<Self>) {
         if self.presentation_released {
             return;
@@ -1871,6 +1882,10 @@ impl RunActivityGroup {
             .clone()
             .tab_stop(can_expand);
         let title_view = state.segments[segment_index].title_view.clone();
+        let latest_tool = match state.segments[segment_index].latest_progress.as_ref() {
+            Some(StageProgress::Tool(card)) => Some(card.clone()),
+            _ => None,
+        };
         let tool_ids = state
             .stage_tool_calls(segment_index, cx)
             .iter()
@@ -1938,11 +1953,12 @@ impl RunActivityGroup {
             let toggle = group.clone();
             let click_focus = header_focus.clone();
             let keyboard = group.clone();
+            let row = div()
+                .id(("run-stage-toggle", segment_index))
+                .group(disclosure_group.clone());
+
             header = Some(
-                div()
-                    .id(("run-stage-toggle", segment_index))
-                    .group(disclosure_group.clone())
-                    .track_focus(&header_focus)
+                row.track_focus(&header_focus)
                     .tab_stop(can_expand)
                     .when(can_expand, |row| row.aria_expanded(expanded))
                     .aria_label(if can_expand {
@@ -2077,7 +2093,20 @@ impl RunActivityGroup {
                                 RunActivityChild::Tool(card)
                                     if !aggregate && (shimmering || thinking_headline) =>
                                 {
-                                    let title = headline.title.clone();
+                                    let title = {
+                                        let current = card.read(cx);
+                                        if !thinking_headline
+                                            && latest_tool.as_ref() == Some(&card)
+                                            && current.is_running()
+                                            && current.is_expanded()
+                                            && current.stage_activity_category()
+                                                == ToolActivityCategory::Shell
+                                        {
+                                            current.compact_title()
+                                        } else {
+                                            headline.title.clone()
+                                        }
+                                    };
                                     title_view.update(cx, |view, cx| {
                                         view.set(title.clone(), shimmering.then_some(epoch), cx)
                                     });

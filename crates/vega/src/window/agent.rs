@@ -621,6 +621,7 @@ impl VegaWindow {
             }
             active.cancel.cancel();
             active.stream.update(cx, |stream, cx| {
+                stream.cancel_live_bash_clocks(cx);
                 stream.timeout_permission(cx);
                 stream.cancel_user_questions(cx);
             });

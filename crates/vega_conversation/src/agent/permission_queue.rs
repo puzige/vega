@@ -640,9 +640,17 @@ impl RuntimePermissionHook for RuntimePermissionAdapter<'_> {
         prepared: vega_tools::PreparedBash,
         policy: vega_tools::BashLaunchPolicy,
         cancel: CancellationToken,
+        started_at: Option<Arc<std::sync::OnceLock<std::time::Instant>>>,
     ) -> BoxFuture<'a, Result<vega_tools::BashOutput, vega_tools::BashError>> {
         self.scope
-            .execute(self.shared, call_id, tools, prepared, policy, cancel)
+            .execute(
+                self.shared,
+                call_id,
+                tools,
+                prepared,
+                policy,
+                super::scoped_bash::ScopedBashExecution { cancel, started_at },
+            )
             .boxed()
     }
 

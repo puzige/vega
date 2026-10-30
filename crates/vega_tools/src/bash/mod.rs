@@ -4,6 +4,7 @@ use std::fmt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, ExitStatus};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -198,6 +199,18 @@ impl Tools {
         scope: Option<PreparedBashScope>,
         cancel: CancellationToken,
     ) -> Result<BashOutput, BashError> {
+        self.execute_bash_scoped_with_start(prepared, policy, scope, cancel, None)
+            .await
+    }
+
+    pub async fn execute_bash_scoped_with_start(
+        &self,
+        prepared: PreparedBash,
+        policy: BashLaunchPolicy,
+        scope: Option<PreparedBashScope>,
+        cancel: CancellationToken,
+        started_at: Option<Arc<OnceLock<Instant>>>,
+    ) -> Result<BashOutput, BashError> {
         self.validate_bash_launch(&prepared, &cancel)?;
         if let Some(scope) = &scope {
             scope.validate(&prepared, policy)?;
@@ -206,7 +219,7 @@ impl Tools {
         }
         let temp_root = TempRoot::create()?;
         let result = self
-            .execute_bash_with_temp(prepared, policy, scope, cancel, &temp_root)
+            .execute_bash_with_temp(prepared, policy, scope, cancel, &temp_root, started_at)
             .await;
         if result.cleanup_safe {
             match temp_root.cleanup() {
@@ -374,6 +387,7 @@ impl Tools {
         scope: Option<PreparedBashScope>,
         cancel: CancellationToken,
         temp_root: &TempRoot,
+        started_at: Option<Arc<OnceLock<Instant>>>,
     ) -> BashAttempt {
         let launch_result = if let Some(scope) = &scope {
             self.prepare_scoped_bash_launch(&prepared, policy, Some(scope), &cancel, temp_root)
@@ -392,7 +406,7 @@ impl Tools {
             }
         };
         let mut attempt = self
-            .execute_bash_command(prepared, launch.command, cancel, temp_root)
+            .execute_bash_command(prepared, launch.command, cancel, temp_root, started_at)
             .await;
         if let Some(lease) = launch.credential_lease
             && lease.shutdown().await.is_err()
@@ -409,6 +423,7 @@ impl Tools {
         command: StdCommand,
         cancel: CancellationToken,
         temp_root: &TempRoot,
+        started_at: Option<Arc<OnceLock<Instant>>>,
     ) -> BashAttempt {
         if cancel.is_cancelled() {
             return BashAttempt::safe(Err(BashError::new(BashErrorCode::Cancelled)));
@@ -420,6 +435,7 @@ impl Tools {
             Ok(child) => child,
             Err(_) => return BashAttempt::safe(Err(BashError::new(BashErrorCode::SpawnFailed))),
         };
+        let process_started_at = Instant::now();
         if child.id().is_none() {
             let _ = terminate_child_without_group(&mut child).await;
             return BashAttempt {
@@ -438,6 +454,9 @@ impl Tools {
         };
         let reader_stop = CancellationToken::new();
         let mut reader = tokio::spawn(read_output(stdout, stderr, reader_stop.clone()));
+        if let Some(started_at) = started_at {
+            let _ = started_at.set(process_started_at);
+        }
         let timeout = tokio::time::sleep(Duration::from_millis(prepared.timeout_ms));
         tokio::pin!(timeout);
 
