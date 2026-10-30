@@ -120,6 +120,7 @@
 "ui.change_permission_mode" = "切换权限模式"
 "ui.changes_requested" = "需修改"
 "ui.changes_were_not_saved_try_again" = "操作未保存，请重试"
+"ui.reasoning_default_not_saved" = "当前对话已更新，但未能保存新对话的默认思考档位。请再次选择档位重试。"
 "ui.changes_will_appear_here_after_you_modify_files" = "修改文件后，变更会显示在这里。"
 "ui.check_again" = "重新检测"
 "ui.check_credential_settings" = "检查凭据设置"

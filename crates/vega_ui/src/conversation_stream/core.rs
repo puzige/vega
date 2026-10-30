@@ -190,6 +190,7 @@ pub struct ConversationStream {
     pub(crate) composer_defaults: ComposerDefaults,
     pub(crate) reasoning_intent_revision: u64,
     pub(crate) reasoning_intents: HashMap<String, (u64, ReasoningChoice)>,
+    pub(crate) reasoning_default_retry: Option<String>,
     pub(crate) selector_reasoning: Option<ReasoningProfileProjection>,
     pub(crate) thinking_slider: Entity<ThinkingSlider>,
     pub(crate) model_options: Vec<ModelOption>,
@@ -617,6 +618,7 @@ impl ConversationStream {
 
             reasoning_intent_revision: 0,
             reasoning_intents: HashMap::new(),
+            reasoning_default_retry: None,
             composer_defaults: ComposerDefaults {
                 model: initial_model,
                 thinking: "provider_default".to_string(),
@@ -1211,6 +1213,19 @@ impl ConversationStream {
         cx.notify();
     }
 
+    pub fn apply_reasoning_default_save_error(&mut self, model: &str, cx: &mut Context<Self>) {
+        self.reasoning_default_retry = Some(model.to_string());
+        self.sync_thinking_slider(cx);
+        cx.notify();
+    }
+
+    pub fn complete_reasoning_default_save(&mut self, model: &str, cx: &mut Context<Self>) {
+        if self.reasoning_default_retry.as_deref() == Some(model) {
+            self.reasoning_default_retry = None;
+            self.sync_thinking_slider(cx);
+        }
+    }
+
     pub fn apply_codex_route_error(&mut self, message: &'static str, cx: &mut Context<Self>) {
         self.apply_codex_route_failure(message.into(), cx);
     }
@@ -1346,8 +1361,10 @@ impl ConversationStream {
             .as_ref()
             .map(|profile| reasoning_choice_name(&profile.preference))
             .unwrap_or_else(|| "provider_default".to_owned());
+        let retry_selected = self.reasoning_default_retry.as_deref() == Some(model_name.as_str());
         self.thinking_slider.update(cx, |slider, cx| {
             slider.set_model_and_tiers(model_name, tiers, supports_off, current, default_tier, cx);
+            slider.set_retry_selected(retry_selected);
         });
         if self.model_picker_level == ModelPickerLevel::Slider
             && !self.thinking_slider.read(cx).has_tiers()
@@ -1368,8 +1385,9 @@ impl ConversationStream {
         else {
             return;
         };
+        let retry = self.reasoning_default_retry.as_deref() == Some(event.model.as_str());
         if profile.model != event.model
-            || reasoning_choice_name(&profile.preference) == event.choice
+            || (reasoning_choice_name(&profile.preference) == event.choice && !retry)
         {
             return;
         }
@@ -1400,6 +1418,10 @@ impl ConversationStream {
                 reasoning_choice_for_name(&event.choice),
             ),
         );
+        if retry {
+            self.thinking_slider
+                .update(cx, |slider, _| slider.set_retry_selected(false));
+        }
         cx.emit(ComposerDefaultsRequested {
             revision: self.reasoning_intent_revision,
             thread_id: self.thread.id.clone(),

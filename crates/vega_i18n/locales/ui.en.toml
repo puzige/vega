@@ -120,6 +120,7 @@
 "ui.change_permission_mode" = "Change permission mode"
 "ui.changes_requested" = "Changes requested"
 "ui.changes_were_not_saved_try_again" = "Changes were not saved. Try again."
+"ui.reasoning_default_not_saved" = "This conversation was updated, but the default for new conversations could not be saved. Select the thinking level again to retry."
 "ui.changes_will_appear_here_after_you_modify_files" = "Changes will appear here after you modify files."
 "ui.check_again" = "Check again"
 "ui.check_credential_settings" = "Check credential settings"

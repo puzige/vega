@@ -57,7 +57,10 @@ impl VegaWindow {
         if self.composer_config_path().as_ref() != Some(path) {
             return false;
         }
-        let defaults = NewTaskDefaults::from_config(Some(path), &refresh.config.defaults);
+        let mut defaults = NewTaskDefaults::from_config(Some(path), &refresh.config.defaults);
+        defaults.reasoning_preferences = cx
+            .try_global::<NewTaskDefaults>()
+            .and_then(|previous| previous.reasoning_preferences.clone());
         let streams = self.permission_reset_streams();
         let project = |thread: &Thread| -> Option<Thread> {
             if let Some(saved) = refresh

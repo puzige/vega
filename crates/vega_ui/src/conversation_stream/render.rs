@@ -238,6 +238,20 @@ impl ConversationStream {
                             ))
                     }),
             )
+            .when(self.reasoning_default_retry.is_some(), |column| {
+                column.child(
+                    div()
+                        .w_full()
+                        .max_w(px(Layout::COMPOSER_MAX_WIDTH))
+                        .mx_auto()
+                        .mt_1()
+                        .mb_2()
+                        .child(render_rows::plain_error_notice(
+                            vega_i18n::t("ui.reasoning_default_not_saved").to_string(),
+                            colors.danger,
+                        )),
+                )
+            })
             .when(self.thread.backend == TaskBackend::Native, |column| {
                 column.child(self.render_pending_status(cx))
             })

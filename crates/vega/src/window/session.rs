@@ -959,7 +959,13 @@ impl VegaWindow {
         }
         self.configured_models = Some(models);
 
-        if reasoning_authority.is_some() && reasoning_error.is_none() {
+        let reasoning_save_pending = self.reasoning_save_pending.is_some();
+        if reasoning_save_pending {
+            defaults.reasoning_preferences = cx
+                .try_global::<NewTaskDefaults>()
+                .and_then(|previous| previous.reasoning_preferences.clone());
+            self.model_catalog_refresh_pending = true;
+        } else if reasoning_authority.is_some() && reasoning_error.is_none() {
             defaults.reasoning_preferences =
                 Some(super::reasoning::session_defaults(&reasoning_profiles));
         }
@@ -1014,7 +1020,6 @@ impl VegaWindow {
         // A reasoning save owns the independent authority until its exact
         // ack. A catalog worker that started before that save may still return
         // an older snapshot; keep it from regressing the pending projection.
-        let reasoning_save_pending = self.reasoning_save_pending.is_some();
         if !reasoning_save_pending {
             self.configured_reasoning = Some(reasoning_profiles);
             // A failed reasoning save remains visible while this coalesced
@@ -1036,6 +1041,7 @@ impl VegaWindow {
             });
         }
         self.resume_catalog_composer_predictions(cx);
+        self.start_pending_composer_thinking(cx);
         cx.notify();
     }
 

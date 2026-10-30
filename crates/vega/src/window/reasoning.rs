@@ -66,6 +66,82 @@ struct ReasoningSaveWorkerResult {
 
 type ReasoningSaveOrigin = Entity<SettingsView>;
 
+type SessionReasoningSaveResult = Result<
+    (
+        Vec<vega_conversation::types::SessionReasoningPreference>,
+        Option<ReasoningSaveWorkerResult>,
+    ),
+    (),
+>;
+
+struct ReasoningDefaultsSaveJob {
+    path: std::path::PathBuf,
+    base: vega_store::reasoning::ReasoningConfig,
+    snapshot: vega_store::reasoning::ReasoningFileSnapshot,
+    patch: vega_store::reasoning::ReasoningProfilePatch,
+}
+
+struct SessionReasoningSaveJob {
+    database: Option<std::path::PathBuf>,
+    thread_id: String,
+    draft: bool,
+    preferences: Vec<vega_conversation::types::SessionReasoningPreference>,
+    candidate: ReasoningProfileProjection,
+    defaults: Option<ReasoningDefaultsSaveJob>,
+}
+
+fn save_session_reasoning(job: SessionReasoningSaveJob) -> SessionReasoningSaveResult {
+    let preferences = if job.draft {
+        let mut preferences = job.preferences;
+        vega_conversation::session_reasoning::set_preference(&mut preferences, &job.candidate)
+            .map_err(|_| ())?;
+        preferences
+    } else {
+        let store = vega_store::Store::open_existing(job.database.ok_or(())?).map_err(|_| ())?;
+        vega_conversation::session_reasoning::save(&store, &job.thread_id, &job.candidate)
+            .map_err(|_| ())?
+    };
+    let defaults = job.defaults.map(|defaults| {
+        save_reasoning_defaults(
+            &defaults.path,
+            &defaults.snapshot,
+            &defaults.base,
+            &defaults.patch,
+        )
+    });
+    Ok((preferences, defaults))
+}
+
+fn save_reasoning_defaults(
+    path: &std::path::Path,
+    expected: &vega_store::reasoning::ReasoningFileSnapshot,
+    base: &vega_store::reasoning::ReasoningConfig,
+    patch: &vega_store::reasoning::ReasoningProfilePatch,
+) -> ReasoningSaveWorkerResult {
+    let error = vega_store::reasoning::save_profile_patch(path, expected, base, patch)
+        .err()
+        .map(|error| reasoning_error_code(&error));
+    let authority = read_reasoning_authority(path);
+    let (authority, error) = match authority {
+        Ok(authority) => (Some(authority), error),
+        Err(read_error) => (None, error.or(Some(reasoning_error_code(&read_error)))),
+    };
+    let capabilities = vega_store::model_capabilities::read_from(
+        &path.with_file_name(vega_store::model_capabilities::MODEL_CAPABILITY_FILE_NAME),
+    )
+    .ok();
+    let error = if capabilities.is_some() {
+        error
+    } else {
+        Some(ReasoningSettingsErrorCode::Invalid)
+    };
+    ReasoningSaveWorkerResult {
+        capabilities,
+        authority,
+        error,
+    }
+}
+
 struct ReasoningSaveJob {
     generation: u64,
     operation_id: u64,
@@ -364,7 +440,7 @@ impl VegaWindow {
         self.pending_composer_thinking.retain(|(_, queued)| {
             queued.thread_id != request.thread_id || queued.defaults.model != request.defaults.model
         });
-        if self.reasoning_save_pending.is_some() {
+        if self.reasoning_save_pending.is_some() || self.model_catalog_loading {
             self.pending_composer_thinking
                 .push((stream, request.clone()));
             return;
@@ -415,8 +491,29 @@ impl VegaWindow {
             }
             ReasoningChoice::Effort(choice)
         };
-        let mut candidate = profile;
+        let mut candidate = profile.clone();
         candidate.preference = next;
+        let defaults_save = self
+            .reasoning_config_path()
+            .zip(self.configured_reasoning_authority.clone())
+            .and_then(|(path, (base, snapshot))| {
+                reasoning_profile_patch(&base, &profile, &candidate)
+                    .ok()
+                    .map(|mut patch| {
+                        patch.preference = Some(match &candidate.preference {
+                            ReasoningChoice::Enabled => "enabled".to_string(),
+                            ReasoningChoice::ProviderDefault => "provider_default".to_string(),
+                            ReasoningChoice::Disabled => "disabled".to_string(),
+                            ReasoningChoice::Effort(effort) => effort.clone(),
+                        });
+                        ReasoningDefaultsSaveJob {
+                            path,
+                            base,
+                            snapshot,
+                            patch,
+                        }
+                    })
+            });
         let Some(preferences) = stream.read(cx).thread_snapshot().reasoning_preferences else {
             stream.update(cx, ConversationStream::apply_controller_error);
             return;
@@ -430,33 +527,20 @@ impl VegaWindow {
         let draft = self.is_draft_route(&request.thread_id);
         let database = self.file_backed_store_path(cx);
         let thread_id = request.thread_id.clone();
-        let worker_thread = thread_id.clone();
+        let job = SessionReasoningSaveJob {
+            database,
+            thread_id: thread_id.clone(),
+            draft,
+            preferences,
+            candidate,
+            defaults: defaults_save,
+        };
         let request = request.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
         let worker = std::thread::Builder::new()
             .name("vega-session-reasoning-save".into())
             .spawn(move || {
-                let result = (|| {
-                    if draft {
-                        let mut preferences = preferences;
-                        vega_conversation::session_reasoning::set_preference(
-                            &mut preferences,
-                            &candidate,
-                        )
-                        .map_err(|_| ())?;
-                        Ok(preferences)
-                    } else {
-                        let store = vega_store::Store::open_existing(database.ok_or(())?)
-                            .map_err(|_| ())?;
-                        vega_conversation::session_reasoning::save(
-                            &store,
-                            &worker_thread,
-                            &candidate,
-                        )
-                        .map_err(|_| ())
-                    }
-                })();
-                let _ = sender.send(result);
+                let _ = sender.send(save_session_reasoning(job));
             });
         if worker.is_err() {
             self.finish_session_reasoning_save(stream, request, owner, Err(()), cx);
@@ -486,7 +570,7 @@ impl VegaWindow {
         stream: Entity<ConversationStream>,
         request: ComposerDefaultsRequested,
         owner: (u64, u64),
-        result: Result<Vec<vega_conversation::types::SessionReasoningPreference>, ()>,
+        result: SessionReasoningSaveResult,
         cx: &mut Context<Self>,
     ) {
         if self.reasoning_save_pending != Some(owner) {
@@ -494,6 +578,14 @@ impl VegaWindow {
         }
         self.reasoning_save_pending = None;
         let thread_id = request.thread_id.clone();
+        let (preferences, defaults_error) = match result {
+            Ok((preferences, Some(defaults))) => {
+                let error = self.apply_reasoning_authority_result(defaults, cx);
+                (Some(preferences), error)
+            }
+            Ok((preferences, None)) => (Some(preferences), Some(ReasoningSettingsErrorCode::Io)),
+            Err(()) => (None, None),
+        };
         stream.update(cx, |stream, cx| {
             stream.acknowledge_reasoning_intent(&request, cx)
         });
@@ -506,22 +598,30 @@ impl VegaWindow {
             self.conversation_loading.clear();
         }
         if stream.read(cx).thread_snapshot().id == thread_id {
-            match &result {
-                Ok(preferences) => {
-                    stream.update(cx, |stream, cx| {
-                        stream.apply_session_reasoning_preferences(preferences.clone(), cx)
-                    });
-                    let thread = stream.read(cx).thread_snapshot();
-                    self.mirror_draft(&thread);
-                    if let Some(current) = cx.global::<OpenedThread>().0.as_ref()
-                        && current.id == thread_id
-                    {
-                        let mut current = current.clone();
-                        current.reasoning_preferences = Some(preferences.clone());
-                        cx.set_global(OpenedThread(Some(current)));
-                    }
+            if let Some(preferences) = &preferences {
+                stream.update(cx, |stream, cx| {
+                    stream.apply_session_reasoning_preferences(preferences.clone(), cx)
+                });
+                let thread = stream.read(cx).thread_snapshot();
+                self.mirror_draft(&thread);
+                if let Some(current) = cx.global::<OpenedThread>().0.as_ref()
+                    && current.id == thread_id
+                {
+                    let mut current = current.clone();
+                    current.reasoning_preferences = Some(preferences.clone());
+                    cx.set_global(OpenedThread(Some(current)));
                 }
-                Err(()) => stream.update(cx, ConversationStream::apply_controller_error),
+                if defaults_error.is_some() {
+                    stream.update(cx, |stream, cx| {
+                        stream.apply_reasoning_default_save_error(&request.defaults.model, cx)
+                    });
+                } else {
+                    stream.update(cx, |stream, cx| {
+                        stream.complete_reasoning_default_save(&request.defaults.model, cx)
+                    });
+                }
+            } else {
+                stream.update(cx, ConversationStream::apply_controller_error);
             }
             let model = stream.read(cx).displayed_model().to_owned();
             self.apply_reasoning_profile_to_stream(&stream, &model, cx);
@@ -530,20 +630,41 @@ impl VegaWindow {
             && id == thread_id
             && current != stream
         {
-            if let Ok(preferences) = result {
+            if let Some(preferences) = preferences {
                 current.update(cx, |stream, cx| {
                     stream.apply_session_reasoning_preferences(preferences, cx)
                 });
+                if defaults_error.is_some() {
+                    current.update(cx, |stream, cx| {
+                        stream.apply_reasoning_default_save_error(&request.defaults.model, cx)
+                    });
+                } else {
+                    current.update(cx, |stream, cx| {
+                        stream.complete_reasoning_default_save(&request.defaults.model, cx)
+                    });
+                }
             } else {
                 current.update(cx, ConversationStream::apply_controller_error);
             }
             let model = current.read(cx).displayed_model().to_owned();
             self.apply_reasoning_profile_to_stream(&current, &model, cx);
         }
-        if self.model_catalog_refresh_pending {
+        if defaults_error.is_some()
+            || self.model_catalog_loading
+            || self.model_catalog_refresh_pending
+        {
+            if defaults_error.is_some() {
+                self.reasoning_error_hold = None;
+            }
             self.model_catalog_refresh_pending = false;
             self.invalidate_model_catalog();
             self.start_model_catalog_load(cx);
+        }
+        if let Some(settings) = self.settings_view.clone() {
+            let projection = self.reasoning_settings_projection();
+            settings.update(cx, |settings, cx| {
+                settings.apply_reasoning_projection(projection, cx)
+            });
         }
         self.start_pending_composer_thinking(cx);
         cx.notify();
@@ -665,19 +786,11 @@ impl VegaWindow {
         .detach();
     }
 
-    fn finish_reasoning_profile_save(
+    fn apply_reasoning_authority_result(
         &mut self,
-        origin: ReasoningSaveOrigin,
-        generation: u64,
-        operation_id: u64,
         result: ReasoningSaveWorkerResult,
         cx: &mut Context<Self>,
-    ) {
-        if self.reasoning_save_pending != Some((generation, operation_id)) {
-            return;
-        }
-        self.reasoning_save_pending = None;
-
+    ) -> Option<ReasoningSettingsErrorCode> {
         let ReasoningSaveWorkerResult {
             authority,
             capabilities,
@@ -721,6 +834,31 @@ impl VegaWindow {
         }
         self.reasoning_error_hold = error;
         self.configured_reasoning_error = error;
+        let mut defaults = cx.global::<NewTaskDefaults>().clone();
+        defaults.reasoning_preferences = if self.configured_reasoning_authority.is_some()
+            && error != Some(ReasoningSettingsErrorCode::Invalid)
+        {
+            self.configured_reasoning.as_deref().map(session_defaults)
+        } else {
+            None
+        };
+        cx.set_global(defaults);
+        error
+    }
+
+    fn finish_reasoning_profile_save(
+        &mut self,
+        origin: ReasoningSaveOrigin,
+        generation: u64,
+        operation_id: u64,
+        result: ReasoningSaveWorkerResult,
+        cx: &mut Context<Self>,
+    ) {
+        if self.reasoning_save_pending != Some((generation, operation_id)) {
+            return;
+        }
+        self.reasoning_save_pending = None;
+        self.apply_reasoning_authority_result(result, cx);
         // Invalidate any catalog worker that read before this save. Its
         // generation is stale even if it completes after the save ack. A
         // provider Settings save observed while this operation was pending is
@@ -765,14 +903,6 @@ impl VegaWindow {
             let model = stream.read(cx).displayed_model().to_owned();
             self.apply_reasoning_profile_to_stream(stream, &model, cx);
         }
-        if let Some(profiles) = &self.configured_reasoning
-            && self.configured_reasoning_authority.is_some()
-            && self.configured_reasoning_error.is_none()
-        {
-            let mut defaults = cx.global::<NewTaskDefaults>().clone();
-            defaults.reasoning_preferences = Some(session_defaults(profiles));
-            cx.set_global(defaults);
-        }
         self.start_pending_composer_thinking(cx);
         cx.notify();
     }
@@ -782,8 +912,11 @@ impl VegaWindow {
     /// A drag across the track emits one intent per tier; only the last one
     /// matters, so they coalesce into a single slot instead of a queue that
     /// would replay every intermediate tier after the ack.
-    fn start_pending_composer_thinking(&mut self, cx: &mut Context<Self>) {
-        if self.reasoning_save_pending.is_some() || self.pending_composer_thinking.is_empty() {
+    pub(super) fn start_pending_composer_thinking(&mut self, cx: &mut Context<Self>) {
+        if self.reasoning_save_pending.is_some()
+            || self.model_catalog_loading
+            || self.pending_composer_thinking.is_empty()
+        {
             return;
         }
         let (stream, request) = self.pending_composer_thinking.remove(0);
@@ -819,3 +952,6 @@ pub(super) fn session_defaults(
         )
         .collect()
 }
+
+#[cfg(test)]
+mod reasoning_default_development_tests;
