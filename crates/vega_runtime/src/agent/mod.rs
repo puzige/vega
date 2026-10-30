@@ -1428,7 +1428,9 @@ impl fmt::Debug for AgentOutcome {
 mod context_accounting;
 mod context_files;
 mod context_history;
-pub use context_history::{ConversationHistoryReader, ConversationReadRequest};
+pub use context_history::{
+    CONVERSATION_HISTORY_RETRY_OUTPUT, ConversationHistoryReader, ConversationReadRequest,
+};
 mod context_plan;
 mod context_skills;
 mod context_tasks;

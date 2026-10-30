@@ -16,6 +16,16 @@ fn redact_runtime_tool_result(config: &RuntimeToolConfig, result: &mut RuntimeTo
     }
 }
 
+fn invalidate_history_result(config: &RuntimeToolConfig, result: &mut RuntimeToolResult) {
+    result.output = config
+        .redact_tool_output(CONVERSATION_HISTORY_RETRY_OUTPUT)
+        .unwrap_or_else(|_| "Tool error: credential safety check unavailable".to_string());
+    result.status = RuntimeToolStatus::Failed;
+    result.truncated = None;
+    result.exit_code = None;
+    result.duration_ms = None;
+}
+
 fn request_output_cap(
     max_tokens: Option<u32>,
     budget: Option<crate::ContextBudget>,
@@ -3303,7 +3313,14 @@ where
                 let mut result = prior.result;
                 result.reused = true;
                 result.truncated = None;
+                let original = (call.name == context_history::TOOL)
+                    .then(|| (result.status, result.output.clone()));
                 redact_runtime_tool_result(&tool_config, &mut result);
+                if original.is_some_and(|(status, output)| {
+                    result.status != status || result.output != output
+                }) {
+                    invalidate_history_result(&tool_config, &mut result);
+                }
                 user_questions::validate_redacted_result(&call, &mut result);
                 subagents::validate_redacted_subagent_result(&call, &mut result);
                 recovery.observe(&call, &result);
@@ -3640,7 +3657,15 @@ where
                 && tool_config
                     .redact_tool_output(&result.output)
                     .is_ok_and(|output| output == result.output);
+            let original_history = (call.name == context_history::TOOL
+                && result.status == RuntimeToolStatus::Success)
+                .then(|| result.output.clone());
             redact_runtime_tool_result(&tool_config, &mut result);
+            if original_history.is_some_and(|output| {
+                result.status != RuntimeToolStatus::Success || result.output != output
+            }) {
+                invalidate_history_result(&tool_config, &mut result);
+            }
             user_questions::validate_redacted_result(&call, &mut result);
             subagents::validate_redacted_subagent_result(&call, &mut result);
             recovery.observe(&call, &result);

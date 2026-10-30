@@ -9,6 +9,7 @@ use vega_runtime::{
 use vega_store::threads;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+const THREAD: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 
 struct Fixture {
     directory: PathBuf,
@@ -29,7 +30,7 @@ fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
     let path = directory.join("history.sqlite");
     let store = Store::open(&path)?;
     store.migrate()?;
-    for id in ["current", "other", "child"] {
+    for id in [THREAD, "other", "child"] {
         threads::create_standalone(
             store.conn(),
             threads::NewThread {
@@ -53,13 +54,13 @@ fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
     for (id, thread, seq, role, content) in [
         (
             "user",
-            "current",
+            THREAD,
             1,
             "user",
             format!("甲乙SYNTHETIC-SECRET-0123456789{}", "界".repeat(1100)),
         ),
-        ("old", "current", 2, "assistant", "older response".into()),
-        ("run", "current", 3, "assistant", "current response".into()),
+        ("old", THREAD, 2, "assistant", "older response".into()),
+        ("run", THREAD, 3, "assistant", "current response".into()),
         (
             "foreign",
             "other",
@@ -121,7 +122,7 @@ fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
             store.conn(),
             tool_calls::NewToolCall {
                 id,
-                thread_id: "current",
+                thread_id: THREAD,
                 message_id: "old",
                 seq,
                 tool,
@@ -140,7 +141,7 @@ fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
             ),
         )?;
     }
-    store.conn().execute("INSERT INTO delegated_executions(child_message_id,child_thread_id,parent_thread_id,parent_message_id,request_call_id,ordinal,kind,name,task,state,result,truncated,created_at) VALUES('child-result','child','current','old','spawn',1,'spawn','child','inspect','completed','delegated result',0,1)", [])?;
+    store.conn().execute("INSERT INTO delegated_executions(child_message_id,child_thread_id,parent_thread_id,parent_message_id,request_call_id,ordinal,kind,name,task,state,result,truncated,created_at) VALUES('child-result','child','01ARZ3NDEKTSV4RRFFQ69G5FAV','old','spawn',1,'spawn','child','inspect','completed','delegated result',0,1)", [])?;
     Ok(Fixture {
         directory,
         path,
@@ -249,7 +250,7 @@ fn persist(store: &Store, seq: &Cell<i64>, event: &RuntimeEvent) -> Result<(), V
     let result = events::persist_runtime_event(
         store,
         "",
-        "current",
+        THREAD,
         "run",
         "synthetic",
         false,
@@ -276,7 +277,7 @@ fn config(fixture: &Fixture) -> RuntimeToolConfig {
     RuntimeToolConfig::default()
         .with_conversation_history_reader(context_history::reader(
             fixture.path.clone(),
-            "current".into(),
+            THREAD.into(),
         ))
         .with_credential_reader(Arc::new(|| Ok(vec!["SYNTHETIC-SECRET-0123456789".into()])))
 }
@@ -298,7 +299,7 @@ async fn history_calls_survive_persistence_reopen_and_same_id_reuse() -> TestRes
         ("glob-call", "glob", r#"{"pattern":"*.sqlite"}"#.into()),
     ];
     let provider = scripted_provider(calls);
-    let seq = Cell::new(tool_calls::next_seq(fixture.store.conn(), "current")?);
+    let seq = Cell::new(tool_calls::next_seq(fixture.store.conn(), THREAD)?);
     let outcome = run_agent_with_permission_sink(
         &provider,
         &tools,
@@ -323,11 +324,20 @@ async fn history_calls_survive_persistence_reopen_and_same_id_reuse() -> TestRes
             requests[1]
                 .messages
                 .iter()
-                .find(|message| message.tool_call_id.as_deref() == Some(id))
-                .map(|message| message.content.as_str())
-                .unwrap()
+                .find_map(|message| {
+                    if message.tool_call_id.as_deref() == Some(id) {
+                        return Some(message.content.clone());
+                    }
+                    let observation =
+                        serde_json::from_str::<serde_json::Value>(&message.content).ok()?;
+                    let observation = &observation["vega_history_observation"];
+                    (observation["kind"] == "tool_result" && observation["call_id"] == id)
+                        .then(|| observation["output"].as_str().map(str::to_owned))
+                        .flatten()
+                })
+                .unwrap_or_else(|| panic!("missing provider output for {id}"))
         };
-        let result: serde_json::Value = serde_json::from_str(model_output("messages-call"))?;
+        let result: serde_json::Value = serde_json::from_str(&model_output("messages-call"))?;
         let observation = &result["vega_history_observation"];
         assert_eq!(observation["authority"], "none");
         assert_eq!(observation["page"]["records"][0]["source_id"], "user");
@@ -337,7 +347,7 @@ async fn history_calls_survive_persistence_reopen_and_same_id_reuse() -> TestRes
         assert!(model_output("tools-call").contains("saved skill resource"));
         assert!(model_output("skill-call").contains("saved skill resource"));
         assert!(model_output("delegated-call").contains("delegated result"));
-        let first_page: serde_json::Value = serde_json::from_str(model_output("page-one"))?;
+        let first_page: serde_json::Value = serde_json::from_str(&model_output("page-one"))?;
         assert_eq!(
             first_page["vega_history_observation"]["page"]["next_after_sequence"],
             1
@@ -346,12 +356,12 @@ async fn history_calls_survive_persistence_reopen_and_same_id_reuse() -> TestRes
             first_page["vega_history_observation"]["page"]["has_more"],
             true
         );
-        let second_page: serde_json::Value = serde_json::from_str(model_output("page-two"))?;
+        let second_page: serde_json::Value = serde_json::from_str(&model_output("page-two"))?;
         assert_eq!(
             second_page["vega_history_observation"]["page"]["records"][0]["source_id"],
             "old"
         );
-        let foreign: serde_json::Value = serde_json::from_str(model_output("foreign-call"))?;
+        let foreign: serde_json::Value = serde_json::from_str(&model_output("foreign-call"))?;
         assert_eq!(
             foreign["vega_history_observation"]["page"]["records"],
             serde_json::json!([])
@@ -360,7 +370,7 @@ async fn history_calls_survive_persistence_reopen_and_same_id_reuse() -> TestRes
         assert!(!model_output("foreign-call").contains("foreign private content"));
     }
 
-    let terminal = tool_calls::terminal_results(fixture.store.conn(), "current")?;
+    let terminal = tool_calls::terminal_results(fixture.store.conn(), THREAD)?;
     for id in [
         "messages-call",
         "tools-call",
@@ -380,7 +390,7 @@ async fn history_calls_survive_persistence_reopen_and_same_id_reuse() -> TestRes
         };
         pipeline::validate_recovered_projection(
             "",
-            "current",
+            THREAD,
             id,
             &call.tool,
             &call.input_json,
@@ -392,7 +402,7 @@ async fn history_calls_survive_persistence_reopen_and_same_id_reuse() -> TestRes
         )?;
     }
     assert_eq!(terminal["invalid-call"].input_json, "{}");
-    let page = crate::history::latest_history_page(&fixture.store, "current", 100)?;
+    let page = crate::history::latest_history_page(&fixture.store, THREAD, 100)?;
     for id in [
         "messages-call",
         "tools-call",
@@ -476,7 +486,7 @@ fn history_audits_reject_forged_inputs_approvals_and_results() -> TestResult {
     let validate = |input: &str, output: &str, status, approval: &ApprovalAudit| {
         pipeline::validate_recovered_projection(
             "",
-            "current",
+            THREAD,
             "id",
             "read_conversation",
             input,
@@ -550,7 +560,7 @@ fn history_audits_reject_forged_inputs_approvals_and_results() -> TestResult {
 #[test]
 fn interrupted_history_calls_recover_without_pending_or_false_success() -> TestResult {
     let fixture = fixture()?;
-    let seq = Cell::new(tool_calls::next_seq(fixture.store.conn(), "current")?);
+    let seq = Cell::new(tool_calls::next_seq(fixture.store.conn(), THREAD)?);
     let audit = RuntimeApprovalAudit {
         decision: RuntimeApprovalDecision::Once,
         note: None,
@@ -582,8 +592,8 @@ fn interrupted_history_calls_recover_without_pending_or_false_success() -> TestR
             )?;
         }
     }
-    vega_store::recovery::recover_thread(fixture.store.conn(), "current", 42)?;
-    let terminal = tool_calls::terminal_results(fixture.store.conn(), "current")?;
+    vega_store::recovery::recover_thread(fixture.store.conn(), THREAD, 42)?;
+    let terminal = tool_calls::terminal_results(fixture.store.conn(), THREAD)?;
     for (id, expected, status) in [
         ("pending", "rejected", RuntimeToolStatus::Rejected),
         ("running", "cancelled", RuntimeToolStatus::Cancelled),
@@ -593,7 +603,7 @@ fn interrupted_history_calls_recover_without_pending_or_false_success() -> TestR
         let approval = ApprovalAudit::from_json(&row.approval)?;
         pipeline::validate_recovered_projection(
             "",
-            "current",
+            THREAD,
             id,
             &row.tool,
             &row.input_json,
@@ -604,7 +614,7 @@ fn interrupted_history_calls_recover_without_pending_or_false_success() -> TestR
             row.duration_ms,
         )?;
     }
-    let page = crate::history::latest_history_page(&fixture.store, "current", 100)?;
+    let page = crate::history::latest_history_page(&fixture.store, THREAD, 100)?;
     for id in ["pending", "running"] {
         assert!(page.entries.iter().any(|entry| matches!(entry,
             crate::history::HistoryEntry::Tool { call_id, result: Some(crate::types::ToolCardResultProjection::ReadOnly { .. }), .. } if call_id == id)));
@@ -616,7 +626,7 @@ fn interrupted_history_calls_recover_without_pending_or_false_success() -> TestR
 async fn history_reader_failure_and_exclusive_batches_remain_recoverable() -> TestResult {
     let fixture = fixture()?;
     let tools = vega_tools::Tools::new(&fixture.directory)?;
-    let seq = Cell::new(tool_calls::next_seq(fixture.store.conn(), "current")?);
+    let seq = Cell::new(tool_calls::next_seq(fixture.store.conn(), THREAD)?);
     let failing = RuntimeToolConfig::default().with_conversation_history_reader(Arc::new(|_| {
         Err(VegaError::Tool {
             tool: "read_conversation".into(),
@@ -655,7 +665,7 @@ async fn history_reader_failure_and_exclusive_batches_remain_recoverable() -> Te
     let approval = ApprovalAudit::from_json(failed.approval.as_deref().ok_or("missing approval")?)?;
     pipeline::validate_recovered_projection(
         "",
-        "current",
+        THREAD,
         "failure",
         &failed.tool,
         &failed.input_json,
@@ -699,7 +709,7 @@ async fn history_reader_failure_and_exclusive_batches_remain_recoverable() -> Te
         ApprovalAudit::from_json(rejected.approval.as_deref().ok_or("missing approval")?)?;
     pipeline::validate_recovered_projection(
         "",
-        "current",
+        THREAD,
         "mixed-history",
         &rejected.tool,
         &rejected.input_json,
@@ -716,7 +726,7 @@ async fn history_reader_failure_and_exclusive_batches_remain_recoverable() -> Te
 async fn cancellation_waits_for_reader_and_persists_no_history_content() -> TestResult {
     let fixture = fixture()?;
     let tools = vega_tools::Tools::new(&fixture.directory)?;
-    let seq = Cell::new(tool_calls::next_seq(fixture.store.conn(), "current")?);
+    let seq = Cell::new(tool_calls::next_seq(fixture.store.conn(), THREAD)?);
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
     let entered = Mutex::new(Some(entered_tx));
     let (release_tx, release_rx) = std::sync::mpsc::channel();
@@ -772,7 +782,7 @@ async fn cancellation_waits_for_reader_and_persists_no_history_content() -> Test
     let approval = ApprovalAudit::from_json(row.approval.as_deref().ok_or("missing approval")?)?;
     pipeline::validate_recovered_projection(
         "",
-        "current",
+        THREAD,
         "cancelled",
         &row.tool,
         &row.input_json,
@@ -782,5 +792,223 @@ async fn cancellation_waits_for_reader_and_persists_no_history_content() -> Test
         None,
         None,
     )?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn history_metadata_can_be_redacted_without_losing_the_audit() -> TestResult {
+    let fixture = fixture()?;
+    let tools = vega_tools::Tools::new(&fixture.directory)?;
+    let config = RuntimeToolConfig::default()
+        .with_conversation_history_reader(context_history::reader(
+            fixture.path.clone(),
+            THREAD.into(),
+        ))
+        .with_credential_reader(Arc::new(|| {
+            Ok(vec!["read_skill_resource".into(), "unknown".into()])
+        }));
+    let provider = scripted_provider(vec![
+        (
+            "resource-redacted",
+            "read_conversation",
+            input("skill_resources", Some("resource"), 0),
+        ),
+        (
+            "delegated-redacted",
+            "read_conversation",
+            input("delegated_results", Some("spawn"), 0),
+        ),
+    ]);
+    let seq = Cell::new(tool_calls::next_seq(fixture.store.conn(), THREAD)?);
+    let outcome = run_agent_with_permission_sink(
+        &provider,
+        &tools,
+        request(config, Default::default()),
+        CancellationToken::new(),
+        &RejectPermission,
+        |event| futures::future::ready(persist(&fixture.store, &seq, &event)),
+    )
+    .await?;
+    assert_eq!(outcome.final_text, "continued");
+    for id in ["resource-redacted", "delegated-redacted"] {
+        let row = tool_calls::find_state(fixture.store.conn(), id)?.ok_or("missing call")?;
+        assert_eq!(row.status, "success");
+        let output = row.output_text.ok_or("missing output")?;
+        assert!(!output.contains("read_skill_resource"));
+        assert!(!output.contains("unknown"));
+        assert!(output.contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn credential_change_during_history_read_returns_safe_recoverable_failure() -> TestResult {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let fixture = fixture()?;
+    let tools = vega_tools::Tools::new(&fixture.directory)?;
+    let started = Arc::new(AtomicBool::new(false));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let reader_started = started.clone();
+    let credential_started = started.clone();
+    let config = RuntimeToolConfig::default()
+        .with_conversation_history_reader(Arc::new(move |_| {
+            reader_started.store(true, Ordering::SeqCst);
+            Ok(serde_json::json!({"records":[{"source_id":"user","sequence":1,"role":"user",
+                "message_kind":"text","status":"done","content":"late synthetic secret",
+                "attachments":{"count":0,"encoded_bytes":0}}],"next_after_sequence":1,"has_more":false}))
+        }))
+        .with_credential_reader(Arc::new(move || {
+            if credential_started.load(Ordering::SeqCst) && reads.fetch_add(1, Ordering::SeqCst) > 0 {
+                Ok(vec!["late synthetic secret".into()])
+            } else {
+                Ok(Vec::new())
+            }
+        }));
+    let provider = scripted_provider(vec![(
+        "changing",
+        "read_conversation",
+        input("messages", Some("user"), 0),
+    )]);
+    let seq = Cell::new(tool_calls::next_seq(fixture.store.conn(), THREAD)?);
+    let outcome = run_agent_with_permission_sink(
+        &provider,
+        &tools,
+        request(config, Default::default()),
+        CancellationToken::new(),
+        &RejectPermission,
+        |event| futures::future::ready(persist(&fixture.store, &seq, &event)),
+    )
+    .await?;
+    assert_eq!(outcome.final_text, "continued");
+    let row = tool_calls::find_state(fixture.store.conn(), "changing")?.ok_or("missing call")?;
+    assert_eq!(row.status, "failed");
+    assert_eq!(
+        row.output_text.as_deref(),
+        Some(vega_runtime::CONVERSATION_HISTORY_RETRY_OUTPUT)
+    );
+    let requests = provider.requests.lock().unwrap();
+    assert!(
+        requests[1]
+            .messages
+            .iter()
+            .all(|message| !message.content.contains("late synthetic secret"))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn changed_credentials_invalidate_old_pages_and_same_id_reuse() -> TestResult {
+    let fixture = fixture()?;
+    let tools = vega_tools::Tools::new(&fixture.directory)?;
+    let seq = Cell::new(tool_calls::next_seq(fixture.store.conn(), THREAD)?);
+    let message_input = input("messages", Some("user"), 2);
+    let initial = scripted_provider(vec![(
+        "old-page",
+        "read_conversation",
+        message_input.clone(),
+    )]);
+    let initial_config = RuntimeToolConfig::default().with_conversation_history_reader(
+        context_history::reader(fixture.path.clone(), THREAD.into()),
+    );
+    let outcome = run_agent_with_permission_sink(
+        &initial,
+        &tools,
+        request(initial_config, Default::default()),
+        CancellationToken::new(),
+        &RejectPermission,
+        |event| futures::future::ready(persist(&fixture.store, &seq, &event)),
+    )
+    .await?;
+    assert_eq!(outcome.final_text, "continued");
+    let terminal = tool_calls::terminal_results(fixture.store.conn(), THREAD)?;
+    let old = &terminal["old-page"];
+    assert!(old.output.contains("SYNTHETIC-SECRET-0123456789"));
+    assert!(old.output.contains("next_offset"));
+    let approval = ApprovalAudit::from_json(&old.approval)?;
+    let completed = std::collections::HashMap::from([(
+        "old-page".into(),
+        CompletedToolCall {
+            tool: old.tool.clone(),
+            input_json: old.input_json.clone(),
+            result: RuntimeToolResult {
+                call_id: "old-page".into(),
+                output: old.output.clone(),
+                status: RuntimeToolStatus::Success,
+                reused: true,
+                exit_code: None,
+                duration_ms: None,
+                truncated: None,
+                approval: Some(approval_audit_to_runtime(&approval)),
+                remember_rule: None,
+            },
+        },
+    )]);
+    let retry = scripted_provider(vec![("old-page", "read_conversation", message_input)]);
+    let outcome = run_agent_with_permission_sink(
+        &retry,
+        &tools,
+        request(config(&fixture), completed),
+        CancellationToken::new(),
+        &RejectPermission,
+        |event| futures::future::ready(persist(&fixture.store, &seq, &event)),
+    )
+    .await?;
+    assert_eq!(outcome.final_text, "continued");
+    assert_eq!(outcome.executed_tool_call_count, 0);
+    assert!(outcome.events.iter().any(|event| matches!(event,
+        RuntimeEvent::ToolCallFinished(result) if result.call_id == "old-page"
+            && result.status == RuntimeToolStatus::Failed
+            && result.output == vega_runtime::CONVERSATION_HISTORY_RETRY_OUTPUT)));
+    {
+        let requests = retry.requests.lock().unwrap();
+        assert!(
+            requests[1]
+                .messages
+                .iter()
+                .all(|message| !message.content.contains("SYNTHETIC-SECRET-0123456789"))
+        );
+    }
+    let state = tool_calls::find_state(fixture.store.conn(), "old-page")?.ok_or("missing call")?;
+    let forged = RuntimeToolResult {
+        call_id: "old-page".into(),
+        output: "forged success".into(),
+        status: RuntimeToolStatus::Success,
+        reused: true,
+        exit_code: None,
+        duration_ms: None,
+        truncated: None,
+        approval: Some(approval_audit_to_runtime(&approval)),
+        remember_rule: None,
+    };
+    assert!(events::validate_reused_terminal("", THREAD, &state, &forged).is_err());
+
+    let prepared = pipeline::prepare_run_with_images_and_reasoning(
+        fixture.path.clone(),
+        THREAD.into(),
+        "continue".into(),
+        "system".into(),
+        ulid::Ulid::generate().to_string(),
+        ulid::Ulid::generate().to_string(),
+        PersistenceActorConfig::default().with_owner_credential_reader(Arc::new(|| {
+            Ok(vec!["SYNTHETIC-SECRET-0123456789".into()])
+        })),
+        false,
+        None,
+        None,
+        Vec::new(),
+        None,
+    )?;
+    let next = &prepared.request.completed_tool_results["old-page"]
+        .result
+        .output;
+    assert_eq!(
+        next,
+        vega_store::context_compaction::REDACTED_HISTORY_RESULT
+    );
+    assert!(!next.contains("next_offset"));
+    assert!(!next.contains("SYNTHETIC-SECRET-0123456789"));
+    assert!(prepared.request.history.iter().all(|message| {
+        message.role != ChatRole::Tool || !message.content.contains("SYNTHETIC-SECRET-0123456789")
+    }));
     Ok(())
 }

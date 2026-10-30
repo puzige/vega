@@ -21,6 +21,46 @@ pub(crate) fn valid_history_call_projection(input_json: &str) -> bool {
     input_json == "{}" || vega_runtime::ConversationReadRequest::parse(input_json).is_some()
 }
 
+fn credential_redaction_only(original: &str, projected: &str) -> bool {
+    if original == projected {
+        return true;
+    }
+    let mut parts = projected
+        .split(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER)
+        .peekable();
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    let Some(mut remaining) = original.strip_prefix(first) else {
+        return false;
+    };
+    let mut replaced = false;
+    while let Some(part) = parts.next() {
+        replaced = true;
+        let Some(character) = remaining.chars().next() else {
+            return false;
+        };
+        remaining = &remaining[character.len_utf8()..];
+        if parts.peek().is_none() {
+            return remaining.ends_with(part);
+        }
+        let Some(index) = remaining.find(part) else {
+            return false;
+        };
+        remaining = &remaining[index + part.len()..];
+    }
+    replaced
+}
+
+pub(crate) fn valid_history_retry_output(output: &str) -> bool {
+    [
+        vega_runtime::CONVERSATION_HISTORY_RETRY_OUTPUT,
+        "Tool error: credential safety check unavailable",
+    ]
+    .iter()
+    .any(|expected| credential_redaction_only(expected, output))
+}
+
 fn valid_history_text(value: &serde_json::Value, offset: usize) -> bool {
     let Some(object) = value.as_object() else {
         return false;
@@ -115,8 +155,11 @@ fn valid_history_observation(
                     && record["message_id"].is_string()
                     && record["tool"].is_string()
                     && (request.kind != "skill_resources"
-                        || (record["tool"] == "read_skill_resource"
-                            && record["status"] == "success"))
+                        || (record["tool"].as_str().is_some_and(|tool| {
+                            credential_redaction_only("read_skill_resource", tool)
+                        }) && record["status"]
+                            .as_str()
+                            .is_some_and(|status| credential_redaction_only("success", status))))
                     && valid_history_text(&record["input"], request.content_offset)
                     && valid_history_text(&record["output"], request.content_offset)
             }
@@ -131,7 +174,9 @@ fn valid_history_observation(
                     ]
                     .iter()
                     .all(|field| record[*field].is_string())
-                    && record["worker_liveness"] == "unknown"
+                    && record["worker_liveness"]
+                        .as_str()
+                        .is_some_and(|liveness| credential_redaction_only("unknown", liveness))
                     && record["result_truncated"].is_boolean()
                     && valid_history_text(&record["content"], request.content_offset)
                     && valid_history_text(&record["output"], request.content_offset)
@@ -1923,12 +1968,16 @@ pub(crate) fn validate_recovered_projection(
     if status == RuntimeToolStatus::Rejected
         && approval.decision == Approval::Deny
         && approval.source == ApprovalSource::Validation
-        && matches!(
-            output,
-            "Tool error: mixed Skill load batch rejected other tools"
-                | vega_runtime::USER_QUESTION_BATCH_REJECTED
-                | vega_runtime::STAGE_BATCH_REJECTED
-        )
+        && ([
+            "Tool error: mixed Skill load batch rejected other tools",
+            vega_runtime::USER_QUESTION_BATCH_REJECTED,
+            vega_runtime::STAGE_BATCH_REJECTED,
+        ]
+        .iter()
+        .any(|expected| {
+            output == *expected
+                || (tool == "read_conversation" && credential_redaction_only(expected, output))
+        }))
         && exit_code.is_none()
         && duration_ms.is_none()
         && valid_mixed_skill_rejection_input(tool, input_json)
@@ -1941,42 +1990,57 @@ pub(crate) fn validate_recovered_projection(
             RuntimeToolStatus::Success => {
                 approval.decision == Approval::Once
                     && approval.source == ApprovalSource::ReadonlyTool
-                    && request
-                        .as_ref()
-                        .is_some_and(|request| valid_history_observation(output, request))
+                    && request.as_ref().is_some_and(|request| {
+                        valid_history_observation(output, request)
+                            || credential_redaction_only(
+                                vega_store::context_compaction::REDACTED_HISTORY_RESULT,
+                                output,
+                            )
+                    })
             }
             RuntimeToolStatus::Failed => {
                 request.is_some()
                     && approval.decision == Approval::Once
                     && approval.source == ApprovalSource::ReadonlyTool
-                    && matches!(
+                    && (credential_redaction_only(
+                        "Tool error: conversation details unavailable; check the source or retry",
                         output,
-                        "Tool error: conversation details unavailable; check the source or retry"
-                            | "Tool error: credential safety check unavailable"
-                    )
+                    ) || valid_history_retry_output(output))
             }
             RuntimeToolStatus::Cancelled => {
                 request.is_some()
                     && approval.decision == Approval::Once
                     && approval.source == ApprovalSource::ReadonlyTool
-                    && matches!(
-                        output,
-                        vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT
-                            | vega_store::recovery::RECOVERY_CANCELLED_OUTPUT
-                    )
+                    && [
+                        vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT,
+                        vega_store::recovery::RECOVERY_CANCELLED_OUTPUT,
+                    ]
+                    .iter()
+                    .any(|expected| credential_redaction_only(expected, output))
             }
             RuntimeToolStatus::Rejected => {
                 approval.decision == Approval::Deny
                     && match approval.source {
                         ApprovalSource::RunMode => {
-                            input_json == "{}" && output == "Tool error: denied: unavailable tool"
+                            input_json == "{}"
+                                && credential_redaction_only(
+                                    "Tool error: denied: unavailable tool",
+                                    output,
+                                )
                         }
                         ApprovalSource::Recovery => {
                             valid_history_call_projection(input_json)
-                                && output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT
+                                && credential_redaction_only(
+                                    vega_store::recovery::RECOVERY_REJECTED_OUTPUT,
+                                    output,
+                                )
                         }
                         ApprovalSource::Cancelled => {
-                            request.is_some() && output == vega_runtime::PERMISSION_CANCELLED_OUTPUT
+                            request.is_some()
+                                && credential_redaction_only(
+                                    vega_runtime::PERMISSION_CANCELLED_OUTPUT,
+                                    output,
+                                )
                         }
                         _ => false,
                     }

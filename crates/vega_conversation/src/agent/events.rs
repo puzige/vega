@@ -1686,6 +1686,48 @@ pub(crate) fn validate_reused_terminal(
         .map(u64::try_from)
         .transpose()
         .map_err(|_| safe_audit_error(&state.tool))?;
+    if state.tool == "read_conversation"
+        && result.status == RuntimeToolStatus::Failed
+        && state.output_text.as_deref() != Some(result.output.as_str())
+        && super::pipeline::valid_history_retry_output(&result.output)
+    {
+        let status = match state.status.as_str() {
+            "success" => RuntimeToolStatus::Success,
+            "failed" => RuntimeToolStatus::Failed,
+            "rejected" => RuntimeToolStatus::Rejected,
+            "cancelled" => RuntimeToolStatus::Cancelled,
+            _ => return Err(safe_audit_error(&state.tool)),
+        };
+        if runtime_approval != approval
+            || result.remember_rule.is_some()
+            || result.truncated.is_some()
+            || state.output_full_path.is_some()
+            || result.exit_code != state.exit_code
+            || result.duration_ms != persisted_duration
+        {
+            return Err(safe_audit_error(&state.tool));
+        }
+        let output = state
+            .output_text
+            .as_deref()
+            .ok_or_else(|| safe_audit_error(&state.tool))?;
+        let canonical = validate_recovered_projection(
+            project_id,
+            thread_id,
+            &result.call_id,
+            &state.tool,
+            &state.input_json,
+            output,
+            status,
+            &approval,
+            state.exit_code,
+            persisted_duration,
+        )
+        .map_err(|_| safe_audit_error(&state.tool))?;
+        return tool_inputs_semantically_equal(&state.tool, &canonical, &state.input_json)
+            .then_some(())
+            .ok_or_else(|| safe_audit_error(&state.tool));
+    }
     if state.status != expected_status
         || runtime_approval != approval
         || result.remember_rule.is_some()

@@ -1,6 +1,8 @@
 use super::*;
 
 pub(super) const TOOL: &str = "read_conversation";
+pub const CONVERSATION_HISTORY_RETRY_OUTPUT: &str =
+    "Tool error: conversation result unavailable; request a new read_conversation call.";
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
