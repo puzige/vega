@@ -288,6 +288,13 @@ impl RunActivityGroup {
         cx.notify();
     }
 
+    pub(crate) fn reasoning_completed(&mut self, cx: &mut Context<Self>) {
+        if let Some(card) = self.current_thinking.clone() {
+            self.set_thinking(card, false, cx);
+        }
+        self.finish_thinking(cx);
+    }
+
     pub(crate) fn finish_thinking(&mut self, cx: &mut Context<Self>) {
         if let Some(card) = self.current_thinking.take() {
             for segment in &mut self.segments {
@@ -464,10 +471,13 @@ impl RunActivityGroup {
         preview_changed: bool,
         cx: &mut Context<Self>,
     ) {
-        if self.terminal
-            || self.presentation_released
-            || !preview_changed && self.current_thinking.as_ref() == Some(&card)
-        {
+        if self.terminal || self.presentation_released {
+            return;
+        }
+        let latest_is_card = self.segments.iter().any(|segment| {
+            matches!(&segment.latest_progress, Some(StageProgress::Thinking { card: latest, .. }) if latest == &card)
+        });
+        if !preview_changed && self.current_thinking.as_ref() == Some(&card) && latest_is_card {
             return;
         }
         self.phase = RunPhase::Thinking;
@@ -1121,6 +1131,21 @@ impl RunActivityGroup {
             .any(|child| matches!(child, RunActivityChild::ToolGroup(owned) if owned == group))
     }
 
+    fn segment_headline_notice(&self, segment: usize, cx: &App) -> bool {
+        if self.stage_is_aggregate(segment, cx) {
+            return false;
+        }
+        let headline = self.stage_headline(segment, cx);
+        let thinking_headline = self.segments.get(segment).is_some_and(|state| {
+            matches!(state.latest_progress, Some(StageProgress::Thinking { .. }))
+        });
+        (headline.live || thinking_headline)
+            && self.stage_tool_calls(segment, cx).iter().any(|card| {
+                let card = card.read(cx);
+                !card.is_subagent_invocation() && card.headline_notice(&headline.title).is_some()
+            })
+    }
+
     pub(crate) fn segment_row_count(&self, segment: usize, cx: &App) -> usize {
         if self.process_in_details() {
             return 0;
@@ -1148,6 +1173,7 @@ impl RunActivityGroup {
             children
         };
         usize::from(aggregate)
+            + usize::from(self.segment_headline_notice(segment, cx))
             + children
                 .iter()
                 .filter(|_| !aggregate || expanded)
@@ -1256,6 +1282,11 @@ impl RunActivityGroup {
             .map(|child| Self::estimated_child_height(child, width, cx))
             .sum::<f32>()
             + if tool_leads { top } else { 0. }
+            + if self.segment_headline_notice(segment, cx) {
+                Layout::CONVERSATION_TOOL_HEIGHT
+            } else {
+                0.
+            }
     }
 
     pub(crate) fn estimated_child_height(child: &RunActivityChild, width: f32, cx: &App) -> f32 {
@@ -1660,6 +1691,14 @@ impl RunActivityGroup {
         }
         if let Some(StageProgress::Thinking { card, .. }) = progress {
             let thinking = owns_progress && !card.read(cx).progress_finished;
+            if !thinking && let Some((title, icon)) = self.stage_tool_title(segment, cx) {
+                return StageHeadline {
+                    title,
+                    icon: Some(icon),
+                    live: false,
+                    summary: None,
+                };
+            }
             return StageHeadline {
                 title: vega_i18n::t(if thinking {
                     "ui.thinking"
@@ -1865,6 +1904,10 @@ impl RunActivityGroup {
         let sticky = state.segments[segment_index].sticky.clone();
         let scrolls = state.segments[segment_index].scrolls.clone();
         let shimmering = headline.live;
+        let thinking_headline = state.segments[segment_index]
+            .latest_progress
+            .as_ref()
+            .is_some_and(|progress| matches!(progress, StageProgress::Thinking { .. }));
         let activity_icon = headline.icon;
         let epoch = state.animation_epoch;
         let focused_hidden_thinking = aggregate
@@ -2050,10 +2093,13 @@ impl RunActivityGroup {
                         .filter(|_| !single_thinking && !single_compaction)
                         .map(|child| {
                             let element = match child {
-                                RunActivityChild::Tool(card) if !aggregate && shimmering => {
+                                RunActivityChild::Tool(card)
+                                    if !aggregate && (shimmering || thinking_headline) =>
+                                {
                                     let title = {
                                         let current = card.read(cx);
-                                        if latest_tool.as_ref() == Some(&card)
+                                        if !thinking_headline
+                                            && latest_tool.as_ref() == Some(&card)
                                             && current.is_running()
                                             && current.is_expanded()
                                             && current.stage_activity_category()
@@ -2065,12 +2111,16 @@ impl RunActivityGroup {
                                         }
                                     };
                                     title_view.update(cx, |view, cx| {
-                                        view.set(title.clone(), Some(epoch), cx)
+                                        view.set(title.clone(), shimmering.then_some(epoch), cx)
                                     });
                                     ToolCard::render_with_title(
                                         card,
                                         false,
-                                        Some((title, title_view.clone().into_any_element())),
+                                        Some((
+                                            title,
+                                            headline.icon,
+                                            title_view.clone().into_any_element(),
+                                        )),
                                         window,
                                         cx,
                                     )
