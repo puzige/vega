@@ -16,9 +16,15 @@ pub(crate) fn coordinate() -> Result<MutexGuard<'static, ()>, ConversationError>
 }
 
 pub(crate) fn require_admission_open(store: &Store) -> Result<(), ConversationError> {
-    if vega_store::thread_admission::is_database_paused(store.database_identity())
-        .map_err(storage_error)?
-    {
+    if vega_store::thread_admission::is_database_paused(store.database_identity()).map_err(
+        |_| {
+            ConversationError::Runtime(std::sync::Arc::new(
+                vega_runtime::VegaError::RuntimeFailure(vega_runtime::RuntimeFailureDetail::new(
+                    vega_runtime::RuntimeFailureReason::Admission,
+                )),
+            ))
+        },
+    )? {
         return Err(ConversationError::InvalidTaskIdentity);
     }
     Ok(())
@@ -82,7 +88,10 @@ impl DraftCreationGuard {
                 .config_path
                 .as_deref()
                 .ok_or(ConversationError::InvalidTaskIdentity)?;
-            let edit = vega_store::config::begin_edit(path).map_err(storage_error)?;
+            let edit = vega_store::config::begin_edit(path).map_err(|error| match error {
+                vega_store::config::ConfigError::Io(error) => storage_error(error),
+                _ => ConversationError::CorruptRow("permission configuration invalid".into()),
+            })?;
             if snapshot.configuration_id.as_deref() != Some(configuration_identity(path)?.as_str())
                 || snapshot.permission_revision < 0
                 || snapshot.permission_mode != draft.permission_mode.as_str()
@@ -427,7 +436,12 @@ pub(crate) fn capture_fence(
         } else {
             let mut rules: Vec<_> =
                 vega_store::permissions::list_exact(store.conn(), &thread.project_id)
-                    .map_err(storage_error)?
+                    .map_err(|error| match error {
+                        vega_store::permissions::PermissionsError::Store(error) => {
+                            storage_error(error)
+                        }
+                        _ => ConversationError::InvalidTaskIdentity,
+                    })?
                     .into_iter()
                     .map(|rule| (rule.tool, rule.pattern))
                     .collect();
@@ -554,6 +568,6 @@ pub(crate) fn capture_delegated_fence(
     Ok(fence)
 }
 
-fn storage_error(error: impl std::fmt::Display) -> ConversationError {
-    ConversationError::Store(error.to_string())
+fn storage_error(error: impl Into<vega_runtime::VegaError>) -> ConversationError {
+    ConversationError::Runtime(std::sync::Arc::new(error.into()))
 }

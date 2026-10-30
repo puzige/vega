@@ -357,6 +357,9 @@ impl VegaWindow {
                 })
         {
             active.cancel.cancel();
+            active
+                .stream
+                .update(cx, ConversationStream::cancel_live_bash_clocks);
             stream.update(cx, |stream, cx| {
                 stream.mark_subagent_cancelling(&request.thread_id, &request.message_id, cx)
             });
@@ -372,6 +375,24 @@ impl VegaWindow {
         cx: &mut Context<Self>,
     ) {
         self.bind_question_attention(view, cx);
+        cx.subscribe(
+            view,
+            |this, _, request: &DraftProjectSelectionRequested, cx| {
+                if let Some(mut draft) = this.draft_for_route(&request.thread_id) {
+                    draft.project_id = request.project.clone().unwrap_or_default();
+                    this.mirror_draft(&draft);
+                    if cx
+                        .global::<OpenedThread>()
+                        .0
+                        .as_ref()
+                        .is_some_and(|thread| thread.id == draft.id)
+                    {
+                        cx.set_global(OpenedThread(Some(draft)));
+                    }
+                }
+            },
+        )
+        .detach();
         let view = view.clone();
         cx.subscribe(
             &view,

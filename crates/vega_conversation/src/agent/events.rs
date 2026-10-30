@@ -270,7 +270,16 @@ where
                                     execution_duration_ms,
                                 );
                                 event_sink(&converted)?;
-                                events.push(converted);
+                                let stored = match converted {
+                                    ConversationEvent::ToolCallRunning { call_id, .. } => {
+                                        ConversationEvent::ToolCallRunning {
+                                            call_id,
+                                            bash_started_at: None,
+                                        }
+                                    }
+                                    other => other,
+                                };
+                                events.push(stored);
                             }
                             Ok(())
                         })(),
@@ -430,7 +439,7 @@ fn record_tool_persistence_failure(
     let call_id = match event {
         RuntimeEvent::ToolCallProposed(call) => &call.id,
         RuntimeEvent::ToolCallApproved { call_id, .. }
-        | RuntimeEvent::ToolCallRunning { call_id } => call_id,
+        | RuntimeEvent::ToolCallRunning { call_id, .. } => call_id,
         RuntimeEvent::ToolCallFinished(result)
         | RuntimeEvent::ToolReadFinished { result, .. }
         | RuntimeEvent::ToolCallValidationRejected { result, .. }
@@ -882,7 +891,7 @@ pub(crate) fn persist_runtime_event(
             tool_calls::approve(store.conn(), call_id, &approval_json, remember, now_ms())
                 .map_err(tool_transition_error)?;
         }
-        RuntimeEvent::ToolCallRunning { call_id } => {
+        RuntimeEvent::ToolCallRunning { call_id, .. } => {
             let state = required_tool_state(store, call_id, thread_id)?;
             if state.status != "approved" {
                 return Err(runtime_state_error());
@@ -1283,6 +1292,11 @@ pub(crate) fn required_tool_state(
 pub(crate) fn validate_runtime_proposal(
     call: &vega_runtime::RuntimeToolCall,
 ) -> Result<(), VegaError> {
+    if call.name == "read_conversation" {
+        return super::pipeline::valid_history_call_projection(&call.input_json)
+            .then_some(())
+            .ok_or_else(|| safe_audit_error(&call.name));
+    }
     if vega_runtime::is_subagent_tool(&call.name) {
         return (call.input_json == "{}"
             || vega_runtime::valid_subagent_input(&call.name, &call.input_json))
@@ -1616,12 +1630,18 @@ pub(crate) fn validate_runtime_terminal(
         return Err(runtime_state_error());
     }
     if result_approval.as_ref() != Some(approval)
+        || state.tool == "read_conversation"
+            && result.status != RuntimeToolStatus::Rejected
+            && vega_runtime::ConversationReadRequest::parse(&state.input_json).is_none()
         || (result.status != RuntimeToolStatus::Rejected && result.remember_rule.is_some())
         || matches!(
             result.status,
             RuntimeToolStatus::Rejected | RuntimeToolStatus::Failed
         ) && result.truncated.is_some()
         || result.status == RuntimeToolStatus::Success && result.truncated.is_none()
+        || state.tool == "read_conversation"
+            && result.status == RuntimeToolStatus::Success
+            && result.truncated != Some(false)
         || vega_runtime::computer_use::ComputerUseRun::tool_capability(&state.tool).is_some()
             && result.output == vega_runtime::computer_use::SUPERSEDED_CONTROL_OUTPUT
             && result.truncated.is_some()
@@ -1678,6 +1698,48 @@ pub(crate) fn validate_reused_terminal(
         .map(u64::try_from)
         .transpose()
         .map_err(|_| safe_audit_error(&state.tool))?;
+    if state.tool == "read_conversation"
+        && result.status == RuntimeToolStatus::Failed
+        && state.output_text.as_deref() != Some(result.output.as_str())
+        && super::pipeline::valid_history_retry_output(&result.output)
+    {
+        let status = match state.status.as_str() {
+            "success" => RuntimeToolStatus::Success,
+            "failed" => RuntimeToolStatus::Failed,
+            "rejected" => RuntimeToolStatus::Rejected,
+            "cancelled" => RuntimeToolStatus::Cancelled,
+            _ => return Err(safe_audit_error(&state.tool)),
+        };
+        if runtime_approval != approval
+            || result.remember_rule.is_some()
+            || result.truncated.is_some()
+            || state.output_full_path.is_some()
+            || result.exit_code != state.exit_code
+            || result.duration_ms != persisted_duration
+        {
+            return Err(safe_audit_error(&state.tool));
+        }
+        let output = state
+            .output_text
+            .as_deref()
+            .ok_or_else(|| safe_audit_error(&state.tool))?;
+        let canonical = validate_recovered_projection(
+            project_id,
+            thread_id,
+            &result.call_id,
+            &state.tool,
+            &state.input_json,
+            output,
+            status,
+            &approval,
+            state.exit_code,
+            persisted_duration,
+        )
+        .map_err(|_| safe_audit_error(&state.tool))?;
+        return tool_inputs_semantically_equal(&state.tool, &canonical, &state.input_json)
+            .then_some(())
+            .ok_or_else(|| safe_audit_error(&state.tool));
+    }
     if state.status != expected_status
         || runtime_approval != approval
         || result.remember_rule.is_some()

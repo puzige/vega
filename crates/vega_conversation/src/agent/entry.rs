@@ -787,7 +787,7 @@ where
             ordinary_preparation.as_ref(),
         );
         if let Some(preparation) = ordinary_preparation {
-            preparation.complete(result.is_ok());
+            preparation.complete(result.as_ref().map(|_| ()));
         }
         result
     })

@@ -1,6 +1,230 @@
 use super::*;
 use vega_ui::icons::{Icon, shell_icon_button};
 
+fn clear_confirmed_reasoning_default_ledger(
+    failures: &mut std::collections::HashMap<(String, String), ReasoningDefaultFailure>,
+    provider: &str,
+    model: &str,
+    choice: &str,
+) {
+    failures.retain(|_, failure| {
+        failure.request.defaults.model != model
+            || failure.request.defaults.thinking != choice
+            || failure
+                .request
+                .defaults
+                .reasoning
+                .as_ref()
+                .is_none_or(|profile| profile.provider != provider)
+    });
+}
+
+fn begin_reasoning_default_ledger(
+    failures: &mut std::collections::HashMap<(String, String), ReasoningDefaultFailure>,
+    latest: &mut std::collections::HashMap<(String, String), ComposerDefaultsRequested>,
+    request: &ComposerDefaultsRequested,
+) {
+    let key = (request.thread_id.clone(), request.defaults.model.clone());
+    latest.insert(key.clone(), request.clone());
+    if let Some(failure) = failures.get_mut(&key) {
+        failure.retry_pending = true;
+    }
+}
+
+fn finish_reasoning_default_ledger(
+    failures: &mut std::collections::HashMap<(String, String), ReasoningDefaultFailure>,
+    latest: &mut std::collections::HashMap<(String, String), ComposerDefaultsRequested>,
+    request: &ComposerDefaultsRequested,
+    defaults_failed: Option<bool>,
+) -> bool {
+    let key = (request.thread_id.clone(), request.defaults.model.clone());
+    match latest.get(&key) {
+        None => return false,
+        Some(current) if current != request => {
+            match defaults_failed {
+                Some(true) => {
+                    failures.insert(
+                        key,
+                        ReasoningDefaultFailure {
+                            request: request.clone(),
+                            retry_pending: true,
+                        },
+                    );
+                }
+                Some(false) => {
+                    failures.remove(&key);
+                }
+                None => {}
+            }
+            return false;
+        }
+        Some(_) => {}
+    }
+    latest.remove(&key);
+    match defaults_failed {
+        Some(true) => {
+            failures.insert(
+                key,
+                ReasoningDefaultFailure {
+                    request: request.clone(),
+                    retry_pending: false,
+                },
+            );
+        }
+        Some(false) => {
+            failures.remove(&key);
+        }
+        None => {
+            if let Some(failure) = failures.get_mut(&key) {
+                failure.retry_pending = false;
+            }
+        }
+    }
+    defaults_failed == Some(false)
+}
+
+impl VegaWindow {
+    fn bind_reasoning_default_retry(
+        &mut self,
+        stream: &Entity<ConversationStream>,
+        cx: &mut Context<Self>,
+    ) {
+        self.reasoning_default_retry_subscriptions
+            .retain(|_, (stream, _)| stream.upgrade().is_some());
+        if self
+            .reasoning_default_retry_subscriptions
+            .contains_key(&stream.entity_id())
+        {
+            return;
+        }
+        let subscription = cx.subscribe(
+            stream,
+            |this, stream, event: &ReasoningDefaultRetryRequested, cx| {
+                this.retry_reasoning_default(stream.clone(), event, cx);
+            },
+        );
+        self.reasoning_default_retry_subscriptions
+            .insert(stream.entity_id(), (stream.downgrade(), subscription));
+    }
+
+    pub(crate) fn project_reasoning_default_failures(
+        &self,
+        stream: &Entity<ConversationStream>,
+        thread_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let failures = self
+            .reasoning_default_failures
+            .iter()
+            .filter(|((id, _), _)| id == thread_id)
+            .map(|(_, failure)| failure.clone())
+            .collect();
+        stream.update(cx, |stream, cx| {
+            stream.apply_reasoning_default_failures(failures, cx);
+        });
+    }
+
+    pub(crate) fn begin_reasoning_default_save(
+        &mut self,
+        request: &ComposerDefaultsRequested,
+        cx: &mut Context<Self>,
+    ) {
+        begin_reasoning_default_ledger(
+            &mut self.reasoning_default_failures,
+            &mut self.reasoning_default_latest,
+            request,
+        );
+        self.refresh_reasoning_default_failures(&request.thread_id, cx);
+    }
+
+    pub(crate) fn finish_reasoning_default_save(
+        &mut self,
+        request: &ComposerDefaultsRequested,
+        defaults_failed: Option<bool>,
+        cx: &mut Context<Self>,
+    ) {
+        let confirmed = finish_reasoning_default_ledger(
+            &mut self.reasoning_default_failures,
+            &mut self.reasoning_default_latest,
+            request,
+            defaults_failed,
+        );
+        if confirmed && let Some(profile) = &request.defaults.reasoning {
+            self.clear_reasoning_default_failures_matching(
+                &profile.provider,
+                &request.defaults.model,
+                &request.defaults.thinking,
+                cx,
+            );
+        }
+        self.refresh_reasoning_default_failures(&request.thread_id, cx);
+    }
+
+    pub(crate) fn discard_reasoning_default_failure(
+        &mut self,
+        request: &ComposerDefaultsRequested,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (request.thread_id.clone(), request.defaults.model.clone());
+        if self
+            .reasoning_default_failures
+            .get(&key)
+            .is_some_and(|failure| failure.request == *request)
+        {
+            self.reasoning_default_failures.remove(&key);
+            self.refresh_reasoning_default_failures(&request.thread_id, cx);
+        }
+    }
+
+    pub(crate) fn clear_reasoning_default_failures_matching(
+        &mut self,
+        provider: &str,
+        model: &str,
+        choice: &str,
+        cx: &mut Context<Self>,
+    ) {
+        clear_confirmed_reasoning_default_ledger(
+            &mut self.reasoning_default_failures,
+            provider,
+            model,
+            choice,
+        );
+        if let Some((id, stream)) = &self.stream_view {
+            self.project_reasoning_default_failures(stream, id, cx);
+        }
+        cx.notify();
+    }
+
+    fn refresh_reasoning_default_failures(&self, thread_id: &str, cx: &mut Context<Self>) {
+        if let Some((id, stream)) = &self.stream_view
+            && id == thread_id
+        {
+            self.project_reasoning_default_failures(stream, thread_id, cx);
+        }
+        cx.notify();
+    }
+
+    fn retry_reasoning_default(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        event: &ReasoningDefaultRetryRequested,
+        cx: &mut Context<Self>,
+    ) {
+        let request = &event.request;
+        let key = (request.thread_id.clone(), request.defaults.model.clone());
+        if !self.owns_stream_request(&stream, &request.thread_id, cx)
+            || !self
+                .reasoning_default_failures
+                .get(&key)
+                .is_some_and(|failure| !failure.retry_pending && failure.request == *request)
+        {
+            return;
+        }
+        self.begin_reasoning_default_save(request, cx);
+        self.retry_composer_thinking(stream, request, cx);
+    }
+}
+
 impl Render for VegaWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_language(cx);
@@ -258,6 +482,11 @@ impl Render for VegaWindow {
                                 })
                                 .cloned()
                         })
+                        .or_else(|| {
+                            self.retained_drafts
+                                .get(&thread.id)
+                                .map(|(_, stream)| stream.clone())
+                        })
                         .or_else(|| self.composer_prediction_stream(&thread.id))
                         .or_else(|| self.automation_controller.streams.get(&thread.id).cloned())
                         .or_else(|| match &self.stream_view {
@@ -421,6 +650,9 @@ impl Render for VegaWindow {
                                 view
                             }
                         };
+                        self.bind_reasoning_default_retry(&stream, cx);
+                        self.project_reasoning_default_failures(&stream, &thread.id, cx);
+                        self.project_pending_reasoning_intents(&stream, &thread.id, cx);
                         if notification_tail {
                             self.completion_attention.pending_tail_thread = None;
                             stream.update(cx, ConversationStream::resume_tail);

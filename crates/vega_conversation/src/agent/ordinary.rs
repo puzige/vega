@@ -167,12 +167,16 @@ impl OrdinaryPreparation {
         Ok(receipt)
     }
 
-    pub(crate) fn complete(self, success: bool) {
-        let _ = self.worker.complete(if success {
-            Ok(())
-        } else {
-            Err(SubmissionFailure::PreparationFailed)
-        });
+    pub(crate) fn complete(self, result: Result<(), &ConversationError>) {
+        let _ = self.worker.complete(result.map_err(|error| {
+            if matches!(error, ConversationError::Runtime(error) if matches!(error.as_ref(), vega_runtime::VegaError::Cancelled)) {
+                SubmissionFailure::Cancelled
+            } else {
+                SubmissionFailure::Preparation(crate::submission_diagnostics::conversation_failure(
+                    crate::submission_diagnostics::PreparationStage::Conversation, error,
+                ))
+            }
+        }));
     }
 }
 
@@ -324,5 +328,55 @@ pub(crate) fn verified_admission(
             Ok(admission.clone())
         }
         None => crate::thread_access::acquire(store, thread),
+    }
+}
+
+#[cfg(test)]
+mod preparation_tests {
+    use super::*;
+    use crate::submission_diagnostics::{PreparationReason, PreparationStage};
+    use crate::types::RawSubmission;
+
+    #[test]
+    fn completion_keeps_database_cause_before_root_generic_failure() {
+        let store = Store::open(":memory:").unwrap();
+        let thread = ulid::Ulid::generate().to_string();
+        let admission =
+            vega_store::thread_admission::try_acquire(store.database_identity(), &thread)
+                .unwrap()
+                .unwrap();
+        let raw = RawSubmission::new("body".into(), vec![], vec![], 1, "model".into(), None, None);
+        let (submission, worker) =
+            OrdinarySubmission::begin(store.database_identity(), thread, raw, admission).unwrap();
+        let attempt = worker.attempt_id();
+        let run = OrdinaryRun::new(submission.clone(), Arc::new(worker));
+        let preparation = OrdinaryPreparation::register(&run).unwrap();
+        let error = store
+            .conn()
+            .execute("INSERT INTO nonexistent VALUES (1)", [])
+            .unwrap_err();
+        let error = ConversationError::Runtime(Arc::new(error.into()));
+        preparation.complete(Err(&error));
+        let OrdinaryRun {
+            worker, lifetime, ..
+        } = run;
+        finish_ordinary_worker(
+            &submission,
+            attempt,
+            worker,
+            Err(SubmissionFailure::PreparationFailed),
+        );
+        drop(lifetime);
+        let snapshot = submission.snapshot();
+        let failure = snapshot.attempts.last().unwrap().failure.unwrap();
+        let SubmissionFailure::Preparation(detail) = failure else {
+            panic!("lost concrete failure")
+        };
+        assert_eq!(detail.stage, PreparationStage::Conversation);
+        assert_eq!(detail.reason, PreparationReason::Database);
+        assert_eq!(detail.sqlite_code, Some(1));
+        let exported = submission.preparation_diagnostics(attempt).unwrap();
+        assert!(exported.contains("database"));
+        assert!(!exported.contains("nonexistent"));
     }
 }

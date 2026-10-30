@@ -134,7 +134,7 @@ impl Recorder {
                 self.proposed(&call)?;
                 self.tool_finished(&result);
             }
-            RuntimeEvent::ToolCallRunning { call_id } => {
+            RuntimeEvent::ToolCallRunning { call_id, .. } => {
                 self.running.insert(call_id.clone());
                 self.trace
                     .push(json!({"event": "tool_running", "call_id": call_id}));

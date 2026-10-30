@@ -140,6 +140,112 @@ pub(crate) fn bind_shortcuts(window: AnyWindowHandle, root: WeakEntity<VegaWindo
 }
 
 impl VegaWindow {
+    fn retain_active_draft(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(draft) = self.draft.clone() else {
+            return true;
+        };
+        if let Some((stored, _)) = self.retained_drafts.get_mut(&draft.id) {
+            *stored = draft;
+            return true;
+        }
+        if self
+            .stream_view
+            .as_ref()
+            .is_none_or(|(id, _)| id != &draft.id)
+        {
+            return true;
+        }
+        if self.retained_drafts.len() >= 8 {
+            self.sidebar.update(cx, |sidebar, cx| {
+                sidebar.set_draft_creation_error("app.navigation.draft_full", cx)
+            });
+            return false;
+        }
+        if let Some((id, stream)) = &self.stream_view
+            && id == &draft.id
+        {
+            self.retained_drafts
+                .insert(id.clone(), (draft, stream.clone()));
+        }
+        true
+    }
+
+    pub(super) fn publish_retained_drafts(&mut self, cx: &mut Context<Self>) {
+        let mut entries: Vec<_> = self
+            .retained_drafts
+            .values()
+            .map(|(thread, stream)| {
+                let input = stream.read(cx).composer_input();
+                let text = input.read(cx).text();
+                let label: String = text.chars().take(60).collect();
+                vega_ui::sidebar::RetainedDraftEntry {
+                    id: thread.id.clone(),
+                    label: if label.trim().is_empty() {
+                        thread.model.clone()
+                    } else {
+                        label
+                    },
+                }
+            })
+            .collect();
+        entries.sort_by(|a, b| a.id.cmp(&b.id));
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.set_retained_drafts(entries, cx));
+    }
+
+    pub(super) fn create_retained_draft(
+        &mut self,
+        project: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.default_permission_save_pending(cx) || !self.retain_active_draft(cx) {
+            return;
+        }
+        let defaults = cx
+            .try_global::<NewTaskDefaults>()
+            .cloned()
+            .unwrap_or_default();
+        let mut draft = vega_conversation::threads::draft_thread_from_defaults(
+            project.as_deref(),
+            &defaults.model,
+            defaults.permission,
+        );
+        draft.reasoning_preferences = defaults.reasoning_preferences;
+        self.draft = Some(draft.clone());
+        cx.set_global(SelectedProject(project));
+        cx.set_global(OpenedThread(Some(draft)));
+        cx.set_global(SettingsOpen(false));
+        self.publish_retained_drafts(cx);
+        self.sync_navigation(cx);
+        cx.notify();
+    }
+
+    pub(super) fn restore_retained_draft(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some((thread, _)) = self.retained_drafts.get(id).cloned() else {
+            return;
+        };
+        if self.default_permission_save_pending(cx) {
+            return;
+        }
+        let target = self.retained_drafts.remove(id);
+        if !self.retain_active_draft(cx) {
+            if let Some(target) = target {
+                self.retained_drafts.insert(id.to_owned(), target);
+            }
+            return;
+        }
+        if let Some((_, stream)) = target {
+            self.stream_view = Some((id.to_owned(), stream));
+        }
+        self.draft = Some(thread.clone());
+        cx.set_global(SelectedProject(thread.project_binding().map(str::to_owned)));
+        cx.set_global(OpenedThread(Some(thread)));
+        cx.set_global(SettingsOpen(false));
+        self.publish_retained_drafts(cx);
+        self.sync_navigation(cx);
+        cx.notify();
+    }
+
     fn draft_id(&self) -> Option<&str> {
         self.draft.as_ref().map(|draft| draft.id.as_str())
     }
@@ -257,7 +363,7 @@ impl VegaWindow {
     }
 
     // Capacity checks precede teardown. The active editor is never evicted.
-    fn retain_departing_draft(&mut self, destination: &Projection, cx: &App) -> bool {
+    fn retain_departing_draft(&mut self, destination: &Projection, cx: &mut Context<Self>) -> bool {
         let Some((id, stream)) = &self.stream_view else {
             return true;
         };
@@ -267,6 +373,11 @@ impl VegaWindow {
             .is_some_and(|thread| &thread.id == id)
         {
             return true;
+        }
+        if self.is_draft_route(id) {
+            let retained = self.retain_active_draft(cx);
+            self.publish_retained_drafts(cx);
+            return retained;
         }
         let input = stream.read(cx).composer_input();
         let text = input.read(cx).text();

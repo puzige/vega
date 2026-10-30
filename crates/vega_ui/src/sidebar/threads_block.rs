@@ -14,7 +14,7 @@ pub enum ThreadsBlockEvent {
         started: std::time::Instant,
     },
     OpeningChanged,
-    DraftOpened,
+    DraftRequested(Option<String>),
 }
 
 impl EventEmitter<ThreadsBlockEvent> for ThreadsBlock {}
@@ -235,11 +235,7 @@ impl ThreadsBlock {
             }
         }
         self.error = None;
-        cx.set_global(SelectedProject(project_id));
-        cx.set_global(OpenedThread(None));
-        self.reload(cx);
-        cx.emit(ThreadsBlockEvent::DraftOpened);
-        cx.refresh_windows();
+        cx.emit(ThreadsBlockEvent::DraftRequested(project_id));
     }
 
     /// Click = open: bumps `threads.updated_at` + the owning project's

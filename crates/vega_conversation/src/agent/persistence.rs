@@ -282,12 +282,18 @@ impl PersistenceActor {
                 }) {
                 Ok(store) => store,
                 Err(error) => {
+                    let error = VegaError::Store(error)
+                        .at_runtime_stage(vega_runtime::RuntimeFailureStage::EventPipeline);
                     if let Some(task) = ordinary_task {
-                        task.complete(Err(crate::types::SubmissionFailure::LaunchFailed));
+                        task.complete(Err(crate::types::SubmissionFailure::Preparation(
+                            crate::submission_diagnostics::runtime_failure(
+                                crate::submission_diagnostics::PreparationStage::Launch,
+                                &error,
+                            ),
+                        )));
                     }
                     let _ = ready.send(Err(()));
-                    return Err(VegaError::Store(error)
-                        .at_runtime_stage(vega_runtime::RuntimeFailureStage::EventPipeline));
+                    return Err(error);
                 }
             };
             if config

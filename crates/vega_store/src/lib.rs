@@ -28,6 +28,7 @@ pub mod recovery;
 pub mod run_diagnostics;
 pub mod sidebar_organization;
 pub mod skills;
+pub mod submission_diagnostics;
 
 pub mod delegated_ownership;
 pub mod delegated_stages;
@@ -101,6 +102,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0049_context_projection.sql"),
     include_str!("../migrations/0050_context_micro_compactions.sql"),
     include_str!("../migrations/0051_context_precompute.sql"),
+    include_str!("../migrations/0052_submission_diagnostics.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.

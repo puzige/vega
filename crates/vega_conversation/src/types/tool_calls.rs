@@ -279,6 +279,7 @@ pub enum ReadOnlyToolKind {
     Read,
     Glob,
     Grep,
+    ConversationHistory,
 }
 
 /// Vega-owned, read-only Skill tools. This is display metadata only and does
@@ -317,6 +318,7 @@ impl ReadOnlyToolKind {
             Self::Read => "read",
             Self::Glob => "glob",
             Self::Grep => "grep",
+            Self::ConversationHistory => "read_conversation",
         }
     }
 }
@@ -524,6 +526,18 @@ pub fn tool_card_description(call: &ToolCall) -> Option<String> {
 }
 
 pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
+    if call.tool == "read_conversation" {
+        return if crate::agent::valid_history_call_projection(&call.input_json) {
+            ToolCardInputProjection::ReadOnly {
+                tool: ReadOnlyToolKind::ConversationHistory,
+                permission_path: None,
+                display_target: None,
+                detail_target: None,
+            }
+        } else {
+            ToolCardInputProjection::Corrupt
+        };
+    }
     if vega_runtime::is_subagent_tool(&call.tool) {
         if call.input_json != "{}"
             && !vega_runtime::valid_subagent_input(&call.tool, &call.input_json)
@@ -665,7 +679,9 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
                                         .file_name()
                                         .map(|name| name.to_string_lossy().into_owned())
                                 }),
-                            ReadOnlyToolKind::Glob | ReadOnlyToolKind::Grep => None,
+                            ReadOnlyToolKind::Glob
+                            | ReadOnlyToolKind::Grep
+                            | ReadOnlyToolKind::ConversationHistory => None,
                         }
                     })
                     .filter(|target| !target.trim().is_empty());
@@ -677,6 +693,7 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
                             ReadOnlyToolKind::Read => &["path"],
                             ReadOnlyToolKind::Glob => &["pattern"],
                             ReadOnlyToolKind::Grep => &["pattern", "path"],
+                            ReadOnlyToolKind::ConversationHistory => &[],
                         };
                         fields
                             .iter()

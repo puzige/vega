@@ -10,13 +10,13 @@ pub use crate::ordinary_submissions::{
 pub use crate::run_credentials::RunCredentialReader;
 pub use prediction_diagnostics::{PredictionEvent, record_prediction_event};
 use std::sync::Arc;
-pub use vega_runtime::ImageAttachment;
 pub use vega_runtime::computer_use::{
     Capability, ComponentState, ComputerUseControl, ComputerUseError, ComputerUseRun, ControlPhase,
     ControlSnapshot, DesktopTarget, DirectCapture, DirectCaptureReason, ExtensionState,
     ManagedComponents, Observation, PermissionState, Preparation, PreparationProbe, PromptMode,
     SUPERSEDED_CONTROL_OUTPUT, Target, preparation_from_check_permissions, unknown_preparation,
 };
+pub use vega_runtime::{BashStartClock, ImageAttachment};
 pub use vega_store::messages::RunContinuation;
 pub use vega_store::thread_admission::{
     AdmissionError, DatabaseAdmissionPause, DatabaseIdentity, ThreadAdmission,

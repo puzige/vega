@@ -145,6 +145,7 @@ pub(crate) struct VegaWindow {
     pub(crate) message_location_request_generation: u64,
     pub(crate) deferred_message_location: Option<DeferredMessageLocation>,
     pub(crate) draft: Option<Thread>,
+    retained_drafts: std::collections::HashMap<String, (Thread, Entity<ConversationStream>)>,
     pub(crate) agent_controller: AppAgentController,
     pub(crate) automation_controller: crate::automation_controller::AutomationController,
     pub(crate) context_controller: context::ContextController,
@@ -177,8 +178,13 @@ pub(crate) struct VegaWindow {
     /// Settings entity and still blocks a new run until the exact ack lands.
     pub(crate) reasoning_save_pending: Option<(u64, u64)>,
     pub(crate) composer_reasoning_operation: u64,
-    pub(crate) pending_composer_thinking:
-        Vec<(Entity<ConversationStream>, ComposerDefaultsRequested)>,
+    pending_composer_thinking: Vec<reasoning::PendingComposerThinking>,
+    pub(crate) reasoning_default_failures:
+        std::collections::HashMap<(String, String), ReasoningDefaultFailure>,
+    pub(crate) reasoning_default_latest:
+        std::collections::HashMap<(String, String), ComposerDefaultsRequested>,
+    pub(crate) reasoning_default_retry_subscriptions:
+        std::collections::HashMap<EntityId, (WeakEntity<ConversationStream>, Subscription)>,
     /// Provider Settings saves request a model catalog reload. If a reasoning
     /// save owns the catalog authority, defer that reload until its ack so the
     /// two workers cannot regress each other's projections.
@@ -324,6 +330,10 @@ impl VegaWindow {
                 cx.notify();
             }
             SidebarEvent::OpeningChanged => cx.notify(),
+            SidebarEvent::NewDraftRequested(project) => {
+                this.create_retained_draft(project.clone(), cx)
+            }
+            SidebarEvent::DraftRestoreRequested(id) => this.restore_retained_draft(id, cx),
         })
         .detach();
         let mut window = Self {
@@ -349,6 +359,7 @@ impl VegaWindow {
             message_location_request_generation: 0,
             deferred_message_location: None,
             draft: None,
+            retained_drafts: Default::default(),
             agent_controller: AppAgentController::default(),
             automation_controller: crate::automation_controller::AutomationController::default(),
             context_controller: context::ContextController::default(),
@@ -382,6 +393,9 @@ impl VegaWindow {
             reasoning_save_pending: None,
             composer_reasoning_operation: 0,
             pending_composer_thinking: Vec::new(),
+            reasoning_default_failures: std::collections::HashMap::new(),
+            reasoning_default_latest: std::collections::HashMap::new(),
+            reasoning_default_retry_subscriptions: std::collections::HashMap::new(),
             model_catalog_refresh_pending: false,
             reasoning_error_hold: None,
             model_catalog_loading: false,

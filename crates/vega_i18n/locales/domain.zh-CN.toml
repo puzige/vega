@@ -128,7 +128,7 @@
 "domain.credential.missing" = "本地凭据不存在，请在设置中重新输入 API Key"
 "domain.credential.unsafe" = "本地凭据路径、类型或权限不安全"
 "domain.credential.unsupported" = "当前平台尚不支持安全的本地凭据存储"
-"domain.failure.audit" = "工具记录未通过安全校验。请重新打开对话、检查工具记录后重试。"
+"domain.failure.audit" = "工具安全校验失败，请重试。"
 "domain.failure.context_limit" = "上下文超出可用容量。对话已保留。请缩短当前输入或移除图片后重试。长任务可缩小工具查询范围或新建对话。"
 "domain.failure.credential_block" = "无法安全转换请求。已完成的工具操作已保留。请检查工具配置后继续。"
 "domain.failure.credential_check" = "无法读取凭据。请在设置中检查凭据后继续。已完成的操作已保留。"

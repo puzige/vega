@@ -1,6 +1,25 @@
 use super::*;
 use crate::cua_onboarding::lifecycle::TaskContext;
 
+static NEXT_REASONING_INTENT_REVISION: AtomicU64 = AtomicU64::new(1);
+
+fn reasoning_default_failures_for_thread(
+    failures: Vec<ReasoningDefaultFailure>,
+    thread_id: &str,
+) -> Vec<ReasoningDefaultFailure> {
+    let mut failures: Vec<_> = failures
+        .into_iter()
+        .filter(|failure| failure.request.thread_id == thread_id)
+        .collect();
+    failures.sort_by(|left, right| {
+        left.request
+            .defaults
+            .model
+            .cmp(&right.request.defaults.model)
+    });
+    failures
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModelPickerLevel {
     /// Nothing is mounted.
@@ -121,6 +140,7 @@ pub struct ConversationStream {
     pub(crate) active_agent_message: Option<(String, usize)>,
     pub(crate) assistant_model_dirty: bool,
     pub(crate) active_run_activity: Option<(String, Entity<RunActivityGroup>)>,
+    pub(crate) bash_clock_cancel_requested: bool,
     pub(crate) active_run_activity_segment: Option<usize>,
     pub(crate) active_agent_sequence: Option<i64>,
     pub(crate) active_segment_ordinal: usize,
@@ -188,8 +208,9 @@ pub struct ConversationStream {
     /// Keyboard stop for the visible failed-index Retry action.
     pub(crate) file_retry_focus: FocusHandle,
     pub(crate) composer_defaults: ComposerDefaults,
-    pub(crate) reasoning_intent_revision: u64,
     pub(crate) reasoning_intents: HashMap<String, (u64, ReasoningChoice)>,
+    pub(crate) reasoning_default_failures: Vec<ReasoningDefaultFailure>,
+    pub(crate) reasoning_default_retry_focuses: HashMap<String, FocusHandle>,
     pub(crate) selector_reasoning: Option<ReasoningProfileProjection>,
     pub(crate) thinking_slider: Entity<ThinkingSlider>,
     pub(crate) model_options: Vec<ModelOption>,
@@ -227,6 +248,7 @@ pub struct ConversationStream {
 impl EventEmitter<crate::cua_onboarding::PreparationRequested> for ConversationStream {}
 impl EventEmitter<ImagePreviewRequested> for ConversationStream {}
 impl EventEmitter<PlanReviewRequested> for ConversationStream {}
+impl EventEmitter<DraftProjectSelectionRequested> for ConversationStream {}
 impl EventEmitter<ThreadSettingsRequested> for ConversationStream {}
 impl EventEmitter<ThreadPermissionReloadRequested> for ConversationStream {}
 impl EventEmitter<ComposerSubmitted> for ConversationStream {}
@@ -248,6 +270,7 @@ impl EventEmitter<ComposerStopRequested> for ConversationStream {}
 impl EventEmitter<ComposerResumeRequested> for ConversationStream {}
 impl EventEmitter<FileIndexRetryRequested> for ConversationStream {}
 impl EventEmitter<ComposerDefaultsRequested> for ConversationStream {}
+impl EventEmitter<ReasoningDefaultRetryRequested> for ConversationStream {}
 impl EventEmitter<ThreadModelSelectionRequested> for ConversationStream {}
 impl EventEmitter<TaskBackendSelectionRequested> for ConversationStream {}
 
@@ -561,6 +584,7 @@ impl ConversationStream {
             active_agent_message: None,
             assistant_model_dirty: false,
             active_run_activity: None,
+            bash_clock_cancel_requested: false,
             active_run_activity_segment: None,
             active_agent_sequence: None,
             active_segment_ordinal: 0,
@@ -615,8 +639,9 @@ impl ConversationStream {
             file_index_failure: None,
             file_retry_focus: cx.focus_handle().tab_stop(true),
 
-            reasoning_intent_revision: 0,
             reasoning_intents: HashMap::new(),
+            reasoning_default_failures: Vec::new(),
+            reasoning_default_retry_focuses: HashMap::new(),
             composer_defaults: ComposerDefaults {
                 model: initial_model,
                 thinking: "provider_default".to_string(),
@@ -1211,6 +1236,44 @@ impl ConversationStream {
         cx.notify();
     }
 
+    pub fn apply_reasoning_default_failures(
+        &mut self,
+        failures: Vec<ReasoningDefaultFailure>,
+        cx: &mut Context<Self>,
+    ) {
+        let failures = reasoning_default_failures_for_thread(failures, &self.thread.id);
+        if self.reasoning_default_failures == failures {
+            return;
+        }
+        self.reasoning_default_retry_focuses.retain(|model, _| {
+            failures
+                .iter()
+                .any(|failure| !failure.retry_pending && failure.request.defaults.model == *model)
+        });
+        for failure in &failures {
+            if !failure.retry_pending {
+                self.reasoning_default_retry_focuses
+                    .entry(failure.request.defaults.model.clone())
+                    .or_insert_with(|| cx.focus_handle().tab_stop(true));
+            }
+        }
+        self.reasoning_default_failures = failures;
+        cx.notify();
+    }
+
+    pub fn request_reasoning_default_retry(&mut self, model: &str, cx: &mut Context<Self>) {
+        let Some(failure) = self
+            .reasoning_default_failures
+            .iter()
+            .find(|failure| failure.request.defaults.model == model && !failure.retry_pending)
+        else {
+            return;
+        };
+        cx.emit(ReasoningDefaultRetryRequested {
+            request: failure.request.clone(),
+        });
+    }
+
     pub fn apply_codex_route_error(&mut self, message: &'static str, cx: &mut Context<Self>) {
         self.apply_codex_route_failure(message.into(), cx);
     }
@@ -1392,16 +1455,13 @@ impl ConversationStream {
         if let Some(profile) = self.selector_reasoning.as_mut() {
             profile.preference = reasoning_choice_for_name(&event.choice);
         }
-        self.reasoning_intent_revision = self.reasoning_intent_revision.wrapping_add(1);
+        let revision = NEXT_REASONING_INTENT_REVISION.fetch_add(1, Ordering::Relaxed);
         self.reasoning_intents.insert(
             event.model.clone(),
-            (
-                self.reasoning_intent_revision,
-                reasoning_choice_for_name(&event.choice),
-            ),
+            (revision, reasoning_choice_for_name(&event.choice)),
         );
         cx.emit(ComposerDefaultsRequested {
-            revision: self.reasoning_intent_revision,
+            revision,
             thread_id: self.thread.id.clone(),
             defaults,
         });
@@ -1966,6 +2026,11 @@ fn reasoning_choice_for_name(name: &str) -> ReasoningChoice {
 impl EventEmitter<CredentialContinuationRequested> for ConversationStream {}
 
 impl ConversationStream {
+    pub fn mark_session_reasoning_unavailable(&mut self, cx: &mut Context<Self>) {
+        self.thread.reasoning_preferences = None;
+        self.mark_reasoning_unavailable(cx);
+    }
+
     pub fn apply_session_reasoning_preferences(
         &mut self,
         preferences: Vec<vega_conversation::types::SessionReasoningPreference>,
@@ -1978,6 +2043,33 @@ impl ConversationStream {
 }
 
 impl ConversationStream {
+    pub fn restore_reasoning_intent(
+        &mut self,
+        request: &ComposerDefaultsRequested,
+        cx: &mut Context<Self>,
+    ) {
+        if self.thread.id != request.thread_id {
+            return;
+        }
+        let choice = reasoning_choice_for_name(&request.defaults.thinking);
+        if self.reasoning_intents.get(&request.defaults.model)
+            == Some(&(request.revision, choice.clone()))
+        {
+            return;
+        }
+        self.reasoning_intents.insert(
+            request.defaults.model.clone(),
+            (request.revision, choice.clone()),
+        );
+        if let Some(profile) = self.selector_reasoning.as_mut()
+            && profile.model == request.defaults.model
+        {
+            profile.preference = choice;
+            self.sync_thinking_slider(cx);
+        }
+        cx.notify();
+    }
+
     pub fn acknowledge_reasoning_intent(
         &mut self,
         request: &ComposerDefaultsRequested,

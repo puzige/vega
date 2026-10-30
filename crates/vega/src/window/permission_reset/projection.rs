@@ -1,9 +1,38 @@
 use super::*;
 use vega_ui::interaction::InteractionExt;
 
+fn merge_permission_refresh(current: &Thread, saved: &Thread) -> Thread {
+    let mut refreshed = current.clone();
+    refreshed.permission_mode = saved.permission_mode;
+    refreshed.permission_revision = saved.permission_revision;
+    refreshed.draft_authority_epoch = saved.draft_authority_epoch.clone();
+    refreshed.full_access_grant = saved.full_access_grant.clone();
+    refreshed.default_permission = saved.default_permission.clone();
+    refreshed
+}
+
+fn reset_retained_draft_permissions(thread: &Thread) -> Thread {
+    let mut draft = thread.clone();
+    if draft.permission_mode == PermissionMode::FullAccess {
+        draft.permission_mode = PermissionMode::Confirm;
+    }
+    draft.draft_authority_epoch = None;
+    draft.full_access_grant = None;
+    draft.default_permission = None;
+    draft
+}
+
 impl VegaWindow {
+    pub(in crate::window) fn project_retained_draft_permission_reset(thread: &Thread) -> Thread {
+        reset_retained_draft_permissions(thread)
+    }
+
     pub(super) fn permission_reset_streams(&self) -> Vec<Entity<ConversationStream>> {
-        let mut streams = Vec::new();
+        let mut streams: Vec<_> = self
+            .retained_drafts
+            .values()
+            .map(|(_, stream)| stream.clone())
+            .collect();
         if let Some((_, stream)) = &self.stream_view {
             streams.push(stream.clone());
         }
@@ -57,7 +86,10 @@ impl VegaWindow {
         if self.composer_config_path().as_ref() != Some(path) {
             return false;
         }
-        let defaults = NewTaskDefaults::from_config(Some(path), &refresh.config.defaults);
+        let mut defaults = NewTaskDefaults::from_config(Some(path), &refresh.config.defaults);
+        defaults.reasoning_preferences = cx
+            .try_global::<NewTaskDefaults>()
+            .and_then(|previous| previous.reasoning_preferences.clone());
         let streams = self.permission_reset_streams();
         let project = |thread: &Thread| -> Option<Thread> {
             if let Some(saved) = refresh
@@ -66,21 +98,11 @@ impl VegaWindow {
                 .find(|saved| saved.thread.id == thread.id)
             {
                 return (saved.thread.project_id == thread.project_id)
-                    .then(|| saved.thread.clone());
+                    .then(|| merge_permission_refresh(thread, &saved.thread));
             }
-            self.draft
-                .as_ref()
-                .filter(|draft| draft.id == thread.id && draft.project_id == thread.project_id)
-                .map(|_| {
-                    let mut draft = thread.clone();
-                    if draft.permission_mode == PermissionMode::FullAccess {
-                        draft.permission_mode = PermissionMode::Confirm;
-                    }
-                    draft.draft_authority_epoch = None;
-                    draft.full_access_grant = None;
-                    draft.default_permission = None;
-                    draft
-                })
+            self.draft_for_route(&thread.id)
+                .filter(|draft| draft.project_id == thread.project_id)
+                .map(|_| Self::project_retained_draft_permission_reset(thread))
         };
         let mut projected = Vec::new();
         for stream in streams {
@@ -108,6 +130,19 @@ impl VegaWindow {
             }
             None => None,
         };
+        let mut retained_drafts = Vec::new();
+        for (_, thread) in &projected {
+            if let Some(draft) = self.draft_for_route(&thread.id)
+                && !retained_drafts
+                    .iter()
+                    .any(|existing: &Thread| existing.id == draft.id)
+            {
+                let Some(draft) = project(&draft) else {
+                    return false;
+                };
+                retained_drafts.push(draft);
+            }
+        }
         for (stream, thread) in projected {
             let saved = refresh
                 .threads
@@ -132,6 +167,9 @@ impl VegaWindow {
         }
         cx.set_global(defaults);
         self.draft = draft;
+        for draft in retained_drafts {
+            self.mirror_draft(&draft);
+        }
         cx.set_global(OpenedThread(opened));
         if let Some(view) = &self.settings_view {
             let values = DefaultPermissionValues::from(&refresh.config.defaults);

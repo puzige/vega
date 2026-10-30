@@ -3,7 +3,7 @@ use std::fmt;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -634,6 +634,33 @@ struct RuntimeSkillConfig {
     authority_probe: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
+#[derive(Clone)]
+pub struct BashStartClock {
+    started_at: Arc<OnceLock<std::time::Instant>>,
+    cancel: CancellationToken,
+}
+
+impl BashStartClock {
+    fn new(cancel: CancellationToken) -> (Self, Arc<OnceLock<std::time::Instant>>) {
+        let started_at = Arc::new(OnceLock::new());
+        (
+            Self {
+                started_at: started_at.clone(),
+                cancel,
+            },
+            started_at,
+        )
+    }
+
+    pub fn started_at(&self) -> Option<std::time::Instant> {
+        self.started_at.get().copied()
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
+}
+
 /// Cancellable permission boundary implemented by conversation/UI.
 pub trait RuntimePermissionHook: Send + Sync {
     /// Requests one content-free decision.
@@ -650,6 +677,7 @@ pub trait RuntimePermissionHook: Send + Sync {
         _prepared: vega_tools::PreparedBash,
         _policy: vega_tools::BashLaunchPolicy,
         _cancel: CancellationToken,
+        _started_at: Option<Arc<std::sync::OnceLock<std::time::Instant>>>,
     ) -> BoxFuture<'a, Result<vega_tools::BashOutput, vega_tools::BashError>> {
         async {
             Err(vega_tools::BashError::new(
@@ -685,6 +713,7 @@ impl RuntimePermissionHook for RejectPermissionHook {
 /// Inputs for one agent task.
 #[derive(Clone)]
 pub struct AgentRequest {
+    pub history_safety: Option<crate::HistorySafetyCheck>,
     /// Provider model id.
     pub model: String,
     /// System instruction placed before all history.
@@ -1176,6 +1205,8 @@ pub enum RuntimeEvent {
     ToolCallRunning {
         /// Provider call id.
         call_id: String,
+        #[allow(missing_docs)]
+        bash_started_at: Option<BashStartClock>,
     },
     /// Complete display chunk from a tool.
     ToolCallOutput {
@@ -1338,7 +1369,7 @@ impl fmt::Debug for RuntimeEvent {
                 .field("call_id_bytes", &call_id.len())
                 .field("has_remember_rule", &remember_rule.is_some())
                 .finish(),
-            Self::ToolCallRunning { call_id } => formatter
+            Self::ToolCallRunning { call_id, .. } => formatter
                 .debug_struct("ToolCallRunning")
                 .field("call_id_bytes", &call_id.len())
                 .finish(),
@@ -1430,7 +1461,10 @@ mod context_accounting;
 mod context_accounting_tests;
 mod context_files;
 mod context_history;
-pub use context_history::{ConversationHistoryReader, ConversationReadRequest};
+pub use context_history::{
+    CONVERSATION_HISTORY_RETRY_OUTPUT, ConversationHistoryReader, ConversationReadRequest,
+    project_page as project_conversation_history_page,
+};
 mod context_plan;
 mod context_skills;
 mod context_tasks;
