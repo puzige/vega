@@ -6,12 +6,23 @@ use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 mod generated_notices;
+mod response_starts;
 mod responses;
+mod timestamp_boundaries;
 pub(crate) use generated_notices::copy_generated_notices_in_transaction;
 pub use generated_notices::{
     GeneratedNoticeRow, record_generated_notice, remap_generated_notices_in_transaction,
 };
+pub use response_starts::{
+    last_assistant_response_start, record_assistant_response_start,
+    rollback_assistant_response_starts,
+};
 pub use responses::{AssistantResponseRow, completed_response_text, record_assistant_response};
+
+pub(crate) use timestamp_boundaries::remap_timestamp_offsets;
+pub use timestamp_boundaries::{
+    record_thread_tail_timestamp_boundary, record_timestamp_boundary, timestamp_break_before,
+};
 
 const COLUMNS: &str = "id, thread_id, seq, role, kind, content, status, created_at, \
                        plan_status, plan_review_note, plan_reviewed_at";
@@ -429,6 +440,9 @@ pub struct MessagePage {
     pub rows: Vec<MessageRow>,
     pub execution_durations_ms: std::collections::HashMap<String, i64>,
     pub assistant_responses: Vec<AssistantResponseRow>,
+    pub assistant_response_starts: std::collections::HashMap<String, Option<i64>>,
+    pub timestamp_boundaries: std::collections::HashMap<String, Vec<usize>>,
+    pub timestamp_breaks_before: Vec<String>,
     pub generated_notices: Vec<GeneratedNoticeRow>,
     pub continuations: Vec<RunContinuation>,
     /// `Some(oldest_seq)` when older rows may exist — pass
@@ -509,6 +523,9 @@ pub fn page_before(
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
     let assistant_responses = responses::for_page(&tx, thread_id, &rows)?;
+    let assistant_response_starts = response_starts::for_page(&tx, thread_id, &rows)?;
+    let timestamp_boundaries = timestamp_boundaries::for_page(&tx, thread_id, &rows)?;
+    let timestamp_breaks_before = timestamp_boundaries::breaks_for_page(&tx, thread_id, &rows)?;
     let generated_notices = generated_notices::for_page(&tx, thread_id, &rows)?;
     let continuations = page_continuations(&tx, thread_id, &rows)?;
     drop(stmt);
@@ -518,6 +535,9 @@ pub fn page_before(
         rows,
         execution_durations_ms,
         assistant_responses,
+        assistant_response_starts,
+        timestamp_boundaries,
+        timestamp_breaks_before,
         generated_notices,
         older_cursor,
         newer_cursor,
@@ -607,6 +627,9 @@ pub fn page_containing_message(
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
     let assistant_responses = responses::for_page(&tx, thread_id, &rows)?;
+    let assistant_response_starts = response_starts::for_page(&tx, thread_id, &rows)?;
+    let timestamp_boundaries = timestamp_boundaries::for_page(&tx, thread_id, &rows)?;
+    let timestamp_breaks_before = timestamp_boundaries::breaks_for_page(&tx, thread_id, &rows)?;
     let generated_notices = generated_notices::for_page(&tx, thread_id, &rows)?;
     let continuations = page_continuations(&tx, thread_id, &rows)?;
     tx.commit()?;
@@ -615,6 +638,9 @@ pub fn page_containing_message(
         rows,
         execution_durations_ms,
         assistant_responses,
+        assistant_response_starts,
+        timestamp_boundaries,
+        timestamp_breaks_before,
         generated_notices,
         older_cursor,
         newer_cursor,
@@ -661,6 +687,9 @@ pub fn page_after(
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
     let assistant_responses = responses::for_page(&tx, thread_id, &rows)?;
+    let assistant_response_starts = response_starts::for_page(&tx, thread_id, &rows)?;
+    let timestamp_boundaries = timestamp_boundaries::for_page(&tx, thread_id, &rows)?;
+    let timestamp_breaks_before = timestamp_boundaries::breaks_for_page(&tx, thread_id, &rows)?;
     let generated_notices = generated_notices::for_page(&tx, thread_id, &rows)?;
     let continuations = page_continuations(&tx, thread_id, &rows)?;
     drop(stmt);
@@ -670,6 +699,9 @@ pub fn page_after(
         rows,
         execution_durations_ms,
         assistant_responses,
+        assistant_response_starts,
+        timestamp_boundaries,
+        timestamp_breaks_before,
         generated_notices,
         older_cursor,
         newer_cursor,

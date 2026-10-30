@@ -15,6 +15,17 @@ use crate::types::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryEntry {
+    TimestampBoundary {
+        message_id: String,
+        text_start_bytes: usize,
+    },
+    TimestampBreakBefore {
+        message_id: String,
+    },
+    MessageTimestamp {
+        message_id: String,
+        sent_at_ms: Option<i64>,
+    },
     RunContinuation {
         previous_assistant_id: String,
         user_message_id: String,
@@ -569,7 +580,33 @@ fn project_rows_with(
             next_assistant_id: relation.next_assistant_id.clone(),
         })
         .collect();
+    let now = crate::types::unix_now_ms();
     for row in &page.rows {
+        if page.timestamp_breaks_before.contains(&row.id) {
+            entries.push(HistoryEntry::TimestampBreakBefore {
+                message_id: row.id.clone(),
+            });
+        }
+        if let Some(boundaries) = page.timestamp_boundaries.get(&row.id) {
+            for &text_start_bytes in boundaries {
+                entries.push(HistoryEntry::TimestampBoundary {
+                    message_id: row.id.clone(),
+                    text_start_bytes,
+                });
+            }
+        }
+        let sent_at_ms = if row.role == "user" {
+            Some(row.created_at)
+        } else {
+            page.assistant_response_starts
+                .get(&row.id)
+                .copied()
+                .unwrap_or_else(|| (row.kind == "plan").then_some(row.created_at))
+        };
+        entries.push(HistoryEntry::MessageTimestamp {
+            message_id: row.id.clone(),
+            sent_at_ms: crate::types::valid_message_timestamp(sent_at_ms, now),
+        });
         entries.extend(generated_notices.iter().filter(|entry| {
             matches!(entry, HistoryEntry::GeneratedNotice { message_id, .. } if message_id == &row.id)
         }).cloned());
@@ -1356,6 +1393,18 @@ fn project_page_privacy(
                 response.text_start_bytes = *start;
                 response.text_end_bytes = *end;
             }
+        }
+        if let Some(boundaries) = page.timestamp_boundaries.get_mut(&row.id) {
+            if boundaries
+                .iter()
+                .any(|offset| !row.content.is_char_boundary(*offset))
+            {
+                return Err(ConversationError::CorruptRow(
+                    "invalid timestamp boundary offset".into(),
+                ));
+            }
+            let (_, remapped) = projection.offsets(&row.content, boundaries);
+            *boundaries = remapped;
         }
         let (content, offsets) = projection.offsets(&row.content, &offsets);
         row.content = content;

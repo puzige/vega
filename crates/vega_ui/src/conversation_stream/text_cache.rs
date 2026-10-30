@@ -286,11 +286,12 @@ impl ConversationStream {
                 self.workspace_width,
             )
         {
-            return compose_text_height(entry, raw, owned);
+            return compose_text_height(entry, raw, owned) + self.timestamp_extra_height(index);
         }
         if owned && matches!(entry, StreamEntry::Summary { .. }) {
             return 0.;
         }
         message_anchors::estimate_entry_height(entry, cx, self.workspace_width)
+            + self.timestamp_extra_height(index)
     }
 }

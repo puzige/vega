@@ -10,7 +10,10 @@ use vega_runtime::{
 };
 use vega_store::{Store, pending_messages as rows};
 
-use crate::types::{ConversationError, ImageAttachment, PendingMessage, PendingMessageBehavior};
+use crate::types::{
+    ConversationError, ImageAttachment, PendingMessage, PendingMessageBehavior,
+    PendingQueueProjection,
+};
 
 #[derive(Serialize, Deserialize)]
 struct StoredSubmission {
@@ -40,6 +43,14 @@ pub fn enqueue_cached(
     message: &PendingMessage,
     cached: &[PendingMessage],
 ) -> Result<Vec<PendingMessage>, ConversationError> {
+    enqueue_cached_projection(store, message, cached).map(|projection| projection.messages)
+}
+
+pub fn enqueue_cached_projection(
+    store: &Store,
+    message: &PendingMessage,
+    cached: &[PendingMessage],
+) -> Result<PendingQueueProjection, ConversationError> {
     let _coordination = crate::permission_contracts::coordinate()?;
     crate::permission_contracts::require_admission_open(store)?;
     require_authority(store, message)?;
@@ -94,6 +105,14 @@ pub fn load_cached(
     thread_id: &str,
     cached: &[PendingMessage],
 ) -> Result<Vec<PendingMessage>, ConversationError> {
+    load_cached_projection(store, thread_id, cached).map(|projection| projection.messages)
+}
+
+pub fn load_cached_projection(
+    store: &Store,
+    thread_id: &str,
+    cached: &[PendingMessage],
+) -> Result<PendingQueueProjection, ConversationError> {
     let tx = store
         .conn()
         .unchecked_transaction()
@@ -107,30 +126,33 @@ fn load_cached_conn(
     conn: &vega_store::Connection,
     thread_id: &str,
     cached: &[PendingMessage],
-) -> Result<Vec<PendingMessage>, ConversationError> {
-    rows::list_metadata(conn, thread_id)
-        .map_err(|_| failure())?
-        .into_iter()
-        .map(|metadata| {
-            if let Some(previous) = cached
-                .iter()
-                .find(|message| message.id == metadata.id && message.thread_id == thread_id)
-            {
-                let mut message = previous.clone();
-                message.generation = metadata.generation;
-                message.behavior = match metadata.behavior.as_str() {
-                    "queue" => PendingMessageBehavior::Queue,
-                    "steer" => PendingMessageBehavior::Steer,
-                    _ => return Err(failure()),
-                };
-                return Ok(message);
-            }
+) -> Result<PendingQueueProjection, ConversationError> {
+    let mut projection = PendingQueueProjection::default();
+    for metadata in rows::list_metadata(conn, thread_id).map_err(|_| failure())? {
+        projection
+            .timestamps
+            .insert(metadata.id.clone(), metadata.created_at);
+        let message = if let Some(previous) = cached
+            .iter()
+            .find(|message| message.id == metadata.id && message.thread_id == thread_id)
+        {
+            let mut message = previous.clone();
+            message.generation = metadata.generation;
+            message.behavior = match metadata.behavior.as_str() {
+                "queue" => PendingMessageBehavior::Queue,
+                "steer" => PendingMessageBehavior::Steer,
+                _ => return Err(failure()),
+            };
+            message
+        } else {
             let row = rows::find(conn, thread_id, &metadata.id)
                 .map_err(|_| failure())?
                 .ok_or_else(failure)?;
-            decode(row)
-        })
-        .collect()
+            decode(row)?
+        };
+        projection.messages.push(message);
+    }
+    Ok(projection)
 }
 
 pub fn remove(
@@ -173,8 +195,16 @@ pub fn recover_cached(
     thread_id: &str,
     cached: &[PendingMessage],
 ) -> Result<Vec<PendingMessage>, ConversationError> {
+    recover_cached_projection(store, thread_id, cached).map(|projection| projection.messages)
+}
+
+pub fn recover_cached_projection(
+    store: &Store,
+    thread_id: &str,
+    cached: &[PendingMessage],
+) -> Result<PendingQueueProjection, ConversationError> {
     rows::release_claims(store.conn(), thread_id).map_err(|_| failure())?;
-    load_cached(store, thread_id, cached)
+    load_cached_projection(store, thread_id, cached)
 }
 
 pub(crate) fn decode(row: rows::PendingMessageRow) -> Result<PendingMessage, ConversationError> {

@@ -74,6 +74,7 @@ pub struct ConversationStream {
     pub(crate) submitted_draft: Option<SubmittedDraft>,
     pub(crate) thread: Thread,
     pub(crate) entries: Vec<StreamEntry>,
+    pub(super) timestamps: super::timestamps::TimestampState,
     pub(crate) assistant_role_rows: Vec<bool>,
     pub(crate) counters: Arc<StreamCounters>,
     pub(crate) list: gpui_kit::ListState,
@@ -529,6 +530,7 @@ impl ConversationStream {
             ordinary: Vec::new(),
             thread,
             entries: Vec::new(),
+            timestamps: Default::default(),
             counters: Arc::new(StreamCounters::default()),
             list,
             foreground_height: px(Layout::READING_NAVIGATION_HEIGHT
@@ -738,6 +740,7 @@ impl ConversationStream {
     }
 
     pub(crate) fn ensure_entry_identities(&mut self) {
+        self.timestamps.dirty |= self.entry_identities.len() != self.entries.len();
         while self.entry_identities.len() < self.entries.len() {
             let identity = self.new_local_identity();
             self.entry_identities.push(identity);
@@ -746,6 +749,7 @@ impl ConversationStream {
     }
 
     pub(crate) fn set_entry_identity(&mut self, index: usize, identity: StreamEntryIdentity) {
+        self.timestamps.dirty = true;
         self.ensure_entry_identities();
         if let Some(slot) = self.entry_identities.get_mut(index) {
             self.measured_entry_heights.remove(&slot.key);
@@ -899,6 +903,7 @@ impl ConversationStream {
 
     /// Registers the removal of the item at `index` (permission resolution).
     pub(crate) fn list_remove(&mut self, index: usize) {
+        self.timestamps.dirty = true;
         self.refresh_assistant_roles();
         if index < self.entry_identities.len() {
             let identity = self.entry_identities.remove(index);
@@ -1961,7 +1966,10 @@ impl ConversationStream {
             | ConversationEvent::ToolCallRunning { .. }
             | ConversationEvent::ToolCallOutput { .. }
             | ConversationEvent::ToolCallFinished { .. } => true,
-            ConversationEvent::PendingMessageDelivered { .. }
+            ConversationEvent::UserMessageAccepted { .. }
+            | ConversationEvent::TimestampBreakBefore { .. }
+            | ConversationEvent::MessageTimestamp { .. }
+            | ConversationEvent::PendingMessageDelivered { .. }
             | ConversationEvent::RunStarted { .. }
             | ConversationEvent::RunContinued { .. }
             | ConversationEvent::AssistantResponseStarted { .. }

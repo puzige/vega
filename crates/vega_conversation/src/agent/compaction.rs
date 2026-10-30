@@ -1277,8 +1277,15 @@ fn persist_context_status(
         crate::types::ContextCompactionUsageState::Unknown => "unknown",
     };
     let failure = record.failure.map(context_failure_name);
+    let tx = store
+        .immediate_transaction()
+        .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
+    if phase == "started" {
+        vega_store::messages::record_thread_tail_timestamp_boundary(&tx, thread_id, operation_key)
+            .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
+    }
     insert_status(
-        store.conn(),
+        &tx,
         NewContextCompactionStatus {
             thread_id,
             model,
@@ -1294,8 +1301,9 @@ fn persist_context_status(
             created_at: record.updated_at,
         },
     )
-    .map(|_| ())
-    .map_err(|error| crate::types::ConversationError::Store(error.to_string()))
+    .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
+    tx.commit()
+        .map_err(|error| crate::types::ConversationError::Store(error.to_string()))
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -143,6 +143,14 @@ pub fn clone_prefix(
     }
     let destination = fresh_id();
     tx.execute("INSERT INTO threads(id,project_id,title,mode,permission_mode,model,backend,status,pinned,unread,created_at,updated_at,forked_from_thread_id,forked_from_message_id) VALUES(?1,?2,?3,?4,'confirm',?5,'native','active',0,0,?6,?6,?7,?8)",params![destination,source.project_id,source.title,source.mode,source.model,now,source_thread_id,through_message_id])?;
+    tx.execute(
+        "INSERT INTO thread_timestamp_fork_prefixes(thread_id,prefix_seq) SELECT ?1,prefix_seq FROM thread_timestamp_fork_prefixes WHERE thread_id=?2 AND prefix_seq<?3",
+        params![destination, source_thread_id, cutoff.seq],
+    )?;
+    tx.execute(
+        "INSERT INTO thread_timestamp_fork_prefixes(thread_id,prefix_seq) VALUES(?1,?2)",
+        params![destination, cutoff.seq],
+    )?;
     if let Some(preferences) = &source.reasoning_preferences {
         crate::threads::set_reasoning_preferences(tx, &destination, preferences, false)?;
     }
@@ -169,6 +177,10 @@ pub fn clone_prefix(
         copy_responses(tx, id, new_id, &call_map)?;
         crate::messages::copy_generated_notices_in_transaction(tx, id, new_id)?;
         for (table, columns) in [
+            (
+                "message_timestamp_boundaries",
+                "operation_key,text_start_bytes",
+            ),
             ("image_attachments", "ordinal,encoded"),
             ("assistant_run_durations", "execution_duration_ms"),
             ("builtin_skill_activations", "name,version,content_sha256"),
@@ -315,13 +327,14 @@ fn copy_responses(
     destination: &str,
     calls: &BTreeMap<String, String>,
 ) -> Result<(), ForkError> {
-    let ids=conn.prepare("SELECT response_id FROM assistant_responses WHERE message_id=?1 UNION SELECT response_id FROM tool_call_rounds WHERE message_id=?1")?
+    let ids=conn.prepare("SELECT response_id FROM assistant_responses WHERE message_id=?1 UNION SELECT response_id FROM tool_call_rounds WHERE message_id=?1 UNION SELECT response_id FROM assistant_response_starts WHERE message_id=?1")?
         .query_map([source],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
     for id in ids {
         if id.is_empty() || id.len() > 128 || id.chars().any(char::is_control) {
             return Err(corrupt("invalid response identity"));
         }
         let new_id = fresh_id();
+        conn.execute("INSERT INTO assistant_response_starts(message_id,response_id,ordinal,text_start_bytes,started_at_ms) SELECT ?1,?2,ordinal,text_start_bytes,started_at_ms FROM assistant_response_starts WHERE message_id=?3 AND response_id=?4",params![destination,new_id,source,id])?;
         conn.execute("INSERT INTO assistant_responses(message_id,response_id,text_start_bytes,text_end_bytes,kind) SELECT ?1,?2,text_start_bytes,text_end_bytes,kind FROM assistant_responses WHERE message_id=?3 AND response_id=?4",params![destination,new_id,source,id])?;
         let rounds=conn.prepare("SELECT r.call_id FROM tool_call_rounds r LEFT JOIN tool_calls c ON c.id=r.call_id WHERE r.message_id=?1 AND r.response_id=?2 AND c.message_id=r.message_id")?
             .query_map(params![source,id],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;

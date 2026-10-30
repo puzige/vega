@@ -317,12 +317,35 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
         let _ = connection.cancel(&session.session_id).await;
         return false;
     }
-    let Some((user_message_id, assistant_message_id, assistant_seq)) =
+    let Some((user_message_id, assistant_message_id, assistant_seq, user_sent_at_ms)) =
         persist_codex_messages(store, thread, prompt)
     else {
         return false;
     };
     let run_started_at = std::time::Instant::now();
+    if sender
+        .send(AgentUpdate::Event(ConversationEvent::UserMessageAccepted {
+            message_id: user_message_id.clone(),
+            seq: assistant_seq.saturating_sub(1) as u64,
+        }))
+        .is_err()
+    {
+        return false;
+    }
+    for (message_id, sent_at_ms) in [
+        (user_message_id.clone(), Some(user_sent_at_ms)),
+        (assistant_message_id.clone(), None),
+    ] {
+        if sender
+            .send(AgentUpdate::Event(ConversationEvent::MessageTimestamp {
+                message_id,
+                sent_at_ms,
+            }))
+            .is_err()
+        {
+            return false;
+        }
+    }
     if sender
         .send(AgentUpdate::Event(ConversationEvent::MessageStarted {
             message_id: assistant_message_id.clone(),
@@ -337,7 +360,6 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
         started_at: run_started_at,
         work_clock: None,
     }));
-    let _ = user_message_id;
     let prompt_handle = match connection.prompt(&session.session_id, prompt).await {
         Ok(handle) => handle,
         Err(_) => {
@@ -1178,7 +1200,7 @@ fn persist_codex_messages(
     store: &Store,
     thread: &Thread,
     prompt: &str,
-) -> Option<(String, String, i64)> {
+) -> Option<(String, String, i64, i64)> {
     let user_message_id = ulid::Ulid::generate().to_string();
     let assistant_message_id = ulid::Ulid::generate().to_string();
     let transaction = store.conn().unchecked_transaction().ok()?;
@@ -1225,7 +1247,7 @@ fn persist_codex_messages(
     )
     .ok()?;
     transaction.commit().ok()?;
-    Some((user_message_id, assistant_message_id, assistant_seq))
+    Some((user_message_id, assistant_message_id, assistant_seq, now))
 }
 
 fn finish_codex_message(

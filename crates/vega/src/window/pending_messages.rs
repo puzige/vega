@@ -130,11 +130,19 @@ impl VegaWindow {
         let worker = cx.background_executor().spawn(async move {
             let store = vega_store::Store::open(database).map_err(|_| ())?;
             if running {
-                vega_conversation::pending_messages::load_cached(&store, &worker_thread, &cached)
-                    .map_err(|_| ())
+                vega_conversation::pending_messages::load_cached_projection(
+                    &store,
+                    &worker_thread,
+                    &cached,
+                )
+                .map_err(|_| ())
             } else {
-                vega_conversation::pending_messages::recover_cached(&store, &worker_thread, &cached)
-                    .map_err(|_| ())
+                vega_conversation::pending_messages::recover_cached_projection(
+                    &store,
+                    &worker_thread,
+                    &cached,
+                )
+                .map_err(|_| ())
             }
         });
         cx.spawn(async move |this, cx| {
@@ -151,7 +159,8 @@ impl VegaWindow {
                 projection.paused |= !running;
                 match result {
                     Ok(messages) => {
-                        projection.messages = messages;
+                        projection.timestamps = messages.timestamps;
+                        projection.messages = messages.messages;
                         projection.error = None;
                     }
                     Err(()) => {
@@ -280,8 +289,10 @@ impl VegaWindow {
             if vega_runtime::contains_sensitive_credential(&message.content, &credentials) {
                 return Err(vega_i18n::t("app.pending.credentials_in_message").into());
             }
-            vega_conversation::pending_messages::enqueue_cached(&store, &message, &cached)
-                .map_err(|error| error.to_string())
+            vega_conversation::pending_messages::enqueue_cached_projection(
+                &store, &message, &cached,
+            )
+            .map_err(|error| error.to_string())
         });
         cx.spawn(async move |this, cx| {
             let result = worker.await;
@@ -296,7 +307,8 @@ impl VegaWindow {
                 projection.busy = false;
                 match result {
                     Ok(messages) => {
-                        projection.messages = messages;
+                        projection.timestamps = messages.timestamps;
+                        projection.messages = messages.messages;
                         if this
                             .agent_controller
                             .active
@@ -435,7 +447,7 @@ impl VegaWindow {
                         {
                             return Err(vega_i18n::t("app.pending.resolve_plan").into());
                         }
-                        vega_conversation::pending_messages::recover_cached(
+                        vega_conversation::pending_messages::recover_cached_projection(
                             &store,
                             &request.thread_id,
                             &cached,
@@ -444,7 +456,7 @@ impl VegaWindow {
                     }
                     PendingQueueAction::ToggleDefault => {}
                 }
-                vega_conversation::pending_messages::load_cached(
+                vega_conversation::pending_messages::load_cached_projection(
                     &store,
                     &request.thread_id,
                     &cached,
@@ -481,7 +493,8 @@ impl VegaWindow {
                                 stream.apply_pending_promotion(pending_id, generation, cx)
                             });
                         }
-                        projection.messages = messages;
+                        projection.timestamps = messages.timestamps;
+                        projection.messages = messages.messages;
                         projection.error = None;
                         if resume {
                             projection.paused = false;
@@ -547,7 +560,7 @@ impl VegaWindow {
         let cached = stream.read(cx).pending_queue().messages.clone();
         let worker = cx.background_executor().spawn(async move {
             let store = vega_store::Store::open(database).map_err(|_| ())?;
-            let messages = vega_conversation::pending_messages::recover_cached(
+            let messages = vega_conversation::pending_messages::recover_cached_projection(
                 &store,
                 &worker_thread,
                 &cached,
@@ -573,7 +586,8 @@ impl VegaWindow {
                 projection.busy = false;
                 let interrupted_tail = match result {
                     Ok((messages, interrupted_tail)) => {
-                        projection.messages = messages;
+                        projection.timestamps = messages.timestamps;
+                        projection.messages = messages.messages;
                         interrupted_tail
                     }
                     Err(()) => {
