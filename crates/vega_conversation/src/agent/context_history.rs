@@ -5,6 +5,150 @@ pub(super) fn reader(database: PathBuf, thread: String) -> Arc<ConversationHisto
     Arc::new(move |request| read(&database, &thread, request).ok_or_else(unavailable))
 }
 
+pub(super) fn history_safety(
+    database: PathBuf,
+    thread: String,
+) -> vega_runtime::HistorySafetyCheck {
+    vega_runtime::HistorySafetyCheck::new(move |active, has_summary, credentials, exceptions| {
+        validate_saved_pages(
+            &database,
+            &thread,
+            active,
+            has_summary,
+            credentials,
+            exceptions,
+        )
+        .unwrap_or_else(|| vega_runtime::HistorySafetyReport {
+            invalidate_all: true,
+            invalidate_summary: true,
+            ..Default::default()
+        })
+    })
+}
+
+fn validate_saved_pages(
+    database: &std::path::Path,
+    thread: &str,
+    active: &[String],
+    has_summary: bool,
+    credentials: &[String],
+    exceptions: Option<&vega_runtime::CredentialExceptionFilter>,
+) -> Option<vega_runtime::HistorySafetyReport> {
+    let store = Store::open_read_only(database).ok()?;
+    let transaction = store.conn().unchecked_transaction().ok()?;
+    let mut report = vega_runtime::HistorySafetyReport::default();
+    let mut pages = std::collections::BTreeMap::<String, (String, String)>::new();
+    if has_summary {
+        let mut statement = transaction.prepare(
+            "SELECT id,input_json,output_text FROM tool_calls WHERE thread_id=?1 AND tool='read_conversation' AND status='success' ORDER BY seq LIMIT 257"
+        ).ok()?;
+        let rows = statement
+            .query_map([thread], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .ok()?
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        if rows.len() > 256
+            || rows
+                .iter()
+                .map(|(_, _, output)| output.as_ref().map_or(0, String::len))
+                .sum::<usize>()
+                > 8 * 1024 * 1024
+        {
+            report.invalidate_summary = true;
+        } else {
+            for (id, input, output) in rows {
+                if let Some(output) = output {
+                    pages.insert(id, (input, output));
+                } else {
+                    report.invalidate_summary = true;
+                    report.invalid_results.insert(id);
+                }
+            }
+        }
+    }
+    for (index, id) in active.iter().enumerate() {
+        if pages.contains_key(id) {
+            continue;
+        }
+        if index >= 256 {
+            report.invalid_results.insert(id.clone());
+            continue;
+        }
+        let mut statement = transaction.prepare(
+            "SELECT input_json,output_text,status FROM tool_calls WHERE thread_id=?1 AND id=?2 AND tool='read_conversation'"
+        ).ok()?;
+        let mut rows = statement.query((thread, id)).ok()?;
+        let Some(row) = rows.next().ok()? else {
+            report.invalid_results.insert(id.clone());
+            continue;
+        };
+        let status: String = row.get(2).ok()?;
+        if status == "success" {
+            match row.get::<_, Option<String>>(1).ok()? {
+                Some(output) => {
+                    pages.insert(id.clone(), (row.get(0).ok()?, output));
+                }
+                None => {
+                    report.invalid_results.insert(id.clone());
+                    report.invalidate_summary = true;
+                }
+            }
+        }
+    }
+    let owned = credentials.to_vec();
+    let config = vega_runtime::RuntimeToolConfig::default()
+        .with_credential_reader(Arc::new(move || Ok(owned.clone())))
+        .with_credential_exceptions(exceptions.cloned());
+    let mut source_cache = std::collections::BTreeMap::new();
+    let mut source_bytes = 0usize;
+    for (id, (input, output)) in pages {
+        let valid = (|| {
+            let request = ConversationReadRequest::parse(&input)?;
+            let original = serde_json::from_str::<serde_json::Value>(&output).ok()?;
+            let records = original["vega_history_observation"]["page"]["records"].as_array()?;
+            if records.iter().any(|record| {
+                record["source_id"].as_str().is_none_or(|id| {
+                    id.contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER)
+                })
+            }) {
+                return Some(false);
+            }
+            let key = (
+                request.kind.clone(),
+                request.source_id.clone(),
+                request.after_sequence,
+                request.limit,
+            );
+            if !source_cache.contains_key(&key) {
+                let current = read_in_connection(&transaction, thread, &request)?;
+                source_bytes =
+                    source_bytes.saturating_add(serde_json::to_vec(&current).ok()?.len());
+                if source_bytes > 16 * 1024 * 1024 {
+                    return Some(false);
+                }
+                source_cache.insert(key.clone(), current);
+            }
+            let current = source_cache.get(&key)?.clone();
+            let projected =
+                vega_runtime::project_conversation_history_page(current, &request, &config).ok()?;
+            let projected = serde_json::from_str::<serde_json::Value>(&projected).ok()?;
+            Some(original == projected)
+        })()
+        .unwrap_or(false);
+        if !valid {
+            report.invalid_results.insert(id);
+            report.invalidate_summary = true;
+        }
+    }
+    Some(report)
+}
+
 fn unavailable() -> VegaError {
     VegaError::Tool {
         tool: "read_conversation".into(),
@@ -28,6 +172,14 @@ fn read(
         return None;
     }
     let store = Store::open_read_only(database).ok()?;
+    read_in_connection(store.conn(), thread, request)
+}
+
+fn read_in_connection(
+    conn: &vega_store::Connection,
+    thread: &str,
+    request: &ConversationReadRequest,
+) -> Option<serde_json::Value> {
     let query = match request.kind.as_str() {
         "messages" => {
             "SELECT m.id,m.seq,m.role,m.kind,m.status,CASE WHEN length(CAST(m.content AS BLOB))<=1048576 THEN m.content END,(SELECT COUNT(*) FROM image_attachments i WHERE i.message_id=m.id),(SELECT COALESCE(SUM(length(i.encoded)),0) FROM image_attachments i WHERE i.message_id=m.id) FROM messages m JOIN threads t ON t.id=m.thread_id WHERE length(CAST(m.id AS BLOB)) BETWEEN 1 AND 128 AND length(CAST(m.role AS BLOB))<=128 AND length(CAST(m.kind AS BLOB))<=128 AND length(CAST(m.status AS BLOB))<=128 AND m.thread_id=?1 AND m.seq>?2 AND (?3 IS NULL OR m.id=?3) AND ?5='messages' ORDER BY m.seq LIMIT ?4"
@@ -63,7 +215,7 @@ fn read(
         }
         _ => return None,
     };
-    let mut statement = store.conn().prepare(query).ok()?;
+    let mut statement = conn.prepare(query).ok()?;
     let mut rows = statement
         .query((
             thread,
@@ -107,7 +259,10 @@ fn read(
                 "status":status,"agent_id":agent,"child_message_id":message,"release_state":release,
                 "worker_liveness":"unknown","result_truncated":truncated,"output":output,"content":checkpoint})
         } else {
-            let output: Option<String> = row.get(6).ok()?;
+            let mut output: Option<String> = row.get(6).ok()?;
+            if b == "read_conversation" {
+                output = None;
+            }
             serde_json::json!({"source_id":id,"sequence":sequence,"message_id":a,"tool":b,
                 "status":status,"input":content,"output":output})
         };

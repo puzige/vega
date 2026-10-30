@@ -685,6 +685,7 @@ impl RuntimePermissionHook for RejectPermissionHook {
 /// Inputs for one agent task.
 #[derive(Clone)]
 pub struct AgentRequest {
+    pub history_safety: Option<crate::HistorySafetyCheck>,
     /// Provider model id.
     pub model: String,
     /// System instruction placed before all history.
@@ -1430,6 +1431,7 @@ mod context_files;
 mod context_history;
 pub use context_history::{
     CONVERSATION_HISTORY_RETRY_OUTPUT, ConversationHistoryReader, ConversationReadRequest,
+    project_page as project_conversation_history_page,
 };
 mod context_plan;
 mod context_skills;

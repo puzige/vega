@@ -1626,15 +1626,15 @@ impl ConversationCompactionHook<'_> {
         cancel: &CancellationToken,
         deadline: tokio::time::Instant,
     ) -> Result<String, ContextCompactionFailure> {
-        let summary_request = match &self.credential_reader {
-            Some(reader) => super::credential_guard::project_owner_secrets_with_policy(
-                summary_request,
-                reader.as_ref(),
-                self.credential_exceptions.as_ref(),
-            )
-            .map_err(|error| failure_with_usages(error, usages, *usage_complete))?,
-            None => summary_request,
-        };
+        let empty_reader = || Ok(Vec::new());
+        let reader = self.credential_reader.as_deref().unwrap_or(&empty_reader);
+        let summary_request = super::credential_guard::project_owner_secrets_with_policy(
+            summary_request,
+            reader,
+            self.credential_exceptions.as_ref(),
+        )
+        .map_err(|error| failure_with_usages(error, usages, *usage_complete))?;
+        let checked_request = summary_request.clone();
         let attempt_id = ulid::Ulid::generate().to_string();
         let started_at = std::time::Instant::now();
         let empty_metrics = SummaryDiagnosticMetrics::default();
@@ -1745,6 +1745,27 @@ impl ConversationCompactionHook<'_> {
                     },
                     None => Vec::new(),
                 };
+                let current_credentials = || Ok(credentials.clone());
+                if let Err(error) = super::credential_guard::reject_owner_secret_with_policy(
+                    &checked_request,
+                    &current_credentials,
+                    self.credential_exceptions.as_ref(),
+                ) {
+                    if let Some(diagnostics) = &self.diagnostics {
+                        diagnostics.stage_event(
+                            &attempt_id,
+                            vega_store::run_diagnostics::DiagnosticPhase::ContextSummary,
+                            vega_store::run_diagnostics::DiagnosticState::Failed,
+                            Some(super::diagnostics::run_failure(&error)),
+                            started_at,
+                            super::diagnostics::with_failure_metrics(
+                                summary_store_metrics(&collection.metrics),
+                                &error,
+                            ),
+                        );
+                    }
+                    return Err(failure_with_usages(error, usages, *usage_complete));
+                }
                 let summary = vega_runtime::redact_sensitive_credential_text_with_policy(
                     &collection.summary,
                     &credentials,
@@ -1806,6 +1827,10 @@ impl ConversationCompactionHook<'_> {
     ) -> Result<String, ContextCompactionFailure> {
         validate_complete_projection(history)
             .map_err(|failure| execution.failure(*failure.error))?;
+        let history_safety = super::context_history::history_safety(
+            self.database_path.clone(),
+            self.thread_id.clone(),
+        );
         let mut history = history.to_vec();
         for message in &mut history {
             if !message.images.is_empty() {
@@ -1842,6 +1867,7 @@ impl ConversationCompactionHook<'_> {
                     Some(execution.task),
                     self.summary_variant,
                 );
+                direct.history_safety = Some(history_safety.clone());
                 self.apply_summary_requirements(&mut direct);
                 estimate_tokens = estimate_wire_context(&direct.messages, &[])
                     .map_err(|error| execution.failure(VegaError::Context(error.into())))?
@@ -2626,6 +2652,7 @@ fn direct_summary_request(
         reasoning: summary_reasoning(reasoning),
         model_snapshot: None,
         tool_choice: None,
+        history_safety: None,
     }
 }
 
