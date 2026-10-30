@@ -1195,11 +1195,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             ));
         }
         if run_mode == ThreadMode::Execute {
-            fs::create_dir_all(&checkpoint_root).map_err(|_| {
-                ConversationError::Runtime(Arc::new(VegaError::Io(std::io::Error::other(
-                    "checkpoint root unavailable",
-                ))))
-            })?;
+            fs::create_dir_all(&checkpoint_root).map_err(runtime_store_error)?;
         }
         let exact_rules = if let Some(authority) = &config.delegated_authority {
             authority.exact_rules.clone()

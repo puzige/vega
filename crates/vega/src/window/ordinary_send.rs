@@ -3,6 +3,9 @@ use crate::ordinary_submission::{
     OrdinaryLaunch, OrdinaryMaterialization, OrdinaryPreparationOwner, finish_root,
 };
 use vega_conversation::agent::OrdinaryRun;
+use vega_conversation::submission_diagnostics::{
+    PreparationFailure, PreparationReason, PreparationStage, conversation_failure, runtime_failure,
+};
 
 const ORDINARY_POLL: std::time::Duration = std::time::Duration::from_millis(4);
 
@@ -77,18 +80,36 @@ impl OrdinaryPreparationRequest {
         if self.cancel.is_cancelled() {
             return Err(SubmissionFailure::Cancelled);
         }
-        preflight_provider(self.config.as_deref(), self.run.submission.raw().model())
-            .map_err(|_| SubmissionFailure::PreflightRejected)?;
+        preflight_provider(self.config.as_deref(), self.run.submission.raw().model()).map_err(
+            |error| {
+                SubmissionFailure::Preparation(PreparationFailure::new(
+                    PreparationStage::Preflight,
+                    match error {
+                        ProviderPreflightFailure::CredentialUnavailable { .. } => {
+                            PreparationReason::CredentialUnavailable
+                        }
+                        _ => PreparationReason::ProviderUnavailable,
+                    },
+                ))
+            },
+        )?;
         if self.cancel.is_cancelled() {
             return Err(SubmissionFailure::Cancelled);
         }
-        let store = vega_store::Store::open(&self.database)
-            .map_err(|_| SubmissionFailure::PreparationFailed)?;
+        let store = vega_store::Store::open(&self.database).map_err(|error| {
+            SubmissionFailure::Preparation(runtime_failure(
+                PreparationStage::Database,
+                &error.into(),
+            ))
+        })?;
         if !self.run.worker.admission().verifies(
             store.database_identity(),
             &self.run.submission.snapshot().thread_id,
         ) {
-            return Err(SubmissionFailure::PreparationFailed);
+            return Err(SubmissionFailure::Preparation(PreparationFailure::new(
+                PreparationStage::Admission,
+                PreparationReason::InvalidIdentity,
+            )));
         }
         let thread = vega_conversation::permission_contracts::prepare_submission_permission(
             &store,
@@ -97,7 +118,12 @@ impl OrdinaryPreparationRequest {
             &self.expected,
             self.draft.as_ref(),
         )
-        .map_err(|_| SubmissionFailure::PreparationFailed)?;
+        .map_err(|error| {
+            SubmissionFailure::Preparation(conversation_failure(
+                PreparationStage::Permission,
+                &error,
+            ))
+        })?;
         Ok((store, thread))
     }
 
@@ -117,11 +143,43 @@ impl OrdinaryPreparationRequest {
                 )
             });
             let workspace = vega_conversation::threads::task_workspace_root(&store, &thread_id)
-                .map_err(|_| SubmissionFailure::PreparationFailed)?;
+                .map_err(|error| {
+                    SubmissionFailure::Preparation(conversation_failure(
+                        PreparationStage::Workspace,
+                        &error,
+                    ))
+                })?;
             if let Some((service, intent)) = &self.skills {
                 service
                     .ensure_composer_pin_with_owner(&thread_id, intent, self.run.worker.admission())
-                    .map_err(|_| SubmissionFailure::PreparationFailed)?;
+                    .map_err(|error| {
+                        SubmissionFailure::Preparation(PreparationFailure::new(
+                            PreparationStage::Skills,
+                            match error {
+                                vega_conversation::SkillSettingsError::Store => {
+                                    PreparationReason::Database
+                                }
+                                vega_conversation::SkillSettingsError::NotFound => {
+                                    PreparationReason::MissingThread
+                                }
+                                vega_conversation::SkillSettingsError::Stale => {
+                                    PreparationReason::SkillChanged
+                                }
+                                vega_conversation::SkillSettingsError::Invalid => {
+                                    PreparationReason::InvalidSkill
+                                }
+                                vega_conversation::SkillSettingsError::TooManyCandidates => {
+                                    PreparationReason::TooManyCandidates
+                                }
+                                vega_conversation::SkillSettingsError::PreviewRequired => {
+                                    PreparationReason::PreviewRequired
+                                }
+                                vega_conversation::SkillSettingsError::SelectionLimit => {
+                                    PreparationReason::SelectionLimit
+                                }
+                            },
+                        ))
+                    })?;
             }
             if self.cancel.is_cancelled() {
                 return Err(SubmissionFailure::Cancelled);
@@ -252,7 +310,7 @@ impl VegaWindow {
                 .map(|path| (store.database_identity(), path.to_path_buf())),
             Err(_) => None,
         };
-        let Some((database, _)) = cached else {
+        let Some((database, diagnostic_path)) = cached else {
             stream.update(cx, ConversationStream::reject_composer_submission);
             stream.update(cx, ConversationStream::apply_controller_error);
             return;
@@ -330,6 +388,7 @@ impl VegaWindow {
                     return;
                 }
             };
+        submission.attach_preparation_diagnostics(&diagnostic_path);
         self.agent_controller
             .ordinary_requests
             .insert(request.request_id);
@@ -350,7 +409,10 @@ impl VegaWindow {
         if crate::ordinary_submission::retain_context(submission.id(), context).is_err() {
             finish_root(
                 OrdinaryRun::new(submission, Arc::new(worker)),
-                Err(SubmissionFailure::PreparationFailed),
+                Err(SubmissionFailure::Preparation(PreparationFailure::new(
+                    PreparationStage::Worker,
+                    PreparationReason::State,
+                ))),
             );
             stream.update(cx, ConversationStream::refresh_ordinary_submissions);
             return;
@@ -373,7 +435,10 @@ impl VegaWindow {
         let Some(database) = database else {
             finish_root(
                 OrdinaryRun::new(submission, Arc::new(worker)),
-                Err(SubmissionFailure::PreparationFailed),
+                Err(SubmissionFailure::Preparation(PreparationFailure::new(
+                    PreparationStage::Database,
+                    PreparationReason::Database,
+                ))),
             );
             return;
         };
@@ -401,7 +466,10 @@ impl VegaWindow {
                 let Some(service) = service else {
                     finish_root(
                         OrdinaryRun::new(submission, Arc::new(worker)),
-                        Err(SubmissionFailure::PreparationFailed),
+                        Err(SubmissionFailure::Preparation(PreparationFailure::new(
+                            PreparationStage::Skills,
+                            PreparationReason::State,
+                        ))),
                     );
                     stream.update(cx, ConversationStream::refresh_ordinary_submissions);
                     return;
@@ -430,7 +498,10 @@ impl VegaWindow {
             Err(_) => {
                 finish_root(
                     OrdinaryRun::new(submission, Arc::new(worker)),
-                    Err(SubmissionFailure::PreparationFailed),
+                    Err(SubmissionFailure::Preparation(PreparationFailure::new(
+                        PreparationStage::Worker,
+                        PreparationReason::State,
+                    ))),
                 );
                 return;
             }

@@ -24,6 +24,7 @@ pub(crate) struct OrdinaryRow {
     attempt: AttemptId,
     state: OrdinaryStatus,
     focus: FocusHandle,
+    diagnostic_focus: FocusHandle,
     checked: Option<&'static str>,
     reference_failed: bool,
 }
@@ -81,6 +82,7 @@ impl OrdinaryStatus {
                     match failure {
                         SubmissionFailure::PreflightRejected => "ui.ordinary_send.preflight_failed",
                         SubmissionFailure::SpawnFailed => "ui.ordinary_send.spawn_failed",
+                        SubmissionFailure::Preparation(detail) => preparation_message(detail),
                         SubmissionFailure::PreparationFailed => {
                             "ui.ordinary_send.preparation_failed"
                         }
@@ -110,6 +112,30 @@ impl OrdinaryStatus {
             detail: None,
             action: Some((label, action)),
         })
+    }
+}
+
+fn preparation_message(
+    detail: vega_conversation::submission_diagnostics::PreparationFailure,
+) -> &'static str {
+    use vega_conversation::submission_diagnostics::{
+        PreparationReason as Reason, PreparationStage as Stage,
+    };
+    match detail.reason {
+        Reason::Database => "ui.ordinary_send.database_failed",
+        Reason::CredentialUnavailable | Reason::CredentialSafety => {
+            "ui.ordinary_send.credential_failed"
+        }
+        Reason::ProviderUnavailable => "ui.ordinary_send.preflight_failed",
+        Reason::Capability | Reason::Reasoning if detail.stage == Stage::Conversation => {
+            "ui.ordinary_send.model_failed"
+        }
+        _ => match detail.stage {
+            Stage::Permission | Stage::Admission => "ui.ordinary_send.permission_failed",
+            Stage::Workspace => "ui.ordinary_send.workspace_failed",
+            Stage::Skills => "ui.ordinary_send.skills_failed",
+            _ => "ui.ordinary_send.preparation_failed",
+        },
     }
 }
 
@@ -275,6 +301,7 @@ impl ConversationStream {
                 attempt: attempt.id,
                 state: OrdinaryStatus::Pending,
                 focus: cx.focus_handle().tab_stop(true),
+                diagnostic_focus: cx.focus_handle().tab_stop(true),
                 checked: None,
                 reference_failed: false,
             });
@@ -538,9 +565,7 @@ impl ConversationStream {
             .ordinary
             .iter()
             .find(|row| identity.message_id.as_deref() == Some(row.submission.user_message_id()))?;
-        if row.reference_failed || self.attempt_shows_stop_line(row, cx) {
-            return None;
-        }
+        let suppress_controls = row.reference_failed || self.attempt_shows_stop_line(row, cx);
         let final_kind = if row.submission.raw().images().is_empty() {
             "user-text"
         } else {
@@ -553,13 +578,27 @@ impl ConversationStream {
         {
             return None;
         }
-        let controls = row
-            .state
-            .controls(row.submission.snapshot().retry, row.checked)?;
+        let snapshot = row.submission.snapshot();
+        let controls = (!suppress_controls)
+            .then(|| row.state.controls(snapshot.retry, row.checked))
+            .flatten();
+        let diagnostic_available = snapshot
+            .attempts
+            .iter()
+            .find(|attempt| attempt.id == row.attempt)
+            .is_some_and(|attempt| {
+                attempt.primary != PrimaryFact::Started
+                    && (attempt.failure.is_some() || attempt.abnormal || attempt.sealed)
+            });
+        if controls.is_none() && !diagnostic_available {
+            return None;
+        }
         let submission = row.submission.id();
         let attempt = row.attempt;
         let thread = self.thread.id.clone();
         let keyboard_thread = thread.clone();
+        let diagnostic_submission = row.submission.clone();
+        let keyboard_diagnostic_submission = diagnostic_submission.clone();
         let colors = theme(cx).colors;
         Some(
             div()
@@ -568,24 +607,71 @@ impl ConversationStream {
                 .gap_2()
                 .text_size(px(Typography::BODY))
                 .text_color(colors.text_secondary)
-                .child(
+                .children(controls.as_ref().map(|controls| {
                     div()
                         .flex()
                         .flex_col()
                         .child(vega_i18n::t(controls.message))
-                        .children(controls.detail.map(vega_i18n::t)),
+                        .children(controls.detail.map(vega_i18n::t))
+                }))
+                .children(
+                    controls
+                        .and_then(|controls| controls.action)
+                        .map(|(label, action)| {
+                            let label = vega_i18n::t(label);
+                            div()
+                                .id(format!(
+                                    "ordinary-action-{}",
+                                    row.submission.user_message_id()
+                                ))
+                                .role(Role::Button)
+                                .aria_label(label)
+                                .key_context("PendingMessageControl")
+                                .track_focus(&row.focus)
+                                .tab_stop(true)
+                                .cursor_pointer()
+                                .px_2()
+                                .py_1()
+                                .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+                                .focus_visible(move |style| {
+                                    style.border_1().border_color(colors.accent)
+                                })
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(move |_, _, _, cx| {
+                                        cx.stop_propagation();
+                                        cx.emit(OrdinaryActionRequested {
+                                            thread_id: thread.clone(),
+                                            submission,
+                                            attempt,
+                                            action,
+                                        });
+                                    }),
+                                )
+                                .on_action(cx.listener(
+                                    move |_, _: &ActivatePendingMessageControl, _, cx| {
+                                        cx.stop_propagation();
+                                        cx.emit(OrdinaryActionRequested {
+                                            thread_id: keyboard_thread.clone(),
+                                            submission,
+                                            attempt,
+                                            action,
+                                        });
+                                    },
+                                ))
+                                .child(label)
+                        }),
                 )
-                .children(controls.action.map(|(label, action)| {
-                    let label = vega_i18n::t(label);
+                .children(diagnostic_available.then(|| {
                     div()
                         .id(format!(
-                            "ordinary-action-{}",
+                            "ordinary-diagnostics-{}",
                             row.submission.user_message_id()
                         ))
                         .role(Role::Button)
-                        .aria_label(label)
+                        .aria_label(vega_i18n::t("ui.ordinary_send.copy_diagnostics"))
                         .key_context("PendingMessageControl")
-                        .track_focus(&row.focus)
+                        .track_focus(&row.diagnostic_focus)
                         .tab_stop(true)
                         .cursor_pointer()
                         .px_2()
@@ -596,26 +682,28 @@ impl ConversationStream {
                             MouseButton::Left,
                             cx.listener(move |_, _, _, cx| {
                                 cx.stop_propagation();
-                                cx.emit(OrdinaryActionRequested {
-                                    thread_id: thread.clone(),
-                                    submission,
-                                    attempt,
-                                    action,
-                                });
+                                if let Some(text) =
+                                    diagnostic_submission.preparation_diagnostics(attempt)
+                                {
+                                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                                        text,
+                                    ));
+                                }
                             }),
                         )
                         .on_action(cx.listener(
                             move |_, _: &ActivatePendingMessageControl, _, cx| {
                                 cx.stop_propagation();
-                                cx.emit(OrdinaryActionRequested {
-                                    thread_id: keyboard_thread.clone(),
-                                    submission,
-                                    attempt,
-                                    action,
-                                });
+                                if let Some(text) =
+                                    keyboard_diagnostic_submission.preparation_diagnostics(attempt)
+                                {
+                                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                                        text,
+                                    ));
+                                }
                             },
                         ))
-                        .child(label)
+                        .child(vega_i18n::t("ui.ordinary_send.copy_diagnostics"))
                 }))
                 .into_any_element(),
         )

@@ -353,7 +353,7 @@ pub fn list_standalone_threads(
 /// row is missing.
 pub fn get_thread(store: &Store, thread_id: &str) -> Result<Thread, ConversationError> {
     let row = store::find(store.conn(), thread_id)
-        .map_err(store_error)?
+        .map_err(crate::agent::runtime_store_error)?
         .ok_or_else(|| ConversationError::NotFound(thread_id.to_string()))?;
     thread_from_row(&row)
 }
@@ -626,7 +626,12 @@ pub fn task_project_path(
 ) -> Result<std::path::PathBuf, ConversationError> {
     let thread = get_thread(store, thread_id)?;
     let project = store_projects::find(store.conn(), &thread.project_id)
-        .map_err(store_error)?
+        .map_err(|error| match error {
+            store_projects::ProjectsError::Sql(error) => crate::agent::runtime_store_error(error),
+            store_projects::ProjectsError::PathAlreadyRegistered(_) => {
+                ConversationError::InvalidTaskIdentity
+            }
+        })?
         .ok_or(ConversationError::NoProject)?;
     let path = std::path::PathBuf::from(project.path);
     if path.as_os_str().is_empty() || !path.is_absolute() || !path.is_dir() {
@@ -674,7 +679,7 @@ fn task_workspace_root_at(
     }
     if thread.project_id.is_empty() {
         let row = store::find(store.conn(), thread_id)
-            .map_err(store_error)?
+            .map_err(crate::agent::runtime_store_error)?
             .ok_or(ConversationError::InvalidTaskIdentity)?;
         let owner = row
             .workspace_owner_thread_id
@@ -687,7 +692,7 @@ fn task_workspace_root_at(
             return Err(ConversationError::InvalidTaskIdentity);
         }
         let root = data_root.join("scratch").join(owner);
-        std::fs::create_dir_all(&root).map_err(store_error)?;
+        std::fs::create_dir_all(&root).map_err(crate::agent::runtime_store_error)?;
         return Ok(root);
     }
     task_project_path(store, thread_id)

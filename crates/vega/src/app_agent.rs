@@ -970,29 +970,38 @@ pub(crate) fn ordinary_effective_authority(
     run: &vega_conversation::agent::OrdinaryRun,
     config: &vega_store::config::AppConfig,
     path: &std::path::Path,
-) -> Result<Arc<EffectiveAuthority>, ()> {
-    let provider = unique_provider_for_model(config, run.submission.raw().model()).ok_or(())?;
+) -> Result<Arc<EffectiveAuthority>, vega_conversation::submission_diagnostics::PreparationFailure>
+{
+    use vega_conversation::submission_diagnostics::{
+        PreparationFailure, PreparationReason, PreparationStage,
+    };
+    let failure = |reason| PreparationFailure::new(PreparationStage::Preflight, reason);
+    let provider = unique_provider_for_model(config, run.submission.raw().model())
+        .ok_or(failure(PreparationReason::ProviderUnavailable))?;
     let model = vega_conversation::model_capabilities::load_configured_model(
         config,
         path,
         &provider.name,
         run.submission.raw().model(),
     )
-    .map_err(|_| ())?;
+    .map_err(|_| failure(PreparationReason::Capability))?;
     let snapshot = run.submission.snapshot();
     if snapshot.unavailable {
-        return Err(());
+        return Err(failure(PreparationReason::InvalidIdentity));
     }
     if let Some(authority) = snapshot.authority {
-        authority.validate_current(&model).map_err(|_| ())?;
+        authority
+            .validate_current(&model)
+            .map_err(|_| failure(PreparationReason::InvalidIdentity))?;
         return Ok(authority);
     }
     let reasoning = match run.submission.raw().reasoning() {
         Some(raw) => {
             if raw.provider != provider.name || raw.model != model.identity.model {
-                return Err(());
+                return Err(failure(PreparationReason::InvalidIdentity));
             }
-            vega_runtime::model_compat::freeze_choice(&model, raw.choice.clone()).map_err(|_| ())?
+            vega_runtime::model_compat::freeze_choice(&model, raw.choice.clone())
+                .map_err(|_| failure(PreparationReason::Reasoning))?
         }
         None => reasoning_for_provider_model(
             &provider.name,
@@ -1000,16 +1009,19 @@ pub(crate) fn ordinary_effective_authority(
             &provider.base_url,
             &model.identity.model,
             Some(&path.with_file_name(vega_store::reasoning::REASONING_FILE_NAME)),
-        )?,
+        )
+        .map_err(|_| failure(PreparationReason::Reasoning))?,
     };
     run.worker
         .bind_effective_authority(model, reasoning)
-        .map_err(|_| ())?;
+        .map_err(|_| failure(PreparationReason::InvalidIdentity))?;
     let snapshot = run.submission.snapshot();
     if snapshot.unavailable {
-        return Err(());
+        return Err(failure(PreparationReason::InvalidIdentity));
     }
-    snapshot.authority.ok_or(())
+    snapshot
+        .authority
+        .ok_or(failure(PreparationReason::InvalidIdentity))
 }
 
 pub(crate) fn commit_provider(
@@ -1129,6 +1141,13 @@ pub(crate) fn run_agent_worker_with_mcp(
         }
         other => other,
     };
+    use vega_conversation::submission_diagnostics::{
+        PreparationFailure, PreparationReason, PreparationStage, conversation_failure,
+        runtime_failure,
+    };
+    let mut preparation_failure =
+        PreparationFailure::new(PreparationStage::Launch, PreparationReason::State);
+    let preparation_cancel = cancel.clone();
     let mut reference_failure = None;
     let mut credential_failure = false;
     let mut computer_use: Option<ComputerUseRun> = None;
@@ -1151,15 +1170,20 @@ pub(crate) fn run_agent_worker_with_mcp(
                 execution_duration_ms: None,
             }));
         };
+        preparation_failure = PreparationFailure::new(PreparationStage::Workspace, PreparationReason::Capability);
         crate::agent_context::project_root_text(&project_path).map_err(project_failure)?;
         // Config and local credential storage are touched only after an explicit user submit
         // or committed Plan approval reaches this worker.
         let tools = vega_tools::Tools::new(&project_path)
-            .map_err(|_| ())?
+            .map_err(|error| { preparation_failure = match error {
+                vega_tools::ToolError::Io(error) => runtime_failure(PreparationStage::Workspace, &error.into()),
+                vega_tools::ToolError::NotFound(_) => PreparationFailure::new(PreparationStage::Workspace, PreparationReason::MissingWorkspace),
+                _ => PreparationFailure::new(PreparationStage::Workspace, PreparationReason::Capability),
+            }; })?
             .with_read_state(file_read_state);
-        let store = Store::open(&database_path).map_err(|_| ())?;
-        store.migrate().map_err(|_| ())?;
-        vega_conversation::automation::pause_matching(&store, &thread.id, &automation_pauses, "user_paused").map_err(|_| ())?;
+        let store = Store::open(&database_path).map_err(|error| { preparation_failure = runtime_failure(PreparationStage::Database, &error.into()); })?;
+        store.migrate().map_err(|error| { preparation_failure = runtime_failure(PreparationStage::Database, &error.into()); })?;
+        vega_conversation::automation::pause_matching(&store, &thread.id, &automation_pauses, "user_paused").map_err(|error| { preparation_failure = conversation_failure(PreparationStage::Conversation, &error); })?;
         // Resolve provider identity once, before constructing the provider and
         // before entering the runtime. The resulting FrozenReasoning is moved
         // into the selected entry point and is never re-read during retries
@@ -1167,8 +1191,9 @@ pub(crate) fn run_agent_worker_with_mcp(
         let config = config_path
             .as_deref()
             .and_then(|path| vega_store::config::read_from(path).ok());
+        preparation_failure = PreparationFailure::new(PreparationStage::Preflight, PreparationReason::CredentialSafety);
         let tools = crate::agent_context::protect_project_tools(tools, config_path.as_deref(), config.as_ref())?;
-        let system_prompt = crate::agent_context::compose_agent_system_prompt(&tools).map_err(project_failure)?;
+        let system_prompt = prepare_worker_system_prompt(&tools, &sender).map_err(|error| { preparation_failure = error; })?;
         let configured_provider = config
             .as_ref()
             .and_then(|config| unique_provider_for_model(config, &thread.model));
@@ -1198,6 +1223,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                 .map_err(|_| ())?;
             computer_use = Some(run);
         }
+        preparation_failure = PreparationFailure::new(PreparationStage::Preflight, PreparationReason::ProviderUnavailable);
         if config_path.is_some() && configured_provider.is_none() {
             return Err(());
         }
@@ -1205,7 +1231,7 @@ pub(crate) fn run_agent_worker_with_mcp(
             .as_deref()
             .map(|path| path.with_file_name(vega_store::reasoning::REASONING_FILE_NAME));
         let reasoning = if let Some(ordinary) = &ordinary {
-            ordinary_effective_authority(ordinary, config.as_ref().ok_or(())?, config_path.as_deref().ok_or(())?)?.reasoning().clone()
+            ordinary_effective_authority(ordinary, config.as_ref().ok_or(())?, config_path.as_deref().ok_or(())?).map_err(|error| { preparation_failure = error; })?.reasoning().clone()
         } else { match (reasoning, configured_provider.as_ref()) {
             (Some(reasoning), Some(provider)) => {
                 if reasoning.model != thread.model || reasoning.provider != provider.name {
@@ -1268,6 +1294,7 @@ pub(crate) fn run_agent_worker_with_mcp(
         );
         let owner_credential_reader = run_credential_reader.reader();
         let credential_exceptions = run_credential_reader.exception_filter();
+        preparation_failure = PreparationFailure::new(PreparationStage::Preflight, PreparationReason::ProviderUnavailable);
         let mut make_provider = || -> Result<Arc<dyn vega_runtime::Provider>, ()> {
             let provider = configured_provider.clone().ok_or(())?;
             let root = config_path
@@ -1329,7 +1356,7 @@ pub(crate) fn run_agent_worker_with_mcp(
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|_| ())?;
+            .map_err(|error| { preparation_failure = runtime_failure(PreparationStage::Launch, &error.into()); })?;
         let event_sender = sender.clone();
         let event_sink = move |event: &vega_conversation::types::ConversationEvent| {
             event_sender
@@ -1426,6 +1453,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                 if cancel.is_cancelled() {
                     return Err(());
                 }
+                preparation_failure = PreparationFailure::new(PreparationStage::Launch, PreparationReason::Pipeline);
                 let mcp_servers = match &mcp_service {
                     Some(service) => runtime
                         .block_on(async {
@@ -1717,6 +1745,9 @@ pub(crate) fn run_agent_worker_with_mcp(
         if let Some(run) = &computer_use {
             runtime.block_on(run.shutdown());
         }
+        if let Err(error) = &result {
+            preparation_failure = conversation_failure(PreparationStage::Conversation, error);
+        }
         let success = result.is_ok_and(|run| !run.failed);
         if success && !prediction_parent_cancel.is_cancelled()
             && let Some(request) = composer_prediction
@@ -1760,7 +1791,21 @@ pub(crate) fn run_agent_worker_with_mcp(
             if success {
                 Ok(())
             } else {
-                Err(SubmissionFailure::PreparationFailed)
+                Err(if preparation_cancel.is_cancelled() {
+                    SubmissionFailure::Cancelled
+                } else if reference_failure.is_some() {
+                    SubmissionFailure::Preparation(PreparationFailure::new(
+                        PreparationStage::Conversation,
+                        PreparationReason::References,
+                    ))
+                } else if credential_failure {
+                    SubmissionFailure::Preparation(PreparationFailure::new(
+                        PreparationStage::Preflight,
+                        PreparationReason::CredentialUnavailable,
+                    ))
+                } else {
+                    SubmissionFailure::Preparation(preparation_failure)
+                })
             },
         );
     }
@@ -1777,5 +1822,81 @@ pub(crate) fn automation_trigger(claim: &AutomationRunClaim) -> &'static str {
         "执行已设置的循环任务。"
     } else {
         "继续推进已设置的持续目标。"
+    }
+}
+
+fn prepare_worker_system_prompt(
+    tools: &vega_tools::Tools,
+    sender: &mpsc::SyncSender<AgentUpdate>,
+) -> Result<String, vega_conversation::submission_diagnostics::PreparationFailure> {
+    crate::agent_context::compose_agent_system_prompt(tools).map_err(|error| {
+        let error = Arc::new(vega_runtime::VegaError::ProjectInstructions(error));
+        let failure = vega_conversation::submission_diagnostics::runtime_failure(
+            vega_conversation::submission_diagnostics::PreparationStage::Workspace,
+            &error,
+        );
+        let _ = sender.send(AgentUpdate::Event(ConversationEvent::Error {
+            message_id: None,
+            error,
+            execution_duration_ms: None,
+        }));
+        failure
+    })
+}
+
+#[cfg(test)]
+mod preparation_tests {
+    use super::{AgentUpdate, prepare_worker_system_prompt};
+    use std::sync::mpsc;
+    use vega_conversation::types::{
+        ConversationEvent, OrdinarySubmission, RawSubmission, SubmissionFailure,
+    };
+    use vega_store::Store;
+
+    #[test]
+    fn oversized_project_instructions_export_workspace_failure_without_content() {
+        let root = tempfile::tempdir().unwrap();
+        let secret = "private-instruction sk-secret ";
+        std::fs::write(root.path().join("AGENTS.md"), secret.repeat(3000)).unwrap();
+        let tools = vega_tools::Tools::new(root.path()).unwrap();
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let failure = prepare_worker_system_prompt(&tools, &sender).unwrap_err();
+        assert!(matches!(
+            receiver.try_recv().unwrap(),
+            AgentUpdate::Event(ConversationEvent::Error { .. })
+        ));
+        let store = Store::open(":memory:").unwrap();
+        let thread = ulid::Ulid::generate().to_string();
+        let admission =
+            vega_store::thread_admission::try_acquire(store.database_identity(), &thread)
+                .unwrap()
+                .unwrap();
+        let raw = RawSubmission::new(
+            "private body".into(),
+            vec![],
+            vec![],
+            1,
+            "model".into(),
+            None,
+            None,
+        );
+        let (submission, worker) =
+            OrdinarySubmission::begin(store.database_identity(), thread, raw, admission).unwrap();
+        let attempt = worker.attempt_id();
+        worker
+            .complete(Err(SubmissionFailure::Preparation(failure)))
+            .unwrap();
+        submission.seal(attempt).unwrap();
+        let exported = submission.preparation_diagnostics(attempt).unwrap();
+        let event: serde_json::Value = serde_json::from_str(&exported).unwrap();
+        assert_eq!(event["events"][1]["failure"]["stage"], "workspace");
+        assert_eq!(
+            event["events"][1]["failure"]["reason"],
+            "instructions_too_large"
+        );
+        assert!(event["events"][1]["failure"]["io_kind"].is_null());
+        assert!(!exported.contains(secret));
+        assert!(!exported.contains(&root.path().to_string_lossy().to_string()));
+        assert!(!exported.contains("private body"));
     }
 }

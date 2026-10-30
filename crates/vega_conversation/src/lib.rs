@@ -53,6 +53,7 @@ pub use skill_settings::{SkillSettingsError, SkillSettingsService};
 
 pub mod ordinary_submissions;
 pub mod pending_messages;
+pub mod submission_diagnostics;
 
 pub mod privacy;
 mod run_credentials;
