@@ -627,6 +627,7 @@ pub struct ChatMessage {
     context_tasks: Option<Box<ContextTasks>>,
     tool_context: Option<Box<crate::tool_context::ToolContext>>,
     model_projection: bool,
+    conversation_history_result: bool,
     replay_cold: bool,
 }
 
@@ -1378,6 +1379,7 @@ impl ChatMessage {
             context_tasks: None,
             tool_context: None,
             model_projection: false,
+            conversation_history_result: false,
             replay_cold: false,
         }
     }
@@ -1406,6 +1408,7 @@ impl ChatMessage {
             context_tasks: None,
             tool_context: None,
             model_projection: false,
+            conversation_history_result: false,
             replay_cold: false,
         }
     }
@@ -1438,6 +1441,7 @@ impl ChatMessage {
             context_tasks: None,
             tool_context: None,
             model_projection: false,
+            conversation_history_result: false,
             replay_cold: false,
             images: Vec::new(),
         }
@@ -1449,13 +1453,20 @@ impl ChatMessage {
         self.tool_context = None;
         self.runtime_guidance = None;
         self.model_projection = false;
+        self.conversation_history_result = false;
+    }
+
+    pub fn is_conversation_history_result(&self) -> bool {
+        self.conversation_history_result
     }
 
     pub fn projected_tool_result(call_id: impl Into<String>, tool: &str, content: &str) -> Self {
         const SHELL_MODEL_OUTPUT_BYTES: usize = 65_536;
         const OMISSION: &str = "\n[Shell output shortened: middle omitted for model context. Narrow/filter or page the command to retrieve more detail.]\n";
         if tool != "bash" || content.len() <= SHELL_MODEL_OUTPUT_BYTES {
-            return Self::tool_result(call_id, content);
+            let mut message = Self::tool_result(call_id, content);
+            message.conversation_history_result = tool == "read_conversation";
+            return message;
         }
         let retained_bytes = SHELL_MODEL_OUTPUT_BYTES - OMISSION.len();
         let mut head_end = retained_bytes / 2;
@@ -1511,6 +1522,7 @@ impl ChatMessage {
             context_tasks: None,
             tool_context: None,
             model_projection: false,
+            conversation_history_result: false,
             replay_cold: false,
         }
     }
@@ -1996,6 +2008,7 @@ pub enum ToolChoice {
 /// model / messages / tools / max_tokens.
 #[derive(Clone, Default, PartialEq)]
 pub struct ChatRequest {
+    pub credential_scan_history: Option<std::sync::Arc<[String]>>,
     pub model_snapshot: Option<Box<crate::model_compat::ResolvedModel>>,
     pub tool_choice: Option<ToolChoice>,
     /// Model name as understood by the provider, e.g. `deepseek-chat`.

@@ -91,6 +91,169 @@ fn contains_with_policy(
     vega_runtime::redact_sensitive_credential_text_with_policy(text, known, exceptions) != text
 }
 
+fn first_json(content: &str) -> Option<serde_json::Value> {
+    let mut stream = serde_json::Deserializer::from_str(content).into_iter::<serde_json::Value>();
+    stream.next()?.ok()
+}
+
+fn history_observation(content: &str) -> Option<(serde_json::Value, bool)> {
+    let value = first_json(content)?;
+    let observation = &value["vega_history_observation"];
+    if observation["kind"] == "conversation_details" {
+        return Some((value, false));
+    }
+    if observation["kind"] == "tool_result" && observation["tool"] == "read_conversation" {
+        let output = observation["output"].as_str()?;
+        let nested = first_json(output)?;
+        if nested["vega_history_observation"]["kind"] == "conversation_details" {
+            return Some((value, true));
+        }
+    }
+    None
+}
+
+pub(crate) fn history_fragment_sequences(
+    messages: &[vega_runtime::ChatMessage],
+) -> Result<Vec<String>, VegaError> {
+    let mut groups =
+        std::collections::BTreeMap::<(String, &'static str), Vec<(u64, String)>>::new();
+    let mut bytes = 0usize;
+    for message in messages {
+        if !message.is_conversation_history_result() {
+            continue;
+        }
+        let Some((observation, nested)) = history_observation(&message.content) else {
+            if let Some(value) = first_json(&message.content) {
+                let observation = &value["vega_history_observation"];
+                if observation["kind"] == "tool_result"
+                    && observation["tool"] == "read_conversation"
+                    && observation["output"]
+                        .as_str()
+                        .is_some_and(|output| !output.trim_start().starts_with('{'))
+                {
+                    continue;
+                }
+                return Err(blocked());
+            }
+            if message.content.trim_start().starts_with('{') {
+                return Err(blocked());
+            }
+            continue;
+        };
+        let value = if nested {
+            let output = observation["vega_history_observation"]["output"]
+                .as_str()
+                .ok_or_else(blocked)?;
+            first_json(output).ok_or_else(blocked)?
+        } else {
+            observation
+        };
+        let records = value["vega_history_observation"]["page"]["records"]
+            .as_array()
+            .ok_or_else(blocked)?;
+        for record in records {
+            let id = record["source_id"].as_str().ok_or_else(blocked)?;
+            if id.contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER) {
+                return Err(blocked());
+            }
+            for field in ["content", "input", "output"] {
+                let Some(text) = record[field]["text"].as_str() else {
+                    continue;
+                };
+                let offset = record[field]["offset"].as_u64().ok_or_else(blocked)?;
+                bytes = bytes.saturating_add(text.len());
+                if bytes > 8 * 1024 * 1024 {
+                    return Err(blocked());
+                }
+                groups
+                    .entry((id.to_owned(), field))
+                    .or_default()
+                    .push((offset, text.to_owned()));
+            }
+        }
+    }
+    let mut sequences = Vec::new();
+    for fragments in groups.values_mut() {
+        fragments.sort_by_key(|(offset, _)| *offset);
+        let mut start = 0u64;
+        let mut run = Vec::<char>::new();
+        for (offset, text) in fragments {
+            let characters = text.chars().collect::<Vec<_>>();
+            let end = start.saturating_add(run.len() as u64);
+            if run.is_empty() || *offset > end {
+                if !run.is_empty() {
+                    sequences.push(run.iter().collect());
+                }
+                start = *offset;
+                run = characters;
+                continue;
+            }
+            let overlap_start = (*offset - start) as usize;
+            let overlap = run
+                .len()
+                .saturating_sub(overlap_start)
+                .min(characters.len());
+            if run[overlap_start..overlap_start + overlap] != characters[..overlap] {
+                return Err(blocked());
+            }
+            run.extend(characters.into_iter().skip(overlap));
+        }
+        if !run.is_empty() {
+            sequences.push(run.iter().collect());
+        }
+    }
+    Ok(sequences)
+}
+
+pub(crate) fn history_sequences_unsafe(
+    sequences: &[String],
+    credentials: &[String],
+    exceptions: Option<&vega_runtime::CredentialExceptionFilter>,
+) -> bool {
+    sequences
+        .iter()
+        .any(|text| contains_with_policy(text, credentials, exceptions))
+}
+
+fn history_fragments_unsafe(
+    request: &ChatRequest,
+    credentials: &[String],
+    exceptions: Option<&vega_runtime::CredentialExceptionFilter>,
+) -> bool {
+    history_fragment_sequences(&request.messages).map_or(true, |sequences| {
+        history_sequences_unsafe(&sequences, credentials, exceptions)
+    })
+}
+
+fn private_history_unsafe(
+    request: &ChatRequest,
+    credentials: &[String],
+    exceptions: Option<&vega_runtime::CredentialExceptionFilter>,
+) -> bool {
+    request
+        .credential_scan_history
+        .as_deref()
+        .is_some_and(|sequences| history_sequences_unsafe(sequences, credentials, exceptions))
+}
+
+pub(crate) fn discard_history_observations(request: &mut ChatRequest) {
+    for message in &mut request.messages {
+        if !message.is_conversation_history_result() {
+            continue;
+        }
+        if let Some(mut observation) = first_json(&message.content)
+            && observation["vega_history_observation"]["kind"] == "tool_result"
+            && observation["vega_history_observation"]["tool"] == "read_conversation"
+        {
+            observation["vega_history_observation"]["output"] =
+                serde_json::Value::String(vega_runtime::CONVERSATION_HISTORY_RETRY_OUTPUT.into());
+            message.content = observation.to_string();
+        } else {
+            message.content = vega_runtime::CONVERSATION_HISTORY_RETRY_OUTPUT.into();
+        }
+    }
+}
+
 fn contains_chat_secret(
     raw: &vega_runtime::ChatRawState,
     known: &[String],
@@ -149,6 +312,11 @@ pub(crate) fn reject_owner_secret_with_policy(
     exceptions: Option<&vega_runtime::CredentialExceptionFilter>,
 ) -> Result<(), VegaError> {
     let known = reader().map_err(|_| VegaError::CredentialCheckUnavailable)?;
+    if private_history_unsafe(request, &known, exceptions)
+        || history_fragments_unsafe(request, &known, exceptions)
+    {
+        return Err(blocked());
+    }
     if request.messages.iter().any(|message| {
         contains_with_policy(&message.content, &known, exceptions)
             || message
@@ -216,6 +384,12 @@ pub(crate) fn project_owner_secrets_with_policy(
     exceptions: Option<&vega_runtime::CredentialExceptionFilter>,
 ) -> Result<ChatRequest, VegaError> {
     let known = reader().map_err(|_| VegaError::CredentialCheckUnavailable)?;
+    if private_history_unsafe(&request, &known, exceptions) {
+        return Err(blocked());
+    }
+    if history_fragments_unsafe(&request, &known, exceptions) {
+        discard_history_observations(&mut request);
+    }
     for message in &mut request.messages {
         if message
             .chat_reasoning

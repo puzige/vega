@@ -200,6 +200,27 @@ impl Provider for ScriptedProvider {
     }
 }
 
+#[derive(Default)]
+struct CaptureProvider(Mutex<Vec<ChatRequest>>);
+
+impl Provider for CaptureProvider {
+    fn chat_stream(
+        &self,
+        request: ChatRequest,
+        _: CancellationToken,
+    ) -> BoxFuture<'static, Result<EventStream, VegaError>> {
+        self.0.lock().unwrap().push(request);
+        Box::pin(async {
+            Ok(Box::pin(futures::stream::iter(vec![
+                Ok(ProviderEvent::TextDelta("continued".into())),
+                Ok(ProviderEvent::Done {
+                    stop_reason: StopReason::End,
+                }),
+            ])) as EventStream)
+        })
+    }
+}
+
 struct RejectPermission;
 impl RuntimePermissionHook for RejectPermission {
     fn request(
@@ -554,6 +575,38 @@ fn history_audits_reject_forged_inputs_approvals_and_results() -> TestResult {
         )
         .is_ok()
     );
+    assert!(
+        validate(
+            "{}",
+            vega_store::context_compaction::REDACTED_HISTORY_RESULT,
+            RuntimeToolStatus::Success,
+            &once
+        )
+        .is_ok()
+    );
+    let state = tool_calls::ToolCallState {
+        thread_id: THREAD.into(),
+        tool: "read_conversation".into(),
+        input_json: "{}".into(),
+        status: "running".into(),
+        approval: Some(once.to_json()?),
+        output_text: None,
+        exit_code: None,
+        duration_ms: None,
+        output_full_path: None,
+    };
+    let forged = RuntimeToolResult {
+        call_id: "id".into(),
+        output: vega_store::context_compaction::REDACTED_HISTORY_RESULT.into(),
+        status: RuntimeToolStatus::Success,
+        reused: false,
+        exit_code: None,
+        duration_ms: None,
+        truncated: Some(false),
+        approval: Some(approval_audit_to_runtime(&once)),
+        remember_rule: None,
+    };
+    assert!(events::validate_runtime_terminal("", THREAD, "id", &state, &forged, &once).is_err());
     Ok(())
 }
 
@@ -1010,5 +1063,582 @@ async fn changed_credentials_invalidate_old_pages_and_same_id_reuse() -> TestRes
     assert!(prepared.request.history.iter().all(|message| {
         message.role != ChatRole::Tool || !message.content.contains("SYNTHETIC-SECRET-0123456789")
     }));
+    let assistant_id = prepared.assistant_message_id.clone();
+    drop(prepared);
+    messages::finish(fixture.store.conn(), &assistant_id, "", "done")?;
+    let fingerprint =
+        vega_store::credential_privacy::source_fingerprint(fixture.store.conn(), THREAD)?;
+    let known = vec![
+        "messages".to_string(),
+        "SYNTHETIC-SECRET-0123456789".to_string(),
+    ];
+    vega_store::credential_privacy::clean(
+        fixture.store.conn(),
+        THREAD,
+        &fingerprint,
+        |text, offsets| {
+            vega_runtime::redact_sensitive_credential_text_with_offsets(text, &known, offsets)
+        },
+    )?;
+    let cleaned =
+        tool_calls::find_state(fixture.store.conn(), "old-page")?.ok_or("missing call")?;
+    assert_eq!(cleaned.input_json, "{}");
+    assert_eq!(
+        cleaned.output_text.as_deref(),
+        Some(vega_store::context_compaction::REDACTED_HISTORY_RESULT)
+    );
+    let prepared_again = pipeline::prepare_run_with_images_and_reasoning(
+        fixture.path.clone(),
+        THREAD.into(),
+        "continue again".into(),
+        "system".into(),
+        ulid::Ulid::generate().to_string(),
+        ulid::Ulid::generate().to_string(),
+        PersistenceActorConfig::default()
+            .with_owner_credential_reader(Arc::new(move || Ok(known.clone()))),
+        false,
+        None,
+        None,
+        Vec::new(),
+        None,
+    )?;
+    let recovered = &prepared_again.request.completed_tool_results["old-page"];
+    assert_eq!(recovered.input_json, "{}");
+    assert_eq!(
+        recovered.result.output,
+        vega_store::context_compaction::REDACTED_HISTORY_RESULT
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn source_identity_redacted_during_read_remains_a_safe_observation() -> TestResult {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let fixture = fixture()?;
+    let tools = vega_tools::Tools::new(&fixture.directory)?;
+    let changed = Arc::new(AtomicBool::new(false));
+    let source_changed = changed.clone();
+    let reader = context_history::reader(fixture.path.clone(), THREAD.into());
+    let config = RuntimeToolConfig::default()
+        .with_conversation_history_reader(Arc::new(move |request| {
+            let page = reader(request)?;
+            source_changed.store(true, Ordering::SeqCst);
+            Ok(page)
+        }))
+        .with_credential_reader(Arc::new(move || {
+            if changed.load(Ordering::SeqCst) {
+                Ok(vec!["user".into()])
+            } else {
+                Ok(Vec::new())
+            }
+        }));
+    let provider = scripted_provider(vec![(
+        "masked-source",
+        "read_conversation",
+        input("messages", Some("user"), 0),
+    )]);
+    let seq = Cell::new(tool_calls::next_seq(fixture.store.conn(), THREAD)?);
+    let outcome = run_agent_with_permission_sink(
+        &provider,
+        &tools,
+        request(config, Default::default()),
+        CancellationToken::new(),
+        &RejectPermission,
+        |event| futures::future::ready(persist(&fixture.store, &seq, &event)),
+    )
+    .await?;
+    assert_eq!(outcome.final_text, "continued");
+    let row =
+        tool_calls::find_state(fixture.store.conn(), "masked-source")?.ok_or("missing call")?;
+    assert_eq!(row.status, "success");
+    let output = row.output_text.ok_or("missing output")?;
+    let value: serde_json::Value = serde_json::from_str(&output)?;
+    assert_eq!(value["vega_history_observation"]["authority"], "none");
+    assert_eq!(
+        value["vega_history_observation"]["page"]["records"][0]["source_id"],
+        vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn unavailable_credentials_after_invalid_proposal_do_not_leave_pending() -> TestResult {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let fixture = fixture()?;
+    let tools = vega_tools::Tools::new(&fixture.directory)?;
+    let proposed = Arc::new(AtomicBool::new(false));
+    let check = proposed.clone();
+    let config = RuntimeToolConfig::default()
+        .with_conversation_history_reader(context_history::reader(
+            fixture.path.clone(),
+            THREAD.into(),
+        ))
+        .with_credential_reader(Arc::new(move || {
+            if check.load(Ordering::SeqCst) {
+                Err(())
+            } else {
+                Ok(Vec::new())
+            }
+        }));
+    let provider = scripted_provider(vec![("invalid-check", "read_conversation", "{}".into())]);
+    let seq = Cell::new(tool_calls::next_seq(fixture.store.conn(), THREAD)?);
+    let outcome = run_agent_with_permission_sink(
+        &provider,
+        &tools,
+        request(config, Default::default()),
+        CancellationToken::new(),
+        &RejectPermission,
+        |event| {
+            if matches!(event, RuntimeEvent::ToolCallProposed(_)) {
+                proposed.store(true, Ordering::SeqCst);
+            }
+            futures::future::ready(persist(&fixture.store, &seq, &event))
+        },
+    )
+    .await?;
+    assert_eq!(outcome.final_text, "continued");
+    let row =
+        tool_calls::find_state(fixture.store.conn(), "invalid-check")?.ok_or("missing call")?;
+    assert_eq!(row.status, "rejected");
+    assert_eq!(
+        row.output_text.as_deref(),
+        Some("Tool error: credential safety check unavailable")
+    );
+    let approval = ApprovalAudit::from_json(row.approval.as_deref().ok_or("approval")?)?;
+    pipeline::validate_recovered_projection(
+        "",
+        THREAD,
+        "invalid-check",
+        &row.tool,
+        &row.input_json,
+        row.output_text.as_deref().unwrap(),
+        RuntimeToolStatus::Rejected,
+        &approval,
+        None,
+        None,
+    )?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn new_credentials_cannot_be_reassembled_from_saved_pages() -> TestResult {
+    let fixture = fixture()?;
+    let tools = vega_tools::Tools::new(&fixture.directory)?;
+    let secret = "separate-sensitive-value-123456789";
+    let content = format!("{}{}end", "界".repeat(1018), secret);
+    fixture
+        .store
+        .conn()
+        .execute("UPDATE messages SET content=?1 WHERE id='user'", [&content])?;
+    let provider = scripted_provider(vec![
+        (
+            "page-a",
+            "read_conversation",
+            input("messages", Some("user"), 0),
+        ),
+        (
+            "page-b",
+            "read_conversation",
+            input("messages", Some("user"), 1024),
+        ),
+    ]);
+    let seq = Cell::new(tool_calls::next_seq(fixture.store.conn(), THREAD)?);
+    let initial = RuntimeToolConfig::default().with_conversation_history_reader(
+        context_history::reader(fixture.path.clone(), THREAD.into()),
+    );
+    let mut initial_request = request(initial, Default::default());
+    let mut frame = vega_runtime::ReplayFrame::new(1, vega_runtime::ReasoningReplayPolicy::Unknown);
+    frame.attach_route_fingerprint([7; 32]);
+    initial_request.replay_frame = Some(frame);
+    let outcome = run_agent_with_permission_sink(
+        &provider,
+        &tools,
+        initial_request,
+        CancellationToken::new(),
+        &RejectPermission,
+        |event| futures::future::ready(persist(&fixture.store, &seq, &event)),
+    )
+    .await?;
+    assert_eq!(outcome.final_text, "continued");
+    let before = tool_calls::terminal_results(fixture.store.conn(), THREAD)?;
+    let first = &before["page-a"].output;
+    let second = &before["page-b"].output;
+    assert!(!first.contains(secret));
+    assert!(!second.contains(secret));
+    assert!(first.contains(&secret[..6]));
+    assert!(second.contains(&secret[6..]));
+    let mut raw_request = provider.requests.lock().unwrap()[1].clone();
+    let history_results = raw_request
+        .messages
+        .iter()
+        .filter(|message| message.is_conversation_history_result())
+        .collect::<Vec<_>>();
+    assert_eq!(history_results.len(), 2);
+    assert!(
+        history_results
+            .iter()
+            .any(|message| message.content.contains(&secret[..6]))
+    );
+    assert!(
+        history_results
+            .iter()
+            .any(|message| message.content.contains(&secret[6..]))
+    );
+    let ordinary_user_json = history_results[0].content.clone();
+    let sequences = credential_guard::history_fragment_sequences(&raw_request.messages)?;
+    assert!(sequences.iter().any(|sequence| sequence.contains(secret)));
+    let mut one_stage = raw_request.clone();
+    let mut seen = false;
+    one_stage.messages.retain(|message| {
+        if !message.is_conversation_history_result() {
+            return true;
+        }
+        if seen {
+            return false;
+        }
+        seen = true;
+        true
+    });
+    one_stage.credential_scan_history = Some(sequences.into());
+    let no_credentials = || Ok(Vec::new());
+    let safe_stage = credential_guard::project_owner_secrets_with_policy(
+        one_stage.clone(),
+        &no_credentials,
+        None,
+    )?;
+    assert!(
+        safe_stage
+            .messages
+            .iter()
+            .any(|message| message.is_conversation_history_result()
+                && message.content.contains(&secret[..6]))
+    );
+    let credentials = || Ok(vec![secret.into()]);
+    assert!(
+        credential_guard::project_owner_secrets_with_policy(one_stage, &credentials, None).is_err()
+    );
+    raw_request
+        .messages
+        .push(ChatMessage::new(ChatRole::User, &ordinary_user_json));
+    assert!(credential_guard::reject_owner_secret(&raw_request, &credentials).is_err());
+    let projected =
+        credential_guard::project_owner_secrets_with_policy(raw_request, &credentials, None)?;
+    credential_guard::reject_owner_secret(&projected, &credentials)?;
+    assert_eq!(
+        projected.messages.last().ok_or("missing user")?.content,
+        ordinary_user_json
+    );
+    let protected = projected
+        .messages
+        .iter()
+        .filter(|message| message.is_conversation_history_result())
+        .collect::<Vec<_>>();
+    assert_eq!(protected.len(), 2);
+    assert!(
+        protected
+            .iter()
+            .all(|message| !message.content.contains(&secret[..6])
+                && !message.content.contains(&secret[6..]))
+    );
+
+    let source = vega_store::context_compaction::load_source(fixture.store.conn(), THREAD)?;
+    let registry = ReplaySessionRegistry::new();
+    let fence = ReplayCheckpointFence::from_checkpoint(None);
+    let lease = registry.begin(THREAD, source.source_version, &source.fingerprint, fence);
+    assert!(registry.seal(
+        lease,
+        source.source_version,
+        source.fingerprint.clone(),
+        fence,
+        "run".into(),
+        outcome.messages.clone()
+    ));
+    let probe = registry.begin(THREAD, source.source_version, &source.fingerprint, fence);
+    assert!(probe.candidate().is_some());
+    assert!(registry.seal(
+        probe,
+        source.source_version,
+        source.fingerprint,
+        fence,
+        "run".into(),
+        outcome.messages.clone()
+    ));
+
+    let prepared = pipeline::prepare_run_with_images_and_reasoning(
+        fixture.path.clone(),
+        THREAD.into(),
+        "continue".into(),
+        "system".into(),
+        ulid::Ulid::generate().to_string(),
+        ulid::Ulid::generate().to_string(),
+        PersistenceActorConfig::default()
+            .with_owner_credential_reader(Arc::new(move || Ok(vec![secret.into()])))
+            .with_replay_session_registry(registry, [7; 32]),
+        false,
+        None,
+        None,
+        Vec::new(),
+        None,
+    )?;
+    assert!(
+        prepared
+            .replay_lease
+            .as_ref()
+            .is_some_and(|lease| lease.candidate().is_some())
+    );
+    for id in ["page-a", "page-b"] {
+        let output = &prepared.request.completed_tool_results[id].result.output;
+        assert_eq!(output, &before[id].output);
+        assert!(output.contains("next_offset"));
+    }
+    let mut forwarded = prepared.request.clone();
+    if let Some(frame) = forwarded.replay_frame.as_mut() {
+        frame.attach_route_fingerprint([7; 32]);
+        if let Some(session) = prepared
+            .replay_lease
+            .as_ref()
+            .and_then(|lease| lease.candidate())
+        {
+            frame.attach_candidate(
+                session.messages().to_vec(),
+                session.environment_fingerprint(),
+            );
+        }
+    }
+    let capture = Arc::new(CaptureProvider::default());
+    let guarded = credential_guard::OwnerCredentialProvider::new(
+        capture.clone(),
+        Arc::new(move || Ok(vec![secret.into()])),
+    );
+    let delivered = run_agent_with_permission_sink(
+        &guarded,
+        &tools,
+        forwarded,
+        CancellationToken::new(),
+        &RejectPermission,
+        |_| futures::future::ready(Ok(())),
+    )
+    .await?;
+    assert_eq!(delivered.final_text, "continued");
+    let sent = capture.0.lock().unwrap();
+    let results = sent[0]
+        .messages
+        .iter()
+        .filter(|message| message.is_conversation_history_result())
+        .collect::<Vec<_>>();
+    assert_eq!(results.len(), 2);
+    assert!(
+        results
+            .iter()
+            .all(|message| !message.content.contains(&secret[..6])
+                && !message.content.contains(&secret[6..]))
+    );
+    for id in ["page-a", "page-b"] {
+        let stored = tool_calls::find_state(fixture.store.conn(), id)?.ok_or("missing page")?;
+        assert_eq!(
+            stored.output_text.as_deref(),
+            Some(before[id].output.as_str())
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn safe_history_results_remain_available_to_the_compaction_provider() -> TestResult {
+    let fixture = fixture()?;
+    let tools = vega_tools::Tools::new(&fixture.directory)?;
+    let anchor = "historical-recovery-anchor";
+    let content = format!("{anchor}{}", " text".repeat(400));
+    fixture
+        .store
+        .conn()
+        .execute("UPDATE messages SET content=?1 WHERE id='user'", [&content])?;
+    let history_provider = scripted_provider(vec![(
+        "safe-page",
+        "read_conversation",
+        input("messages", Some("user"), 0),
+    )]);
+    let seq = Cell::new(tool_calls::next_seq(fixture.store.conn(), THREAD)?);
+    let config = RuntimeToolConfig::default().with_conversation_history_reader(
+        context_history::reader(fixture.path.clone(), THREAD.into()),
+    );
+    run_agent_with_permission_sink(
+        &history_provider,
+        &tools,
+        request(config, Default::default()),
+        CancellationToken::new(),
+        &RejectPermission,
+        |event| futures::future::ready(persist(&fixture.store, &seq, &event)),
+    )
+    .await?;
+    let captured = CaptureProvider::default();
+    compaction::compact_thread_manually_with_credential_reader(
+        &fixture.store,
+        &captured,
+        THREAD,
+        "synthetic",
+        "system",
+        Vec::new(),
+        vega_runtime::ContextBudget::new(20_000, 1_000, false)?,
+        CancellationToken::new(),
+        None,
+        None,
+        Some(Arc::new(|| Ok(Vec::new()))),
+    )
+    .await
+    .map_err(|failure| *failure.error)?;
+    let requests = captured.0.lock().unwrap();
+    let results = requests
+        .iter()
+        .flat_map(|request| &request.messages)
+        .filter(|message| message.is_conversation_history_result())
+        .collect::<Vec<_>>();
+    assert!(!results.is_empty());
+    assert!(
+        results
+            .iter()
+            .any(|message| message.content.contains(anchor))
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|request| !format!("{request:?}").contains(anchor))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn permanent_clean_invalidates_split_pages_and_recovers_cleaned_running_call() -> TestResult {
+    let fixture = fixture()?;
+    let tools = vega_tools::Tools::new(&fixture.directory)?;
+    let secret = "separate-sensitive-value-123456789";
+    let content = format!("{}{}end", "界".repeat(1018), secret);
+    fixture
+        .store
+        .conn()
+        .execute("UPDATE messages SET content=?1 WHERE id='user'", [&content])?;
+    let provider = scripted_provider(vec![
+        (
+            "clean-a",
+            "read_conversation",
+            input("messages", Some("user"), 0),
+        ),
+        (
+            "clean-b",
+            "read_conversation",
+            input("messages", Some("user"), 1024),
+        ),
+    ]);
+    let seq = Cell::new(tool_calls::next_seq(fixture.store.conn(), THREAD)?);
+    let config = RuntimeToolConfig::default().with_conversation_history_reader(
+        context_history::reader(fixture.path.clone(), THREAD.into()),
+    );
+    let outcome = run_agent_with_permission_sink(
+        &provider,
+        &tools,
+        request(config, Default::default()),
+        CancellationToken::new(),
+        &RejectPermission,
+        |event| futures::future::ready(persist(&fixture.store, &seq, &event)),
+    )
+    .await?;
+    assert_eq!(outcome.final_text, "continued");
+    let before = tool_calls::terminal_results(fixture.store.conn(), THREAD)?;
+    assert!(!before["clean-a"].output.contains(secret));
+    assert!(!before["clean-b"].output.contains(secret));
+    assert!(before["clean-a"].output.contains(&secret[..6]));
+    assert!(before["clean-b"].output.contains(&secret[6..]));
+    let fingerprint =
+        vega_store::credential_privacy::source_fingerprint(fixture.store.conn(), THREAD)?;
+    vega_store::credential_privacy::clean(
+        fixture.store.conn(),
+        THREAD,
+        &fingerprint,
+        |text, offsets| {
+            vega_runtime::redact_sensitive_credential_text_with_offsets(
+                text,
+                &[secret.into()],
+                offsets,
+            )
+        },
+    )?;
+    for id in ["clean-a", "clean-b"] {
+        let row = tool_calls::find_state(fixture.store.conn(), id)?.ok_or("missing call")?;
+        assert_eq!(row.status, "success");
+        assert_eq!(
+            row.output_text.as_deref(),
+            Some(vega_store::context_compaction::REDACTED_HISTORY_RESULT)
+        );
+    }
+    let page = crate::history::latest_history_page(&fixture.store, THREAD, 100)?;
+    for id in ["clean-a", "clean-b"] {
+        assert!(page.entries.iter().any(|entry| matches!(entry,
+            crate::history::HistoryEntry::Tool { call_id, result: Some(crate::types::ToolCardResultProjection::ReadOnly { output, .. }), .. }
+            if call_id == id && output == vega_store::context_compaction::REDACTED_HISTORY_RESULT)));
+    }
+    let audit = RuntimeApprovalAudit {
+        decision: RuntimeApprovalDecision::Once,
+        note: None,
+        source: RuntimeApprovalSource::ReadonlyTool,
+        danger: None,
+    };
+    let call = RuntimeToolCall {
+        id: "clean-running".into(),
+        name: "read_conversation".into(),
+        input_json: input("messages", None, 0),
+        description: None,
+    };
+    persist(&fixture.store, &seq, &RuntimeEvent::ToolCallProposed(call))?;
+    persist(
+        &fixture.store,
+        &seq,
+        &RuntimeEvent::ToolCallApproved {
+            call_id: "clean-running".into(),
+            audit,
+            remember_rule: None,
+        },
+    )?;
+    persist(
+        &fixture.store,
+        &seq,
+        &RuntimeEvent::ToolCallRunning {
+            call_id: "clean-running".into(),
+        },
+    )?;
+    let fingerprint =
+        vega_store::credential_privacy::source_fingerprint(fixture.store.conn(), THREAD)?;
+    vega_store::credential_privacy::clean(
+        fixture.store.conn(),
+        THREAD,
+        &fingerprint,
+        |text, offsets| {
+            vega_runtime::redact_sensitive_credential_text_with_offsets(
+                text,
+                &["messages".into()],
+                offsets,
+            )
+        },
+    )?;
+    let cleaned = tool_calls::find_state(fixture.store.conn(), "clean-running")?
+        .ok_or("missing running call")?;
+    assert_eq!(cleaned.input_json, "{}");
+    vega_store::recovery::recover_thread(fixture.store.conn(), THREAD, 42)?;
+    let recovered = tool_calls::find_state(fixture.store.conn(), "clean-running")?
+        .ok_or("missing recovered call")?;
+    assert_eq!(recovered.status, "cancelled");
+    let approval =
+        ApprovalAudit::from_json(recovered.approval.as_deref().ok_or("missing approval")?)?;
+    pipeline::validate_recovered_projection(
+        "",
+        THREAD,
+        "clean-running",
+        &recovered.tool,
+        &recovered.input_json,
+        recovered.output_text.as_deref().unwrap(),
+        RuntimeToolStatus::Cancelled,
+        &approval,
+        None,
+        None,
+    )?;
     Ok(())
 }

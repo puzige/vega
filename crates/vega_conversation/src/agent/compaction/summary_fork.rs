@@ -56,6 +56,7 @@ impl ConversationCompactionHook<'_> {
             tools: parent.tools.clone(),
             max_tokens: direct.max_tokens,
             reasoning: self.reasoning.clone(),
+            credential_scan_history: direct.credential_scan_history.clone(),
         };
         if estimate_wire_context(&request.messages, &request.tools)
             .map_err(|error| VegaError::Context(error.into()))?

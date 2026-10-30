@@ -1626,6 +1626,7 @@ impl ConversationCompactionHook<'_> {
         cancel: &CancellationToken,
         deadline: tokio::time::Instant,
     ) -> Result<String, ContextCompactionFailure> {
+        let scan_history = summary_request.credential_scan_history.clone();
         let summary_request = match &self.credential_reader {
             Some(reader) => super::credential_guard::project_owner_secrets_with_policy(
                 summary_request,
@@ -1745,6 +1746,29 @@ impl ConversationCompactionHook<'_> {
                     },
                     None => Vec::new(),
                 };
+                if scan_history.as_deref().is_some_and(|sequences| {
+                    super::credential_guard::history_sequences_unsafe(
+                        sequences,
+                        &credentials,
+                        self.credential_exceptions.as_ref(),
+                    )
+                }) {
+                    let error = VegaError::CredentialExposureBlocked;
+                    if let Some(diagnostics) = &self.diagnostics {
+                        diagnostics.stage_event(
+                            &attempt_id,
+                            vega_store::run_diagnostics::DiagnosticPhase::ContextSummary,
+                            vega_store::run_diagnostics::DiagnosticState::Failed,
+                            Some(super::diagnostics::run_failure(&error)),
+                            started_at,
+                            super::diagnostics::with_failure_metrics(
+                                summary_store_metrics(&collection.metrics),
+                                &error,
+                            ),
+                        );
+                    }
+                    return Err(failure_with_usages(error, usages, *usage_complete));
+                }
                 let summary = vega_runtime::redact_sensitive_credential_text_with_policy(
                     &collection.summary,
                     &credentials,
@@ -1806,6 +1830,12 @@ impl ConversationCompactionHook<'_> {
     ) -> Result<String, ContextCompactionFailure> {
         validate_complete_projection(history)
             .map_err(|failure| execution.failure(*failure.error))?;
+        let mut scan_messages = history.to_vec();
+        scan_messages.extend(execution.request.messages.iter().cloned());
+        let scan_history: Arc<[String]> =
+            super::credential_guard::history_fragment_sequences(&scan_messages)
+                .map_err(|error| execution.failure(error))?
+                .into();
         let mut history = history.to_vec();
         for message in &mut history {
             if !message.images.is_empty() {
@@ -1842,6 +1872,7 @@ impl ConversationCompactionHook<'_> {
                     Some(execution.task),
                     self.summary_variant,
                 );
+                direct.credential_scan_history = Some(scan_history.clone());
                 self.apply_summary_requirements(&mut direct);
                 estimate_tokens = estimate_wire_context(&direct.messages, &[])
                     .map_err(|error| execution.failure(VegaError::Context(error.into())))?
@@ -1916,6 +1947,17 @@ impl ConversationCompactionHook<'_> {
                     }
                     return Err(failure);
                 }
+            }
+        }
+        if let Some(reader) = &self.credential_reader {
+            let credentials =
+                reader().map_err(|_| execution.failure(VegaError::CredentialCheckUnavailable))?;
+            if super::credential_guard::history_sequences_unsafe(
+                &scan_history,
+                &credentials,
+                self.credential_exceptions.as_ref(),
+            ) {
+                return Err(execution.failure(VegaError::CredentialExposureBlocked));
             }
         }
         Ok(aggregate)
@@ -2626,6 +2668,7 @@ fn direct_summary_request(
         reasoning: summary_reasoning(reasoning),
         model_snapshot: None,
         tool_choice: None,
+        credential_scan_history: None,
     }
 }
 
