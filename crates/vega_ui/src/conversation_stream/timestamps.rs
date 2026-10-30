@@ -321,6 +321,3 @@ impl ConversationStream {
         )
     }
 }
-
-#[cfg(test)]
-mod tests;

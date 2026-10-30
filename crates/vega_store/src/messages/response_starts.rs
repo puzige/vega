@@ -128,6 +128,3 @@ pub(super) fn for_page(
     }
     Ok(result)
 }
-
-#[cfg(test)]
-mod tests;

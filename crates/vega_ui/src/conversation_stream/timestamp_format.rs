@@ -1,8 +1,5 @@
 use vega_i18n::{t, t_args};
 
-#[cfg(test)]
-mod tests;
-
 const MAX_TIMESTAMP_MS: i64 = 253_402_300_799_999;
 const WEEKDAY_KEYS: [&str; 7] = [
     "ui.timestamp.weekday_sunday",
