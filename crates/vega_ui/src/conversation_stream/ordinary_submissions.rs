@@ -213,6 +213,15 @@ impl ConversationStream {
             .collect::<Vec<_>>();
         let image_identity =
             self.durable_entry_identity(submission.user_message_id(), "user-images", None);
+        self.timestamps
+            .times
+            .entry(submission.user_message_id().to_owned())
+            .or_insert_with(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
+            });
         self.project_ordinary_submission(submission, cx);
         if original_images.len() == request.images.len()
             && !original_images.is_empty()
@@ -445,6 +454,7 @@ impl ConversationStream {
             self.grow_entry_indices(to, 1);
             self.list.splice(to..to, 1);
         }
+        self.timestamps.dirty = true;
         self.refresh_assistant_roles();
         if !anchor.following_tail {
             self.restore_scroll_anchor(&anchor);

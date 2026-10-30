@@ -8190,6 +8190,7 @@ name = "vega_ui"
 version = "0.1.0"
 dependencies = [
  "gpui-kit",
+ "libc",
  "serde_json",
  "tokio",
  "tokio-util",

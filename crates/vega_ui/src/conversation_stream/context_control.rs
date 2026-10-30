@@ -526,6 +526,7 @@ impl ConversationStream {
                 {
                     *old = record.clone();
                 }
+                self.timestamps.dirty = true;
                 self.invalidate_item(Some(index));
             } else {
                 // Just like a tool boundary: future text must follow this row,

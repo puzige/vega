@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 vega_i18n.workspace = true
 gpui_kit.workspace = true
+libc.workspace = true
 tracing.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

@@ -327,6 +327,8 @@ mod shimmer;
 mod sticky_disclosure;
 mod subagents;
 mod text_cache;
+mod timestamp_format;
+mod timestamps;
 use run_activity::{RunActivityChild, RunActivityGroup, RunActivityStatus};
 mod autolinks;
 mod inline_code;

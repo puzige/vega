@@ -197,6 +197,7 @@ impl ConversationStream {
         let identity = self.durable_entry_identity(owner, "subagents", None);
         self.entry_identities.insert(index, identity);
         self.grow_entry_indices(index, 1);
+        self.timestamps.dirty = true;
         self.list.splice(index..index, 1);
     }
 

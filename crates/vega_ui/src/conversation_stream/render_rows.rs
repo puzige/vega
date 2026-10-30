@@ -206,19 +206,11 @@ fn render_entry_internal(
                 // 仅图片的轮次不应产生空气泡，也不挂复制入口。
                 return div().h_0().into_any_element();
             }
-            let body = if let Some(interaction) = interaction {
+            if let Some(interaction) = interaction {
                 selectable_user_message(lines, copy, interaction, &colors, window, cx)
             } else {
                 user_message_item(lines, &colors)
-            };
-            message_with_copy(
-                body,
-                copy,
-                copy.id,
-                true,
-                colors,
-                interaction.is_none_or(|interaction| interaction.actions_enabled),
-            )
+            }
         }
         StreamEntry::UserImages { images } => attachments::render_user_images(images, cx),
         StreamEntry::Screenshot { card } => card.clone().into_any_element(),
@@ -1624,61 +1616,93 @@ pub(crate) fn sample_document(blocks: usize) -> String {
     doc
 }
 
+pub(super) struct MessageActions<'a> {
+    pub(super) id: gpui_kit::SharedString,
+    pub(super) user: bool,
+    pub(super) colors: ThemeColors,
+    pub(super) enabled: bool,
+    pub(super) timestamp: Option<super::timestamp_format::TimestampDisplay>,
+    pub(super) focus: Option<&'a FocusHandle>,
+}
+
 pub(super) fn message_with_copy(
     body: AnyElement,
-    copy: &MessageCopy,
-    id: u64,
-    user: bool,
-    colors: ThemeColors,
-    actions_enabled: bool,
+    copy: Option<&MessageCopy>,
+    actions: MessageActions<'_>,
+    window: &Window,
+    cx: &App,
 ) -> AnyElement {
-    if !copy.has_text() {
+    let MessageActions {
+        id,
+        user,
+        colors,
+        enabled: actions_enabled,
+        timestamp,
+        focus,
+    } = actions;
+    if copy.is_none_or(|copy| !copy.has_text()) && timestamp.is_none() {
         return body;
     }
     let group: gpui_kit::SharedString = format!("message-copy-group-{id}").into();
-    div()
-        .id(("message-with-copy", id))
+    let focused = focus.is_some_and(|focus| focus.contains_focused(window, cx));
+    let mut wrapper = div()
+        .id(id)
         .group(group.clone())
         .w_full()
+        .min_w_0()
         .flex_shrink_0()
         .relative()
         .flex()
         .flex_col()
         .when(!user, |body| body.pb(px(Layout::MESSAGE_COPY_FOOTER)))
-        .child(body)
-        .when(actions_enabled, |body| {
-            body.child(
-                div()
-                    .absolute()
-                    .when(user, |row| {
-                        row.right_0().bottom(px(
-                            Layout::CONVERSATION_USER_BOTTOM - Layout::MESSAGE_COPY_FOOTER
-                        ))
-                    })
-                    .when(!user, |row| row.left_0().bottom_0())
-                    .flex()
-                    .child(CopyReceiptButton::new(
-                        format!("message-copy-receipt-{}", copy.id).into(),
-                        CopySource::Message(copy.clone()),
-                        if user {
-                            vega_i18n::t("ui.copy_message")
-                        } else {
-                            vega_i18n::t("ui.copy_final_reply")
-                        },
-                        colors,
-                        |button| {
-                            button
-                                .id(("message-copy", id))
-                                .size(px(Layout::COPY_ACTION_SIZE))
-                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                .opacity(0.)
-                                .group_hover(group, |style| style.opacity(1.))
-                                .focus_visible(|style| style.opacity(1.).bg(colors.bg_active))
-                        },
-                    )),
-            )
+        .child(body);
+    if let Some(focus) = focus {
+        wrapper = wrapper.track_focus(focus).tab_stop(true);
+    }
+    let mut row = div()
+        .absolute()
+        .when(user, |row| {
+            row.right_0().bottom(px(
+                Layout::CONVERSATION_USER_BOTTOM - Layout::MESSAGE_COPY_FOOTER
+            ))
         })
-        .into_any_element()
+        .when(!user, |row| row.left_0().bottom_0())
+        .flex()
+        .items_center();
+    if actions_enabled && let Some(copy) = copy.filter(|copy| copy.has_text()) {
+        row = row.child(CopyReceiptButton::new(
+            format!("message-copy-receipt-{}", copy.id).into(),
+            CopySource::Message(copy.clone()),
+            if user {
+                vega_i18n::t("ui.copy_message")
+            } else {
+                vega_i18n::t("ui.copy_final_reply")
+            },
+            colors,
+            |button| {
+                button
+                    .id(("message-copy", copy.id))
+                    .size(px(Layout::COPY_ACTION_SIZE))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .opacity(if focused { 1. } else { 0. })
+                    .group_hover(group.clone(), |style| style.opacity(1.))
+                    .focus_visible(|style| style.opacity(1.).bg(colors.bg_active))
+            },
+        ));
+    }
+    if let Some(timestamp) = timestamp {
+        row = row.child(
+            div()
+                .id("message-time")
+                .aria_label(timestamp.accessible)
+                .text_size(px(Typography::METADATA))
+                .text_color(colors.text_tertiary)
+                .opacity(if focused { 1. } else { 0. })
+                .group_hover(group, |style| style.opacity(1.))
+                .child(timestamp.message),
+        );
+    }
+    wrapper.child(row).into_any_element()
 }
 
 pub(super) fn plain_error_notice(message: String, color: Rgba) -> AnyElement {
