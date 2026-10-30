@@ -140,6 +140,12 @@ pub(crate) fn bind_shortcuts(window: AnyWindowHandle, root: WeakEntity<VegaWindo
 }
 
 impl VegaWindow {
+    pub(super) fn reject_unavailable_draft_navigation(&mut self, cx: &mut Context<Self>) {
+        self.navigation.error = Some(vega_i18n::t("app.navigation.task_unavailable"));
+        self.publish_navigation(cx);
+        cx.notify();
+    }
+
     fn draft_id(&self) -> Option<&str> {
         self.draft.as_ref().map(|draft| draft.id.as_str())
     }

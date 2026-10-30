@@ -145,6 +145,58 @@ fn finish_thread_model_selection(
         return;
     }
 
+    if let Some(draft) = window.draft_for_route(thread_id) {
+        let update = outcome.as_ref().ok().and_then(|thread| {
+            if !stream
+                .read(cx)
+                .model_selection_ack_is_valid(request_id, thread)
+            {
+                return None;
+            }
+            ModelSelectionRefresh::from_thread(thread).merge_into(&draft)
+        });
+        if let Some(updated) = update {
+            let refresh = ModelSelectionRefresh::from_thread(&updated);
+            stream.update(cx, |stream, cx| {
+                stream.apply_thread_model_acknowledged(
+                    thread_id,
+                    request_id,
+                    &refresh.model,
+                    updated.clone(),
+                    cx,
+                )
+            });
+            window.mirror_draft(&updated);
+            super::reasoning::apply_reasoning_profile_to_stream_with_app(
+                window,
+                stream,
+                &refresh.model,
+                cx,
+            );
+            if let Some(current) = cx
+                .global::<OpenedThread>()
+                .0
+                .as_ref()
+                .and_then(|current| refresh.merge_into(current))
+            {
+                let visible = window.current_cached_stream_for_thread(thread_id, cx);
+                cx.set_global(OpenedThread(Some(current.clone())));
+                if let Some(visible) = visible
+                    && visible != *stream
+                {
+                    visible.update(cx, |visible, cx| {
+                        visible.apply_authoritative_model(current, &refresh.model, cx)
+                    });
+                }
+            }
+        } else {
+            stream.update(cx, |stream, cx| {
+                stream.apply_thread_model_failed(thread_id, request_id, cx)
+            });
+        }
+        return;
+    }
+
     // Always clear the originating entity's exact owner after a route switch
     // or while Settings hides the session. This cleanup never projects the
     // stale entity as current.
@@ -780,6 +832,7 @@ impl VegaWindow {
             self.configured_reasoning = Some(Vec::new());
             self.configured_reasoning_error = Some(ReasoningSettingsErrorCode::Io);
             self.configured_reasoning_authority = None;
+            self.start_pending_composer_thinking(cx);
             return;
         };
         self.model_catalog_loading = true;
@@ -1028,6 +1081,9 @@ impl VegaWindow {
             // typed save failure so the Settings draft stays retryable.
             self.configured_reasoning_error = reasoning_error.or(self.reasoning_error_hold);
             self.configured_reasoning_authority = reasoning_authority;
+            if reasoning_error.is_none() {
+                self.clear_confirmed_reasoning_default_failures(cx);
+            }
         }
         let options = self.model_options_for_pricing();
         if let Some((_, stream)) = &self.stream_view {

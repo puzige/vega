@@ -274,6 +274,17 @@ pub struct ComposerDefaultsRequested {
     pub defaults: ComposerDefaults,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReasoningDefaultFailure {
+    pub request: ComposerDefaultsRequested,
+    pub retry_pending: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReasoningDefaultRetryRequested {
+    pub request: ComposerDefaultsRequested,
+}
+
 /// Scroll-up hydration bookkeeping. `older_cursor` is `Some(oldest loaded
 /// seq)` while older pages may exist and `None` at the durable beginning of
 /// the thread (or before any page arrived). One page is in flight at a time;

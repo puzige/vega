@@ -1,6 +1,230 @@
 use super::*;
 use vega_ui::icons::{Icon, shell_icon_button};
 
+fn clear_confirmed_reasoning_default_ledger(
+    failures: &mut std::collections::HashMap<(String, String), ReasoningDefaultFailure>,
+    provider: &str,
+    model: &str,
+    choice: &str,
+) {
+    failures.retain(|_, failure| {
+        failure.request.defaults.model != model
+            || failure.request.defaults.thinking != choice
+            || failure
+                .request
+                .defaults
+                .reasoning
+                .as_ref()
+                .is_none_or(|profile| profile.provider != provider)
+    });
+}
+
+fn begin_reasoning_default_ledger(
+    failures: &mut std::collections::HashMap<(String, String), ReasoningDefaultFailure>,
+    latest: &mut std::collections::HashMap<(String, String), ComposerDefaultsRequested>,
+    request: &ComposerDefaultsRequested,
+) {
+    let key = (request.thread_id.clone(), request.defaults.model.clone());
+    latest.insert(key.clone(), request.clone());
+    if let Some(failure) = failures.get_mut(&key) {
+        failure.retry_pending = true;
+    }
+}
+
+fn finish_reasoning_default_ledger(
+    failures: &mut std::collections::HashMap<(String, String), ReasoningDefaultFailure>,
+    latest: &mut std::collections::HashMap<(String, String), ComposerDefaultsRequested>,
+    request: &ComposerDefaultsRequested,
+    defaults_failed: Option<bool>,
+) -> bool {
+    let key = (request.thread_id.clone(), request.defaults.model.clone());
+    match latest.get(&key) {
+        None => return false,
+        Some(current) if current != request => {
+            match defaults_failed {
+                Some(true) => {
+                    failures.insert(
+                        key,
+                        ReasoningDefaultFailure {
+                            request: request.clone(),
+                            retry_pending: true,
+                        },
+                    );
+                }
+                Some(false) => {
+                    failures.remove(&key);
+                }
+                None => {}
+            }
+            return false;
+        }
+        Some(_) => {}
+    }
+    latest.remove(&key);
+    match defaults_failed {
+        Some(true) => {
+            failures.insert(
+                key,
+                ReasoningDefaultFailure {
+                    request: request.clone(),
+                    retry_pending: false,
+                },
+            );
+        }
+        Some(false) => {
+            failures.remove(&key);
+        }
+        None => {
+            if let Some(failure) = failures.get_mut(&key) {
+                failure.retry_pending = false;
+            }
+        }
+    }
+    defaults_failed == Some(false)
+}
+
+impl VegaWindow {
+    fn bind_reasoning_default_retry(
+        &mut self,
+        stream: &Entity<ConversationStream>,
+        cx: &mut Context<Self>,
+    ) {
+        self.reasoning_default_retry_subscriptions
+            .retain(|_, (stream, _)| stream.upgrade().is_some());
+        if self
+            .reasoning_default_retry_subscriptions
+            .contains_key(&stream.entity_id())
+        {
+            return;
+        }
+        let subscription = cx.subscribe(
+            stream,
+            |this, stream, event: &ReasoningDefaultRetryRequested, cx| {
+                this.retry_reasoning_default(stream.clone(), event, cx);
+            },
+        );
+        self.reasoning_default_retry_subscriptions
+            .insert(stream.entity_id(), (stream.downgrade(), subscription));
+    }
+
+    pub(crate) fn project_reasoning_default_failures(
+        &self,
+        stream: &Entity<ConversationStream>,
+        thread_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let failures = self
+            .reasoning_default_failures
+            .iter()
+            .filter(|((id, _), _)| id == thread_id)
+            .map(|(_, failure)| failure.clone())
+            .collect();
+        stream.update(cx, |stream, cx| {
+            stream.apply_reasoning_default_failures(failures, cx);
+        });
+    }
+
+    pub(crate) fn begin_reasoning_default_save(
+        &mut self,
+        request: &ComposerDefaultsRequested,
+        cx: &mut Context<Self>,
+    ) {
+        begin_reasoning_default_ledger(
+            &mut self.reasoning_default_failures,
+            &mut self.reasoning_default_latest,
+            request,
+        );
+        self.refresh_reasoning_default_failures(&request.thread_id, cx);
+    }
+
+    pub(crate) fn finish_reasoning_default_save(
+        &mut self,
+        request: &ComposerDefaultsRequested,
+        defaults_failed: Option<bool>,
+        cx: &mut Context<Self>,
+    ) {
+        let confirmed = finish_reasoning_default_ledger(
+            &mut self.reasoning_default_failures,
+            &mut self.reasoning_default_latest,
+            request,
+            defaults_failed,
+        );
+        if confirmed && let Some(profile) = &request.defaults.reasoning {
+            self.clear_reasoning_default_failures_matching(
+                &profile.provider,
+                &request.defaults.model,
+                &request.defaults.thinking,
+                cx,
+            );
+        }
+        self.refresh_reasoning_default_failures(&request.thread_id, cx);
+    }
+
+    pub(crate) fn discard_reasoning_default_failure(
+        &mut self,
+        request: &ComposerDefaultsRequested,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (request.thread_id.clone(), request.defaults.model.clone());
+        if self
+            .reasoning_default_failures
+            .get(&key)
+            .is_some_and(|failure| failure.request == *request)
+        {
+            self.reasoning_default_failures.remove(&key);
+            self.refresh_reasoning_default_failures(&request.thread_id, cx);
+        }
+    }
+
+    pub(crate) fn clear_reasoning_default_failures_matching(
+        &mut self,
+        provider: &str,
+        model: &str,
+        choice: &str,
+        cx: &mut Context<Self>,
+    ) {
+        clear_confirmed_reasoning_default_ledger(
+            &mut self.reasoning_default_failures,
+            provider,
+            model,
+            choice,
+        );
+        if let Some((id, stream)) = &self.stream_view {
+            self.project_reasoning_default_failures(stream, id, cx);
+        }
+        cx.notify();
+    }
+
+    fn refresh_reasoning_default_failures(&self, thread_id: &str, cx: &mut Context<Self>) {
+        if let Some((id, stream)) = &self.stream_view
+            && id == thread_id
+        {
+            self.project_reasoning_default_failures(stream, thread_id, cx);
+        }
+        cx.notify();
+    }
+
+    fn retry_reasoning_default(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        event: &ReasoningDefaultRetryRequested,
+        cx: &mut Context<Self>,
+    ) {
+        let request = &event.request;
+        let key = (request.thread_id.clone(), request.defaults.model.clone());
+        if !self.owns_stream_request(&stream, &request.thread_id, cx)
+            || !self
+                .reasoning_default_failures
+                .get(&key)
+                .is_some_and(|failure| !failure.retry_pending && failure.request == *request)
+        {
+            return;
+        }
+        self.begin_reasoning_default_save(request, cx);
+        self.retry_composer_thinking(stream, request, cx);
+    }
+}
+
 impl Render for VegaWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_language(cx);
@@ -421,6 +645,9 @@ impl Render for VegaWindow {
                                 view
                             }
                         };
+                        self.bind_reasoning_default_retry(&stream, cx);
+                        self.project_reasoning_default_failures(&stream, &thread.id, cx);
+                        self.project_pending_reasoning_intents(&stream, &thread.id, cx);
                         if notification_tail {
                             self.completion_attention.pending_tail_thread = None;
                             stream.update(cx, ConversationStream::resume_tail);
@@ -770,5 +997,104 @@ impl VegaWindow {
         } else {
             vega_ui::sidebar::toggle_persisted(cx);
         }
+    }
+}
+
+#[cfg(test)]
+mod reasoning_default_ledger_tests {
+    use super::{
+        begin_reasoning_default_ledger, clear_confirmed_reasoning_default_ledger,
+        finish_reasoning_default_ledger,
+    };
+    use std::collections::HashMap;
+    use vega_conversation::types::{ComposerDefaults, ReasoningProfileProjection};
+    use vega_ui::conversation_stream::ComposerDefaultsRequested;
+
+    fn request(
+        thread: &str,
+        provider: &str,
+        model: &str,
+        choice: &str,
+        revision: u64,
+    ) -> ComposerDefaultsRequested {
+        ComposerDefaultsRequested {
+            revision,
+            thread_id: thread.to_string(),
+            defaults: ComposerDefaults {
+                model: model.to_string(),
+                thinking: choice.to_string(),
+                reasoning: Some(ReasoningProfileProjection::unknown(provider, model)),
+                ..ComposerDefaults::default()
+            },
+        }
+    }
+
+    #[test]
+    fn superseded_failure_stays_pending_until_newer_request_settles() {
+        let mut failures = HashMap::new();
+        let mut latest = HashMap::new();
+        let old = request("a", "p", "m", "low", 1);
+        let middle = request("a", "p", "m", "medium", 2);
+        let new = request("a", "p", "m", "high", 3);
+        let key = ("a".to_string(), "m".to_string());
+        begin_reasoning_default_ledger(&mut failures, &mut latest, &old);
+        begin_reasoning_default_ledger(&mut failures, &mut latest, &middle);
+        begin_reasoning_default_ledger(&mut failures, &mut latest, &new);
+        finish_reasoning_default_ledger(&mut failures, &mut latest, &middle, None);
+        finish_reasoning_default_ledger(&mut failures, &mut latest, &old, Some(true));
+        assert_eq!(failures[&key].request, old);
+        assert!(failures[&key].retry_pending);
+        finish_reasoning_default_ledger(&mut failures, &mut latest, &new, None);
+        assert_eq!(failures[&key].request, old);
+        assert!(!failures[&key].retry_pending);
+        assert!(latest.is_empty());
+    }
+
+    #[test]
+    fn confirmed_choices_clear_only_exact_provider_model_and_choice() {
+        let mut failures = HashMap::new();
+        let mut latest = HashMap::new();
+        let a = request("a", "p", "m", "high", 1);
+        let b = request("b", "p", "m", "high", 2);
+        let other_choice = request("c", "p", "m", "low", 3);
+        let other_provider = request("d", "q", "m", "high", 4);
+        let other_model = request("e", "p", "n", "high", 5);
+        for request in [&a, &b, &other_choice, &other_provider, &other_model] {
+            begin_reasoning_default_ledger(&mut failures, &mut latest, request);
+            finish_reasoning_default_ledger(&mut failures, &mut latest, request, Some(true));
+        }
+        begin_reasoning_default_ledger(&mut failures, &mut latest, &b);
+        clear_confirmed_reasoning_default_ledger(&mut failures, "p", "m", "high");
+        assert!(!failures.contains_key(&("a".into(), "m".into())));
+        assert!(!failures.contains_key(&("b".into(), "m".into())));
+        assert!(failures.contains_key(&("c".into(), "m".into())));
+        assert!(failures.contains_key(&("d".into(), "m".into())));
+        assert!(failures.contains_key(&("e".into(), "n".into())));
+        finish_reasoning_default_ledger(&mut failures, &mut latest, &b, None);
+        assert!(!failures.contains_key(&("b".into(), "m".into())));
+    }
+
+    #[test]
+    fn latest_failure_replaces_old_notice_and_success_clears_it() {
+        let mut failures = HashMap::new();
+        let mut latest = HashMap::new();
+        let old = request("a", "p", "m", "low", 1);
+        let new = request("a", "p", "m", "high", 2);
+        let key = ("a".to_string(), "m".to_string());
+        begin_reasoning_default_ledger(&mut failures, &mut latest, &old);
+        finish_reasoning_default_ledger(&mut failures, &mut latest, &old, Some(true));
+        begin_reasoning_default_ledger(&mut failures, &mut latest, &new);
+        finish_reasoning_default_ledger(&mut failures, &mut latest, &new, Some(true));
+        assert_eq!(failures[&key].request, new);
+        assert!(!failures[&key].retry_pending);
+        begin_reasoning_default_ledger(&mut failures, &mut latest, &new);
+        assert!(finish_reasoning_default_ledger(
+            &mut failures,
+            &mut latest,
+            &new,
+            Some(false)
+        ));
+        assert!(failures.is_empty());
+        assert!(latest.is_empty());
     }
 }

@@ -177,8 +177,13 @@ pub(crate) struct VegaWindow {
     /// Settings entity and still blocks a new run until the exact ack lands.
     pub(crate) reasoning_save_pending: Option<(u64, u64)>,
     pub(crate) composer_reasoning_operation: u64,
-    pub(crate) pending_composer_thinking:
-        Vec<(Entity<ConversationStream>, ComposerDefaultsRequested)>,
+    pub(crate) pending_composer_thinking: Vec<reasoning::PendingComposerThinking>,
+    pub(crate) reasoning_default_failures:
+        std::collections::HashMap<(String, String), ReasoningDefaultFailure>,
+    pub(crate) reasoning_default_latest:
+        std::collections::HashMap<(String, String), ComposerDefaultsRequested>,
+    pub(crate) reasoning_default_retry_subscriptions:
+        std::collections::HashMap<EntityId, (WeakEntity<ConversationStream>, Subscription)>,
     /// Provider Settings saves request a model catalog reload. If a reasoning
     /// save owns the catalog authority, defer that reload until its ack so the
     /// two workers cannot regress each other's projections.
@@ -324,6 +329,9 @@ impl VegaWindow {
                 cx.notify();
             }
             SidebarEvent::OpeningChanged => cx.notify(),
+            SidebarEvent::NewDraftRequested(_) | SidebarEvent::DraftRestoreRequested(_) => {
+                this.reject_unavailable_draft_navigation(cx);
+            }
         })
         .detach();
         let mut window = Self {
@@ -382,6 +390,9 @@ impl VegaWindow {
             reasoning_save_pending: None,
             composer_reasoning_operation: 0,
             pending_composer_thinking: Vec::new(),
+            reasoning_default_failures: std::collections::HashMap::new(),
+            reasoning_default_latest: std::collections::HashMap::new(),
+            reasoning_default_retry_subscriptions: std::collections::HashMap::new(),
             model_catalog_refresh_pending: false,
             reasoning_error_hold: None,
             model_catalog_loading: false,
@@ -446,5 +457,37 @@ impl VegaWindow {
 impl Drop for VegaWindow {
     fn drop(&mut self) {
         self.window_terminal_cleanup();
+    }
+}
+
+#[cfg(test)]
+mod draft_model_refresh_development_tests {
+    use super::ModelSelectionRefresh;
+    use vega_conversation::threads::draft_thread;
+    use vega_conversation::types::{PermissionMode, SessionReasoningPreference};
+
+    #[test]
+    fn model_result_updates_only_its_original_draft() {
+        let mut original = draft_thread(Some("project-a"), "old-model", "confirm");
+        original.reasoning_preferences = Some(vec![SessionReasoningPreference {
+            provider: "provider".into(),
+            model: "old-model".into(),
+            preference: "high".into(),
+        }]);
+        let mut result = original.clone();
+        result.model = "new-model".into();
+        let refresh = ModelSelectionRefresh::from_thread(&result);
+
+        let mut current = original.clone();
+        current.permission_mode = PermissionMode::ReadOnly;
+        current.title = "updated title".into();
+        let mut expected = current.clone();
+        expected.model = "new-model".into();
+        assert_eq!(refresh.merge_into(&current), Some(expected));
+
+        let other = draft_thread(Some("project-a"), "old-model", "confirm");
+        assert_eq!(refresh.merge_into(&other), None);
+        current.project_id = "project-b".into();
+        assert_eq!(refresh.merge_into(&current), None);
     }
 }

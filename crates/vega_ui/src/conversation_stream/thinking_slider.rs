@@ -380,7 +380,6 @@ impl Render for DragKnob {
 pub struct ThinkingSlider {
     model: ThinkingSliderModel,
     model_name: String,
-    retry_selected: bool,
     /// Track bounds captured at prepaint. Needed because `MouseDownEvent`
     /// carries only a position, and the tier is picked from the x offset.
     track_bounds: Option<Bounds<Pixels>>,
@@ -406,7 +405,6 @@ impl ThinkingSlider {
                 default.as_ref(),
             ),
             model_name: model_name.into(),
-            retry_selected: false,
             track_bounds: None,
         }
     }
@@ -455,10 +453,6 @@ impl ThinkingSlider {
         self.model
             .set_tiers(tiers, supports_off, current.as_ref(), default.as_ref());
         cx.notify();
-    }
-
-    pub fn set_retry_selected(&mut self, retry_selected: bool) {
-        self.retry_selected = retry_selected;
     }
 
     pub fn select_index(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
@@ -535,17 +529,8 @@ impl ThinkingSlider {
         let Some(bounds) = self.track_bounds else {
             return;
         };
-        if let Some(index) = self.index_for_position(bounds, event.position)
-            && !self.select_index(index, cx)
-            && self.retry_selected
-            && self.model.selected_position() == Some(index)
-            && let Some(choice) = self.model.choice_name()
-        {
-            self.retry_selected = false;
-            cx.emit(ThinkingTierSelected {
-                model: self.model_name.clone(),
-                choice: choice.to_owned(),
-            });
+        if let Some(index) = self.index_for_position(bounds, event.position) {
+            self.select_index(index, cx);
         }
     }
 

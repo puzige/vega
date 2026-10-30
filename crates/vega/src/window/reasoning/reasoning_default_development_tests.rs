@@ -1,8 +1,16 @@
-use super::*;
+use super::{
+    ReasoningDefaultsSaveJob, ReasoningProfileProjection, ReasoningSettingsErrorCode,
+    SessionReasoningSaveJob, apply_draft_reasoning_result, confirmed_session_defaults,
+    prepare_composer_defaults_save, read_reasoning_authority, reasoning_intent_pending,
+    reasoning_profile_patch, save_session_reasoning, session_defaults,
+};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use vega_conversation::types::SessionReasoningPreference;
+use vega_conversation::types::{ComposerDefaults, SessionReasoningPreference};
+use vega_runtime::ReasoningChoice;
 use vega_runtime::{ReasoningDisabledWire, ReasoningProtocol, ReasoningSupport};
 use vega_store::reasoning::{ReasoningConfig, ReasoningProfile, ReasoningProfilePatch};
+use vega_ui::conversation_stream::ComposerDefaultsRequested;
 
 struct Fixture {
     directory: PathBuf,
@@ -99,6 +107,166 @@ fn reload_defaults(path: &Path) -> Vec<SessionReasoningPreference> {
         .map(|value| ReasoningProfileProjection::from_store(value).unwrap())
         .collect::<Vec<_>>();
     session_defaults(&profiles)
+}
+
+#[test]
+fn confirmed_authority_survives_catalog_invalidation_for_new_drafts() {
+    let config = ReasoningConfig {
+        version: 1,
+        profiles: vec![ReasoningProfile {
+            provider: "p".into(),
+            model: "m".into(),
+            preference: "high".into(),
+        }],
+    };
+    let confirmed = confirmed_session_defaults(None, Some(&config), None).unwrap();
+    let mut draft = vega_conversation::threads::draft_thread(None, "m", "confirm");
+    draft.reasoning_preferences = Some(confirmed);
+    assert_eq!(
+        choice(draft.reasoning_preferences.as_ref().unwrap(), "p", "m"),
+        "high"
+    );
+    assert!(confirmed_session_defaults(None, None, None).is_none());
+    for error in [
+        ReasoningSettingsErrorCode::Io,
+        ReasoningSettingsErrorCode::Invalid,
+        ReasoningSettingsErrorCode::Conflict,
+        ReasoningSettingsErrorCode::Busy,
+    ] {
+        assert!(confirmed_session_defaults(None, Some(&config), Some(error)).is_none());
+    }
+}
+
+#[test]
+fn pending_reasoning_materialization_fence_is_scoped_to_the_draft() {
+    let mut latest = HashMap::new();
+    let request = ComposerDefaultsRequested {
+        revision: 1,
+        thread_id: "draft-a".into(),
+        defaults: ComposerDefaults {
+            model: "m".into(),
+            ..ComposerDefaults::default()
+        },
+    };
+    latest.insert(("draft-a".into(), "m".into()), request);
+    assert!(reasoning_intent_pending(&latest, "draft-a"));
+    assert!(!reasoning_intent_pending(&latest, "draft-b"));
+    latest.clear();
+    assert!(!reasoning_intent_pending(&latest, "draft-a"));
+}
+
+#[test]
+fn delayed_draft_reasoning_completion_changes_only_the_matching_identity() {
+    let mut a = vega_conversation::threads::draft_thread(None, "m", "confirm");
+    let mut b = vega_conversation::threads::draft_thread(None, "m", "confirm");
+    let original_a = vec![
+        SessionReasoningPreference {
+            provider: "p".into(),
+            model: "m".into(),
+            preference: "low".into(),
+        },
+        SessionReasoningPreference {
+            provider: "p".into(),
+            model: "other".into(),
+            preference: "medium".into(),
+        },
+    ];
+    let original_b = vec![SessionReasoningPreference {
+        provider: "p".into(),
+        model: "m".into(),
+        preference: "medium".into(),
+    }];
+    let saved_a = profile("p", "m", ReasoningChoice::Effort("high".into()));
+    a.reasoning_preferences = Some(original_a);
+    b.reasoning_preferences = Some(original_b.clone());
+    let a_id = a.id.clone();
+    assert!(!apply_draft_reasoning_result(&mut b, &a_id, &saved_a));
+    assert_eq!(b.reasoning_preferences, Some(original_b));
+    assert!(apply_draft_reasoning_result(&mut a, &a_id, &saved_a));
+    let preferences = a.reasoning_preferences.as_ref().unwrap();
+    assert_eq!(choice(preferences, "p", "m"), "high");
+    assert_eq!(choice(preferences, "p", "other"), "medium");
+    a.reasoning_preferences = None;
+    assert!(!apply_draft_reasoning_result(&mut a, &a_id, &saved_a));
+    assert!(a.reasoning_preferences.is_none());
+}
+
+#[test]
+fn unavailable_or_conflicting_catalog_cannot_prepare_a_session_or_default_write() {
+    let fixture = Fixture::new();
+    write_defaults(&fixture.config, &[("p", "m", "low"), ("q", "m", "medium")]);
+    let store = vega_store::Store::open_existing(&fixture.database).unwrap();
+    let thread =
+        vega_conversation::threads::create_standalone_thread(&store, "m", "confirm").unwrap();
+    let preferences = reload_defaults(&fixture.config);
+    vega_conversation::session_reasoning::initialize(&store, &thread.id, &preferences).unwrap();
+    let source = profile("p", "m", ReasoningChoice::Effort("low".into()));
+    let candidate = profile("p", "m", ReasoningChoice::Effort("high".into()));
+    let authority = read_reasoning_authority(&fixture.config).unwrap();
+    let session_before = vega_conversation::threads::get_thread(&store, &thread.id)
+        .unwrap()
+        .reasoning_preferences;
+    let defaults_before = std::fs::read(&fixture.config).unwrap();
+
+    for error in [
+        ReasoningSettingsErrorCode::Io,
+        ReasoningSettingsErrorCode::Invalid,
+        ReasoningSettingsErrorCode::Conflict,
+        ReasoningSettingsErrorCode::Busy,
+    ] {
+        assert_eq!(
+            prepare_composer_defaults_save(
+                Some(fixture.config.clone()),
+                Some(authority.clone()),
+                Some(error),
+                &source,
+                &candidate,
+            )
+            .err(),
+            Some(error)
+        );
+    }
+    assert_eq!(
+        prepare_composer_defaults_save(
+            Some(fixture.config.clone()),
+            None,
+            None,
+            &source,
+            &candidate,
+        )
+        .err(),
+        Some(ReasoningSettingsErrorCode::Io)
+    );
+    let mut incompatible = candidate.clone();
+    incompatible.efforts.push("unexpected".into());
+    assert_eq!(
+        prepare_composer_defaults_save(
+            Some(fixture.config.clone()),
+            Some(authority.clone()),
+            None,
+            &source,
+            &incompatible,
+        )
+        .err(),
+        Some(ReasoningSettingsErrorCode::Invalid)
+    );
+    assert!(
+        prepare_composer_defaults_save(
+            Some(fixture.config.clone()),
+            Some(authority),
+            None,
+            &source,
+            &candidate,
+        )
+        .is_ok()
+    );
+    assert_eq!(std::fs::read(&fixture.config).unwrap(), defaults_before);
+    assert_eq!(
+        vega_conversation::threads::get_thread(&store, &thread.id)
+            .unwrap()
+            .reasoning_preferences,
+        session_before
+    );
 }
 
 #[test]

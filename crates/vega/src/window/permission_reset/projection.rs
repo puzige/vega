@@ -1,7 +1,32 @@
 use super::*;
 use vega_ui::interaction::InteractionExt;
 
+fn merge_permission_refresh(current: &Thread, saved: &Thread) -> Thread {
+    let mut refreshed = current.clone();
+    refreshed.permission_mode = saved.permission_mode;
+    refreshed.permission_revision = saved.permission_revision;
+    refreshed.draft_authority_epoch = saved.draft_authority_epoch.clone();
+    refreshed.full_access_grant = saved.full_access_grant.clone();
+    refreshed.default_permission = saved.default_permission.clone();
+    refreshed
+}
+
+fn reset_retained_draft_permissions(thread: &Thread) -> Thread {
+    let mut draft = thread.clone();
+    if draft.permission_mode == PermissionMode::FullAccess {
+        draft.permission_mode = PermissionMode::Confirm;
+    }
+    draft.draft_authority_epoch = None;
+    draft.full_access_grant = None;
+    draft.default_permission = None;
+    draft
+}
+
 impl VegaWindow {
+    pub(in crate::window) fn project_retained_draft_permission_reset(thread: &Thread) -> Thread {
+        reset_retained_draft_permissions(thread)
+    }
+
     pub(super) fn permission_reset_streams(&self) -> Vec<Entity<ConversationStream>> {
         let mut streams = Vec::new();
         if let Some((_, stream)) = &self.stream_view {
@@ -69,21 +94,11 @@ impl VegaWindow {
                 .find(|saved| saved.thread.id == thread.id)
             {
                 return (saved.thread.project_id == thread.project_id)
-                    .then(|| saved.thread.clone());
+                    .then(|| merge_permission_refresh(thread, &saved.thread));
             }
-            self.draft
-                .as_ref()
-                .filter(|draft| draft.id == thread.id && draft.project_id == thread.project_id)
-                .map(|_| {
-                    let mut draft = thread.clone();
-                    if draft.permission_mode == PermissionMode::FullAccess {
-                        draft.permission_mode = PermissionMode::Confirm;
-                    }
-                    draft.draft_authority_epoch = None;
-                    draft.full_access_grant = None;
-                    draft.default_permission = None;
-                    draft
-                })
+            self.draft_for_route(&thread.id)
+                .filter(|draft| draft.project_id == thread.project_id)
+                .map(|_| Self::project_retained_draft_permission_reset(thread))
         };
         let mut projected = Vec::new();
         for stream in streams {
@@ -111,6 +126,19 @@ impl VegaWindow {
             }
             None => None,
         };
+        let mut retained_drafts = Vec::new();
+        for (_, thread) in &projected {
+            if let Some(draft) = self.draft_for_route(&thread.id)
+                && !retained_drafts
+                    .iter()
+                    .any(|existing: &Thread| existing.id == draft.id)
+            {
+                let Some(draft) = project(&draft) else {
+                    return false;
+                };
+                retained_drafts.push(draft);
+            }
+        }
         for (stream, thread) in projected {
             let saved = refresh
                 .threads
@@ -135,6 +163,9 @@ impl VegaWindow {
         }
         cx.set_global(defaults);
         self.draft = draft;
+        for draft in retained_drafts {
+            self.mirror_draft(&draft);
+        }
         cx.set_global(OpenedThread(opened));
         if let Some(view) = &self.settings_view {
             let values = DefaultPermissionValues::from(&refresh.config.defaults);
@@ -216,5 +247,58 @@ impl VegaWindow {
             view.update(cx, |view, cx| view.show_general(cx));
         }
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod reasoning_permission_development_tests {
+    use super::{merge_permission_refresh, reset_retained_draft_permissions};
+    use vega_conversation::types::{PermissionMode, SessionReasoningPreference};
+
+    #[test]
+    fn delayed_permission_refresh_preserves_confirmed_reasoning() {
+        let mut current = vega_conversation::threads::draft_thread(None, "m", "confirm");
+        current.reasoning_preferences = Some(vec![SessionReasoningPreference {
+            provider: "p".into(),
+            model: "m".into(),
+            preference: "high".into(),
+        }]);
+        let mut old_snapshot = current.clone();
+        old_snapshot.reasoning_preferences.as_mut().unwrap()[0].preference = "low".into();
+        old_snapshot.permission_mode = PermissionMode::ReadOnly;
+        old_snapshot.permission_revision = 42;
+        let merged = merge_permission_refresh(&current, &old_snapshot);
+        assert_eq!(merged.reasoning_preferences, current.reasoning_preferences);
+        assert_eq!(merged.permission_mode, PermissionMode::ReadOnly);
+        assert_eq!(merged.permission_revision, 42);
+    }
+
+    #[test]
+    fn each_retained_draft_loses_full_access_without_losing_its_reasoning() {
+        let mut a = vega_conversation::threads::draft_thread(None, "m", "full_access");
+        a.reasoning_preferences = Some(vec![SessionReasoningPreference {
+            provider: "p".into(),
+            model: "m".into(),
+            preference: "high".into(),
+        }]);
+        let mut b = vega_conversation::threads::draft_thread(None, "m", "readonly");
+        b.reasoning_preferences = Some(vec![SessionReasoningPreference {
+            provider: "p".into(),
+            model: "m".into(),
+            preference: "low".into(),
+        }]);
+        let reset_a = reset_retained_draft_permissions(&a);
+        let reset_b = reset_retained_draft_permissions(&b);
+        assert_ne!(reset_a.id, reset_b.id);
+        assert_eq!(reset_a.permission_mode, PermissionMode::Confirm);
+        assert_eq!(reset_b.permission_mode, PermissionMode::ReadOnly);
+        assert_eq!(reset_a.reasoning_preferences, a.reasoning_preferences);
+        assert_eq!(reset_b.reasoning_preferences, b.reasoning_preferences);
+        assert!(reset_a.draft_authority_epoch.is_none());
+        assert!(reset_a.full_access_grant.is_none());
+        assert!(reset_a.default_permission.is_none());
+        assert!(reset_b.draft_authority_epoch.is_none());
+        assert!(reset_b.full_access_grant.is_none());
+        assert!(reset_b.default_permission.is_none());
     }
 }
