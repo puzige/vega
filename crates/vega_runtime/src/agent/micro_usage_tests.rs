@@ -305,6 +305,7 @@ async fn run_case_with_margin(
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let tools = vega_tools::Tools::new(&root).unwrap();
     let request = AgentRequest {
+        history_safety: None,
         model: MODEL.into(),
         system_prompt: SYSTEM.into(),
         history,
