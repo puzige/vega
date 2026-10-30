@@ -514,7 +514,9 @@ impl ToolCard {
                 ToolActivityCategory::Question
             }
             (Some(ToolCardInputProjection::ReadOnly { tool, .. }), _) => match tool {
-                ReadOnlyToolKind::Read => ToolActivityCategory::Read,
+                ReadOnlyToolKind::Read | ReadOnlyToolKind::ConversationHistory => {
+                    ToolActivityCategory::Read
+                }
                 ReadOnlyToolKind::Glob => ToolActivityCategory::Find,
                 ReadOnlyToolKind::Grep => ToolActivityCategory::Search,
             },
@@ -540,7 +542,9 @@ impl ToolCard {
         match &self.input {
             Some(ToolCardInputProjection::UserQuestion { .. }) => ToolActivityCategory::Question,
             Some(ToolCardInputProjection::ReadOnly { tool, .. }) => match tool {
-                ReadOnlyToolKind::Read => ToolActivityCategory::Read,
+                ReadOnlyToolKind::Read | ReadOnlyToolKind::ConversationHistory => {
+                    ToolActivityCategory::Read
+                }
                 ReadOnlyToolKind::Glob => ToolActivityCategory::Find,
                 ReadOnlyToolKind::Grep => ToolActivityCategory::Search,
             },
@@ -1583,6 +1587,7 @@ fn action_label(action: &'static str) -> &'static str {
         "read" => vega_i18n::t("ui.action_read"),
         "search" => vega_i18n::t("ui.action_search"),
         "read files" => vega_i18n::t("ui.read_files"),
+        "read conversation" => vega_i18n::t("ui.read_conversation"),
         "find files" => vega_i18n::t("ui.find_files"),
         "search content" => vega_i18n::t("ui.search_content"),
         _ => action,
@@ -1614,6 +1619,10 @@ fn generic_verb(action: &'static str, state: ToolActivityState, status: ToolCall
         "read files" => (
             vega_i18n::t("ui.read_files_en"),
             vega_i18n::t("ui.reading_files"),
+        ),
+        "read conversation" => (
+            vega_i18n::t("ui.read_conversation_done"),
+            vega_i18n::t("ui.reading_conversation"),
         ),
         "find files" => (
             vega_i18n::t("ui.found_files"),
@@ -1678,6 +1687,7 @@ fn readonly_summary(
         ReadOnlyToolKind::Read => "read files",
         ReadOnlyToolKind::Glob => "find files",
         ReadOnlyToolKind::Grep => "search content",
+        ReadOnlyToolKind::ConversationHistory => "read conversation",
     };
     generic_verb(action, state, status)
 }

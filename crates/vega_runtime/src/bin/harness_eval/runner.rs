@@ -414,6 +414,7 @@ async fn run_trial_inner(
     )
     .map_err(|_| EvalError("context_budget_invalid"))?;
     let agent = AgentRequest {
+        history_safety: None,
         model: request.model.id.clone(),
         system_prompt,
         history: vec![ChatMessage::new(ChatRole::User, &request.task_prompt)],
