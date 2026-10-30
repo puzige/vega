@@ -383,6 +383,8 @@ impl VegaWindow {
                     {
                         let current_route = this.owns_stream_request(&stream, &thread, cx)
                             && cx.global::<OpenedThread>().0.as_ref() == Some(source);
+                        this.retained_drafts.remove(&source.id);
+                        this.publish_retained_drafts(cx);
                         if this.draft.as_ref() == Some(source) {
                             this.draft = None;
                         }

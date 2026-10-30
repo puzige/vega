@@ -403,6 +403,10 @@ impl ConversationStream {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        cx.emit(DraftProjectSelectionRequested {
+            thread_id: self.thread.id.clone(),
+            project: Some(project_id.to_owned()),
+        });
         cx.set_global(SelectedProject(Some(project_id.to_string())));
         self.utility_projects_open = false;
         self.focus_composer(window, cx);
@@ -411,6 +415,10 @@ impl ConversationStream {
     }
 
     fn detach_utility_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(DraftProjectSelectionRequested {
+            thread_id: self.thread.id.clone(),
+            project: None,
+        });
         cx.set_global(SelectedProject(None));
         self.utility_projects_open = false;
         self.focus_composer(window, cx);

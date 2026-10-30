@@ -3,7 +3,9 @@ use super::*;
 use crate::interaction::InteractionExt;
 use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade, ScrollFadeTopGuards};
 use gpui_kit::component::Sizable as _;
-use gpui_kit::{Anchor, AnchoredPositionMode, PathBuilder, Role, anchored, canvas, point};
+use gpui_kit::{
+    Anchor, AnchoredPositionMode, Focusable, PathBuilder, Role, anchored, canvas, point,
+};
 // Re-exported so the permission picker's copy is testable from the suite the
 // same way `PICKER_EFFORT_LABEL`/`PICKER_LIST_HEADING` are.
 use super::composer_actions::{
@@ -46,6 +48,61 @@ impl ConversationStream {
 
     fn open_diff_action(&mut self, _: &OpenWorkspaceDiff, _: &mut Window, cx: &mut Context<Self>) {
         self.emit_open_diff(cx);
+    }
+
+    fn focus_reasoning_retry_neighbor(
+        &self,
+        index: usize,
+        backwards: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let neighboring = if backwards {
+            self.reasoning_default_failures[..index]
+                .iter()
+                .rev()
+                .find_map(|failure| {
+                    self.reasoning_default_retry_focuses
+                        .get(&failure.request.defaults.model)
+                })
+        } else {
+            self.reasoning_default_failures[index + 1..]
+                .iter()
+                .find_map(|failure| {
+                    self.reasoning_default_retry_focuses
+                        .get(&failure.request.defaults.model)
+                })
+        };
+        if let Some(focus) = neighboring {
+            window.focus(focus, cx);
+        } else {
+            window.focus(&self.input.read(cx).focus_handle(cx), cx);
+        }
+        cx.stop_propagation();
+    }
+
+    fn previous_composer_control_with_reasoning_retry(
+        &mut self,
+        action: &PreviousComposerControl,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.input.read(cx).is_composing()
+            && self.input.read(cx).focus_handle(cx).is_focused(window)
+            && let Some(focus) = self
+                .reasoning_default_failures
+                .iter()
+                .rev()
+                .find_map(|failure| {
+                    self.reasoning_default_retry_focuses
+                        .get(&failure.request.defaults.model)
+                })
+        {
+            window.focus(focus, cx);
+            cx.stop_propagation();
+            return;
+        }
+        self.previous_composer_control(action, window, cx);
     }
 
     fn copy_selected_text(&mut self, _: &CopySelectedText, _: &mut Window, cx: &mut Context<Self>) {
@@ -218,6 +275,9 @@ impl ConversationStream {
             .pt(px(Layout::COMPOSER_PADDING_TOP))
             .pb(px(Layout::COMPOSER_PADDING_BOTTOM))
             .flex_shrink_0()
+            .key_context("Composer")
+            .on_action(cx.listener(Self::next_composer_control))
+            .on_action(cx.listener(Self::previous_composer_control_with_reasoning_retry))
             .when(self.utility_bar_visible(cx), |column| {
                 column.child(self.render_composer_utility_bar(window, cx))
             })
@@ -235,6 +295,118 @@ impl ConversationStream {
                             .child(render_rows::plain_error_notice(
                                 error.render(),
                                 colors.danger,
+                            ))
+                    }),
+            )
+            .children(
+                self.reasoning_default_failures
+                    .iter()
+                    .enumerate()
+                    .map(|(index, failure)| {
+                        let model = failure.request.defaults.model.clone();
+                        let key_model = model.clone();
+                        let click_model = model.clone();
+                        div()
+                            .w_full()
+                            .max_w(px(Layout::COMPOSER_MAX_WIDTH))
+                            .mx_auto()
+                            .mt_1()
+                            .mb_2()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(render_rows::plain_error_notice(
+                                        vega_i18n::t_args(
+                                            "ui.reasoning_default_not_saved",
+                                            &[("model", &model)],
+                                        ),
+                                        colors.danger,
+                                    )),
+                            )
+                            .when(failure.retry_pending, |row| {
+                                row.child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .text_color(colors.text_secondary)
+                                        .child(vega_i18n::t("ui.saving")),
+                                )
+                            })
+                            .children(self.reasoning_default_retry_focuses.get(&model).map(
+                                |focus| {
+                                    div()
+                                        .id(format!("reasoning-default-retry-{model}"))
+                                        .role(Role::Button)
+                                        .aria_label(vega_i18n::t_args(
+                                            "ui.reasoning_default_retry",
+                                            &[("model", &model)],
+                                        ))
+                                        .focusable()
+                                        .track_focus(focus)
+                                        .tab_stop(true)
+                                        .focus_visible(|style| {
+                                            style
+                                                .bg(colors.bg_active)
+                                                .text_color(colors.text_primary)
+                                        })
+                                        .flex_shrink_0()
+                                        .px_2()
+                                        .h(px(Layout::TITLEBAR_CONTROL_SIZE))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(Layout::DISCLOSURE_RADIUS))
+                                        .text_color(colors.text_primary)
+                                        .bg(colors.bg_hover)
+                                        .cursor_pointer()
+                                        .on_key_down(cx.listener(
+                                            move |this,
+                                                  event: &gpui_kit::KeyDownEvent,
+                                                  window,
+                                                  cx| {
+                                                if matches!(
+                                                    event.keystroke.key.as_str(),
+                                                    "enter" | "space" | " "
+                                                ) {
+                                                    this.request_reasoning_default_retry(
+                                                        &key_model, cx,
+                                                    );
+                                                    window.focus(
+                                                        &this.input.read(cx).focus_handle(cx),
+                                                        cx,
+                                                    );
+                                                    cx.stop_propagation();
+                                                }
+                                            },
+                                        ))
+                                        .on_mouse_up(
+                                            MouseButton::Left,
+                                            cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                                                this.request_reasoning_default_retry(
+                                                    &click_model,
+                                                    cx,
+                                                );
+                                            }),
+                                        )
+                                        .on_action(cx.listener(
+                                            move |this, _: &NextComposerControl, window, cx| {
+                                                this.focus_reasoning_retry_neighbor(
+                                                    index, false, window, cx,
+                                                );
+                                            },
+                                        ))
+                                        .on_action(cx.listener(
+                                            move |this, _: &PreviousComposerControl, window, cx| {
+                                                this.focus_reasoning_retry_neighbor(
+                                                    index, true, window, cx,
+                                                );
+                                            },
+                                        ))
+                                        .child(vega_i18n::t("ui.retry"))
+                                },
                             ))
                     }),
             )
@@ -261,8 +433,6 @@ impl ConversationStream {
                     .when(self.permission_picker_open, |shell| {
                         shell.on_key_down(cx.listener(Self::on_permission_picker_key_down))
                     })
-                    .on_action(cx.listener(Self::next_composer_control))
-                    .on_action(cx.listener(Self::previous_composer_control))
                     .on_action(cx.listener(Self::previous_composer_action))
                     .on_action(cx.listener(Self::next_composer_action))
                     .on_action(cx.listener(Self::accept_composer_action))

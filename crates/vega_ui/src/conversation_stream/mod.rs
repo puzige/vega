@@ -127,6 +127,12 @@ pub struct ThreadSettingsRequested {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DraftProjectSelectionRequested {
+    pub thread_id: String,
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskBackendSelectionRequested {
     pub thread_id: String,
     pub backend: TaskBackend,
@@ -272,6 +278,17 @@ pub struct ComposerDefaultsRequested {
     pub revision: u64,
     pub thread_id: String,
     pub defaults: ComposerDefaults,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReasoningDefaultFailure {
+    pub request: ComposerDefaultsRequested,
+    pub retry_pending: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReasoningDefaultRetryRequested {
+    pub request: ComposerDefaultsRequested,
 }
 
 /// Scroll-up hydration bookkeeping. `older_cursor` is `Some(oldest loaded

@@ -1669,7 +1669,15 @@ impl VegaWindow {
             });
             return;
         };
-        self.draft = None;
+        self.retained_drafts.remove(&thread.id);
+        self.publish_retained_drafts(cx);
+        if self
+            .draft
+            .as_ref()
+            .is_some_and(|draft| draft.id == thread.id)
+        {
+            self.draft = None;
+        }
         let intent = match &cx.global::<VegaStore>().0 {
             Ok(store) => {
                 vega_conversation::codex_tasks::begin_codex_session_creation(store, &thread.id)
@@ -1679,7 +1687,15 @@ impl VegaWindow {
             )),
         };
         let Ok(intent) = intent else {
-            self.draft = None;
+            self.retained_drafts.remove(&thread.id);
+            self.publish_retained_drafts(cx);
+            if self
+                .draft
+                .as_ref()
+                .is_some_and(|draft| draft.id == thread.id)
+            {
+                self.draft = None;
+            }
             stream.update(cx, |stream, cx| {
                 stream.set_draft_route(false, cx);
                 stream.apply_thread(thread.clone(), cx);
@@ -1725,7 +1741,15 @@ impl VegaWindow {
                     CodexSessionFailureCode::ProcessStartFailed,
                 );
             }
-            self.draft = None;
+            self.retained_drafts.remove(&thread.id);
+            self.publish_retained_drafts(cx);
+            if self
+                .draft
+                .as_ref()
+                .is_some_and(|draft| draft.id == thread.id)
+            {
+                self.draft = None;
+            }
             stream.update(cx, |stream, cx| {
                 stream.set_draft_route(false, cx);
                 stream.apply_thread(thread.clone(), cx);
