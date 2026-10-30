@@ -555,9 +555,27 @@ impl std::fmt::Debug for ProviderResponseMetadata {
     }
 }
 
+pub struct ProviderInputReceipt {
+    pub(crate) pending: Option<crate::agent::context_accounting::PendingInputAnchor>,
+}
+
+impl ProviderInputReceipt {
+    pub fn from_request(request: &ChatRequest) -> Result<Self, VegaError> {
+        let projected = crate::project_model_messages(&request.messages)?;
+        let pending = if projected == request.messages && request.model_snapshot.is_some() {
+            crate::agent::context_accounting::PendingInputAnchor::from_request(request)
+                .map_err(|error| VegaError::Context(error.into()))?
+        } else {
+            None
+        };
+        Ok(Self { pending })
+    }
+}
+
 pub struct ProviderStream {
     pub events: EventStream,
     pub metadata: ProviderResponseMetadata,
+    pub input_receipt: Option<ProviderInputReceipt>,
 }
 
 impl std::fmt::Debug for ProviderStream {
@@ -2327,6 +2345,13 @@ impl ProviderRequestSubmission {
 }
 
 pub trait Provider: Send + Sync {
+    fn prepare_accounting_request(
+        &self,
+        _request: ChatRequest,
+    ) -> BoxFuture<'_, Result<Option<ChatRequest>, VegaError>> {
+        Box::pin(async { Ok(None) })
+    }
+
     #[allow(missing_docs)]
     fn chat_stream_with_submission(
         &self,
@@ -2376,6 +2401,7 @@ pub trait Provider: Send + Sync {
             future.await.map(|events| ProviderStream {
                 events,
                 metadata: ProviderResponseMetadata::default(),
+                input_receipt: None,
             })
         })
     }
@@ -2397,6 +2423,7 @@ pub trait Provider: Send + Sync {
             future.await.map(|events| ProviderStream {
                 events,
                 metadata: ProviderResponseMetadata::default(),
+                input_receipt: None,
             })
         })
     }

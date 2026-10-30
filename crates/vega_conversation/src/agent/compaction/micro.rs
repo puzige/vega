@@ -20,7 +20,7 @@ impl ConversationCompactionHook<'_> {
         let original = estimate_wire_context(&wire, &request.tools)
             .map_err(|error| VegaError::Context(error.into()))?
             .input_tokens;
-        if original
+        if request.estimate.input_tokens
             < request
                 .budget
                 .precompute_tokens()

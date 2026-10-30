@@ -16,15 +16,17 @@ pub(super) struct InputAnchor {
     model: String,
     reasoning: Option<FrozenReasoning>,
     max_tokens: Option<u32>,
+    model_snapshot: Option<Box<crate::model_compat::ResolvedModel>>,
 }
 
-pub(super) struct PendingInputAnchor {
+pub(crate) struct PendingInputAnchor {
     prefix_digest: [u8; 32],
     covered_messages: usize,
     prefix_estimate: u64,
     model: String,
     reasoning: Option<FrozenReasoning>,
     max_tokens: Option<u32>,
+    model_snapshot: Option<Box<crate::model_compat::ResolvedModel>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,11 +54,12 @@ impl PendingInputAnchor {
             model: request.model.clone(),
             reasoning: request.reasoning.clone(),
             max_tokens: request.max_tokens,
+            model_snapshot: request.model_snapshot.clone(),
         }))
     }
 
-    pub fn complete(self, input: u64) -> Option<InputAnchor> {
-        (input > 0).then_some(InputAnchor {
+    pub(super) fn complete(self, input: u64) -> Option<InputAnchor> {
+        (input > 0 && self.model_snapshot.is_some()).then_some(InputAnchor {
             prefix_digest: self.prefix_digest,
             covered_messages: self.covered_messages,
             prefix_estimate: self.prefix_estimate,
@@ -64,11 +67,30 @@ impl PendingInputAnchor {
             model: self.model,
             reasoning: self.reasoning,
             max_tokens: self.max_tokens,
+            model_snapshot: self.model_snapshot,
         })
     }
 }
 
 impl InputAnchor {
+    pub fn decide_request(
+        anchor: Option<&Self>,
+        request: &ChatRequest,
+        revision: u64,
+    ) -> Result<InputDecision, ContextEstimateError> {
+        Self::decide(
+            anchor.filter(|anchor| {
+                request.model_snapshot.is_some() && anchor.model_snapshot == request.model_snapshot
+            }),
+            &request.messages,
+            &request.tools,
+            &request.model,
+            request.reasoning.as_ref(),
+            request.max_tokens,
+            revision,
+        )
+    }
+
     pub fn decide(
         anchor: Option<&Self>,
         messages: &[ChatMessage],
@@ -80,11 +102,13 @@ impl InputAnchor {
     ) -> Result<InputDecision, ContextEstimateError> {
         let raw = crate::estimate_wire_context(messages, tools)?;
         if let Some(anchor) = anchor
-            && messages.len() >= anchor.covered_messages
             && model == anchor.model
             && reasoning == anchor.reasoning.as_ref()
             && max_tokens == anchor.max_tokens
-            && fingerprint(&messages[..anchor.covered_messages], tools)
+            && let Ok(projected) = crate::project_model_messages(messages)
+            && projected.len() >= anchor.covered_messages
+            && wire_prefix_stable(&projected, anchor.covered_messages)
+            && fingerprint(&projected[..anchor.covered_messages], tools)
                 == Some(anchor.prefix_digest)
         {
             let incremental = raw
@@ -120,6 +144,42 @@ impl InputAnchor {
     }
 }
 
+fn wire_prefix_stable(messages: &[ChatMessage], covered_messages: usize) -> bool {
+    let (prefix, tail) = messages.split_at(covered_messages);
+    if prefix
+        .iter()
+        .rev()
+        .take_while(|message| message.role == crate::ChatRole::Tool)
+        .any(|message| !message.images.is_empty())
+        && tail
+            .first()
+            .is_some_and(|message| message.role == crate::ChatRole::Tool)
+    {
+        return false;
+    }
+    if !tail
+        .iter()
+        .any(|message| !message.tool_calls.is_empty() || message.tool_call_id.is_some())
+    {
+        return true;
+    }
+    let live_ids = prefix
+        .iter()
+        .filter(|message| message.preserves_live_wire_ids())
+        .flat_map(|message| message.tool_calls.iter().map(|call| call.id.as_str()))
+        .collect::<std::collections::HashSet<_>>();
+    prefix
+        .iter()
+        .flat_map(|message| {
+            message
+                .tool_calls
+                .iter()
+                .map(|call| call.id.as_str())
+                .chain(message.tool_call_id.as_deref())
+        })
+        .all(|id| live_ids.contains(id) || (!id.contains('|') && id.len() <= 40))
+}
+
 fn tagged(hasher: &mut Sha256, tag: u8, bytes: &[u8]) {
     hasher.update([tag]);
     hasher.update((bytes.len() as u64).to_le_bytes());
@@ -129,9 +189,13 @@ fn tagged(hasher: &mut Sha256, tag: u8, bytes: &[u8]) {
 fn fingerprint(messages: &[ChatMessage], tools: &[ToolDefinition]) -> Option<[u8; 32]> {
     let mut hasher = Sha256::new();
     tagged(&mut hasher, 1, &(messages.len() as u64).to_le_bytes());
-    let projected = crate::project_model_messages(messages).ok()?;
-    for message in &projected {
+    for message in messages {
         tagged(&mut hasher, 2, message.role.as_str().as_bytes());
+        tagged(
+            &mut hasher,
+            42,
+            &[u8::from(message.preserves_live_wire_ids())],
+        );
         tagged(&mut hasher, 3, message.content.as_bytes());
         match &message.reasoning_content {
             Some(value) => tagged(&mut hasher, 4, value.as_bytes()),

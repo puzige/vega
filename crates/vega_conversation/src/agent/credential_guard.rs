@@ -703,6 +703,22 @@ fn protected_stream(
 }
 
 impl Provider for OwnerCredentialProvider {
+    fn prepare_accounting_request(
+        &self,
+        request: ChatRequest,
+    ) -> BoxFuture<'_, Result<Option<ChatRequest>, VegaError>> {
+        let known = self.known.clone();
+        let exceptions = self.exceptions.clone();
+        Box::pin(async move {
+            let request = tokio::task::spawn_blocking(move || {
+                project_owner_secrets_with_policy(request, known.as_ref(), exceptions.as_ref())
+            })
+            .await
+            .map_err(|_| VegaError::CredentialCheckUnavailable)??;
+            self.provider.prepare_accounting_request(request).await
+        })
+    }
+
     fn chat_stream_with_submission(
         &self,
         request: ChatRequest,

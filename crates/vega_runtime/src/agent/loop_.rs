@@ -1,4 +1,4 @@
-use super::context_accounting::{InputAnchor, InputDecision, PendingInputAnchor};
+use super::context_accounting::{InputAnchor, InputDecision};
 use super::tools_exec::SkillToolAction;
 use super::*;
 use crate::skills::{BatchPolicy, classify_tool_batch};
@@ -54,7 +54,7 @@ fn is_initial_user_input(messages: &[ChatMessage]) -> bool {
 }
 
 fn input_decision(
-    anchor: Option<&InputAnchor>,
+    _anchor: Option<&InputAnchor>,
     messages: &[ChatMessage],
     tools: &[ToolDefinition],
     model: &str,
@@ -63,12 +63,40 @@ fn input_decision(
     revision: u64,
 ) -> Result<InputDecision, VegaError> {
     InputAnchor::decide(
-        anchor, messages, tools, model, reasoning, max_tokens, revision,
+        None, messages, tools, model, reasoning, max_tokens, revision,
     )
     .map_err(|error| {
         VegaError::Context(error.into())
             .at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation)
     })
+}
+
+async fn prepared_input_decision(
+    provider: &dyn Provider,
+    anchor: Option<&InputAnchor>,
+    messages: &[ChatMessage],
+    tools: &[ToolDefinition],
+    request: &ChatRequest,
+    revision: u64,
+) -> Result<InputDecision, VegaError> {
+    let candidate = ChatRequest {
+        messages: crate::project_model_messages(messages)?,
+        tools: tools.to_vec(),
+        ..request.clone()
+    };
+    match provider.prepare_accounting_request(candidate).await? {
+        Some(prepared) => InputAnchor::decide_request(anchor, &prepared, revision)
+            .map_err(|error| VegaError::Context(error.into())),
+        None => input_decision(
+            None,
+            messages,
+            tools,
+            &request.model,
+            request.reasoning.as_ref(),
+            request.max_tokens,
+            revision,
+        ),
+    }
 }
 
 fn accounting_event(
@@ -1115,6 +1143,14 @@ where
     let mut force_provider_compaction = false;
     let mut provider_compaction_deeper = false;
     let mut provider_overflow_gap = None;
+    let accounting_request = ChatRequest {
+        model: request.model.clone(),
+        reasoning: request.reasoning.clone(),
+        max_tokens: request_output_cap(request.max_tokens, context_budget),
+        model_snapshot: request.model_snapshot.clone(),
+        history_safety: request.history_safety.clone(),
+        ..Default::default()
+    };
     let mut completed = request.completed_tool_results;
     let tool_config = request.tool_config;
     let skill_config = tool_config.skills.clone();
@@ -1497,7 +1533,17 @@ where
         {
             let before = crate::estimate_wire_context(&messages, &tool_definitions)
                 .map_err(|error| VegaError::Context(error.into()))?;
-            if before.input_tokens
+            let predicted = prepared_input_decision(
+                provider,
+                input_anchor.as_ref(),
+                &messages,
+                &tool_definitions,
+                &accounting_request,
+                primary_revision,
+            )
+            .await?
+            .estimate;
+            if predicted.input_tokens
                 >= budget
                     .precompute_tokens()
                     .map_err(|error| VegaError::Context(error.into()))?
@@ -1510,7 +1556,7 @@ where
                                 messages: messages[1..].to_vec(),
                                 tools: tool_definitions.clone(),
                                 budget,
-                                estimate: before,
+                                estimate: predicted,
                                 target_tokens: budget
                                     .target_tokens()
                                     .map_err(|error| VegaError::Context(error.into()))?,
@@ -1554,30 +1600,30 @@ where
             let Some(budget) = context_budget else {
                 break 'compaction;
             };
-            let decision = input_decision(
+            let decision = prepared_input_decision(
+                provider,
                 input_anchor.as_ref(),
                 &messages,
                 &tool_definitions,
-                &request.model,
-                request.reasoning.as_ref(),
-                request_output_cap(request.max_tokens, context_budget),
+                &accounting_request,
                 primary_revision,
-            )?;
+            )
+            .await?;
             emit!(
                 events,
                 sink,
                 accounting_event(decision, budget, ContextAccountingStage::PrimaryPreflight)?
             );
             tool_definitions = capabilities.current_definitions();
-            let estimate = input_decision(
+            let estimate = prepared_input_decision(
+                provider,
                 input_anchor.as_ref(),
                 &messages,
                 &tool_definitions,
-                &request.model,
-                request.reasoning.as_ref(),
-                request_output_cap(request.max_tokens, context_budget),
+                &accounting_request,
                 primary_revision,
-            )?
+            )
+            .await?
             .estimate;
             if cancel.is_cancelled() {
                 emit!(events, sink, RuntimeEvent::Interrupted);
@@ -2162,14 +2208,6 @@ where
         primary_revision = primary_revision.checked_add(1).ok_or(VegaError::Context(
             ContextRuntimeError::Estimate(crate::ContextEstimateError::Overflow),
         ))?;
-        let pending_anchor = if context_budget.is_some() {
-            PendingInputAnchor::from_request(&chat_request).map_err(|error| {
-                VegaError::Context(error.into())
-                    .at_runtime_stage(crate::RuntimeFailureStage::RequestPreparation)
-            })?
-        } else {
-            None
-        };
         if let Some(run) = &tool_config.computer_use {
             run.consume_model_batch(&mut messages);
         }
@@ -2252,6 +2290,11 @@ where
                     true,
                 ));
             }
+        };
+        let pending_anchor = if context_budget.is_some() {
+            call.input_receipt.and_then(|receipt| receipt.pending)
+        } else {
+            None
         };
         diagnostic_metrics.provider = call.metadata;
         let mut stream = call.events;
@@ -2992,15 +3035,15 @@ where
                 && !precompute_suppressed
                 && let Some(budget) = context_budget.filter(|budget| budget.automatic_compaction())
                 && let Some(hook) = external_context_hook.or(request_context_hook.as_deref())
-                && let Ok(decision) = input_decision(
+                && let Ok(decision) = prepared_input_decision(
+                    provider,
                     input_anchor.as_ref(),
                     &messages,
                     &tool_definitions,
-                    &request.model,
-                    request.reasoning.as_ref(),
-                    request_output_cap(request.max_tokens, context_budget),
+                    &accounting_request,
                     primary_revision,
                 )
+                .await
                 && let Ok(threshold) = budget.precompute_tokens()
                 && let Ok(target_tokens) = budget.target_tokens()
                 && decision.estimate.input_tokens >= threshold
@@ -3886,15 +3929,15 @@ where
             && (tool_config.turn_limit == 0 || turn_index < tool_config.turn_limit)
             && let Some(budget) = context_budget.filter(|budget| budget.automatic_compaction())
             && let Some(hook) = external_context_hook.or(request_context_hook.as_deref())
-            && let Ok(decision) = input_decision(
+            && let Ok(decision) = prepared_input_decision(
+                provider,
                 input_anchor.as_ref(),
                 &messages,
                 &tool_definitions,
-                &request.model,
-                request.reasoning.as_ref(),
-                request_output_cap(request.max_tokens, context_budget),
+                &accounting_request,
                 primary_revision,
             )
+            .await
             && let Ok(threshold) = budget.precompute_tokens()
             && let Ok(target_tokens) = budget.target_tokens()
             && decision.estimate.input_tokens >= threshold
