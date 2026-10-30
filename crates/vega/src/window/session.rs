@@ -492,7 +492,15 @@ impl VegaWindow {
                 stream.update(cx, |stream, cx| stream.apply_thread(draft.clone(), cx));
             }
         }
-        let draft = if creating || draft.project_binding() == bound {
+        let unavailable = draft.project_binding().is_some_and(|project| {
+            !cx.global::<VegaStore>().0.as_ref().is_ok_and(|store| {
+                vega_store::projects::find(store.conn(), project)
+                    .ok()
+                    .flatten()
+                    .is_some()
+            })
+        });
+        let draft = if creating || unavailable || draft.project_binding() == bound {
             draft
         } else {
             Thread {
@@ -500,6 +508,7 @@ impl VegaWindow {
                 ..draft
             }
         };
+        self.mirror_draft(&draft);
         self.draft = Some(draft.clone());
         if opened.as_ref() != Some(&draft) {
             cx.set_global(OpenedThread(Some(draft.clone())));

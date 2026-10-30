@@ -144,7 +144,8 @@ impl VegaWindow {
         let Some(draft) = self.draft.clone() else {
             return true;
         };
-        if self.retained_drafts.contains_key(&draft.id) {
+        if let Some((stored, _)) = self.retained_drafts.get_mut(&draft.id) {
+            *stored = draft;
             return true;
         }
         if self.retained_drafts.len() >= 8 {
@@ -216,8 +217,18 @@ impl VegaWindow {
         let Some((thread, _)) = self.retained_drafts.get(id).cloned() else {
             return;
         };
-        if self.default_permission_save_pending(cx) || !self.retain_active_draft(cx) {
+        if self.default_permission_save_pending(cx) {
             return;
+        }
+        let target = self.retained_drafts.remove(id);
+        if !self.retain_active_draft(cx) {
+            if let Some(target) = target {
+                self.retained_drafts.insert(id.to_owned(), target);
+            }
+            return;
+        }
+        if let Some((_, stream)) = target {
+            self.stream_view = Some((id.to_owned(), stream));
         }
         self.draft = Some(thread.clone());
         cx.set_global(SelectedProject(thread.project_binding().map(str::to_owned)));
@@ -345,7 +356,7 @@ impl VegaWindow {
     }
 
     // Capacity checks precede teardown. The active editor is never evicted.
-    fn retain_departing_draft(&mut self, destination: &Projection, cx: &App) -> bool {
+    fn retain_departing_draft(&mut self, destination: &Projection, cx: &mut Context<Self>) -> bool {
         let Some((id, stream)) = &self.stream_view else {
             return true;
         };
@@ -357,7 +368,9 @@ impl VegaWindow {
             return true;
         }
         if self.is_draft_route(id) {
-            return true;
+            let retained = self.retain_active_draft(cx);
+            self.publish_retained_drafts(cx);
+            return retained;
         }
         let input = stream.read(cx).composer_input();
         let text = input.read(cx).text();
