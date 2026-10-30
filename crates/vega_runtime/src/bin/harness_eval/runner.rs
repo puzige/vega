@@ -87,6 +87,13 @@ impl ObservedProvider<'_> {
 }
 
 impl Provider for ObservedProvider<'_> {
+    fn prepare_accounting_request(
+        &self,
+        request: ChatRequest,
+    ) -> BoxFuture<'_, Result<Option<ChatRequest>, VegaError>> {
+        self.inner.prepare_accounting_request(request)
+    }
+
     fn model_snapshot(&self) -> Option<ResolvedModel> {
         self.inner.model_snapshot()
     }

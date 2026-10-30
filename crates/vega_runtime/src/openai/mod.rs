@@ -263,6 +263,7 @@ impl OpenAiProvider {
                             event_stream(resp, cancel)
                         },
                         metadata,
+                        input_receipt: crate::ProviderInputReceipt::from_request(&req).ok(),
                     });
                 }
                 Ok(resp) => {
@@ -326,6 +327,13 @@ impl OpenAiProvider {
 }
 
 impl Provider for OpenAiProvider {
+    fn prepare_accounting_request(
+        &self,
+        request: ChatRequest,
+    ) -> BoxFuture<'_, Result<Option<ChatRequest>, VegaError>> {
+        Box::pin(async move { self.prepare_request(request).map(Some) })
+    }
+
     fn chat_stream_with_submission(
         &self,
         req: ChatRequest,

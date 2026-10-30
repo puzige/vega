@@ -69,9 +69,9 @@ pub use permission::{
 pub use provider::{
     ChatMessage, ChatReasoningPresence, ChatRequest, ChatRole, ChatToolCall,
     CompactionProviderFactory, EventStream, FrozenReasoning, HistorySafetyCheck,
-    HistorySafetyReport, Provider, ProviderEvent, ProviderFailureKind, ProviderRequestSubmission,
-    ProviderResponseMetadata, ProviderStream, ReasoningBudgetScope, ReasoningChoice,
-    ReasoningDisabledWire, ReasoningProtocol, ReasoningReplayPolicy, ReplayFrame,
+    HistorySafetyReport, Provider, ProviderEvent, ProviderFailureKind, ProviderInputReceipt,
+    ProviderRequestSubmission, ProviderResponseMetadata, ProviderStream, ReasoningBudgetScope,
+    ReasoningChoice, ReasoningDisabledWire, ReasoningProtocol, ReasoningReplayPolicy, ReplayFrame,
     ResponseReplayLayout, ResponseReplaySlot, StopReason, ToolChoice, ToolDefinition,
     project_model_messages,
 };

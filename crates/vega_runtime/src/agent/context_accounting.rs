@@ -16,15 +16,17 @@ pub(super) struct InputAnchor {
     model: String,
     reasoning: Option<FrozenReasoning>,
     max_tokens: Option<u32>,
+    model_snapshot: Option<Box<crate::model_compat::ResolvedModel>>,
 }
 
-pub(super) struct PendingInputAnchor {
+pub(crate) struct PendingInputAnchor {
     prefix_digest: [u8; 32],
     covered_messages: usize,
     prefix_estimate: u64,
     model: String,
     reasoning: Option<FrozenReasoning>,
     max_tokens: Option<u32>,
+    model_snapshot: Option<Box<crate::model_compat::ResolvedModel>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,11 +54,12 @@ impl PendingInputAnchor {
             model: request.model.clone(),
             reasoning: request.reasoning.clone(),
             max_tokens: request.max_tokens,
+            model_snapshot: request.model_snapshot.clone(),
         }))
     }
 
-    pub fn complete(self, input: u64) -> Option<InputAnchor> {
-        (input > 0).then_some(InputAnchor {
+    pub(super) fn complete(self, input: u64) -> Option<InputAnchor> {
+        (input > 0 && self.model_snapshot.is_some()).then_some(InputAnchor {
             prefix_digest: self.prefix_digest,
             covered_messages: self.covered_messages,
             prefix_estimate: self.prefix_estimate,
@@ -64,11 +67,30 @@ impl PendingInputAnchor {
             model: self.model,
             reasoning: self.reasoning,
             max_tokens: self.max_tokens,
+            model_snapshot: self.model_snapshot,
         })
     }
 }
 
 impl InputAnchor {
+    pub fn decide_request(
+        anchor: Option<&Self>,
+        request: &ChatRequest,
+        revision: u64,
+    ) -> Result<InputDecision, ContextEstimateError> {
+        Self::decide(
+            anchor.filter(|anchor| {
+                request.model_snapshot.is_some() && anchor.model_snapshot == request.model_snapshot
+            }),
+            &request.messages,
+            &request.tools,
+            &request.model,
+            request.reasoning.as_ref(),
+            request.max_tokens,
+            revision,
+        )
+    }
+
     pub fn decide(
         anchor: Option<&Self>,
         messages: &[ChatMessage],

@@ -15,7 +15,7 @@ use crate::{
     tool_definitions,
 };
 
-const MODEL: &str = "micro-usage-model";
+const MODEL: &str = "gpt-4.1";
 const SYSTEM: &str = "Inspect the available files.";
 const LIVE_CALL_ID: &str = "live-glob";
 const OLD_CALL_COUNT: usize = 40;
@@ -29,6 +29,9 @@ enum UsageMode {
     Input(u64),
     InvalidCache,
     Duplicate,
+    NoReceipt,
+    RetryThenMissing,
+    RetryThenInput(u64),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -58,6 +61,46 @@ struct ScriptedProvider {
 }
 
 impl Provider for ScriptedProvider {
+    fn model_snapshot(&self) -> Option<crate::model_compat::ResolvedModel> {
+        use crate::model_compat::{
+            ModelApi, ModelIdentity, ModelRoute, lookup_model_definition, resolve_model,
+        };
+        let route =
+            ModelRoute::new(ModelApi::ChatCompletions, "https://api.openai.com/v1").unwrap();
+        let identity = ModelIdentity {
+            provider: "openai".into(),
+            model: MODEL.into(),
+        };
+        Some(resolve_model(&lookup_model_definition(&route, &identity).unwrap(), None).unwrap())
+    }
+
+    fn prepare_accounting_request(
+        &self,
+        request: ChatRequest,
+    ) -> BoxFuture<'_, Result<Option<ChatRequest>, VegaError>> {
+        Box::pin(async move { Ok(Some(request)) })
+    }
+
+    fn chat_stream_recovering(
+        &self,
+        request: ChatRequest,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<crate::ProviderStream, VegaError>> {
+        let receipt = if matches!(self.usage, UsageMode::NoReceipt) {
+            Ok(None)
+        } else {
+            crate::ProviderInputReceipt::from_request(&request).map(Some)
+        };
+        let events = self.chat_stream(request, cancel);
+        Box::pin(async move {
+            Ok(crate::ProviderStream {
+                events: events.await?,
+                metadata: Default::default(),
+                input_receipt: receipt?,
+            })
+        })
+    }
+
     fn chat_stream(
         &self,
         request: ChatRequest,
@@ -73,17 +116,33 @@ impl Provider for ScriptedProvider {
         Box::pin(async move {
             let events = match request_index {
                 0 => {
-                    let mut events = vec![
+                    let mut events = Vec::new();
+                    if matches!(
+                        usage,
+                        UsageMode::RetryThenMissing | UsageMode::RetryThenInput(_)
+                    ) {
+                        events.push(ProviderEvent::Usage {
+                            input: 90_000,
+                            output: 1,
+                            cache_read: None,
+                            cache_write: None,
+                        });
+                        events.push(ProviderEvent::RetryScheduled {
+                            attempt: 1,
+                            max_retries: 2,
+                        });
+                    }
+                    events.extend([
                         ProviderEvent::TextDelta("A".repeat(ASSISTANT_TEXT_BYTES)),
                         ProviderEvent::ToolUse {
                             id: LIVE_CALL_ID.into(),
                             name: "glob".into(),
                             input_json: GLOB_INPUT.into(),
                         },
-                    ];
+                    ]);
                     let input = match usage {
-                        UsageMode::Input(input) => input,
-                        UsageMode::InvalidCache | UsageMode::Duplicate => 1_000,
+                        UsageMode::Input(input) | UsageMode::RetryThenInput(input) => input,
+                        _ => 1_000,
                     };
                     let usage_event = ProviderEvent::Usage {
                         input,
@@ -95,7 +154,9 @@ impl Provider for ScriptedProvider {
                         }),
                         cache_write: Some(input / 4),
                     };
-                    events.push(usage_event.clone());
+                    if !matches!(usage, UsageMode::RetryThenMissing) {
+                        events.push(usage_event.clone());
+                    }
                     if matches!(usage, UsageMode::Duplicate) {
                         events.push(usage_event);
                     }
@@ -650,4 +711,25 @@ async fn duplicate_usage_fails_before_tool_execution_or_another_primary_request(
             .iter()
             .any(|event| matches!(event, RuntimeEvent::Error(_)))
     );
+}
+
+#[tokio::test]
+async fn absent_receipt_or_success_usage_never_reuses_failed_attempt_input() {
+    for mode in [UsageMode::NoReceipt, UsageMode::RetryThenMissing] {
+        let (outcome, trace) = run_case(mode, MicroReply::None).await;
+        let outcome = outcome.unwrap();
+        let trace = trace.lock().unwrap();
+        assert_completed_tool_round(&outcome, &trace.requests);
+        let decisions = primary_decisions(&outcome);
+        assert_eq!(decisions[1].source, ContextAccountingSource::Estimated);
+        assert_eq!(decisions[1].provider_input_baseline, None);
+        assert_eq!(decisions[1].predicted_input, raw_tokens(&trace.requests[1]));
+    }
+    let (outcome, trace) = run_case(UsageMode::RetryThenInput(1000), MicroReply::None).await;
+    let outcome = outcome.unwrap();
+    let trace = trace.lock().unwrap();
+    assert_completed_tool_round(&outcome, &trace.requests);
+    let decisions = primary_decisions(&outcome);
+    assert_eq!(decisions[1].source, ContextAccountingSource::UsageAnchored);
+    assert_eq!(decisions[1].provider_input_baseline, Some(1000));
 }

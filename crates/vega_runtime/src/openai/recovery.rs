@@ -31,6 +31,7 @@ impl OpenAiProvider {
         }
         let request = self.prepare_request(request)?;
         let body = self.request_body(&request)?;
+        let input_receipt = crate::ProviderInputReceipt::from_request(&request).ok();
         let state = RecoveryStream {
             provider: self,
             request,
@@ -45,6 +46,7 @@ impl OpenAiProvider {
             ended: false,
         };
         Ok(ProviderStream {
+            input_receipt,
             metadata: ProviderResponseMetadata::default(),
             events: Box::pin(futures::stream::unfold(state, |mut state| async move {
                 if state.ended {

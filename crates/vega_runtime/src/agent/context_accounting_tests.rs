@@ -6,7 +6,19 @@ use crate::{
     RuntimeToolStatus, ToolDefinition, estimate_wire_context, project_model_messages,
 };
 
-const MODEL: &str = "model-a";
+const MODEL: &str = "gpt-4.1";
+
+fn model_snapshot() -> crate::model_compat::ResolvedModel {
+    use crate::model_compat::{
+        ModelApi, ModelIdentity, ModelRoute, lookup_model_definition, resolve_model,
+    };
+    let route = ModelRoute::new(ModelApi::ChatCompletions, "https://api.openai.com/v1").unwrap();
+    let identity = ModelIdentity {
+        provider: "openai".into(),
+        model: MODEL.into(),
+    };
+    resolve_model(&lookup_model_definition(&route, &identity).unwrap(), None).unwrap()
+}
 const OUTPUT_CAP: u32 = 4096;
 const REVISION: u64 = 7;
 
@@ -99,6 +111,7 @@ fn append_tool_round(messages: &mut Vec<ChatMessage>, outputs: &[&str], reasonin
 fn projected_request(messages: &[ChatMessage], tools: &[ToolDefinition]) -> ChatRequest {
     ChatRequest {
         model: MODEL.into(),
+        model_snapshot: Some(Box::new(model_snapshot())),
         messages: project_model_messages(messages).unwrap(),
         tools: tools.to_vec(),
         max_tokens: Some(OUTPUT_CAP),
@@ -120,16 +133,9 @@ fn decide(
     messages: &[ChatMessage],
     request: &ChatRequest,
 ) -> InputDecision {
-    InputAnchor::decide(
-        anchor,
-        messages,
-        &request.tools,
-        &request.model,
-        request.reasoning.as_ref(),
-        request.max_tokens,
-        REVISION,
-    )
-    .unwrap()
+    let mut next = request.clone();
+    next.messages = messages.to_vec();
+    InputAnchor::decide_request(anchor, &next, REVISION).unwrap()
 }
 
 fn assert_anchored(
@@ -1180,4 +1186,40 @@ mod openai_wire_anchor_regressions {
             );
         }
     }
+}
+
+#[test]
+fn absent_or_changed_frozen_identity_does_not_reuse_usage() {
+    let messages = cold_history(2);
+    let request = projected_request(&messages, &tools());
+    let usage = anchor(&request, 1234);
+    let mut missing = request.clone();
+    missing.model_snapshot = None;
+    assert!(pending(&missing).complete(1234).is_none());
+    assert_estimated(
+        decide(Some(&usage), &messages, &missing),
+        &messages,
+        &missing.tools,
+    );
+    let mut changed = request.clone();
+    use crate::model_compat::{
+        ModelApi, ModelIdentity, ModelRoute, lookup_model_definition, resolve_model,
+    };
+    let route = ModelRoute::new(ModelApi::Responses, "https://api.openai.com/v1").unwrap();
+    let identity = ModelIdentity {
+        provider: "openai".into(),
+        model: MODEL.into(),
+    };
+    changed.model_snapshot = Some(Box::new(
+        resolve_model(&lookup_model_definition(&route, &identity).unwrap(), None).unwrap(),
+    ));
+    assert_estimated(
+        decide(Some(&usage), &messages, &changed),
+        &messages,
+        &changed.tools,
+    );
+    assert_eq!(
+        decide(Some(&usage), &messages, &request).source,
+        ContextAccountingSource::UsageAnchored
+    );
 }

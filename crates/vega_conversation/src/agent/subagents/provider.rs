@@ -27,6 +27,16 @@ impl ChildProvider<'_> {
 }
 
 impl Provider for ChildProvider<'_> {
+    fn prepare_accounting_request(
+        &self,
+        request: vega_runtime::ChatRequest,
+    ) -> BoxFuture<'_, Result<Option<vega_runtime::ChatRequest>, VegaError>> {
+        Box::pin(async move {
+            self.validate(&request)?;
+            self.provider().prepare_accounting_request(request).await
+        })
+    }
+
     fn compaction_provider_factory(&self) -> Option<vega_runtime::CompactionProviderFactory> {
         let factory = self.provider().compaction_provider_factory()?;
         let reader = self.reader.clone();

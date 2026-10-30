@@ -1456,7 +1456,7 @@ impl fmt::Debug for AgentOutcome {
     }
 }
 
-mod context_accounting;
+pub(crate) mod context_accounting;
 #[cfg(test)]
 mod context_accounting_tests;
 mod context_files;
