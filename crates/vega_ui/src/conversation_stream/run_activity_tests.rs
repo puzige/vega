@@ -756,7 +756,19 @@ fn latest_tool_and_thinking_events_do_not_restore_an_older_running_shell(cx: &mu
             response_id: "response".into(),
         },
     );
-    assert_row(cx, stage_id(), "Thought, expand stage activity", false);
+    assert_row(
+        cx,
+        stage_id(),
+        "Run commands, read files, expand stage activity",
+        false,
+    );
+    advance(cx, Duration::from_secs(1));
+    assert_row(
+        cx,
+        stage_id(),
+        "Run commands, read files, expand stage activity",
+        false,
+    );
 }
 
 #[gpui_kit::test]
