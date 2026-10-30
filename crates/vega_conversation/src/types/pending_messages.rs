@@ -49,6 +49,7 @@ pub struct PendingInputAuthority {
 #[derive(Clone, Default)]
 pub struct PendingQueueProjection {
     pub messages: Vec<PendingMessage>,
+    pub timestamps: std::collections::HashMap<String, i64>,
     pub committed_generation: Option<String>,
     pub paused: bool,
     pub busy: bool,

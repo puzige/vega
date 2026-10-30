@@ -271,6 +271,27 @@ impl ConversationStream {
         let mut restored_responses: HashMap<String, phase::RunResponses> = HashMap::new();
         for (entry_index, entry) in history_entries.into_iter().enumerate() {
             match entry {
+                HistoryEntry::TimestampBoundary {
+                    message_id,
+                    text_start_bytes,
+                } => {
+                    if text_start_bytes == 0 {
+                        self.timestamps.break_before.insert(message_id.clone());
+                    }
+                    self.timestamps.boundary_after.insert(message_id);
+                    self.timestamps.dirty = true;
+                }
+                HistoryEntry::TimestampBreakBefore { message_id } => {
+                    self.timestamps.break_before.insert(message_id);
+                    self.timestamps.dirty = true;
+                }
+                HistoryEntry::MessageTimestamp {
+                    message_id,
+                    sent_at_ms,
+                } => {
+                    self.timestamps.times.insert(message_id, sent_at_ms);
+                    self.timestamps.dirty = true;
+                }
                 HistoryEntry::RunContinuation { .. } | HistoryEntry::GeneratedNotice { .. } => {}
                 HistoryEntry::CredentialContinuation {
                     message_id,
@@ -387,6 +408,11 @@ impl ConversationStream {
                         );
                     }
                     for part in assistants.remove(&entry_index).into_iter().flatten() {
+                        if part.starts_timestamp_boundary {
+                            let identity =
+                                self.durable_entry_identity(&message_id, &part.key, Some(seq));
+                            self.timestamps.boundary_before_entries.insert(identity.key);
+                        }
                         let (copy, stream, model) = part.body.into_message(&self.counters);
                         hydrated.push(StreamEntry::Assistant {
                             copy,
@@ -744,7 +770,10 @@ impl ConversationStream {
         cx: &mut Context<Self>,
     ) -> bool {
         let contains_target = page.entries.iter().any(|entry| match entry {
-            HistoryEntry::CredentialContinuation { message_id: id, .. }
+            HistoryEntry::TimestampBoundary { message_id: id, .. }
+            | HistoryEntry::TimestampBreakBefore { message_id: id }
+            | HistoryEntry::MessageTimestamp { message_id: id, .. }
+            | HistoryEntry::CredentialContinuation { message_id: id, .. }
             | HistoryEntry::UserText { message_id: id, .. }
             | HistoryEntry::UserImages { message_id: id, .. }
             | HistoryEntry::AssistantText { message_id: id, .. }
@@ -768,6 +797,7 @@ impl ConversationStream {
         self.network_retry = None;
         self.controller_runtime_error = None;
         self.entry_identities.clear();
+        self.timestamps = Default::default();
         self.measured_entry_heights.clear();
         self.text_cache.get_mut().clear();
         self.message_anchor_hovered = None;
@@ -1148,6 +1178,7 @@ impl ConversationStream {
             group,
             |this, group, change: &run_activity::RunActivityDisplayChanged, cx| {
                 if change.geometry {
+                    this.timestamps.dirty = true;
                     let indexes = this
                         .entries
                         .iter()
@@ -1297,6 +1328,7 @@ impl ConversationStream {
                     .then_some(index)
             })
             .collect::<Vec<_>>();
+        self.timestamps.dirty = true;
         self.run_continuations.insert(previous.clone(), relation);
         for index in indexes {
             self.invalidate_item(Some(index));
@@ -1423,6 +1455,22 @@ impl ConversationStream {
         self.feed_meter(&event, cx);
         self.clear_recovered_retry(&event);
         match event {
+            ConversationEvent::UserMessageAccepted { message_id, seq } => {
+                self.timestamps.accepted_user = Some((message_id, seq));
+            }
+            ConversationEvent::TimestampBreakBefore { message_id } => {
+                self.timestamps.break_before.insert(message_id);
+                self.timestamps.dirty = true;
+                cx.notify();
+            }
+            ConversationEvent::MessageTimestamp {
+                message_id,
+                sent_at_ms,
+            } => {
+                self.timestamps.times.insert(message_id, sent_at_ms);
+                self.timestamps.dirty = true;
+                cx.notify();
+            }
             ConversationEvent::RunContinued {
                 previous_assistant_id,
                 user_message_id,
@@ -1924,6 +1972,7 @@ impl ConversationStream {
     }
 
     pub(crate) fn finish_agent_message(&mut self, message_id: &str, cx: &mut Context<Self>) {
+        self.timestamps.dirty = true;
         let Some((active_id, entry_index)) = self.active_agent_message.as_ref() else {
             return;
         };

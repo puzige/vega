@@ -686,6 +686,7 @@ impl ConversationStream {
         response: AssistantResponseMetadata,
         cx: &mut Context<Self>,
     ) {
+        self.timestamps.dirty = true;
         if !self
             .active_agent_message
             .as_ref()
@@ -842,6 +843,7 @@ impl ConversationStream {
             .cloned()
             .collect::<Vec<_>>();
         for group in groups {
+            self.timestamps.dirty = true;
             let copies = self
                 .entries
                 .iter()

@@ -940,6 +940,7 @@ where
                     "extra redacted tool text offsets".into(),
                 ));
             }
+            crate::messages::remap_timestamp_offsets(conn, &id, &text, &mut redact)?;
             conn.execute(
                 "UPDATE messages SET content = ?1 WHERE id = ?2 AND thread_id = ?3 AND role = 'assistant' AND status <> 'streaming'",
                 params![redacted, id, thread_id],

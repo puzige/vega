@@ -237,7 +237,7 @@ pub(crate) enum PersistenceCommand {
         event: Box<RuntimeEvent>,
         content: String,
         execution_duration_ms: Option<i64>,
-        ack: oneshot::Sender<Result<(), VegaError>>,
+        ack: oneshot::Sender<Result<Vec<ConversationEvent>, VegaError>>,
     },
     Diagnostic(Box<vega_store::run_diagnostics::NewDiagnosticEvent>),
 }
@@ -310,6 +310,7 @@ impl PersistenceActor {
             let _ = ready.send(Ok(()));
             let mut next_tool_seq = next_tool_seq;
             let mut message_id = message_id;
+            let mut active_response_id: Option<String> = None;
             while let Some(command) = receiver.blocking_recv() {
                 match command {
                     PersistenceCommand::Snapshot { content, ack } => {
@@ -390,6 +391,7 @@ impl PersistenceActor {
                                     &mut next_tool_seq,
                                     &event,
                                     execution_duration_ms,
+                                    active_response_id.as_deref(),
                                 )?;
                                 if usage.is_some()
                                     && let Some((parent_thread, parent_message)) =
@@ -435,7 +437,59 @@ impl PersistenceActor {
                                 if let Some(transaction) = transaction {
                                     transaction.commit()?;
                                 }
-                                Ok(())
+                                let timestamp_owner = match event.as_ref() {
+                                    RuntimeEvent::SteeringAccepted(input) => {
+                                        Some((input.id.as_str(), true))
+                                    }
+                                    RuntimeEvent::AssistantResponseStarted { .. }
+                                    | RuntimeEvent::ResponseRetrying { .. }
+                                    | RuntimeEvent::Finished(_) => {
+                                        Some((message_id.as_str(), false))
+                                    }
+                                    _ => None,
+                                };
+                                let mut metadata = Vec::new();
+                                if let Some((owner, user)) = timestamp_owner {
+                                    if user
+                                        && messages::timestamp_break_before(store.conn(), owner)?
+                                    {
+                                        metadata.push(ConversationEvent::TimestampBreakBefore {
+                                            message_id: owner.to_owned(),
+                                        });
+                                    }
+                                    let clock = if user {
+                                        messages::find(store.conn(), owner)?
+                                            .map(|row| row.created_at)
+                                    } else {
+                                        messages::last_assistant_response_start(
+                                            store.conn(),
+                                            owner,
+                                        )?
+                                    };
+                                    let clock = if clock.is_none()
+                                        && is_plan
+                                        && matches!(event.as_ref(), RuntimeEvent::Finished(_))
+                                    {
+                                        messages::find(store.conn(), owner)?
+                                            .map(|row| row.created_at)
+                                    } else {
+                                        clock
+                                    };
+                                    metadata.push(ConversationEvent::MessageTimestamp {
+                                        message_id: owner.to_owned(),
+                                        sent_at_ms: crate::types::valid_message_timestamp(
+                                            clock,
+                                            crate::types::unix_now_ms(),
+                                        ),
+                                    });
+                                }
+                                if let RuntimeEvent::SteeringAccepted(input) = event.as_ref() {
+                                    metadata.push(ConversationEvent::MessageTimestamp {
+                                        message_id: input.assistant_message_id.clone(),
+                                        sent_at_ms: None,
+                                    });
+                                }
+                                Ok(metadata)
                             })
                             .map_err(|error| error.at_runtime_stage(runtime_event_stage(&event)));
                         log_persistence_result(
@@ -448,6 +502,13 @@ impl PersistenceActor {
                             && let RuntimeEvent::SteeringAccepted(input) = event.as_ref()
                         {
                             message_id = input.assistant_message_id.clone();
+                            active_response_id = None;
+                        }
+                        if result.is_ok()
+                            && let RuntimeEvent::AssistantResponseStarted { response_id, .. } =
+                                event.as_ref()
+                        {
+                            active_response_id = Some(response_id.clone());
                         }
                         let _ = ack.send(result);
                     }
@@ -522,7 +583,7 @@ impl PersistenceActor {
         event: RuntimeEvent,
         content: String,
         execution_duration_ms: Option<i64>,
-    ) -> Result<(), VegaError> {
+    ) -> Result<Vec<ConversationEvent>, VegaError> {
         let stage = runtime_event_stage(&event);
         let (ack, received) = oneshot::channel();
         self.sender
@@ -565,6 +626,8 @@ pub(crate) struct PreparedRun {
     pub(crate) model: String,
     pub(crate) is_plan: bool,
     pub(crate) user_message_id: String,
+    pub(crate) user_sent_at_ms: Option<i64>,
+    pub(crate) user_timestamp_break_before: bool,
     pub(crate) assistant_message_id: String,
     pub(crate) assistant_seq: i64,
     pub(crate) request: AgentRequest,

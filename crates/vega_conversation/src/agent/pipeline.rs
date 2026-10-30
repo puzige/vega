@@ -1246,13 +1246,14 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                                 vega_i18n::t("domain.pending.error.delivered").into(),
                             )
                         })?;
+                let created_at = row.created_at;
                 let pending = crate::pending_messages::decode(row)?;
                 if pending.images != images {
                     return Err(ConversationError::Store(
                         vega_i18n::t("domain.pending.error.attachments").into(),
                     ));
                 }
-                Ok::<_, ConversationError>(pending.content)
+                Ok::<_, ConversationError>((pending.content, created_at))
             })
             .transpose()?;
         let pending_model_content = pending_original.as_ref().map(|_| user_content.clone());
@@ -1387,9 +1388,15 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                     seq: user_seq,
                     role: "user".to_string(),
                     kind: "text".to_string(),
-                    content: pending_original.unwrap_or_else(|| user_content.clone()),
+                    content: pending_original
+                        .as_ref()
+                        .map(|(content, _)| content.clone())
+                        .unwrap_or_else(|| user_content.clone()),
                     status: "done".to_string(),
-                    created_at: now,
+                    created_at: pending_original
+                        .as_ref()
+                        .map(|(_, created_at)| *created_at)
+                        .unwrap_or(now),
                     plan_status: None,
                     plan_review_note: None,
                     plan_reviewed_at: None,
@@ -1666,6 +1673,12 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             .record_not_committed(rollback.map_err(|_| crate::types::RollbackFailure::Failed));
         return Err(super::ordinary::fact_error(error));
     }
+    let user_sent_at_ms = messages::find(&transaction, &user_message_id)
+        .map_err(runtime_store_error)?
+        .map(|row| row.created_at);
+    let user_timestamp_break_before =
+        messages::timestamp_break_before(&transaction, &user_message_id)
+            .map_err(runtime_store_error)?;
     transaction.commit().map_err(runtime_store_error)?;
     drop(permission_coordination);
     if let (Some(ordinary), Some(receipt)) = (ordinary, receipt) {
@@ -1709,6 +1722,11 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         project_id: thread.project_id.clone(),
         model: thread.model.clone(),
         is_plan: run_mode == ThreadMode::Plan,
+        user_timestamp_break_before,
+        user_sent_at_ms: crate::types::valid_message_timestamp(
+            user_sent_at_ms,
+            crate::types::unix_now_ms(),
+        ),
         user_message_id,
         assistant_message_id: assistant_message_id.clone(),
         assistant_seq,

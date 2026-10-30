@@ -156,6 +156,12 @@ impl ConversationStream {
         cx: &mut Context<Self>,
     ) {
         self.pending_ui.error = error;
+        for (message_id, sent_at_ms) in &projection.timestamps {
+            self.timestamps
+                .times
+                .insert(message_id.clone(), Some(*sent_at_ms));
+        }
+        self.timestamps.dirty = true;
         let committed = projection.committed_message_ids();
         self.reconcile_pending_echoes(&projection, &committed, cx);
         let mut previous = std::mem::take(&mut self.pending_ui.items);

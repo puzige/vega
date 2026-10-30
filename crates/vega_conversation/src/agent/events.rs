@@ -97,7 +97,10 @@ where
             RuntimeEvent::AssistantResponseStarted {
                 text_start_bytes, ..
             } => {
-                if *text_start_bytes == streamed_content.len() {
+                if *text_start_bytes == streamed_content.len()
+                    || (response_start == Some(*text_start_bytes)
+                        && streamed_content.is_char_boundary(*text_start_bytes))
+                {
                     response_start = Some(*text_start_bytes);
                     false
                 } else {
@@ -171,7 +174,11 @@ where
                         )
                         .await
                     {
-                        Ok(()) => (|| {
+                        Ok(metadata) => (|| {
+                            for timestamp in metadata {
+                                event_sink(&timestamp)?;
+                                events.push(timestamp);
+                            }
                             if matches!(event, RuntimeEvent::AssistantResponseStarted { .. }) {
                                 events.retain(|event| {
                                     !matches!(
@@ -557,20 +564,49 @@ pub(crate) fn persist_runtime_event(
     next_tool_seq: &mut i64,
     event: &RuntimeEvent,
     execution_duration_ms: Option<i64>,
+    active_response_id: Option<&str>,
 ) -> Result<(), VegaError> {
     match event {
-        RuntimeEvent::ResponseRetrying { .. } => {
-            vega_store::messages::update_streaming_content(
-                store.conn(),
+        RuntimeEvent::ResponseRetrying {
+            text_start_bytes, ..
+        } => {
+            let tx = store.immediate_transaction()?;
+            messages::rollback_assistant_response_starts(
+                &tx,
                 message_id,
-                streamed_content,
-            )
-            .map_err(VegaError::from)?;
+                *text_start_bytes,
+                active_response_id,
+            )?;
+            ensure_message_updated(
+                messages::update_streaming_content(&tx, message_id, streamed_content)?,
+                message_id,
+            )?;
+            tx.commit()?;
         }
-        RuntimeEvent::AssistantResponseStarted { .. } => {}
+        RuntimeEvent::AssistantResponseStarted {
+            response_id,
+            text_start_bytes,
+        } => {
+            let tx = store.immediate_transaction()?;
+            ensure_message_updated(
+                messages::update_streaming_content(&tx, message_id, streamed_content)?,
+                message_id,
+            )?;
+            messages::record_assistant_response_start(
+                &tx,
+                message_id,
+                response_id,
+                *text_start_bytes,
+                now_ms(),
+            )?;
+            tx.commit()?;
+        }
         RuntimeEvent::ReasoningCompleted { .. } => {}
         RuntimeEvent::SteeringAccepted(input) => {
             let tx = store.immediate_transaction()?;
+            let admitted_at = vega_store::pending_messages::find(&tx, thread_id, &input.id)?
+                .ok_or_else(runtime_state_error)?
+                .created_at;
             if !vega_store::pending_messages::mark_accepted(&tx, thread_id, &input.id, message_id)?
             {
                 return Err(runtime_state_error());
@@ -621,7 +657,11 @@ pub(crate) fn persist_runtime_event(
                         kind: "text".into(),
                         content: content.into(),
                         status: status.into(),
-                        created_at: now_ms(),
+                        created_at: if role == "user" {
+                            admitted_at
+                        } else {
+                            now_ms()
+                        },
                         plan_status: None,
                         plan_review_note: None,
                         plan_reviewed_at: None,
@@ -1094,8 +1134,19 @@ pub(crate) fn persist_runtime_event(
                 vega_runtime::ContextCompactionStatusFailure::OverLimit => "over_limit",
                 vega_runtime::ContextCompactionStatusFailure::Unavailable => "unavailable",
             });
+            let tx = store.immediate_transaction()?;
+            ensure_message_updated(
+                messages::update_streaming_content(&tx, message_id, streamed_content)?,
+                message_id,
+            )?;
+            messages::record_timestamp_boundary(
+                &tx,
+                message_id,
+                &status.operation_key,
+                streamed_content.len(),
+            )?;
             vega_store::context_compaction::insert_status(
-                store.conn(),
+                &tx,
                 vega_store::context_compaction::NewContextCompactionStatus {
                     thread_id,
                     model,
@@ -1111,6 +1162,7 @@ pub(crate) fn persist_runtime_event(
                     created_at: now_ms(),
                 },
             )?;
+            tx.commit()?;
         }
         RuntimeEvent::StageHandoff { checkpoint_id } => {
             let tx = store.immediate_transaction()?;

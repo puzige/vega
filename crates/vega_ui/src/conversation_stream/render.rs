@@ -1681,10 +1681,17 @@ impl Render for ConversationStream {
             }) = self.entries.get_mut(*index)
             && copy.sync_model(stream, model, &self.counters)
         {
+            if !self
+                .timestamps
+                .has_message_time(*index, &self.entry_identities)
+            {
+                self.timestamps.dirty = true;
+            }
             self.invalidate_item(Some(*index));
         }
         self.settle_final_presentation(window, cx);
         self.refresh_run_notices(cx);
+        self.refresh_timestamps(window, cx);
         let stage_top_insets = self.stage_top_insets(cx);
         self.prepare_text_cache();
 
@@ -1823,11 +1830,16 @@ impl Render for ConversationStream {
                                                                 cx,
                                                                 this.message_interaction(),
                                                             );
-                                                            if let Some(source) = this.copy_source_for_entry(index) {
-                                                                render_rows::message_with_copy(body, source, source.id, false, theme(cx).colors, this.message_actions_enabled())
-                                                            } else {
-                                                                body
-                                                            }
+                                                            let user = matches!(entry, StreamEntry::User { .. });
+                                                            let source = match entry {
+                                                                StreamEntry::User { copy, .. } => Some(copy),
+                                                                _ => this.copy_source_for_entry(index),
+                                                            };
+                                                            render_rows::message_with_copy(body, source, render_rows::MessageActions {
+                                                                id: this.entry_identities.get(index).map(|id| id.key.clone()).unwrap_or_else(|| format!("message-{index}")).into(),
+                                                                user, colors: theme(cx).colors, enabled: this.message_actions_enabled(),
+                                                                timestamp: this.entry_timestamp(index), focus: this.timestamp_focus(index),
+                                                            }, window, cx)
                                                         },
                                                         None => div().into_any_element(),
                                                     }
@@ -1865,6 +1877,9 @@ impl Render for ConversationStream {
                                                 } else {
                                                     item
                                                 };
+                                                let item = if let Some(prefix) = this.timestamp_prefix(index, theme(cx).colors) {
+                                                    div().w_full().min_w_0().flex().flex_col().child(prefix).child(item).into_any_element()
+                                                } else { item };
                                                 this.counters.record_row_callback(
                                                     row_t0.elapsed().as_nanos(),
                                                 );

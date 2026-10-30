@@ -523,6 +523,14 @@ fn provider_has_quota_code(message: &str) -> bool {
     })
 }
 
+pub(crate) fn unix_now_ms() -> i64 {
+    now_unix_millis()
+}
+
+pub(crate) fn valid_message_timestamp(value: Option<i64>, now_ms: i64) -> Option<i64> {
+    value.filter(|value| *value > 0 && *value <= now_ms && *value <= 253_402_300_799_999)
+}
+
 fn now_unix_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -534,6 +542,17 @@ fn now_unix_millis() -> i64 {
 /// Runtime-to-UI/store unique event stream (tech-spec §3).
 #[derive(Clone)]
 pub enum ConversationEvent {
+    UserMessageAccepted {
+        message_id: MessageId,
+        seq: u64,
+    },
+    TimestampBreakBefore {
+        message_id: String,
+    },
+    MessageTimestamp {
+        message_id: String,
+        sent_at_ms: Option<i64>,
+    },
     AssistantResponseStarted {
         message_id: MessageId,
         response_id: String,
@@ -700,6 +719,23 @@ pub enum ConversationEvent {
 impl std::fmt::Debug for ConversationEvent {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::UserMessageAccepted { message_id, seq } => formatter
+                .debug_struct("UserMessageAccepted")
+                .field("message_id_bytes", &message_id.len())
+                .field("seq", seq)
+                .finish(),
+            Self::TimestampBreakBefore { message_id } => formatter
+                .debug_struct("TimestampBreakBefore")
+                .field("message_id_bytes", &message_id.len())
+                .finish(),
+            Self::MessageTimestamp {
+                message_id,
+                sent_at_ms,
+            } => formatter
+                .debug_struct("MessageTimestamp")
+                .field("message_id_bytes", &message_id.len())
+                .field("sent_at_ms", sent_at_ms)
+                .finish(),
             Self::AssistantResponseStarted {
                 response_id,
                 text_start_bytes,

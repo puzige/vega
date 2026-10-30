@@ -3,6 +3,7 @@ use generated_notice::{GeneratedNoticeFragment, GeneratedNoticeSpan};
 
 pub(super) struct PreparedAssistantPart {
     pub(super) key: String,
+    pub(super) starts_timestamp_boundary: bool,
     pub(super) body: model::PreparedMessage,
 }
 
@@ -14,7 +15,24 @@ pub(super) struct PreparedHistoryEntries {
 
 impl PreparedHistoryEntries {
     pub(super) fn new(entries: Vec<HistoryEntry>, counters: &StreamCounters) -> Self {
-        let response_boundaries = phase::history_response_boundaries(&entries);
+        let mut response_boundaries = phase::history_response_boundaries(&entries);
+        let mut timestamp_boundaries: HashMap<String, HashSet<usize>> = HashMap::new();
+        for entry in &entries {
+            if let HistoryEntry::TimestampBoundary {
+                message_id,
+                text_start_bytes,
+            } = entry
+            {
+                timestamp_boundaries
+                    .entry(message_id.clone())
+                    .or_default()
+                    .insert(*text_start_bytes);
+                response_boundaries
+                    .entry(message_id.clone())
+                    .or_default()
+                    .push(*text_start_bytes);
+            }
+        }
         let generated_notices = generated_notice::history_notices(&entries);
         let mut assistant_segments = HashMap::<String, usize>::new();
         let mut assistant_offsets = HashMap::<String, usize>::new();
@@ -47,10 +65,16 @@ impl PreparedHistoryEntries {
                 .into_iter()
                 .flatten()
                 .copied()
-                .filter(|boundary| *boundary > start && *boundary < *offset)
+                .filter(|boundary| {
+                    *boundary > start
+                        && *boundary < *offset
+                        && content.is_char_boundary(*boundary - start)
+                })
                 .map(|boundary| boundary - start)
                 .collect::<Vec<_>>();
             boundaries.push(content.len());
+            boundaries.sort_unstable();
+            boundaries.dedup();
             let mut part_start = 0;
             let mut parts = Vec::new();
             for part_end in boundaries {
@@ -70,6 +94,9 @@ impl PreparedHistoryEntries {
                 };
                 parts.push(PreparedAssistantPart {
                     key,
+                    starts_timestamp_boundary: timestamp_boundaries
+                        .get(message_id)
+                        .is_some_and(|offsets| offsets.contains(&(start + part_start))),
                     body: model::PreparedMessage::new(
                         &content[part_start..part_end],
                         notices,

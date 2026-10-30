@@ -1016,11 +1016,31 @@ where
                     clock: work_clock.clone(),
                 }) as Arc<dyn vega_runtime::RuntimeUserQuestionHook>
             }));
+    let timestamp_break =
+        prepared
+            .user_timestamp_break_before
+            .then(|| ConversationEvent::TimestampBreakBefore {
+                message_id: prepared.user_message_id.clone(),
+            });
+    let timestamp = ConversationEvent::MessageTimestamp {
+        message_id: prepared.user_message_id.clone(),
+        sent_at_ms: prepared.user_sent_at_ms,
+    };
+    let assistant_timestamp = ConversationEvent::MessageTimestamp {
+        message_id: prepared.assistant_message_id.clone(),
+        sent_at_ms: None,
+    };
     let started = ConversationEvent::MessageStarted {
         message_id: prepared.assistant_message_id.clone(),
         seq: prepared.assistant_seq as u64,
     };
-    if let Err(error) = event_sink(&started) {
+    if let Err(error) = timestamp_break
+        .as_ref()
+        .map_or(Ok(()), &mut event_sink)
+        .and_then(|()| event_sink(&timestamp))
+        .and_then(|()| event_sink(&assistant_timestamp))
+        .and_then(|()| event_sink(&started))
+    {
         let error = Arc::new(error);
         let cleanup = actor
             .event(RuntimeEvent::Error(error.clone()), String::new(), None)
@@ -1059,7 +1079,8 @@ where
         super::ordinary::record_cleanup(ordinary.as_ref(), cleanup.is_ok() && closed.is_ok());
         return Err(ConversationError::Runtime(error));
     }
-    let mut events = vec![started, clock];
+    let mut events: Vec<_> = timestamp_break.into_iter().collect();
+    events.extend([timestamp, assistant_timestamp, started, clock]);
 
     let (runtime_sender, runtime_receiver) = mpsc::channel(PERSISTENCE_CHANNEL_CAPACITY);
     let task_cancel = cancel.child_token();
