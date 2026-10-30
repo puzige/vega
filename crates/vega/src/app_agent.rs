@@ -1193,7 +1193,7 @@ pub(crate) fn run_agent_worker_with_mcp(
             .and_then(|path| vega_store::config::read_from(path).ok());
         preparation_failure = PreparationFailure::new(PreparationStage::Preflight, PreparationReason::CredentialSafety);
         let tools = crate::agent_context::protect_project_tools(tools, config_path.as_deref(), config.as_ref())?;
-        let system_prompt = crate::agent_context::compose_agent_system_prompt(&tools).map_err(project_failure)?;
+        let system_prompt = prepare_worker_system_prompt(&tools, &sender).map_err(|error| { preparation_failure = error; })?;
         let configured_provider = config
             .as_ref()
             .and_then(|config| unique_provider_for_model(config, &thread.model));
@@ -1822,5 +1822,81 @@ pub(crate) fn automation_trigger(claim: &AutomationRunClaim) -> &'static str {
         "执行已设置的循环任务。"
     } else {
         "继续推进已设置的持续目标。"
+    }
+}
+
+fn prepare_worker_system_prompt(
+    tools: &vega_tools::Tools,
+    sender: &mpsc::SyncSender<AgentUpdate>,
+) -> Result<String, vega_conversation::submission_diagnostics::PreparationFailure> {
+    crate::agent_context::compose_agent_system_prompt(tools).map_err(|error| {
+        let error = Arc::new(vega_runtime::VegaError::ProjectInstructions(error));
+        let failure = vega_conversation::submission_diagnostics::runtime_failure(
+            vega_conversation::submission_diagnostics::PreparationStage::Workspace,
+            &error,
+        );
+        let _ = sender.send(AgentUpdate::Event(ConversationEvent::Error {
+            message_id: None,
+            error,
+            execution_duration_ms: None,
+        }));
+        failure
+    })
+}
+
+#[cfg(test)]
+mod preparation_tests {
+    use super::{AgentUpdate, prepare_worker_system_prompt};
+    use std::sync::mpsc;
+    use vega_conversation::types::{
+        ConversationEvent, OrdinarySubmission, RawSubmission, SubmissionFailure,
+    };
+    use vega_store::Store;
+
+    #[test]
+    fn oversized_project_instructions_export_workspace_failure_without_content() {
+        let root = tempfile::tempdir().unwrap();
+        let secret = "private-instruction sk-secret ";
+        std::fs::write(root.path().join("AGENTS.md"), secret.repeat(3000)).unwrap();
+        let tools = vega_tools::Tools::new(root.path()).unwrap();
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let failure = prepare_worker_system_prompt(&tools, &sender).unwrap_err();
+        assert!(matches!(
+            receiver.try_recv().unwrap(),
+            AgentUpdate::Event(ConversationEvent::Error { .. })
+        ));
+        let store = Store::open(":memory:").unwrap();
+        let thread = ulid::Ulid::generate().to_string();
+        let admission =
+            vega_store::thread_admission::try_acquire(store.database_identity(), &thread)
+                .unwrap()
+                .unwrap();
+        let raw = RawSubmission::new(
+            "private body".into(),
+            vec![],
+            vec![],
+            1,
+            "model".into(),
+            None,
+            None,
+        );
+        let (submission, worker) =
+            OrdinarySubmission::begin(store.database_identity(), thread, raw, admission).unwrap();
+        let attempt = worker.attempt_id();
+        worker
+            .complete(Err(SubmissionFailure::Preparation(failure)))
+            .unwrap();
+        submission.seal(attempt).unwrap();
+        let exported = submission.preparation_diagnostics(attempt).unwrap();
+        let event: serde_json::Value = serde_json::from_str(&exported).unwrap();
+        assert_eq!(event["events"][1]["failure"]["stage"], "workspace");
+        assert_eq!(
+            event["events"][1]["failure"]["reason"],
+            "instructions_too_large"
+        );
+        assert!(event["events"][1]["failure"]["io_kind"].is_null());
+        assert!(!exported.contains(secret));
+        assert!(!exported.contains(&root.path().to_string_lossy().to_string()));
+        assert!(!exported.contains("private body"));
     }
 }

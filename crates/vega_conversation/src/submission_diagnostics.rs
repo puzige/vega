@@ -18,6 +18,12 @@ pub fn runtime_failure(
     let reason = match error {
         vega_runtime::VegaError::Cancelled => Reason::State,
         vega_runtime::VegaError::ModelImagesUnsupported => Reason::Capability,
+        vega_runtime::VegaError::ProjectInstructions(error) => match error.failure() {
+            vega_tools::ProjectInstructionsFailure::InvalidRootPath => Reason::MissingWorkspace,
+            vega_tools::ProjectInstructionsFailure::Unavailable => Reason::InstructionsUnavailable,
+            vega_tools::ProjectInstructionsFailure::TooLarge => Reason::InstructionsTooLarge,
+            vega_tools::ProjectInstructionsFailure::InvalidText => Reason::InstructionsInvalid,
+        },
         vega_runtime::VegaError::ReasoningSelectionInvalid { .. }
         | vega_runtime::VegaError::ReasoningReplayUnsupported
         | vega_runtime::VegaError::ReasoningReplayIncomplete => Reason::Reasoning,
