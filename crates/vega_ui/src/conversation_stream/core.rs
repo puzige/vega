@@ -2042,6 +2042,53 @@ impl ConversationStream {
     }
 }
 
+impl ConversationStream {
+    pub fn restore_reasoning_intent(
+        &mut self,
+        request: &ComposerDefaultsRequested,
+        cx: &mut Context<Self>,
+    ) {
+        if self.thread.id != request.thread_id {
+            return;
+        }
+        let choice = reasoning_choice_for_name(&request.defaults.thinking);
+        if self.reasoning_intents.get(&request.defaults.model)
+            == Some(&(request.revision, choice.clone()))
+        {
+            return;
+        }
+        self.reasoning_intents.insert(
+            request.defaults.model.clone(),
+            (request.revision, choice.clone()),
+        );
+        if let Some(profile) = self.selector_reasoning.as_mut()
+            && profile.model == request.defaults.model
+        {
+            profile.preference = choice;
+            self.sync_thinking_slider(cx);
+        }
+        cx.notify();
+    }
+
+    pub fn acknowledge_reasoning_intent(
+        &mut self,
+        request: &ComposerDefaultsRequested,
+        cx: &mut Context<Self>,
+    ) {
+        if self.thread.id != request.thread_id {
+            return;
+        }
+        if self
+            .reasoning_intents
+            .get(&request.defaults.model)
+            .is_some_and(|(revision, _)| *revision == request.revision)
+        {
+            self.reasoning_intents.remove(&request.defaults.model);
+        }
+        cx.notify();
+    }
+}
+
 #[cfg(test)]
 mod reasoning_default_failure_tests {
     use super::{
@@ -2091,52 +2138,5 @@ mod reasoning_default_failure_tests {
             "thread-b",
         );
         assert!(projected.is_empty());
-    }
-}
-
-impl ConversationStream {
-    pub fn restore_reasoning_intent(
-        &mut self,
-        request: &ComposerDefaultsRequested,
-        cx: &mut Context<Self>,
-    ) {
-        if self.thread.id != request.thread_id {
-            return;
-        }
-        let choice = reasoning_choice_for_name(&request.defaults.thinking);
-        if self.reasoning_intents.get(&request.defaults.model)
-            == Some(&(request.revision, choice.clone()))
-        {
-            return;
-        }
-        self.reasoning_intents.insert(
-            request.defaults.model.clone(),
-            (request.revision, choice.clone()),
-        );
-        if let Some(profile) = self.selector_reasoning.as_mut()
-            && profile.model == request.defaults.model
-        {
-            profile.preference = choice;
-            self.sync_thinking_slider(cx);
-        }
-        cx.notify();
-    }
-
-    pub fn acknowledge_reasoning_intent(
-        &mut self,
-        request: &ComposerDefaultsRequested,
-        cx: &mut Context<Self>,
-    ) {
-        if self.thread.id != request.thread_id {
-            return;
-        }
-        if self
-            .reasoning_intents
-            .get(&request.defaults.model)
-            .is_some_and(|(revision, _)| *revision == request.revision)
-        {
-            self.reasoning_intents.remove(&request.defaults.model);
-        }
-        cx.notify();
     }
 }
