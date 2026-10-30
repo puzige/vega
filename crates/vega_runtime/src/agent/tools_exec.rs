@@ -1646,8 +1646,7 @@ pub(crate) async fn execute_prepared_waiting(
             Err(_) => (
                 failed_tool_result(
                     &call,
-                    "Tool error: conversation details unavailable; check the source or retry"
-                        .into(),
+                    "conversation details unavailable; check the source or retry".into(),
                 ),
                 false,
             ),

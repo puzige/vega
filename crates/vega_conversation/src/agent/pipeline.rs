@@ -17,6 +17,134 @@ pub(crate) fn valid_automation_call_projection(tool: &str, input_json: &str) -> 
         })
 }
 
+pub(crate) fn valid_history_call_projection(input_json: &str) -> bool {
+    input_json == "{}" || vega_runtime::ConversationReadRequest::parse(input_json).is_some()
+}
+
+fn valid_history_text(value: &serde_json::Value, offset: usize) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    if object.len() == 1 && value["unavailable"] == true {
+        return true;
+    }
+    let Some(text) = value["text"].as_str() else {
+        return false;
+    };
+    let count = text.chars().count();
+    let Some(complete) = value["complete"].as_bool() else {
+        return false;
+    };
+    object.len() == 4
+        && object.contains_key("next_offset")
+        && value["offset"].as_u64() == Some(offset as u64)
+        && count <= 1024
+        && (!complete || offset == 0 && value["next_offset"].is_null())
+        && (value["next_offset"].is_null()
+            || (count > 0
+                && value["next_offset"].as_u64() == Some(offset.saturating_add(count) as u64)))
+}
+
+fn valid_history_observation(
+    output: &str,
+    request: &vega_runtime::ConversationReadRequest,
+) -> bool {
+    if output.len() > 65_536 {
+        return false;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(output) else {
+        return false;
+    };
+    let observation = &value["vega_history_observation"];
+    let page = &observation["page"];
+    let Some(records) = page["records"].as_array() else {
+        return false;
+    };
+    if !value.as_object().is_some_and(|object| object.len() == 1)
+        || !observation
+            .as_object()
+            .is_some_and(|object| object.len() == 4)
+        || observation["version"] != 1
+        || observation["authority"] != "none"
+        || observation["kind"] != "conversation_details"
+        || !page.as_object().is_some_and(|object| object.len() == 3)
+        || !page["has_more"].is_boolean()
+        || records.len() > request.limit
+        || (page["has_more"] == true && records.len() != request.limit)
+        || (request.source_id.is_some() && (records.len() > 1 || page["has_more"] == true))
+    {
+        return false;
+    }
+    let mut sequence = request.after_sequence;
+    for record in records {
+        let Some(object) = record.as_object() else {
+            return false;
+        };
+        let Some(id) = record["source_id"].as_str() else {
+            return false;
+        };
+        let Some(next_sequence) = record["sequence"].as_u64() else {
+            return false;
+        };
+        if id.is_empty()
+            || request
+                .source_id
+                .as_deref()
+                .is_some_and(|source| source != id)
+            || next_sequence <= sequence
+            || next_sequence > i64::MAX as u64
+            || !record["status"].is_string()
+        {
+            return false;
+        }
+        sequence = next_sequence;
+        let valid = match request.kind.as_str() {
+            "messages" => {
+                object.len() == 7
+                    && record["role"].is_string()
+                    && record["message_kind"].is_string()
+                    && record["attachments"]
+                        .as_object()
+                        .is_some_and(|attachments| attachments.len() == 2)
+                    && record["attachments"]["count"].as_u64().is_some()
+                    && record["attachments"]["encoded_bytes"].as_u64().is_some()
+                    && valid_history_text(&record["content"], request.content_offset)
+            }
+            "tools" | "skill_resources" => {
+                object.len() == 7
+                    && record["message_id"].is_string()
+                    && record["tool"].is_string()
+                    && (request.kind != "skill_resources"
+                        || (record["tool"] == "read_skill_resource"
+                            && record["status"] == "success"))
+                    && valid_history_text(&record["input"], request.content_offset)
+                    && valid_history_text(&record["output"], request.content_offset)
+            }
+            "delegated_results" => {
+                object.len() == 12
+                    && [
+                        "message_id",
+                        "tool",
+                        "agent_id",
+                        "child_message_id",
+                        "release_state",
+                    ]
+                    .iter()
+                    .all(|field| record[*field].is_string())
+                    && record["worker_liveness"] == "unknown"
+                    && record["result_truncated"].is_boolean()
+                    && valid_history_text(&record["content"], request.content_offset)
+                    && valid_history_text(&record["output"], request.content_offset)
+            }
+            _ => false,
+        };
+        if !valid {
+            return false;
+        }
+    }
+    page["next_after_sequence"].as_u64() == Some(sequence)
+}
+
 pub(crate) fn valid_skill_call_projection(tool: &str, input_json: &str) -> bool {
     if input_json == "{}" {
         return true;
@@ -68,6 +196,7 @@ fn valid_mixed_skill_rejection_input(tool: &str, input_json: &str) -> bool {
                 || vega_runtime::user_question_validation_error(input_json).is_some()
         }
         "load_skill" | "read_skill_resource" => valid_skill_call_projection(tool, input_json),
+        "read_conversation" => valid_history_call_projection(input_json),
         _ if tool.starts_with("mcp_") => {
             let call = crate::types::ToolCall {
                 id: "mixed-batch".to_string(),
@@ -1806,6 +1935,61 @@ pub(crate) fn validate_recovered_projection(
     {
         return Ok(input_json.to_string());
     }
+    if tool == "read_conversation" {
+        let request = vega_runtime::ConversationReadRequest::parse(input_json);
+        let valid = match status {
+            RuntimeToolStatus::Success => {
+                approval.decision == Approval::Once
+                    && approval.source == ApprovalSource::ReadonlyTool
+                    && request
+                        .as_ref()
+                        .is_some_and(|request| valid_history_observation(output, request))
+            }
+            RuntimeToolStatus::Failed => {
+                request.is_some()
+                    && approval.decision == Approval::Once
+                    && approval.source == ApprovalSource::ReadonlyTool
+                    && matches!(
+                        output,
+                        "Tool error: conversation details unavailable; check the source or retry"
+                            | "Tool error: credential safety check unavailable"
+                    )
+            }
+            RuntimeToolStatus::Cancelled => {
+                request.is_some()
+                    && approval.decision == Approval::Once
+                    && approval.source == ApprovalSource::ReadonlyTool
+                    && matches!(
+                        output,
+                        vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT
+                            | vega_store::recovery::RECOVERY_CANCELLED_OUTPUT
+                    )
+            }
+            RuntimeToolStatus::Rejected => {
+                approval.decision == Approval::Deny
+                    && match approval.source {
+                        ApprovalSource::RunMode => {
+                            input_json == "{}" && output == "Tool error: denied: unavailable tool"
+                        }
+                        ApprovalSource::Recovery => {
+                            valid_history_call_projection(input_json)
+                                && output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT
+                        }
+                        ApprovalSource::Cancelled => {
+                            request.is_some() && output == vega_runtime::PERMISSION_CANCELLED_OUTPUT
+                        }
+                        _ => false,
+                    }
+            }
+        };
+        return (valid
+            && approval.note.is_none()
+            && approval.danger.is_none()
+            && exit_code.is_none()
+            && duration_ms.is_none())
+        .then(|| input_json.to_string())
+        .ok_or_else(corrupt);
+    }
     if matches!(tool, "Read" | "read")
         && (approval.source == ApprovalSource::Validation
             || output == vega_runtime::INVALID_READ_INPUT_OUTPUT)
@@ -2464,6 +2648,23 @@ pub(crate) fn approval_source_matches(
     source: ApprovalSource,
     invalid_projection: bool,
 ) -> bool {
+    if tool == "read_conversation" {
+        let valid_input = vega_runtime::ConversationReadRequest::parse(input_json).is_some();
+        return !invalid_projection
+            && match status {
+                RuntimeToolStatus::Success
+                | RuntimeToolStatus::Failed
+                | RuntimeToolStatus::Cancelled => {
+                    valid_input && source == ApprovalSource::ReadonlyTool
+                }
+                RuntimeToolStatus::Rejected => match source {
+                    ApprovalSource::RunMode => input_json == "{}",
+                    ApprovalSource::Recovery => valid_history_call_projection(input_json),
+                    ApprovalSource::Cancelled => valid_input,
+                    _ => false,
+                },
+            };
+    }
     if matches!(
         source,
         ApprovalSource::Cancelled | ApprovalSource::Unavailable

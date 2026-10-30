@@ -53,6 +53,8 @@ mod credential_guard;
 mod diagnostics;
 mod entry;
 mod events;
+#[cfg(test)]
+mod history_audit_tests;
 mod ordinary;
 mod permission_queue;
 mod scope_permission;

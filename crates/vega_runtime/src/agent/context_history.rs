@@ -13,8 +13,15 @@ pub struct ConversationReadRequest {
 }
 
 impl ConversationReadRequest {
-    pub(super) fn parse(input: &str) -> Option<Self> {
+    pub fn parse(input: &str) -> Option<Self> {
         if input.len() > 4096 {
+            return None;
+        }
+        if !serde_json::from_str::<Value>(input)
+            .ok()?
+            .as_object()?
+            .contains_key("source_id")
+        {
             return None;
         }
         let request: Self = serde_json::from_str(input).ok()?;

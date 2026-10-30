@@ -1283,6 +1283,11 @@ pub(crate) fn required_tool_state(
 pub(crate) fn validate_runtime_proposal(
     call: &vega_runtime::RuntimeToolCall,
 ) -> Result<(), VegaError> {
+    if call.name == "read_conversation" {
+        return super::pipeline::valid_history_call_projection(&call.input_json)
+            .then_some(())
+            .ok_or_else(|| safe_audit_error(&call.name));
+    }
     if vega_runtime::is_subagent_tool(&call.name) {
         return (call.input_json == "{}"
             || vega_runtime::valid_subagent_input(&call.name, &call.input_json))
@@ -1622,6 +1627,9 @@ pub(crate) fn validate_runtime_terminal(
             RuntimeToolStatus::Rejected | RuntimeToolStatus::Failed
         ) && result.truncated.is_some()
         || result.status == RuntimeToolStatus::Success && result.truncated.is_none()
+        || state.tool == "read_conversation"
+            && result.status == RuntimeToolStatus::Success
+            && result.truncated != Some(false)
         || vega_runtime::computer_use::ComputerUseRun::tool_capability(&state.tool).is_some()
             && result.output == vega_runtime::computer_use::SUPERSEDED_CONTROL_OUTPUT
             && result.truncated.is_some()
