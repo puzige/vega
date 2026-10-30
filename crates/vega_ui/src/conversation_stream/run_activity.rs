@@ -286,6 +286,13 @@ impl RunActivityGroup {
         cx.notify();
     }
 
+    pub(crate) fn reasoning_completed(&mut self, cx: &mut Context<Self>) {
+        if let Some(card) = self.current_thinking.clone() {
+            self.set_thinking(card, false, cx);
+        }
+        self.finish_thinking(cx);
+    }
+
     pub(crate) fn finish_thinking(&mut self, cx: &mut Context<Self>) {
         if let Some(card) = self.current_thinking.take() {
             for segment in &mut self.segments {
@@ -462,10 +469,13 @@ impl RunActivityGroup {
         preview_changed: bool,
         cx: &mut Context<Self>,
     ) {
-        if self.terminal
-            || self.presentation_released
-            || !preview_changed && self.current_thinking.as_ref() == Some(&card)
-        {
+        if self.terminal || self.presentation_released {
+            return;
+        }
+        let latest_is_card = self.segments.iter().any(|segment| {
+            matches!(&segment.latest_progress, Some(StageProgress::Thinking { card: latest, .. }) if latest == &card)
+        });
+        if !preview_changed && self.current_thinking.as_ref() == Some(&card) && latest_is_card {
             return;
         }
         self.phase = RunPhase::Thinking;
@@ -1856,6 +1866,10 @@ impl RunActivityGroup {
         let sticky = state.segments[segment_index].sticky.clone();
         let scrolls = state.segments[segment_index].scrolls.clone();
         let shimmering = headline.live;
+        let thinking_headline = state.segments[segment_index]
+            .latest_progress
+            .as_ref()
+            .is_some_and(|progress| matches!(progress, StageProgress::Thinking { .. }));
         let activity_icon = headline.icon;
         let epoch = state.animation_epoch;
         let focused_hidden_thinking = aggregate
@@ -2039,10 +2053,12 @@ impl RunActivityGroup {
                         .filter(|_| !single_thinking && !single_compaction)
                         .map(|child| {
                             let element = match child {
-                                RunActivityChild::Tool(card) if !aggregate && shimmering => {
+                                RunActivityChild::Tool(card)
+                                    if !aggregate && (shimmering || thinking_headline) =>
+                                {
                                     let title = headline.title.clone();
                                     title_view.update(cx, |view, cx| {
-                                        view.set(title.clone(), Some(epoch), cx)
+                                        view.set(title.clone(), shimmering.then_some(epoch), cx)
                                     });
                                     ToolCard::render_with_title(
                                         card,

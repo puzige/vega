@@ -672,10 +672,6 @@ impl ConversationStream {
                 (appended, summary_preview_changed)
             });
             if !card.read(cx).progress_finished
-                && (summary_preview_changed
-                    || !summary
-                        && !delta.trim().is_empty()
-                        && card.read(cx).summary_title().is_none())
                 && let Some((_, group)) = &self.active_run_activity
             {
                 group.update(cx, |group, cx| {
