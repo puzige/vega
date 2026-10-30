@@ -148,6 +148,13 @@ impl VegaWindow {
             *stored = draft;
             return true;
         }
+        if self
+            .stream_view
+            .as_ref()
+            .is_none_or(|(id, _)| id != &draft.id)
+        {
+            return true;
+        }
         if self.retained_drafts.len() >= 8 {
             self.sidebar.update(cx, |sidebar, cx| {
                 sidebar.set_draft_creation_error("app.navigation.draft_full", cx)

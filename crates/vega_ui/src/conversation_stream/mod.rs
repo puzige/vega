@@ -127,6 +127,12 @@ pub struct ThreadSettingsRequested {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DraftProjectSelectionRequested {
+    pub thread_id: String,
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskBackendSelectionRequested {
     pub thread_id: String,
     pub backend: TaskBackend,

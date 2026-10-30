@@ -248,6 +248,7 @@ pub struct ConversationStream {
 impl EventEmitter<crate::cua_onboarding::PreparationRequested> for ConversationStream {}
 impl EventEmitter<ImagePreviewRequested> for ConversationStream {}
 impl EventEmitter<PlanReviewRequested> for ConversationStream {}
+impl EventEmitter<DraftProjectSelectionRequested> for ConversationStream {}
 impl EventEmitter<ThreadSettingsRequested> for ConversationStream {}
 impl EventEmitter<ThreadPermissionReloadRequested> for ConversationStream {}
 impl EventEmitter<ComposerSubmitted> for ConversationStream {}
