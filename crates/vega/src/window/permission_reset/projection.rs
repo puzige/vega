@@ -28,7 +28,11 @@ impl VegaWindow {
     }
 
     pub(super) fn permission_reset_streams(&self) -> Vec<Entity<ConversationStream>> {
-        let mut streams = Vec::new();
+        let mut streams: Vec<_> = self
+            .retained_drafts
+            .values()
+            .map(|(_, stream)| stream.clone())
+            .collect();
         if let Some((_, stream)) = &self.stream_view {
             streams.push(stream.clone());
         }

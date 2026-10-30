@@ -145,6 +145,7 @@ pub(crate) struct VegaWindow {
     pub(crate) message_location_request_generation: u64,
     pub(crate) deferred_message_location: Option<DeferredMessageLocation>,
     pub(crate) draft: Option<Thread>,
+    retained_drafts: std::collections::HashMap<String, (Thread, Entity<ConversationStream>)>,
     pub(crate) agent_controller: AppAgentController,
     pub(crate) automation_controller: crate::automation_controller::AutomationController,
     pub(crate) context_controller: context::ContextController,
@@ -329,9 +330,10 @@ impl VegaWindow {
                 cx.notify();
             }
             SidebarEvent::OpeningChanged => cx.notify(),
-            SidebarEvent::NewDraftRequested(_) | SidebarEvent::DraftRestoreRequested(_) => {
-                this.reject_unavailable_draft_navigation(cx);
+            SidebarEvent::NewDraftRequested(project) => {
+                this.create_retained_draft(project.clone(), cx)
             }
+            SidebarEvent::DraftRestoreRequested(id) => this.restore_retained_draft(id, cx),
         })
         .detach();
         let mut window = Self {
@@ -357,6 +359,7 @@ impl VegaWindow {
             message_location_request_generation: 0,
             deferred_message_location: None,
             draft: None,
+            retained_drafts: Default::default(),
             agent_controller: AppAgentController::default(),
             automation_controller: crate::automation_controller::AutomationController::default(),
             context_controller: context::ContextController::default(),

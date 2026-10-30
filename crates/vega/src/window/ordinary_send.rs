@@ -23,6 +23,8 @@ impl VegaWindow {
             &stream.read(cx).thread_snapshot(),
             route,
         ) {
+            self.retained_drafts.remove(&materialized.thread.id);
+            self.publish_retained_drafts(cx);
             if projection.stream {
                 stream.update(cx, |stream, cx| {
                     stream.apply_thread(materialized.thread.clone(), cx);

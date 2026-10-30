@@ -371,6 +371,9 @@ impl VegaWindow {
     }
 
     pub(crate) fn mirror_draft(&mut self, thread: &Thread) {
+        if let Some((draft, _)) = self.retained_drafts.get_mut(&thread.id) {
+            *draft = thread.clone();
+        }
         if self
             .draft
             .as_ref()
@@ -511,13 +514,16 @@ impl VegaWindow {
             .as_ref()
             .filter(|draft| draft.id == thread_id)
             .cloned()
+            .or_else(|| {
+                self.retained_drafts
+                    .get(thread_id)
+                    .map(|(thread, _)| thread.clone())
+            })
     }
 
     /// Whether `thread_id` is the window's unpersisted draft route.
     pub(crate) fn is_draft_route(&self, thread_id: &str) -> bool {
-        self.draft
-            .as_ref()
-            .is_some_and(|draft| draft.id == thread_id)
+        self.draft_for_route(thread_id).is_some()
     }
 
     pub(crate) fn apply_thread_model_selection(
