@@ -30,6 +30,9 @@ const MAX_SOURCE_ROWS: i64 = 100_000;
 const MAX_SOURCE_TEXT_BYTES: i64 = 64 * 1024 * 1024;
 const MAX_SOURCE_IMAGE_BYTES: i64 = 32 * 1024 * 1024;
 
+pub const REDACTED_HISTORY_RESULT: &str =
+    "Historical result unavailable after credential filtering. Request a new conversation read.";
+
 /// Context capacity and automatic-compaction policy for one configured
 /// provider/model pair. A missing row uses the editable assumed default;
 /// a saved row with two absent limits stays sendable without a budget.
@@ -840,18 +843,26 @@ where
     )?;
     let tool_rows = {
         let mut statement = conn.prepare(
-            "SELECT id, output_text FROM tool_calls WHERE thread_id = ?1 AND output_text IS NOT NULL",
+            "SELECT id, tool, status, output_text FROM tool_calls WHERE thread_id = ?1 AND output_text IS NOT NULL",
         )?;
         statement
             .query_map([thread_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
             })?
             .collect::<Result<Vec<_>, _>>()?
     };
     let mut changed = false;
-    for (id, text) in tool_rows {
-        let (redacted, _) = redact(&text, &[]);
+    for (id, tool, status, text) in tool_rows {
+        let (mut redacted, _) = redact(&text, &[]);
         if redacted != text {
+            if tool == "read_conversation" && status == "success" {
+                redacted = redact(REDACTED_HISTORY_RESULT, &[]).0;
+            }
             conn.execute(
                 "UPDATE tool_calls SET output_text = ?1 WHERE id = ?2 AND thread_id = ?3",
                 params![redacted, id, thread_id],

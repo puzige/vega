@@ -625,6 +625,7 @@ pub enum ConversationEvent {
     ToolCallRunning {
         /// Provider call id; no arguments or output cross this boundary.
         call_id: CallId,
+        bash_started_at: Option<vega_runtime::BashStartClock>,
     },
     /// Tool output chunk.
     ToolCallOutput {
@@ -784,7 +785,7 @@ impl std::fmt::Debug for ConversationEvent {
                 .field("call_id_bytes", &call_id.len())
                 .field("approval", approval)
                 .finish(),
-            Self::ToolCallRunning { call_id } => formatter
+            Self::ToolCallRunning { call_id, .. } => formatter
                 .debug_struct("ToolCallRunning")
                 .field("call_id_bytes", &call_id.len())
                 .finish(),
@@ -991,8 +992,12 @@ pub(crate) fn from_runtime_event(
                 approval: approval_from_runtime(audit.decision),
             })
         }
-        RuntimeEvent::ToolCallRunning { call_id } => Some(ConversationEvent::ToolCallRunning {
+        RuntimeEvent::ToolCallRunning {
+            call_id,
+            bash_started_at,
+        } => Some(ConversationEvent::ToolCallRunning {
             call_id: call_id.clone(),
+            bash_started_at: bash_started_at.clone(),
         }),
         RuntimeEvent::ToolCallOutput { call_id, chunk } => {
             Some(ConversationEvent::ToolCallOutput {
@@ -1205,6 +1210,9 @@ pub(crate) fn safe_runtime_tool_call(call: &vega_runtime::RuntimeToolCall) -> Op
         description: call.description.clone(),
         codex_display: None,
     };
+    if call.name == "read_conversation" {
+        return crate::agent::valid_history_call_projection(&call.input_json).then_some(projected);
+    }
     if vega_runtime::is_subagent_tool(&call.name) {
         return (call.input_json == "{}"
             || vega_runtime::valid_subagent_input(&call.name, &call.input_json))

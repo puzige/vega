@@ -357,6 +357,9 @@ impl VegaWindow {
                 })
         {
             active.cancel.cancel();
+            active
+                .stream
+                .update(cx, ConversationStream::cancel_live_bash_clocks);
             stream.update(cx, |stream, cx| {
                 stream.mark_subagent_cancelling(&request.thread_id, &request.message_id, cx)
             });

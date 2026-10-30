@@ -159,15 +159,19 @@ pub(super) fn partial_plan(
                 prior_covered.push(range);
             }
             ProjectionFragment::Summary => {
-                summary_history.push(super::super::pipeline::historical_summary_message(
+                summary_history.push(super::super::pipeline::historical_checkpoint_summary(
                     &checkpoint.ok_or_else(invalid)?.summary,
+                    checkpoint.ok_or_else(invalid)?.id,
                 ))
             }
             ProjectionFragment::PreviousSummary { checkpoint_id } => {
                 let text = checkpoint
                     .and_then(|previous| previous.referenced_summaries.get(&checkpoint_id))
                     .ok_or_else(invalid)?;
-                summary_history.push(super::super::pipeline::historical_summary_message(text));
+                summary_history.push(super::super::pipeline::historical_checkpoint_summary(
+                    text,
+                    checkpoint_id,
+                ));
             }
             ProjectionFragment::TaskReference { message_id } => summary_history.push(
                 super::super::pipeline::historical_task_reference(source, &message_id)
@@ -199,6 +203,7 @@ pub(super) fn partial_plan(
         });
     }
     let plan = ProjectionPlan {
+        history_dependencies: None,
         schema: 1,
         strategy: if up_to {
             ProjectionStrategy::PartialUpTo
@@ -266,14 +271,16 @@ pub(super) fn fragment_history(
             )
             .map_err(|_| invalid())?
         }
-        ProjectionFragment::Summary => vec![super::super::pipeline::historical_summary_message(
+        ProjectionFragment::Summary => vec![super::super::pipeline::historical_checkpoint_summary(
             &checkpoint.ok_or_else(invalid)?.summary,
+            checkpoint.ok_or_else(invalid)?.id,
         )],
         ProjectionFragment::PreviousSummary { checkpoint_id } => {
-            vec![super::super::pipeline::historical_summary_message(
+            vec![super::super::pipeline::historical_checkpoint_summary(
                 checkpoint
                     .and_then(|checkpoint| checkpoint.referenced_summaries.get(checkpoint_id))
                     .ok_or_else(invalid)?,
+                *checkpoint_id,
             )]
         }
         ProjectionFragment::TaskReference { message_id } => vec![
@@ -371,15 +378,19 @@ pub(super) fn full_plan(
                 covered.push(range);
             }
             ProjectionFragment::Summary => {
-                summary_history.push(super::super::pipeline::historical_summary_message(
+                summary_history.push(super::super::pipeline::historical_checkpoint_summary(
                     &checkpoint.ok_or_else(invalid)?.summary,
+                    checkpoint.ok_or_else(invalid)?.id,
                 ))
             }
             ProjectionFragment::PreviousSummary { checkpoint_id } => {
                 let text = checkpoint
                     .and_then(|previous| previous.referenced_summaries.get(&checkpoint_id))
                     .ok_or_else(invalid)?;
-                summary_history.push(super::super::pipeline::historical_summary_message(text));
+                summary_history.push(super::super::pipeline::historical_checkpoint_summary(
+                    text,
+                    checkpoint_id,
+                ));
             }
             ProjectionFragment::TaskReference { message_id } => summary_history.push(
                 super::super::pipeline::historical_task_reference(source, &message_id)
@@ -425,6 +436,7 @@ pub(super) fn full_plan(
         },
     });
     let plan = ProjectionPlan {
+        history_dependencies: None,
         schema: 1,
         strategy: ProjectionStrategy::Full,
         continuation: if owner.is_some() {
@@ -537,15 +549,17 @@ pub(super) fn ordered_prefix_plan(
         }
         match fragment {
             ProjectionFragment::Summary => {
-                history.push(super::super::pipeline::historical_summary_message(
+                history.push(super::super::pipeline::historical_checkpoint_summary(
                     &checkpoint.ok_or_else(invalid)?.summary,
+                    checkpoint.ok_or_else(invalid)?.id,
                 ))
             }
             ProjectionFragment::PreviousSummary { checkpoint_id } => {
-                history.push(super::super::pipeline::historical_summary_message(
+                history.push(super::super::pipeline::historical_checkpoint_summary(
                     checkpoint
                         .and_then(|previous| previous.referenced_summaries.get(&checkpoint_id))
                         .ok_or_else(invalid)?,
+                    checkpoint_id,
                 ))
             }
             ProjectionFragment::TaskReference { message_id } => history.push(
@@ -654,6 +668,7 @@ pub(super) fn prefix_plan(
         },
     });
     let plan = ProjectionPlan {
+        history_dependencies: None,
         schema: 1,
         strategy: if manual {
             ProjectionStrategy::Manual

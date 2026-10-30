@@ -16,6 +16,22 @@ fn redact_runtime_tool_result(config: &RuntimeToolConfig, result: &mut RuntimeTo
     }
 }
 
+fn invalidate_history_result(config: &RuntimeToolConfig, result: &mut RuntimeToolResult) {
+    result.output = config
+        .redact_tool_output(CONVERSATION_HISTORY_RETRY_OUTPUT)
+        .unwrap_or_else(|_| "Tool error: credential safety check unavailable".to_string());
+    result.status = RuntimeToolStatus::Failed;
+    result.truncated = None;
+    result.exit_code = None;
+    result.duration_ms = None;
+}
+
+fn redact_history_rejection(config: &RuntimeToolConfig, result: &mut RuntimeToolResult) {
+    result.output = config
+        .redact_tool_output(&result.output)
+        .unwrap_or_else(|_| "Tool error: credential safety check unavailable".to_string());
+}
+
 fn request_output_cap(
     max_tokens: Option<u32>,
     budget: Option<crate::ContextBudget>,
@@ -2140,6 +2156,7 @@ where
             reasoning: request.reasoning.clone(),
             model_snapshot: request.model_snapshot.clone(),
             tool_choice: None,
+            history_safety: request.history_safety.clone(),
         };
         let tools_requested = !chat_request.tools.is_empty();
         primary_revision = primary_revision.checked_add(1).ok_or(VegaError::Context(
@@ -3242,7 +3259,7 @@ where
                     result
                 } else {
                     emit!(events, sink, RuntimeEvent::ToolCallProposed(call.clone()));
-                    let result = terminal_result(
+                    let mut result = terminal_result(
                         &call,
                         if mixed_stage_batch {
                             STAGE_BATCH_REJECTED
@@ -3253,6 +3270,9 @@ where
                         RuntimeToolStatus::Rejected,
                         Some(validation_audit()),
                     );
+                    if call.name == context_history::TOOL {
+                        redact_history_rejection(&tool_config, &mut result);
+                    }
                     emit!(events, sink, RuntimeEvent::ToolCallFinished(result.clone()));
                     completed.insert(
                         call.id.clone(),
@@ -3303,7 +3323,22 @@ where
                 let mut result = prior.result;
                 result.reused = true;
                 result.truncated = None;
-                redact_runtime_tool_result(&tool_config, &mut result);
+                let original = (call.name == context_history::TOOL)
+                    .then(|| (result.status, result.output.clone()));
+                if call.name == context_history::TOOL
+                    && result.status == RuntimeToolStatus::Rejected
+                {
+                    redact_history_rejection(&tool_config, &mut result);
+                } else {
+                    redact_runtime_tool_result(&tool_config, &mut result);
+                }
+                if original.is_some_and(|(status, output)| {
+                    result.status != status
+                        || result.output != output
+                        || (call.input_json == "{}" && status != RuntimeToolStatus::Rejected)
+                }) {
+                    invalidate_history_result(&tool_config, &mut result);
+                }
                 user_questions::validate_redacted_result(&call, &mut result);
                 subagents::validate_redacted_subagent_result(&call, &mut result);
                 recovery.observe(&call, &result);
@@ -3330,7 +3365,11 @@ where
                     Some(validation_audit()),
                 );
                 let mut result = result;
-                redact_runtime_tool_result(&tool_config, &mut result);
+                if call.name == context_history::TOOL {
+                    redact_history_rejection(&tool_config, &mut result);
+                } else {
+                    redact_runtime_tool_result(&tool_config, &mut result);
+                }
                 user_questions::validate_redacted_result(&call, &mut result);
                 subagents::validate_redacted_subagent_result(&call, &mut result);
                 recovery.observe(&call, &result);
@@ -3426,13 +3465,22 @@ where
                             pattern: target.exact_pattern,
                         });
                     }
-                    emit!(
-                        events,
-                        sink,
-                        RuntimeEvent::ToolCallRunning {
-                            call_id: call.id.clone(),
-                        }
-                    );
+                    let (bash_clock, bash_started_at) =
+                        if matches!(&prepared, PreparedRuntimeCall::Bash { .. }) {
+                            let (clock, writer) = BashStartClock::new(cancel.clone());
+                            (Some(clock), Some(writer))
+                        } else {
+                            (None, None)
+                        };
+                    sink(RuntimeEvent::ToolCallRunning {
+                        call_id: call.id.clone(),
+                        bash_started_at: bash_clock,
+                    })
+                    .await?;
+                    events.push(RuntimeEvent::ToolCallRunning {
+                        call_id: call.id.clone(),
+                        bash_started_at: None,
+                    });
                     if cancel.is_cancelled() {
                         (
                             terminal_result(
@@ -3591,8 +3639,14 @@ where
                                 (executed.result, false)
                             }
                             other => {
-                                execute_prepared_waiting(other, tools, permission_hook, &cancel)
-                                    .await
+                                execute_prepared_waiting(
+                                    other,
+                                    tools,
+                                    permission_hook,
+                                    &cancel,
+                                    bash_started_at,
+                                )
+                                .await
                             }
                         };
                         if result.status == RuntimeToolStatus::Cancelled
@@ -3640,7 +3694,19 @@ where
                 && tool_config
                     .redact_tool_output(&result.output)
                     .is_ok_and(|output| output == result.output);
-            redact_runtime_tool_result(&tool_config, &mut result);
+            let original_history = (call.name == context_history::TOOL
+                && result.status == RuntimeToolStatus::Success)
+                .then(|| result.output.clone());
+            if call.name == context_history::TOOL && result.status == RuntimeToolStatus::Rejected {
+                redact_history_rejection(&tool_config, &mut result);
+            } else {
+                redact_runtime_tool_result(&tool_config, &mut result);
+            }
+            if original_history.is_some_and(|output| {
+                result.status != RuntimeToolStatus::Success || result.output != output
+            }) {
+                invalidate_history_result(&tool_config, &mut result);
+            }
             user_questions::validate_redacted_result(&call, &mut result);
             subagents::validate_redacted_subagent_result(&call, &mut result);
             recovery.observe(&call, &result);

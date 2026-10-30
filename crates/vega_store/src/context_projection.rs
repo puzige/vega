@@ -59,6 +59,8 @@ pub enum ProjectionFragment {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectionPlan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_dependencies: Option<Vec<String>>,
     pub schema: u32,
     pub strategy: ProjectionStrategy,
     pub continuation: ContinuationMode,

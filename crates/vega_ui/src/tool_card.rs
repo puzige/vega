@@ -1,12 +1,12 @@
 //! Audited tool-call activities over strict `vega_conversation` projections.
 
 use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, App, Entity, MouseButton, MouseUpEvent, ScrollHandle, Task, div, px};
 use vega_conversation::types::{
-    Approval, CodexAcpActivityIdentity, CodexArgumentPreview, CodexDisplayMetadata,
+    Approval, BashStartClock, CodexAcpActivityIdentity, CodexArgumentPreview, CodexDisplayMetadata,
     InvalidToolKind, ReadOnlyToolKind, SkillCardOutcome, SubagentOpenRequested, SubagentSnapshot,
     SubagentState, ToolCall, ToolCallStatus, ToolCardInputProjection, ToolCardResultProjection,
     ToolResult, tool_card_description, tool_card_input_projection, tool_card_result_projection,
@@ -147,7 +147,7 @@ pub struct ToolCard {
     output_rows: Vec<String>,
     expanded: bool,
     detail_scroll: ScrollHandle,
-    running_started_at: Option<Instant>,
+    running_started_at: Option<BashStartClock>,
     running_elapsed_seconds: Option<u64>,
     elapsed_refresh_task: Option<Task<()>>,
     presentation_released: bool,
@@ -338,7 +338,11 @@ impl ToolCard {
     /// Applies the content-free runtime execution boundary. Only Bash owns a
     /// live elapsed clock; other tools still advance to the truthful Running
     /// lifecycle state without adding time copy.
-    pub fn apply_running(&mut self, cx: &mut gpui_kit::Context<Self>) -> bool {
+    pub fn apply_running(
+        &mut self,
+        started_at: Option<BashStartClock>,
+        cx: &mut gpui_kit::Context<Self>,
+    ) -> bool {
         if self.result.is_some()
             || self.approval.is_none()
             || !matches!(
@@ -351,44 +355,64 @@ impl ToolCard {
             return false;
         }
         self.status = ToolCallStatus::Running;
-        if !self.presentation_released && self.is_bash() && self.running_started_at.is_none() {
-            let started_at = cx.background_executor().now();
-            self.running_started_at = Some(started_at);
-            self.running_elapsed_seconds = Some(0);
+        if !self.presentation_released
+            && self.is_bash()
+            && self.running_started_at.is_none()
+            && let Some(started_at) = started_at
+            && !started_at.is_cancelled()
+        {
+            self.running_started_at = Some(started_at.clone());
+            if let Some(started) = started_at.started_at()
+                && !started_at.is_cancelled()
+            {
+                self.running_elapsed_seconds = Some(
+                    cx.background_executor()
+                        .now()
+                        .saturating_duration_since(started)
+                        .as_secs(),
+                );
+            }
             let task = cx.spawn(async move |this, cx| {
                 loop {
-                    let elapsed = cx
-                        .background_executor()
-                        .now()
-                        .saturating_duration_since(started_at);
-                    let next_boundary = Duration::from_secs(elapsed.as_secs().saturating_add(1));
-                    cx.background_executor()
-                        .timer(next_boundary.saturating_sub(elapsed))
-                        .await;
-                    let keep_refreshing = this
+                    let delay = this
                         .update(cx, |card, cx| {
-                            let Some(started_at) = card.running_started_at else {
-                                return false;
-                            };
-                            if card.status != ToolCallStatus::Running || !card.is_bash() {
-                                return false;
+                            if card.status != ToolCallStatus::Running
+                                || !card.is_bash()
+                                || card.running_started_at.is_none()
+                            {
+                                return None;
                             }
+                            let started = started_at.started_at();
+                            if started_at.is_cancelled() {
+                                card.running_started_at = None;
+                                card.running_elapsed_seconds = None;
+                                card.refresh_summary();
+                                cx.notify();
+                                return None;
+                            }
+                            let Some(started) = started else {
+                                return Some(Duration::from_millis(250));
+                            };
                             let elapsed = cx
                                 .background_executor()
                                 .now()
-                                .saturating_duration_since(started_at)
-                                .as_secs();
-                            if card.running_elapsed_seconds != Some(elapsed) {
-                                card.running_elapsed_seconds = Some(elapsed);
+                                .saturating_duration_since(started);
+                            if card.running_elapsed_seconds != Some(elapsed.as_secs()) {
+                                card.running_elapsed_seconds = Some(elapsed.as_secs());
                                 card.refresh_summary();
                                 cx.notify();
                             }
-                            true
+                            Some(
+                                Duration::from_secs(elapsed.as_secs().saturating_add(1))
+                                    .saturating_sub(elapsed),
+                            )
                         })
-                        .unwrap_or(false);
-                    if !keep_refreshing {
+                        .ok()
+                        .flatten();
+                    let Some(delay) = delay else {
                         break;
-                    }
+                    };
+                    cx.background_executor().timer(delay).await;
                 }
             });
             self.elapsed_refresh_task = Some(task);
@@ -514,7 +538,9 @@ impl ToolCard {
                 ToolActivityCategory::Question
             }
             (Some(ToolCardInputProjection::ReadOnly { tool, .. }), _) => match tool {
-                ReadOnlyToolKind::Read => ToolActivityCategory::Read,
+                ReadOnlyToolKind::Read | ReadOnlyToolKind::ConversationHistory => {
+                    ToolActivityCategory::Read
+                }
                 ReadOnlyToolKind::Glob => ToolActivityCategory::Find,
                 ReadOnlyToolKind::Grep => ToolActivityCategory::Search,
             },
@@ -540,7 +566,9 @@ impl ToolCard {
         match &self.input {
             Some(ToolCardInputProjection::UserQuestion { .. }) => ToolActivityCategory::Question,
             Some(ToolCardInputProjection::ReadOnly { tool, .. }) => match tool {
-                ReadOnlyToolKind::Read => ToolActivityCategory::Read,
+                ReadOnlyToolKind::Read | ReadOnlyToolKind::ConversationHistory => {
+                    ToolActivityCategory::Read
+                }
                 ReadOnlyToolKind::Glob => ToolActivityCategory::Find,
                 ReadOnlyToolKind::Grep => ToolActivityCategory::Search,
             },
@@ -615,7 +643,9 @@ impl ToolCard {
     }
 
     pub(crate) fn headline_title(&self) -> String {
-        if self.summary_language == vega_i18n::language() {
+        if self.summary_language == vega_i18n::language()
+            && !(self.is_bash() && self.status == ToolCallStatus::Running)
+        {
             self.summary.clone()
         } else {
             self.build_summary()
@@ -625,6 +655,17 @@ impl ToolCard {
     pub(crate) fn description_headline(&self) -> Option<(String, Icon)> {
         self.description_title()
             .map(|title| (title, self.leading_icon()))
+    }
+
+    pub(crate) fn headline_notice(&self, title: &str) -> Option<String> {
+        let safety_title = self.headline_title();
+        (title != safety_title
+            && (self.status == ToolCallStatus::PendingApproval
+                || !matches!(
+                    self.activity_state(),
+                    ToolActivityState::Active | ToolActivityState::Success
+                )))
+        .then_some(safety_title)
     }
 
     pub(crate) fn completed_command_headline(&self) -> Option<String> {
@@ -645,6 +686,18 @@ impl ToolCard {
         self.expanded
     }
 
+    fn live_elapsed_seconds(&self) -> Option<u64> {
+        if self
+            .running_started_at
+            .as_ref()
+            .is_some_and(BashStartClock::is_cancelled)
+        {
+            None
+        } else {
+            self.running_elapsed_seconds
+        }
+    }
+
     pub(crate) fn compact_title(&self) -> String {
         if !self.expanded
             || !self.is_bash()
@@ -656,6 +709,9 @@ impl ToolCard {
                 )
             )
         {
+            return self.headline_title();
+        }
+        if self.status == ToolCallStatus::Running && self.live_elapsed_seconds().is_none() {
             return self.headline_title();
         }
         let (label_key, duration_key) = match self.activity_state() {
@@ -689,7 +745,7 @@ impl ToolCard {
             return None;
         }
         if self.status == ToolCallStatus::Running {
-            return self.running_elapsed_seconds.map(human_elapsed);
+            return self.live_elapsed_seconds().map(human_elapsed);
         }
         match &self.result {
             Some(ToolCardResultProjection::Bash {
@@ -712,12 +768,18 @@ impl ToolCard {
     pub(crate) fn render_with_title(
         card: Entity<Self>,
         indented: bool,
-        headline: Option<(String, AnyElement)>,
+        headline: Option<(String, Option<Icon>, AnyElement)>,
         window: &mut gpui_kit::Window,
         cx: &mut App,
     ) -> AnyElement {
         if card.read(cx).is_subagent_invocation() {
-            return Self::render_invocation(card, indented, headline, window, cx);
+            return Self::render_invocation(
+                card,
+                indented,
+                headline.map(|(title, _, element)| (title, element)),
+                window,
+                cx,
+            );
         }
         let colors = theme(cx).colors;
         let (title, leading_icon, leading_icon_color, expanded, expandable, detail) = {
@@ -733,8 +795,24 @@ impl ToolCard {
                 if expanded { card_ref.detail() } else { None },
             )
         };
-        let (title, title_element) =
-            headline.unwrap_or_else(|| (title.clone(), div().child(title).into_any_element()));
+        let notice = {
+            let card = card.read(cx);
+            headline.as_ref().and_then(|(title, _, _)| {
+                card.headline_notice(title)
+                    .map(|notice| (notice, card.activity_state().terminal_color(&colors)))
+            })
+        };
+        let (title, leading_icon, title_element) = headline.unwrap_or_else(|| {
+            (
+                title.clone(),
+                Some(leading_icon),
+                div().child(title).into_any_element(),
+            )
+        });
+        let accessible_title = notice.as_ref().map_or_else(
+            || title.clone(),
+            |(notice, _)| format!("{title} · {notice}"),
+        );
         let detail_scroll = card.read(cx).detail_scroll.clone();
         let detail_id = format!("tool-detail-{}", card.entity_id());
         let toggle_card = card.clone();
@@ -746,13 +824,14 @@ impl ToolCard {
         let row = div()
             .id(("tool-activity-toggle", card.entity_id()))
             .group(disclosure_group.clone());
+
         let row = row
             .track_focus(&focus)
             .aria_expanded(expanded)
             .aria_label(vega_i18n::t_args(
                 "ui.tool_disclosure",
                 &[
-                    ("title", &title),
+                    ("title", &accessible_title),
                     (
                         "action",
                         vega_i18n::t(if expanded { "ui.collapse" } else { "ui.expand" }),
@@ -796,11 +875,13 @@ impl ToolCard {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(crate::icons::sized_icon(
-                        leading_icon,
-                        leading_icon_color,
-                        Layout::ICON_SIZE,
-                    )),
+                    .when_some(leading_icon, |slot, icon| {
+                        slot.child(crate::icons::sized_icon(
+                            icon,
+                            leading_icon_color,
+                            Layout::ICON_SIZE,
+                        ))
+                    }),
             )
             .child(
                 div()
@@ -827,6 +908,18 @@ impl ToolCard {
             .flex_col()
             .when(indented, |card| card.pl_4())
             .child(row)
+            .when_some(notice, |card, (notice, color)| {
+                card.child(
+                    div()
+                        .h(px(Layout::CONVERSATION_TOOL_HEIGHT))
+                        .pl(px(Layout::ICON_SIZE + Layout::CONVERSATION_INLINE_GAP))
+                        .text_size(px(Typography::CONVERSATION))
+                        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
+                        .text_color(color)
+                        .truncate()
+                        .child(notice),
+                )
+            })
             .when_some(expanded.then_some(detail).flatten(), move |card, detail| {
                 card.child(render_detail(
                     detail,
@@ -1338,6 +1431,18 @@ impl ToolCard {
     }
 
     fn build_bash_summary(&self) -> String {
+        if self.status == ToolCallStatus::Running && self.live_elapsed_seconds().is_none() {
+            let Some(ToolCardInputProjection::Bash { command }) = &self.input else {
+                return vega_i18n::t("ui.shell").into();
+            };
+            return vega_i18n::t_args(
+                "ui.command_action",
+                &[
+                    ("action", vega_i18n::t("ui.shell")),
+                    ("command", &compact_object(command)),
+                ],
+            );
+        }
         let action = match self.activity_state() {
             ToolActivityState::Superseded => vega_i18n::t("ui.not_run_after_takeover"),
             ToolActivityState::Success => vega_i18n::t("ui.ran"),
@@ -1361,9 +1466,16 @@ impl ToolCard {
         )
     }
 
+    pub(crate) fn cancel_pending_bash_clock(&mut self) {
+        if self.is_bash() {
+            self.stop_live_elapsed();
+            self.refresh_summary();
+        }
+    }
+
     pub(crate) fn release_presentation(&mut self) {
         self.presentation_released = true;
-        self.elapsed_refresh_task = None;
+        self.stop_live_elapsed();
     }
 
     fn stop_live_elapsed(&mut self) {
@@ -1397,6 +1509,11 @@ impl ToolCard {
             }
             ToolActivityState::Active if self.status == ToolCallStatus::Approved => {
                 vega_i18n::t("ui.ready_to_run")
+            }
+            ToolActivityState::Active
+                if self.is_bash() && self.live_elapsed_seconds().is_none() =>
+            {
+                vega_i18n::t("ui.pending")
             }
             ToolActivityState::Active => vega_i18n::t("ui.running"),
             ToolActivityState::Rejected => vega_i18n::t("ui.rejected"),
@@ -1583,6 +1700,7 @@ fn action_label(action: &'static str) -> &'static str {
         "read" => vega_i18n::t("ui.action_read"),
         "search" => vega_i18n::t("ui.action_search"),
         "read files" => vega_i18n::t("ui.read_files"),
+        "read conversation" => vega_i18n::t("ui.read_conversation"),
         "find files" => vega_i18n::t("ui.find_files"),
         "search content" => vega_i18n::t("ui.search_content"),
         _ => action,
@@ -1614,6 +1732,10 @@ fn generic_verb(action: &'static str, state: ToolActivityState, status: ToolCall
         "read files" => (
             vega_i18n::t("ui.read_files_en"),
             vega_i18n::t("ui.reading_files"),
+        ),
+        "read conversation" => (
+            vega_i18n::t("ui.read_conversation_done"),
+            vega_i18n::t("ui.reading_conversation"),
         ),
         "find files" => (
             vega_i18n::t("ui.found_files"),
@@ -1678,6 +1800,7 @@ fn readonly_summary(
         ReadOnlyToolKind::Read => "read files",
         ReadOnlyToolKind::Glob => "find files",
         ReadOnlyToolKind::Grep => "search content",
+        ReadOnlyToolKind::ConversationHistory => "read conversation",
     };
     generic_verb(action, state, status)
 }

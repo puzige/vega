@@ -271,6 +271,11 @@ where
     }
     crate::messages::remap_generated_notices_in_transaction(&tx, thread, &mut redact)?;
     crate::context_compaction::redact_legacy_thread_content(&tx, thread, &mut redact)?;
+    let unavailable = redact(crate::context_compaction::REDACTED_HISTORY_RESULT, &[]).0;
+    tx.execute(
+        "UPDATE tool_calls SET output_text=?1 WHERE thread_id=?2 AND tool='read_conversation' AND status='success'",
+        params![unavailable, thread],
+    )?;
     for (id, field, value) in fields(&tx, thread)? {
         let changed = match field.as_str() {
             "message" | "plan.note" | "pending.model" | "pending.content" | "historical.model" => {
@@ -375,10 +380,18 @@ where
                     tx.execute("UPDATE delegated_execution_recovery SET reconciliations=?1 WHERE child_message_id=?2",params![changed,id])?;
                 }
                 "tool.input" => {
-                    tx.execute(
-                        "UPDATE tool_calls SET input_json=?1 WHERE id=?2 AND thread_id=?3",
-                        params![changed, id, thread],
+                    let unavailable =
+                        redact(crate::context_compaction::REDACTED_HISTORY_RESULT, &[]).0;
+                    let history = tx.execute(
+                        "UPDATE tool_calls SET input_json='{}', output_text=CASE WHEN status IN ('success','failed','rejected','cancelled') THEN ?1 ELSE output_text END WHERE id=?2 AND thread_id=?3 AND tool='read_conversation'",
+                        params![unavailable, id, thread],
                     )?;
+                    if history == 0 {
+                        tx.execute(
+                            "UPDATE tool_calls SET input_json=?1 WHERE id=?2 AND thread_id=?3",
+                            params![changed, id, thread],
+                        )?;
+                    }
                 }
                 _ => {}
             }
