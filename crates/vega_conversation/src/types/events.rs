@@ -1210,6 +1210,9 @@ pub(crate) fn safe_runtime_tool_call(call: &vega_runtime::RuntimeToolCall) -> Op
         description: call.description.clone(),
         codex_display: None,
     };
+    if call.name == "read_conversation" {
+        return crate::agent::valid_history_call_projection(&call.input_json).then_some(projected);
+    }
     if vega_runtime::is_subagent_tool(&call.name) {
         return (call.input_json == "{}"
             || vega_runtime::valid_subagent_input(&call.name, &call.input_json))

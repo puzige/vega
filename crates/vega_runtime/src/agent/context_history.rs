@@ -1,6 +1,8 @@
 use super::*;
 
 pub(super) const TOOL: &str = "read_conversation";
+pub const CONVERSATION_HISTORY_RETRY_OUTPUT: &str =
+    "Tool error: conversation result unavailable; request a new read_conversation call.";
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -13,8 +15,15 @@ pub struct ConversationReadRequest {
 }
 
 impl ConversationReadRequest {
-    pub(super) fn parse(input: &str) -> Option<Self> {
+    pub fn parse(input: &str) -> Option<Self> {
         if input.len() > 4096 {
+            return None;
+        }
+        if !serde_json::from_str::<Value>(input)
+            .ok()?
+            .as_object()?
+            .contains_key("source_id")
+        {
             return None;
         }
         let request: Self = serde_json::from_str(input).ok()?;
@@ -73,7 +82,7 @@ fn filter(value: &mut Value, credentials: &[String], config: &RuntimeToolConfig)
     }
 }
 
-pub(super) fn project_page(
+pub fn project_page(
     mut page: Value,
     request: &ConversationReadRequest,
     config: &RuntimeToolConfig,

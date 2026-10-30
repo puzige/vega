@@ -128,7 +128,7 @@
 "domain.credential.missing" = "Local credentials are missing. Re-enter the API key in Settings."
 "domain.credential.unsafe" = "The local credential path, file type, or permissions are unsafe."
 "domain.credential.unsupported" = "Secure local credential storage is not supported on this platform."
-"domain.failure.audit" = "A tool record failed safety validation. Reopen the conversation, review its tool records, then retry."
+"domain.failure.audit" = "A tool safety check failed. Please retry."
 "domain.failure.context_limit" = "Context exceeds available capacity. The conversation is preserved. Reduce the current input or remove images, then retry. For long tasks, narrow tool queries or start a new conversation."
 "domain.failure.credential_block" = "The request could not be transformed safely. Completed tool actions are preserved. Check tool configuration before continuing."
 "domain.failure.credential_check" = "Credentials could not be read. Check credentials in Settings before continuing. Completed actions are preserved."
