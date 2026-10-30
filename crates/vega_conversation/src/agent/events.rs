@@ -1621,6 +1621,9 @@ pub(crate) fn validate_runtime_terminal(
         return Err(runtime_state_error());
     }
     if result_approval.as_ref() != Some(approval)
+        || state.tool == "read_conversation"
+            && result.status != RuntimeToolStatus::Rejected
+            && vega_runtime::ConversationReadRequest::parse(&state.input_json).is_none()
         || (result.status != RuntimeToolStatus::Rejected && result.remember_rule.is_some())
         || matches!(
             result.status,

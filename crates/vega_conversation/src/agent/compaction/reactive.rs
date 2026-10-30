@@ -498,6 +498,7 @@ impl ResponsePlanner {
             }
         }
         let plan = ProjectionPlan {
+            history_dependencies: None,
             schema: 1,
             strategy: ProjectionStrategy::Reactive,
             continuation: if request.source_owner_id.is_some() {

@@ -82,7 +82,7 @@ fn filter(value: &mut Value, credentials: &[String], config: &RuntimeToolConfig)
     }
 }
 
-pub(super) fn project_page(
+pub fn project_page(
     mut page: Value,
     request: &ConversationReadRequest,
     config: &RuntimeToolConfig,
