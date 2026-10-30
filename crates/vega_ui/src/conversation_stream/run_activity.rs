@@ -1647,6 +1647,14 @@ impl RunActivityGroup {
         }
         if let Some(StageProgress::Thinking { card, .. }) = progress {
             let thinking = owns_progress && !card.read(cx).progress_finished;
+            if !thinking && let Some((title, icon)) = self.stage_tool_title(segment, cx) {
+                return StageHeadline {
+                    title,
+                    icon: Some(icon),
+                    live: false,
+                    summary: None,
+                };
+            }
             return StageHeadline {
                 title: vega_i18n::t(if thinking {
                     "ui.thinking"
