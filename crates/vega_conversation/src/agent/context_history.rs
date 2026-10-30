@@ -5,6 +5,211 @@ pub(super) fn reader(database: PathBuf, thread: String) -> Arc<ConversationHisto
     Arc::new(move |request| read(&database, &thread, request).ok_or_else(unavailable))
 }
 
+pub(super) fn history_safety(
+    database: PathBuf,
+    thread: String,
+) -> vega_runtime::HistorySafetyCheck {
+    vega_runtime::HistorySafetyCheck::new(move |active, summaries, credentials, exceptions| {
+        validate_saved_pages(
+            &database,
+            &thread,
+            active,
+            summaries,
+            credentials,
+            exceptions,
+        )
+        .unwrap_or_else(|| vega_runtime::HistorySafetyReport {
+            invalidate_all: true,
+            invalidate_summary: true,
+            ..Default::default()
+        })
+    })
+}
+
+fn validate_saved_pages(
+    database: &std::path::Path,
+    thread: &str,
+    active: &[String],
+    summaries: &[String],
+    credentials: &[String],
+    exceptions: Option<&vega_runtime::CredentialExceptionFilter>,
+) -> Option<vega_runtime::HistorySafetyReport> {
+    let store = Store::open_read_only(database).ok()?;
+    let transaction = store.conn().unchecked_transaction().ok()?;
+    let mut report = vega_runtime::HistorySafetyReport::default();
+    let mut pages = std::collections::BTreeMap::<String, (String, String)>::new();
+    let mut pending = active.to_vec();
+    for summary in summaries {
+        let plan = transaction.query_row(
+            "SELECT projection_plan FROM context_checkpoints WHERE thread_id=?1 AND id=?2 LIMIT 1",
+            (thread, summary), |row| row.get::<_, Option<String>>(0),
+        ).ok().flatten().and_then(|json| serde_json::from_str::<vega_store::context_projection::ProjectionPlan>(&json).ok());
+        if let Some(dependencies) = plan.and_then(|plan| plan.history_dependencies) {
+            pending.extend(dependencies.iter().cloned());
+            report
+                .summary_dependencies
+                .insert(summary.clone(), dependencies);
+        } else {
+            let mut statement = transaction.prepare("SELECT id FROM tool_calls WHERE thread_id=?1 AND tool='read_conversation' AND status='success' LIMIT 257").ok()?;
+            let dependencies = statement
+                .query_map([thread], |row| row.get::<_, String>(0))
+                .ok()?
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?;
+            if dependencies.len() > 256 {
+                report.invalid_summaries.insert(summary.clone());
+            } else {
+                pending.extend(dependencies.iter().cloned());
+                report
+                    .summary_dependencies
+                    .insert(summary.clone(), dependencies);
+            }
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut nested_dependencies = std::collections::BTreeMap::<String, Vec<String>>::new();
+    let mut output_bytes = 0usize;
+    let mut index = 0;
+    while index < pending.len() {
+        let id = pending[index].clone();
+        index += 1;
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        if seen.len() > 256 || output_bytes >= 8 * 1024 * 1024 {
+            report.invalid_results.insert(id);
+            continue;
+        }
+        let row = transaction.query_row(
+            "SELECT input_json,CASE WHEN length(CAST(output_text AS BLOB))<=65536 THEN output_text END,status FROM tool_calls WHERE thread_id=?1 AND id=?2 AND tool='read_conversation'",
+            (thread, &id), |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?)),
+        ).ok();
+        let Some((input, output, status)) = row else {
+            report.invalid_results.insert(id);
+            continue;
+        };
+        if status != "success" {
+            continue;
+        }
+        let Some(output) = output else {
+            report.invalid_results.insert(id);
+            continue;
+        };
+        output_bytes = output_bytes.saturating_add(output.len());
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&output)
+            && let Some(records) = value["vega_history_observation"]["page"]["records"].as_array()
+        {
+            for record in records {
+                if record["output"]["text"].is_string()
+                    && let Some(nested) = record["source_id"].as_str()
+                    && transaction
+                        .query_row(
+                            "SELECT tool FROM tool_calls WHERE thread_id=?1 AND id=?2",
+                            (thread, nested),
+                            |row| row.get::<_, String>(0),
+                        )
+                        .ok()
+                        .as_deref()
+                        == Some("read_conversation")
+                {
+                    pending.push(nested.to_owned());
+                    nested_dependencies
+                        .entry(id.clone())
+                        .or_default()
+                        .push(nested.to_owned());
+                }
+            }
+        }
+        pages.insert(id, (input, output));
+    }
+    let owned = credentials.to_vec();
+    let config = vega_runtime::RuntimeToolConfig::default()
+        .with_credential_reader(Arc::new(move || Ok(owned.clone())))
+        .with_credential_exceptions(exceptions.cloned());
+    let mut source_cache = std::collections::BTreeMap::new();
+    let mut source_bytes = 0usize;
+    for (id, (input, output)) in pages {
+        if source_bytes >= 16 * 1024 * 1024 {
+            report.invalid_results.insert(id);
+            continue;
+        }
+        let valid = (|| {
+            let request = ConversationReadRequest::parse(&input)?;
+            let original = serde_json::from_str::<serde_json::Value>(&output).ok()?;
+            let records = original["vega_history_observation"]["page"]["records"].as_array()?;
+            if records.iter().any(|record| {
+                record["source_id"].as_str().is_none_or(|id| {
+                    id.contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER)
+                })
+            }) {
+                return Some(false);
+            }
+            let key = (
+                request.kind.clone(),
+                request.source_id.clone(),
+                request.after_sequence,
+                request.limit,
+            );
+            if !source_cache.contains_key(&key) {
+                let current = read_in_connection(&transaction, thread, &request)?;
+                let bytes = serde_json::to_vec(&current).ok()?.len();
+                source_cache.insert(key.clone(), (current, bytes));
+            }
+            let (current, bytes) = source_cache.get(&key)?;
+            source_bytes = source_bytes.saturating_add(*bytes);
+            if source_bytes > 16 * 1024 * 1024 {
+                return Some(false);
+            }
+            let current = current.clone();
+            let projected =
+                vega_runtime::project_conversation_history_page(current, &request, &config).ok()?;
+            let projected = serde_json::from_str::<serde_json::Value>(&projected).ok()?;
+            let current_records =
+                projected["vega_history_observation"]["page"]["records"].as_array()?;
+            Some(records.iter().all(|record| {
+                current_records
+                    .iter()
+                    .find(|current| current["source_id"] == record["source_id"])
+                    .is_some_and(|current| {
+                        ["content", "input", "output"].iter().all(|field| {
+                            record[*field].is_null()
+                                || record[*field]["unavailable"] == true
+                                || record[*field] == current[*field]
+                        })
+                    })
+            }))
+        })()
+        .unwrap_or(false);
+        if !valid {
+            report.invalid_results.insert(id);
+            report.invalidate_summary = true;
+        }
+    }
+    for _ in 0..nested_dependencies.len() {
+        let mut changed = false;
+        for (id, dependencies) in &nested_dependencies {
+            if dependencies
+                .iter()
+                .any(|dependency| report.invalid_results.contains(dependency))
+            {
+                changed |= report.invalid_results.insert(id.clone());
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for (summary, dependencies) in &report.summary_dependencies {
+        if dependencies
+            .iter()
+            .any(|id| report.invalid_results.contains(id))
+        {
+            report.invalid_summaries.insert(summary.clone());
+        }
+    }
+    Some(report)
+}
+
 fn unavailable() -> VegaError {
     VegaError::Tool {
         tool: "read_conversation".into(),
@@ -28,6 +233,14 @@ fn read(
         return None;
     }
     let store = Store::open_read_only(database).ok()?;
+    read_in_connection(store.conn(), thread, request)
+}
+
+fn read_in_connection(
+    conn: &vega_store::Connection,
+    thread: &str,
+    request: &ConversationReadRequest,
+) -> Option<serde_json::Value> {
     let query = match request.kind.as_str() {
         "messages" => {
             "SELECT m.id,m.seq,m.role,m.kind,m.status,CASE WHEN length(CAST(m.content AS BLOB))<=1048576 THEN m.content END,(SELECT COUNT(*) FROM image_attachments i WHERE i.message_id=m.id),(SELECT COALESCE(SUM(length(i.encoded)),0) FROM image_attachments i WHERE i.message_id=m.id) FROM messages m JOIN threads t ON t.id=m.thread_id WHERE length(CAST(m.id AS BLOB)) BETWEEN 1 AND 128 AND length(CAST(m.role AS BLOB))<=128 AND length(CAST(m.kind AS BLOB))<=128 AND length(CAST(m.status AS BLOB))<=128 AND m.thread_id=?1 AND m.seq>?2 AND (?3 IS NULL OR m.id=?3) AND ?5='messages' ORDER BY m.seq LIMIT ?4"
@@ -63,7 +276,7 @@ fn read(
         }
         _ => return None,
     };
-    let mut statement = store.conn().prepare(query).ok()?;
+    let mut statement = conn.prepare(query).ok()?;
     let mut rows = statement
         .query((
             thread,

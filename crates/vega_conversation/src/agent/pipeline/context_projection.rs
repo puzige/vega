@@ -68,6 +68,9 @@ pub(crate) fn interpret_projection_with_live(
                     ));
                 }
                 let mut summary_message = historical_summary_message(summary);
+                if let Some(dependencies) = &plan.history_dependencies {
+                    summary_message.set_history_dependencies(dependencies.clone());
+                }
                 summary_message
                     .attach_context_file_references(context_file_references(source, plan)?);
                 summary_message.attach_context_skill_runs(context_skill_runs(source, plan)?);
@@ -81,7 +84,10 @@ pub(crate) fn interpret_projection_with_live(
                 let previous = previous.get(checkpoint_id).ok_or_else(|| {
                     ConversationError::CorruptRow("historical summary reference missing".into())
                 })?;
-                messages.push(historical_summary_message(previous));
+                messages.push(super::historical_checkpoint_summary(
+                    previous,
+                    *checkpoint_id,
+                ));
             }
             ProjectionFragment::TaskReference { message_id } => {
                 messages.push(historical_task_reference(source, message_id)?);

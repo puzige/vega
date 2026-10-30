@@ -271,15 +271,24 @@ impl ConversationCompactionHook<'_> {
             messages: wire,
             tools: request.tools.clone(),
             reasoning: self.reasoning.clone(),
+            history_safety: Some(super::super::context_history::history_safety(
+                self.database_path.clone(),
+                self.thread_id.clone(),
+            )),
             ..Default::default()
         };
         let empty_reader = || Ok(Vec::new());
         let reader = self.credential_reader.as_deref().unwrap_or(&empty_reader);
-        super::super::credential_guard::reject_owner_secret_with_policy(
+        if let Err(error) = super::super::credential_guard::reject_owner_secret_with_policy(
             &credential_request,
             reader,
             self.credential_exceptions.as_ref(),
-        )?;
+        ) {
+            if matches!(error, VegaError::CredentialExposureBlocked) {
+                return Ok(None);
+            }
+            return Err(error);
+        }
         if cancel.is_cancelled() {
             return Err(VegaError::Cancelled);
         }
