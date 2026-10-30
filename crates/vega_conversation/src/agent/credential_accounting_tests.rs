@@ -480,10 +480,28 @@ async fn missing_frozen_model_does_not_mint_a_receipt_or_prevent_safe_sending() 
 async fn non_idempotent_sent_request_does_not_gain_a_receipt_from_preparation() {
     let fixture = Fixture::new(vec![SYNTHETIC_SECRET.into()]);
     let mut request = fixture.request(Vec::new());
-    request.messages.push(ChatMessage::new(
-        ChatRole::User,
-        format!("use {SYNTHETIC_SECRET}"),
+    let mut system = ChatMessage::new(ChatRole::System, "system");
+    system.attach_replay_frame(vega_runtime::ReplayFrame::new(
+        3,
+        vega_runtime::ReasoningReplayPolicy::ResponsesItems,
     ));
+    let mut assistant = ChatMessage::assistant_with_tools(
+        format!("use {SYNTHETIC_SECRET}"),
+        vec![vega_runtime::ChatToolCall {
+            id: "stored-read".into(),
+            name: "read".into(),
+            input_json: "{}".into(),
+        }],
+    );
+    assistant
+        .mark_stored_tool_calls_with_statuses(vec!["success".into()])
+        .unwrap();
+    request.messages = vec![
+        system,
+        assistant,
+        ChatMessage::tool_result("stored-read", "safe result"),
+        ChatMessage::new(ChatRole::User, "continue"),
+    ];
     assert!(project_model_messages(&request.messages).unwrap() != request.messages);
     let prepared = fixture
         .owner
@@ -507,7 +525,7 @@ async fn non_idempotent_sent_request_does_not_gain_a_receipt_from_preparation() 
         assert!(sent[0].model_snapshot.is_some());
         assert!(sent[0].messages != prepared.messages);
         assert!(
-            sent[0].messages[0].content == format!("use {PROVIDER_CREDENTIAL_REDACTION_MARKER}")
+            sent[0].messages[1].content == format!("use {PROVIDER_CREDENTIAL_REDACTION_MARKER}")
         );
     }
     assert!(response.input_receipt.is_none());
