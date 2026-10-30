@@ -68,6 +68,9 @@ pub(crate) fn interpret_projection_with_live(
                     ));
                 }
                 let mut summary_message = historical_summary_message(summary);
+                if let Some(dependencies) = &plan.history_dependencies {
+                    summary_message.set_history_dependencies(dependencies.clone());
+                }
                 summary_message
                     .attach_context_file_references(context_file_references(source, plan)?);
                 summary_message.attach_context_skill_runs(context_skill_runs(source, plan)?);

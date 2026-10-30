@@ -31,8 +31,8 @@ pub use agent::{
     RuntimeToolStatus, RuntimeUsagePricing, STAGE_BATCH_REJECTED, SUBAGENT_CANCELLED_OUTPUT,
     SUBAGENT_RESULT_BYTES, contains_sensitive_credential, credential_stream_safe_end,
     inspect_credential_text, is_invalid_bash_feedback, is_native_tool, is_subagent_tool,
-    read_identity_with_permission, redact_sensitive_credential_text,
-    redact_sensitive_credential_text_with_offsets,
+    project_conversation_history_page, read_identity_with_permission,
+    redact_sensitive_credential_text, redact_sensitive_credential_text_with_offsets,
     redact_sensitive_credential_text_with_offsets_and_policy,
     redact_sensitive_credential_text_with_policy, run_agent, run_agent_with_permission_sink,
     run_agent_with_permission_sink_and_context, run_agent_with_sink, tool_definitions,
@@ -68,11 +68,12 @@ pub use permission::{
 };
 pub use provider::{
     ChatMessage, ChatReasoningPresence, ChatRequest, ChatRole, ChatToolCall,
-    CompactionProviderFactory, EventStream, FrozenReasoning, Provider, ProviderEvent,
-    ProviderFailureKind, ProviderRequestSubmission, ProviderResponseMetadata, ProviderStream,
-    ReasoningBudgetScope, ReasoningChoice, ReasoningDisabledWire, ReasoningProtocol,
-    ReasoningReplayPolicy, ReplayFrame, ResponseReplayLayout, ResponseReplaySlot, StopReason,
-    ToolChoice, ToolDefinition, project_model_messages,
+    CompactionProviderFactory, EventStream, FrozenReasoning, HistorySafetyCheck,
+    HistorySafetyReport, Provider, ProviderEvent, ProviderFailureKind, ProviderRequestSubmission,
+    ProviderResponseMetadata, ProviderStream, ReasoningBudgetScope, ReasoningChoice,
+    ReasoningDisabledWire, ReasoningProtocol, ReasoningReplayPolicy, ReplayFrame,
+    ResponseReplayLayout, ResponseReplaySlot, StopReason, ToolChoice, ToolDefinition,
+    project_model_messages,
 };
 pub use retry::RetryPolicy;
 

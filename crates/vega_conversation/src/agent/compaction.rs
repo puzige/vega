@@ -1625,16 +1625,16 @@ impl ConversationCompactionHook<'_> {
         usage_complete: &mut bool,
         cancel: &CancellationToken,
         deadline: tokio::time::Instant,
-    ) -> Result<String, ContextCompactionFailure> {
-        let summary_request = match &self.credential_reader {
-            Some(reader) => super::credential_guard::project_owner_secrets_with_policy(
-                summary_request,
-                reader.as_ref(),
-                self.credential_exceptions.as_ref(),
-            )
-            .map_err(|error| failure_with_usages(error, usages, *usage_complete))?,
-            None => summary_request,
-        };
+    ) -> Result<(String, Vec<String>), ContextCompactionFailure> {
+        let empty_reader = || Ok(Vec::new());
+        let reader = self.credential_reader.as_deref().unwrap_or(&empty_reader);
+        let summary_request = super::credential_guard::project_owner_secrets_with_policy(
+            summary_request,
+            reader,
+            self.credential_exceptions.as_ref(),
+        )
+        .map_err(|error| failure_with_usages(error, usages, *usage_complete))?;
+        let checked_request = summary_request.clone();
         let attempt_id = ulid::Ulid::generate().to_string();
         let started_at = std::time::Instant::now();
         let empty_metrics = SummaryDiagnosticMetrics::default();
@@ -1745,6 +1745,27 @@ impl ConversationCompactionHook<'_> {
                     },
                     None => Vec::new(),
                 };
+                let current_credentials = || Ok(credentials.clone());
+                if let Err(error) = super::credential_guard::reject_owner_secret_with_policy(
+                    &checked_request,
+                    &current_credentials,
+                    self.credential_exceptions.as_ref(),
+                ) {
+                    if let Some(diagnostics) = &self.diagnostics {
+                        diagnostics.stage_event(
+                            &attempt_id,
+                            vega_store::run_diagnostics::DiagnosticPhase::ContextSummary,
+                            vega_store::run_diagnostics::DiagnosticState::Failed,
+                            Some(super::diagnostics::run_failure(&error)),
+                            started_at,
+                            super::diagnostics::with_failure_metrics(
+                                summary_store_metrics(&collection.metrics),
+                                &error,
+                            ),
+                        );
+                    }
+                    return Err(failure_with_usages(error, usages, *usage_complete));
+                }
                 let summary = vega_runtime::redact_sensitive_credential_text_with_policy(
                     &collection.summary,
                     &credentials,
@@ -1760,7 +1781,10 @@ impl ConversationCompactionHook<'_> {
                         summary_store_metrics(&collection.metrics),
                     );
                 }
-                Ok(summary)
+                Ok((
+                    summary,
+                    super::credential_guard::summary_history_dependencies(&checked_request),
+                ))
             }
             Err(stage_failure) => {
                 *usage_complete &= stage_failure.failure.usage_complete;
@@ -1803,9 +1827,13 @@ impl ConversationCompactionHook<'_> {
         &self,
         history: &[ChatMessage],
         execution: &mut SummaryExecution<'_>,
-    ) -> Result<String, ContextCompactionFailure> {
+    ) -> Result<(String, Vec<String>), ContextCompactionFailure> {
         validate_complete_projection(history)
             .map_err(|failure| execution.failure(*failure.error))?;
+        let history_safety = super::context_history::history_safety(
+            self.database_path.clone(),
+            self.thread_id.clone(),
+        );
         let mut history = history.to_vec();
         for message in &mut history {
             if !message.images.is_empty() {
@@ -1817,6 +1845,7 @@ impl ConversationCompactionHook<'_> {
         let mut stage_limit = groups.len();
         let mut cursor = 0;
         let mut aggregate = String::new();
+        let mut dependencies = Vec::new();
         while cursor < groups.len() {
             if execution.cancel.is_cancelled() {
                 return Err(execution.failure(VegaError::Cancelled));
@@ -1826,9 +1855,9 @@ impl ConversationCompactionHook<'_> {
             }
             let mut stage = Vec::new();
             if !aggregate.is_empty() {
-                stage.push(vec![super::pipeline::historical_summary_message(
-                    &aggregate,
-                )]);
+                let mut message = super::pipeline::historical_summary_message(&aggregate);
+                message.set_history_dependencies(dependencies.clone());
+                stage.push(vec![message]);
             }
             let mut selected = None;
             let mut estimate_tokens = 0;
@@ -1842,6 +1871,7 @@ impl ConversationCompactionHook<'_> {
                     Some(execution.task),
                     self.summary_variant,
                 );
+                direct.history_safety = Some(history_safety.clone());
                 self.apply_summary_requirements(&mut direct);
                 estimate_tokens = estimate_wire_context(&direct.messages, &[])
                     .map_err(|error| execution.failure(VegaError::Context(error.into())))?
@@ -1899,8 +1929,9 @@ impl ConversationCompactionHook<'_> {
                     .await;
             }
             match outcome {
-                Ok(summary) => {
+                Ok((summary, included)) => {
                     aggregate = summary;
+                    dependencies = included;
                     cursor = end;
                 }
                 Err(failure) => {
@@ -1918,7 +1949,7 @@ impl ConversationCompactionHook<'_> {
                 }
             }
         }
-        Ok(aggregate)
+        Ok((aggregate, dependencies))
     }
 
     async fn compact_impl(
@@ -2317,7 +2348,7 @@ impl ConversationCompactionHook<'_> {
             } else {
                 self.summarize_history(&history, &mut execution).await
             };
-            let aggregate = match summary_result {
+            let (aggregate, dependencies) = match summary_result {
                 Ok(summary) => summary,
                 Err(problem) => {
                     let overflow = classify_summary_input_overflow(problem.error.as_ref());
@@ -2363,7 +2394,13 @@ impl ConversationCompactionHook<'_> {
                     continue;
                 }
             };
-            let projected = project(&aggregate).map_err(|error| execution.failure(error))?;
+            let mut projected = project(&aggregate).map_err(|error| execution.failure(error))?;
+            for message in &mut projected {
+                if message.history_summary_source() == Some(aggregate.as_str()) {
+                    message.set_history_dependencies(dependencies.clone());
+                }
+            }
+            projection_plan.history_dependencies = Some(dependencies);
             let projected_estimate =
                 estimate_chat_context(&request.system_prompt, &projected, &request.tools).map_err(
                     |_| {
@@ -2626,6 +2663,7 @@ fn direct_summary_request(
         reasoning: summary_reasoning(reasoning),
         model_snapshot: None,
         tool_choice: None,
+        history_safety: None,
     }
 }
 

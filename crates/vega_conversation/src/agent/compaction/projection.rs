@@ -199,6 +199,7 @@ pub(super) fn partial_plan(
         });
     }
     let plan = ProjectionPlan {
+        history_dependencies: None,
         schema: 1,
         strategy: if up_to {
             ProjectionStrategy::PartialUpTo
@@ -425,6 +426,7 @@ pub(super) fn full_plan(
         },
     });
     let plan = ProjectionPlan {
+        history_dependencies: None,
         schema: 1,
         strategy: ProjectionStrategy::Full,
         continuation: if owner.is_some() {
@@ -654,6 +656,7 @@ pub(super) fn prefix_plan(
         },
     });
     let plan = ProjectionPlan {
+        history_dependencies: None,
         schema: 1,
         strategy: if manual {
             ProjectionStrategy::Manual
