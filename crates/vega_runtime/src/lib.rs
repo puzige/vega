@@ -14,12 +14,13 @@ mod tool_context;
 
 pub use agent::{
     AgentOutcome, AgentRequest, BASH_INVALID_INPUT_OUTPUT, CALL_ID_CONFLICT_OUTPUT,
-    CANCELLED_BEFORE_EXECUTION_OUTPUT, CompletedToolCall, ContextAccountingDecision,
-    ContextAccountingSource, ContextAccountingStage, ConversationHistoryReader,
-    ConversationReadRequest, CredentialConfidence, CredentialExceptionFilter, CredentialFinding,
-    CredentialReader, DANGER_DENIED_OUTPUT, GREP_INVALID_INPUT_OUTPUT, HistoricalPlan,
-    HistoricalPlanReader, HistoricalTask, HistoricalTaskReader, INVALID_READ_INPUT_OUTPUT,
-    InvalidBashAudit, LEGACY_BASH_INVALID_INPUT_OUTPUT, McpReadyServer, McpRevocationLease,
+    CANCELLED_BEFORE_EXECUTION_OUTPUT, CONVERSATION_HISTORY_RETRY_OUTPUT, CompletedToolCall,
+    ContextAccountingDecision, ContextAccountingSource, ContextAccountingStage,
+    ConversationHistoryReader, ConversationReadRequest, CredentialConfidence,
+    CredentialExceptionFilter, CredentialFinding, CredentialReader, DANGER_DENIED_OUTPUT,
+    GREP_INVALID_INPUT_OUTPUT, HistoricalPlan, HistoricalPlanReader, HistoricalTask,
+    HistoricalTaskReader, INVALID_READ_INPUT_OUTPUT, InvalidBashAudit,
+    LEGACY_BASH_INVALID_INPUT_OUTPUT, McpReadyServer, McpRevocationLease,
     PERMISSION_CANCELLED_OUTPUT, PERMISSION_DENIED_OUTPUT, PERMISSION_TIMEOUT,
     PERMISSION_TIMEOUT_OUTPUT, PERMISSION_UNAVAILABLE_OUTPUT, PROVIDER_CREDENTIAL_REDACTION_MARKER,
     RuntimeAssistantResponseKind, RuntimeAutomationHook, RuntimeDiagnosticAttempt,
@@ -30,8 +31,8 @@ pub use agent::{
     RuntimeToolStatus, RuntimeUsagePricing, STAGE_BATCH_REJECTED, SUBAGENT_CANCELLED_OUTPUT,
     SUBAGENT_RESULT_BYTES, contains_sensitive_credential, credential_stream_safe_end,
     inspect_credential_text, is_invalid_bash_feedback, is_native_tool, is_subagent_tool,
-    read_identity_with_permission, redact_sensitive_credential_text,
-    redact_sensitive_credential_text_with_offsets,
+    project_conversation_history_page, read_identity_with_permission,
+    redact_sensitive_credential_text, redact_sensitive_credential_text_with_offsets,
     redact_sensitive_credential_text_with_offsets_and_policy,
     redact_sensitive_credential_text_with_policy, run_agent, run_agent_with_permission_sink,
     run_agent_with_permission_sink_and_context, run_agent_with_sink, tool_definitions,
@@ -67,11 +68,12 @@ pub use permission::{
 };
 pub use provider::{
     ChatMessage, ChatReasoningPresence, ChatRequest, ChatRole, ChatToolCall,
-    CompactionProviderFactory, EventStream, FrozenReasoning, Provider, ProviderEvent,
-    ProviderFailureKind, ProviderRequestSubmission, ProviderResponseMetadata, ProviderStream,
-    ReasoningBudgetScope, ReasoningChoice, ReasoningDisabledWire, ReasoningProtocol,
-    ReasoningReplayPolicy, ReplayFrame, ResponseReplayLayout, ResponseReplaySlot, StopReason,
-    ToolChoice, ToolDefinition, project_model_messages,
+    CompactionProviderFactory, EventStream, FrozenReasoning, HistorySafetyCheck,
+    HistorySafetyReport, Provider, ProviderEvent, ProviderFailureKind, ProviderRequestSubmission,
+    ProviderResponseMetadata, ProviderStream, ReasoningBudgetScope, ReasoningChoice,
+    ReasoningDisabledWire, ReasoningProtocol, ReasoningReplayPolicy, ReplayFrame,
+    ResponseReplayLayout, ResponseReplaySlot, StopReason, ToolChoice, ToolDefinition,
+    project_model_messages,
 };
 pub use retry::RetryPolicy;
 
