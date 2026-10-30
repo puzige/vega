@@ -544,7 +544,10 @@ impl RunActivityGroup {
     pub(crate) fn cancel_pending_bash_clocks(&self, cx: &mut Context<Self>) {
         for segment in 0..self.segments.len() {
             for card in self.stage_tool_calls(segment, cx) {
-                card.update(cx, |card, _| card.cancel_pending_bash_clock());
+                card.update(cx, |card, cx| {
+                    card.cancel_pending_bash_clock();
+                    cx.notify();
+                });
             }
         }
     }

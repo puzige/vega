@@ -3467,7 +3467,7 @@ where
                     }
                     let (bash_clock, bash_started_at) =
                         if matches!(&prepared, PreparedRuntimeCall::Bash { .. }) {
-                            let (clock, writer) = BashStartClock::new();
+                            let (clock, writer) = BashStartClock::new(cancel.clone());
                             (Some(clock), Some(writer))
                         } else {
                             (None, None)

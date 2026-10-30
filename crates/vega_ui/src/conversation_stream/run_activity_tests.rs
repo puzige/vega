@@ -2,6 +2,7 @@ use super::*;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{Modifiers, TestAppContext, VisualTestContext};
 use std::{cell::Cell, rc::Rc, sync::OnceLock};
+use tokio_util::sync::CancellationToken;
 use vega_conversation::types::{
     Approval, BashStartClock, ContextCompactionStatus, ContextCompactionStatusRecord,
     ContextCompactionUsageState, ThreadStatus, ToolCall, ToolCallStatus, ToolResult,
@@ -109,6 +110,31 @@ fn start(
         ConversationEvent::ToolCallRunning {
             call_id: id.into(),
             bash_started_at: bash_started_at.map(BashStartClock::from_test_start),
+        },
+    );
+}
+
+fn start_bash_with_cancel(
+    stream: &Entity<ConversationStream>,
+    cx: &mut VisualTestContext,
+    id: &str,
+    clock: Arc<OnceLock<Instant>>,
+    cancel: CancellationToken,
+) {
+    apply(
+        stream,
+        cx,
+        ConversationEvent::ToolCallApproved {
+            call_id: id.into(),
+            approval: Approval::Once,
+        },
+    );
+    apply(
+        stream,
+        cx,
+        ConversationEvent::ToolCallRunning {
+            call_id: id.into(),
+            bash_started_at: Some(BashStartClock::from_test_start_with_cancel(clock, cancel)),
         },
     );
 }
@@ -259,15 +285,38 @@ fn assert_no_running_shell_title_painted() {
     );
 }
 
+fn assert_waiting_shell_painted(expected: &str) {
+    let painted = shimmer::take_painted_text();
+    assert!(
+        painted.iter().any(|text| text == expected),
+        "expected visible waiting shimmer text {expected:?}, painted {painted:?}"
+    );
+    assert!(
+        painted
+            .iter()
+            .all(|text| !text.starts_with("Running") && !text.contains("Running command for")),
+        "an unobserved Shell start must not paint a running title: {painted:?}"
+    );
+}
+
 fn watch_notifications(
     stream: &Entity<ConversationStream>,
     cx: &mut VisualTestContext,
     call_id: &str,
 ) -> [Rc<Cell<usize>>; 3] {
+    watch_message_notifications(stream, cx, MESSAGE, call_id)
+}
+
+fn watch_message_notifications(
+    stream: &Entity<ConversationStream>,
+    cx: &mut VisualTestContext,
+    message_id: &str,
+    call_id: &str,
+) -> [Rc<Cell<usize>>; 3] {
     let counts = std::array::from_fn(|_| Rc::new(Cell::new(0)));
     cx.update(|_, cx| {
         let card = stream.read(cx).tool_cards[call_id].clone();
-        let group = stream.read(cx).run_activity_groups[MESSAGE].clone();
+        let group = stream.read(cx).run_activity_groups[message_id].clone();
         let card_count = counts[0].clone();
         let group_count = counts[1].clone();
         let stream_count = counts[2].clone();
@@ -1246,7 +1295,7 @@ fn stop_before_running_suppresses_old_clock_without_poisoning_the_next_run(
 }
 
 #[gpui_kit::test]
-fn stop_does_not_pause_an_already_observed_process_clock(cx: &mut TestAppContext) {
+fn stop_hides_an_already_observed_process_clock_until_real_terminal(cx: &mut TestAppContext) {
     assert_eq!(vega_i18n::language(), "en");
     let (stream, cx) = open_stream(cx);
     propose(&stream, cx, bash("shell", Some("Inspect the working tree")));
@@ -1261,11 +1310,11 @@ fn stop_does_not_pause_an_already_observed_process_clock(cx: &mut TestAppContext
     });
     let _ = shimmer::take_painted_text();
     advance(cx, Duration::from_secs(1));
-    assert_painted("Running command for 1s");
+    assert_no_running_shell_title_painted();
     assert_row(
         cx,
         id.clone(),
-        "Running command for 1s, Collapse tool details",
+        "Inspect the working tree, Collapse tool details",
         true,
     );
     finish(
@@ -1275,4 +1324,977 @@ fn stop_does_not_pause_an_already_observed_process_clock(cx: &mut TestAppContext
         shell_result(ToolCallStatus::Cancelled),
     );
     assert_row(cx, id, "Command cancelled, Collapse tool details", true);
+}
+
+#[gpui_kit::test]
+fn parent_cancellation_suppresses_an_unobserved_child_start_until_real_terminal(
+    cx: &mut TestAppContext,
+) {
+    assert_eq!(vega_i18n::language(), "en");
+    for publish_before_cancel in [true, false] {
+        for (status, terminal_label) in [
+            (
+                ToolCallStatus::Success,
+                "Ran command in 7s, Collapse tool details",
+            ),
+            (
+                ToolCallStatus::Cancelled,
+                "Command cancelled, Collapse tool details",
+            ),
+        ] {
+            for (description, waiting_title, waiting_label) in [
+                (
+                    Some("Inspect the working tree"),
+                    "Inspect the working tree",
+                    "Inspect the working tree, Collapse tool details",
+                ),
+                (
+                    None,
+                    "Shell printf hello",
+                    "Shell printf hello, Collapse tool details",
+                ),
+            ] {
+                let (stream, visual) = open_stream(cx);
+                let parent = CancellationToken::new();
+                let child = parent.child_token();
+                let clock = Arc::new(OnceLock::new());
+                propose(&stream, visual, bash("child", description));
+                start_bash_with_cancel(&stream, visual, "child", clock.clone(), child.clone());
+                let id = tool_id(&stream, visual, "child");
+                click(visual, id.clone());
+                assert_waiting_shell_painted(waiting_title);
+                assert_waiting_shell(visual, id.clone(), true);
+                assert!(clock.get().is_none());
+                let notifications = watch_notifications(&stream, visual, "child");
+                let before = notifications[0].get();
+                let _ = shimmer::take_painted_text();
+
+                if publish_before_cancel {
+                    publish_bash_start(&clock, visual);
+                }
+                parent.cancel();
+                assert!(child.is_cancelled());
+                if !publish_before_cancel {
+                    advance(visual, Duration::from_millis(250));
+                    assert!(clock.get().is_none());
+                    assert_eq!(notifications[0].get(), before);
+                    publish_bash_start(&clock, visual);
+                }
+                advance(visual, Duration::from_secs(3));
+                assert_eq!(notifications[0].get(), before);
+                assert_no_running_shell_title_painted();
+                assert_waiting_shell(visual, id.clone(), true);
+                assert_row(visual, id.clone(), waiting_label, true);
+                visual.update(|_, cx| {
+                    assert!(
+                        stream.read(cx).tool_cards["child"].read(cx).is_running(),
+                        "parent cancellation must not fabricate a child terminal status"
+                    );
+                });
+
+                click(visual, id.clone());
+                assert_waiting_shell_painted(waiting_title);
+                assert_waiting_shell(visual, id.clone(), false);
+                click(visual, id.clone());
+                assert_waiting_shell_painted(waiting_title);
+                assert_waiting_shell(visual, id.clone(), true);
+                let before = std::array::from_fn(|index| notifications[index].get());
+                finish(&stream, visual, "child", shell_result(status));
+                assert_notifications_advance(&notifications, before);
+                assert_row(visual, id.clone(), terminal_label, true);
+                visual.update(|_, cx| {
+                    assert!(!stream.read(cx).tool_cards["child"].read(cx).is_running());
+                });
+                let before = notifications[0].get();
+                let _ = shimmer::take_painted_text();
+                advance(visual, Duration::from_secs(3));
+                assert_eq!(notifications[0].get(), before);
+                assert_no_running_shell_title_painted();
+                assert_row(visual, id, terminal_label, true);
+                visual.update(|window, _| window.remove_window());
+                visual.run_until_parked();
+            }
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn cancelled_child_running_can_arrive_late_without_poisoning_a_new_run(cx: &mut TestAppContext) {
+    assert_eq!(vega_i18n::language(), "en");
+    for publish_before_running in [true, false] {
+        let (stream, visual) = open_stream(cx);
+        let parent = CancellationToken::new();
+        let child = parent.child_token();
+        let clock = Arc::new(OnceLock::new());
+        propose(
+            &stream,
+            visual,
+            bash("old", Some("Inspect the working tree")),
+        );
+        apply(
+            &stream,
+            visual,
+            ConversationEvent::ToolCallApproved {
+                call_id: "old".into(),
+                approval: Approval::Once,
+            },
+        );
+        let old = tool_id(&stream, visual, "old");
+        click(visual, old.clone());
+        let notifications = watch_notifications(&stream, visual, "old");
+        let before = std::array::from_fn(|index| notifications[index].get());
+        let _ = shimmer::take_painted_text();
+        if publish_before_running {
+            publish_bash_start(&clock, visual);
+        }
+        parent.cancel();
+        assert!(child.is_cancelled());
+        apply(
+            &stream,
+            visual,
+            ConversationEvent::ToolCallRunning {
+                call_id: "old".into(),
+                bash_started_at: Some(BashStartClock::from_test_start_with_cancel(
+                    clock.clone(),
+                    child.clone(),
+                )),
+            },
+        );
+        assert_notifications_advance(&notifications, before);
+        assert_waiting_shell_painted("Inspect the working tree");
+        assert_waiting_shell(visual, old.clone(), true);
+        assert_row(
+            visual,
+            old.clone(),
+            "Inspect the working tree, Collapse tool details",
+            true,
+        );
+        visual.update(|_, cx| {
+            assert!(
+                stream.read(cx).tool_cards["old"].read(cx).is_running(),
+                "late child Running must remain Running until a real terminal"
+            );
+        });
+        let before = notifications[0].get();
+        if !publish_before_running {
+            assert!(clock.get().is_none());
+            publish_bash_start(&clock, visual);
+        }
+        advance(visual, Duration::from_secs(3));
+        assert_eq!(notifications[0].get(), before);
+        assert_no_running_shell_title_painted();
+        assert_waiting_shell(visual, old.clone(), true);
+        visual.update(|_, cx| {
+            assert!(stream.read(cx).tool_cards["old"].read(cx).is_running());
+        });
+        let before = std::array::from_fn(|index| notifications[index].get());
+        finish(
+            &stream,
+            visual,
+            "old",
+            shell_result(ToolCallStatus::Cancelled),
+        );
+        assert_notifications_advance(&notifications, before);
+        assert_row(
+            visual,
+            old.clone(),
+            "Command cancelled, Collapse tool details",
+            true,
+        );
+        visual.update(|_, cx| {
+            assert!(!stream.read(cx).tool_cards["old"].read(cx).is_running());
+        });
+        let before = notifications[0].get();
+        let _ = shimmer::take_painted_text();
+        advance(visual, Duration::from_secs(3));
+        assert_eq!(notifications[0].get(), before);
+        assert_no_running_shell_title_painted();
+        click(visual, old);
+
+        apply(
+            &stream,
+            visual,
+            ConversationEvent::Interrupted {
+                message_id: MESSAGE.into(),
+                execution_duration_ms: None,
+            },
+        );
+        stream.update(visual, |stream, cx| stream.begin_composer_run(cx));
+        apply(
+            &stream,
+            visual,
+            ConversationEvent::MessageStarted {
+                message_id: "next-assistant".into(),
+                seq: 2,
+            },
+        );
+        let next = CancellationToken::new();
+        let next_clock = Arc::new(OnceLock::new());
+        assert!(parent.is_cancelled());
+        assert!(!next.is_cancelled());
+        propose(&stream, visual, bash("new", Some("Review the next task")));
+        start_bash_with_cancel(&stream, visual, "new", next_clock.clone(), next.clone());
+        let new = tool_id(&stream, visual, "new");
+        click(visual, new.clone());
+        assert_waiting_shell_painted("Review the next task");
+        assert_waiting_shell(visual, new.clone(), true);
+        let notifications = watch_message_notifications(&stream, visual, "next-assistant", "new");
+        let before = std::array::from_fn(|index| notifications[index].get());
+        let _ = shimmer::take_painted_text();
+        publish_bash_start(&next_clock, visual);
+        advance(visual, Duration::from_millis(250));
+        assert_notifications_advance(&notifications, before);
+        assert_painted("Running command for 0s");
+        assert_row(
+            visual,
+            new.clone(),
+            "Running command for 0s, Collapse tool details",
+            true,
+        );
+        let before = std::array::from_fn(|index| notifications[index].get());
+        advance(visual, Duration::from_secs(1));
+        assert_notifications_advance(&notifications, before);
+        assert_painted("Running command for 1s");
+        assert_row(
+            visual,
+            new.clone(),
+            "Running command for 1s, Collapse tool details",
+            true,
+        );
+        assert!(!next.is_cancelled());
+        finish(
+            &stream,
+            visual,
+            "new",
+            shell_result(ToolCallStatus::Success),
+        );
+        assert_row(
+            visual,
+            new,
+            "Ran command in 7s, Collapse tool details",
+            true,
+        );
+        visual.update(|window, _| window.remove_window());
+        visual.run_until_parked();
+    }
+}
+
+#[gpui_kit::test]
+fn cancelling_one_child_branch_does_not_stop_an_independent_sibling_clock(cx: &mut TestAppContext) {
+    assert_eq!(vega_i18n::language(), "en");
+    let (stream, cx) = open_stream(cx);
+    let root = CancellationToken::new();
+    let parent = root.child_token();
+    let child = parent.child_token();
+    let sibling = root.child_token();
+    let child_clock = Arc::new(OnceLock::new());
+    let sibling_clock = Arc::new(OnceLock::new());
+    propose(&stream, cx, bash("child", Some("Inspect the working tree")));
+    start_bash_with_cancel(&stream, cx, "child", child_clock.clone(), child.clone());
+    propose(&stream, cx, bash("sibling", Some("Review build status")));
+    start_bash_with_cancel(
+        &stream,
+        cx,
+        "sibling",
+        sibling_clock.clone(),
+        sibling.clone(),
+    );
+    assert_painted("Review build status");
+    click(cx, stage_id());
+    let child_id = tool_id(&stream, cx, "child");
+    let sibling_id = tool_id(&stream, cx, "sibling");
+    click(cx, child_id.clone());
+    click(cx, sibling_id.clone());
+    assert_waiting_shell(cx, child_id.clone(), true);
+    assert_waiting_shell(cx, sibling_id.clone(), true);
+    let child_notifications = watch_notifications(&stream, cx, "child");
+    let sibling_notifications = watch_notifications(&stream, cx, "sibling");
+    let child_before = child_notifications[0].get();
+    let _ = shimmer::take_painted_text();
+
+    publish_bash_start(&child_clock, cx);
+    parent.cancel();
+    assert!(child.is_cancelled());
+    assert!(!root.is_cancelled());
+    assert!(!sibling.is_cancelled());
+    advance(cx, Duration::from_millis(250));
+    assert_eq!(child_notifications[0].get(), child_before);
+    assert_no_running_shell_title_painted();
+    assert_waiting_shell(cx, child_id.clone(), true);
+    assert_waiting_shell(cx, sibling_id.clone(), true);
+    cx.update(|_, cx| {
+        assert!(stream.read(cx).tool_cards["child"].read(cx).is_running());
+        assert!(stream.read(cx).tool_cards["sibling"].read(cx).is_running());
+    });
+
+    let sibling_before = std::array::from_fn(|index| sibling_notifications[index].get());
+    let _ = shimmer::take_painted_text();
+    publish_bash_start(&sibling_clock, cx);
+    advance(cx, Duration::from_millis(250));
+    assert_notifications_advance(&sibling_notifications, sibling_before);
+    assert_painted("Review build status");
+    assert_eq!(child_notifications[0].get(), child_before);
+    assert_waiting_shell(cx, child_id.clone(), true);
+    assert_row(
+        cx,
+        sibling_id.clone(),
+        "Running command for 0s, Collapse tool details",
+        true,
+    );
+    let sibling_before = std::array::from_fn(|index| sibling_notifications[index].get());
+    advance(cx, Duration::from_secs(1));
+    assert_notifications_advance(&sibling_notifications, sibling_before);
+    assert_painted("Review build status");
+    assert_eq!(child_notifications[0].get(), child_before);
+    assert_waiting_shell(cx, child_id.clone(), true);
+    assert_row(
+        cx,
+        sibling_id.clone(),
+        "Running command for 1s, Collapse tool details",
+        true,
+    );
+    cx.update(|_, cx| {
+        assert!(stream.read(cx).tool_cards["child"].read(cx).is_running());
+    });
+
+    finish(
+        &stream,
+        cx,
+        "child",
+        shell_result(ToolCallStatus::Cancelled),
+    );
+    assert_row(
+        cx,
+        child_id,
+        "Command cancelled, Collapse tool details",
+        true,
+    );
+    let sibling_before = std::array::from_fn(|index| sibling_notifications[index].get());
+    let _ = shimmer::take_painted_text();
+    advance(cx, Duration::from_secs(1));
+    assert_notifications_advance(&sibling_notifications, sibling_before);
+    assert_row(
+        cx,
+        sibling_id.clone(),
+        "Running command for 2s, Collapse tool details",
+        true,
+    );
+    assert!(!sibling.is_cancelled());
+    finish(
+        &stream,
+        cx,
+        "sibling",
+        shell_result(ToolCallStatus::Success),
+    );
+    assert_row(
+        cx,
+        sibling_id,
+        "Ran command in 7s, Collapse tool details",
+        true,
+    );
+}
+
+#[gpui_kit::test]
+fn parent_cancellation_hides_an_observed_child_clock_until_real_terminal(cx: &mut TestAppContext) {
+    assert_eq!(vega_i18n::language(), "en");
+    let (stream, cx) = open_stream(cx);
+    let parent = CancellationToken::new();
+    let child = parent.child_token();
+    let clock = Arc::new(OnceLock::new());
+    publish_bash_start(&clock, cx);
+    propose(&stream, cx, bash("child", Some("Inspect the working tree")));
+    start_bash_with_cancel(&stream, cx, "child", clock, child.clone());
+    let id = tool_id(&stream, cx, "child");
+    click(cx, id.clone());
+    assert_painted("Running command for 0s");
+    assert_row(
+        cx,
+        id.clone(),
+        "Running command for 0s, Collapse tool details",
+        true,
+    );
+    let notifications = watch_notifications(&stream, cx, "child");
+    let before = std::array::from_fn(|index| notifications[index].get());
+    let _ = shimmer::take_painted_text();
+    parent.cancel();
+    assert!(child.is_cancelled());
+    advance(cx, Duration::from_secs(1));
+    assert_notifications_advance(&notifications, before);
+    assert_no_running_shell_title_painted();
+    assert_row(
+        cx,
+        id.clone(),
+        "Inspect the working tree, Collapse tool details",
+        true,
+    );
+    cx.update(|_, cx| {
+        assert!(stream.read(cx).tool_cards["child"].read(cx).is_running());
+    });
+    let before = std::array::from_fn(|index| notifications[index].get());
+    finish(
+        &stream,
+        cx,
+        "child",
+        shell_result(ToolCallStatus::Cancelled),
+    );
+    assert_notifications_advance(&notifications, before);
+    assert_row(
+        cx,
+        id.clone(),
+        "Command cancelled, Collapse tool details",
+        true,
+    );
+    cx.update(|_, cx| {
+        assert!(!stream.read(cx).tool_cards["child"].read(cx).is_running());
+    });
+    let before = notifications[0].get();
+    let _ = shimmer::take_painted_text();
+    advance(cx, Duration::from_secs(3));
+    assert_eq!(notifications[0].get(), before);
+    assert_no_running_shell_title_painted();
+    assert_row(cx, id, "Command cancelled, Collapse tool details", true);
+}
+
+fn observe_collapsed_child_shell_start(
+    stream: &Entity<ConversationStream>,
+    cx: &mut VisualTestContext,
+    id: gpui_kit::ElementId,
+    clock: &OnceLock<Instant>,
+) -> [Rc<Cell<usize>>; 3] {
+    assert!(clock.get().is_none());
+    let notifications = watch_notifications(stream, cx, "child");
+    let before = notifications[0].get();
+    let _ = shimmer::take_painted_text();
+    advance(cx, Duration::from_millis(250));
+    assert!(clock.get().is_none());
+    assert_eq!(notifications[0].get(), before);
+    assert_no_running_shell_title_painted();
+    assert_row(
+        cx,
+        id.clone(),
+        "Inspect the working tree, expand tool details",
+        false,
+    );
+
+    let before = std::array::from_fn(|index| notifications[index].get());
+    publish_bash_start(clock, cx);
+    assert!(clock.get().is_some());
+    advance(cx, Duration::from_millis(250));
+    assert_notifications_advance(&notifications, before);
+    assert_waiting_shell_painted("Inspect the working tree");
+    assert_row(
+        cx,
+        id,
+        "Inspect the working tree, expand tool details",
+        false,
+    );
+    cx.update(|_, cx| {
+        let card = stream.read(cx).tool_cards["child"].read(cx);
+        assert!(card.is_running());
+        assert!(!card.is_expanded());
+    });
+    notifications
+}
+
+#[gpui_kit::test]
+fn cancelled_collapsed_child_does_not_first_display_a_background_observed_clock(
+    cx: &mut TestAppContext,
+) {
+    assert_eq!(vega_i18n::language(), "en");
+    for cancel_parent in [true, false] {
+        for (status, terminal_label) in [
+            (
+                ToolCallStatus::Success,
+                "Ran command in 7s, Collapse tool details",
+            ),
+            (
+                ToolCallStatus::Cancelled,
+                "Command cancelled, Collapse tool details",
+            ),
+        ] {
+            let (stream, visual) = open_stream(cx);
+            let parent = CancellationToken::new();
+            let child = parent.child_token();
+            let sibling = parent.child_token();
+            let clock = Arc::new(OnceLock::new());
+            propose(
+                &stream,
+                visual,
+                bash("child", Some("Inspect the working tree")),
+            );
+            start_bash_with_cancel(&stream, visual, "child", clock.clone(), child.clone());
+            let id = tool_id(&stream, visual, "child");
+            let notifications =
+                observe_collapsed_child_shell_start(&stream, visual, id.clone(), &clock);
+            let before = std::array::from_fn(|index| notifications[index].get());
+            let _ = shimmer::take_painted_text();
+
+            if cancel_parent {
+                parent.cancel();
+            } else {
+                child.cancel();
+            }
+            assert!(child.is_cancelled());
+            assert_eq!(parent.is_cancelled(), cancel_parent);
+            assert_eq!(sibling.is_cancelled(), cancel_parent);
+            click(visual, id.clone());
+            assert_notifications_advance(&notifications, before);
+            assert_waiting_shell_painted("Inspect the working tree");
+            assert_waiting_shell(visual, id.clone(), true);
+            assert_row(
+                visual,
+                id.clone(),
+                "Inspect the working tree, Collapse tool details",
+                true,
+            );
+            visual.update(|_, cx| {
+                assert!(stream.read(cx).tool_cards["child"].read(cx).is_running());
+            });
+
+            let _ = shimmer::take_painted_text();
+            advance(visual, Duration::from_secs(3));
+            assert_no_running_shell_title_painted();
+            assert_waiting_shell(visual, id.clone(), true);
+            assert_row(
+                visual,
+                id.clone(),
+                "Inspect the working tree, Collapse tool details",
+                true,
+            );
+            visual.update(|_, cx| {
+                assert!(stream.read(cx).tool_cards["child"].read(cx).is_running());
+            });
+
+            let before = std::array::from_fn(|index| notifications[index].get());
+            let _ = shimmer::take_painted_text();
+            finish(&stream, visual, "child", shell_result(status));
+            assert_notifications_advance(&notifications, before);
+            assert_no_running_shell_title_painted();
+            assert_row(visual, id.clone(), terminal_label, true);
+            visual.update(|_, cx| {
+                assert!(!stream.read(cx).tool_cards["child"].read(cx).is_running());
+            });
+            let before = notifications[0].get();
+            let _ = shimmer::take_painted_text();
+            advance(visual, Duration::from_secs(3));
+            assert_eq!(notifications[0].get(), before);
+            assert_no_running_shell_title_painted();
+            assert_row(visual, id, terminal_label, true);
+            visual.update(|window, _| window.remove_window());
+            visual.run_until_parked();
+        }
+    }
+}
+
+fn assert_painted_without_running_elapsed(expected: &str) {
+    let painted = shimmer::take_painted_text();
+    assert!(
+        painted.iter().any(|text| text == expected),
+        "expected visible shimmer text {expected:?}, painted {painted:?}"
+    );
+    assert!(
+        painted.iter().all(|text| {
+            !text.contains("Running command for")
+                && !text
+                    .split(|character: char| !character.is_ascii_alphanumeric())
+                    .any(|word| {
+                        word.strip_suffix('s').is_some_and(|seconds| {
+                            !seconds.is_empty()
+                                && seconds.chars().all(|digit| digit.is_ascii_digit())
+                        })
+                    })
+        }),
+        "a previously undisplayed clock must not paint elapsed time: {painted:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn cancelled_collapsed_shell_without_description_never_first_displays_elapsed_time(
+    cx: &mut TestAppContext,
+) {
+    assert_eq!(vega_i18n::language(), "en");
+    for cancel_parent in [true, false] {
+        for (status, terminal_label) in [
+            (
+                ToolCallStatus::Success,
+                "Ran command in 7s, Collapse tool details",
+            ),
+            (
+                ToolCallStatus::Cancelled,
+                "Command cancelled, Collapse tool details",
+            ),
+        ] {
+            let (stream, visual) = open_stream(cx);
+            let parent = CancellationToken::new();
+            let child = parent.child_token();
+            let sibling = parent.child_token();
+            let clock = Arc::new(OnceLock::new());
+            propose(&stream, visual, bash("child", None));
+            start_bash_with_cancel(&stream, visual, "child", clock.clone(), child.clone());
+            let id = tool_id(&stream, visual, "child");
+            let notifications = watch_notifications(&stream, visual, "child");
+
+            assert!(clock.get().is_none());
+            let before = notifications[0].get();
+            let _ = shimmer::take_painted_text();
+            advance(visual, Duration::from_millis(250));
+            assert!(clock.get().is_none());
+            assert_eq!(notifications[0].get(), before);
+            assert_no_running_shell_title_painted();
+            assert_waiting_shell(visual, id.clone(), false);
+
+            let before = std::array::from_fn(|index| notifications[index].get());
+            let _ = shimmer::take_painted_text();
+            publish_bash_start(&clock, visual);
+            assert!(clock.get().is_some());
+            advance(visual, Duration::from_millis(250));
+            assert_notifications_advance(&notifications, before);
+            assert_painted_without_running_elapsed("Running printf hello");
+            assert_row(
+                visual,
+                id.clone(),
+                "Running printf hello, expand tool details",
+                false,
+            );
+            visual.update(|_, cx| {
+                let card = stream.read(cx).tool_cards["child"].read(cx);
+                assert!(card.is_running());
+                assert!(!card.is_expanded());
+            });
+
+            let before = std::array::from_fn(|index| notifications[index].get());
+            let _ = shimmer::take_painted_text();
+            if cancel_parent {
+                parent.cancel();
+            } else {
+                child.cancel();
+            }
+            assert!(child.is_cancelled());
+            assert_eq!(parent.is_cancelled(), cancel_parent);
+            assert_eq!(sibling.is_cancelled(), cancel_parent);
+            click(visual, id.clone());
+            assert_notifications_advance(&notifications, before);
+            assert_painted_without_running_elapsed("Shell printf hello");
+            assert_waiting_shell(visual, id.clone(), true);
+            assert_row(
+                visual,
+                id.clone(),
+                "Shell printf hello, Collapse tool details",
+                true,
+            );
+            visual.update(|_, cx| {
+                assert!(stream.read(cx).tool_cards["child"].read(cx).is_running());
+            });
+
+            let before = notifications[0].get();
+            let _ = shimmer::take_painted_text();
+            advance(visual, Duration::from_secs(3));
+            assert_eq!(notifications[0].get(), before);
+            assert_no_running_shell_title_painted();
+            assert_waiting_shell(visual, id.clone(), true);
+            assert_row(
+                visual,
+                id.clone(),
+                "Shell printf hello, Collapse tool details",
+                true,
+            );
+            visual.update(|_, cx| {
+                assert!(stream.read(cx).tool_cards["child"].read(cx).is_running());
+            });
+
+            let before = std::array::from_fn(|index| notifications[index].get());
+            let _ = shimmer::take_painted_text();
+            finish(&stream, visual, "child", shell_result(status));
+            assert_notifications_advance(&notifications, before);
+            assert_no_running_shell_title_painted();
+            assert_row(visual, id.clone(), terminal_label, true);
+            visual.update(|_, cx| {
+                assert!(!stream.read(cx).tool_cards["child"].read(cx).is_running());
+            });
+            let before = notifications[0].get();
+            let _ = shimmer::take_painted_text();
+            advance(visual, Duration::from_secs(3));
+            assert_eq!(notifications[0].get(), before);
+            assert_no_running_shell_title_painted();
+            assert_row(visual, id, terminal_label, true);
+            visual.update(|window, _| window.remove_window());
+            visual.run_until_parked();
+        }
+    }
+}
+
+fn scroll_conversation(
+    stream: &Entity<ConversationStream>,
+    cx: &mut VisualTestContext,
+    delta: gpui_kit::Pixels,
+) {
+    let position = cx.update(|_, cx| {
+        let bounds = stream.read(cx).list.viewport_bounds();
+        assert!(bounds.size.width > px(10.));
+        assert!(bounds.size.height > px(0.));
+        gpui_kit::point(bounds.left() + px(5.), bounds.center().y)
+    });
+    cx.simulate_mouse_move(position, None, Modifiers::default());
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position,
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), delta)),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn cancelled_offscreen_measured_shell_never_first_displays_elapsed_time(cx: &mut TestAppContext) {
+    assert_eq!(vega_i18n::language(), "en");
+    for cancel_parent in [true, false] {
+        for (status, terminal_label) in [
+            (
+                ToolCallStatus::Success,
+                "Ran command in 7s, Collapse tool details",
+            ),
+            (
+                ToolCallStatus::Cancelled,
+                "Command cancelled, Collapse tool details",
+            ),
+        ] {
+            let (stream, visual) = open_stream(cx);
+            apply(
+                &stream,
+                visual,
+                ConversationEvent::PendingMessageDelivered {
+                    pending_id: "scroll-context".into(),
+                    message_id: "scroll-context-user".into(),
+                    seq: 2,
+                    content: "Scrollable context\n".repeat(80),
+                    images: vec![],
+                },
+            );
+            let parent = CancellationToken::new();
+            let child = parent.child_token();
+            let clock = Arc::new(OnceLock::new());
+            propose(
+                &stream,
+                visual,
+                bash("child", Some("Inspect the working tree")),
+            );
+            start_bash_with_cancel(&stream, visual, "child", clock.clone(), child.clone());
+            let id = tool_id(&stream, visual, "child");
+            let _ = shimmer::take_painted_text();
+            click(visual, id.clone());
+            assert_waiting_shell_painted("Inspect the working tree");
+            assert_row(
+                visual,
+                id.clone(),
+                "Inspect the working tree, Collapse tool details",
+                true,
+            );
+            let notifications = watch_notifications(&stream, visual, "child");
+            let (index, scroll_up) = visual.update(|_, cx| {
+                let stream = stream.read(cx);
+                let card = &stream.tool_cards["child"];
+                let index = stream
+                    .tool_entry_index(card, cx)
+                    .expect("the running card must belong to a real list item");
+                let viewport = stream.list.viewport_bounds();
+                let bounds = stream
+                    .list
+                    .bounds_for_item(index)
+                    .expect("the expanded card item must initially be measured");
+                assert!(viewport.size.height > px(0.));
+                assert!(bounds.top() < viewport.bottom());
+                assert!(bounds.bottom() > viewport.top());
+                (
+                    index,
+                    (viewport.bottom() + px(80.) - bounds.top()).max(px(1.)),
+                )
+            });
+            let _ = shimmer::take_painted_text();
+            scroll_conversation(&stream, visual, scroll_up);
+            visual.update(|_, cx| {
+                let stream = stream.read(cx);
+                let viewport = stream.list.viewport_bounds();
+                let bounds = stream
+                    .list
+                    .bounds_for_item(index)
+                    .expect("the card must remain measured in the trailing overdraw");
+                assert_eq!(stream.list.item_is_below_viewport(index), Some(true));
+                assert!(bounds.top() >= viewport.bottom());
+                assert!(bounds.top() - viewport.bottom() < px(600.));
+                let card = stream.tool_cards["child"].read(cx);
+                assert!(card.is_running());
+                assert!(card.is_expanded());
+                stream.list.remeasure_items(index..index + 1);
+                assert!(stream.list.bounds_for_item(index).is_none());
+            });
+
+            let before = std::array::from_fn(|index| notifications[index].get());
+            let _ = shimmer::take_painted_text();
+            assert!(clock.get().is_none());
+            publish_bash_start(&clock, visual);
+            advance(visual, Duration::from_millis(250));
+            assert_notifications_advance(&notifications, before);
+            visual.update(|_, cx| {
+                let stream = stream.read(cx);
+                let viewport = stream.list.viewport_bounds();
+                let bounds = stream
+                    .list
+                    .bounds_for_item(index)
+                    .expect("the natural notification must remeasure the offscreen card");
+                assert_eq!(stream.list.item_is_below_viewport(index), Some(true));
+                assert!(bounds.top() >= viewport.bottom());
+                assert!(bounds.top() - viewport.bottom() < px(600.));
+                let card = stream.tool_cards["child"].read(cx);
+                assert!(card.is_running());
+                assert!(card.is_expanded());
+                assert_eq!(card.compact_title(), "Running command for 0s");
+            });
+            let painted = shimmer::take_painted_text();
+            assert!(
+                painted.iter().all(|text| {
+                    text != "Inspect the working tree" && !text.contains("Running command for")
+                }),
+                "the measured offscreen title must not be painted: {painted:?}"
+            );
+
+            if cancel_parent {
+                parent.cancel();
+            } else {
+                child.cancel();
+            }
+            assert!(child.is_cancelled());
+            assert_eq!(parent.is_cancelled(), cancel_parent);
+            let before = notifications[2].get();
+            let _ = shimmer::take_painted_text();
+            scroll_conversation(&stream, visual, px(-10_000.));
+            assert!(notifications[2].get() > before);
+            assert_waiting_shell_painted("Inspect the working tree");
+            assert_waiting_shell(visual, id.clone(), true);
+            assert_row(
+                visual,
+                id.clone(),
+                "Inspect the working tree, Collapse tool details",
+                true,
+            );
+            visual.update(|_, cx| {
+                assert!(stream.read(cx).tool_cards["child"].read(cx).is_running());
+            });
+            let before = notifications[0].get();
+            let _ = shimmer::take_painted_text();
+            advance(visual, Duration::from_secs(3));
+            assert_eq!(notifications[0].get(), before);
+            assert_no_running_shell_title_painted();
+            assert_waiting_shell(visual, id.clone(), true);
+            assert_row(
+                visual,
+                id.clone(),
+                "Inspect the working tree, Collapse tool details",
+                true,
+            );
+            visual.update(|_, cx| {
+                assert!(stream.read(cx).tool_cards["child"].read(cx).is_running());
+            });
+
+            let before = std::array::from_fn(|index| notifications[index].get());
+            let _ = shimmer::take_painted_text();
+            finish(&stream, visual, "child", shell_result(status));
+            assert_notifications_advance(&notifications, before);
+            assert_no_running_shell_title_painted();
+            assert_row(visual, id.clone(), terminal_label, true);
+            visual.update(|_, cx| {
+                assert!(!stream.read(cx).tool_cards["child"].read(cx).is_running());
+            });
+            let before = notifications[0].get();
+            let _ = shimmer::take_painted_text();
+            advance(visual, Duration::from_secs(3));
+            assert_eq!(notifications[0].get(), before);
+            assert_no_running_shell_title_painted();
+            assert_row(visual, id, terminal_label, true);
+            visual.update(|window, _| window.remove_window());
+            visual.run_until_parked();
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn cancelled_child_hides_an_expanded_displayed_clock_until_real_terminal(cx: &mut TestAppContext) {
+    assert_eq!(vega_i18n::language(), "en");
+    for cancel_parent in [true, false] {
+        for (status, terminal_label) in [
+            (
+                ToolCallStatus::Success,
+                "Ran command in 7s, Collapse tool details",
+            ),
+            (
+                ToolCallStatus::Cancelled,
+                "Command cancelled, Collapse tool details",
+            ),
+        ] {
+            let (stream, visual) = open_stream(cx);
+            let parent = CancellationToken::new();
+            let child = parent.child_token();
+            let sibling = parent.child_token();
+            let clock = Arc::new(OnceLock::new());
+            propose(
+                &stream,
+                visual,
+                bash("child", Some("Inspect the working tree")),
+            );
+            start_bash_with_cancel(&stream, visual, "child", clock.clone(), child.clone());
+            let id = tool_id(&stream, visual, "child");
+            let notifications =
+                observe_collapsed_child_shell_start(&stream, visual, id.clone(), &clock);
+            let before = std::array::from_fn(|index| notifications[index].get());
+            let _ = shimmer::take_painted_text();
+            click(visual, id.clone());
+            assert_notifications_advance(&notifications, before);
+            assert_painted("Running command for 0s");
+            assert_row(
+                visual,
+                id.clone(),
+                "Running command for 0s, Collapse tool details",
+                true,
+            );
+
+            let before = std::array::from_fn(|index| notifications[index].get());
+            let _ = shimmer::take_painted_text();
+            if cancel_parent {
+                parent.cancel();
+            } else {
+                child.cancel();
+            }
+            assert!(child.is_cancelled());
+            assert_eq!(parent.is_cancelled(), cancel_parent);
+            assert_eq!(sibling.is_cancelled(), cancel_parent);
+            advance(visual, Duration::from_secs(1));
+            assert_notifications_advance(&notifications, before);
+            assert_no_running_shell_title_painted();
+            assert_row(
+                visual,
+                id.clone(),
+                "Inspect the working tree, Collapse tool details",
+                true,
+            );
+            visual.update(|_, cx| {
+                assert!(stream.read(cx).tool_cards["child"].read(cx).is_running());
+            });
+
+            let before = std::array::from_fn(|index| notifications[index].get());
+            let _ = shimmer::take_painted_text();
+            finish(&stream, visual, "child", shell_result(status));
+            assert_notifications_advance(&notifications, before);
+            assert_no_running_shell_title_painted();
+            assert_row(visual, id.clone(), terminal_label, true);
+            visual.update(|_, cx| {
+                assert!(!stream.read(cx).tool_cards["child"].read(cx).is_running());
+            });
+            let before = notifications[0].get();
+            let _ = shimmer::take_painted_text();
+            advance(visual, Duration::from_secs(3));
+            assert_eq!(notifications[0].get(), before);
+            assert_no_running_shell_title_painted();
+            assert_row(visual, id, terminal_label, true);
+            visual.update(|window, _| window.remove_window());
+            visual.run_until_parked();
+        }
+    }
 }

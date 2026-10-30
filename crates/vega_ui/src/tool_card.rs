@@ -361,9 +361,12 @@ impl ToolCard {
             && self.is_bash()
             && self.running_started_at.is_none()
             && let Some(started_at) = started_at
+            && !started_at.is_cancelled()
         {
             self.running_started_at = Some(started_at.clone());
-            if let Some(started) = started_at.started_at() {
+            if let Some(started) = started_at.started_at()
+                && !started_at.is_cancelled()
+            {
                 self.running_elapsed_seconds = Some(
                     cx.background_executor()
                         .now()
@@ -381,7 +384,15 @@ impl ToolCard {
                             {
                                 return None;
                             }
-                            let Some(started) = started_at.started_at() else {
+                            let started = started_at.started_at();
+                            if started_at.is_cancelled() {
+                                card.running_started_at = None;
+                                card.running_elapsed_seconds = None;
+                                card.refresh_summary();
+                                cx.notify();
+                                return None;
+                            }
+                            let Some(started) = started else {
                                 return Some(Duration::from_millis(250));
                             };
                             let elapsed = cx
@@ -634,7 +645,9 @@ impl ToolCard {
     }
 
     pub(crate) fn headline_title(&self) -> String {
-        if self.summary_language == vega_i18n::language() {
+        if self.summary_language == vega_i18n::language()
+            && !(self.is_bash() && self.status == ToolCallStatus::Running)
+        {
             self.summary.clone()
         } else {
             self.build_summary()
@@ -664,6 +677,18 @@ impl ToolCard {
         self.expanded
     }
 
+    fn live_elapsed_seconds(&self) -> Option<u64> {
+        if self
+            .running_started_at
+            .as_ref()
+            .is_some_and(BashStartClock::is_cancelled)
+        {
+            None
+        } else {
+            self.running_elapsed_seconds
+        }
+    }
+
     pub(crate) fn compact_title(&self) -> String {
         if !self.expanded
             || !self.is_bash()
@@ -677,7 +702,7 @@ impl ToolCard {
         {
             return self.headline_title();
         }
-        if self.status == ToolCallStatus::Running && self.running_elapsed_seconds.is_none() {
+        if self.status == ToolCallStatus::Running && self.live_elapsed_seconds().is_none() {
             return self.headline_title();
         }
         let (label_key, duration_key) = match self.activity_state() {
@@ -711,7 +736,7 @@ impl ToolCard {
             return None;
         }
         if self.status == ToolCallStatus::Running {
-            return self.running_elapsed_seconds.map(human_elapsed);
+            return self.live_elapsed_seconds().map(human_elapsed);
         }
         match &self.result {
             Some(ToolCardResultProjection::Bash {
@@ -1362,7 +1387,7 @@ impl ToolCard {
     }
 
     fn build_bash_summary(&self) -> String {
-        if self.status == ToolCallStatus::Running && self.running_elapsed_seconds.is_none() {
+        if self.status == ToolCallStatus::Running && self.live_elapsed_seconds().is_none() {
             let Some(ToolCardInputProjection::Bash { command }) = &self.input else {
                 return vega_i18n::t("ui.shell").into();
             };
@@ -1398,8 +1423,9 @@ impl ToolCard {
     }
 
     pub(crate) fn cancel_pending_bash_clock(&mut self) {
-        if self.is_bash() && self.running_elapsed_seconds.is_none() {
+        if self.is_bash() {
             self.stop_live_elapsed();
+            self.refresh_summary();
         }
     }
 
@@ -1441,7 +1467,7 @@ impl ToolCard {
                 vega_i18n::t("ui.ready_to_run")
             }
             ToolActivityState::Active
-                if self.is_bash() && self.running_elapsed_seconds.is_none() =>
+                if self.is_bash() && self.live_elapsed_seconds().is_none() =>
             {
                 vega_i18n::t("ui.pending")
             }

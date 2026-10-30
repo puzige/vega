@@ -635,21 +635,42 @@ struct RuntimeSkillConfig {
 }
 
 #[derive(Clone)]
-pub struct BashStartClock(Arc<OnceLock<std::time::Instant>>);
+pub struct BashStartClock {
+    started_at: Arc<OnceLock<std::time::Instant>>,
+    cancel: CancellationToken,
+}
 
 impl BashStartClock {
-    fn new() -> (Self, Arc<OnceLock<std::time::Instant>>) {
+    fn new(cancel: CancellationToken) -> (Self, Arc<OnceLock<std::time::Instant>>) {
         let started_at = Arc::new(OnceLock::new());
-        (Self(started_at.clone()), started_at)
+        (
+            Self {
+                started_at: started_at.clone(),
+                cancel,
+            },
+            started_at,
+        )
     }
 
     pub fn started_at(&self) -> Option<std::time::Instant> {
-        self.0.get().copied()
+        self.started_at.get().copied()
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
     }
 
     #[cfg(feature = "test-support")]
     pub fn from_test_start(started_at: Arc<OnceLock<std::time::Instant>>) -> Self {
-        Self(started_at)
+        Self::from_test_start_with_cancel(started_at, CancellationToken::new())
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn from_test_start_with_cancel(
+        started_at: Arc<OnceLock<std::time::Instant>>,
+        cancel: CancellationToken,
+    ) -> Self {
+        Self { started_at, cancel }
     }
 }
 
