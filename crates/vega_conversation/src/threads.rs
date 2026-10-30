@@ -626,7 +626,12 @@ pub fn task_project_path(
 ) -> Result<std::path::PathBuf, ConversationError> {
     let thread = get_thread(store, thread_id)?;
     let project = store_projects::find(store.conn(), &thread.project_id)
-        .map_err(crate::agent::runtime_store_error)?
+        .map_err(|error| match error {
+            store_projects::ProjectsError::Sql(error) => crate::agent::runtime_store_error(error),
+            store_projects::ProjectsError::PathAlreadyRegistered(_) => {
+                ConversationError::InvalidTaskIdentity
+            }
+        })?
         .ok_or(ConversationError::NoProject)?;
     let path = std::path::PathBuf::from(project.path);
     if path.as_os_str().is_empty() || !path.is_absolute() || !path.is_dir() {

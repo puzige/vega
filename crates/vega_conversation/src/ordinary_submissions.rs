@@ -1410,6 +1410,9 @@ impl OrdinaryWorker {
                         current.facts.failure,
                         Some(
                             SubmissionFailure::PreparationFailed
+                                | SubmissionFailure::LaunchFailed
+                                | SubmissionFailure::SpawnFailed
+                                | SubmissionFailure::CommitFailed
                                 | SubmissionFailure::Unknown
                                 | SubmissionFailure::WorkerLost
                         )

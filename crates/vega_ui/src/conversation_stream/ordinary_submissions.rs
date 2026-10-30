@@ -565,9 +565,7 @@ impl ConversationStream {
             .ordinary
             .iter()
             .find(|row| identity.message_id.as_deref() == Some(row.submission.user_message_id()))?;
-        if row.reference_failed || self.attempt_shows_stop_line(row, cx) {
-            return None;
-        }
+        let suppress_controls = row.reference_failed || self.attempt_shows_stop_line(row, cx);
         let final_kind = if row.submission.raw().images().is_empty() {
             "user-text"
         } else {
@@ -580,9 +578,21 @@ impl ConversationStream {
         {
             return None;
         }
-        let controls = row
-            .state
-            .controls(row.submission.snapshot().retry, row.checked)?;
+        let snapshot = row.submission.snapshot();
+        let controls = (!suppress_controls)
+            .then(|| row.state.controls(snapshot.retry, row.checked))
+            .flatten();
+        let diagnostic_available = snapshot
+            .attempts
+            .iter()
+            .find(|attempt| attempt.id == row.attempt)
+            .is_some_and(|attempt| {
+                attempt.primary != PrimaryFact::Started
+                    && (attempt.failure.is_some() || attempt.abnormal || attempt.sealed)
+            });
+        if controls.is_none() && !diagnostic_available {
+            return None;
+        }
         let submission = row.submission.id();
         let attempt = row.attempt;
         let thread = self.thread.id.clone();
@@ -597,56 +607,62 @@ impl ConversationStream {
                 .gap_2()
                 .text_size(px(Typography::BODY))
                 .text_color(colors.text_secondary)
-                .child(
+                .children(controls.as_ref().map(|controls| {
                     div()
                         .flex()
                         .flex_col()
                         .child(vega_i18n::t(controls.message))
-                        .children(controls.detail.map(vega_i18n::t)),
-                )
-                .children(controls.action.map(|(label, action)| {
-                    let label = vega_i18n::t(label);
-                    div()
-                        .id(format!(
-                            "ordinary-action-{}",
-                            row.submission.user_message_id()
-                        ))
-                        .role(Role::Button)
-                        .aria_label(label)
-                        .key_context("PendingMessageControl")
-                        .track_focus(&row.focus)
-                        .tab_stop(true)
-                        .cursor_pointer()
-                        .px_2()
-                        .py_1()
-                        .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-                        .focus_visible(move |style| style.border_1().border_color(colors.accent))
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(move |_, _, _, cx| {
-                                cx.stop_propagation();
-                                cx.emit(OrdinaryActionRequested {
-                                    thread_id: thread.clone(),
-                                    submission,
-                                    attempt,
-                                    action,
-                                });
-                            }),
-                        )
-                        .on_action(cx.listener(
-                            move |_, _: &ActivatePendingMessageControl, _, cx| {
-                                cx.stop_propagation();
-                                cx.emit(OrdinaryActionRequested {
-                                    thread_id: keyboard_thread.clone(),
-                                    submission,
-                                    attempt,
-                                    action,
-                                });
-                            },
-                        ))
-                        .child(label)
+                        .children(controls.detail.map(vega_i18n::t))
                 }))
-                .child(
+                .children(
+                    controls
+                        .and_then(|controls| controls.action)
+                        .map(|(label, action)| {
+                            let label = vega_i18n::t(label);
+                            div()
+                                .id(format!(
+                                    "ordinary-action-{}",
+                                    row.submission.user_message_id()
+                                ))
+                                .role(Role::Button)
+                                .aria_label(label)
+                                .key_context("PendingMessageControl")
+                                .track_focus(&row.focus)
+                                .tab_stop(true)
+                                .cursor_pointer()
+                                .px_2()
+                                .py_1()
+                                .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+                                .focus_visible(move |style| {
+                                    style.border_1().border_color(colors.accent)
+                                })
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(move |_, _, _, cx| {
+                                        cx.stop_propagation();
+                                        cx.emit(OrdinaryActionRequested {
+                                            thread_id: thread.clone(),
+                                            submission,
+                                            attempt,
+                                            action,
+                                        });
+                                    }),
+                                )
+                                .on_action(cx.listener(
+                                    move |_, _: &ActivatePendingMessageControl, _, cx| {
+                                        cx.stop_propagation();
+                                        cx.emit(OrdinaryActionRequested {
+                                            thread_id: keyboard_thread.clone(),
+                                            submission,
+                                            attempt,
+                                            action,
+                                        });
+                                    },
+                                ))
+                                .child(label)
+                        }),
+                )
+                .children(diagnostic_available.then(|| {
                     div()
                         .id(format!(
                             "ordinary-diagnostics-{}",
@@ -687,8 +703,8 @@ impl ConversationStream {
                                 }
                             },
                         ))
-                        .child(vega_i18n::t("ui.ordinary_send.copy_diagnostics")),
-                )
+                        .child(vega_i18n::t("ui.ordinary_send.copy_diagnostics"))
+                }))
                 .into_any_element(),
         )
     }

@@ -317,7 +317,8 @@ impl VegaWindow {
                     &worker_thread,
                     &pending,
                     "user_paused",
-                )?;
+                )
+                .map_err(|error| error.to_string())?;
             }
             if let AutomationCommand::Create { instruction, .. }
             | AutomationCommand::Edit { instruction, .. } = &command
@@ -692,7 +693,8 @@ impl VegaWindow {
                     &worker_thread,
                     &pending,
                     "user_paused",
-                )?;
+                )
+                .map_err(|error| error.to_string())?;
             }
             let sampled_at = std::time::Instant::now();
             let (tasks, active_claim) =

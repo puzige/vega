@@ -308,9 +308,14 @@ pub fn pause_matching(
     thread: &str,
     expected: &[AutomationTask],
     reason: &str,
-) -> Result<(), String> {
-    let tx = store.immediate_transaction().map_err(storage)?;
-    for mut task in load_from(&tx, thread)? {
+) -> Result<(), crate::types::ConversationError> {
+    let tx = store
+        .immediate_transaction()
+        .map_err(crate::agent::runtime_store_error)?;
+    for encoded in db::tasks(&tx, thread).map_err(crate::agent::runtime_store_error)? {
+        let mut task: AutomationTask = serde_json::from_str(&encoded).map_err(|_| {
+            crate::types::ConversationError::CorruptRow("automation task invalid".into())
+        })?;
         if task.status == AutomationStatus::Active
             && expected.iter().any(|snapshot| {
                 snapshot.identity == task.identity && snapshot.revision == task.revision
@@ -321,12 +326,22 @@ pub fn pause_matching(
             task.revision = task
                 .revision
                 .checked_add(1)
-                .ok_or(vega_i18n::t("domain.automation.error.revision_limit"))?;
+                .ok_or(crate::types::ConversationError::InvalidTaskIdentity)?;
             task.updated_at_ms = now_ms();
-            save(&tx, &task)?;
+            let encoded = serde_json::to_string(&task)
+                .map_err(|_| crate::types::ConversationError::InvalidTaskIdentity)?;
+            db::save_task(
+                &tx,
+                &task.thread_id,
+                task.kind.key(),
+                &task.identity,
+                task.revision,
+                &encoded,
+            )
+            .map_err(crate::agent::runtime_store_error)?;
         }
     }
-    tx.commit().map_err(storage)
+    tx.commit().map_err(crate::agent::runtime_store_error)
 }
 
 pub fn recover_startup(store: &Store) -> Result<(), String> {

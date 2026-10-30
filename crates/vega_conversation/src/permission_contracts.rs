@@ -16,9 +16,15 @@ pub(crate) fn coordinate() -> Result<MutexGuard<'static, ()>, ConversationError>
 }
 
 pub(crate) fn require_admission_open(store: &Store) -> Result<(), ConversationError> {
-    if vega_store::thread_admission::is_database_paused(store.database_identity())
-        .map_err(storage_error)?
-    {
+    if vega_store::thread_admission::is_database_paused(store.database_identity()).map_err(
+        |_| {
+            ConversationError::Runtime(std::sync::Arc::new(
+                vega_runtime::VegaError::RuntimeFailure(vega_runtime::RuntimeFailureDetail::new(
+                    vega_runtime::RuntimeFailureReason::Admission,
+                )),
+            ))
+        },
+    )? {
         return Err(ConversationError::InvalidTaskIdentity);
     }
     Ok(())
@@ -430,7 +436,12 @@ pub(crate) fn capture_fence(
         } else {
             let mut rules: Vec<_> =
                 vega_store::permissions::list_exact(store.conn(), &thread.project_id)
-                    .map_err(storage_error)?
+                    .map_err(|error| match error {
+                        vega_store::permissions::PermissionsError::Store(error) => {
+                            storage_error(error)
+                        }
+                        _ => ConversationError::InvalidTaskIdentity,
+                    })?
                     .into_iter()
                     .map(|rule| (rule.tool, rule.pattern))
                     .collect();

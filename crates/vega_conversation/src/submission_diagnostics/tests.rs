@@ -241,3 +241,38 @@ fn committed_preparation_emits_prepared_once_without_claiming_run_success() {
     assert_eq!(exported["events"][1]["state"], "prepared");
     assert!(exported["events"][1]["failure"].is_null());
 }
+
+#[test]
+fn generic_startup_failure_is_enriched_by_later_sqlite_cause() {
+    let (store, submission, worker) = submission();
+    let attempt = worker.attempt_id();
+    let actor = worker.register_worker().unwrap();
+    actor
+        .complete(Err(SubmissionFailure::LaunchFailed))
+        .unwrap();
+    let error = store
+        .conn()
+        .execute("INSERT INTO nonexistent VALUES (1)", [])
+        .unwrap_err();
+    let detail = runtime_failure(PreparationStage::Launch, &error.into());
+    worker
+        .complete(Err(SubmissionFailure::Preparation(detail)))
+        .unwrap();
+    submission.seal(attempt).unwrap();
+    let event = &diagnostic(&submission, attempt)["events"][1];
+    assert_eq!(event["failure"]["stage"], "launch");
+    assert_eq!(event["failure"]["reason"], "database");
+    assert_eq!(event["failure"]["sqlite_code"], 1);
+    assert_eq!(event["state"], "failed");
+    assert!(submission.try_retry(attempt).is_ok());
+}
+
+#[test]
+fn automation_pause_keeps_sqlite_failure_instead_of_workspace_cause() {
+    let store = Store::open(":memory:").unwrap();
+    let error = crate::automation::pause_matching(&store, "unmaterialized", &[], "user_paused")
+        .unwrap_err();
+    let detail = conversation_failure(PreparationStage::Conversation, &error);
+    assert_eq!(detail.reason, PreparationReason::Database);
+    assert_eq!(detail.sqlite_code, Some(1));
+}

@@ -970,29 +970,38 @@ pub(crate) fn ordinary_effective_authority(
     run: &vega_conversation::agent::OrdinaryRun,
     config: &vega_store::config::AppConfig,
     path: &std::path::Path,
-) -> Result<Arc<EffectiveAuthority>, ()> {
-    let provider = unique_provider_for_model(config, run.submission.raw().model()).ok_or(())?;
+) -> Result<Arc<EffectiveAuthority>, vega_conversation::submission_diagnostics::PreparationFailure>
+{
+    use vega_conversation::submission_diagnostics::{
+        PreparationFailure, PreparationReason, PreparationStage,
+    };
+    let failure = |reason| PreparationFailure::new(PreparationStage::Preflight, reason);
+    let provider = unique_provider_for_model(config, run.submission.raw().model())
+        .ok_or(failure(PreparationReason::ProviderUnavailable))?;
     let model = vega_conversation::model_capabilities::load_configured_model(
         config,
         path,
         &provider.name,
         run.submission.raw().model(),
     )
-    .map_err(|_| ())?;
+    .map_err(|_| failure(PreparationReason::Capability))?;
     let snapshot = run.submission.snapshot();
     if snapshot.unavailable {
-        return Err(());
+        return Err(failure(PreparationReason::InvalidIdentity));
     }
     if let Some(authority) = snapshot.authority {
-        authority.validate_current(&model).map_err(|_| ())?;
+        authority
+            .validate_current(&model)
+            .map_err(|_| failure(PreparationReason::InvalidIdentity))?;
         return Ok(authority);
     }
     let reasoning = match run.submission.raw().reasoning() {
         Some(raw) => {
             if raw.provider != provider.name || raw.model != model.identity.model {
-                return Err(());
+                return Err(failure(PreparationReason::InvalidIdentity));
             }
-            vega_runtime::model_compat::freeze_choice(&model, raw.choice.clone()).map_err(|_| ())?
+            vega_runtime::model_compat::freeze_choice(&model, raw.choice.clone())
+                .map_err(|_| failure(PreparationReason::Reasoning))?
         }
         None => reasoning_for_provider_model(
             &provider.name,
@@ -1000,16 +1009,19 @@ pub(crate) fn ordinary_effective_authority(
             &provider.base_url,
             &model.identity.model,
             Some(&path.with_file_name(vega_store::reasoning::REASONING_FILE_NAME)),
-        )?,
+        )
+        .map_err(|_| failure(PreparationReason::Reasoning))?,
     };
     run.worker
         .bind_effective_authority(model, reasoning)
-        .map_err(|_| ())?;
+        .map_err(|_| failure(PreparationReason::InvalidIdentity))?;
     let snapshot = run.submission.snapshot();
     if snapshot.unavailable {
-        return Err(());
+        return Err(failure(PreparationReason::InvalidIdentity));
     }
-    snapshot.authority.ok_or(())
+    snapshot
+        .authority
+        .ok_or(failure(PreparationReason::InvalidIdentity))
 }
 
 pub(crate) fn commit_provider(
@@ -1171,7 +1183,7 @@ pub(crate) fn run_agent_worker_with_mcp(
             .with_read_state(file_read_state);
         let store = Store::open(&database_path).map_err(|error| { preparation_failure = runtime_failure(PreparationStage::Database, &error.into()); })?;
         store.migrate().map_err(|error| { preparation_failure = runtime_failure(PreparationStage::Database, &error.into()); })?;
-        vega_conversation::automation::pause_matching(&store, &thread.id, &automation_pauses, "user_paused").map_err(|_| ())?;
+        vega_conversation::automation::pause_matching(&store, &thread.id, &automation_pauses, "user_paused").map_err(|error| { preparation_failure = conversation_failure(PreparationStage::Conversation, &error); })?;
         // Resolve provider identity once, before constructing the provider and
         // before entering the runtime. The resulting FrozenReasoning is moved
         // into the selected entry point and is never re-read during retries
@@ -1179,6 +1191,7 @@ pub(crate) fn run_agent_worker_with_mcp(
         let config = config_path
             .as_deref()
             .and_then(|path| vega_store::config::read_from(path).ok());
+        preparation_failure = PreparationFailure::new(PreparationStage::Preflight, PreparationReason::CredentialSafety);
         let tools = crate::agent_context::protect_project_tools(tools, config_path.as_deref(), config.as_ref())?;
         let system_prompt = crate::agent_context::compose_agent_system_prompt(&tools).map_err(project_failure)?;
         let configured_provider = config
@@ -1210,6 +1223,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                 .map_err(|_| ())?;
             computer_use = Some(run);
         }
+        preparation_failure = PreparationFailure::new(PreparationStage::Preflight, PreparationReason::ProviderUnavailable);
         if config_path.is_some() && configured_provider.is_none() {
             return Err(());
         }
@@ -1217,7 +1231,7 @@ pub(crate) fn run_agent_worker_with_mcp(
             .as_deref()
             .map(|path| path.with_file_name(vega_store::reasoning::REASONING_FILE_NAME));
         let reasoning = if let Some(ordinary) = &ordinary {
-            ordinary_effective_authority(ordinary, config.as_ref().ok_or(())?, config_path.as_deref().ok_or(())?)?.reasoning().clone()
+            ordinary_effective_authority(ordinary, config.as_ref().ok_or(())?, config_path.as_deref().ok_or(())?).map_err(|error| { preparation_failure = error; })?.reasoning().clone()
         } else { match (reasoning, configured_provider.as_ref()) {
             (Some(reasoning), Some(provider)) => {
                 if reasoning.model != thread.model || reasoning.provider != provider.name {
@@ -1342,7 +1356,7 @@ pub(crate) fn run_agent_worker_with_mcp(
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|_| ())?;
+            .map_err(|error| { preparation_failure = runtime_failure(PreparationStage::Launch, &error.into()); })?;
         let event_sender = sender.clone();
         let event_sink = move |event: &vega_conversation::types::ConversationEvent| {
             event_sender
@@ -1439,6 +1453,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                 if cancel.is_cancelled() {
                     return Err(());
                 }
+                preparation_failure = PreparationFailure::new(PreparationStage::Launch, PreparationReason::Pipeline);
                 let mcp_servers = match &mcp_service {
                     Some(service) => runtime
                         .block_on(async {
