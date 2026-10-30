@@ -1374,10 +1374,11 @@ fn parent_cancellation_suppresses_an_unobserved_child_start_until_real_terminal(
                 }
                 parent.cancel();
                 assert!(child.is_cancelled());
+                advance(visual, Duration::from_millis(250));
+                assert_eq!(notifications[0].get(), before + 1);
+                let before = notifications[0].get();
                 if !publish_before_cancel {
-                    advance(visual, Duration::from_millis(250));
                     assert!(clock.get().is_none());
-                    assert_eq!(notifications[0].get(), before);
                     publish_bash_start(&clock, visual);
                 }
                 advance(visual, Duration::from_secs(3));
@@ -1618,7 +1619,8 @@ fn cancelling_one_child_branch_does_not_stop_an_independent_sibling_clock(cx: &m
     assert!(!root.is_cancelled());
     assert!(!sibling.is_cancelled());
     advance(cx, Duration::from_millis(250));
-    assert_eq!(child_notifications[0].get(), child_before);
+    assert_eq!(child_notifications[0].get(), child_before + 1);
+    let child_before = child_notifications[0].get();
     assert_no_running_shell_title_painted();
     assert_waiting_shell(cx, child_id.clone(), true);
     assert_waiting_shell(cx, sibling_id.clone(), true);
@@ -1988,6 +1990,10 @@ fn cancelled_collapsed_shell_without_description_never_first_displays_elapsed_ti
 
             let before = notifications[0].get();
             let _ = shimmer::take_painted_text();
+            advance(visual, Duration::from_secs(1));
+            assert_eq!(notifications[0].get(), before + 1);
+            assert_no_running_shell_title_painted();
+            let before = notifications[0].get();
             advance(visual, Duration::from_secs(3));
             assert_eq!(notifications[0].get(), before);
             assert_no_running_shell_title_painted();
@@ -2180,6 +2186,10 @@ fn cancelled_offscreen_measured_shell_never_first_displays_elapsed_time(cx: &mut
             });
             let before = notifications[0].get();
             let _ = shimmer::take_painted_text();
+            advance(visual, Duration::from_secs(1));
+            assert_eq!(notifications[0].get(), before + 1);
+            assert_no_running_shell_title_painted();
+            let before = notifications[0].get();
             advance(visual, Duration::from_secs(3));
             assert_eq!(notifications[0].get(), before);
             assert_no_running_shell_title_painted();
