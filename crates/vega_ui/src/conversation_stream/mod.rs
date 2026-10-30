@@ -305,8 +305,6 @@ mod phase;
 mod render;
 mod render_rows;
 mod run_activity;
-#[cfg(test)]
-mod run_activity_tests;
 mod run_notice;
 mod shimmer;
 mod sticky_disclosure;

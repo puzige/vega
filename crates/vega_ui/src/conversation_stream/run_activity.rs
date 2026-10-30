@@ -2,8 +2,6 @@ use super::sticky_disclosure::{StickyDisclosure, StickySection, StickyState};
 use super::*;
 use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use crate::tool_card::{ToolActivityCategory, sentence_initial};
-#[cfg(test)]
-use gpui_kit::test::TestSupportExt;
 use gpui_kit::{AnyElement, MouseButton, MouseUpEvent, ScrollHandle, div, px};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1958,8 +1956,7 @@ impl RunActivityGroup {
             let row = div()
                 .id(("run-stage-toggle", segment_index))
                 .group(disclosure_group.clone());
-            #[cfg(test)]
-            let row = row.test_support();
+
             header = Some(
                 row.track_focus(&header_focus)
                     .tab_stop(can_expand)

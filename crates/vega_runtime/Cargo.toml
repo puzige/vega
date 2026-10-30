@@ -3,9 +3,6 @@ name = "vega_runtime"
 version.workspace = true
 edition.workspace = true
 
-[features]
-test-support = []
-
 [dependencies]
 vega_i18n.workspace = true
 vega_credentials = { workspace = true }

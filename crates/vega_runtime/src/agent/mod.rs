@@ -659,19 +659,6 @@ impl BashStartClock {
     pub fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled()
     }
-
-    #[cfg(feature = "test-support")]
-    pub fn from_test_start(started_at: Arc<OnceLock<std::time::Instant>>) -> Self {
-        Self::from_test_start_with_cancel(started_at, CancellationToken::new())
-    }
-
-    #[cfg(feature = "test-support")]
-    pub fn from_test_start_with_cancel(
-        started_at: Arc<OnceLock<std::time::Instant>>,
-        cancel: CancellationToken,
-    ) -> Self {
-        Self { started_at, cancel }
-    }
 }
 
 /// Cancellable permission boundary implemented by conversation/UI.

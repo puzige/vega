@@ -1,16 +1,6 @@
 use super::*;
 use gpui_kit::{ContentMask, DecorationRun, LineLayout, TextAlign, point};
 
-#[cfg(test)]
-thread_local! {
-    static PAINTED_TEXT: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
-}
-
-#[cfg(test)]
-pub(super) fn take_painted_text() -> Vec<String> {
-    PAINTED_TEXT.with(|text| std::mem::take(&mut *text.borrow_mut()))
-}
-
 pub(crate) struct StageText {
     title: String,
     epoch: Option<Instant>,
@@ -231,7 +221,7 @@ fn styled_text(
                     bounds: clipped_bounds,
                 }),
                 |window| {
-                    let painted = layout.paint(
+                    let _ = layout.paint(
                         point(bounds.left(), bounds.top()),
                         bounds.size.height,
                         TextAlign::Left,
@@ -240,11 +230,6 @@ fn styled_text(
                         window,
                         cx,
                     );
-                    #[cfg(test)]
-                    if painted.is_ok() && !clipped_bounds.is_empty() {
-                        PAINTED_TEXT.with(|text| text.borrow_mut().push(shown.clone()));
-                    }
-                    let _ = painted;
                 },
             );
             if moving {
