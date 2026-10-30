@@ -120,3 +120,22 @@ Native U5 acceptance failed on the verified candidate: two stages, output usages
 | U91-8 renewed again | Verified package, original native conversation continuation and restart | Original-session success and durable checkpoint/raw audit verification; no closure based solely on owned or snapshot diagnostics |
 
 The extra cost of failed parent requests and longer latency must be reported. The native failure remains unaccepted until the final native case passes. No dependency, schema, user configuration or database editing is authorized.
+
+
+## 2026-10-30 — minimal anchor fix validation
+
+- Recoverable development source: tag [`evidence/context-anchor-tests-cbebee11`](https://github.com/puzige/vega/tree/evidence/context-anchor-tests-cbebee11), full SHA `cbebee11429bf6a115485596d73120cfdef84f9f`.
+- [Actions 41097828224](https://github.com/puzige/vega/actions/runs/41097828224): format, all-target Clippy, Python release-script checks and required aggregate succeeded; **52 discovered / 52 executed / 52 passed / 0 skipped**. This is development-version evidence, not final cleanup-head validation or native acceptance.
+- Non-implementer static review of `e8325e10f802f3bb300ea408abae39fc5c0a1961`, then ownership-only delta `5cbd35cffb5d8d23c11ac7937470e0d40b0c9475` and fixture-only delta `cbebee11429bf6a115485596d73120cfdef84f9f`: no actionable findings. Static review is not compilation or behavior proof.
+- Earlier [41094588866](https://github.com/puzige/vega/actions/runs/41094588866) failed compilation (partial-move borrow); [41096292093](https://github.com/puzige/vega/actions/runs/41096292093) compiled, then ran 52 tests with 51 passed / 1 failed / 0 skipped due to an idempotent test fixture. Corrected responsible layers without weakening assertions.
+- Four task-exclusive development Rust test modules and their wiring removed after preserving the above source/evidence. No production changes in cleanup; existing mainline tests are not removed. Final-head CI and Rust discovery/execution counts pending. Mainline tests conflict with the repository-wide zero-Rust-test delivery rule and require a separate scope decision before merging; no zero-suite claim is made.
+- No local Vega execution, compilation, Clippy, tests, packaging or deployment. Target machine remains read-only. Checkpoint/skill transactions, run drain/cancellation and unknown-outcome recovery remain separate #781–#784 / #770 work.
+
+Preserved development test SHA-256:
+
+| Source | SHA-256 |
+| --- | --- |
+| runtime `context_accounting_tests.rs` | `de755be6a3e9c11a22c90d034970809808c4aaea72aa91b4e23b0b4e27bee08a` |
+| runtime `micro_usage_tests.rs` | `3563ffb13f7b3f61717442f3bf5599d1c47dc28d3d1f196f4ba7d9e93c5c9c60` |
+| conversation compaction `micro_usage_tests.rs` | `64b61527d0eb54ba47df17be77a71df8a9964253a03112bea27e16a68a8cbe6b` |
+| conversation `credential_accounting_tests.rs` | `ebd8a9962d785eb1db311381301f45b17dac8a8b3f208a72a604e7fb59d6a6a8` |

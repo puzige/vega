@@ -1457,8 +1457,6 @@ impl fmt::Debug for AgentOutcome {
 }
 
 pub(crate) mod context_accounting;
-#[cfg(test)]
-mod context_accounting_tests;
 mod context_files;
 mod context_history;
 pub use context_history::{
@@ -1474,8 +1472,6 @@ mod descriptions;
 pub use descriptions::is_native_tool;
 use descriptions::{describe_definition, extract_call_description};
 mod loop_;
-#[cfg(test)]
-mod micro_usage_tests;
 mod tools_exec;
 
 pub use loop_::{
