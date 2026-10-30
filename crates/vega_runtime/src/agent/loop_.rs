@@ -76,18 +76,13 @@ async fn prepared_input_decision(
     anchor: Option<&InputAnchor>,
     messages: &[ChatMessage],
     tools: &[ToolDefinition],
-    request: &AgentRequest,
+    request: &ChatRequest,
     revision: u64,
 ) -> Result<InputDecision, VegaError> {
     let candidate = ChatRequest {
-        model: request.model.clone(),
         messages: crate::project_model_messages(messages)?,
         tools: tools.to_vec(),
-        reasoning: request.reasoning.clone(),
-        max_tokens: request_output_cap(request.max_tokens, request.context_budget),
-        model_snapshot: request.model_snapshot.clone(),
-        history_safety: request.history_safety.clone(),
-        ..Default::default()
+        ..request.clone()
     };
     match provider.prepare_accounting_request(candidate).await? {
         Some(prepared) => InputAnchor::decide_request(anchor, &prepared, revision)
@@ -98,7 +93,7 @@ async fn prepared_input_decision(
             tools,
             &request.model,
             request.reasoning.as_ref(),
-            request_output_cap(request.max_tokens, request.context_budget),
+            request.max_tokens,
             revision,
         ),
     }
@@ -1148,6 +1143,14 @@ where
     let mut force_provider_compaction = false;
     let mut provider_compaction_deeper = false;
     let mut provider_overflow_gap = None;
+    let accounting_request = ChatRequest {
+        model: request.model.clone(),
+        reasoning: request.reasoning.clone(),
+        max_tokens: request_output_cap(request.max_tokens, context_budget),
+        model_snapshot: request.model_snapshot.clone(),
+        history_safety: request.history_safety.clone(),
+        ..Default::default()
+    };
     let mut completed = request.completed_tool_results;
     let tool_config = request.tool_config;
     let skill_config = tool_config.skills.clone();
@@ -1535,7 +1538,7 @@ where
                 input_anchor.as_ref(),
                 &messages,
                 &tool_definitions,
-                &request,
+                &accounting_request,
                 primary_revision,
             )
             .await?
@@ -1602,7 +1605,7 @@ where
                 input_anchor.as_ref(),
                 &messages,
                 &tool_definitions,
-                &request,
+                &accounting_request,
                 primary_revision,
             )
             .await?;
@@ -1617,7 +1620,7 @@ where
                 input_anchor.as_ref(),
                 &messages,
                 &tool_definitions,
-                &request,
+                &accounting_request,
                 primary_revision,
             )
             .await?
@@ -3037,7 +3040,7 @@ where
                     input_anchor.as_ref(),
                     &messages,
                     &tool_definitions,
-                    &request,
+                    &accounting_request,
                     primary_revision,
                 )
                 .await
@@ -3931,7 +3934,7 @@ where
                 input_anchor.as_ref(),
                 &messages,
                 &tool_definitions,
-                &request,
+                &accounting_request,
                 primary_revision,
             )
             .await
