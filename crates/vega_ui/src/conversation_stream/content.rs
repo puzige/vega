@@ -1541,6 +1541,9 @@ impl ConversationStream {
                     self.apply_controller_error(cx);
                     return;
                 }
+                if self.actions.running {
+                    self.timestamps.start_assistant(&message_id);
+                }
                 self.reset_live_context_usage();
                 self.last_finished_agent_message = None;
                 let continuation_successor = self
