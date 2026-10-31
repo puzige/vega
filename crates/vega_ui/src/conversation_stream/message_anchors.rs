@@ -265,7 +265,7 @@ impl ConversationStream {
                         StreamEntry::RunActivity { group } => self.estimated_run_height(group, cx) + stage_top_insets.get(&index).copied().unwrap_or(0.),
                         StreamEntry::RunActivitySegment { group, segment } => group.read(cx).estimated_segment_height_with_top(*segment, notice_width, stage_top_insets.get(&index).copied().unwrap_or(Layout::CONVERSATION_STAGE_TOP), cx),
                         StreamEntry::Tool { .. } | StreamEntry::ToolGroup { .. } | StreamEntry::ContextCompaction { .. } => self.estimated_entry_height(index, cx, identity.message_id.is_some()) + stage_top_insets.get(&index).copied().unwrap_or(0.),
-                        _ => self.estimated_entry_height(index, cx, identity.message_id.is_some()) + if self.copy_source_for_entry(index).is_some() { Layout::MESSAGE_COPY_FOOTER } else { 0. },
+                        _ => self.estimated_entry_height(index, cx, identity.message_id.is_some()) + if self.action_copy_source_for_entry(index).is_some() { Layout::MESSAGE_COPY_FOOTER } else { 0. },
                     } + notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.)
                         + mcp_notices.get(&index).map(|notice| notice.estimated_height(notice_width)).unwrap_or(0.))
             })
