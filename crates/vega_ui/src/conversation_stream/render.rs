@@ -692,7 +692,7 @@ impl ConversationStream {
                     .h(px(Layout::COMPOSER_TEXT_TRIGGER_HEIGHT))
                     .min_w(px(Layout::COMPOSER_TEXT_TRIGGER_HEIGHT))
                     .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
-                    .rounded(px(Layout::COMPOSER_TEXT_TRIGGER_RADIUS))
+                    .rounded_full()
                     .text_size(px(Typography::BODY))
                     .text_color(ink)
                     .cursor_pointer()
@@ -1386,7 +1386,7 @@ impl ConversationStream {
                     .px(px(Layout::COMPOSER_TEXT_TRIGGER_PADDING_X))
                     .h(px(Layout::COMPOSER_TEXT_TRIGGER_HEIGHT))
                     .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
-                    .rounded(px(Layout::COMPOSER_TEXT_TRIGGER_RADIUS))
+                    .rounded_full()
                     .text_size(px(Typography::SIDEBAR))
                     .text_color(if enabled {
                         colors.text_secondary
