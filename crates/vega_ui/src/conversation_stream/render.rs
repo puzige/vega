@@ -1833,7 +1833,7 @@ impl Render for ConversationStream {
                                                             let user = matches!(entry, StreamEntry::User { .. });
                                                             let source = match entry {
                                                                 StreamEntry::User { copy, .. } => Some(copy),
-                                                                _ => this.copy_source_for_entry(index),
+                                                                _ => this.action_copy_source_for_entry(index),
                                                             };
                                                             render_rows::message_with_copy(body, source, render_rows::MessageActions {
                                                                 id: this.entry_identities.get(index).map(|id| id.key.clone()).unwrap_or_else(|| format!("message-{index}")).into(),

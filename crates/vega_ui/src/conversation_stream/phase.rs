@@ -232,10 +232,8 @@ pub(crate) enum RunDetail {
 }
 
 fn operation_top_inset(index: usize, previous_assistant: bool) -> f32 {
-    if index == 0 {
+    if index == 0 || previous_assistant {
         Layout::CONVERSATION_BODY_TOP
-    } else if previous_assistant {
-        Layout::CONVERSATION_STAGE_TOP
     } else {
         0.
     }
@@ -269,6 +267,18 @@ impl ConversationStream {
             focus: &self.selection_focus,
             actions_enabled: self.message_actions_enabled(),
         }
+    }
+
+    pub(crate) fn action_copy_source_for_entry(&self, index: usize) -> Option<&MessageCopy> {
+        if self
+            .entry_identities
+            .get(index)
+            .and_then(|identity| identity.message_id.as_ref())
+            .is_some_and(|owner| self.timestamps.running_assistants.contains(owner))
+        {
+            return None;
+        }
+        self.copy_source_for_entry(index)
     }
 
     pub(crate) fn copy_source_for_entry(&self, index: usize) -> Option<&MessageCopy> {
@@ -481,9 +491,9 @@ impl ConversationStream {
                     Some(
                         StreamEntry::RunActivity { .. }
                         | StreamEntry::User { .. }
-                        | StreamEntry::UserImages { .. },
+                        | StreamEntry::UserImages { .. }
+                        | StreamEntry::Assistant { .. },
                     ) => Layout::CONVERSATION_BODY_TOP,
-                    Some(StreamEntry::Assistant { .. }) => Layout::CONVERSATION_STAGE_TOP,
                     _ => 0.,
                 };
                 if top > 0. {
@@ -523,7 +533,11 @@ impl ConversationStream {
                         if previous_clock.get(owner) == Some(&true)
                             || matches!(
                                 previous_visible.and_then(|previous| self.entries.get(previous)),
-                                Some(StreamEntry::User { .. } | StreamEntry::UserImages { .. })
+                                Some(
+                                    StreamEntry::User { .. }
+                                        | StreamEntry::UserImages { .. }
+                                        | StreamEntry::Assistant { .. }
+                                )
                             )
                         {
                             Layout::CONVERSATION_BODY_TOP

@@ -335,7 +335,22 @@ impl ConversationStream {
         self.timeout_permission(cx);
         self.cancel_user_questions(cx);
         self.actions.running = false;
+        let finished_entries = self
+            .entry_identities
+            .iter()
+            .enumerate()
+            .filter_map(|(index, identity)| {
+                identity
+                    .message_id
+                    .as_ref()
+                    .is_some_and(|owner| self.timestamps.running_assistants.contains(owner))
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
         self.timestamps.finish_run();
+        for index in finished_entries {
+            self.invalidate_item(Some(index));
+        }
         self.permission_editor.active_mode = None;
         self.composer_resume_pending = false;
         self.actions.restore_focus = self.actions.stopping;
