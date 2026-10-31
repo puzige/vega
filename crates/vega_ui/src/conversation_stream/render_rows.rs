@@ -6,6 +6,15 @@ use super::selection::SelectionDocumentBuilder;
 use super::*;
 use crate::icons::{Icon, icon};
 
+pub(crate) fn user_markdown_model(text: &str) -> StreamModel {
+    let mut stream = MarkdownStream::new();
+    stream.append(text);
+    stream.finish();
+    let mut model = StreamModel::default();
+    model.sync(&stream.snapshot(), &StreamCounters::default());
+    model
+}
+
 pub(crate) fn user_message_lines(block_id: u64, text: &str) -> Vec<StreamLine> {
     let mut lines = vec![StreamLine::new(block_id, LineKind::UserLabel)];
     let trimmed = text.trim_end_matches('\n');
@@ -201,15 +210,15 @@ fn render_entry_internal(
                 &colors,
             )
         }
-        StreamEntry::User { lines, copy } => {
+        StreamEntry::User { lines, copy, model } => {
             if !user_message_is_visible(copy, lines) {
                 // 仅图片的轮次不应产生空气泡，也不挂复制入口。
                 return div().h_0().into_any_element();
             }
             if let Some(interaction) = interaction {
-                selectable_user_message(lines, copy, interaction, &colors, window, cx)
+                selectable_user_message(model, copy, interaction, &colors, window, cx)
             } else {
-                user_message_item(lines, &colors, Layout::USER_MESSAGE_PADDING_TOP)
+                user_message_item(model, &colors, Layout::USER_MESSAGE_PADDING_TOP, copy.id)
             }
         }
         StreamEntry::UserImages { images } => attachments::render_user_images(images, cx),
@@ -497,120 +506,78 @@ pub(super) fn status_notice_with_icon(
         .into_any_element()
 }
 
-pub(crate) fn user_message_item(
-    lines: &[StreamLine],
-    colors: &ThemeColors,
-    top: f32,
-) -> AnyElement {
-    let mut body = div()
-        .max_w(gpui_kit::relative(Layout::CONVERSATION_USER_RATIO))
-        .bg(colors.conversation_bubble)
-        .rounded(px(Layout::USER_MESSAGE_RADIUS))
-        .text_size(px(Typography::CONVERSATION))
-        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
-        .px(px(Layout::CONVERSATION_USER_PADDING))
-        .py_2()
-        .text_color(colors.conversation_user)
-        .block();
-    for (index, line) in lines.iter().enumerate() {
-        if !matches!(line.kind, LineKind::UserLine { .. }) {
-            continue;
-        }
-        let text = line
-            .spans
-            .iter()
-            .map(|span| span.text.as_str())
-            .collect::<String>();
-        if text.is_empty() {
-            // 空行保留一行正文行高的自然占位（非定高行模型）。
-            body = body.child(div().h(user_line_height()));
-        } else {
-            let runs = block_text_runs(&line.spans, user_body_style(colors), colors);
-            body = body.child(super::inline_code::interactive_text(
-                text,
-                runs,
-                link_ranges(&line.spans),
-                format!("user-message-{}-{index}", line.block_id),
-            ));
-        }
-    }
+fn user_message_bubble(content: AnyElement, colors: &ThemeColors, top: f32) -> AnyElement {
     div()
         .w_full()
+        .min_w_0()
         .flex_shrink_0()
         .pt(px(top))
         .pb(px(Layout::CONVERSATION_USER_BOTTOM))
         .flex()
         .flex_col()
         .items_end()
-        .child(body)
+        .child(
+            div()
+                .max_w(gpui_kit::relative(Layout::CONVERSATION_USER_RATIO))
+                .min_w_0()
+                .bg(colors.conversation_bubble)
+                .rounded(px(Layout::USER_MESSAGE_RADIUS))
+                .text_size(px(Typography::CONVERSATION))
+                .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
+                .px(px(Layout::CONVERSATION_USER_PADDING))
+                .py_2()
+                .text_color(colors.conversation_user)
+                .child(content),
+        )
         .into_any_element()
 }
 
-/// One blank user-message line's natural box: exactly one body line height.
-fn user_line_height() -> Pixels {
-    px(Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT)
+pub(crate) fn user_message_item(
+    model: &StreamModel,
+    colors: &ThemeColors,
+    top: f32,
+    owner: u64,
+) -> AnyElement {
+    let user_colors = ThemeColors {
+        text_primary: colors.conversation_user,
+        ..*colors
+    };
+    let blocks = markdown_blocks(
+        model,
+        &user_colors,
+        Some(owner),
+        None,
+        true,
+        |line, index| {
+            let id = format!("user-message-{owner}-{index}");
+            let marker =
+                independent_list_marker(line).map(|marker| render_line(&marker, &user_colors, &id));
+            let content = list_item_content(line);
+            (
+                marker,
+                render_line(content.as_ref().unwrap_or(line), &user_colors, &id),
+            )
+        },
+    );
+    let content = div().w_full().min_w_0().flex().flex_col().children(blocks);
+    user_message_bubble(content.into_any_element(), colors, top)
 }
 
 fn selectable_user_message(
-    lines: &[StreamLine],
+    model: &StreamModel,
     copy: &MessageCopy,
     interaction: MessageInteraction<'_>,
     colors: &ThemeColors,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let selection_color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
-    let mut document =
-        SelectionDocumentBuilder::new(copy.clone(), interaction.focus.clone(), selection_color);
-    let mut body = div()
-        .max_w(gpui_kit::relative(Layout::CONVERSATION_USER_RATIO))
-        .bg(colors.conversation_bubble)
-        .rounded(px(Layout::USER_MESSAGE_RADIUS))
-        .text_size(px(Typography::CONVERSATION))
-        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
-        .px(px(Layout::CONVERSATION_USER_PADDING))
-        .py_2()
-        .text_color(colors.conversation_user)
-        .block();
-    let mut visible_line = false;
-    for line in lines {
-        if !matches!(line.kind, LineKind::UserLine { .. }) {
-            continue;
-        }
-        if visible_line {
-            document.append_literal("\n");
-        }
-        visible_line = true;
-        let text = line
-            .spans
-            .iter()
-            .map(|span| span.text.as_str())
-            .collect::<String>();
-        if text.is_empty() {
-            body = body.child(div().h(user_line_height()));
-        } else {
-            let runs = block_text_runs(&line.spans, user_body_style(colors), colors);
-            let selected =
-                document.append_styled_runs(&text, runs, link_ranges(&line.spans), "user-body");
-            body = body.child(selected);
-        }
-    }
-    let body = div()
-        .w_full()
-        .flex_shrink_0()
-        .pt(px(interaction.user_top))
-        .pb(px(Layout::CONVERSATION_USER_BOTTOM))
-        .flex()
-        .flex_col()
-        .items_end()
-        .child(body)
-        .into_any_element();
-    selection_context_menu(
-        document.wrap(body, window, cx),
-        copy,
-        false,
-        interaction.actions_enabled,
-    )
+    let user_colors = ThemeColors {
+        text_primary: colors.conversation_user,
+        ..*colors
+    };
+    let content =
+        selectable_markdown_content(model, copy, interaction, &user_colors, true, window, cx);
+    user_message_bubble(content, colors, interaction.user_top)
 }
 
 fn selectable_markdown_message(

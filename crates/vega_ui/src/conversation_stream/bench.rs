@@ -263,6 +263,7 @@ fn user_echo_entry(seq: u64, text: &str) -> StreamEntry {
     StreamEntry::User {
         copy: MessageCopy::new(text),
         lines: super::user_message_lines(block_id, text),
+        model: super::user_markdown_model(text),
     }
 }
 

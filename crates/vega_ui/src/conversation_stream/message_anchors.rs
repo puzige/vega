@@ -140,7 +140,7 @@ impl ConversationStream {
                 continue;
             };
             let (kind, preview) = match entry {
-                StreamEntry::User { lines, copy } if !user_message_is_visible(copy, lines) => {
+                StreamEntry::User { lines, copy, .. } if !user_message_is_visible(copy, lines) => {
                     continue;
                 }
                 StreamEntry::User { .. } => (
@@ -153,7 +153,7 @@ impl ConversationStream {
                 StreamEntry::UserImages { .. } => {
                     let text = self.entries.get(entry_index + 1).zip(self.entry_identities.get(entry_index + 1))
                         .filter(|(entry, next)| next.message_id.as_deref() == Some(message_id)
-                            && matches!(entry, StreamEntry::User { copy, lines } if user_message_is_visible(copy, lines)));
+                            && matches!(entry, StreamEntry::User { copy, lines, .. } if user_message_is_visible(copy, lines)));
                     let preview = text
                         .and_then(|(entry, next)| {
                             self.text_cache
@@ -790,7 +790,9 @@ pub(super) fn estimate_entry_height(
         StreamEntry::Tool { card } => card.read(cx).estimated_height(),
         StreamEntry::ToolGroup { group } => group.read(cx).estimated_height(cx),
         StreamEntry::ArtifactGroup { group } => group.read(cx).estimated_height(),
-        StreamEntry::User { lines, copy } => estimate_user_height(copy, lines, text_width),
+        StreamEntry::User { lines, copy, model } => {
+            estimate_user_height(copy, lines, model, text_width)
+        }
         StreamEntry::Assistant { model, failure, .. } => {
             estimate_markdown_height(model, text_width)
                 + Layout::CONVERSATION_BODY_TOP
@@ -944,6 +946,7 @@ pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
 pub(super) fn estimate_user_height(
     copy: &MessageCopy,
     lines: &[StreamLine],
+    model: &StreamModel,
     text_width: f32,
 ) -> f32 {
     if !user_message_is_visible(copy, lines) {
@@ -951,20 +954,7 @@ pub(super) fn estimate_user_height(
     }
     let bubble_width =
         text_width * Layout::CONVERSATION_USER_RATIO - 2. * Layout::CONVERSATION_USER_PADDING;
-    let user_chars_per_line = (bubble_width / (Typography::CONVERSATION * 0.56)).max(12.0) as usize;
-    let rows = lines
-        .iter()
-        .filter(|line| matches!(line.kind, LineKind::UserLine { .. }))
-        .map(|line| {
-            let chars = line
-                .spans
-                .iter()
-                .map(|span| display_width(&span.text))
-                .sum::<usize>();
-            chars.div_ceil(user_chars_per_line).max(1)
-        })
-        .sum::<usize>();
-    rows.max(1) as f32 * (Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT)
+    estimate_markdown_height(model, bubble_width.max(1.))
         + Layout::USER_MESSAGE_PADDING_TOP
         + Layout::CONVERSATION_USER_BOTTOM
         + 16.

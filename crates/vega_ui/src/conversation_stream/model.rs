@@ -1279,6 +1279,7 @@ pub(crate) enum StreamEntry {
     User {
         lines: Vec<StreamLine>,
         copy: MessageCopy,
+        model: StreamModel,
     },
     UserImages {
         images: Vec<attachments::ImagePreview>,

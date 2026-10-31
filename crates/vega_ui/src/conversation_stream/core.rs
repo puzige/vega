@@ -1221,6 +1221,7 @@ impl ConversationStream {
             self.entries[index] = StreamEntry::User {
                 copy: MessageCopy::new(content),
                 lines: user_message_lines(block, content),
+                model: user_markdown_model(content),
             };
             self.invalidate_item(Some(index));
         }
