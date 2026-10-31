@@ -5,7 +5,6 @@ use super::links::link_ranges;
 use super::selection::SelectionDocumentBuilder;
 use super::*;
 use crate::icons::{Icon, icon};
-use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
 
 pub(crate) fn user_message_lines(block_id: u64, text: &str) -> Vec<StreamLine> {
     let mut lines = vec![StreamLine::new(block_id, LineKind::UserLabel)];
@@ -1259,15 +1258,16 @@ fn render_table_selectable(
         body = body.child(row);
     }
     div()
-        .id(gpui_kit::SharedString::from(format!(
-            "{id_prefix}-markdown-table-{block_id}-{ordinal}"
-        )))
         .w_full()
         .min_w_0()
         .flex_shrink_0()
-        .overflow_x_scroll()
-        .child(body)
-        .scroll_edge_fade(colors.bg_base, ScrollFade::compact())
+        .child(CodeViewport::new(
+            gpui_kit::SharedString::from(format!(
+                "{id_prefix}-markdown-table-{block_id}-{ordinal}"
+            )),
+            body,
+            colors.bg_base,
+        ))
         .into_any_element()
 }
 
@@ -1568,15 +1568,16 @@ fn render_table(
         body = body.child(row);
     }
     div()
-        .id(gpui_kit::SharedString::from(format!(
-            "{id_prefix}-markdown-table-{block_id}-{ordinal}"
-        )))
         .w_full()
         .min_w_0()
         .flex_shrink_0()
-        .overflow_x_scroll()
-        .child(body)
-        .scroll_edge_fade(colors.bg_base, ScrollFade::compact())
+        .child(CodeViewport::new(
+            gpui_kit::SharedString::from(format!(
+                "{id_prefix}-markdown-table-{block_id}-{ordinal}"
+            )),
+            body,
+            colors.bg_base,
+        ))
         .into_any_element()
 }
 
