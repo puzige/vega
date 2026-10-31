@@ -4,7 +4,7 @@
 
 用户在 #788 第一批合并后追加授权：排队区文字动作改为 `rounded_full()`，问答短动作统一 full 写法；高度和其他样式保持不变，不影响图标按钮和菜单行。
 
-基线 `d1e9b61bf78551e17040ca8c526393415c5a62fb`，分支 `feat/788-queue-question-capsules`。本规格仅扩展[第一批范围](composer-capsules.md)，模型与权限已交付的 32 高契约不变；不以第三方解包内容作为输入。
+基线 `d1e9b61bf78551e17040ca8c526393415c5a62fb`，分支 `feat/788-queue-question-capsules`。本规格仅扩展[第一批范围](composer-capsules.md)，本批当时保持模型与权限的 32 高契约；后续用户反馈已由[当前模型与权限验收](composer-capsules.md#当前验收恢复紧凑高度)将其恢复为 28 高，不改变本批排队与问答契约。不以第三方解包内容作为输入。
 
 ## 验收与实现
 
