@@ -454,6 +454,7 @@ impl Layout {
     pub const DISCLOSURE_PADDING_X: f32 = 8.0;
     pub const DISCLOSURE_RADIUS: f32 = 8.0;
     pub const USER_MESSAGE_PADDING_TOP: f32 = 24.0;
+    pub const USER_ATTACHMENT_TEXT_GAP: f32 = 8.0;
     pub const ASSISTANT_MESSAGE_PADDING_TOP: f32 = 8.0;
     pub const MESSAGE_PADDING_BOTTOM: f32 = 16.0;
     pub const STATUS_PADDING: f32 = 8.0;

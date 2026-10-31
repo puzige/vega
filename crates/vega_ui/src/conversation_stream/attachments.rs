@@ -337,7 +337,6 @@ pub(crate) fn render_user_images(images: &[ImagePreview], cx: &App) -> AnyElemen
     div()
         .w_full()
         .pt(px(Layout::USER_MESSAGE_PADDING_TOP))
-        .pb(px(Layout::MESSAGE_PADDING_BOTTOM))
         .flex_shrink_0()
         .flex()
         .justify_end()

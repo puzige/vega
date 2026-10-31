@@ -277,15 +277,6 @@ impl ConversationStream {
         self.user_block_seq += 1;
         let copy = MessageCopy::from_live_text(&message.content);
         let content = copy.original_text();
-        let index = self.entries.len();
-        self.entries.push(StreamEntry::User {
-            copy,
-            lines: user_message_lines(block_id, &content),
-        });
-        self.list_append(index);
-        let identity = echo_entry_identity(&self.thread.id, &message.id, ECHO_TEXT_KIND);
-        self.set_entry_identity(index, identity);
-        indices.push(index);
         if !message.images.is_empty() {
             let images = self.history_image_previews(message.images.clone(), cx);
             let index = self.entries.len();
@@ -295,6 +286,15 @@ impl ConversationStream {
             self.set_entry_identity(index, identity);
             indices.push(index);
         }
+        let index = self.entries.len();
+        self.entries.push(StreamEntry::User {
+            copy,
+            lines: user_message_lines(block_id, &content),
+        });
+        self.list_append(index);
+        let identity = echo_entry_identity(&self.thread.id, &message.id, ECHO_TEXT_KIND);
+        self.set_entry_identity(index, identity);
+        indices.push(index);
         self.pending_echoes.push(PendingEcho {
             pending_id: message.id.clone(),
             indices,
@@ -1169,18 +1169,8 @@ impl ConversationStream {
         let sequence = i64::try_from(seq).ok();
         let block_id = self.user_block_seq;
         self.user_block_seq += 1;
-        let index = self.entries.len();
         let copy = MessageCopy::from_live_text(content);
         let projected = copy.original_text();
-        self.entries.push(StreamEntry::User {
-            copy,
-            lines: user_message_lines(block_id, &projected),
-        });
-        self.list_append(index);
-        self.set_entry_identity(
-            index,
-            self.durable_entry_identity(message_id, "user-text", sequence),
-        );
         if !images.is_empty() {
             let images = self.history_image_previews(images, cx);
             let index = self.entries.len();
@@ -1191,6 +1181,16 @@ impl ConversationStream {
                 self.durable_entry_identity(message_id, "user-images", sequence),
             );
         }
+        let index = self.entries.len();
+        self.entries.push(StreamEntry::User {
+            copy,
+            lines: user_message_lines(block_id, &projected),
+        });
+        self.list_append(index);
+        self.set_entry_identity(
+            index,
+            self.durable_entry_identity(message_id, "user-text", sequence),
+        );
         if self.composer_history.last().map(String::as_str) != Some(content) {
             self.composer_history.push(content.to_string());
         }

@@ -150,10 +150,19 @@ impl ConversationStream {
                         .preview(entry_index, &identity.key, entry)
                         .unwrap_or_default(),
                 ),
-                StreamEntry::UserImages { .. } => (
-                    MessageAnchorKind::User,
-                    vega_i18n::t("ui.image_message").to_string(),
-                ),
+                StreamEntry::UserImages { .. } => {
+                    let text = self.entries.get(entry_index + 1).zip(self.entry_identities.get(entry_index + 1))
+                        .filter(|(entry, next)| next.message_id.as_deref() == Some(message_id)
+                            && matches!(entry, StreamEntry::User { copy, lines } if user_message_is_visible(copy, lines)));
+                    let preview = text
+                        .and_then(|(entry, next)| {
+                            self.text_cache
+                                .borrow_mut()
+                                .preview(entry_index + 1, &next.key, entry)
+                        })
+                        .unwrap_or_else(|| vega_i18n::t("ui.image_message").to_string());
+                    (MessageAnchorKind::User, preview)
+                }
                 StreamEntry::Assistant { .. } => (
                     MessageAnchorKind::Assistant,
                     self.text_cache
@@ -787,7 +796,16 @@ pub(super) fn estimate_entry_height(
                 + Layout::CONVERSATION_BODY_TOP
                 + if failure.is_some() { line_height } else { 0. }
         }
-        StreamEntry::UserImages { .. } => 128.0,
+        StreamEntry::UserImages { images } => {
+            let gap = Layout::USER_ATTACHMENT_TEXT_GAP;
+            let per_row = ((text_width + gap) / (Layout::ATTACHMENT_THUMBNAIL + gap))
+                .floor()
+                .max(1.) as usize;
+            let rows = images.len().div_ceil(per_row);
+            Layout::USER_MESSAGE_PADDING_TOP
+                + rows as f32 * Layout::ATTACHMENT_THUMBNAIL
+                + rows.saturating_sub(1) as f32 * gap
+        }
         StreamEntry::Summary { card }
             if card.read(cx).summary().outcome
                 == vega_conversation::types::TaskSummaryOutcome::Completed =>

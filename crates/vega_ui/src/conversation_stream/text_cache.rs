@@ -276,8 +276,35 @@ impl ConversationStream {
         );
     }
 
+    pub(crate) fn user_message_top(&self, index: usize) -> f32 {
+        if matches!(self.entries.get(index), Some(StreamEntry::User { .. }))
+            && index.checked_sub(1).is_some_and(|previous| {
+                matches!(
+                    self.entries.get(previous),
+                    Some(StreamEntry::UserImages { .. })
+                ) && self
+                    .entry_identities
+                    .get(previous)
+                    .zip(self.entry_identities.get(index))
+                    .is_some_and(|(images, text)| {
+                        images.message_id == text.message_id && images.pending_id == text.pending_id
+                    })
+            })
+        {
+            Layout::USER_ATTACHMENT_TEXT_GAP
+        } else {
+            Layout::USER_MESSAGE_PADDING_TOP
+        }
+    }
+
     pub(crate) fn estimated_entry_height(&self, index: usize, cx: &App, owned: bool) -> f32 {
         let entry = &self.entries[index];
+        let user_top_adjustment = match entry {
+            StreamEntry::User { copy, lines } if user_message_is_visible(copy, lines) => {
+                self.user_message_top(index) - Layout::USER_MESSAGE_PADDING_TOP
+            }
+            _ => 0.,
+        };
         if let Some(identity) = self.entry_identities.get(index)
             && let Some(raw) = self.text_cache.borrow_mut().height(
                 index,
@@ -286,12 +313,15 @@ impl ConversationStream {
                 self.workspace_width,
             )
         {
-            return compose_text_height(entry, raw, owned) + self.timestamp_extra_height(index);
+            return compose_text_height(entry, raw, owned)
+                + user_top_adjustment
+                + self.timestamp_extra_height(index);
         }
         if owned && matches!(entry, StreamEntry::Summary { .. }) {
             return 0.;
         }
         message_anchors::estimate_entry_height(entry, cx, self.workspace_width)
+            + user_top_adjustment
             + self.timestamp_extra_height(index)
     }
 }
