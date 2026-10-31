@@ -10,8 +10,10 @@ pub(super) struct TimestampState {
     pub(super) break_before: HashSet<String>,
     pub(super) boundary_after: HashSet<String>,
     pub(super) boundary_before_entries: HashSet<String>,
+    pub(super) running_assistants: HashSet<String>,
     prefixes: HashMap<String, i64>,
     messages: HashMap<String, i64>,
+    hidden_messages: HashSet<String>,
     focuses: HashMap<String, FocusHandle>,
     subscriptions: HashMap<String, Vec<gpui_kit::Subscription>>,
     pub(super) now_ms: i64,
@@ -50,14 +52,32 @@ impl TimestampAdjacency {
 }
 
 impl TimestampState {
+    pub(super) fn start_assistant(&mut self, message_id: &str) {
+        if self.running_assistants.insert(message_id.to_owned()) {
+            self.dirty = true;
+        }
+    }
+
+    pub(super) fn finish_run(&mut self) {
+        if !self.running_assistants.is_empty() {
+            self.running_assistants.clear();
+            self.dirty = true;
+        }
+    }
+
+    fn message_time(&self, owner: &str, time: Option<i64>) -> Option<i64> {
+        time.filter(|_| !self.running_assistants.contains(owner))
+    }
+
     pub(super) fn has_message_time(
         &self,
         index: usize,
         identities: &[StreamEntryIdentity],
     ) -> bool {
-        identities
-            .get(index)
-            .is_some_and(|identity| self.messages.contains_key(&identity.key))
+        identities.get(index).is_some_and(|identity| {
+            self.messages.contains_key(&identity.key)
+                || self.hidden_messages.contains(&identity.key)
+        })
     }
 }
 
@@ -88,6 +108,7 @@ impl ConversationStream {
         let mut next_change_ms = None;
         let mut prefixes = HashMap::new();
         let mut messages = HashMap::new();
+        let mut hidden_messages = HashSet::new();
         let mut first_visible = HashMap::new();
 
         let mut last_body = HashMap::new();
@@ -159,8 +180,11 @@ impl ConversationStream {
             }
         }
         for (owner, key) in last_body {
-            if let Some(time) = valid_times.get(&owner).copied().flatten() {
+            let time = valid_times.get(&owner).copied().flatten();
+            if let Some(time) = self.timestamps.message_time(&owner, time) {
                 messages.insert(key, time);
+            } else if time.is_some() && self.timestamps.running_assistants.contains(&owner) {
+                hidden_messages.insert(key);
             }
         }
         for (index, entry) in self.entries.iter().enumerate() {
@@ -233,6 +257,7 @@ impl ConversationStream {
         self.timestamps.next_change_ms = next_change_ms;
         self.timestamps.prefixes = prefixes;
         self.timestamps.messages = messages;
+        self.timestamps.hidden_messages = hidden_messages;
         for index in changed {
             self.invalidate_item(Some(index));
         }

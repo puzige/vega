@@ -335,6 +335,7 @@ impl ConversationStream {
         self.timeout_permission(cx);
         self.cancel_user_questions(cx);
         self.actions.running = false;
+        self.timestamps.finish_run();
         self.permission_editor.active_mode = None;
         self.composer_resume_pending = false;
         self.actions.restore_focus = self.actions.stopping;
