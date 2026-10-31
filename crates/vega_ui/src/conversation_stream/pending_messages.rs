@@ -688,6 +688,7 @@ impl ConversationStream {
                 )
                 .w_auto()
                 .px_2()
+                .rounded_full()
                 .child(vega_i18n::t("ui.continue_queue"));
             status = status.child(div().flex().justify_end().mb_1().child(resume));
         }
@@ -710,6 +711,7 @@ impl ConversationStream {
                 )
                 .w_auto()
                 .px_2()
+                .rounded_full()
                 .child(vega_i18n::t("ui.continue_editing"));
             let preview = if message.content.is_empty() {
                 vega_i18n::t("ui.image").to_string()
@@ -805,6 +807,7 @@ impl ConversationStream {
                     )
                     .w_auto()
                     .px_1()
+                    .rounded_full()
                     .child(vega_i18n::t("ui.steer"));
                 let remove = self.pending_button(
                     PendingButton {
