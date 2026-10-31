@@ -134,30 +134,9 @@ fn calendar_ordinal(civil: &libc::tm) -> i64 {
 
 fn format_time(civil: &libc::tm) -> String {
     let minute = format!("{:02}", civil.tm_min);
-    if vega_i18n::language() == "zh-CN" {
-        return t_args(
-            "ui.timestamp.time_24",
-            &[("hour", &civil.tm_hour.to_string()), ("minute", &minute)],
-        );
-    }
-    let hour = match civil.tm_hour % 12 {
-        0 => 12,
-        hour => hour,
-    };
     t_args(
-        "ui.timestamp.time_12",
-        &[
-            ("hour", &hour.to_string()),
-            ("minute", &minute),
-            (
-                "period",
-                t(if civil.tm_hour < 12 {
-                    "ui.timestamp.am"
-                } else {
-                    "ui.timestamp.pm"
-                }),
-            ),
-        ],
+        "ui.timestamp.time_24",
+        &[("hour", &civil.tm_hour.to_string()), ("minute", &minute)],
     )
 }
 
