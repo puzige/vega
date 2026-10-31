@@ -26,6 +26,10 @@
 
 单草稿回退意味着不再承诺多份未发送内容/附件的恢复；用户已明确选择该取舍，不借机清理数据库或其他资源。UI 与真实请求仍须用户手测，不以静态或 CI 代替。
 
+## 用户追加授权：清理基线已有 Rust 测试
+
+首轮云端在修复 head `0f34591e9c22447693d94cca33cf95b163a7b33c` 发现并执行了基线已有的 10 个 Rust 测试，全部通过；用户随后明确授权本次一并清理。仅删除 `app_agent.rs` 和 `agent/ordinary.rs` 文件末尾的 `#[cfg(test)] mod preparation_tests`、`submission_diagnostics.rs` 的测试模块声明，以及独占的 `submission_diagnostics/tests.rs`。不改生产函数、安全断言、共享依赖、Python 测试、benchmark 或 CI；`tempfile` 有生产使用者，保留。源码、SHA-256 与实际云端结果见 [交付证据](delivery-evidence.md)。清理后单独审查增量并重新执行完整最终 CI，不能以首轮结果代替。
+
 ## 验证计划
 
 本地仅快速 diff、格式与静态引用检查，不运行 Vega 代码、编译、测试或打包。按精确提交执行非实现者独立审查，完整 required Actions 通过后合并。无新增 Rust 测试；最终 required CI 核实 Rust 0 发现/0 执行。用户手测前事项保持开放。

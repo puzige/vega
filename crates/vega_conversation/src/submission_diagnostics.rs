@@ -204,6 +204,3 @@ impl Journal {
         serde_json::json!({"storage": storage, "events": journal.events.iter().filter(|event| event.attempt == attempt).collect::<Vec<_>>()}).to_string()
     }
 }
-
-#[cfg(test)]
-mod tests;
