@@ -796,7 +796,16 @@ pub(super) fn estimate_entry_height(
                 + Layout::CONVERSATION_BODY_TOP
                 + if failure.is_some() { line_height } else { 0. }
         }
-        StreamEntry::UserImages { .. } => 128.0,
+        StreamEntry::UserImages { images } => {
+            let gap = Layout::USER_ATTACHMENT_TEXT_GAP;
+            let per_row = ((text_width + gap) / (Layout::ATTACHMENT_THUMBNAIL + gap))
+                .floor()
+                .max(1.) as usize;
+            let rows = images.len().div_ceil(per_row);
+            Layout::USER_MESSAGE_PADDING_TOP
+                + rows as f32 * Layout::ATTACHMENT_THUMBNAIL
+                + rows.saturating_sub(1) as f32 * gap
+        }
         StreamEntry::Summary { card }
             if card.read(cx).summary().outcome
                 == vega_conversation::types::TaskSummaryOutcome::Completed =>

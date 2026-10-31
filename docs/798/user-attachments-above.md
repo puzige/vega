@@ -9,7 +9,7 @@
 - `vega_conversation/src/history.rs` 的用户投影先生成 UserImages，再生成 UserText；不改变存储、序号、消息 ID 或发送给模型的内容。
 - `conversation_stream/composer.rs`、`ordinary_submissions.rs`、`pending_messages.rs` 的即时回显/队列提交保持相同顺序，随行设置原有 identity，保留 pending echo 索引映射。
 - 图片组保留消息顶部 24px，不再添加原有 16px 底部留白；紧随图片的用户文字顶部改为 8px。纯文字顶部仍为 24px。纯图片不生成可见空气泡，时间戳仍归于图片。
-- `render_rows.rs` 和主列表渲染传递文字顶部间距，`text_cache.rs` 高度估算使用相同数值；不改虚拟列表滚动策略、气泡样式、复制及选择行为。
+- `render_rows.rs` 和主列表渲染传递文字顶部间距，`text_cache.rs` 高度估算使用相同数值；图片组估算按可用宽度、72px 缩略图与 8px 图间距计算行数，再加顶部 24px，替代旧固定高度，不改虚拟列表滚动策略、气泡样式、复制及选择行为。
 - 图片缩略图、预览、打开、排列及换行行为不变。时间戳、重试及诊断控件在同一消息末尾；附件与文字之间不出现复制页脚。紧凑间距按消息身份归组，不能作用于另一个用户消息。消息定位栏仍锚定消息首行，同时复用同消息文字作为预览。
 
 ## 验收与风险
