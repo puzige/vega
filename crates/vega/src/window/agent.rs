@@ -1669,8 +1669,6 @@ impl VegaWindow {
             });
             return;
         };
-        self.retained_drafts.remove(&thread.id);
-        self.publish_retained_drafts(cx);
         if self
             .draft
             .as_ref()
@@ -1687,8 +1685,6 @@ impl VegaWindow {
             )),
         };
         let Ok(intent) = intent else {
-            self.retained_drafts.remove(&thread.id);
-            self.publish_retained_drafts(cx);
             if self
                 .draft
                 .as_ref()
@@ -1741,8 +1737,6 @@ impl VegaWindow {
                     CodexSessionFailureCode::ProcessStartFailed,
                 );
             }
-            self.retained_drafts.remove(&thread.id);
-            self.publish_retained_drafts(cx);
             if self
                 .draft
                 .as_ref()

@@ -531,8 +531,6 @@
 "ui.request_changes" = "要求修改"
 "ui.restart_terminal" = "重启终端"
 "ui.restore_task" = "恢复任务"
-"ui.retained_drafts" = "草稿"
-"ui.draft_capacity_reached" = "打开的草稿过多。请先发送或移除一个草稿，再新建对话。"
 "ui.resume" = "恢复"
 "ui.resume_kind" = "恢复{kind}"
 "ui.retry" = "重试"

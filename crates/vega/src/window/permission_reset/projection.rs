@@ -28,11 +28,7 @@ impl VegaWindow {
     }
 
     pub(super) fn permission_reset_streams(&self) -> Vec<Entity<ConversationStream>> {
-        let mut streams: Vec<_> = self
-            .retained_drafts
-            .values()
-            .map(|(_, stream)| stream.clone())
-            .collect();
+        let mut streams = Vec::new();
         if let Some((_, stream)) = &self.stream_view {
             streams.push(stream.clone());
         }
@@ -130,19 +126,6 @@ impl VegaWindow {
             }
             None => None,
         };
-        let mut retained_drafts = Vec::new();
-        for (_, thread) in &projected {
-            if let Some(draft) = self.draft_for_route(&thread.id)
-                && !retained_drafts
-                    .iter()
-                    .any(|existing: &Thread| existing.id == draft.id)
-            {
-                let Some(draft) = project(&draft) else {
-                    return false;
-                };
-                retained_drafts.push(draft);
-            }
-        }
         for (stream, thread) in projected {
             let saved = refresh
                 .threads
@@ -167,9 +150,6 @@ impl VegaWindow {
         }
         cx.set_global(defaults);
         self.draft = draft;
-        for draft in retained_drafts {
-            self.mirror_draft(&draft);
-        }
         cx.set_global(OpenedThread(opened));
         if let Some(view) = &self.settings_view {
             let values = DefaultPermissionValues::from(&refresh.config.defaults);

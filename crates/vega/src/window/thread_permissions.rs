@@ -141,10 +141,6 @@ impl VegaWindow {
         durable: bool,
         cx: &mut Context<Self>,
     ) {
-        if durable {
-            self.retained_drafts.remove(&source.id);
-            self.publish_retained_drafts(cx);
-        }
         if durable && self.draft.as_ref() == Some(source) {
             self.draft = None;
         }

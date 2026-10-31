@@ -531,8 +531,6 @@
 "ui.request_changes" = "Request changes"
 "ui.restart_terminal" = "Restart terminal"
 "ui.restore_task" = "Restore task"
-"ui.retained_drafts" = "Drafts"
-"ui.draft_capacity_reached" = "Too many drafts are open. Send or remove a draft before creating another."
 "ui.resume" = "Resume"
 "ui.resume_kind" = "Resume {kind}"
 "ui.retry" = "Retry"
