@@ -384,6 +384,7 @@ impl ConversationStream {
                     hydrated.push(StreamEntry::User {
                         copy: MessageCopy::new(&content),
                         lines: user_message_lines(block_id, &content),
+                        model: user_markdown_model(&content),
                     });
                     hydrated_identities.push(self.durable_entry_identity(
                         &message_id,

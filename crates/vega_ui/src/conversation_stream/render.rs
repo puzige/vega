@@ -1633,12 +1633,14 @@ impl Render for ConversationStream {
             let top = self.list.logical_scroll_top();
             let anchor = self.scroll_anchor_snapshot();
             for entry in &mut self.entries {
-                if let StreamEntry::User { copy, lines } = entry
+                if let StreamEntry::User { copy, lines, model } = entry
                     && copy.refresh_live_projection()
                 {
                     let block = self.user_block_seq;
                     self.user_block_seq += 1;
-                    *lines = user_message_lines(block, &copy.original_text());
+                    let text = copy.original_text();
+                    *lines = user_message_lines(block, &text);
+                    *model = user_markdown_model(&text);
                 }
                 if let StreamEntry::Assistant {
                     copy,

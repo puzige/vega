@@ -144,12 +144,13 @@ pub(super) fn update_user_history_text(
     text: &str,
     next_block: &mut u64,
 ) -> bool {
-    if let StreamEntry::User { copy, lines } = entry
+    if let StreamEntry::User { copy, lines, model } = entry
         && copy.original_text() != text
     {
         copy.clear_retained();
         copy.replace_text(text);
         *lines = user_message_lines(*next_block, text);
+        *model = user_markdown_model(text);
         *next_block += 1;
         true
     } else {
@@ -298,6 +299,7 @@ impl ConversationStream {
             self.entries.push(StreamEntry::User {
                 copy: MessageCopy::new(&text),
                 lines: user_message_lines(block, &text),
+                model: user_markdown_model(&text),
             });
             self.set_entry_identity(index, text_identity);
         }

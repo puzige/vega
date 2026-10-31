@@ -397,6 +397,7 @@ impl ConversationStream {
         self.entries.push(StreamEntry::User {
             copy,
             lines: user_message_lines(block_id, &projected),
+            model: user_markdown_model(&projected),
         });
         self.list_append(index);
         if let Some((id, seq)) = durable_user.as_ref() {

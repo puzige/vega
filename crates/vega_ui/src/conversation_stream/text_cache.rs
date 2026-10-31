@@ -242,9 +242,9 @@ fn record_payload(key_capacity: usize, record: &TextRecord) -> usize {
 
 pub(super) fn raw_text_height(entry: &StreamEntry, width: f32) -> Option<f32> {
     match entry {
-        StreamEntry::User { lines, copy } => {
-            Some(message_anchors::estimate_user_height(copy, lines, width))
-        }
+        StreamEntry::User { lines, copy, model } => Some(message_anchors::estimate_user_height(
+            copy, lines, model, width,
+        )),
         StreamEntry::Assistant { model, .. } => {
             Some(message_anchors::estimate_markdown_height(model, width))
         }
@@ -300,7 +300,7 @@ impl ConversationStream {
     pub(crate) fn estimated_entry_height(&self, index: usize, cx: &App, owned: bool) -> f32 {
         let entry = &self.entries[index];
         let user_top_adjustment = match entry {
-            StreamEntry::User { copy, lines } if user_message_is_visible(copy, lines) => {
+            StreamEntry::User { copy, lines, .. } if user_message_is_visible(copy, lines) => {
                 self.user_message_top(index) - Layout::USER_MESSAGE_PADDING_TOP
             }
             _ => 0.,

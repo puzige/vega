@@ -290,6 +290,7 @@ impl ConversationStream {
         self.entries.push(StreamEntry::User {
             copy,
             lines: user_message_lines(block_id, &content),
+            model: user_markdown_model(&content),
         });
         self.list_append(index);
         let identity = echo_entry_identity(&self.thread.id, &message.id, ECHO_TEXT_KIND);
@@ -1185,6 +1186,7 @@ impl ConversationStream {
         self.entries.push(StreamEntry::User {
             copy,
             lines: user_message_lines(block_id, &projected),
+            model: user_markdown_model(&projected),
         });
         self.list_append(index);
         self.set_entry_identity(
