@@ -482,11 +482,6 @@ impl Render for VegaWindow {
                                 })
                                 .cloned()
                         })
-                        .or_else(|| {
-                            self.retained_drafts
-                                .get(&thread.id)
-                                .map(|(_, stream)| stream.clone())
-                        })
                         .or_else(|| self.composer_prediction_stream(&thread.id))
                         .or_else(|| self.automation_controller.streams.get(&thread.id).cloned())
                         .or_else(|| match &self.stream_view {

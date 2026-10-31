@@ -179,8 +179,6 @@ pub enum SidebarEvent {
         started: std::time::Instant,
     },
     OpeningChanged,
-    NewDraftRequested(Option<String>),
-    DraftRestoreRequested(String),
 }
 
 impl EventEmitter<SidebarEvent> for Sidebar {}
@@ -343,19 +341,12 @@ fn with_store<R>(
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RetainedDraftEntry {
-    pub id: String,
-    pub label: String,
-}
-
 pub struct Sidebar {
     projects_block: Entity<ProjectsBlock>,
     sessions_block: Entity<ThreadsBlock>,
     sidebar_scroll: gpui_kit::ScrollHandle,
     /// Inline error from thread creation (ui-spec §4.6: no modals).
     new_task_error: Option<crate::localized_copy::LocalizedCopy>,
-    retained_drafts: Vec<RetainedDraftEntry>,
 }
 
 impl Sidebar {
@@ -376,20 +367,7 @@ impl Sidebar {
             sessions_block,
             sidebar_scroll: gpui_kit::ScrollHandle::new(),
             new_task_error: None,
-            retained_drafts: Vec::new(),
         }
-    }
-
-    pub fn set_retained_drafts(&mut self, drafts: Vec<RetainedDraftEntry>, cx: &mut Context<Self>) {
-        if self.retained_drafts != drafts {
-            self.retained_drafts = drafts;
-            cx.notify();
-        }
-    }
-
-    pub fn set_draft_creation_error(&mut self, key: &'static str, cx: &mut Context<Self>) {
-        self.new_task_error = Some(crate::localized_copy::LocalizedCopy::new(key));
-        cx.notify();
     }
 
     /// Cross-block wiring for project selection/removal: the session block
@@ -440,8 +418,9 @@ impl Sidebar {
                 });
             }
             ThreadsBlockEvent::OpeningChanged => cx.emit(SidebarEvent::OpeningChanged),
-            ThreadsBlockEvent::DraftRequested(project_id) => {
-                cx.emit(SidebarEvent::NewDraftRequested(project_id.clone()));
+            ThreadsBlockEvent::DraftOpened => {
+                self.projects_block.update(cx, ProjectsBlock::reload);
+                cx.refresh_windows();
             }
         }
         cx.notify();
@@ -513,6 +492,7 @@ impl Sidebar {
         let project_id = cx.global::<SelectedProject>().0.clone();
         self.sessions_block
             .update(cx, |block, cx| block.create_task(project_id, cx));
+        cx.set_global(SettingsOpen(false));
     }
 
     /// Returns an already-loaded project label without store or filesystem IO.
@@ -600,66 +580,6 @@ impl Sidebar {
                     .clone()
                     .map(|message| error_bar(message, colors)),
             )
-            .into_any_element()
-    }
-
-    fn render_retained_drafts(&self, cx: &mut Context<Self>, colors: &ThemeColors) -> AnyElement {
-        let rows = self
-            .retained_drafts
-            .iter()
-            .map(|draft| {
-                let id = draft.id.clone();
-                let label = draft.label.clone();
-                let keyboard_id = id.clone();
-                let keyboard = cx.listener(move |_, event: &gpui_kit::KeyDownEvent, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        cx.stop_propagation();
-                        if crate::navigation::allow_task_navigation(Some(&keyboard_id), cx) {
-                            cx.emit(SidebarEvent::DraftRestoreRequested(keyboard_id.clone()));
-                        }
-                    }
-                });
-                let mouse = cx.listener(move |_, _, _, cx| {
-                    cx.stop_propagation();
-                    if crate::navigation::allow_task_navigation(Some(&id), cx) {
-                        cx.emit(SidebarEvent::DraftRestoreRequested(id.clone()));
-                    }
-                });
-                let border = colors.accent;
-                div()
-                    .id(gpui_kit::SharedString::from(format!(
-                        "retained-draft-{}",
-                        draft.id
-                    )))
-                    .aria_label(label.clone())
-                    .focusable()
-                    .tab_stop(true)
-                    .min_w_0()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .text_color(colors.text_primary)
-                    .text_size(px(Typography::SIDEBAR))
-                    .cursor_pointer()
-                    .focus_visible(move |style| style.border_1().border_color(border))
-                    .on_click(mouse)
-                    .on_key_down(keyboard)
-                    .interaction_surface(colors.bg_base, colors.bg_hover, colors.bg_active, true)
-                    .child(div().overflow_hidden().child(label))
-                    .into_any_element()
-            })
-            .collect::<Vec<_>>();
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(
-                div()
-                    .text_size(px(Typography::METADATA))
-                    .text_color(colors.text_secondary)
-                    .child(vega_i18n::t("ui.retained_drafts")),
-            )
-            .children(rows)
             .into_any_element()
     }
 
@@ -792,9 +712,6 @@ impl Render for Sidebar {
                                         block.resume_project_scroll_growth();
                                     });
                                 }
-                            })
-                            .when(!self.retained_drafts.is_empty(), |column| {
-                                column.child(self.render_retained_drafts(cx, &colors))
                             })
                             .child(self.sessions_block.clone())
                             .tracked_scroll_edge_fade(
