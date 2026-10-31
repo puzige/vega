@@ -284,7 +284,7 @@ impl UserQuestionPanel {
             .text_size(px(Typography::SIDEBAR))
             .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
             .px_3()
-            .rounded(px(Layout::TITLEBAR_CONTROL_SIZE / 2.0))
+            .rounded_full()
             .border_1()
             .border_color(colors.bg_elevated)
             .text_color(if enabled {
