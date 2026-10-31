@@ -1163,11 +1163,54 @@ pub fn historical_history_page_containing_message(
         .transpose()
 }
 
+pub(crate) enum DisplayHistoryCursor<'a> {
+    Latest,
+    Before(PageCursor),
+    After(i64),
+    Containing(&'a str),
+}
+
+pub(crate) fn display_historical_page(
+    store: &Store,
+    thread: &str,
+    cursor: DisplayHistoryCursor<'_>,
+    limit: usize,
+) -> Result<Option<crate::types::HistoricalHistoryPage>, ConversationError> {
+    let (page, attach_summary) = match cursor {
+        DisplayHistoryCursor::Latest => (page_read(store, thread, PageCursor::Head, limit)?, true),
+        DisplayHistoryCursor::Before(cursor) => (page_read(store, thread, cursor, limit)?, false),
+        DisplayHistoryCursor::After(cursor) => (
+            messages::page_after(store.conn(), thread, cursor, limit).map_err(page_failure)?,
+            true,
+        ),
+        DisplayHistoryCursor::Containing(message) => {
+            let Some(page) =
+                messages::page_containing_message(store.conn(), thread, message, limit)
+                    .map_err(page_failure)?
+            else {
+                return Ok(None);
+            };
+            (page, true)
+        }
+    };
+    assemble_historical_projection(store, thread, page, attach_summary, true).map(Some)
+}
+
 fn assemble_historical(
+    store: &Store,
+    thread: &str,
+    page: MessagePage,
+    attach_summary: bool,
+) -> Result<crate::types::HistoricalHistoryPage, ConversationError> {
+    assemble_historical_projection(store, thread, page, attach_summary, false)
+}
+
+fn assemble_historical_projection(
     store: &Store,
     thread: &str,
     mut page: MessagePage,
     attach_summary: bool,
+    archived_only: bool,
 ) -> Result<crate::types::HistoricalHistoryPage, ConversationError> {
     use crate::types::{HistoricalHistoryEntry, HistoricalHistoryPage};
     let generated_notices = project_page_privacy(store, thread, &mut page)?;
@@ -1192,6 +1235,9 @@ fn assemble_historical(
         let archive = archives
             .iter()
             .find(|archive| archive.call_id == call.id && archive.kind == "delegation");
+        if archived_only && archive.is_none() {
+            continue;
+        }
         let input = archive.map_or_else(
             || call.input_json.clone(),
             |archive| projection.json(&archive.input_json),

@@ -34,7 +34,13 @@ pub fn latest_history_page(
     project(
         store,
         thread,
-        history::latest_historical_history_page(store, thread, limit)?,
+        history::display_historical_page(
+            store,
+            thread,
+            history::DisplayHistoryCursor::Latest,
+            limit,
+        )?
+        .ok_or(ConversationError::InvalidTaskIdentity)?,
     )
 }
 
@@ -50,7 +56,13 @@ pub fn history_page_before(
     project(
         store,
         thread,
-        history::historical_history_page_before(store, thread, cursor, limit)?,
+        history::display_historical_page(
+            store,
+            thread,
+            history::DisplayHistoryCursor::Before(cursor),
+            limit,
+        )?
+        .ok_or(ConversationError::InvalidTaskIdentity)?,
     )
 }
 
@@ -66,7 +78,13 @@ pub fn history_page_after(
     project(
         store,
         thread,
-        history::historical_history_page_after(store, thread, cursor, limit)?,
+        history::display_historical_page(
+            store,
+            thread,
+            history::DisplayHistoryCursor::After(cursor),
+            limit,
+        )?
+        .ok_or(ConversationError::InvalidTaskIdentity)?,
     )
 }
 
@@ -79,9 +97,14 @@ pub fn history_page_containing_message(
     if !has_archive(store, thread)? {
         return history::history_page_containing_message(store, thread, message, limit);
     }
-    history::historical_history_page_containing_message(store, thread, message, limit)?
-        .map(|page| project(store, thread, page))
-        .transpose()
+    history::display_historical_page(
+        store,
+        thread,
+        history::DisplayHistoryCursor::Containing(message),
+        limit,
+    )?
+    .map(|page| project(store, thread, page))
+    .transpose()
 }
 
 fn project(
