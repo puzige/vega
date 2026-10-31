@@ -1596,6 +1596,7 @@ pub(super) struct MessageActions<'a> {
     pub(super) enabled: bool,
     pub(super) timestamp: Option<super::timestamp_format::TimestampDisplay>,
     pub(super) focus: Option<&'a FocusHandle>,
+    pub(super) fork: Option<(ForkRequested, gpui_kit::WeakEntity<ConversationStream>)>,
 }
 
 pub(super) fn message_with_copy(
@@ -1612,6 +1613,7 @@ pub(super) fn message_with_copy(
         enabled: actions_enabled,
         timestamp,
         focus,
+        fork,
     } = actions;
     if copy.is_none_or(|copy| !copy.has_text()) && timestamp.is_none() {
         return body;
@@ -1662,6 +1664,24 @@ pub(super) fn message_with_copy(
                     .focus_visible(|style| style.opacity(1.).bg(colors.bg_active))
             },
         ));
+    }
+    if let Some((request, stream)) = fork {
+        row = row.child(
+            crate::icons::icon_button(
+                Icon::GitBranch,
+                vega_i18n::t("ui.branch_in_new_chat"),
+                colors,
+                move |_, _, cx| {
+                    let _ = stream.update(cx, |_, cx| cx.emit(request.clone()));
+                },
+            )
+            .id("message-fork")
+            .size(px(Layout::COPY_ACTION_SIZE))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .opacity(if focused { 1. } else { 0. })
+            .group_hover(group.clone(), |style| style.opacity(1.))
+            .focus_visible(|style| style.opacity(1.).bg(colors.bg_active)),
+        );
     }
     if let Some(timestamp) = timestamp {
         row = row.child(

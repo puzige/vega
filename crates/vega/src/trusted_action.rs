@@ -4,6 +4,7 @@ use std::sync::*;
 #[allow(dead_code)]
 pub(crate) enum TrustedActionKind {
     BranchSwitch,
+    ConversationFork,
     ArtifactOpen,
     Commit,
     ModelSelection,

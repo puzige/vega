@@ -1844,6 +1844,7 @@ impl Render for ConversationStream {
                                                                 id: this.entry_identities.get(index).map(|id| id.key.clone()).unwrap_or_else(|| format!("message-{index}")).into(),
                                                                 user, colors: theme(cx).colors, enabled: this.message_actions_enabled(),
                                                                 timestamp: this.entry_timestamp(index), focus: this.timestamp_focus(index),
+                                                                fork: this.fork_request_for_entry(index).map(|request| (request, cx.entity().downgrade())),
                                                             }, window, cx)
                                                         },
                                                         None => div().into_any_element(),
