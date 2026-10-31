@@ -4,6 +4,9 @@ use sha2::{Digest, Sha256};
 
 const MCP_ARGUMENT_LIMIT: usize = 256 * 1024;
 const MCP_RESULT_LIMIT: usize = 256 * 1024;
+
+#[cfg(test)]
+mod mcp_policy_tests;
 pub const GREP_INVALID_INPUT_OUTPUT: &str = "Tool error: invalid grep input. Use {\"pattern\":\"TODO\",\"path\":null}. pattern must be a valid regular expression; path must be a readable file or directory, or null to search the project root. Other fields are unsupported.";
 
 #[derive(Deserialize)]
@@ -1032,6 +1035,17 @@ pub(crate) async fn authorize_call(
                         danger: None,
                     }),
                 )));
+            }
+            if config.permission_mode == RuntimePermissionMode::FullAccess {
+                return Ok(Authorization::Approved {
+                    audit: RuntimeApprovalAudit {
+                        decision: RuntimeApprovalDecision::Once,
+                        note: None,
+                        source: RuntimeApprovalSource::FullAccess,
+                        danger: None,
+                    },
+                    remember_rule: None,
+                });
             }
             let decision =
                 wait_for_mcp_permission(hook, prompt.clone(), config.permission_timeout, cancel)

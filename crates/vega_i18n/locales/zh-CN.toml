@@ -178,7 +178,7 @@
 "settings.mcp.health.failed" = "连接失败"
 "settings.mcp.health.removing" = "正在移除；凭据清理待重试"
 "settings.mcp.health.transport" = "不支持已弃用的独立 HTTP+SSE；请改用 Streamable HTTP 端点"
-"settings.mcp.intro" = "服务器配置默认禁用；启用/测试需分别确认。每次外部工具调用仍须单独批准。"
+"settings.mcp.intro" = "服务器配置默认禁用；启用/测试需分别确认。工具调用遵循任务权限模式。"
 "settings.mcp.loading" = "正在加载 MCP 配置…"
 "settings.mcp.local_summary" = "本地 stdio · {path}"
 "settings.mcp.loopback_hint" = "非 HTTPS 仅允许显式开启的 127.0.0.1 / ::1 本机测试端点。"

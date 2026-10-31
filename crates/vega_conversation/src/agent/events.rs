@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(test)]
+mod mcp_policy_tests;
+
 pub(super) struct RuntimeEventContext<'a, F> {
     pub(super) message_id: &'a str,
     pub(super) streamed_content: &'a mut String,
@@ -914,6 +917,11 @@ pub(crate) fn persist_runtime_event(
         } => {
             let state = required_tool_state(store, call_id, thread_id)?;
             validate_runtime_approval_event(&state, call_id, audit, remember_rule.as_ref())?;
+            if state.tool.starts_with("mcp_")
+                && audit.source == vega_runtime::RuntimeApprovalSource::FullAccess
+            {
+                validate_mcp_full_access_authority(store, thread_id, message_id)?;
+            }
             let approval_json = approval_audit_from_runtime(audit)
                 .to_json()
                 .map_err(|_| safe_audit_error("permission"))?;
@@ -1520,6 +1528,48 @@ pub(crate) fn validate_runtime_conflict_event(
     Ok(())
 }
 
+fn validate_mcp_full_access_authority(
+    store: &Store,
+    thread_id: &str,
+    message_id: &str,
+) -> Result<(), VegaError> {
+    let invalid = || safe_audit_error("mcp");
+    let encoded =
+        vega_store::permission_contracts::load_run_fence(store.conn(), message_id, thread_id)
+            .map_err(|_| invalid())?
+            .ok_or_else(invalid)?;
+    let fence: crate::types::PermissionFence =
+        serde_json::from_str(&encoded).map_err(|_| invalid())?;
+    if !fence.is_valid()
+        || fence.thread_id != thread_id
+        || fence.database_identity != store.database_identity().permission_fence_key()
+        || fence.run_mode != "execute"
+        || fence.permission_mode != "full_access"
+    {
+        return Err(invalid());
+    }
+    let thread = vega_store::threads::find(store.conn(), thread_id)
+        .map_err(|_| invalid())?
+        .ok_or_else(invalid)?;
+    let current = if let Some(source) = &fence.delegation {
+        crate::permission_contracts::capture_delegated_fence(
+            store,
+            &thread,
+            &source.parent_fence.thread_id,
+            &source.parent_message_id,
+            message_id,
+            &source.parent_fence,
+        )
+    } else {
+        crate::permission_contracts::capture_fence(store, &thread)
+    }
+    .map_err(|_| invalid())?;
+    if current != fence {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_runtime_approval_event(
     state: &tool_calls::ToolCallState,
     call_id: &str,
@@ -1559,9 +1609,21 @@ pub(crate) fn validate_runtime_approval_event(
     }
     if state.tool.starts_with("mcp_")
         && (shared.decision != Approval::Once
-            || shared.source != ApprovalSource::User
+            || !matches!(
+                shared.source,
+                ApprovalSource::User | ApprovalSource::FullAccess
+            )
+            || (shared.source == ApprovalSource::FullAccess && shared.note.is_some())
             || shared.danger.is_some()
-            || remember.is_some())
+            || remember.is_some()
+            || crate::types::McpCallIdentity::from_tool_call(&crate::types::ToolCall {
+                id: call_id.to_owned(),
+                tool: state.tool.clone(),
+                input_json: state.input_json.clone(),
+                description: None,
+                codex_display: None,
+            })
+            .is_none())
     {
         return Err(safe_audit_error(&state.tool));
     }
