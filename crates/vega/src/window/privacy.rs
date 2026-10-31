@@ -65,7 +65,7 @@ impl VegaWindow {
                         .map_err(|error| error.to_string())?;
                     let page = if changed {
                         Some(
-                            vega_conversation::history::latest_history_page(
+                            vega_conversation::display_history::latest_history_page(
                                 &store,
                                 &request.thread_id,
                                 vega_store::messages::PAGE_LIMIT,

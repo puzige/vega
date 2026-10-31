@@ -265,6 +265,7 @@ impl EventEmitter<WorkspaceToolTerminal> for ConversationStream {}
 impl EventEmitter<HistoryPageRequested> for ConversationStream {}
 impl EventEmitter<NewerHistoryPageRequested> for ConversationStream {}
 impl EventEmitter<MessageLocationRequested> for ConversationStream {}
+impl EventEmitter<ForkRequested> for ConversationStream {}
 impl EventEmitter<FileIndexRequested> for ConversationStream {}
 impl EventEmitter<FileIndexCancelled> for ConversationStream {}
 impl EventEmitter<ComposerStopRequested> for ConversationStream {}

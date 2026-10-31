@@ -212,12 +212,22 @@ pub fn restart_history_page(
     limit: usize,
 ) -> Result<HistoryPage, ConversationError> {
     guard_legacy_history(store, thread_id)?;
+    with_restart_recovery(store, thread_id, || {
+        latest_history_page(store, thread_id, limit)
+    })
+}
+
+pub(crate) fn with_restart_recovery(
+    store: &Store,
+    thread_id: &str,
+    read: impl FnOnce() -> Result<HistoryPage, ConversationError>,
+) -> Result<HistoryPage, ConversationError> {
     let admission = vega_store::thread_admission::try_acquire(store.database_identity(), thread_id)
         .map_err(|_| {
             ConversationError::Store(vega_i18n::t("domain.ordinary_send.access_unavailable").into())
         })?;
     let Some(_admission) = admission else {
-        return latest_history_page(store, thread_id, limit);
+        return read();
     };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -228,7 +238,7 @@ pub fn restart_history_page(
         recovery::recover_thread(store.conn(), thread_id, now)
             .map_err(|error| ConversationError::Store(error.to_string()))?;
     }
-    latest_history_page(store, thread_id, limit)
+    read()
 }
 
 fn page_read(
@@ -332,6 +342,29 @@ fn assemble(
     append_skill_history(store, thread_id, &page, &mut entries)?;
 
     append_task_summary(store, thread_id, &page, &mut entries, attach_summary)?;
+    append_credential_continuations(store, &page, &mut entries)?;
+    Ok(HistoryPage {
+        interrupted_tail: interrupted_tail(store, thread_id)?,
+        subagents: crate::subagents::history(store, thread_id)?
+            .into_iter()
+            .filter(|agent| {
+                page.rows
+                    .iter()
+                    .any(|message| message.id == agent.parent_message_id)
+            })
+            .collect(),
+        entries,
+        older_cursor: page.older_cursor,
+        newer_cursor: page.newer_cursor,
+        newest_seq,
+    })
+}
+
+fn append_credential_continuations(
+    store: &Store,
+    page: &MessagePage,
+    entries: &mut Vec<HistoryEntry>,
+) -> Result<(), ConversationError> {
     for row in page.rows.iter().filter(|row| row.role == "assistant") {
         if let Some(receipt) = vega_store::credential_continuation::find(store.conn(), &row.id)
             .map_err(|error| ConversationError::Store(error.to_string()))?
@@ -360,21 +393,7 @@ fn assemble(
             });
         }
     }
-    Ok(HistoryPage {
-        interrupted_tail: interrupted_tail(store, thread_id)?,
-        subagents: crate::subagents::history(store, thread_id)?
-            .into_iter()
-            .filter(|agent| {
-                page.rows
-                    .iter()
-                    .any(|message| message.id == agent.parent_message_id)
-            })
-            .collect(),
-        entries,
-        older_cursor: page.older_cursor,
-        newer_cursor: page.newer_cursor,
-        newest_seq,
-    })
+    Ok(())
 }
 
 fn append_task_summary(
@@ -1250,6 +1269,7 @@ fn assemble_historical(
     })?;
     append_skill_history(store, thread, &page, &mut entries)?;
     append_task_summary(store, thread, &page, &mut entries, attach_summary)?;
+    append_credential_continuations(store, &page, &mut entries)?;
     let entries = entries
         .into_iter()
         .map(|entry| {

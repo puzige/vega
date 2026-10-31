@@ -118,7 +118,7 @@ pub(crate) fn run_history_page_worker(
     let outcome = (|| {
         let store = Store::open(&database_path)
             .map_err(|error| HistoryPageFailure::Store(error.to_string()))?;
-        vega_conversation::history::history_page_before(
+        vega_conversation::display_history::history_page_before(
             &store,
             &request.thread_id,
             vega_store::messages::PageCursor::Before(request.before),
@@ -137,7 +137,7 @@ pub(crate) fn run_newer_history_page_worker(
     let outcome = (|| {
         let store = Store::open(&database_path)
             .map_err(|error| HistoryPageFailure::Store(error.to_string()))?;
-        vega_conversation::history::history_page_after(
+        vega_conversation::display_history::history_page_after(
             &store,
             &request.thread_id,
             request.after,
@@ -167,7 +167,7 @@ pub(crate) fn run_message_location_worker(
     let outcome = (|| {
         let store = Store::open(&database_path)
             .map_err(|error| HistoryPageFailure::Store(error.to_string()))?;
-        vega_conversation::history::history_page_containing_message(
+        vega_conversation::display_history::history_page_containing_message(
             &store,
             &request.thread_id,
             &request.message_id,

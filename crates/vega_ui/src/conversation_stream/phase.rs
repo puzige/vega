@@ -258,6 +258,33 @@ impl ConversationStream {
             .map(|(_, source)| source)
     }
 
+    pub(crate) fn fork_request_for_entry(&self, index: usize) -> Option<ForkRequested> {
+        if self.thread.backend != TaskBackend::Native
+            || self.thread.project_id.is_empty()
+            || self.thread.parent_thread_id.is_some()
+        {
+            return None;
+        }
+        self.final_copy_for_entry(index)?;
+        Some(ForkRequested {
+            thread_id: self.thread.id.clone(),
+            message_id: self.entry_identities.get(index)?.message_id.clone()?,
+        })
+    }
+
+    pub fn accepts_fork_request(&self, request: &ForkRequested) -> bool {
+        self.thread.id == request.thread_id
+            && self
+                .entries
+                .iter()
+                .enumerate()
+                .any(|(index, _)| self.fork_request_for_entry(index).as_ref() == Some(request))
+    }
+
+    pub fn fork_is_idle(&self) -> bool {
+        self.message_actions_enabled()
+    }
+
     pub(crate) fn message_actions_enabled(&self) -> bool {
         !self.actions.running && self.active_agent_message.is_none()
     }

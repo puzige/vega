@@ -266,6 +266,12 @@ pub struct NewerHistoryPageRequested {
     pub after: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkRequested {
+    pub thread_id: String,
+    pub message_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MessageLocationRequested {
     pub thread_id: String,

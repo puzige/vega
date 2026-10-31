@@ -5,6 +5,7 @@ mod automatic_titles;
 pub mod codex_tasks;
 pub mod command_scope;
 mod composer_predictions;
+pub mod display_history;
 mod git_workspace;
 pub mod history;
 pub mod link_preview;
