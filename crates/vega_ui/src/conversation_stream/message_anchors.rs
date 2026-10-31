@@ -150,10 +150,19 @@ impl ConversationStream {
                         .preview(entry_index, &identity.key, entry)
                         .unwrap_or_default(),
                 ),
-                StreamEntry::UserImages { .. } => (
-                    MessageAnchorKind::User,
-                    vega_i18n::t("ui.image_message").to_string(),
-                ),
+                StreamEntry::UserImages { .. } => {
+                    let text = self.entries.get(entry_index + 1).zip(self.entry_identities.get(entry_index + 1))
+                        .filter(|(entry, next)| next.message_id.as_deref() == Some(message_id)
+                            && matches!(entry, StreamEntry::User { copy, lines } if user_message_is_visible(copy, lines)));
+                    let preview = text
+                        .and_then(|(entry, next)| {
+                            self.text_cache
+                                .borrow_mut()
+                                .preview(entry_index + 1, &next.key, entry)
+                        })
+                        .unwrap_or_else(|| vega_i18n::t("ui.image_message").to_string());
+                    (MessageAnchorKind::User, preview)
+                }
                 StreamEntry::Assistant { .. } => (
                     MessageAnchorKind::Assistant,
                     self.text_cache

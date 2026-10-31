@@ -1828,7 +1828,10 @@ impl Render for ConversationStream {
                                                                     .unwrap_or(0.),
                                                                 window,
                                                                 cx,
-                                                                this.message_interaction(),
+                                                                render_rows::MessageInteraction {
+                                                                    user_top: this.user_message_top(index),
+                                                                    ..this.message_interaction()
+                                                                },
                                                             );
                                                             let user = matches!(entry, StreamEntry::User { .. });
                                                             let source = match entry {

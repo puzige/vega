@@ -373,16 +373,6 @@ impl ConversationStream {
         let durable_user = self.timestamps.accepted_user.take();
         let block_id = self.user_block_seq;
         self.user_block_seq += 1;
-        let index = self.entries.len();
-        self.entries.push(StreamEntry::User {
-            copy,
-            lines: user_message_lines(block_id, &projected),
-        });
-        self.list_append(index);
-        if let Some((id, seq)) = durable_user.as_ref() {
-            let identity = self.durable_entry_identity(id, "user-text", i64::try_from(*seq).ok());
-            self.set_entry_identity(index, identity);
-        }
         let submitted = std::mem::take(&mut self.submitted_attachments);
         self.attachments
             .retain(|(id, _)| !submitted.iter().any(|(sent, _)| sent == id));
@@ -402,6 +392,16 @@ impl ConversationStream {
                     self.durable_entry_identity(id, "user-images", i64::try_from(*seq).ok());
                 self.set_entry_identity(index, identity);
             }
+        }
+        let index = self.entries.len();
+        self.entries.push(StreamEntry::User {
+            copy,
+            lines: user_message_lines(block_id, &projected),
+        });
+        self.list_append(index);
+        if let Some((id, seq)) = durable_user.as_ref() {
+            let identity = self.durable_entry_identity(id, "user-text", i64::try_from(*seq).ok());
+            self.set_entry_identity(index, identity);
         }
         cx.notify();
     }

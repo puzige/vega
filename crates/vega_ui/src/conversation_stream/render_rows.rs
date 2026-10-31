@@ -64,6 +64,7 @@ pub(crate) fn context_compaction_label(
 pub(crate) struct MessageInteraction<'a> {
     pub(crate) focus: &'a FocusHandle,
     pub(crate) actions_enabled: bool,
+    pub(crate) user_top: f32,
 }
 
 pub(crate) fn render_entry(entry: &StreamEntry, window: &mut Window, cx: &mut App) -> AnyElement {
@@ -209,7 +210,7 @@ fn render_entry_internal(
             if let Some(interaction) = interaction {
                 selectable_user_message(lines, copy, interaction, &colors, window, cx)
             } else {
-                user_message_item(lines, &colors)
+                user_message_item(lines, &colors, Layout::USER_MESSAGE_PADDING_TOP)
             }
         }
         StreamEntry::UserImages { images } => attachments::render_user_images(images, cx),
@@ -497,7 +498,11 @@ pub(super) fn status_notice_with_icon(
         .into_any_element()
 }
 
-pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> AnyElement {
+pub(crate) fn user_message_item(
+    lines: &[StreamLine],
+    colors: &ThemeColors,
+    top: f32,
+) -> AnyElement {
     let mut body = div()
         .max_w(gpui_kit::relative(Layout::CONVERSATION_USER_RATIO))
         .bg(colors.conversation_bubble)
@@ -533,7 +538,7 @@ pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> A
     div()
         .w_full()
         .flex_shrink_0()
-        .pt(px(Layout::USER_MESSAGE_PADDING_TOP))
+        .pt(px(top))
         .pb(px(Layout::CONVERSATION_USER_BOTTOM))
         .flex()
         .flex_col()
@@ -594,7 +599,7 @@ fn selectable_user_message(
     let body = div()
         .w_full()
         .flex_shrink_0()
-        .pt(px(Layout::USER_MESSAGE_PADDING_TOP))
+        .pt(px(interaction.user_top))
         .pb(px(Layout::CONVERSATION_USER_BOTTOM))
         .flex()
         .flex_col()

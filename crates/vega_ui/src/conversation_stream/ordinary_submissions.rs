@@ -274,6 +274,17 @@ impl ConversationStream {
         let image_identity =
             self.durable_entry_identity(&snapshot.user_message_id, "user-images", None);
         let first = self.entries.len();
+        if !snapshot.raw.images().is_empty()
+            && !self
+                .entry_identities
+                .iter()
+                .any(|identity| identity.key == image_identity.key)
+        {
+            let images = self.history_image_previews(snapshot.raw.images().to_vec(), cx);
+            let index = self.entries.len();
+            self.entries.push(StreamEntry::UserImages { images });
+            self.set_entry_identity(index, image_identity);
+        }
         if !snapshot.raw.text().is_empty()
             && !self
                 .entry_identities
@@ -289,17 +300,6 @@ impl ConversationStream {
                 lines: user_message_lines(block, &text),
             });
             self.set_entry_identity(index, text_identity);
-        }
-        if !snapshot.raw.images().is_empty()
-            && !self
-                .entry_identities
-                .iter()
-                .any(|identity| identity.key == image_identity.key)
-        {
-            let images = self.history_image_previews(snapshot.raw.images().to_vec(), cx);
-            let index = self.entries.len();
-            self.entries.push(StreamEntry::UserImages { images });
-            self.set_entry_identity(index, image_identity);
         }
         if self.entries.len() > first {
             self.list_append(first);
@@ -576,10 +576,10 @@ impl ConversationStream {
             .iter()
             .find(|row| identity.message_id.as_deref() == Some(row.submission.user_message_id()))?;
         let suppress_controls = row.reference_failed || self.attempt_shows_stop_line(row, cx);
-        let final_kind = if row.submission.raw().images().is_empty() {
-            "user-text"
-        } else {
+        let final_kind = if row.submission.raw().text().is_empty() {
             "user-images"
+        } else {
+            "user-text"
         };
         if identity.key
             != self

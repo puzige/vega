@@ -623,11 +623,6 @@ fn project_rows_with(
                     // not user-typed content (Composer history rule).
                     continue;
                 }
-                entries.push(HistoryEntry::UserText {
-                    seq: row.seq,
-                    message_id: row.id.clone(),
-                    content: row.content.clone(),
-                });
                 let images = page
                     .images
                     .iter()
@@ -646,6 +641,11 @@ fn project_rows_with(
                         images,
                     });
                 }
+                entries.push(HistoryEntry::UserText {
+                    seq: row.seq,
+                    message_id: row.id.clone(),
+                    content: row.content.clone(),
+                });
             }
             "assistant" => match row.kind.as_str() {
                 "plan" => {

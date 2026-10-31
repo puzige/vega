@@ -266,6 +266,7 @@ impl ConversationStream {
         render_rows::MessageInteraction {
             focus: &self.selection_focus,
             actions_enabled: self.message_actions_enabled(),
+            user_top: Layout::USER_MESSAGE_PADDING_TOP,
         }
     }
 
