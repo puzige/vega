@@ -59,6 +59,7 @@ pub(super) fn preview(
             true,
         );
         let mut end = index + 1;
+        let mut table_preview = None;
         let (block_height, cutoff) = if line.kind == LineKind::Code {
             while end < lines.len() && lines[end].continues_code_block(line) {
                 end += 1;
@@ -75,7 +76,24 @@ pub(super) fn preview(
                 None,
             )
         } else if let Some(table) = &line.table {
-            (table_height(line, table, width, colors, window), None)
+            let row_heights = table_row_heights(line, table, width, colors, window);
+            let mut preview_height = 0.;
+            let mut rows = 0;
+            for row_height in &row_heights {
+                if height + gap + preview_height + row_height > target {
+                    break;
+                }
+                preview_height += row_height;
+                rows += 1;
+            }
+            if rows > 0 {
+                let mut projected = table.as_ref().clone();
+                projected.rows.truncate(rows);
+                let mut projected_line = line.clone();
+                projected_line.table = Some(Arc::new(projected));
+                table_preview = Some((projected_line, preview_height));
+            }
+            (row_heights.iter().sum(), None)
         } else if line.kind == LineKind::Rule {
             (9., None)
         } else {
@@ -121,7 +139,12 @@ pub(super) fn preview(
                 visible_height = height + gap + block_height;
                 stopped = visible_height >= target;
             } else {
-                if let Some(cutoff) = cutoff.filter(|cutoff| *cutoff > 0) {
+                if line.table.is_some() {
+                    if let Some((projected, preview_height)) = table_preview {
+                        visible.push(projected);
+                        visible_height = height + gap + preview_height;
+                    }
+                } else if let Some(cutoff) = cutoff.filter(|cutoff| *cutoff > 0) {
                     visible.push(truncate_line(line, cutoff));
                     visible_height = target;
                 } else if visible.is_empty() {
@@ -250,13 +273,13 @@ fn truncate_line(line: &StreamLine, end: usize) -> StreamLine {
     result
 }
 
-fn table_height(
+fn table_row_heights(
     line: &StreamLine,
     table: &StreamTable,
     width: f32,
     colors: &ThemeColors,
     window: &Window,
-) -> f32 {
+) -> Vec<f32> {
     let widths = table.column_widths(
         width
             - line.list_content_inset()
@@ -265,16 +288,17 @@ fn table_height(
     table
         .rows
         .iter()
-        .map(|row| {
+        .enumerate()
+        .map(|(row_index, row)| {
             row.iter()
                 .zip(&widths)
                 .map(|(spans, width)| {
                     let text: String = spans.iter().map(|span| span.text.as_str()).collect();
-                    let runs = render_rows::block_text_runs(
-                        spans,
-                        render_rows::user_message_run_style(colors.text_primary),
-                        colors,
-                    );
+                    let mut style = render_rows::user_message_run_style(colors.text_primary);
+                    if row_index == 0 {
+                        style.font_weight = Typography::HEADING_CARD_WEIGHT;
+                    }
+                    let runs = render_rows::block_text_runs(spans, style, colors);
                     let line_height =
                         px(Typography::CONVERSATION * Typography::CONVERSATION_USER_LINE_HEIGHT);
                     f32::from(
@@ -295,7 +319,7 @@ fn table_height(
                 + 2. * Layout::MARKDOWN_TABLE_PADDING_Y
                 + 1.
         })
-        .sum()
+        .collect()
 }
 
 pub(super) fn estimated_height(copy: &MessageCopy, width: f32, fallback: f32) -> f32 {
