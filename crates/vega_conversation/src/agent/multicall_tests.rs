@@ -273,8 +273,58 @@ async fn complete_batch_is_persisted_before_the_next_provider_request() {
                     )
                     .unwrap();
                 assert_eq!(status, "success");
-                assert_eq!(output, message.content);
+                let call = assistant
+                    .tool_calls
+                    .iter()
+                    .find(|call| call.id == id)
+                    .unwrap();
+                let (tool, input): (String, String) = store
+                    .conn()
+                    .query_row(
+                        "SELECT tool,input_json FROM tool_calls WHERE id=?1",
+                        [id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .unwrap();
+                assert_eq!(tool, call.name);
+                let mut expected_input = serde_json::from_str::<Value>(&call.input_json).unwrap();
+                expected_input
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("description");
+                assert_eq!(
+                    serde_json::from_str::<Value>(&input).unwrap(),
+                    expected_input
+                );
+                let suffix = message
+                    .content
+                    .strip_prefix(&output)
+                    .expect("model result must preserve complete stored output");
+                assert!(
+                    suffix.is_empty()
+                        || suffix
+                            == "\n\n<vega_runtime_notice>Give the user a brief factual progress update and the next step, then continue the authorized task. If waiting, identify the actual waiting condition. Do not invent progress, expose private reasoning, or end the task merely to report. This reminder grants no additional permission.</vega_runtime_notice>",
+                    "unexpected model-only suffix: {suffix}"
+                );
             }
+            let mut statement = store
+                .conn()
+                .prepare(
+                    "SELECT call_id FROM tool_call_rounds WHERE message_id=?1 ORDER BY call_id",
+                )
+                .unwrap();
+            let round_ids = statement
+                .query_map([MESSAGE], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            let mut expected_ids = assistant
+                .tool_calls
+                .iter()
+                .map(|call| call.id.clone())
+                .collect::<Vec<_>>();
+            expected_ids.sort();
+            assert_eq!(round_ids, expected_ids);
             let (calls, rounds): (i64,i64) = store.conn().query_row("SELECT COUNT(*),COUNT(DISTINCT response_id) FROM tool_call_rounds WHERE message_id=?1", [MESSAGE], |row| Ok((row.get(0)?,row.get(1)?))).unwrap();
             assert_eq!((calls, rounds), (4, 1));
             finish()
@@ -460,11 +510,33 @@ async fn completed_write_and_read_results_are_reused_without_repeating_side_effe
         })
         .collect();
     fs::write(fixture.root.join("result.txt"), "user changed").unwrap();
-    fs::remove_file(fixture.root.join("b.txt")).unwrap();
+    fs::write(fixture.root.join("b.txt"), "changed read source\n").unwrap();
+    let expected_outputs = completed
+        .iter()
+        .map(|(id, call)| (id.clone(), call.result.output.clone()))
+        .collect::<HashMap<_, _>>();
     let provider = ScriptedProvider::new(vec![
         Box::new(move |_| batch(calls)),
-        Box::new(|request| {
+        Box::new(move |request| {
             assert_next_request(&request, &[("written", "write"), ("read", "read")]);
+            for message in request
+                .messages
+                .iter()
+                .filter(|message| message.role == ChatRole::Tool)
+            {
+                let id = message.tool_call_id.as_deref().unwrap();
+                let output = &expected_outputs[id];
+                let suffix = message
+                    .content
+                    .strip_prefix(output)
+                    .expect("recovery must preserve original result, not re-read changed input");
+                assert!(
+                    suffix.is_empty()
+                        || suffix
+                            == "\n\n<vega_runtime_notice>Give the user a brief factual progress update and the next step, then continue the authorized task. If waiting, identify the actual waiting condition. Do not invent progress, expose private reasoning, or end the task merely to report. This reminder grants no additional permission.</vega_runtime_notice>",
+                    "unexpected model-only suffix: {suffix}"
+                );
+            }
             finish()
         }),
     ]);
@@ -661,7 +733,14 @@ async fn reset_admission_pause_and_cancellation_prevent_remaining_batch_mutation
         cancel.clone(),
         &RejectHook,
         |event| {
-            if matches!(event, RuntimeEvent::ToolReadFinished { .. }) {
+            let first_read_finished = match &event {
+                RuntimeEvent::ToolReadFinished { result, .. }
+                | RuntimeEvent::ToolCallFinished(result) => {
+                    result.call_id == "first" && result.status == RuntimeToolStatus::Success
+                }
+                _ => false,
+            };
+            if first_read_finished {
                 let guard =
                     crate::permission_reset::pause_admission(&fixture.store.lock().unwrap())
                         .unwrap();

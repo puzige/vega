@@ -5,7 +5,7 @@
 Issue #840, roadmap item 2 (P1). Baseline: e6a7a0e59cb4db63c19ff3ab6dfc7b52a562e8ff.
 The historical CPA audit found 53 single-call upstream responses with parallel calls enabled, and earlier multi-call responses delivered intact. This is not evidence of a dropped-call defect. #839 changes planning instructions; its real-model effectiveness remains user-led and is not a prerequisite for deterministic regression checks.
 
-Only development regression modules and this specification are planned. No new production API, scheduler, provider flag, external service request, dependency, or persistent observability system. If a regression reveals a defect, record the original failure and responsible layer before changing production code.
+Initially only development regression modules and this specification were planned. The first cloud run and independent review exposed a pre-existing SSE identity defect: a new nonempty ID at an already-bound index was silently ignored. The user explicitly approved including the minimal production repair: remove the by_index exception from the existing ID-conflict predicate in SseAssembler::absorb_tool_call. Empty/omitted IDs, first ID binding, matching repeated IDs and argument accumulation must remain supported. No new production API, scheduler, provider flag, external service request, dependency, or persistent observability system.
 
 ## Acceptance before implementation
 
@@ -15,8 +15,8 @@ Only development regression modules and this specification are planned. No new p
 | Invalid SSE | Missing identity, malformed arguments, conflicting identities and duplicate IDs at distinct indices fail closed | Existing typed protocol errors; no fabricated successful calls |
 | Complete batch | A scripted Provider emits four calls, including two reads with different parameters; the real runtime executes them and sends exactly one subsequent request containing every call/result | Provider mock only; actual filesystem tools in owned temporary directory |
 | Partial failure / refusal | Mix successful read, missing file and a refused write; preserve distinct results and leave refused target absent | Real runtime permissions and tool events |
-| Persistence | Feed real runtime events into production persist_runtime_event against isolated Store; assert terminal status, input/output and round membership match next-request results | Production event adapter, not a handwritten persistence substitute |
-| Recovery | Supply previously completed call identities/results and repeat the batch; reuse results without executing the tools again | Side-effect target remains unchanged and execution count agrees |
+| Persistence | Feed real runtime events into production persist_runtime_event against isolated Store; assert terminal status, exact tool/input identity and exact round-member IDs match next-request calls; stored output remains intact in the model result, with only the explicitly allowed runtime progress notice suffix | Production event adapter, not a handwritten persistence substitute |
+| Recovery | Supply previously completed call identities/results and repeat the batch against changed but still valid read/write targets; reuse original outputs without executing the tools again | Side-effect target remains unchanged and execution count agrees |
 | Cancellation | Cancel after first terminal event; retain its terminal fact and do not start remaining calls or another provider request | Real cancellation token and sink |
 | Question isolation | A question mixed with ordinary calls does not execute the ordinary call or invoke the question hook | Real runtime mixed-batch gate |
 | Skill policy | Skill-only and mixed batches preserve the production classifier's distinct policy | Unit boundary; not claimed as full skill activation integration |
@@ -38,4 +38,6 @@ No concurrency (#841), asynchronous shell (#412), batch tool/code mode (#842), o
 
 ## Current validation
 
-NOT RUN: cloud regressions and final required CI. No success counts are available yet.
+First development head: de105e6919c18df666cbc0a387a4515396f0411f. Actions run https://github.com/puzige/vega/actions/runs/41327025202 completed: fmt/Clippy passed; Nextest 11 run / 7 passed / 4 failed / 0 skipped. Original source remains accessible at that commit. Failures: production identity conflict returned Ok; reset fixture listened for a stage-only event; persistence expected equality despite legitimate model-only guidance; recovery removed the read target before preparation. The latter three are harness/expectation defects, not established product defects. Independent review also requires exact persisted input and round-member assertions. Retain all original safety expectations while correcting the responsible layers. User approved the identity repair before production changes.
+
+Pending: corrected development head cloud regressions, incremental independent review, cleanup and final required CI. No final success is claimed.

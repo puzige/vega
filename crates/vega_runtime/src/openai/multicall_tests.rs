@@ -107,6 +107,44 @@ fn incomplete_or_nonobject_arguments_do_not_emit_partial_successes() {
 }
 
 #[test]
+fn delayed_and_repeated_matching_ids_keep_argument_fragments() {
+    let mut assembler = SseAssembler::default();
+    for call in [
+        start(0, "", "read", "{\"path\":"),
+        start(0, "stable", "read", "\"a"),
+        start(0, "stable", "", ".txt\""),
+        json!({"index":0,"function":{"arguments":"}"}}),
+        json!({"id":"stable","function":{"arguments":" "}}),
+    ] {
+        assert!(
+            assembler
+                .absorb(&frame(json!([call]), Value::Null))
+                .unwrap()
+                .is_empty()
+        );
+    }
+    let events = assembler
+        .absorb(&frame(Value::Null, json!("tool_calls")))
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    match &events[0] {
+        ProviderEvent::ToolUse {
+            id,
+            name,
+            input_json,
+        } => {
+            assert_eq!(id, "stable");
+            assert_eq!(name, "read");
+            assert_eq!(
+                serde_json::from_str::<Value>(input_json).unwrap(),
+                json!({"path":"a.txt"})
+            );
+        }
+        event => panic!("unexpected event: {event:?}"),
+    }
+}
+
+#[test]
 fn duplicate_ids_and_conflicting_indices_fail_closed() {
     for invalid in [
         start(1, "one", "read", "{}"),
