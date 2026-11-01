@@ -41,6 +41,8 @@ Reuse `serde-saphyr =0.0.29` deserialize for typed validation; use approved `yam
 
 UI patch saves retain comments/unknown fields/untouched entries, including within mappings and identifiable service/provider lists. No-op preserves bytes. File edits compare captured content with latest bytes under a stable cross-process lock, create a unique owner-only temporary file, sync, replace atomically and sync parent. A stable lock inode is not the replaceable YAML inode. Detect concurrent/external edits and return conflicts, not blind overwrites. Non-cooperating editors are not covered by advisory exclusion; no absolute CAS claim.
 
+Copied MCP credential-binding templates use a YAML sequence; a local server with no environment slots produces `credential_bindings: []`, never null. Both empty and populated templates must load through the real config reader after any required origin is filled. This clarifies the existing valid-YAML contract following PR #824 independent delta review; it does not change activation or credential authority.
+
 ## 4. MCP authority and lifecycle
 
 Each YAML declaration contains explicit immutable `id`, display name, transport-specific settings, credential references and enabled intent. Display name/order is not identity. DB keeps historical identity/revisions/tombstones, OAuth lifecycle, pending cleanup, live activation grants and audit. YAML is the editable declaration authority, not a second independent SQLite configuration source. Never write token values or connection errors/lifecycle details into YAML.

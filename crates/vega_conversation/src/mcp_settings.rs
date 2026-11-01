@@ -404,6 +404,9 @@ impl McpServerSettingsService {
         let store = self.store()?;
         let row = mcp_servers::find(store.conn(), id)?.ok_or(McpSettingsError::NotFound)?;
         let slots = env_slots_from_row(&row)?;
+        if slots.is_empty() {
+            return Ok(String::from("credential_bindings: []\n"));
+        }
         let mut template = String::from("credential_bindings:\n");
         for slot in slots {
             let reference =
