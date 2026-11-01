@@ -1397,6 +1397,11 @@ impl ThreadsBlock {
                 format!("{selector_prefix}{thread_id}").into(),
             ))
             .aria_label(accessibility_label)
+            .when(thread_is_awaiting_answer(&thread.id, cx), |row| {
+                row.tooltip(|_, cx| {
+                    crate::icons::tooltip(vega_i18n::t("ui.waiting_for_your_answer"), cx)
+                })
+            })
             .h(px(row_height))
             .flex_shrink_0()
             .ml(px(-surface_leading_outset))
@@ -1753,9 +1758,6 @@ impl ThreadsBlock {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .tooltip(|_, cx| {
-                            crate::icons::tooltip(vega_i18n::t("ui.waiting_for_your_answer"), cx)
-                        })
                         .child(crate::icons::icon(
                             crate::icons::Icon::Pause,
                             colors.text_secondary,
