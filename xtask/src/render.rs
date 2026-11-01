@@ -185,6 +185,7 @@ fn spawn_with_idle_assertion(
         .arg("--vega-bench-render")
         .arg(report_path)
         .env("HOME", home)
+        .env("VEGA_HOME", home.join(".vega"))
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("XDG_DATA_HOME")
         .stdout(Stdio::null())

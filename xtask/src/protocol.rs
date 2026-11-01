@@ -135,6 +135,7 @@ impl Isolation {
         command
             .args(args)
             .env("HOME", &self.home)
+            .env("VEGA_HOME", self.home.join(".vega"))
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("XDG_DATA_HOME")
             .stdout(Stdio::piped())
