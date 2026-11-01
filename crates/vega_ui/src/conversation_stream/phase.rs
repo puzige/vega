@@ -777,7 +777,7 @@ impl ConversationStream {
             }
         }
         if final_confirmed {
-            self.confirm_continued_process(message_id, true, cx);
+            self.confirm_continued_process(message_id, cx);
         }
         if previous_copy != next_copy {
             self.invalidate_copy_owner(previous_copy);
@@ -786,12 +786,7 @@ impl ConversationStream {
         }
     }
 
-    fn confirm_continued_process(
-        &mut self,
-        message_id: &str,
-        pending: bool,
-        cx: &mut Context<Self>,
-    ) {
+    fn confirm_continued_process(&mut self, message_id: &str, cx: &mut Context<Self>) {
         let mut current = message_id.to_owned();
         let mut visited = HashSet::from([current.clone()]);
         while let Some(previous) = self
@@ -826,7 +821,7 @@ impl ConversationStream {
                             })
                             .collect()
                     });
-                group.update(cx, |group, cx| group.confirm_final(copies, pending, cx));
+                group.update(cx, |group, cx| group.confirm_final(copies, true, cx));
             }
             current = previous;
         }
@@ -840,7 +835,7 @@ impl ConversationStream {
             .map(|(message_id, _)| message_id.clone())
             .collect::<Vec<_>>();
         for message_id in finals {
-            self.confirm_continued_process(&message_id, false, cx);
+            self.confirm_continued_process(&message_id, cx);
         }
     }
 
