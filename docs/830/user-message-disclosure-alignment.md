@@ -2,7 +2,7 @@
 
 ## 基线、根因与范围
 
-基线 `259099b30b01ce23c680615655aa4346eb90a865`。用户已授权按 #830 实施，替代上一轮仅排查建卡的限制。#810 的 `selectable_user_message` 使用 `.justify_end()` 且仅渲染 label；[#804](../804/user-message-disclosure.md) 将参考图误写为“右下方只显示文字”。本规格取代该条视觉契约，不改变其他预览和折叠规则。
+初始基线 `259099b30b01ce23c680615655aa4346eb90a865`；集成基线更新为 `44f8148291ae0059e764ff8a0b708196a0eecf00`，保留 #829 的圆角与规格修订，仅合并文档变更记录冲突。用户已授权按 #830 实施，替代上一轮仅排查建卡的限制。#810 的 `selectable_user_message` 使用 `.justify_end()` 且仅渲染 label；[#804](../804/user-message-disclosure.md) 将参考图误写为“右下方只显示文字”。本规格取代该条视觉契约，不改变其他预览和折叠规则。
 
 仅修改 `crates/vega_ui/src/conversation_stream/render_rows.rs::selectable_user_message` 内的控件布局与装饰图标。用户气泡外层 `.items_end()` 保持不变，正文、附件、时间戳及整条消息仍保持原布局。不改共享 disclosure、依赖、源文、复制、存储、模型输入、折叠阈值或滚动策略。
 
