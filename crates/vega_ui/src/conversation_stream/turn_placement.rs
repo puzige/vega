@@ -55,6 +55,10 @@ impl TurnPlacement {
         self.target.is_some()
     }
 
+    pub(super) fn automatically_placed(&self) -> bool {
+        self.active() && !self.interrupted
+    }
+
     pub(super) fn inserted(&mut self, index: usize) {
         if let Some(target) = &mut self.target
             && index <= *target

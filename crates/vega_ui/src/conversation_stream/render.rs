@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod arrow_tests;
+
 use super::context_usage::ContextUsageDisplay;
 use super::*;
 use crate::interaction::InteractionExt;
@@ -209,16 +212,21 @@ impl ConversationStream {
 
     fn render_resume_tail(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
+        let show_arrow =
+            !self.following_tail() && !self.turn_placement.borrow().automatically_placed();
         div()
             .h(px(Layout::READING_NAVIGATION_HEIGHT))
             .flex_shrink_0()
             .py(px(Layout::READING_NAVIGATION_PADDING))
             .flex()
             .justify_center()
-            .when(!self.following_tail(), |row| {
+            .when(show_arrow, |row| {
                 row.child(
                     div()
                         .id("scroll-to-bottom")
+                        .when(cfg!(test), |button| {
+                            button.debug_selector(|| "resume-tail".into())
+                        })
                         .aria_label(vega_i18n::t("ui.back_to_bottom"))
                         .track_focus(&self.resume_tail_focus)
                         .tab_stop(true)
