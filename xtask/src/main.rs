@@ -336,7 +336,7 @@ fn make_sandbox() -> Result<Sandbox> {
 /// provider/key interaction.
 fn preseed_profile(home: &Path) -> Result<()> {
     let paths = vega_store::paths::AppPaths::from_home(Some(home), None)?;
-    paths.initialize()?;
+    paths.initialize_data_dir()?;
     let data_dir = paths.data_dir();
     let store = vega_store::Store::open(data_dir.join("vega.db"))?;
     store.migrate()?;
