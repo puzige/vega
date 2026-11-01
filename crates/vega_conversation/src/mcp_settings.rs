@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod registry_progress_tests;
+
 use std::collections::{HashMap, HashSet};
 use std::net::TcpListener as StdTcpListener;
 type OAuthCallbackStream = tokio::net::TcpStream;
@@ -498,6 +501,7 @@ impl McpServerSettingsService {
                 });
             }
         }
+        drop(state);
         offers.sort_by(|left, right| left.server_id.cmp(&right.server_id));
         self.reject_owner_secret_in_ui(
             offers
