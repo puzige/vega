@@ -1,5 +1,8 @@
 use super::*;
 use gpui_kit::Role;
+
+#[cfg(test)]
+mod placement_tests;
 use vega_conversation::types::{
     AttemptId, CommitFact, OrdinarySubmission, PrimaryFact, RetryBlocker, RetryEligibility,
     SubmissionFailure, SubmissionId,
@@ -223,7 +226,13 @@ impl ConversationStream {
                     .ok()
                     .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
             });
+        let turn_start = self.entries.len();
         self.project_ordinary_submission(submission, cx);
+        if self.entries.len() > turn_start {
+            self.turn_placement
+                .borrow_mut()
+                .begin(turn_start, &self.list);
+        }
         if original_images.len() == request.images.len()
             && !original_images.is_empty()
             && let Some(index) = self
