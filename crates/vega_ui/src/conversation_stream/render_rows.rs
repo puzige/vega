@@ -1723,6 +1723,7 @@ pub(crate) fn sample_document(blocks: usize) -> String {
 pub(super) struct MessageActions<'a> {
     pub(super) id: gpui_kit::SharedString,
     pub(super) user: bool,
+    pub(super) user_bubble: bool,
     pub(super) colors: ThemeColors,
     pub(super) enabled: bool,
     pub(super) timestamp: Option<super::timestamp_format::TimestampDisplay>,
@@ -1739,6 +1740,7 @@ pub(super) fn message_with_copy(
     let MessageActions {
         id,
         user,
+        user_bubble,
         colors,
         enabled: actions_enabled,
         timestamp,
@@ -1758,19 +1760,23 @@ pub(super) fn message_with_copy(
         .relative()
         .flex()
         .flex_col()
-        .when(!user, |body| body.pb(px(Layout::MESSAGE_COPY_FOOTER)))
+        .when(!user_bubble, |body| {
+            body.pb(px(Layout::MESSAGE_COPY_FOOTER))
+        })
         .child(body);
     if let Some(focus) = focus {
         wrapper = wrapper.track_focus(focus).tab_stop(true);
     }
     let mut row = div()
         .absolute()
-        .when(user, |row| {
-            row.right_0().bottom(px(
+        .when(user, |row| row.right_0())
+        .when(!user, |row| row.left_0())
+        .when(user_bubble, |row| {
+            row.bottom(px(
                 Layout::CONVERSATION_USER_BOTTOM - Layout::MESSAGE_COPY_FOOTER
             ))
         })
-        .when(!user, |row| row.left_0().bottom_0())
+        .when(!user_bubble, |row| row.bottom_0())
         .flex()
         .items_center();
     if actions_enabled && let Some(copy) = copy.filter(|copy| copy.has_text()) {
