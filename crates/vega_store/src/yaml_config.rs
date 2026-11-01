@@ -335,8 +335,8 @@ fn patch_field(mapping: &Mapping, key: &str, old: Option<&Value>, next: &Value) 
                 if let Some(position) = current_ids.iter().position(|id| id == desired) {
                     if position != index {
                         let item = target.get(position).ok_or_else(invalid)?;
-                        target.remove(position);
                         target.insert(index, item);
+                        target.remove(position + usize::from(position >= index));
                         let id = current_ids.remove(position);
                         current_ids.insert(index, id);
                     }
