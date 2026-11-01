@@ -492,7 +492,7 @@ impl SseAssembler {
         };
         let tool = &mut self.tools[slot];
         if index.zip(tool.index).is_some_and(|(one, two)| one != two)
-            || (by_index.is_none() && id.is_some_and(|id| !tool.id.is_empty() && tool.id != id))
+            || id.is_some_and(|id| !tool.id.is_empty() && tool.id != id)
         {
             return Err(invalid_protocol(
                 ProviderProtocolReason::ToolIdentityConflict,
