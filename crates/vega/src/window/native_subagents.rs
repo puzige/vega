@@ -340,6 +340,9 @@ impl VegaWindow {
             });
             return;
         };
+        stream.update(cx, |stream, cx| {
+            stream.set_fork_pending(Some(request.message_id.clone()), cx)
+        });
         let source = request.thread_id.clone();
         let worker_source = source.clone();
         let cutoff = request.message_id.clone();
@@ -356,19 +359,30 @@ impl VegaWindow {
         });
         cx.spawn(async move |this, cx| {
             let outcome = work.await;
-            if !coordinator.release(lease) {
+            let released = coordinator.release(lease);
+            stream.update(cx, |stream, cx| stream.set_fork_pending(None, cx));
+            if !released {
                 return;
             }
             let _ = this.update(cx, |this, cx| {
                 cx.notify();
-                if this.message_location_route_generation != route
+                if cx.global::<SettingsOpen>().0
+                    || this.message_location_route_generation != route
                     || !this.owns_stream_request(&stream, &source, cx)
                 {
                     return;
                 }
                 match outcome {
                     Ok(thread) => {
-                        this.accept_palette_thread(thread, cx);
+                        let destination = thread.id.clone();
+                        if this.accept_palette_thread(thread, cx) {
+                            this.fork_focus_thread = Some(destination);
+                            cx.refresh_windows();
+                        } else {
+                            stream.update(cx, |stream, cx| {
+                                stream.apply_codex_route_error("ui.fork_created_not_opened", cx)
+                            });
+                        }
                     }
                     Err(()) => stream.update(cx, |stream, cx| {
                         stream.apply_codex_route_error("ui.fork_failed", cx)

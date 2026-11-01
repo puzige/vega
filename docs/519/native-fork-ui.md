@@ -15,12 +15,22 @@ Current AGENTS overrides the old issue's mandatory TDD and docs/498 placement. T
 
 ## UI and request contract
 
-1. Final response footer: Copy then a direct GitBranch button, accessible localized label `Branch in new chat` / `在新聊天中分支`. Not a menu item. Existing footer height, Copy geometry, original text copying, timestamps and user-message controls remain unchanged.
+1. Final response footer: Copy then a direct GitBranch button, accessible localized label `Branch in new chat` / `在新聊天中分支`. Also available from the eligible Final message's context menu, through the same request chain. Existing footer height, Copy geometry, original text copying, timestamps and user-message controls remain unchanged.
 2. Each button retains individual hover/focus visibility; a focused message reveals both. No transparent parent concealing focused children. Existing 24px actions stay horizontal in the 28px footer; no extra vertical space is introduced.
 3. Emit `ForkRequested { thread_id, message_id }` only for a Native, project-bound, parentless thread with a trusted Final entry. Store additionally rejects workspace-owned/noneligible records. User, Codex/ACP, standalone and child threads have no Fork button.
 4. Handler revalidates stream route, current thread identity/backend/project/parent, trusted Final anchor and idle UI/controller/global runtime owner. Running/busy requests produce a bounded localized recovery message. No raw storage errors or paths in UI/logs.
 5. Acquire a dedicated Fork trusted-action lease before spawning blocking Store/fork work off UI. The worker also holds the source thread-admission guard through copy so sends in another window cannot race the idle check. Duplicate requests while leased create nothing. Hold lease until work returns, even if navigation changes; never cancel-and-replay unknown storage work.
 6. Completion releases only its own lease. Publish/open the created thread through existing navigation only when stream, source ID and route generation still match. A committed fork after navigation remains sidebar-discoverable but must not steal the current route. Failed storage creates no partial thread and does not navigate. No automatic run; existing Composer prediction behavior is not suppressed.
+
+## User acceptance revision: pending feedback and focus
+
+User feedback after PR #803: the action had no pending feedback and the new chat appeared in the sidebar without clear navigation/focus; request an equivalent message context-menu entry.
+
+- Once the handler acquires the Fork lease, the source Final footer keeps a visible spinner and localized `Creating branch…` label until the worker settles. The action cannot submit again while pending. Other Final Fork actions and context-menu entries are disabled while this stream has a pending Fork. Copy/timestamp geometry is unchanged at rest; pending feedback stays in the existing footer height. Reduce Motion or inactive windows use a static indicator with the same label.
+- Clear pending state on completion even when the route/stream is stale. Failed storage retains the existing bounded retry error; retries can acquire a new lease. Do not replace backend/route/admission validation with UI state.
+- A successful current-route completion opens/selects the created thread, explicitly refreshes the window and records a one-shot destination Composer focus request. Consume focus only when that destination stream is loaded and visible. Leaving the destination clears the request; stale completions never schedule focus or navigation. If the existing navigation guard refuses opening an already-created chat, report that it was created and can be opened from the sidebar, not that storage failed.
+- Eligible Final message right-click menus include `Branch in new chat`, using the same trusted Final/native/project/top-level eligibility and handler, with no user/ACP/Codex/child entry. Existing selection Copy and partial-compaction entries remain intact. Busy state is checked again at activation to protect already-open menus.
+- Validation: focused static review of pending lifetime, completion/route guards, shared menu/button activation and destination-only focus; exact-head full Actions and independent non-writer delta review. No restored historical Rust suite or local execution. Visual animation, context-menu interaction and real focus remain user manual acceptance.
 
 ## Historical consumer contract
 

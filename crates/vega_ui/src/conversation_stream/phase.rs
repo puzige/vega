@@ -259,7 +259,9 @@ impl ConversationStream {
     }
 
     pub(crate) fn fork_request_for_entry(&self, index: usize) -> Option<ForkRequested> {
-        if self.thread.backend != TaskBackend::Native
+        if self.reading_preview
+            || self.permissions_revoked
+            || self.thread.backend != TaskBackend::Native
             || self.thread.project_id.is_empty()
             || self.thread.parent_thread_id.is_some()
         {
@@ -282,7 +284,46 @@ impl ConversationStream {
     }
 
     pub fn fork_is_idle(&self) -> bool {
-        self.message_actions_enabled()
+        self.message_actions_enabled() && self.fork_pending.is_none()
+    }
+
+    pub fn set_fork_pending(&mut self, message_id: Option<String>, cx: &mut Context<Self>) {
+        self.fork_pending = message_id;
+        cx.notify();
+    }
+
+    pub(crate) fn request_fork(&mut self, request: &ForkRequested, cx: &mut Context<Self>) {
+        if self.fork_pending.is_none() && self.accepts_fork_request(request) {
+            cx.emit(request.clone());
+        }
+    }
+
+    pub(crate) fn prepare_fork_menu(&self, index: usize, cx: &mut Context<Self>) {
+        use gpui_kit::component::menu::PopupMenuItem;
+        let Some(StreamEntry::Assistant { copy, .. }) = self.entries.get(index) else {
+            return;
+        };
+        *copy.fork_menu.borrow_mut() = None;
+        let Some(request) = self.fork_request_for_entry(index) else {
+            return;
+        };
+        let weak = cx.entity().downgrade();
+        let pending = self.fork_pending.is_some();
+        *copy.fork_menu.borrow_mut() = Some(std::rc::Rc::new(move |menu, _, _| {
+            let weak = weak.clone();
+            let request = request.clone();
+            menu.item(
+                PopupMenuItem::new(vega_i18n::t(if pending {
+                    "ui.fork_creating"
+                } else {
+                    "ui.branch_in_new_chat"
+                }))
+                .disabled(pending)
+                .on_click(move |_, _, cx| {
+                    let _ = weak.update(cx, |stream, cx| stream.request_fork(&request, cx));
+                }),
+            )
+        }));
     }
 
     pub(crate) fn message_actions_enabled(&self) -> bool {

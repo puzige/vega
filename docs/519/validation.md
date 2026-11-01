@@ -4,6 +4,14 @@
 
 Issue #519 / PR #803, Native project top-level chat Fork only. No ACP/Codex Fork, user-message editing, installation, application restart or user-data mutation. Local validation is formatting, diff and static inspection only; no local Vega execution, compilation or tests. CI and merge are not user acceptance.
 
+## User acceptance follow-up: pending feedback, destination focus and message menu
+
+The original UI did not expose the Fork worker's pending lifetime or explicitly request destination Composer focus. The handler already attempted navigation, so the user's real-system failure to see it open is not established by historical CI; this follow-up explicitly refreshes the destination and schedules focus only after its stream loads. Source route/generation/stream guards remain authoritative; navigation refusal after a committed copy is reported as created-but-not-opened rather than storage failure.
+
+This revision adds source-message pending feedback, shared button/context-menu activation and one-shot destination focus. The right-click menu is attached to the actual Assistant body copy object, not the distinct Final clipboard projection. Pending is cleared before stale completion rejection, busy menus revalidate at activation, and Reduce Motion/inactive windows retain a static indicator and label. Leaving the destination or entering Settings clears pending focus.
+
+Validation choice: focused static lifecycle/API/identity inspection plus exact-head Actions fmt/Clippy/Nextest and existing Python checks. No new Rust development tests or test-only support; the historical suite below is not restored or claimed as a current-cycle test run. This UI-only delta leaves Store copy, archive/history adapters, admission and lease ownership unchanged. Native paint, animation, real menu interaction and focus require user manual acceptance, not source-string tests. Local format/diff checks pass; current-cycle independent review and cloud results pending at this revision's creation. Exact versions/results are recorded in the follow-up PR and #519.
+
 ## Development regressions
 
 Immutable source head: `e717bf67fbe066315e64d5a4625a3875f88eac24`.

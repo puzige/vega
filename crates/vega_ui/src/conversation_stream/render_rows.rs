@@ -7,7 +7,7 @@ use super::*;
 use crate::icons::{Icon, icon};
 use gpui_kit::{
     Radians, Transformation,
-    component::{IconName, IconNamed},
+    component::{IconName, IconNamed, Sizable as _},
     svg,
 };
 
@@ -1131,6 +1131,11 @@ pub(super) fn selection_context_menu(
                     .disabled(!copy_for_menu.has_selected_text())
                     .on_click(move |_, _, cx| selected.copy_selected_text(cx)),
             );
+        let menu = if let Some(builder) = copy_for_menu.fork_menu.borrow().as_ref() {
+            builder(menu, window, cx)
+        } else {
+            menu
+        };
         if let Some(builder) = copy_for_menu.compaction_menu.borrow().as_ref() {
             builder(menu, window, cx)
         } else {
@@ -1751,6 +1756,7 @@ pub(super) struct MessageActions<'a> {
     pub(super) timestamp: Option<super::timestamp_format::TimestampDisplay>,
     pub(super) focus: Option<&'a FocusHandle>,
     pub(super) fork: Option<(ForkRequested, gpui_kit::WeakEntity<ConversationStream>)>,
+    pub(super) fork_pending: Option<&'a str>,
 }
 
 pub(super) fn message_with_copy(
@@ -1769,6 +1775,7 @@ pub(super) fn message_with_copy(
         timestamp,
         focus,
         fork,
+        fork_pending,
     } = actions;
     if copy.is_none_or(|copy| !copy.has_text()) && timestamp.is_none() {
         return body;
@@ -1825,22 +1832,61 @@ pub(super) fn message_with_copy(
         ));
     }
     if let Some((request, stream)) = fork {
-        row = row.child(
-            crate::icons::icon_button(
-                Icon::GitBranch,
-                vega_i18n::t("ui.branch_in_new_chat"),
-                colors,
-                move |_, _, cx| {
-                    let _ = stream.update(cx, |_, cx| cx.emit(request.clone()));
-                },
-            )
-            .id("message-fork")
-            .size(px(Layout::COPY_ACTION_SIZE))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .opacity(if focused { 1. } else { 0. })
-            .group_hover(group.clone(), |style| style.opacity(1.))
-            .focus_visible(|style| style.opacity(1.).bg(colors.bg_active)),
-        );
+        if fork_pending == Some(request.message_id.as_str()) {
+            let indicator = if window.is_window_active() && !cx.reduce_motion() {
+                gpui_kit::component::spinner::Spinner::new()
+                    .ease(gpui_kit::linear)
+                    .with_size(px(Layout::ICON_SIZE))
+                    .icon(gpui_kit::component::IconName::LoaderCircle)
+                    .into_any_element()
+            } else {
+                icon(Icon::GitBranch, colors.text_secondary)
+            };
+            row = row.child(
+                div()
+                    .id("message-fork-pending")
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .h(px(Layout::COPY_ACTION_SIZE))
+                    .px_1()
+                    .text_size(px(Typography::METADATA))
+                    .text_color(colors.text_secondary)
+                    .aria_label(vega_i18n::t("ui.fork_creating"))
+                    .child(indicator)
+                    .child(vega_i18n::t("ui.fork_creating")),
+            );
+        } else if fork_pending.is_some() {
+            row = row.child(
+                div()
+                    .id("message-fork-disabled")
+                    .size(px(Layout::COPY_ACTION_SIZE))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .aria_label(vega_i18n::t("ui.fork_creating"))
+                    .opacity(if focused { 0.5 } else { 0. })
+                    .group_hover(group.clone(), |style| style.opacity(0.5))
+                    .child(icon(Icon::GitBranch, colors.text_tertiary)),
+            );
+        } else {
+            row = row.child(
+                crate::icons::icon_button(
+                    Icon::GitBranch,
+                    vega_i18n::t("ui.branch_in_new_chat"),
+                    colors,
+                    move |_, _, cx| {
+                        let _ = stream.update(cx, |stream, cx| stream.request_fork(&request, cx));
+                    },
+                )
+                .id("message-fork")
+                .size(px(Layout::COPY_ACTION_SIZE))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .opacity(if focused { 1. } else { 0. })
+                .group_hover(group.clone(), |style| style.opacity(1.))
+                .focus_visible(|style| style.opacity(1.).bg(colors.bg_active)),
+            );
+        }
     }
     if let Some(timestamp) = timestamp {
         row = row.child(
