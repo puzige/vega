@@ -143,6 +143,16 @@ fn manual_scroll_restores_arrow_and_existing_return_to_tail(cx: &mut TestAppCont
     });
     scroll(cx, -2000.);
     frame(cx);
+    stream.read_with(cx, |stream, _| {
+        eprintln!(
+            "after down: top={:?} tail={:?} viewport={:?} following={} active={}",
+            stream.list.logical_scroll_top(),
+            stream.list.bounds_for_item(7),
+            stream.list.viewport_bounds(),
+            stream.following_tail(),
+            stream.turn_placement.borrow().active()
+        );
+    });
     assert!(!arrow_visible(cx));
     stream.read_with(cx, |stream, _| {
         assert!(stream.following_tail());
