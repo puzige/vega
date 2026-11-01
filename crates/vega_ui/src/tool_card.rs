@@ -1603,6 +1603,17 @@ impl ToolCard {
                 },
                 footer: Some((self.terminal_footer(), self.activity_state())),
             }),
+            Some(ToolCardInputProjection::Subagent { tool, .. })
+                if tool == "historical_delegation" && !self.output_rows.is_empty() =>
+            {
+                Some(ToolDetail {
+                    title: None,
+                    command: None,
+                    output: self.output_rows.clone(),
+                    output_copy: None,
+                    footer: Some((self.terminal_footer(), self.activity_state())),
+                })
+            }
             Some(
                 ToolCardInputProjection::UserQuestion { .. }
                 | ToolCardInputProjection::ReadOnly { .. }

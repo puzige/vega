@@ -300,6 +300,85 @@ impl VegaWindow {
         current
     }
 
+    pub(crate) fn fork_conversation(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: &ForkRequested,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.owns_stream_request(&stream, &request.thread_id, cx)
+            || !stream.read(cx).accepts_fork_request(request)
+            || self.is_draft_route(&request.thread_id)
+        {
+            return;
+        }
+        if !stream.read(cx).fork_is_idle()
+            || self
+                .agent_controller
+                .active
+                .contains_key(&request.thread_id)
+            || thread_is_running(&request.thread_id, cx)
+        {
+            stream.update(cx, |stream, cx| {
+                stream.apply_codex_route_error("ui.fork_busy", cx)
+            });
+            return;
+        }
+        let route = self.message_location_route_generation;
+        let Some(database) = self.context_database(cx) else {
+            stream.update(cx, |stream, cx| {
+                stream.apply_codex_route_error("ui.fork_failed", cx)
+            });
+            return;
+        };
+        let Some(lease) =
+            self.trusted_actions
+                .acquire(TrustedActionKind::ConversationFork, route, 0)
+        else {
+            stream.update(cx, |stream, cx| {
+                stream.apply_codex_route_error("ui.fork_busy", cx)
+            });
+            return;
+        };
+        let source = request.thread_id.clone();
+        let worker_source = source.clone();
+        let cutoff = request.message_id.clone();
+        let coordinator = self.trusted_actions.clone();
+        let work = cx.background_executor().spawn(async move {
+            let store = vega_store::Store::open_existing(database).map_err(|_| ())?;
+            let _admission = vega_store::thread_admission::try_acquire(
+                store.database_identity(),
+                &worker_source,
+            )
+            .map_err(|_| ())?
+            .ok_or(())?;
+            vega_conversation::threads::fork_thread(&store, &worker_source, &cutoff).map_err(|_| ())
+        });
+        cx.spawn(async move |this, cx| {
+            let outcome = work.await;
+            if !coordinator.release(lease) {
+                return;
+            }
+            let _ = this.update(cx, |this, cx| {
+                cx.notify();
+                if this.message_location_route_generation != route
+                    || !this.owns_stream_request(&stream, &source, cx)
+                {
+                    return;
+                }
+                match outcome {
+                    Ok(thread) => {
+                        this.accept_palette_thread(thread, cx);
+                    }
+                    Err(()) => stream.update(cx, |stream, cx| {
+                        stream.apply_codex_route_error("ui.fork_failed", cx)
+                    }),
+                }
+            });
+        })
+        .detach();
+    }
+
     pub(crate) fn open_subagent(
         &mut self,
         stream: Entity<ConversationStream>,
@@ -375,6 +454,10 @@ impl VegaWindow {
         cx: &mut Context<Self>,
     ) {
         self.bind_question_attention(view, cx);
+        cx.subscribe(view, |this, stream, request: &ForkRequested, cx| {
+            this.fork_conversation(stream.clone(), request, cx);
+        })
+        .detach();
         cx.subscribe(
             view,
             |this, _, request: &DraftProjectSelectionRequested, cx| {

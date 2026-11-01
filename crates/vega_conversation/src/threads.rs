@@ -32,8 +32,11 @@ pub fn load_conversation(
             crate::session_reasoning::initialize(&store, thread_id, &defaults.profiles)?
         }
     };
-    let history =
-        crate::history::restart_history_page(&store, thread_id, vega_store::messages::PAGE_LIMIT)?;
+    let history = crate::display_history::restart_history_page(
+        &store,
+        thread_id,
+        vega_store::messages::PAGE_LIMIT,
+    )?;
     Ok(crate::types::ConversationLoad {
         reasoning_preferences,
         history,
