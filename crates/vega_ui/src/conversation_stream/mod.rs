@@ -26,8 +26,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{
     AbsoluteLength, AnyElement, App, Context, DefiniteLength, Entity, EventEmitter, FocusHandle,
     FontStyle, FontWeight, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Render, Rgba,
-    ScrollHandle, StrikethroughStyle, StyledText, TextRun, TextStyle, Window, actions, div, list,
-    px,
+    ScrollHandle, StrikethroughStyle, StyledText, TextRun, TextStyle, Window, actions, div, px,
 };
 use vega_conversation::agent::{PendingPermission, PermissionQueue};
 use vega_conversation::history::{HistoryEntry, HistoryPage};
@@ -329,6 +328,7 @@ mod subagents;
 mod text_cache;
 mod timestamp_format;
 mod timestamps;
+mod turn_placement;
 use run_activity::{RunActivityChild, RunActivityGroup, RunActivityStatus};
 mod autolinks;
 mod inline_code;

@@ -273,6 +273,7 @@ impl ConversationStream {
     fn append_pending_echo(&mut self, message: &PendingMessage, cx: &mut Context<Self>) {
         self.ensure_entry_identities();
         let mut indices = Vec::new();
+        let turn_start = self.entries.len();
         let block_id = self.user_block_seq;
         self.user_block_seq += 1;
         let copy = MessageCopy::from_live_text(&message.content);
@@ -296,6 +297,9 @@ impl ConversationStream {
         let identity = echo_entry_identity(&self.thread.id, &message.id, ECHO_TEXT_KIND);
         self.set_entry_identity(index, identity);
         indices.push(index);
+        self.turn_placement
+            .borrow_mut()
+            .begin(turn_start, &self.list);
         self.pending_echoes.push(PendingEcho {
             pending_id: message.id.clone(),
             indices,
@@ -1167,6 +1171,7 @@ impl ConversationStream {
         if self.promote_pending_echo(pending_id, message_id, content, seq, cx) {
             return;
         }
+        let turn_start = self.entries.len();
         let sequence = i64::try_from(seq).ok();
         let block_id = self.user_block_seq;
         self.user_block_seq += 1;
@@ -1193,6 +1198,9 @@ impl ConversationStream {
             index,
             self.durable_entry_identity(message_id, "user-text", sequence),
         );
+        self.turn_placement
+            .borrow_mut()
+            .begin(turn_start, &self.list);
         if self.composer_history.last().map(String::as_str) != Some(content) {
             self.composer_history.push(content.to_string());
         }
