@@ -442,7 +442,7 @@ fn schema_children(schema: &Value, draft: jsonschema::Draft) -> Vec<SchemaChild<
             key.as_str(),
             "properties" | "patternProperties" | "definitions"
         ) || (modern && matches!(key.as_str(), "$defs" | "dependentSchemas"));
-        let dependencies = tuple && key == "dependencies";
+        let dependencies = key == "dependencies";
         if map || dependencies {
             if let Some(entries) = value.as_object() {
                 for (name, node) in entries {
@@ -863,6 +863,33 @@ mod dialect_tests {
                     .unwrap_err()
                     .contains("unsupported schema dialect")
             );
+        }
+    }
+
+    #[test]
+    fn checks_legacy_dependencies_under_default_and_explicit_modern_roots() {
+        for declaration in [None, Some(DIALECTS[4])] {
+            let mut schema = json!({"type":"object"});
+            if let Some(dialect) = declaration {
+                schema["$schema"] = json!(dialect);
+            }
+            schema["dependencies"] = json!({"trigger":["needed"]});
+            assert!(parse_tool(&definition(schema.clone()), true).is_ok());
+            schema["dependencies"] = json!({"trigger":{"$schema":DIALECTS[2],"type":"object"}});
+            assert!(
+                validate_schema(&schema)
+                    .unwrap_err()
+                    .contains("mixed schema dialects")
+            );
+            schema["dependencies"] = json!({"trigger":{"$vocabulary":{}}});
+            assert!(
+                validate_schema(&schema)
+                    .unwrap_err()
+                    .contains("custom schema vocabulary")
+            );
+            schema["dependencies"] = json!({"trigger":{"$schema":DIALECTS[4],"type":"object","properties":{"token":{"type":"string","x-mcp-header":"Token"}}}});
+            assert!(parse_tool(&definition(schema.clone()), true).is_err());
+            assert!(parse_tool(&definition(schema), false).is_ok());
         }
     }
 
