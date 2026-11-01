@@ -105,7 +105,7 @@ fn validate_node(node: &YamlNode, depth: usize) -> io::Result<()> {
         YamlKind::Alias | YamlKind::Tagged(_) => Err(invalid()),
         _ => {
             if let Some(mapping) = node.as_mapping() {
-                validate_mapping(&mapping, depth + 1)?;
+                validate_mapping(mapping, depth + 1)?;
             } else if let Some(sequence) = node.as_sequence() {
                 for value in sequence.values() {
                     validate_node(&value, depth + 1)?;
@@ -211,10 +211,10 @@ fn validate_parents(path: &Path) -> io::Result<()> {
 
 fn private_directory(path: &Path) -> io::Result<()> {
     validate_parents(path)?;
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        if !parent.exists() {
-            private_directory(parent)?;
-        }
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty())
+        && !parent.exists()
+    {
+        private_directory(parent)?;
     }
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(()),
