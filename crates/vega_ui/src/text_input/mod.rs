@@ -85,6 +85,7 @@ pub struct TextInput {
     content: SharedString,
     content_revision: u64,
     prediction: Option<SharedString>,
+    prediction_suppressed: bool,
     placeholder: SharedString,
     placeholder_key: Option<&'static str>,
     masked: bool,

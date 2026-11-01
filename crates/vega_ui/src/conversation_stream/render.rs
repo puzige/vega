@@ -1924,13 +1924,38 @@ impl Render for ConversationStream {
             .text_color(colors.text_primary)
             .key_context("ConversationStream")
             .track_focus(&self.selection_focus)
-            .capture_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                if this.context_usage_trigger_hovered && event.keystroke.key == "escape" {
-                    this.context_usage_trigger_hovered = false;
-                    cx.notify();
-                    cx.stop_propagation();
-                }
-            }))
+            .capture_action(
+                cx.listener(|this, _: &crate::text_input::AcceptPrediction, _, cx| {
+                    if this.model_picker_level.is_open() {
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+            .capture_action(cx.listener(
+                |this, _: &crate::text_input::DismissPrediction, window, cx| {
+                    if this.model_picker_level.is_open() {
+                        this.on_model_close(&CloseModel, window, cx);
+                        cx.stop_propagation();
+                    }
+                },
+            ))
+            .capture_key_down(
+                cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    if this.model_picker_level.is_open()
+                        && event.keystroke.key == "escape"
+                        && !this.input.read(cx).is_composing()
+                    {
+                        this.on_model_close(&CloseModel, window, cx);
+                        cx.stop_propagation();
+                        return;
+                    }
+                    if this.context_usage_trigger_hovered && event.keystroke.key == "escape" {
+                        this.context_usage_trigger_hovered = false;
+                        cx.notify();
+                        cx.stop_propagation();
+                    }
+                }),
+            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
