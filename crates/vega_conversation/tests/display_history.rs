@@ -9,7 +9,21 @@ use vega_store::messages::PageCursor;
 
 const SECRET: &str = concat!("ghp_", "syntheticFixtureCredential0123456789");
 
-fn fixture() -> Store {
+struct Fixture {
+    store: Store,
+    _root: tempfile::TempDir,
+}
+
+impl std::ops::Deref for Fixture {
+    type Target = Store;
+
+    fn deref(&self) -> &Self::Target {
+        &self.store
+    }
+}
+
+fn fixture() -> Fixture {
+    let root = tempfile::tempdir().unwrap();
     let store = Store::open(":memory:").unwrap();
     store.migrate().unwrap();
     store.conn().execute_batch(
@@ -69,6 +83,13 @@ fn fixture() -> Store {
         )
         .unwrap();
     store
+        .conn()
+        .execute(
+            "UPDATE projects SET path=?1 WHERE id='project'",
+            [root.path().canonicalize().unwrap().to_str().unwrap()],
+        )
+        .unwrap();
+    Fixture { store, _root: root }
 }
 
 fn tool<'a>(page: &'a HistoryPage, wanted: &str) -> &'a HistoryEntry {

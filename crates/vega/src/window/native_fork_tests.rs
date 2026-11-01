@@ -1,5 +1,4 @@
 use super::VegaWindow;
-use gpui_kit as gpui;
 use gpui_kit::{AppContext, Entity, TestAppContext};
 use vega_conversation::types::{ConversationEvent, Thread};
 use vega_store::Store;
@@ -19,10 +18,11 @@ struct Fixture {
 impl Fixture {
     fn new(cx: &mut TestAppContext) -> Self {
         let root = tempfile::tempdir().unwrap();
-        let database = root.path().join("vega.db");
+        let canonical = root.path().canonicalize().unwrap();
+        let database = canonical.join("vega.db");
         let workspace = vega_conversation::startup::prepare_workspace(
             &database,
-            &root.path().join("config.yaml"),
+            &canonical.join("config.yaml"),
         )
         .unwrap();
         let store = Store::open_existing(&database).unwrap();
@@ -49,6 +49,13 @@ impl Fixture {
             .unwrap()
         );
         vega_store::messages::finish(store.conn(), "answer", "Answer", "done").unwrap();
+        store
+            .conn()
+            .execute(
+                "UPDATE projects SET path=?1 WHERE id='project'",
+                [canonical.to_str().unwrap()],
+            )
+            .unwrap();
         let source = vega_conversation::threads::get_thread(&store, "source").unwrap();
         let page = vega_conversation::history::latest_history_page(&store, "source", 20).unwrap();
         let request = ForkRequested {
@@ -256,7 +263,7 @@ fn replaced_stream_prevents_stale_completion_and_stale_request_creates_nothing(
 fn controller_running_refuses_fork_and_cleared_owner_allows_retry(cx: &mut TestAppContext) {
     let fixture = Fixture::new(cx);
     cx.update(|cx| {
-        fixture.window.update(cx, |window, cx| {
+        fixture.window.update(cx, |window, _| {
             assert!(
                 window
                     .agent_controller
