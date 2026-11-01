@@ -737,6 +737,7 @@ impl ConversationStream {
         responses.refresh_final_copy(message_id, &self.entries, &self.entry_identities);
         let next_copy = responses.copy_owner();
         let copies = process_copies(message_id, responses, &self.entries, &self.entry_identities);
+        let final_confirmed = copies.is_some();
         if let Some(group) = self.run_activity_groups.get(message_id) {
             group.update(cx, |group, cx| {
                 if let Some(copies) = copies {
@@ -775,10 +776,66 @@ impl ConversationStream {
                 self.close_active_segment_at_response(text.len());
             }
         }
+        if final_confirmed {
+            self.confirm_continued_process(message_id, cx);
+        }
         if previous_copy != next_copy {
             self.invalidate_copy_owner(previous_copy);
             self.invalidate_copy_owner(next_copy);
             cx.notify();
+        }
+    }
+
+    fn confirm_continued_process(&mut self, message_id: &str, cx: &mut Context<Self>) {
+        let mut current = message_id.to_owned();
+        let mut visited = HashSet::from([current.clone()]);
+        while let Some(previous) = self
+            .run_continuations
+            .values()
+            .find(|relation| relation.next_assistant_id == current)
+            .map(|relation| relation.previous_assistant_id.clone())
+        {
+            if !visited.insert(previous.clone()) {
+                break;
+            }
+            if let Some(group) = self.run_activity_groups.get(&previous) {
+                let copies = self
+                    .run_responses
+                    .get(&previous)
+                    .and_then(|responses| {
+                        process_copies(&previous, responses, &self.entries, &self.entry_identities)
+                    })
+                    .unwrap_or_else(|| {
+                        self.entries
+                            .iter()
+                            .zip(&self.entry_identities)
+                            .filter_map(|(entry, identity)| match entry {
+                                StreamEntry::Assistant {
+                                    copy,
+                                    failure: None,
+                                    ..
+                                } if identity.message_id.as_deref() == Some(&previous) => {
+                                    Some(copy.id)
+                                }
+                                _ => None,
+                            })
+                            .collect()
+                    });
+                group.update(cx, |group, cx| group.confirm_final(copies, true, cx));
+            }
+            current = previous;
+        }
+    }
+
+    pub(super) fn restore_continued_process(&mut self, cx: &mut Context<Self>) {
+        let finals = self
+            .run_responses
+            .iter()
+            .filter(|(_, responses)| responses.final_copy.is_some())
+            .map(|(message_id, _)| message_id.clone())
+            .collect::<Vec<_>>();
+        for message_id in finals {
+            self.confirm_continued_process(&message_id, cx);
         }
     }
 

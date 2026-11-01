@@ -129,6 +129,7 @@ impl ConversationStream {
         hydrated_identities.append(&mut self.entry_identities);
         self.entry_identities = hydrated_identities;
         self.list_prepend(prepended_entries);
+        self.restore_continued_process(cx);
         if prepended_entries > 0 {
             self.grow_entry_indices(0, prepended_entries);
             let stage_top_insets = self.stage_top_insets(cx);
@@ -180,6 +181,7 @@ impl ConversationStream {
         self.entries.append(&mut hydrated);
         self.entry_identities.append(&mut hydrated_identities);
         self.list_append(previous_len);
+        self.restore_continued_process(cx);
         self.hydration.newer_cursor = page.newer_cursor;
         self.hydration.loading = false;
         self.hydration.paused = false;
