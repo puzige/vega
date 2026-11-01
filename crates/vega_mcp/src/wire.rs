@@ -329,9 +329,11 @@ fn validate_schema(schema: &Value) -> Result<(), String> {
         return Err("/inputSchema: schema byte limit exceeded".into());
     }
     schema_budget(schema, 0, &mut 0, &mut 0, "")?;
-    validate_dialects(schema, "")?;
+    let draft = schema_draft(schema, jsonschema::Draft::Draft202012, "")?;
+    let (has_references, _) = reference_header_inventory(schema);
+    validate_dialects(schema, draft, "", has_references)?;
     jsonschema::options()
-        .with_draft(jsonschema::Draft::Draft202012)
+        .with_draft(draft)
         .offline()
         .with_pattern_options(
             jsonschema::PatternOptions::fancy_regex()
@@ -392,50 +394,149 @@ fn schema_budget(
     Ok(())
 }
 
-fn validate_dialects(schema: &Value, path: &str) -> Result<(), String> {
-    let Some(object) = schema.as_object() else {
-        return Ok(());
+fn schema_draft(
+    schema: &Value,
+    inherited: jsonschema::Draft,
+    path: &str,
+) -> Result<jsonschema::Draft, String> {
+    let Some(declaration) = schema.get("$schema") else {
+        return Ok(inherited);
     };
-    if let Some(dialect) = object.get("$schema")
-        && dialect.as_str().map(|value| value.trim_end_matches('#'))
-            != Some("https://json-schema.org/draft/2020-12/schema")
-    {
-        return Err(format!(
+    let draft = declaration.as_str().and_then(|uri| {
+        let uri = uri.strip_suffix('#').unwrap_or(uri);
+        let path = uri
+            .strip_prefix("https://json-schema.org/")
+            .or_else(|| uri.strip_prefix("http://json-schema.org/"))?;
+        match path {
+            "draft-04/schema" => Some(jsonschema::Draft::Draft4),
+            "draft-06/schema" => Some(jsonschema::Draft::Draft6),
+            "draft-07/schema" => Some(jsonschema::Draft::Draft7),
+            "draft/2019-09/schema" => Some(jsonschema::Draft::Draft201909),
+            "draft/2020-12/schema" => Some(jsonschema::Draft::Draft202012),
+            _ => None,
+        }
+    });
+    draft.ok_or_else(|| {
+        format!(
             "/inputSchema{}/$schema: unsupported schema dialect",
+            diagnostic_label(path)
+        )
+    })
+}
+
+struct SchemaChild<'a> {
+    node: &'a Value,
+    path: String,
+    property: Option<&'a str>,
+}
+
+fn schema_children(schema: &Value, draft: jsonschema::Draft) -> Vec<SchemaChild<'_>> {
+    use jsonschema::Draft;
+    let Some(object) = schema.as_object() else {
+        return Vec::new();
+    };
+    let modern = matches!(draft, Draft::Draft201909 | Draft::Draft202012);
+    let tuple = draft != Draft::Draft202012;
+    let mut children = Vec::new();
+    for (key, value) in object {
+        let map = matches!(
+            key.as_str(),
+            "properties" | "patternProperties" | "definitions"
+        ) || (modern && matches!(key.as_str(), "$defs" | "dependentSchemas"));
+        let dependencies = key == "dependencies";
+        if map || dependencies {
+            if let Some(entries) = value.as_object() {
+                for (name, node) in entries {
+                    if dependencies && !(node.is_object() || node.is_boolean()) {
+                        continue;
+                    }
+                    children.push(SchemaChild {
+                        node,
+                        path: format!("/{key}/{}", name.replace('~', "~0").replace('/', "~1")),
+                        property: (key == "properties").then_some(name.as_str()),
+                    });
+                }
+            }
+            continue;
+        }
+        let array = matches!(key.as_str(), "allOf" | "anyOf" | "oneOf")
+            || (draft == Draft::Draft202012 && key == "prefixItems")
+            || (tuple && key == "items" && value.is_array());
+        if array {
+            if let Some(entries) = value.as_array() {
+                for (index, node) in entries.iter().enumerate() {
+                    children.push(SchemaChild {
+                        node,
+                        path: format!("/{key}/{index}"),
+                        property: None,
+                    });
+                }
+            }
+            continue;
+        }
+        let single = matches!(key.as_str(), "items" | "additionalProperties" | "not")
+            || (tuple && key == "additionalItems")
+            || (draft != Draft::Draft4 && matches!(key.as_str(), "contains" | "propertyNames"))
+            || (matches!(
+                draft,
+                Draft::Draft7 | Draft::Draft201909 | Draft::Draft202012
+            ) && matches!(key.as_str(), "if" | "then" | "else"))
+            || (modern
+                && matches!(
+                    key.as_str(),
+                    "unevaluatedItems" | "unevaluatedProperties" | "contentSchema"
+                ));
+        if single {
+            children.push(SchemaChild {
+                node: value,
+                path: format!("/{key}"),
+                property: None,
+            });
+        }
+    }
+    children
+}
+
+fn validate_dialects(
+    schema: &Value,
+    draft: jsonschema::Draft,
+    path: &str,
+    referenced: bool,
+) -> Result<(), String> {
+    let declared = schema_draft(schema, draft, path)?;
+    if declared != draft {
+        return Err(format!(
+            "/inputSchema{}/$schema: mixed schema dialects unsupported",
             diagnostic_label(path)
         ));
     }
-    for (key, value) in object {
-        let next = format!("{path}/{}", key.replace('~', "~0").replace('/', "~1"));
-        match key.as_str() {
-            "$defs" | "definitions" | "properties" | "patternProperties" | "dependentSchemas" => {
-                if let Some(children) = value.as_object() {
-                    for (name, child) in children {
-                        validate_dialects(
-                            child,
-                            &format!("{next}/{}", name.replace('~', "~0").replace('/', "~1")),
-                        )?;
-                    }
+    if schema
+        .as_object()
+        .is_some_and(|object| object.contains_key("$vocabulary"))
+    {
+        return Err(format!(
+            "/inputSchema{}/$vocabulary: custom schema vocabulary unsupported",
+            diagnostic_label(path)
+        ));
+    }
+    if referenced {
+        match schema {
+            Value::Object(object) => {
+                for (key, node) in object {
+                    let next = format!("{path}/{}", key.replace('~', "~0").replace('/', "~1"));
+                    validate_dialects(node, draft, &next, true)?;
                 }
             }
-            "allOf" | "anyOf" | "oneOf" | "prefixItems" => {
-                if let Some(children) = value.as_array() {
-                    for (index, child) in children.iter().enumerate() {
-                        validate_dialects(child, &format!("{next}/{index}"))?;
-                    }
+            Value::Array(entries) => {
+                for (index, node) in entries.iter().enumerate() {
+                    validate_dialects(node, draft, &format!("{path}/{index}"), true)?;
                 }
             }
-            "items"
-            | "additionalProperties"
-            | "unevaluatedProperties"
-            | "unevaluatedItems"
-            | "contains"
-            | "propertyNames"
-            | "not"
-            | "if"
-            | "then"
-            | "else" => validate_dialects(value, &next)?,
             _ => {}
+        }
+    } else {
+        for child in schema_children(schema, draft) {
+            validate_dialects(child.node, draft, &format!("{path}{}", child.path), false)?;
         }
     }
     Ok(())
@@ -444,7 +545,8 @@ fn validate_dialects(schema: &Value, path: &str) -> Result<(), String> {
 fn collect_header_params(schema: &Value) -> Result<Vec<HeaderParam>, ()> {
     let mut params = Vec::new();
     let mut seen = HashSet::new();
-    inspect_schema(schema, true, &[], &mut params, &mut seen)?;
+    let draft = schema_draft(schema, jsonschema::Draft::Draft202012, "").map_err(|_| ())?;
+    inspect_schema(schema, draft, true, &[], &mut params, &mut seen)?;
     let (has_references, header_declarations) = reference_header_inventory(schema);
     if has_references && header_declarations != params.len() {
         return Err(());
@@ -455,7 +557,9 @@ fn collect_header_params(schema: &Value) -> Result<Vec<HeaderParam>, ()> {
 fn reference_header_inventory(node: &Value) -> (bool, usize) {
     match node {
         Value::Object(object) => {
-            let mut references = object.contains_key("$ref") || object.contains_key("$dynamicRef");
+            let mut references = object.contains_key("$ref")
+                || object.contains_key("$dynamicRef")
+                || object.contains_key("$recursiveRef");
             let mut headers = usize::from(object.contains_key("x-mcp-header"));
             for child in object.values() {
                 let (child_references, child_headers) = reference_header_inventory(child);
@@ -476,79 +580,47 @@ fn reference_header_inventory(node: &Value) -> (bool, usize) {
 
 fn inspect_schema(
     node: &Value,
+    draft: jsonschema::Draft,
     reachable: bool,
     path: &[String],
     params: &mut Vec<HeaderParam>,
     seen: &mut HashSet<String>,
 ) -> Result<(), ()> {
-    match node {
-        Value::Object(object) => {
-            if let Some(header) = object.get("x-mcp-header") {
-                let name = header.as_str().ok_or(())?;
-                if !reachable || path.is_empty() || !valid_header_token(name) {
-                    return Err(());
-                }
-                let kind = match object.get("type").and_then(Value::as_str) {
-                    Some("string") => HeaderKind::String,
-                    Some("integer") => HeaderKind::Integer,
-                    Some("boolean") => HeaderKind::Boolean,
-                    _ => return Err(()),
-                };
-                if !seen.insert(name.to_ascii_lowercase()) {
-                    return Err(());
-                }
-                params.push(HeaderParam {
-                    name: name.to_owned(),
-                    path: path.to_vec(),
-                    kind,
-                });
-            }
-            for (key, value) in object {
-                if key == "properties" && reachable {
-                    let properties = value.as_object().ok_or(())?;
-                    for (property, child) in properties {
-                        let mut next = path.to_vec();
-                        next.push(property.clone());
-                        inspect_schema(child, true, &next, params, seen)?;
-                    }
-                } else if matches!(
-                    key.as_str(),
-                    "items"
-                        | "additionalProperties"
-                        | "unevaluatedProperties"
-                        | "unevaluatedItems"
-                        | "contains"
-                        | "propertyNames"
-                        | "not"
-                        | "if"
-                        | "then"
-                        | "else"
-                        | "allOf"
-                        | "anyOf"
-                        | "oneOf"
-                        | "prefixItems"
-                ) {
-                    inspect_schema(value, false, path, params, seen)?;
-                } else if matches!(
-                    key.as_str(),
-                    "$defs"
-                        | "definitions"
-                        | "patternProperties"
-                        | "dependentSchemas"
-                        | "properties"
-                ) {
-                    for child in value.as_object().ok_or(())?.values() {
-                        inspect_schema(child, false, path, params, seen)?;
-                    }
-                }
-            }
+    let Some(object) = node.as_object() else {
+        return Ok(());
+    };
+    let ignored_siblings = matches!(
+        draft,
+        jsonschema::Draft::Draft4 | jsonschema::Draft::Draft6 | jsonschema::Draft::Draft7
+    ) && object.contains_key("$ref");
+    let reachable = reachable && !ignored_siblings;
+    if let Some(header) = object.get("x-mcp-header") {
+        let name = header.as_str().ok_or(())?;
+        if !reachable || path.is_empty() || !valid_header_token(name) {
+            return Err(());
         }
-        Value::Array(items) => {
-            for item in items {
-                inspect_schema(item, false, path, params, seen)?;
-            }
+        let kind = match object.get("type").and_then(Value::as_str) {
+            Some("string") => HeaderKind::String,
+            Some("integer") => HeaderKind::Integer,
+            Some("boolean") => HeaderKind::Boolean,
+            _ => return Err(()),
+        };
+        if !seen.insert(name.to_ascii_lowercase()) {
+            return Err(());
         }
-        _ => {}
+        params.push(HeaderParam {
+            name: name.to_owned(),
+            path: path.to_vec(),
+            kind,
+        });
+    }
+    for child in schema_children(node, draft) {
+        let mut next = path.to_vec();
+        let child_reachable = reachable && child.property.is_some();
+        if let Some(property) = child.property {
+            next.push(property.to_owned());
+        }
+        inspect_schema(child.node, draft, child_reachable, &next, params, seen)?;
     }
     Ok(())
 }
