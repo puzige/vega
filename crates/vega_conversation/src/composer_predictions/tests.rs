@@ -4,6 +4,7 @@ use vega_store::{messages::MessageRow, threads::NewThread};
 
 fn store() -> Store {
     let store = Store::open(":memory:").unwrap();
+    store.migrate().unwrap();
     vega_store::threads::create_standalone(
         store.conn(),
         NewThread {
