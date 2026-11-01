@@ -131,32 +131,58 @@ fn automatic_placement_hides_arrow_without_changing_anchor_or_spacer(cx: &mut Te
 
 #[gpui_kit::test]
 fn manual_scroll_restores_arrow_and_existing_return_to_tail(cx: &mut TestAppContext) {
+    for delta in [-25., -2000.] {
+        let (stream, cx) = fixture(cx);
+        begin(&stream, cx);
+        frame(cx);
+        assert!(!arrow_visible(cx));
+        scroll(cx, 50.);
+        assert!(arrow_visible(cx));
+        stream.read_with(cx, |stream, _| {
+            assert!(!stream.turn_placement.borrow().automatically_placed());
+            assert!(!stream.following_tail());
+        });
+        scroll(cx, delta);
+        frame(cx);
+        assert!(!arrow_visible(cx));
+        stream.read_with(cx, |stream, _| {
+            assert!(stream.following_tail());
+            assert!(!stream.turn_placement.borrow().active());
+            let tail = stream.list.bounds_for_item(7).unwrap();
+            assert_eq!(
+                tail.bottom() + px(20.),
+                stream.list.viewport_bounds().bottom()
+            );
+        });
+    }
+}
+
+#[gpui_kit::test]
+fn upward_and_zero_scroll_at_reclaimed_boundary_do_not_resume_tail(cx: &mut TestAppContext) {
     let (stream, cx) = fixture(cx);
     begin(&stream, cx);
     frame(cx);
-    assert!(!arrow_visible(cx));
     scroll(cx, 50.);
+    let anchor = stream.read_with(cx, |stream, _| stream.list.logical_scroll_top());
+    scroll(cx, 0.);
+    frame(cx);
     assert!(arrow_visible(cx));
     stream.read_with(cx, |stream, _| {
-        assert!(!stream.turn_placement.borrow().automatically_placed());
+        let after = stream.list.logical_scroll_top();
+        assert_eq!(after.item_ix, anchor.item_ix);
+        assert_eq!(after.offset_in_item, anchor.offset_in_item);
         assert!(!stream.following_tail());
+        assert!(stream.turn_placement.borrow().active());
     });
-    for step in 0..20 {
-        scroll(cx, -25.);
-        stream.read_with(cx, |stream, _| {
-            eprintln!(
-                "down step {step}: top={:?} tail={:?} viewport={:?} following={} active={}",
-                stream.list.logical_scroll_top(),
-                stream.list.bounds_for_item(7),
-                stream.list.viewport_bounds(),
-                stream.following_tail(),
-                stream.turn_placement.borrow().active()
-            );
-        });
-        if stream.read_with(cx, |stream, _| stream.following_tail()) {
-            break;
-        }
-    }
+    scroll(cx, 25.);
+    frame(cx);
+    assert!(arrow_visible(cx));
+    stream.read_with(cx, |stream, _| {
+        assert!(!stream.following_tail());
+        assert!(stream.turn_placement.borrow().active());
+        assert_eq!(stream.list.bounds_for_item(7).unwrap().top(), px(75.));
+    });
+    scroll(cx, -25.);
     frame(cx);
     assert!(!arrow_visible(cx));
     stream.read_with(cx, |stream, _| {
