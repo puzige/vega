@@ -20,4 +20,14 @@ Actions `41301184851`、提交 `60afa0dca8ea6f206f83a0f8457c652f40c42f0a` 的探
 - 未置顶的历史浏览仍显示按钮，原鼠标/键盘入口及回底语义不改。
 - 新 turn 重新隐藏按钮；无新增历史恢复/重复投影副作用。#818 的入口实现保持逐字不变。
 
-本地只做格式、差异与静态检查，自动回归在现有 Actions 执行。GPUI 无头渲染/列表回归不冒充原生桌面首帧或用户手测。Rust 回归与专用 test-support 仅留在开发分支；本轮 draft PR 给用户审阅 diff 和结果，不合并、不发布、不安装、不关闭卡片。
+本地只做格式、差异与静态检查，自动回归在现有 Actions 执行。GPUI 无头渲染/列表回归不冒充原生桌面首帧或用户手测。Rust 回归与专用 test-support 仅供开发辅助。用户已授权留痕清理后，在最终 head required CI 通过时合并 PR #832，并跟踪自动发布；不安装应用，不关闭卡片，合并后置 In review 等待用户手测。
+
+## 开发回归留痕与最终交付
+
+- 已通过回归的完整提交：`8ccfba8083be031a8ef8845312db7c7f72b352ca`。
+- 固定[原始回归源码](https://github.com/puzige/vega/blob/8ccfba8083be031a8ef8845312db7c7f72b352ca/crates/vega_ui/src/conversation_stream/render/arrow_tests.rs)，Git blob `9107d385acbfe84fdc5ce31e09251c5200bc9f9d`；SHA-256 `b71d15ac4ff5a908475192abfe6ec37852388a7a254d894e3fb891176b4e9c28`。清理前已由 GitHub Contents API 核验固定提交中的源码可达；不依赖临时 artifact。
+- [云端 Actions 41306425098](https://github.com/puzige/vega/actions/runs/41306425098)，Nextest job `124847643050`，Clippy job `124847643129`，required check job `124848621029`，对应上述精确提交，均成功。
+- 云端执行 `cargo nextest list --workspace --message-format json`、`cargo nextest run --workspace`：4 发现、4 执行、4 通过、0 跳过；三组 Python 回归分别 5 / 15 / 40 通过，格式与全目标 Clippy 通过。覆盖自动置顶箭头隐藏、真实列表锚点/留白、小步与大步下滚贴底、零滚动与继续上滚不误恢复、历史浏览焦点和按钮回底、新 turn 再隐藏。
+- 已独立静态审查上述版本，无新增阻断项；原生桌面表现仍待用户手测。
+- 合并清理仅移除 222 行开发回归、`mod arrow_tests`、按钮 `debug_selector` 和 dev-only GPUI `test-support` 依赖。箭头判断、方向意图及底部边界恢复生产逻辑保持不变；不改锁文件、Python、benchmark、打包或通用 CI。
+- 最终无测试 head 的静态清点、增量独立审查与 required CI 结果在 PR #832 留存，尚未取得时不称通过。最终空集 `no Rust tests`（0 发现 / 0 执行）与上述 4/4 行为验证分别记录，不冒充重跑行为回归。本地仅静态检查，不运行、编译或测试 Vega。

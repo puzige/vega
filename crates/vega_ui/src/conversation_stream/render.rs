@@ -1,6 +1,3 @@
-#[cfg(test)]
-mod arrow_tests;
-
 use super::context_usage::ContextUsageDisplay;
 use super::*;
 use crate::interaction::InteractionExt;
@@ -224,9 +221,6 @@ impl ConversationStream {
                 row.child(
                     div()
                         .id("scroll-to-bottom")
-                        .when(cfg!(test), |button| {
-                            button.debug_selector(|| "resume-tail".into())
-                        })
                         .aria_label(vega_i18n::t("ui.back_to_bottom"))
                         .track_focus(&self.resume_tail_focus)
                         .tab_stop(true)
