@@ -5,6 +5,11 @@ use super::links::link_ranges;
 use super::selection::SelectionDocumentBuilder;
 use super::*;
 use crate::icons::{Icon, icon};
+use gpui_kit::{
+    Radians, Transformation,
+    component::{IconName, IconNamed},
+    svg,
+};
 
 pub(crate) fn user_markdown_model(text: &str) -> StreamModel {
     let mut stream = MarkdownStream::new();
@@ -627,7 +632,7 @@ fn selectable_user_message(
                 div()
                     .mt(px(Layout::USER_MESSAGE_TOGGLE_GAP))
                     .flex()
-                    .justify_end()
+                    .justify_start()
                     .child(
                         div()
                             .id(id)
@@ -637,6 +642,13 @@ fn selectable_user_message(
                             .track_focus(&focus)
                             .tab_stop(true)
                             .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .flex_shrink_0()
+                            .gap(px(Layout::CONVERSATION_INLINE_GAP))
+                            .h(px(Typography::CONVERSATION
+                                * Typography::CONVERSATION_USER_LINE_HEIGHT))
+                            .whitespace_nowrap()
                             .text_size(px(Typography::BODY))
                             .rounded(px(Layout::COPY_ACTION_GAP))
                             .focus_visible(move |style| style.bg(focus_background))
@@ -660,7 +672,17 @@ fn selectable_user_message(
                                     cx.stop_propagation();
                                 }
                             })
-                            .child(label),
+                            .child(label)
+                            .child(
+                                svg()
+                                    .path(IconName::ChevronDown.path())
+                                    .size(px(Layout::CONVERSATION_CHEVRON_SIZE))
+                                    .flex_shrink_0()
+                                    .text_color(colors.conversation_user)
+                                    .with_transformation(Transformation::rotate(Radians(
+                                        if expanded { std::f32::consts::PI } else { 0. },
+                                    ))),
+                            ),
                     ),
             )
         });
