@@ -1033,6 +1033,17 @@ pub(crate) async fn authorize_call(
                     }),
                 )));
             }
+            if config.permission_mode == RuntimePermissionMode::FullAccess {
+                return Ok(Authorization::Approved {
+                    audit: RuntimeApprovalAudit {
+                        decision: RuntimeApprovalDecision::Once,
+                        note: None,
+                        source: RuntimeApprovalSource::FullAccess,
+                        danger: None,
+                    },
+                    remember_rule: None,
+                });
+            }
             let decision =
                 wait_for_mcp_permission(hook, prompt.clone(), config.permission_timeout, cancel)
                     .await;

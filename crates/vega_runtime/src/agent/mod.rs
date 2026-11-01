@@ -687,8 +687,6 @@ pub trait RuntimePermissionHook: Send + Sync {
         .boxed()
     }
 
-    /// External calls always require a separate one-shot decision. The
-    /// default is fail-closed until a conversation/UI adapter implements it.
     fn request_mcp(
         &self,
         _prompt: RuntimeMcpPermissionPrompt,
