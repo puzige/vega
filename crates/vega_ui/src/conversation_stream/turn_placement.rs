@@ -60,6 +60,34 @@ impl TurnPlacement {
         self.active() && !self.interrupted
     }
 
+    pub(super) fn at_reading_bottom(&self, list: &ListState) -> bool {
+        let Some(foreground) = self.foreground else {
+            return false;
+        };
+        let viewport = list.viewport_bounds();
+        let reading_height = viewport.size.height - foreground - self.spacer;
+        if !f32::from(viewport.size.width).is_finite()
+            || viewport.size.width <= px(0.)
+            || !f32::from(reading_height).is_finite()
+            || reading_height <= px(0.)
+            || foreground < px(0.)
+        {
+            return false;
+        }
+        let top = list.logical_scroll_top();
+        let count = list.item_count();
+        let reading_bottom = viewport.top() + reading_height + px(super::ANCHOR_EPSILON_PX);
+        top.item_ix < count
+            && (top.item_ix..count).all(|index| {
+                list.bounds_for_item(index).is_some_and(|bounds| {
+                    bounds.size.width > px(0.)
+                        && bounds.size.height >= px(0.)
+                        && f32::from(bounds.bottom()).is_finite()
+                        && bounds.bottom() <= reading_bottom
+                })
+            })
+    }
+
     pub(super) fn inserted(&mut self, index: usize) {
         if let Some(target) = &mut self.target
             && index <= *target
