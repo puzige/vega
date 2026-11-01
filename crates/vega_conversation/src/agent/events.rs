@@ -1534,10 +1534,13 @@ fn validate_mcp_full_access_authority(
     message_id: &str,
 ) -> Result<(), VegaError> {
     let invalid = || safe_audit_error("mcp");
-    let encoded =
-        vega_store::permission_contracts::load_run_fence(store.conn(), message_id, thread_id)
-            .map_err(|_| invalid())?
-            .ok_or_else(invalid)?;
+    let (admitted_message_id, encoded) = vega_store::permission_contracts::load_active_run_fence(
+        store.conn(),
+        message_id,
+        thread_id,
+    )
+    .map_err(|_| invalid())?
+    .ok_or_else(invalid)?;
     let fence: crate::types::PermissionFence =
         serde_json::from_str(&encoded).map_err(|_| invalid())?;
     if !fence.is_valid()
@@ -1557,7 +1560,7 @@ fn validate_mcp_full_access_authority(
             &thread,
             &source.parent_fence.thread_id,
             &source.parent_message_id,
-            message_id,
+            &admitted_message_id,
             &source.parent_fence,
         )
     } else {

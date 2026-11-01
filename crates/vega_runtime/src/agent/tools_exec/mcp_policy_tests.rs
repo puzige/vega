@@ -452,3 +452,131 @@ async fn full_access_preserves_external_error_categories_without_prompt_or_retry
         assert_eq!(hook.prompts.load(Ordering::SeqCst), 0);
     }
 }
+
+struct ToolProvider;
+
+impl Provider for ToolProvider {
+    fn chat_stream(
+        &self,
+        req: ChatRequest,
+        _: CancellationToken,
+    ) -> BoxFuture<'static, Result<crate::EventStream, VegaError>> {
+        let name = req
+            .tools
+            .iter()
+            .find(|tool| tool.name.starts_with("mcp_"))
+            .unwrap()
+            .name
+            .clone();
+        async move {
+            let events = futures::stream::iter(vec![
+                Ok(ProviderEvent::ToolUse {
+                    id: "persist-first".into(),
+                    name,
+                    input_json: "{}".into(),
+                }),
+                Ok(ProviderEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                }),
+            ]);
+            Ok(Box::pin(events) as crate::EventStream)
+        }
+        .boxed()
+    }
+}
+
+#[tokio::test]
+async fn approval_or_running_persistence_failure_prevents_runtime_dispatch() {
+    for fail_running in [false, true] {
+        let (snapshot, _, calls) = setup(Ok("receipt"), false);
+        let alias = snapshot
+            .definitions()
+            .iter()
+            .find(|d| d.name.starts_with("mcp_"))
+            .unwrap()
+            .name
+            .clone();
+        let frozen = snapshot.mcp_tool(&alias).unwrap();
+        let mut config = config(RuntimePermissionMode::FullAccess);
+        config.mcp_candidates = vec![McpCandidate::new(
+            frozen.server_id().into(),
+            frozen.config_revision(),
+            frozen.exact_tool_name().into(),
+            ToolDefinition {
+                name: "qa_receipt".into(),
+                description: String::new(),
+                input_schema: serde_json::json!({"type":"object","properties":{}}),
+                strict: false,
+            },
+            Arc::new(Dispatcher {
+                calls: calls.clone(),
+                result: Ok("receipt"),
+                wait: false,
+            }),
+            CancellationToken::new(),
+        )];
+        let request = AgentRequest {
+            history_safety: None,
+            model: "test".into(),
+            system_prompt: "test".into(),
+            history: vec![ChatMessage::new(ChatRole::User, "call")],
+            max_tokens: None,
+            completed_tool_results: HashMap::new(),
+            tool_config: config,
+            pricing_catalog: None,
+            reasoning: None,
+            model_snapshot: None,
+            replay_frame: None,
+            context_budget: None,
+            context_source_version: None,
+            context_source_fingerprint: None,
+            context_operation_id: None,
+            context_compaction_hook: None,
+        };
+        let tools = vega_tools::Tools::new(std::env::current_dir().unwrap()).unwrap();
+        let hook = hook(RuntimeUserDecision::Deny { note: None });
+        let seen = Arc::new(AtomicUsize::new(0));
+        let observed = seen.clone();
+        let result = crate::run_agent_with_permission_sink(
+            &ToolProvider,
+            &tools,
+            request,
+            CancellationToken::new(),
+            &hook,
+            move |event| {
+                let fail = match event {
+                    RuntimeEvent::ToolCallApproved {
+                        audit,
+                        remember_rule,
+                        ..
+                    } => {
+                        assert_eq!(audit.source, RuntimeApprovalSource::FullAccess);
+                        assert!(remember_rule.is_none());
+                        observed.fetch_add(1, Ordering::SeqCst);
+                        !fail_running
+                    }
+                    RuntimeEvent::ToolCallRunning { .. } => {
+                        observed.fetch_add(1, Ordering::SeqCst);
+                        fail_running
+                    }
+                    _ => false,
+                };
+                async move {
+                    if fail {
+                        Err(VegaError::Cancelled)
+                    } else {
+                        Ok(())
+                    }
+                }
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            if fail_running { 2 } else { 1 }
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(hook.prompts.load(Ordering::SeqCst), 0);
+    }
+}

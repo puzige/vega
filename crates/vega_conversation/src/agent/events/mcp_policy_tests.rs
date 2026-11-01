@@ -238,6 +238,7 @@ impl Database {
         std::fs::create_dir(&root).unwrap();
         let path = root.join("test.sqlite");
         let store = Store::open(&path).unwrap();
+        store.migrate().unwrap();
         let project =
             vega_store::projects::create(store.conn(), root.to_str().unwrap(), "policy", None)
                 .unwrap();
@@ -338,6 +339,110 @@ fn full_access_approval_requires_current_database_thread_mode_and_epoch() {
 }
 
 #[test]
+fn accepted_steering_retains_full_access_authority_but_never_changed_authority() {
+    let db = Database::new();
+    let input_id = ulid::Ulid::generate().to_string();
+    let next_message = ulid::Ulid::generate().to_string();
+    vega_store::pending_messages::insert(
+        db.store.conn(),
+        &vega_store::pending_messages::PendingMessageRow {
+            id: input_id.clone(),
+            thread_id: db.thread.clone(),
+            ordinal: 0,
+            behavior: "steer".into(),
+            generation: "generation".into(),
+            payload: "{}".into(),
+            created_at: 2,
+        },
+    )
+    .unwrap();
+    let steering = vega_runtime::RuntimeSteeringInput {
+        original_content: "continue".into(),
+        user_message_seq: 1,
+        id: input_id.clone(),
+        assistant_message_id: next_message.clone(),
+        message: vega_runtime::ChatMessage::new(vega_runtime::ChatRole::User, "continue"),
+    };
+    let mut seq = 0;
+    persist_runtime_event(
+        &db.store,
+        "",
+        &db.thread,
+        &db.message,
+        "test",
+        false,
+        "",
+        &mut seq,
+        &RuntimeEvent::SteeringAccepted(steering),
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(validate_mcp_full_access_authority(&db.store, &db.thread, &next_message).is_ok());
+    let call = vega_runtime::RuntimeToolCall {
+        id: "after-steering".into(),
+        name: identity().alias(),
+        input_json: input(&identity()),
+        description: None,
+    };
+    persist_runtime_event(
+        &db.store,
+        "",
+        &db.thread,
+        &next_message,
+        "test",
+        false,
+        "",
+        &mut seq,
+        &RuntimeEvent::ToolCallProposed(call.clone()),
+        None,
+        None,
+    )
+    .unwrap();
+    persist_runtime_event(
+        &db.store,
+        "",
+        &db.thread,
+        &next_message,
+        "test",
+        false,
+        "",
+        &mut seq,
+        &RuntimeEvent::ToolCallApproved {
+            call_id: call.id,
+            audit: audit(vega_runtime::RuntimeApprovalSource::FullAccess),
+            remember_rule: None,
+        },
+        None,
+        None,
+    )
+    .unwrap();
+    db.store
+        .conn()
+        .execute(
+            "UPDATE pending_messages SET permission_invalidated=1 WHERE id=?1",
+            [&input_id],
+        )
+        .unwrap();
+    assert!(validate_mcp_full_access_authority(&db.store, &db.thread, &next_message).is_err());
+    db.store
+        .conn()
+        .execute(
+            "UPDATE pending_messages SET permission_invalidated=0 WHERE id=?1",
+            [&input_id],
+        )
+        .unwrap();
+    db.store
+        .conn()
+        .execute(
+            "UPDATE threads SET permission_mode='confirm' WHERE id=?1",
+            [&db.thread],
+        )
+        .unwrap();
+    assert!(validate_mcp_full_access_authority(&db.store, &db.thread, &next_message).is_err());
+}
+
+#[test]
 fn approval_persists_before_running_and_failure_leaves_call_unapproved() {
     let db = Database::new();
     let identity = identity();
@@ -416,6 +521,71 @@ fn approval_persists_before_running_and_failure_leaves_call_unapproved() {
     let saved = ApprovalAudit::from_json(&encoded).unwrap();
     assert_eq!(saved.source, ApprovalSource::FullAccess);
     assert_eq!(saved.decision, Approval::Once);
+    let legacy = vega_runtime::RuntimeToolCall {
+        id: "legacy-user".into(),
+        ..call.clone()
+    };
+    apply(&RuntimeEvent::ToolCallProposed(legacy.clone()), &mut seq).unwrap();
+    apply(
+        &RuntimeEvent::ToolCallApproved {
+            call_id: legacy.id.clone(),
+            audit: audit(vega_runtime::RuntimeApprovalSource::User),
+            remember_rule: None,
+        },
+        &mut seq,
+    )
+    .unwrap();
+    apply(
+        &RuntimeEvent::ToolCallRunning {
+            call_id: legacy.id,
+            bash_started_at: None,
+        },
+        &mut seq,
+    )
+    .unwrap();
+    let recovered = vega_store::recovery::recover_thread(reopened.conn(), &db.thread, 3).unwrap();
+    assert_eq!(recovered.tools_cancelled, 2);
+    for id in ["durable", "legacy-user"] {
+        let (status, approval, output): (String, String, String) = reopened
+            .conn()
+            .query_row(
+                "SELECT status,approval,output_text FROM tool_calls WHERE id=?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "cancelled");
+        let approval = ApprovalAudit::from_json(&approval).unwrap();
+        assert_eq!(
+            approval.source,
+            if id == "durable" {
+                ApprovalSource::FullAccess
+            } else {
+                ApprovalSource::User
+            }
+        );
+        assert!(
+            validate_recovered_projection(
+                "",
+                &db.thread,
+                id,
+                &call.name,
+                &call.input_json,
+                &output,
+                RuntimeToolStatus::Cancelled,
+                &approval,
+                None,
+                None
+            )
+            .is_ok()
+        );
+    }
+    assert_eq!(
+        vega_store::recovery::recover_thread(reopened.conn(), &db.thread, 4)
+            .unwrap()
+            .tools_cancelled,
+        0
+    );
     assert_eq!(
         reopened
             .conn()
