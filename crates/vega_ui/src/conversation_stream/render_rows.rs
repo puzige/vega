@@ -1859,6 +1859,7 @@ pub(super) fn message_with_copy(
         } else if fork_pending.is_some() {
             row = row.child(
                 div()
+                    .id("message-fork-disabled")
                     .size(px(Layout::COPY_ACTION_SIZE))
                     .flex()
                     .items_center()
