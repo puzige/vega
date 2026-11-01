@@ -177,6 +177,17 @@ impl Element for TurnList {
         let previous_padding = placement.foreground.unwrap_or(self.foreground) + placement.spacer;
         let distance_from_bottom = tail_bounds
             .map(|tail| tail.bottom() + previous_padding - self.list.viewport_bounds().bottom());
+        #[cfg(test)]
+        if placement.interrupted && placement.scrolled {
+            eprintln!(
+                "placement scroll: scrolled={} offset={:?} previous={:?} spacer={:?} bottom_distance={:?}",
+                placement.scrolled,
+                offset,
+                placement.last_offset,
+                placement.spacer,
+                distance_from_bottom
+            );
+        }
         if !placement.pending
             && placement
                 .viewport
