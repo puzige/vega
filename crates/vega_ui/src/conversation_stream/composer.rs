@@ -424,6 +424,10 @@ impl ConversationStream {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.model_picker_level.is_open() {
+            cx.stop_propagation();
+            return;
+        }
         if self.action_focus[1].is_focused(window) {
             self.activate_composer_primary(cx);
             cx.stop_propagation();

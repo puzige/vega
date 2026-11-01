@@ -1674,7 +1674,7 @@ impl ConversationStream {
     pub(crate) fn on_activate_model(
         &mut self,
         _: &ActivateModel,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.model_options.is_empty()
@@ -1686,6 +1686,7 @@ impl ConversationStream {
         }
         if !self.model_picker_level.is_open() {
             self.close_composer_popovers(cx);
+            window.focus(&self.model_focus, cx);
             if self.thinking_slider.read(cx).has_tiers() {
                 self.open_model_picker_slider(cx);
             } else {
@@ -1798,10 +1799,11 @@ impl ConversationStream {
     pub(crate) fn on_model_close(
         &mut self,
         _: &CloseModel,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.model_picker_level = ModelPickerLevel::Closed;
+        self.focus_composer(window, cx);
         cx.notify();
     }
 

@@ -12,6 +12,7 @@ impl TextInput {
             content: "".into(),
             content_revision: 0,
             prediction: None,
+            prediction_suppressed: false,
             placeholder: placeholder.into(),
             placeholder_key: None,
             masked,
@@ -215,9 +216,16 @@ impl TextInput {
     }
 
     pub fn prediction_text(&self) -> Option<&str> {
-        self.prediction
-            .as_deref()
-            .filter(|_| self.content.is_empty() && !self.is_composing())
+        self.prediction.as_deref().filter(|_| {
+            !self.prediction_suppressed && self.content.is_empty() && !self.is_composing()
+        })
+    }
+
+    pub(crate) fn set_prediction_suppressed(&mut self, suppressed: bool, cx: &mut Context<Self>) {
+        if self.prediction_suppressed != suppressed {
+            self.prediction_suppressed = suppressed;
+            cx.notify();
+        }
     }
 
     pub(crate) fn set_prediction(&mut self, suggestion: Option<String>, cx: &mut Context<Self>) {
@@ -251,6 +259,10 @@ impl TextInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.prediction_suppressed {
+            cx.propagate();
+            return;
+        }
         if self.prediction.take().is_some() {
             self.content_revision = self.content_revision.wrapping_add(1);
             cx.notify();
