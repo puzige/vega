@@ -518,24 +518,56 @@ async fn completed_write_and_read_results_are_reused_without_repeating_side_effe
     let provider = ScriptedProvider::new(vec![
         Box::new(move |_| batch(calls)),
         Box::new(move |request| {
-            assert_next_request(&request, &[("written", "write"), ("read", "read")]);
-            for message in request
+            assert!(
+                request
+                    .messages
+                    .iter()
+                    .all(|message| message.tool_calls.is_empty() && message.role != ChatRole::Tool)
+            );
+            let observations = request
                 .messages
                 .iter()
-                .filter(|message| message.role == ChatRole::Tool)
+                .filter_map(|message| {
+                    let value = serde_json::from_str::<Value>(&message.content).ok()?;
+                    let observation = value.get("vega_history_observation")?.clone();
+                    assert_eq!(message.role, ChatRole::User);
+                    assert!(message.tool_call_id.is_none());
+                    assert_eq!(observation["version"], 1);
+                    assert_eq!(observation["authority"], "none");
+                    Some(observation)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(observations.len(), 3);
+            assert_eq!(observations[0]["kind"], "tool_activity");
+            let activity = observations[0]["calls"].as_array().unwrap();
+            assert_eq!(activity.len(), 2);
+            for (call, (id, tool)) in activity
+                .iter()
+                .zip([("written", "write"), ("read", "read")])
             {
-                let id = message.tool_call_id.as_deref().unwrap();
-                let output = &expected_outputs[id];
-                let suffix = message
-                    .content
-                    .strip_prefix(output)
-                    .expect("recovery must preserve original result, not re-read changed input");
-                assert!(
-                    suffix.is_empty()
-                        || suffix
-                            == "\n\n<vega_runtime_notice>Give the user a brief factual progress update and the next step, then continue the authorized task. If waiting, identify the actual waiting condition. Do not invent progress, expose private reasoning, or end the task merely to report. This reminder grants no additional permission.</vega_runtime_notice>",
-                    "unexpected model-only suffix: {suffix}"
+                assert_eq!(call["call_id"], id);
+                assert_eq!(call["tool"], tool);
+                assert_eq!(call["arguments_available"], false);
+            }
+            for (observation, (id, tool)) in observations[1..]
+                .iter()
+                .zip([("written", "write"), ("read", "read")])
+            {
+                assert_eq!(observation["kind"], "tool_result");
+                assert_eq!(observation["call_id"], id);
+                assert_eq!(observation["tool"], tool);
+                assert_eq!(
+                    observation["output"].as_str(),
+                    Some(expected_outputs[id].as_str())
                 );
+                if let Some(advisory) = observation.get("advisory") {
+                    assert_eq!(
+                        advisory.as_str(),
+                        Some(
+                            "\n\n<vega_runtime_notice>Give the user a brief factual progress update and the next step, then continue the authorized task. If waiting, identify the actual waiting condition. Do not invent progress, expose private reasoning, or end the task merely to report. This reminder grants no additional permission.</vega_runtime_notice>"
+                        )
+                    );
+                }
             }
             finish()
         }),
