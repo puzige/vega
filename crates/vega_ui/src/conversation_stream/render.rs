@@ -1778,8 +1778,11 @@ impl Render for ConversationStream {
                                 .h_full()
                                 .overflow_hidden()
                                 .child(
-                                    list(
+                                    turn_placement::TurnList::new(
                                         self.list.clone(),
+                                        self.turn_placement.clone(),
+                                        self.foreground_height,
+                                        self.entries.len(),
                                         cx.processor(
                                             move |this: &mut ConversationStream,
                                                   index: usize,
@@ -1898,7 +1901,6 @@ impl Render for ConversationStream {
                                     )
                                     .h_full()
                                     .w_full()
-                                    .pb(self.foreground_height)
                                     .tracked_scroll_edge_fade(self.list.clone(), colors.bg_base, ScrollFade::reading().top_only().vertical_list())
                                     .preserve_pinned_headers(top_fade_guards),
                                 ),

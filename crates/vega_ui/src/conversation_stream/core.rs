@@ -79,6 +79,7 @@ pub struct ConversationStream {
     pub(crate) counters: Arc<StreamCounters>,
     pub(crate) list: gpui_kit::ListState,
     pub(crate) foreground_height: Pixels,
+    pub(super) turn_placement: turn_placement::PlacementHandle,
     pub(crate) entry_identities: Vec<StreamEntryIdentity>,
     pub(crate) measured_entry_heights: HashMap<String, f32>,
     pub(crate) rendered_language: &'static str,
@@ -303,6 +304,7 @@ impl ConversationStream {
         self.hydration.loading = false;
         self.hydration.paused = false;
         self.hydration.paused_direction = None;
+        self.turn_placement.borrow_mut().reset();
         self.foreground_height = px(0.);
         self.measured_entry_heights.clear();
         self.list.remeasure();
@@ -322,6 +324,7 @@ impl ConversationStream {
             cx.notify();
         }
         if width_changed && !self.entries.is_empty() {
+            self.turn_placement.borrow_mut().reset();
             self.measured_entry_heights.clear();
             self.ensure_entry_identities();
             let top = self.list.logical_scroll_top();
@@ -533,6 +536,7 @@ impl ConversationStream {
             timestamps: Default::default(),
             counters: Arc::new(StreamCounters::default()),
             list,
+            turn_placement: Default::default(),
             foreground_height: px(Layout::READING_NAVIGATION_HEIGHT
                 + Layout::COMPOSER_PADDING_TOP
                 + Layout::COMPOSER_MIN_HEIGHT
@@ -876,6 +880,7 @@ impl ConversationStream {
     /// Registers one item inserted at `index` (e.g. an inline artifact after
     /// its exact tool).
     pub(crate) fn list_insert(&mut self, index: usize) {
+        self.turn_placement.borrow_mut().inserted(index);
         self.refresh_assistant_roles();
         let identity = self.new_local_identity();
         if index <= self.entry_identities.len() {
@@ -887,6 +892,7 @@ impl ConversationStream {
 
     pub(crate) fn list_prepend(&mut self, count: usize) {
         if count > 0 {
+            self.turn_placement.borrow_mut().reset();
             self.refresh_assistant_roles();
             let old_count = self.entries.len().saturating_sub(count);
             if self.entry_identities.len() == old_count {
@@ -903,6 +909,7 @@ impl ConversationStream {
 
     /// Registers the removal of the item at `index` (permission resolution).
     pub(crate) fn list_remove(&mut self, index: usize) {
+        self.turn_placement.borrow_mut().removed(index);
         self.timestamps.dirty = true;
         self.refresh_assistant_roles();
         if index < self.entry_identities.len() {
@@ -944,6 +951,7 @@ impl ConversationStream {
     }
 
     pub fn resume_tail(&mut self, cx: &mut Context<Self>) {
+        self.turn_placement.borrow_mut().reset();
         self.list.set_follow_mode(gpui_kit::FollowMode::Tail);
         cx.notify();
     }
