@@ -28,23 +28,23 @@ fn fixture() -> Fixture {
     store.migrate().unwrap();
     store.conn().execute_batch(
         "INSERT INTO projects(id,path,name,created_at,last_opened_at) VALUES('project','/fixture','Fixture',1,1);
-         INSERT INTO threads(id,project_id,title,model,created_at,updated_at) VALUES('fork','project','Fork','model',1,1);
-         INSERT INTO threads(id,project_id,title,model,parent_thread_id,workspace_owner_thread_id,created_at,updated_at) VALUES('child','project','Current child','model','fork','fork',1,1);
+         INSERT INTO threads(id,project_id,title,model,created_at,updated_at) VALUES('01ARZ3NDEKTSV4RRFFQ69G5FAV','project','Fork','model',1,1);
+         INSERT INTO threads(id,project_id,title,model,parent_thread_id,workspace_owner_thread_id,created_at,updated_at) VALUES('child','project','Current child','model','01ARZ3NDEKTSV4RRFFQ69G5FAV','01ARZ3NDEKTSV4RRFFQ69G5FAV',1,1);
          INSERT INTO messages(id,thread_id,seq,role,content,status,created_at) VALUES
-           ('user','fork',1,'user','Question','done',1),
-           ('archived','fork',2,'assistant','Archived reply','done',2),
-           ('next-user','fork',3,'user','Continue','done',3),
-           ('current','fork',4,'assistant','Current reply','done',4),
+           ('user','01ARZ3NDEKTSV4RRFFQ69G5FAV',1,'user','Question','done',1),
+           ('archived','01ARZ3NDEKTSV4RRFFQ69G5FAV',2,'assistant','Archived reply','done',2),
+           ('next-user','01ARZ3NDEKTSV4RRFFQ69G5FAV',3,'user','Continue','done',3),
+           ('current','01ARZ3NDEKTSV4RRFFQ69G5FAV',4,'assistant','Current reply','done',4),
            ('child-message','child',1,'assistant','Child result','done',4);
          INSERT INTO assistant_responses(message_id,response_id,text_start_bytes,text_end_bytes,kind) VALUES
            ('archived','archived-final',0,14,'final'),('current','current-final',0,13,'final');
          INSERT INTO tool_calls(id,thread_id,message_id,seq,tool,input_json,output_text,status,approval,created_at,finished_at,text_offset_bytes) VALUES
-           ('archive-call','fork','archived',1,'spawn_agent','{}','placeholder','success','once',2,2,0),
-           ('current-call','fork','current',2,'spawn_agent','{}','placeholder','success','once',4,4,0);
+           ('archive-call','01ARZ3NDEKTSV4RRFFQ69G5FAV','archived',1,'spawn_agent','{}','placeholder','success','once',2,2,0),
+           ('current-call','01ARZ3NDEKTSV4RRFFQ69G5FAV','current',2,'spawn_agent','{}','placeholder','success','once',4,4,0);
          INSERT INTO historical_tool_receipts(call_id,thread_id,kind,source_thread_id,source_message_id,source_call_id,input_json,output_text,references_json)
-           VALUES('archive-call','fork','delegation','source','source-message','source-call','{}','placeholder','[]');
+           VALUES('archive-call','01ARZ3NDEKTSV4RRFFQ69G5FAV','delegation','source','source-message','source-call','{}','placeholder','[]');
          INSERT INTO delegated_executions(child_thread_id,child_message_id,parent_thread_id,parent_message_id,request_call_id,ordinal,kind,name,task,state,result,created_at)
-           VALUES('child','child-message','fork','current','current-call',1,'spawn','Current child','Current task','completed','Current result',4);"
+           VALUES('child','child-message','01ARZ3NDEKTSV4RRFFQ69G5FAV','current','current-call',1,'spawn','Current child','Current task','completed','Current result',4);"
     ).unwrap();
     let archive = serde_json::json!({
         "agent": {
@@ -55,7 +55,7 @@ fn fixture() -> Fixture {
     });
     let current = serde_json::json!({
         "agent": {
-            "agent_id": "child", "parent_thread_id": "fork", "parent_message_id": "current",
+            "agent_id": "child", "parent_thread_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "parent_message_id": "current",
             "message_id": "child-message", "name": "Current child", "state": "completed",
             "result": "Current result", "truncated": false
         }
@@ -196,7 +196,7 @@ fn assert_current(page: &HistoryPage) {
     };
     assert_eq!(agent.agent_id, "child");
     assert_eq!(agent.message_id, "child-message");
-    assert_eq!(agent.parent_thread_id, "fork");
+    assert_eq!(agent.parent_thread_id, "01ARZ3NDEKTSV4RRFFQ69G5FAV");
     assert_eq!(agent.parent_message_id, "current");
     assert_eq!(page.subagents.len(), 1);
     assert_eq!(page.subagents[0].agent_id, "child");
@@ -217,7 +217,7 @@ fn message_order(page: &HistoryPage) -> Vec<&str> {
 #[test]
 fn mixed_delegations_keep_identity_through_restart_and_privacy_refresh() {
     let store = fixture();
-    let latest = display::latest_history_page(&store, "fork", 20).unwrap();
+    let latest = display::latest_history_page(&store, "01ARZ3NDEKTSV4RRFFQ69G5FAV", 20).unwrap();
     assert_archive(&latest, ToolCallStatus::Success, Approval::Once);
     assert_current(&latest);
     assert_eq!(
@@ -229,11 +229,11 @@ fn mixed_delegations_keep_identity_through_restart_and_privacy_refresh() {
         (None, None, Some(4))
     );
     assert_eq!(
-        display::restart_history_page(&store, "fork", 20).unwrap(),
+        display::restart_history_page(&store, "01ARZ3NDEKTSV4RRFFQ69G5FAV", 20).unwrap(),
         latest
     );
     assert_eq!(
-        display::latest_history_page(&store, "fork", 20).unwrap(),
+        display::latest_history_page(&store, "01ARZ3NDEKTSV4RRFFQ69G5FAV", 20).unwrap(),
         latest
     );
     let stored: String = store
@@ -248,7 +248,7 @@ fn mixed_delegations_keep_identity_through_restart_and_privacy_refresh() {
     let agents: i64 = store
         .conn()
         .query_row(
-            "SELECT COUNT(*) FROM delegated_executions WHERE parent_thread_id='fork'",
+            "SELECT COUNT(*) FROM delegated_executions WHERE parent_thread_id='01ARZ3NDEKTSV4RRFFQ69G5FAV'",
             [],
             |row| row.get(0),
         )
@@ -259,30 +259,41 @@ fn mixed_delegations_keep_identity_through_restart_and_privacy_refresh() {
 #[test]
 fn mixed_delegations_preserve_paging_location_and_cursor_edges() {
     let store = fixture();
-    let latest = display::latest_history_page(&store, "fork", 2).unwrap();
+    let latest = display::latest_history_page(&store, "01ARZ3NDEKTSV4RRFFQ69G5FAV", 2).unwrap();
     assert_current(&latest);
     assert_eq!(message_order(&latest), ["next-user", "current"]);
     assert_eq!(
         (latest.older_cursor, latest.newer_cursor, latest.newest_seq),
         (Some(3), None, Some(4))
     );
-    let older = display::history_page_before(&store, "fork", PageCursor::Before(3), 2).unwrap();
+    let older = display::history_page_before(
+        &store,
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        PageCursor::Before(3),
+        2,
+    )
+    .unwrap();
     assert_archive(&older, ToolCallStatus::Success, Approval::Once);
     assert!(older.subagents.is_empty());
     assert_eq!(message_order(&older), ["user", "archived"]);
     assert_eq!(older.older_cursor, Some(1));
     assert_eq!(older.newer_cursor, Some(2));
     assert_eq!(older.newest_seq, Some(2));
-    let newer = display::history_page_after(&store, "fork", 2, 2).unwrap();
+    let newer = display::history_page_after(&store, "01ARZ3NDEKTSV4RRFFQ69G5FAV", 2, 2).unwrap();
     assert_current(&newer);
     assert_eq!(message_order(&newer), ["next-user", "current"]);
     assert_eq!(
         (newer.older_cursor, newer.newer_cursor, newer.newest_seq),
         (Some(3), Some(4), Some(4))
     );
-    let located = display::history_page_containing_message(&store, "fork", "archived", 4)
-        .unwrap()
-        .unwrap();
+    let located = display::history_page_containing_message(
+        &store,
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "archived",
+        4,
+    )
+    .unwrap()
+    .unwrap();
     assert_archive(&located, ToolCallStatus::Success, Approval::Once);
     assert_current(&located);
     assert_eq!(
@@ -298,14 +309,24 @@ fn mixed_delegations_preserve_paging_location_and_cursor_edges() {
         (None, None, Some(4))
     );
     assert!(
-        display::history_page_containing_message(&store, "fork", "missing", 4)
-            .unwrap()
-            .is_none()
+        display::history_page_containing_message(
+            &store,
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "missing",
+            4
+        )
+        .unwrap()
+        .is_none()
     );
     assert!(
-        display::history_page_containing_message(&store, "fork", "child-message", 4)
-            .unwrap()
-            .is_none()
+        display::history_page_containing_message(
+            &store,
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "child-message",
+            4
+        )
+        .unwrap()
+        .is_none()
     );
 }
 
@@ -330,7 +351,7 @@ fn archive_cards_preserve_terminal_status_and_approval_without_actions() {
                 (status, approval),
             )
             .unwrap();
-        let page = display::latest_history_page(&store, "fork", 20).unwrap();
+        let page = display::latest_history_page(&store, "01ARZ3NDEKTSV4RRFFQ69G5FAV", 20).unwrap();
         assert_archive(&page, expected_status, expected_approval);
         assert_current(&page);
     }
@@ -339,8 +360,9 @@ fn archive_cards_preserve_terminal_status_and_approval_without_actions() {
 #[test]
 fn ordinary_display_readers_match_legacy_and_headless_keeps_historical_semantics() {
     let store = fixture();
-    assert!(history::latest_history_page(&store, "fork", 20).is_err());
-    let headless = history::latest_historical_history_page(&store, "fork", 20).unwrap();
+    assert!(history::latest_history_page(&store, "01ARZ3NDEKTSV4RRFFQ69G5FAV", 20).is_err());
+    let headless =
+        history::latest_historical_history_page(&store, "01ARZ3NDEKTSV4RRFFQ69G5FAV", 20).unwrap();
     let calls: Vec<_> = headless
         .entries
         .iter()
@@ -355,24 +377,48 @@ fn ordinary_display_readers_match_legacy_and_headless_keeps_historical_semantics
         .execute("DELETE FROM historical_tool_receipts", [])
         .unwrap();
     assert_eq!(
-        display::latest_history_page(&store, "fork", 20).unwrap(),
-        history::latest_history_page(&store, "fork", 20).unwrap()
+        display::latest_history_page(&store, "01ARZ3NDEKTSV4RRFFQ69G5FAV", 20).unwrap(),
+        history::latest_history_page(&store, "01ARZ3NDEKTSV4RRFFQ69G5FAV", 20).unwrap()
     );
     assert_eq!(
-        display::restart_history_page(&store, "fork", 20).unwrap(),
-        history::restart_history_page(&store, "fork", 20).unwrap()
+        display::restart_history_page(&store, "01ARZ3NDEKTSV4RRFFQ69G5FAV", 20).unwrap(),
+        history::restart_history_page(&store, "01ARZ3NDEKTSV4RRFFQ69G5FAV", 20).unwrap()
     );
     assert_eq!(
-        display::history_page_before(&store, "fork", PageCursor::Before(3), 2).unwrap(),
-        history::history_page_before(&store, "fork", PageCursor::Before(3), 2).unwrap()
+        display::history_page_before(
+            &store,
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            PageCursor::Before(3),
+            2
+        )
+        .unwrap(),
+        history::history_page_before(
+            &store,
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            PageCursor::Before(3),
+            2
+        )
+        .unwrap()
     );
     assert_eq!(
-        display::history_page_after(&store, "fork", 2, 2).unwrap(),
-        history::history_page_after(&store, "fork", 2, 2).unwrap()
+        display::history_page_after(&store, "01ARZ3NDEKTSV4RRFFQ69G5FAV", 2, 2).unwrap(),
+        history::history_page_after(&store, "01ARZ3NDEKTSV4RRFFQ69G5FAV", 2, 2).unwrap()
     );
     assert_eq!(
-        display::history_page_containing_message(&store, "fork", "current", 2).unwrap(),
-        history::history_page_containing_message(&store, "fork", "current", 2).unwrap()
+        display::history_page_containing_message(
+            &store,
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "current",
+            2
+        )
+        .unwrap(),
+        history::history_page_containing_message(
+            &store,
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "current",
+            2
+        )
+        .unwrap()
     );
 }
 
@@ -386,10 +432,13 @@ fn restart_recovery_respects_admission_and_retains_inert_history() {
             [],
         )
         .unwrap();
-    let admission = vega_store::thread_admission::try_acquire(store.database_identity(), "fork")
-        .unwrap()
-        .unwrap();
-    let guarded = display::restart_history_page(&store, "fork", 20).unwrap();
+    let admission = vega_store::thread_admission::try_acquire(
+        store.database_identity(),
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    )
+    .unwrap()
+    .unwrap();
+    let guarded = display::restart_history_page(&store, "01ARZ3NDEKTSV4RRFFQ69G5FAV", 20).unwrap();
     assert_archive(&guarded, ToolCallStatus::Success, Approval::Once);
     let status: String = store
         .conn()
@@ -401,7 +450,7 @@ fn restart_recovery_respects_admission_and_retains_inert_history() {
         .unwrap();
     assert_eq!(status, "streaming");
     assert!(guarded.interrupted_tail.is_none());
-    let thread = vega_store::threads::find(store.conn(), "fork")
+    let thread = vega_store::threads::find(store.conn(), "01ARZ3NDEKTSV4RRFFQ69G5FAV")
         .unwrap()
         .unwrap();
     let fence = vega_conversation::types::PermissionFence {
@@ -413,11 +462,14 @@ fn restart_recovery_respects_admission_and_retains_inert_history() {
         database_identity: store.database_identity().permission_fence_key(),
         thread_id: thread.id,
         project_id: thread.project_id,
-        workspace: vega_conversation::threads::task_workspace_root(&store, "fork")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_owned(),
+        workspace: vega_conversation::threads::task_workspace_root(
+            &store,
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        )
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned(),
         run_mode: thread.mode,
         permission_mode: thread.permission_mode,
         permission_revision: thread.permission_revision,
@@ -430,13 +482,14 @@ fn restart_recovery_respects_admission_and_retains_inert_history() {
     vega_store::permission_contracts::record_run_fence(
         &tx,
         "current",
-        "fork",
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
         &serde_json::to_string(&fence).unwrap(),
     )
     .unwrap();
     tx.commit().unwrap();
     drop(admission);
-    let recovered = display::restart_history_page(&store, "fork", 20).unwrap();
+    let recovered =
+        display::restart_history_page(&store, "01ARZ3NDEKTSV4RRFFQ69G5FAV", 20).unwrap();
     assert_archive(&recovered, ToolCallStatus::Success, Approval::Once);
     assert_current(&recovered);
     assert_eq!(
