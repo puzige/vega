@@ -1,5 +1,7 @@
 # MCP schema compatibility
 
+Dialect support is extended by [#834: five-dialect tool definitions](../834/mcp-five-dialects.md). The original contract and delivery evidence below describe #658, not the later five-dialect delivery.
+
 ## Contract
 
 Issue #658. Baseline: 68704d46794d5fd221bdbc915354de58600a3a9d.
