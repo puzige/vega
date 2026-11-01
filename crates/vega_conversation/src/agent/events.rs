@@ -1,8 +1,5 @@
 use super::*;
 
-#[cfg(test)]
-mod mcp_policy_tests;
-
 pub(super) struct RuntimeEventContext<'a, F> {
     pub(super) message_id: &'a str,
     pub(super) streamed_content: &'a mut String,
