@@ -141,18 +141,23 @@ fn manual_scroll_restores_arrow_and_existing_return_to_tail(cx: &mut TestAppCont
         assert!(!stream.turn_placement.borrow().automatically_placed());
         assert!(!stream.following_tail());
     });
-    scroll(cx, -2000.);
+    for step in 0..20 {
+        scroll(cx, -25.);
+        stream.read_with(cx, |stream, _| {
+            eprintln!(
+                "down step {step}: top={:?} tail={:?} viewport={:?} following={} active={}",
+                stream.list.logical_scroll_top(),
+                stream.list.bounds_for_item(7),
+                stream.list.viewport_bounds(),
+                stream.following_tail(),
+                stream.turn_placement.borrow().active()
+            );
+        });
+        if stream.read_with(cx, |stream, _| stream.following_tail()) {
+            break;
+        }
+    }
     frame(cx);
-    stream.read_with(cx, |stream, _| {
-        eprintln!(
-            "after down: top={:?} tail={:?} viewport={:?} following={} active={}",
-            stream.list.logical_scroll_top(),
-            stream.list.bounds_for_item(7),
-            stream.list.viewport_bounds(),
-            stream.following_tail(),
-            stream.turn_placement.borrow().active()
-        );
-    });
     assert!(!arrow_visible(cx));
     stream.read_with(cx, |stream, _| {
         assert!(stream.following_tail());
