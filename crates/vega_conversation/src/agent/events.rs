@@ -1,9 +1,5 @@
 use super::*;
 
-#[cfg(test)]
-#[path = "multicall_tests.rs"]
-mod multicall_tests;
-
 pub(super) struct RuntimeEventContext<'a, F> {
     pub(super) message_id: &'a str,
     pub(super) streamed_content: &'a mut String,

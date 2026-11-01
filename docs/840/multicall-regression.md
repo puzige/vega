@@ -42,4 +42,10 @@ First development head: de105e6919c18df666cbc0a387a4515396f0411f. Actions run ht
 
 Second development head: 7790db99fc5df9a0555f0f5968fc391dd89abfae. Actions run https://github.com/puzige/vega/actions/runs/41328179533: fmt/Clippy passed; Nextest 12 run / 11 passed / 1 failed / 0 skipped. Identity rejection and normal fragment compatibility passed. Recovery helper still expected live assistant calls. Static tracing of prepare_completed_mutation -> MixedRejected -> model_call(None) -> project_model_messages establishes that the existing safety contract projects the completed group into non-authoritative historical observations. Correct the harness to require exact activity/result IDs, names, original outputs, unavailable arguments, and no native re-invocation. Retain zero execution and unchanged user-write assertions. No additional production change is needed or authorized for recovery projection.
 
-Pending: corrected recovery cloud result, incremental independent review, cleanup and final required CI. No final success is claimed.
+Successful development head: **f7a5622a226acaf5f21a29346d3ed5ba98bfc5ce**. Actions https://github.com/puzige/vega/actions/runs/41328948181: **12 discovered / 12 executed / 12 passed / 0 failed / 0 skipped**; fmt/Clippy/required aggregate passed. Independent incremental review found no necessary findings. No local builds/tests or real provider calls occurred.
+
+Accessible original test source:
+- https://github.com/puzige/vega/blob/f7a5622a226acaf5f21a29346d3ed5ba98bfc5ce/crates/vega_runtime/src/openai/multicall_tests.rs
+- https://github.com/puzige/vega/blob/f7a5622a226acaf5f21a29346d3ed5ba98bfc5ce/crates/vega_conversation/src/agent/multicall_tests.rs
+
+The complete development patch is recoverable from the baseline and that full commit SHA. Both Rust test modules and their two exclusive module hooks are removed for final delivery; no dependencies or other support files were added. The only final production difference is the ID-conflict predicate. Cleanup delta review and final no-Rust-tests required CI remain pending; development test success is not final-head CI or user acceptance.
