@@ -1,5 +1,5 @@
 use super::*;
-use gpui_kit::{AppContext, TestAppContext, WindowHandle, gpui};
+use gpui_kit::{TestAppContext, WindowHandle};
 use vega_conversation::history::AssistantStatus;
 use vega_conversation::types::{
     SubagentSnapshot, SubagentState, SummaryCost, TaskSummaryOutcome, ThreadStatus,
@@ -79,7 +79,8 @@ fn time(id: &str, value: Option<i64>) -> HistoryEntry {
     }
 }
 
-fn page(entries: Vec<HistoryEntry>, subagents: Vec<SubagentSnapshot>) -> HistoryPage {
+fn page(mut entries: Vec<HistoryEntry>, subagents: Vec<SubagentSnapshot>) -> HistoryPage {
+    entries.splice(0..0, [time("earlier-user", None), user("earlier-user", 0)]);
     HistoryPage {
         interrupted_tail: None,
         subagents,
