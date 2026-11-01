@@ -334,9 +334,9 @@ fn install_txt(version: &str) -> String {
          如出现 Git 不可用或版本过旧提示，请执行 brew install git（或升级\n\
          已有 Homebrew Git）后重启 Vega。Vega 不会自动联网安装或替换系统 Git。\n\n\
          数据位置：\n\
-         - 配置：~/.config/vega/config.toml\n\
-         - 数据：~/Library/Application Support/ai.vega（bundle id ai.vega，\n\
-         与 Keychain 服务同名；版本 {version}）\n\n\
+         - 配置：~/.vega/config.yaml\n\
+         - 数据：~/.vega/data/vega.db；显式 VEGA_HOME 覆盖统一根\n\
+         - 不自动迁移旧目录，重启前按需手动转移或全新开始；版本 {version}\n\n\
          签名、公证与发布凭据配置见 docs/vega-release.md。\n"
     )
 }

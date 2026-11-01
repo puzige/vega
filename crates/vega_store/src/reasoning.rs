@@ -1,16 +1,13 @@
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 /// Current on-disk format version.
 pub const REASONING_CONFIG_VERSION: u32 = 1;
 /// File name under [`crate::paths::config_dir`].
-pub const REASONING_FILE_NAME: &str = "reasoning-preferences.toml";
+pub const REASONING_FILE_NAME: &str = "config.yaml";
 
 /// Error returned by the reasoning config codec and persistence boundary.
 #[derive(Debug, thiserror::Error)]
@@ -39,7 +36,6 @@ pub enum ReasoningConfigError {
 
 /// Raw, versioned reasoning file. All fields are non-secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ReasoningConfig {
     /// On-disk schema version.
     pub version: u32,
@@ -109,7 +105,6 @@ pub struct ReasoningProfilePatch {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ReasoningProfile {
     /// Exact provider identifier.
     pub provider: String,
@@ -188,14 +183,7 @@ pub fn read_from(path: &Path) -> Result<ReasoningConfig, ReasoningConfigError> {
 pub fn read_authority_from(
     path: &Path,
 ) -> Result<(ReasoningConfig, ReasoningFileSnapshot), ReasoningConfigError> {
-    let snapshot = match fs::read(path) {
-        Ok(bytes) => ReasoningFileSnapshot {
-            exists: true,
-            bytes,
-        },
-        Err(error) if error.kind() == io::ErrorKind::NotFound => ReasoningFileSnapshot::absent(),
-        Err(error) => return Err(ReasoningConfigError::Io(error)),
-    };
+    let snapshot = read_snapshot_from(path)?;
     let config = if snapshot.exists {
         decode(&snapshot.bytes)?
     } else {
@@ -206,15 +194,12 @@ pub fn read_authority_from(
 
 /// Reads the exact bytes used for a compare-before-rename.
 pub fn read_snapshot_from(path: &Path) -> Result<ReasoningFileSnapshot, ReasoningConfigError> {
-    match fs::read(path) {
-        Ok(bytes) => Ok(ReasoningFileSnapshot {
+    match crate::yaml_config::read(path)? {
+        Some(bytes) => Ok(ReasoningFileSnapshot {
             exists: true,
             bytes,
         }),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            Ok(ReasoningFileSnapshot::absent())
-        }
-        Err(error) => Err(ReasoningConfigError::Io(error)),
+        None => Ok(ReasoningFileSnapshot::absent()),
     }
 }
 
@@ -287,8 +272,11 @@ fn save_if_unchanged_locked(
     if &current != expected {
         return Err(ReasoningConfigError::ConcurrentModification);
     }
-    let bytes = encode(candidate)?;
-    write_atomic(path, &bytes, expected)?;
+    let document = crate::yaml_config::begin(path)?;
+    if document.bytes().as_deref() != expected.exists.then_some(expected.bytes.as_slice()) {
+        return Err(ReasoningConfigError::ConcurrentModification);
+    }
+    let bytes = document.save_fields(&serde_json::json!({"reasoning": candidate}))?;
     Ok(ReasoningFileSnapshot {
         exists: true,
         bytes,
@@ -305,8 +293,7 @@ fn coordinator_poisoned() -> ReasoningConfigError {
 }
 
 fn decode(bytes: &[u8]) -> Result<ReasoningConfig, ReasoningConfigError> {
-    let text = String::from_utf8(bytes.to_vec())?;
-    let config: ReasoningConfig = toml::from_str(&text)?;
+    let config: ReasoningConfig = crate::yaml_config::section(bytes, "reasoning")?;
     config.validate()?;
     Ok(config)
 }
@@ -347,56 +334,6 @@ fn merge_profile_patch(
 
 pub fn encode(config: &ReasoningConfig) -> Result<Vec<u8>, ReasoningConfigError> {
     config.validate()?;
-    let body = toml::to_string_pretty(config)?;
-    Ok(body.into_bytes())
-}
-
-fn write_atomic(
-    path: &Path,
-    bytes: &[u8],
-    expected: &ReasoningFileSnapshot,
-) -> Result<(), ReasoningConfigError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("reasoning config path has no parent"))?;
-    fs::create_dir_all(parent)?;
-    let tmp = unique_temp_path(path);
-    let result = (|| -> Result<(), ReasoningConfigError> {
-        let mut file = OpenOptions::new().create_new(true).write(true).open(&tmp)?;
-        file.write_all(bytes)?;
-        file.flush()?;
-        file.sync_all()?;
-        // This second read deliberately happens after the temporary file is
-        // durable and immediately before rename. It narrows the race window
-        // for non-cooperating writers but cannot provide an inter-process CAS.
-        let current = read_snapshot_from(path)?;
-        if &current != expected {
-            return Err(ReasoningConfigError::ConcurrentModification);
-        }
-        fs::rename(&tmp, path)?;
-        // Directory fsync closes the durability gap after rename on platforms
-        // that support opening a directory as a File (macOS/Linux).
-        File::open(parent)?.sync_all()?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    result
-}
-
-fn unique_temp_path(path: &Path) -> PathBuf {
-    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos() as u64);
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(REASONING_FILE_NAME);
-    path.with_file_name(format!(
-        ".{file_name}.tmp-{}-{sequence}-{nanos}",
-        std::process::id()
-    ))
+    serde_json::to_vec(&serde_json::json!({"schema_version": 1, "reasoning": config}))
+        .map_err(|_| io::Error::other("reasoning serialization failed").into())
 }
