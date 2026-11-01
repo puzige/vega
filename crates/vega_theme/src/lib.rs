@@ -521,7 +521,7 @@ impl Layout {
     pub const CONTENT_MAX_WIDTH: f32 = 768.0;
     /// Maximum user-message bubble width as a fraction of the message column.
     pub const USER_MESSAGE_MAX_WIDTH_RATIO: f32 = 0.8;
-    pub const USER_MESSAGE_RADIUS: f32 = 22.0;
+    pub const USER_MESSAGE_RADIUS: f32 = 16.0;
     /// Minimum horizontal page padding around a readable content column.
     pub const CONTENT_PADDING: f32 = 16.0;
     /// Radius for ordinary panels and cards.
