@@ -360,7 +360,7 @@ impl VegaWindow {
         cx.spawn(async move |this, cx| {
             let outcome = work.await;
             let released = coordinator.release(lease);
-            let _ = stream.update(cx, |stream, cx| stream.set_fork_pending(None, cx));
+            stream.update(cx, |stream, cx| stream.set_fork_pending(None, cx));
             if !released {
                 return;
             }
