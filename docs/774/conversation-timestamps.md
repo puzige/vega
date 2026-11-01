@@ -87,7 +87,7 @@ Vega 是本地持久化架构，统一称为**会话层／持久化权威时间*
 | `RunContinuation` / `RunContinued`；Fork／恢复续接边界 | 关系元数据，不是独立消息；在实际连接点标记下一逻辑主体 | 不用关系建立时间替换原消息时间 | 否 | 是，在显式连接点；Fork 复制来的每条历史消息不逐条打断 |
 | `Subagents` 聚合行 | 父助手的附属投影；打开的子会话自身按同一消息规则处理 | 父流不拿子 Agent 创建时间生成消息分隔线 | 否 | 否；跳过且保留前序，不受可见行数影响，见 [#807 修订](../807/subagent-timestamp-adjacency.md) |
 | `ContextCompaction` 压缩活动 | 独立非 turn 活动 | 状态记录时间不充当消息发送时间 | 否 | 是；零可见行的处理仍须固定，见待验证 |
-| `Summary`（`TaskCostSummary`，不是 `SummaryDelta`） | 独立任务结果／成本摘要，即使带 message_id 也不自动并入正文 | 不拿统计时间替代助手发送时间 | 否 | 是；当前部分 outcome 不产生可见行，见待验证 |
+| `Summary`（`TaskCostSummary`，不是 `SummaryDelta`） | 任务结果／成本摘要，不是正文 | 不拿统计时间替代助手发送时间 | 否 | Completed 零行摘要透明跳过；可见 Failed/Interrupted 摘要仍打断，见 [#807 修订](../807/hidden-summary-timestamps.md) |
 | `SkillActivation` 历史技能来源行 | 独立来源审计行，虽绑定 run，仍不是正文消息或工具分段 | 审计创建时间不作为消息发送时间 | 否 | 是 |
 | thinking／reasoning、`SummaryDelta` 等助手活动及合成批准指令 | 前者归所属助手；后者为控制能力，不是用户正文 | 不新增发送时间 | 否 | 附属活动否；被过滤控制指令不伪造 user 或断点 |
 
