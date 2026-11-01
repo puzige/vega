@@ -498,6 +498,7 @@ impl McpServerSettingsService {
                 });
             }
         }
+        drop(state);
         offers.sort_by(|left, right| left.server_id.cmp(&right.server_id));
         self.reject_owner_secret_in_ui(
             offers
