@@ -314,7 +314,7 @@ pub struct Typography;
 impl Typography {
     pub const CONVERSATION: f32 = 13.5;
     pub const CONVERSATION_LINE_HEIGHT: f32 = 23.0 / Self::CONVERSATION;
-    pub const CONVERSATION_USER_LINE_HEIGHT: f32 = (Self::CONVERSATION + 4.0) / Self::CONVERSATION;
+    pub const CONVERSATION_USER_LINE_HEIGHT: f32 = Self::CONVERSATION_LINE_HEIGHT;
     pub const SETTINGS_TITLE: f32 = 20.0;
     /// Body text: 13px (§3 "正文字体 …13px/1.55 行高").
     pub const BODY: f32 = 13.0;
