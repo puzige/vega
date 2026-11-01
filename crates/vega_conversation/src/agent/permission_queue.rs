@@ -633,6 +633,18 @@ pub(crate) struct RuntimePermissionAdapter<'a> {
 }
 
 impl RuntimePermissionHook for RuntimePermissionAdapter<'_> {
+    fn start_scoped_bash_session<'a>(
+        &'a self,
+        call_id: String,
+        tools: vega_tools::Tools,
+        prepared: vega_tools::PreparedBash,
+        policy: vega_tools::BashLaunchPolicy,
+        cancel: CancellationToken,
+        redact: Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>,
+    ) -> BoxFuture<'a, Result<vega_tools::BashSession, vega_tools::BashError>> {
+        self.scope.start_session(self.shared, call_id, tools, prepared, policy, cancel, redact).boxed()
+    }
+
     fn execute_scoped_bash<'a>(
         &'a self,
         call_id: String,

@@ -1962,6 +1962,11 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
 
     let history_safety =
         super::context_history::history_safety(database_path.clone(), thread_id.clone());
+    let shell_operations = Arc::new(super::shell_operations::ShellOperationPersistence {
+        database_path: database_path.clone(),
+        thread_id: thread_id.clone(),
+        run_id: assistant_message_id.clone(),
+    });
     Ok(PreparedRun {
         skill_launch,
         permission_fence,
@@ -2014,7 +2019,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                     thread_id,
                     checkpoint_root,
                     exact_rules,
-                );
+                ).with_shell_operations(shell_operations);
                 let runtime_config = match config.steering_source.clone() {
                     Some(source) => runtime_config.with_steering_source(source),
                     None => runtime_config,
@@ -2211,6 +2216,9 @@ pub(crate) fn validate_recovered_projection(
             "terminal tool call {call_id} has invalid safe projection"
         ))
     };
+    if let Some(valid) = super::shell_operations::validate_projection(tool, input_json, output, status, approval, exit_code, duration_ms) {
+        return valid.then(|| input_json.to_owned()).ok_or_else(corrupt);
+    }
     if tool == "read_conversation" && input_json == "{}" && history_result_invalidated(output) {
         let valid = match status {
             RuntimeToolStatus::Success

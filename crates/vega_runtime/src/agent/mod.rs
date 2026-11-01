@@ -39,6 +39,10 @@ pub use user_questions::*;
 mod compaction_refill;
 mod progress;
 mod progress_recovery;
+mod shell_sessions;
+pub use shell_sessions::{
+    RuntimeShellOperationHook, RuntimeShellOperationRecord, RuntimeWorkspaceMutationGuard,
+};
 
 mod mcp_registry;
 use mcp_registry::{KnownCredentials, McpCandidate, RunCapabilitySnapshot};
@@ -260,6 +264,8 @@ pub struct RuntimeToolConfig {
     credential_reader: Option<CredentialReader>,
     credential_exceptions: Option<CredentialExceptionFilter>,
     legacy_credential_cleanup_detected: bool,
+    shell_operations: Option<Arc<dyn RuntimeShellOperationHook>>,
+    shell_run: Option<Arc<shell_sessions::ShellRun>>,
 }
 
 impl RuntimeToolConfig {
@@ -299,6 +305,8 @@ impl RuntimeToolConfig {
             credential_reader: None,
             credential_exceptions: None,
             legacy_credential_cleanup_detected: false,
+            shell_operations: None,
+            shell_run: None,
         }
     }
 
@@ -310,6 +318,11 @@ impl RuntimeToolConfig {
             self.run_mode == RuntimeRunMode::Execute
                 && self.permission_mode != RuntimePermissionMode::ReadOnly
         });
+        self
+    }
+
+    pub fn with_shell_operations(mut self, hook: Arc<dyn RuntimeShellOperationHook>) -> Self {
+        self.shell_operations = Some(hook);
         self
     }
 
@@ -701,6 +714,23 @@ pub trait RuntimePermissionHook: Send + Sync {
         _cancel: CancellationToken,
         _started_at: Option<Arc<std::sync::OnceLock<std::time::Instant>>>,
     ) -> BoxFuture<'a, Result<vega_tools::BashOutput, vega_tools::BashError>> {
+        async {
+            Err(vega_tools::BashError::new(
+                vega_tools::BashErrorCode::ScopeMismatch,
+            ))
+        }
+        .boxed()
+    }
+
+    fn start_scoped_bash_session<'a>(
+        &'a self,
+        _call_id: String,
+        _tools: vega_tools::Tools,
+        _prepared: vega_tools::PreparedBash,
+        _policy: vega_tools::BashLaunchPolicy,
+        _cancel: CancellationToken,
+        _redact: Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>,
+    ) -> BoxFuture<'a, Result<vega_tools::BashSession, vega_tools::BashError>> {
         async {
             Err(vega_tools::BashError::new(
                 vega_tools::BashErrorCode::ScopeMismatch,

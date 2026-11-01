@@ -31,6 +31,7 @@ pub mod reasoning;
 pub mod recovery;
 pub mod run_diagnostics;
 pub mod sidebar_organization;
+pub mod shell_operations;
 pub mod skills;
 pub mod submission_diagnostics;
 
@@ -117,6 +118,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0059_configuration_failure_reasons.sql"),
     include_str!("../migrations/0060_configuration_lock_diagnostics.sql"),
     include_str!("../migrations/0061_preparation_revisions.sql"),
+    include_str!("../migrations/0062_shell_operations.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.

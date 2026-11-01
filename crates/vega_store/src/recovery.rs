@@ -162,6 +162,7 @@ pub fn recover_stopped_with_owner(
         )
         .collect::<rusqlite::Result<Vec<_>>>()?;
     crate::subagents::recover(tx, thread_id)?;
+    crate::shell_operations::recover_thread(tx, thread_id, now_ms)?;
     let messages_interrupted = tx.execute(
         "UPDATE messages SET status = 'interrupted' \
          WHERE thread_id = ?1 AND status = 'streaming'",

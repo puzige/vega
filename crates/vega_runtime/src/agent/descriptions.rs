@@ -12,6 +12,8 @@ pub fn is_native_tool(tool: &str) -> bool {
             | "Edit"
             | "edit"
             | "bash"
+            | "bash_wait"
+            | "bash_cancel"
             | USER_QUESTION_TOOL
             | "load_skill"
             | "read_skill_resource"

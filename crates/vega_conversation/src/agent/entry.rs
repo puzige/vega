@@ -669,6 +669,14 @@ pub(super) async fn run_thread_task_with_automation_inner<F>(
 where
     F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
 {
+    let workspace = std::fs::canonicalize(tools.root()).map_err(|error| ConversationError::Store(error.to_string()))?;
+    let unknown_shell = vega_store::shell_operations::has_unknown_workspace(store.conn(), &workspace.to_string_lossy()).map_err(|error| ConversationError::Store(error.to_string()))?;
+    if unknown_shell {
+        return Err(ConversationError::Runtime(Arc::new(VegaError::Tool {
+            tool: "bash".into(),
+            message: "A previous command could not be confirmed stopped. Verify its process and workspace before retrying; it will not be restarted automatically.".into(),
+        })));
+    }
     let _live_thread = store
         .database_path()
         .map(|path| crate::subagents::LiveDelegation::new(path, thread_id))

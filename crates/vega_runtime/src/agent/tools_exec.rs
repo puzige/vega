@@ -102,6 +102,17 @@ pub(crate) enum PreparedRuntimeCall {
     InvalidBash {
         call: RuntimeToolCall,
     },
+    ShellControl {
+        call: RuntimeToolCall,
+        input: shell_sessions::SessionInput,
+        cancel: bool,
+    },
+    ShellRejected {
+        call: RuntimeToolCall,
+    },
+    ShellBlocked {
+        call: RuntimeToolCall,
+    },
     Unknown(RuntimeToolCall),
 }
 
@@ -133,6 +144,9 @@ impl PreparedRuntimeCall {
             | Self::RunModeMutation(call)
             | Self::InvalidWriteEdit { call, .. }
             | Self::InvalidBash { call, .. }
+            | Self::ShellControl { call, .. }
+            | Self::ShellRejected { call }
+            | Self::ShellBlocked { call }
             | Self::InvalidMcp { call }
             | Self::ExternalRead { call, .. }
             | Self::Grep { call, .. }
@@ -187,6 +201,7 @@ impl PreparedRuntimeCall {
             Self::Write { prepared, .. } => prepared.model_input_json(),
             Self::Edit { prepared, .. } => prepared.model_input_json()?,
             Self::Bash { prepared, .. } => prepared.input_json(),
+            Self::ShellControl { input, .. } => serde_json::to_string(input).ok()?,
             Self::PinnedRead { execution, .. } => canonical_read_input(&execution.input_json)?,
             Self::ExternalRead { call, .. } => canonical_read_input(&call.input_json)?,
             Self::Grep { model_input, .. } => model_input.clone(),
@@ -325,6 +340,29 @@ pub(crate) fn prepare_runtime_call(
     capabilities: &RunCapabilitySnapshot,
     raw_call: RuntimeToolCall,
 ) -> Result<PreparedRuntimeCall, VegaError> {
+    if config.shell_run.as_ref().is_some_and(|owner| owner.active().unwrap_or(true))
+        && !matches!(raw_call.name.as_str(), "read" | "Read" | "glob" | "grep" | "bash_wait" | "bash_cancel")
+    {
+        return Ok(PreparedRuntimeCall::ShellBlocked {
+            call: RuntimeToolCall { input_json: "{}".into(), ..raw_call },
+        });
+    }
+    if matches!(raw_call.name.as_str(), "bash_wait" | "bash_cancel") {
+        let cancel = raw_call.name == "bash_cancel";
+        return Ok(match shell_sessions::SessionInput::parse(&raw_call.input_json, cancel) {
+            Some(input) => PreparedRuntimeCall::ShellControl {
+                call: RuntimeToolCall {
+                    input_json: serde_json::to_string(&input).map_err(|_| safe_prepare_error("bash_wait"))?,
+                    ..raw_call
+                },
+                input,
+                cancel,
+            },
+            None => PreparedRuntimeCall::ShellRejected {
+                call: RuntimeToolCall { input_json: "{}".into(), ..raw_call },
+            },
+        });
+    }
     if raw_call.name == USER_QUESTION_TOOL {
         let parsed = UserQuestionInput::from_json(&raw_call.input_json).and_then(|input| {
             let json = input.to_json()?;
@@ -585,7 +623,14 @@ pub(crate) fn prepare_runtime_call(
         }
         "bash" => match base_tools.prepare_bash_json(&raw_call.input_json) {
             Ok(prepared) => Ok(PreparedRuntimeCall::Bash {
-                call: raw_call,
+                call: if prepared.wait_ms().is_some() {
+                    RuntimeToolCall {
+                        input_json: config.redact_tool_output(&prepared.input_json())?,
+                        ..raw_call
+                    }
+                } else {
+                    raw_call
+                },
                 tools: base_tools.clone(),
                 prepared,
                 policy: crate::permission::bash_launch_policy(
@@ -878,7 +923,23 @@ pub(crate) async fn authorize_call(
     hook: &dyn RuntimePermissionHook,
     cancel: &CancellationToken,
 ) -> Result<Authorization, VegaError> {
+    if let PreparedRuntimeCall::Bash { prepared: bash, policy, .. } = prepared
+        && bash.wait_ms().is_some()
+    {
+        let validation = config.shell_run.as_ref()
+            .ok_or_else(safe_permission_error)
+            .and_then(|owner| owner.validate_launch(bash, *policy));
+        if let Err(error) = validation {
+            return Ok(Authorization::Terminal(terminal_result(prepared.call(), format!("Tool error: {error}"), RuntimeToolStatus::Rejected, Some(validation_audit()))));
+        }
+    }
+    let _admission = match shell_sessions::admit_prepared(prepared, config) {
+        Ok(guard) => guard,
+        Err(error) => return Ok(Authorization::Terminal(terminal_result(prepared.call(), format!("Tool error: {error}"), RuntimeToolStatus::Rejected, Some(validation_audit())))),
+    };
     match prepared {
+        PreparedRuntimeCall::ShellBlocked { call } => Ok(Authorization::Terminal(terminal_result(call, "Tool error: wait or cancel the active shell session before other work".into(), RuntimeToolStatus::Rejected, Some(validation_audit())))),
+        PreparedRuntimeCall::ShellRejected { call } => Ok(Authorization::Terminal(terminal_result(call, "Tool error: invalid shell session input".into(), RuntimeToolStatus::Rejected, Some(validation_audit())))),
         PreparedRuntimeCall::InvalidRead(call) => {
             Ok(Authorization::Terminal(invalid_read_result(call)))
         }
@@ -1209,6 +1270,7 @@ pub(crate) async fn authorize_call(
         | PreparedRuntimeCall::ConversationHistory { .. }
         | PreparedRuntimeCall::Automation { .. }
         | PreparedRuntimeCall::Readonly(_)
+        | PreparedRuntimeCall::ShellControl { .. }
         | PreparedRuntimeCall::InvalidGrep(_)
         | PreparedRuntimeCall::PinnedRead { .. }
         | PreparedRuntimeCall::Grep { target: None, .. } => {
@@ -1555,6 +1617,16 @@ pub(crate) fn runtime_inputs_semantically_equal(tool: &str, left: &str, right: &
     if tool == "bash" {
         return vega_tools::bash_inputs_semantically_equal(left, right);
     }
+    if matches!(tool, "bash_wait" | "bash_cancel") {
+        let cancel = tool == "bash_cancel";
+        return match (
+            shell_sessions::SessionInput::parse(left, cancel),
+            shell_sessions::SessionInput::parse(right, cancel),
+        ) {
+            (Some(left), Some(right)) => left.semantically_equal(&right),
+            _ => left == right,
+        };
+    }
     if !matches!(tool, "Write" | "Edit" | "write" | "edit") {
         return left == right
             || (is_native_tool(tool)
@@ -1585,8 +1657,27 @@ pub(crate) async fn execute_prepared_waiting(
     permission_hook: &dyn RuntimePermissionHook,
     cancel: &CancellationToken,
     bash_started_at: Option<Arc<std::sync::OnceLock<std::time::Instant>>>,
+    config: &RuntimeToolConfig,
 ) -> (RuntimeToolResult, bool) {
+    let session_launch = matches!(&prepared, PreparedRuntimeCall::Bash { prepared, .. } if prepared.wait_ms().is_some());
+    let _admission = if session_launch {
+        None
+    } else {
+        match shell_sessions::admit(&prepared, config, base_tools) {
+            Ok(guard) => guard,
+            Err(error) => return (terminal_result(prepared.call(), format!("Tool error: {error}"), RuntimeToolStatus::Rejected, None), false),
+        }
+    };
     match prepared {
+        PreparedRuntimeCall::ShellControl { call, input, cancel: cancel_session } => {
+            let output = match config.shell_run.as_ref() {
+                Some(owner) => owner.observe(&input, cancel_session, base_tools).await,
+                None => Err(safe_permission_error()),
+            };
+            (shell_result(&call, output), false)
+        }
+        PreparedRuntimeCall::ShellBlocked { call } => (terminal_result(&call, "Tool error: wait or cancel the active shell session before other work".into(), RuntimeToolStatus::Rejected, Some(validation_audit())), false),
+        PreparedRuntimeCall::ShellRejected { call } => (terminal_result(&call, "Tool error: invalid shell session input".into(), RuntimeToolStatus::Rejected, Some(validation_audit())), false),
         PreparedRuntimeCall::InvalidUserQuestion { call, code } => (
             terminal_result(
                 &call,
@@ -1998,6 +2089,13 @@ pub(crate) async fn execute_prepared_waiting(
             prepared,
             policy,
         } => {
+            if prepared.wait_ms().is_some() {
+                let output = match config.shell_run.as_ref() {
+                    Some(owner) => owner.launch(&call, tools, prepared, policy, permission_hook, config).await,
+                    None => Err(safe_permission_error()),
+                };
+                return (shell_result(&call, output), false);
+            }
             let result = if prepared.requested_scope().is_some()
                 && policy != vega_tools::BashLaunchPolicy::FullAccess
             {
@@ -2095,6 +2193,28 @@ pub(crate) async fn execute_prepared_waiting(
             ),
             false,
         ),
+    }
+}
+
+fn shell_result(call: &RuntimeToolCall, output: Result<String, VegaError>) -> RuntimeToolResult {
+    match output {
+        Ok(output) => {
+            let value = serde_json::from_str::<Value>(&output).ok();
+            let state = value.as_ref().and_then(|value| value["state"].as_str());
+            let status = match state {
+                Some("failed" | "timed_out" | "outcome_unknown") | None => RuntimeToolStatus::Failed,
+                Some("cancelled") => RuntimeToolStatus::Cancelled,
+                _ => RuntimeToolStatus::Success,
+            };
+            let mut result = terminal_result(call, output, status, None);
+            if let Some(value) = value {
+                result.exit_code = value["exit_code"].as_i64().and_then(|code| i32::try_from(code).ok());
+                result.duration_ms = value["duration_ms"].as_u64();
+                result.truncated = value["truncated"].as_bool();
+            }
+            result
+        }
+        Err(error) => terminal_result(call, format!("Tool error: {error}"), RuntimeToolStatus::Failed, None),
     }
 }
 
@@ -2459,10 +2579,24 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
     }
     definitions.push(ToolDefinition {
         name: "bash".into(),
-        description: "Run a non-empty command at the project root. Ask/Plan and ReadOnly use a read-only sandbox; Confirm/Auto permit workspace writes after approval. Sandboxed commands are offline and ignore user shell startup files by default. Optional requested_scope asks for one-command network access and/or extra writable directories with a reason; it requires separate explicit approval, never changes the permission mode, and cannot bypass danger checks. Extra writable directories require Execute Confirm/Auto. Network access with credential bindings uses only their HTTPS destinations; otherwise approval permits any network destination including local services. Full access uses current-user permissions without sandbox restrictions. timeout is positive seconds; null uses 120 seconds. A cd affects only this command. Filter large output; do not automatically retry side effects. Example: {\"command\":\"pwd\",\"timeout\":null}.".into(),
-        input_schema: serde_json::json!({"type":"object","properties":{"command":{"type":"string","minLength":1},"description":vega_tools::description_field_schema(),"timeout":{"type":["integer","null"],"minimum":1,"maximum":18446744073709551u64},"requested_scope":{"type":"object","properties":{"network":{"type":"boolean","default":false},"write_roots":{"type":"array","items":{"type":"string"},"default":[]},"reason":{"type":"string","minLength":1,"maxLength":512}},"required":["reason"],"additionalProperties":false}},"required":["command","timeout"],"additionalProperties":false}),
+        description: "Run a non-empty command at the project root. Ask/Plan and ReadOnly use a read-only sandbox; Confirm/Auto permit workspace writes after approval. Sandboxed commands are offline and ignore user shell startup files by default. Optional requested_scope asks for one-command network access and/or extra writable directories with a reason; it requires separate explicit approval, never changes the permission mode, and cannot bypass danger checks. Extra writable directories require Execute Confirm/Auto. Network access with credential bindings uses only their HTTPS destinations; otherwise approval permits any network destination including local services. Full access uses current-user permissions without sandbox restrictions. timeout is positive seconds; null uses 120 seconds. A cd affects only this command. Optional wait_ms (0–30000) explicitly starts a run-bound session in the workspace-write sandbox; omit or null for the original blocking protocol. A running receipt is not command success. Use bash_wait or bash_cancel for that session. Sessions reject Full Access and extra writable roots. Filter large output; do not automatically retry side effects. Example: {\"command\":\"pwd\",\"timeout\":null}.".into(),
+        input_schema: serde_json::json!({"type":"object","properties":{"command":{"type":"string","minLength":1},"description":vega_tools::description_field_schema(),"timeout":{"type":["integer","null"],"minimum":1,"maximum":18446744073709551u64},"wait_ms":{"type":["integer","null"],"minimum":0,"maximum":30000},"requested_scope":{"type":"object","properties":{"network":{"type":"boolean","default":false},"write_roots":{"type":"array","items":{"type":"string"},"default":[]},"reason":{"type":"string","minLength":1,"maxLength":512}},"required":["reason"],"additionalProperties":false}},"required":["command","timeout"],"additionalProperties":false}),
         strict: false,
     });
+    definitions.extend([
+        ToolDefinition {
+            name: "bash_wait".into(),
+            description: "Observe an existing shell session in this run; never reruns its command. wait_ms defaults to 30000 and only bounds this observation. Use the returned cursor to read later output. Wait or cancel before starting mutations or requesting new approvals.".into(),
+            input_schema: serde_json::json!({"type":"object","properties":{"handle":{"type":"string","minLength":26,"maxLength":26},"cursor":{"type":["integer","null"],"minimum":0},"wait_ms":{"type":["integer","null"],"minimum":0,"maximum":300000}},"required":["handle"],"additionalProperties":false}),
+            strict: false,
+        },
+        ToolDefinition {
+            name: "bash_cancel".into(),
+            description: "Cancel an existing shell session in this run and wait for bounded cleanup. An already terminal session keeps its original outcome; unknown cleanup is not successful cancellation.".into(),
+            input_schema: serde_json::json!({"type":"object","properties":{"handle":{"type":"string","minLength":26,"maxLength":26}},"required":["handle"],"additionalProperties":false}),
+            strict: false,
+        },
+    ]);
     definitions.into_iter().map(describe_definition).collect()
 }
 
