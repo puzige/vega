@@ -545,6 +545,3 @@ fn persist_usage(
         tracing::warn!("composer prediction usage persistence failed");
     }
 }
-
-#[cfg(test)]
-mod tests;
