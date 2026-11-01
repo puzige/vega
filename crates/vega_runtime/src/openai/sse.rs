@@ -660,3 +660,7 @@ fn usage_counts(usage: &serde_json::Value) -> Option<UsageCounts> {
 fn invalid_protocol(reason: ProviderProtocolReason) -> VegaError {
     crate::chat_compat::protocol_error_with_reason(reason)
 }
+
+#[cfg(test)]
+#[path = "multicall_tests.rs"]
+mod multicall_tests;
