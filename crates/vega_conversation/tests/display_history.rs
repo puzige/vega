@@ -400,6 +400,41 @@ fn restart_recovery_respects_admission_and_retains_inert_history() {
         )
         .unwrap();
     assert_eq!(status, "streaming");
+    assert!(guarded.interrupted_tail.is_none());
+    let thread = vega_store::threads::find(store.conn(), "fork")
+        .unwrap()
+        .unwrap();
+    let fence = vega_conversation::types::PermissionFence {
+        schema_version: 1,
+        execution_policy_version: 2,
+        authority_epoch: vega_store::permission_contracts::load_state(store.conn())
+            .unwrap()
+            .authority_epoch,
+        database_identity: store.database_identity().permission_fence_key(),
+        thread_id: thread.id,
+        project_id: thread.project_id,
+        workspace: vega_conversation::threads::task_workspace_root(&store, "fork")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned(),
+        run_mode: thread.mode,
+        permission_mode: thread.permission_mode,
+        permission_revision: thread.permission_revision,
+        exact_rules: Vec::new(),
+        full_access_grant: None,
+        delegation: None,
+    };
+    assert!(fence.is_valid());
+    let tx = store.immediate_transaction().unwrap();
+    vega_store::permission_contracts::record_run_fence(
+        &tx,
+        "current",
+        "fork",
+        &serde_json::to_string(&fence).unwrap(),
+    )
+    .unwrap();
+    tx.commit().unwrap();
     drop(admission);
     let recovered = display::restart_history_page(&store, "fork", 20).unwrap();
     assert_archive(&recovered, ToolCallStatus::Success, Approval::Once);
