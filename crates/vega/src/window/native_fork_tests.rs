@@ -1,7 +1,11 @@
-use super::*;
+use super::VegaWindow;
 use gpui_kit as gpui;
-use gpui_kit::TestAppContext;
+use gpui_kit::{AppContext, Entity, TestAppContext};
+use vega_conversation::types::{ConversationEvent, Thread};
 use vega_store::Store;
+use vega_ui::conversation_stream::{ConversationStream, ForkRequested};
+use vega_ui::settings::SettingsOpen;
+use vega_ui::sidebar::{OpenedThread, SelectedProject};
 
 struct Fixture {
     _root: tempfile::TempDir,
