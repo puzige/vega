@@ -48,7 +48,6 @@ pub struct McpServerDraft {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct McpEnvSlot {
     pub variable: String,
     pub credential_ref: String,
@@ -64,6 +63,8 @@ pub struct McpSecretCleanup {
 pub enum McpStoreError {
     #[error("MCP configuration is invalid")]
     Invalid,
+    #[error("MCP configuration is unavailable")]
+    Configuration,
     #[error("MCP configuration changed; reload before editing")]
     Conflict,
     #[error("MCP server not found")]
@@ -268,7 +269,11 @@ pub fn create(conn: &Connection, draft: &McpServerDraft) -> Result<McpServerRow,
         };
     let environment_slots = local_slots(&id, 1, draft)?;
     let now = now_ms();
-    conn.execute(
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
+    tx.execute(
         "INSERT INTO mcp_servers (id, display_name, transport, local_executable, local_args_json, \
          local_working_directory, local_env_refs_json, remote_endpoint, remote_allow_loopback_http, \
          remote_auth_mode, remote_credential_ref, remote_oauth_issuer, remote_oauth_client_id, \
@@ -282,7 +287,10 @@ pub fn create(conn: &Connection, draft: &McpServerDraft) -> Result<McpServerRow,
             now,
         ],
     )?;
-    find(conn, &id)?.ok_or(McpStoreError::NotFound)
+    let row = find(&tx, &id)?.ok_or(McpStoreError::NotFound)?;
+    crate::mcp_config::stage(&tx)?;
+    tx.commit()?;
+    Ok(row)
 }
 
 pub fn find(conn: &Connection, id: &str) -> Result<Option<McpServerRow>, McpStoreError> {
@@ -366,6 +374,7 @@ pub fn replace(
     for reference in server_secret_refs(&old)?.difference(&new_refs) {
         enqueue_cleanup(&tx, id, reference)?;
     }
+    crate::mcp_config::stage(&tx)?;
     tx.commit()?;
     Ok(new)
 }
@@ -433,6 +442,7 @@ pub fn set_enabled(
         params![enabled, now_ms(), id, expected],
     )?;
     let changed = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
+    crate::mcp_config::stage(&tx)?;
     tx.commit()?;
     Ok(changed)
 }
@@ -488,6 +498,7 @@ pub fn begin_oauth_install(
     for old_ref in server_secret_refs(&old)?.difference(&new_refs) {
         enqueue_cleanup(&tx, id, old_ref)?;
     }
+    crate::mcp_config::stage(&tx)?;
     tx.commit()?;
     Ok((changed, reference))
 }
@@ -526,6 +537,7 @@ pub fn begin_oauth_disconnect(
         enqueue_cleanup(&tx, id, &old_ref)?;
     }
     let changed = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
+    crate::mcp_config::stage(&tx)?;
     tx.commit()?;
     Ok(changed)
 }
@@ -586,6 +598,7 @@ pub fn begin_local_secret_rotation(
     )?;
     enqueue_cleanup(&tx, id, &old_reference)?;
     let changed = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
+    crate::mcp_config::stage(&tx)?;
     tx.commit()?;
     Ok((changed, reference))
 }
@@ -653,6 +666,7 @@ pub fn begin_remove(
         enqueue_cleanup(&tx, id, &reference)?;
     }
     let changed = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
+    crate::mcp_config::stage(&tx)?;
     tx.commit()?;
     Ok(changed)
 }
@@ -720,10 +734,80 @@ pub fn finish_remove(conn: &Connection, id: &str) -> Result<bool, McpStoreError>
         conn,
         crate::write_coordination::WriteCategory::McpServers,
     )?;
-    let count = conn.execute(
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
+    if let Some(row) = find(&tx, id)? {
+        if row.deleting {
+            tx.execute(
+                "INSERT INTO mcp_config_identities (id, declaration, projected_revision, tombstoned) VALUES (?1, ?2, ?3, 1) ON CONFLICT(id) DO UPDATE SET tombstoned = 1",
+                params![id, serde_json::to_string(&crate::mcp_config::Declaration::from_row(&row)?).map_err(|_| McpStoreError::Invalid)?, row.config_revision],
+            )?;
+        }
+    }
+    let count = tx.execute(
         "DELETE FROM mcp_servers WHERE id = ?1 AND deleting = 1 \
          AND NOT EXISTS (SELECT 1 FROM mcp_secret_cleanup WHERE server_id = ?1)",
         [id],
     )?;
+    tx.commit()?;
     Ok(count == 1)
+}
+
+pub(crate) fn validate_projection_refs(
+    row: &McpServerRow,
+    old: Option<&McpServerRow>,
+) -> Result<(), McpStoreError> {
+    let refs = server_secret_refs(row)?;
+    if let Some(old) = old {
+        if !refs.is_subset(&server_secret_refs(old)?) {
+            return Err(McpStoreError::Conflict);
+        }
+        if row.remote_auth_mode.as_deref() == Some("oauth")
+            && (row.remote_credential_ref != old.remote_credential_ref
+                || row.remote_oauth_issuer != old.remote_oauth_issuer)
+        {
+            return Err(McpStoreError::Conflict);
+        }
+    } else if row.remote_oauth_issuer.is_some()
+        || (row.remote_auth_mode.as_deref() == Some("oauth") && !refs.is_empty())
+    {
+        return Err(McpStoreError::Conflict);
+    }
+    Ok(())
+}
+
+pub(crate) fn queue_projection_cleanup(
+    conn: &Connection,
+    old: &McpServerRow,
+    new: &McpServerRow,
+) -> Result<(), McpStoreError> {
+    for reference in server_secret_refs(old)?.difference(&server_secret_refs(new)?) {
+        enqueue_cleanup(conn, &old.id, reference)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn write_projection(conn: &Connection, row: &McpServerRow) -> Result<(), McpStoreError> {
+    conn.execute(
+        "INSERT INTO mcp_servers (id, display_name, transport, local_executable, local_args_json, \
+         local_working_directory, local_env_refs_json, remote_endpoint, remote_allow_loopback_http, \
+         remote_auth_mode, remote_credential_ref, remote_oauth_issuer, remote_oauth_client_id, \
+         enabled, config_revision, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 0, ?14, ?15, ?16) \
+         ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, transport = excluded.transport, \
+         local_executable = excluded.local_executable, local_args_json = excluded.local_args_json, \
+         local_working_directory = excluded.local_working_directory, local_env_refs_json = excluded.local_env_refs_json, \
+         remote_endpoint = excluded.remote_endpoint, remote_allow_loopback_http = excluded.remote_allow_loopback_http, \
+         remote_auth_mode = excluded.remote_auth_mode, remote_credential_ref = excluded.remote_credential_ref, \
+         remote_oauth_issuer = excluded.remote_oauth_issuer, remote_oauth_client_id = excluded.remote_oauth_client_id, \
+         enabled = 0, config_revision = excluded.config_revision, last_error_code = NULL, updated_at = excluded.updated_at",
+        params![row.id, row.display_name, row.transport, row.local_executable, row.local_args_json,
+            row.local_working_directory, row.local_env_refs_json, row.remote_endpoint,
+            row.remote_allow_loopback_http, row.remote_auth_mode, row.remote_credential_ref,
+            row.remote_oauth_issuer, row.remote_oauth_client_id, row.config_revision,
+            if row.created_at == 0 { now_ms() } else { row.created_at }, now_ms()],
+    )?;
+    Ok(())
 }

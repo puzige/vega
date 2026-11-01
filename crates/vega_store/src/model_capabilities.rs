@@ -1,15 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{self, Write},
-    path::{Path, PathBuf},
-    sync::{
-        Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
-    },
+    io,
+    path::Path,
+    sync::{Mutex, OnceLock},
 };
 
-pub const MODEL_CAPABILITY_FILE_NAME: &str = "model-capabilities.toml";
+pub const MODEL_CAPABILITY_FILE_NAME: &str = "config.yaml";
 pub type ModelCapabilitySnapshot = crate::reasoning::ReasoningFileSnapshot;
 
 #[derive(Debug, thiserror::Error)]
@@ -27,7 +23,6 @@ pub enum ModelCapabilityError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ModelCapabilityConfig {
     pub version: u32,
     #[serde(default)]
@@ -43,13 +38,10 @@ impl Default for ModelCapabilityConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ModelCapabilityRecord {
     pub provider: String,
     pub model: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub allowed_efforts: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub image_input: Option<bool>,
 }
 
@@ -73,7 +65,7 @@ impl ModelCapabilityConfig {
             .iter()
             .find(|r| r.provider == provider && r.model == model)
     }
-    fn validate(&self) -> Result<(), ModelCapabilityError> {
+    pub(crate) fn validate(&self) -> Result<(), ModelCapabilityError> {
         if self.version != 1 {
             return Err(ModelCapabilityError::Invalid);
         }
@@ -100,13 +92,12 @@ impl ModelCapabilityConfig {
 }
 
 fn snapshot(path: &Path) -> Result<ModelCapabilitySnapshot, ModelCapabilityError> {
-    match fs::read(path) {
-        Ok(bytes) => Ok(ModelCapabilitySnapshot {
+    match crate::yaml_config::read(path)? {
+        Some(bytes) => Ok(ModelCapabilitySnapshot {
             exists: true,
             bytes,
         }),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(ModelCapabilitySnapshot::absent()),
-        Err(e) => Err(e.into()),
+        None => Ok(ModelCapabilitySnapshot::absent()),
     }
 }
 fn decode(
@@ -115,8 +106,8 @@ fn decode(
     if !snapshot.exists {
         return Ok(ModelCapabilityConfig::default());
     }
-    let text = std::str::from_utf8(&snapshot.bytes).map_err(|_| ModelCapabilityError::Invalid)?;
-    let config: ModelCapabilityConfig = toml::from_str(text)?;
+    let config: ModelCapabilityConfig =
+        crate::yaml_config::section(&snapshot.bytes, "model_capabilities")?;
     config.validate()?;
     Ok(config)
 }
@@ -132,7 +123,8 @@ pub fn read_authority_from(
 }
 pub fn encode(config: &ModelCapabilityConfig) -> Result<Vec<u8>, ModelCapabilityError> {
     config.validate()?;
-    Ok(toml::to_string_pretty(config)?.into_bytes())
+    serde_json::to_vec(&serde_json::json!({"schema_version": 1, "model_capabilities": config}))
+        .map_err(|_| ModelCapabilityError::Invalid)
 }
 
 pub fn save_model_patch(
@@ -170,53 +162,14 @@ pub fn save_model_patch(
     if let ModelCapabilityPatch::Upsert(record) = patch {
         config.models.push(record.clone());
     }
-    let bytes = encode(&config)?;
-    write_atomic(path, &current, &bytes)?;
+    config.validate()?;
+    let document = crate::yaml_config::begin(path)?;
+    if document.bytes().as_deref() != current.exists.then_some(current.bytes.as_slice()) {
+        return Err(ModelCapabilityError::ConcurrentModification);
+    }
+    let bytes = document.save_fields(&serde_json::json!({"model_capabilities": config}))?;
     Ok(ModelCapabilitySnapshot {
         exists: true,
         bytes,
     })
-}
-
-fn write_atomic(
-    path: &Path,
-    expected: &ModelCapabilitySnapshot,
-    bytes: &[u8],
-) -> Result<(), ModelCapabilityError> {
-    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("model capability parent unavailable"))?;
-    fs::create_dir_all(parent)?;
-    let name = path
-        .file_name()
-        .and_then(|v| v.to_str())
-        .unwrap_or(MODEL_CAPABILITY_FILE_NAME);
-    let temp: PathBuf = path.with_file_name(format!(
-        ".{name}.tmp-{}-{}",
-        std::process::id(),
-        SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ));
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp)?;
-        if expected.exists {
-            file.set_permissions(fs::metadata(path)?.permissions())?;
-        }
-        file.write_all(bytes)?;
-        file.flush()?;
-        file.sync_all()?;
-        if &snapshot(path)? != expected {
-            return Err(ModelCapabilityError::ConcurrentModification);
-        }
-        fs::rename(&temp, path)?;
-        File::open(parent)?.sync_all()?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result
 }

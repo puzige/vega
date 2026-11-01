@@ -15,6 +15,8 @@ This explicitly supersedes #73's per-call approval requirement for Execute + Ful
 
 A Full access authorization is one call's `Once / FullAccess` audit, with no remembered rule, note or danger override. It is not a user click and cannot be granted by model arguments, tool descriptions, annotations or output. Server activation, credentials and OAuth consent remain separate. Existing task authority, epoch/reset fences, frozen server/config/tool identity, enable/delete revocation, limits, cancellation, redaction and subprocess protection remain mandatory. There is no Always policy or automatic replay.
 
+#820 changes paths and declaration storage, not this authorization policy: YAML settings are not approval provenance, and invalid or unreconciled MCP declarations cannot bypass revocation/admission fences. See [#820](../820/unified-home-and-safe-migration.md).
+
 ## Minimal implementation
 
 - `tools_exec::authorize_call`: keep run-mode/cancel/revocation rejections first; return a one-call FullAccess policy audit only for trusted runtime FullAccess configuration. Confirm/Auto keep the existing hook and timeout.
