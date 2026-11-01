@@ -105,7 +105,9 @@ fn automatic_placement_hides_arrow_without_changing_anchor_or_spacer(cx: &mut Te
         assert_eq!(top.item_ix, 7);
         assert_eq!(top.offset_in_item, px(0.));
         let _ = stream.render_resume_tail(cx);
-        assert_eq!(stream.list.logical_scroll_top(), top);
+        let after = stream.list.logical_scroll_top();
+        assert_eq!(after.item_ix, top.item_ix);
+        assert_eq!(after.offset_in_item, top.offset_in_item);
         assert!(!stream.following_tail());
     });
     frame(cx);
@@ -120,7 +122,9 @@ fn automatic_placement_hides_arrow_without_changing_anchor_or_spacer(cx: &mut Te
     frame(cx);
     assert!(!arrow_visible(cx));
     stream.read_with(cx, |stream, _| {
-        assert_eq!(stream.list.logical_scroll_top(), anchor);
+        let after = stream.list.logical_scroll_top();
+        assert_eq!(after.item_ix, anchor.item_ix);
+        assert_eq!(after.offset_in_item, anchor.offset_in_item);
         assert!(stream.turn_placement.borrow().automatically_placed());
     });
 }
