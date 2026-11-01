@@ -18,6 +18,7 @@ pub(super) struct TurnPlacement {
     last_offset: Option<Pixels>,
     user_distance: Pixels,
     scrolled: bool,
+    scrolling_down: bool,
     release: bool,
 }
 
@@ -53,6 +54,10 @@ impl TurnPlacement {
 
     pub(super) fn active(&self) -> bool {
         self.target.is_some()
+    }
+
+    pub(super) fn automatically_placed(&self) -> bool {
+        self.active() && !self.interrupted
     }
 
     pub(super) fn inserted(&mut self, index: usize) {
@@ -230,9 +235,9 @@ impl Element for TurnList {
                     }
                     if placement.scrolled
                         && distance_from_bottom.is_some_and(|distance| distance.abs() <= px(1.))
-                        && placement
-                            .last_offset
-                            .is_some_and(|previous| offset > previous)
+                        && placement.last_offset.is_some_and(|previous| {
+                            offset > previous || (placement.scrolling_down && offset == previous)
+                        })
                         && placement.user_distance > px(0.)
                     {
                         placement.reset();
@@ -254,6 +259,7 @@ impl Element for TurnList {
             placement.release = false;
         }
         placement.scrolled = false;
+        placement.scrolling_down = false;
         let padding = self.foreground + placement.spacer;
         drop(placement);
         let render = self.render.clone();
@@ -292,7 +298,9 @@ impl Element for TurnList {
         let list = self.list.clone();
         window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _, _| {
             if phase.capture() && bounds.contains(&event.position) {
-                placement.borrow_mut().interrupt(&list);
+                let mut placement = placement.borrow_mut();
+                placement.interrupt(&list);
+                placement.scrolling_down = event.delta.pixel_delta(px(20.)).y < px(0.);
             }
         });
         let placement = self.placement.clone();

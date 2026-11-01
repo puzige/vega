@@ -209,13 +209,15 @@ impl ConversationStream {
 
     fn render_resume_tail(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
+        let show_arrow =
+            !self.following_tail() && !self.turn_placement.borrow().automatically_placed();
         div()
             .h(px(Layout::READING_NAVIGATION_HEIGHT))
             .flex_shrink_0()
             .py(px(Layout::READING_NAVIGATION_PADDING))
             .flex()
             .justify_center()
-            .when(!self.following_tail(), |row| {
+            .when(show_arrow, |row| {
                 row.child(
                     div()
                         .id("scroll-to-bottom")
