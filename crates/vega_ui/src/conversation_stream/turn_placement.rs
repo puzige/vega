@@ -14,6 +14,7 @@ pub(super) struct TurnPlacement {
     interrupted: bool,
     spacer: Pixels,
     viewport: Option<Size<Pixels>>,
+    foreground: Option<Pixels>,
     last_offset: Option<Pixels>,
     user_distance: Pixels,
     scrolled: bool,
@@ -172,14 +173,21 @@ impl Element for TurnList {
         {
             placement.reset();
         }
+        let foreground_changed = placement
+            .foreground
+            .is_some_and(|height| height != self.foreground);
+        if foreground_changed && placement.interrupted {
+            placement.reset();
+        }
         placement.viewport = Some(bounds.size);
+        placement.foreground = Some(self.foreground);
         if let Some(target) = placement.target {
             if target >= self.count {
                 placement.reset();
             } else {
                 let mut height = px(0.);
                 for index in target..self.count {
-                    if !placement.pending && placement.spacer == px(0.) {
+                    if !placement.pending && !foreground_changed && placement.spacer == px(0.) {
                         break;
                     }
                     if height >= usable {
@@ -197,6 +205,8 @@ impl Element for TurnList {
                         offset_in_item: px(0.),
                     });
                     placement.pending = false;
+                } else if foreground_changed && !placement.interrupted {
+                    placement.spacer = required;
                 } else {
                     placement.spacer = placement.spacer.min(required);
                 }
@@ -213,7 +223,10 @@ impl Element for TurnList {
                         self.list.pause_following_tail();
                     }
                     if placement.scrolled
-                        && self.list.is_scrolled_to_end() == Some(true)
+                        && bottom - offset <= px(1.)
+                        && placement
+                            .last_offset
+                            .is_some_and(|previous| offset > previous)
                         && placement.user_distance > px(0.)
                     {
                         placement.reset();
