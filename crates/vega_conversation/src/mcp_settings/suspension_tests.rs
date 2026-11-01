@@ -10,13 +10,15 @@ struct Fixture {
 
 impl Fixture {
     fn imported(authorization: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("vega-mcp-suspension-{}", ulid::Ulid::new()));
+        let root = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("vega-mcp-suspension-{}", ulid::Ulid::generate()));
         std::fs::create_dir(&root).unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         let fixture = Self {
             service: McpServerSettingsService::new(root.join("vega.db"), root.clone()),
             root,
-            id: ulid::Ulid::new().to_string(),
+            id: ulid::Ulid::generate().to_string(),
         };
         fixture.write("Initial", true, authorization);
         fixture
@@ -35,6 +37,18 @@ impl Fixture {
     }
 
     fn declaration(&self, name: &str, enabled: bool, authorization: &str) -> Value {
+        use vega_store::mcp_config::Authorization;
+        let authorization = match authorization {
+            "bearer" => Authorization::Bearer {
+                credential_ref: None,
+            },
+            "oauth" => Authorization::OAuth {
+                credential_ref: None,
+                issuer: None,
+                client_id: None,
+            },
+            _ => panic!("unsupported fixture authorization"),
+        };
         json!({
             "id": self.id,
             "display_name": name,
@@ -42,7 +56,7 @@ impl Fixture {
             "transport": {
                 "type": "remote",
                 "endpoint": "https://example.invalid/mcp",
-                "authorization": {"type": authorization}
+                "authorization": authorization
             }
         })
     }
@@ -50,6 +64,7 @@ impl Fixture {
     fn write(&self, name: &str, enabled: bool, authorization: &str) {
         self.write_bytes(
             &serde_json::to_vec(&json!({
+                "schema_version": 1,
                 "mcp_servers": [self.declaration(name, enabled, authorization)]
             }))
             .unwrap(),
@@ -65,6 +80,19 @@ impl Fixture {
     fn row(&self) -> McpServerRow {
         let store = self.service.store().unwrap();
         mcp_servers::find(store.conn(), &self.id).unwrap().unwrap()
+    }
+
+    fn register_handle(&self) -> McpReadyServer {
+        let row = self.row();
+        let handle = McpReadyServer::isolated_test_handle(self.id.clone(), row.config_revision);
+        self.service
+            .lock()
+            .unwrap()
+            .leases
+            .entry(self.id.clone())
+            .or_default()
+            .push((row.config_revision, handle.revocation_lease()));
+        handle
     }
 
     fn token(&self) -> CancellationToken {
@@ -150,14 +178,28 @@ async fn accepted_configuration_change_still_requires_explicit_activation() {
 #[tokio::test]
 async fn configuration_error_fails_closed_then_recovers_without_reviving_old_attempt() {
     let fixture = Fixture::new("bearer").await;
-    fixture.row();
+    let old = fixture.register_handle();
+    let old_clone = old.clone();
+    let lease = old.revocation_lease();
     let token = fixture.token();
+    let epoch = fixture.service.lock().unwrap().epoch(&fixture.id);
+    assert!(lease.is_live());
     fixture.write_bytes(b"mcp_servers: [");
     assert!(fixture.service.store().is_err());
     assert!(token.is_cancelled());
+    assert!(fixture.service.lock().unwrap().epoch(&fixture.id) > epoch);
+    assert!(old.is_revoked());
+    assert!(old_clone.is_revoked());
+    assert!(!lease.is_live());
     fixture.write("Initial", true, "bearer");
     fixture.assert_credential_admission().await;
     assert!(!fixture.token().is_cancelled());
+    let fresh = fixture.register_handle();
+    assert!(fresh.revocation_lease().is_live());
+    assert!(!lease.same_connection(&fresh.revocation_lease()));
+    assert!(old.is_revoked());
+    assert!(old_clone.is_revoked());
+    assert!(!lease.is_live());
     assert!(token.is_cancelled());
 }
 
@@ -224,16 +266,51 @@ async fn pending_delete_remains_disabled_and_is_never_connected() {
 async fn oauth_disconnect_preserves_revocation_and_requires_explicit_authorization() {
     let fixture = Fixture::new("oauth").await;
     let row = fixture.row();
+    let reference = {
+        let store = fixture.service.store().unwrap();
+        let (_, reference) = mcp_servers::begin_oauth_install(
+            store.conn(),
+            &fixture.id,
+            row.config_revision,
+            "https://issuer.invalid",
+            "synthetic-client",
+        )
+        .unwrap();
+        vega_store::keystore::set_key(&fixture.root, &reference, "synthetic-authorization")
+            .unwrap();
+        reference
+    };
+    fixture.service.reconcile_pending().unwrap();
+    let installed = fixture.row();
+    assert_eq!(
+        installed.remote_credential_ref.as_deref(),
+        Some(reference.as_str())
+    );
+    assert_eq!(
+        installed.remote_oauth_issuer.as_deref(),
+        Some("https://issuer.invalid")
+    );
+    let old = fixture.register_handle();
     let token = fixture.token();
     let view = fixture
         .service
-        .disconnect_oauth(&fixture.id, row.config_revision, true)
+        .disconnect_oauth(&fixture.id, installed.config_revision, true)
         .unwrap();
     assert!(!view.enabled);
     assert!(token.is_cancelled());
     let current = fixture.row();
     assert!(current.remote_credential_ref.is_none());
     assert!(current.remote_oauth_issuer.is_none());
+    assert!(matches!(
+        vega_store::keystore::get_key(&fixture.root, &reference),
+        Err(vega_store::keystore::Error::Missing)
+    ));
+    let repaired = std::fs::read(fixture.root.join("config.yaml")).unwrap();
+    fixture.write_bytes(b"mcp_servers: [");
+    assert!(fixture.service.store().is_err());
+    fixture.write_bytes(&repaired);
+    assert!(!fixture.row().enabled);
+    assert!(old.is_revoked());
     let readiness = fixture.service.ready_for_run().await.unwrap();
     assert!(readiness.ready_servers.is_empty());
     assert!(readiness.unavailable.is_empty());
@@ -245,6 +322,26 @@ async fn oauth_disconnect_preserves_revocation_and_requires_explicit_authorizati
             .suspended
             .contains(&fixture.id)
     );
+}
+
+#[tokio::test]
+async fn repaired_uncredentialed_oauth_requires_authorization_without_starting_a_flow() {
+    let fixture = Fixture::new("oauth").await;
+    let saved = std::fs::read(fixture.root.join("config.yaml")).unwrap();
+    let token = fixture.token();
+    fixture.write_bytes(b"mcp_servers: [");
+    assert!(fixture.service.store().is_err());
+    fixture.write_bytes(&saved);
+    let readiness = fixture.service.ready_for_run().await.unwrap();
+    assert!(readiness.ready_servers.is_empty());
+    assert_eq!(readiness.unavailable.len(), 1);
+    assert_eq!(readiness.unavailable[0].code, "authorization_required");
+    let state = fixture.service.lock().unwrap();
+    assert!(!state.suspended.contains(&fixture.id));
+    assert!(state.prepared_oauth.is_empty());
+    assert!(state.pending_oauth.is_empty());
+    assert!(state.active_oauth.is_empty());
+    assert!(token.is_cancelled());
 }
 
 #[tokio::test]

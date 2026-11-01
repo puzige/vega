@@ -259,6 +259,28 @@ impl McpRevocationLease {
 }
 
 impl McpReadyServer {
+    #[cfg(feature = "mcp-test-support")]
+    pub fn isolated_test_handle(server_id: String, config_revision: u64) -> Self {
+        Self {
+            server_id,
+            config_revision,
+            catalog: Catalog {
+                tools: Vec::new(),
+                rejected: Vec::new(),
+            },
+            dispatcher: Arc::new(LiveMcpDispatcher {
+                connection: Arc::new(Mutex::new(None)),
+                tools_by_name: HashMap::new(),
+                scope_challenge_sink: None,
+                admission_check: OnceLock::new(),
+            }),
+            revoked: CancellationToken::new(),
+            known_credentials: Arc::new(KnownCredentials::default()),
+            transport: McpTransportKind::StreamableHttp,
+            server_display_name: None,
+        }
+    }
+
     /// Connect and discover an explicitly configured local server.
     pub async fn connect_local(
         server_id: String,

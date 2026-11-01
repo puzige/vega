@@ -25,7 +25,7 @@ In `crates/vega_conversation/src/mcp_settings.rs` split `RegistryState::invalida
 - Never clear all suspension, resurrect a lease, cache an old client, change revision/epoch/admission checks, or replay a call.
 - Explicit failed disable/remove/edit remains suspended even if durable configuration is still enabled; a later successful reconciliation cannot undo that safety latch. Explicit successful re-enable retains its existing semantics.
 
-No UI, schema, protocol, endpoint, credential-storage, generic telemetry or dependency changes.
+No production UI, schema, protocol, endpoint, credential-storage, generic telemetry or dependency changes. Development-only `mcp-test-support` exposes an inert in-memory ready handle to the conversation tests without a transport; remove this feature, constructor and dev-dependency edge together with the tests before final-head CI.
 
 ## Regression matrix and validation
 
@@ -43,7 +43,8 @@ Required scenarios:
 - OAuth disconnect disables and clears authorization; bearer rotation disables and revokes old authority; no implicit consent or escalation.
 - Failed explicit disable/delete with stale revision keeps the suspension despite enabled durable state and later valid reconciliation.
 - Explicit suspension survives unrelated accepted configuration changes and repaired configuration errors.
-- Old epoch/token and revocation leases remain invalid after new authority is constructed. Runtime-local lease tests use an in-memory dispatcher with no transport to verify irreversible revocation.
+- Old epoch/token and revocation leases remain invalid after new authority is constructed. Register an inert handle's lease in the real registry, trigger the actual `store` failure, repair configuration and assert revoked clones/lease and epoch advance. Runtime-local lease tests additionally verify irreversible revocation.
+- OAuth disconnect starts with a synthetic installed owner-only authorization slot/issuer; assert real clearing and secret cleanup, then configuration repair cannot re-enable it. Uncredentialed enabled OAuth after repair returns `AuthorizationRequired` without creating authorization flows.
 - No historical call dispatch is added; all existing post-connect epoch/revision/current-enabled/deleting checks and per-dispatch admission checks remain unchanged.
 
 Static checks: formatting, diff whitespace, change scope and absence of test-only artifacts in final head. Independent non-implementer review of stopped exact version; latest final-head required CI before merge. Issue remains open/In review pending user tool-call validation.
