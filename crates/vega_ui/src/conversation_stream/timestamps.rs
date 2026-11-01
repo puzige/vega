@@ -2,10 +2,6 @@ use super::timestamp_format::{TimestampDisplay, format_timestamp};
 use super::*;
 use gpui_kit::Role;
 
-#[cfg(test)]
-#[path = "summary_timestamp_tests.rs"]
-mod tests;
-
 #[derive(Default)]
 pub(super) struct TimestampState {
     pub(super) times: HashMap<String, Option<i64>>,

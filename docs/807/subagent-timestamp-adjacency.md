@@ -6,6 +6,8 @@
 
 ## 契约
 
+后续用户反馈修订：下文摘要断点及旧开发测试中的零行 Summary 预期，已由 [隐藏统计摘要修订](hidden-summary-timestamps.md) 替代；旧验证记录仅证明当时的子 Agent 契约。
+
 `StreamEntry::Subagents` 是父助手的附属投影。时间分组遍历直接跳过它，不清空 previous、segment_owner 或 seen，不推进 saw_user，不使用子 Agent 的创建或完成时间，也不为聚合条目生成前缀；是否有可见行不影响此规则。
 
 前后逻辑消息仍使用原权威时间和严格阈值：assistant → user 大于 1 小时；assistant → assistant 大于 10 分钟；恰好阈值不显示。压缩、摘要、技能来源、无归属的其它条目、显式时间断点与真实续接/Fork 连接点仍打断比较。重开、分页重算和实时子 Agent 插入共用同一遍历规则。

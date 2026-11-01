@@ -27,6 +27,14 @@
 
 范围仅时间分组及必要回归。不改数据库、权限、生命周期、UI 文案、复制或日期格式，不新增生产依赖。检查依据：model::StreamEntry::row_count、phase::process_entry_hidden、content 的身份/权限移除/摘要接入及 context_control 的压缩投影。
 
+## 开发验证记录
+
+- 完整开发 SHA `d7306a1bc9ae9310f65cbdbda31d04005dca69d4`；[原始测试源码](https://github.com/puzige/vega/blob/d7306a1bc9ae9310f65cbdbda31d04005dca69d4/crates/vega_ui/src/conversation_stream/summary_timestamp_tests.rs) 已远端读取核验，blob `81acb2d788c52710b41577aee872a7091497cc4d`，SHA-256 `ffd33ab95c802b81542349dae3d0776b48c390109ac62ba22ce6006872d0e320`。
+- [Actions 41266528037](https://github.com/puzige/vega/actions/runs/41266528037) 完整 required CI 成功。Nextest job `124730371695`：发现 6、执行 6、通过 6、失败 0、跳过 0；Clippy job `124730371793`，汇总 `124731027383` 成功；三组 Python 检查同轮成功。
+- 独立只读审查绑定上述 SHA：无发现。检查时间来源、首用户分支、分页、子 Agent、显式边界、可见摘要与零行压缩。压缩回归直接构造条目，只验证比较层，不冒充压缩全链路；Fork 全链路、非零正文偏移边界和实际绘制未运行。
+- 本地 `cargo fmt --all`、`git diff --check`、`cargo metadata --no-deps --offline --format-version 1` 成功；未运行 Vega、编译或测试。
+- 按政策留痕后移除本轮开发测试及独占模块/dev dependency，未改变生产判断；最终 head 的完整 required CI 仍须另行核实，不用空集替代以上 6 个行为回归。
+
 ## 验证边界
 
 本地只做快速格式、差异与静态检查，不执行 Vega、编译或测试。新增开发 Rust 回归只由 PR Check 运行，原始源码、完整 SHA、指纹及实际云端结果留痕后按现行政策移除测试及独占接线；最终无 Rust 测试 head 再跑完整 required CI。独立审查与用户手测不可由空集门禁替代。
