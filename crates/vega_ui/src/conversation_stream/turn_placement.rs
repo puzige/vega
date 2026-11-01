@@ -166,6 +166,13 @@ impl Element for TurnList {
         let usable = (bounds.size.height - self.foreground).max(px(0.));
         let offset = -self.list.scroll_px_offset_for_scrollbar().y;
         let mut placement = self.placement.borrow_mut();
+        let tail_bounds = self
+            .count
+            .checked_sub(1)
+            .and_then(|index| self.list.bounds_for_item(index));
+        let previous_padding = placement.foreground.unwrap_or(self.foreground) + placement.spacer;
+        let distance_from_bottom = tail_bounds
+            .map(|tail| tail.bottom() + previous_padding - self.list.viewport_bounds().bottom());
         if !placement.pending
             && placement
                 .viewport
@@ -218,12 +225,11 @@ impl Element for TurnList {
                         placement.user_distance += delta.abs();
                         placement.spacer = (placement.spacer - delta.max(px(0.))).max(px(0.));
                     }
-                    let bottom = self.list.max_offset_for_scrollbar().y;
                     if placement.user_distance > px(24.) {
                         self.list.pause_following_tail();
                     }
                     if placement.scrolled
-                        && bottom - offset <= px(1.)
+                        && distance_from_bottom.is_some_and(|distance| distance.abs() <= px(1.))
                         && placement
                             .last_offset
                             .is_some_and(|previous| offset > previous)
@@ -232,7 +238,10 @@ impl Element for TurnList {
                         placement.reset();
                         placement.release = false;
                         self.list.set_follow_mode(FollowMode::Tail);
-                    } else if bottom - offset >= placement.spacer {
+                    } else if tail_bounds.is_some_and(|tail| {
+                        tail.bottom() >= bounds.bottom() - self.foreground
+                            || tail.bottom() + placement.spacer <= bounds.top()
+                    }) {
                         placement.spacer = px(0.);
                     }
                 }
