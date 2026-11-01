@@ -742,7 +742,7 @@ pub fn finish_remove(conn: &Connection, id: &str) -> Result<bool, McpStoreError>
         if row.deleting {
             tx.execute(
                 "INSERT INTO mcp_config_identities (id, declaration, projected_revision, tombstoned) VALUES (?1, ?2, ?3, 1) ON CONFLICT(id) DO UPDATE SET tombstoned = 1",
-                params![id, serde_json::to_string(&crate::mcp_config::Declaration::from_row(&row)?).map_err(|_| McpStoreError::Invalid)?, row.config_revision],
+                params![id, serde_json::to_string(&crate::mcp_config::Declaration::from_row(&row)?).map_err(|_| McpStoreError::Invalid)?, i64::try_from(row.config_revision).map_err(|_| McpStoreError::Invalid)?],
             )?;
         }
     }
@@ -806,7 +806,7 @@ pub(crate) fn write_projection(conn: &Connection, row: &McpServerRow) -> Result<
         params![row.id, row.display_name, row.transport, row.local_executable, row.local_args_json,
             row.local_working_directory, row.local_env_refs_json, row.remote_endpoint,
             row.remote_allow_loopback_http, row.remote_auth_mode, row.remote_credential_ref,
-            row.remote_oauth_issuer, row.remote_oauth_client_id, row.config_revision,
+            row.remote_oauth_issuer, row.remote_oauth_client_id, i64::try_from(row.config_revision).map_err(|_| McpStoreError::Invalid)?,
             if row.created_at == 0 { now_ms() } else { row.created_at }, now_ms()],
     )?;
     Ok(())

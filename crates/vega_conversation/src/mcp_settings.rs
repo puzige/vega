@@ -404,13 +404,13 @@ impl McpServerSettingsService {
         let store = self.store()?;
         let row = mcp_servers::find(store.conn(), id)?.ok_or(McpSettingsError::NotFound)?;
         let slots = env_slots_from_row(&row)?;
-        let mut template = String::new();
+        let mut template = String::from("credential_bindings:\n");
         for slot in slots {
             let reference =
                 serde_json::to_string(&slot.credential_ref).map_err(|_| McpSettingsError::Store)?;
             let variable =
                 serde_json::to_string(&slot.variable).map_err(|_| McpSettingsError::Store)?;
-            template.push_str(&format!("[[credential_bindings]]\nkey_ref = {reference}\nenv = {variable}\norigin = \"\"\nheader = \"authorization\"\nprefix = \"Bearer \"\npath = \"/\"\n\n"));
+            template.push_str(&format!("  - key_ref: {reference}\n    env: {variable}\n    origin: \"\"\n    header: authorization\n    prefix: \"Bearer \"\n    path: /\n"));
         }
         Ok(template)
     }

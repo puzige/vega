@@ -308,11 +308,13 @@ fn patch_field(mapping: &Mapping, key: &str, old: Option<&Value>, next: &Value) 
         next.as_array(),
         mapping.get_sequence(key),
     ) {
-        let identity = ["id", "name", "model"].into_iter().find(|field| {
-            old.iter()
-                .chain(next)
-                .all(|value| value.get(*field).and_then(Value::as_str).is_some())
-        });
+        let identity = ["id", "name", "model", "variable", "env"]
+            .into_iter()
+            .find(|field| {
+                old.iter()
+                    .chain(next)
+                    .all(|value| value.get(*field).and_then(Value::as_str).is_some())
+            });
         if let Some(identity) = identity {
             let identify = |value: &Value| -> io::Result<String> {
                 let key = value
@@ -361,7 +363,7 @@ fn patch_field(mapping: &Mapping, key: &str, old: Option<&Value>, next: &Value) 
             }
             return Ok(());
         }
-        mapping.set(key, node_for(next)?);
+        mapping.set(key, node_for(&Value::Array(next.clone()))?);
     } else {
         mapping.set(key, node_for(next)?);
     }
@@ -388,7 +390,7 @@ pub fn update_section<T: Serialize>(
 
 fn publish(path: &Path, expected: Option<&[u8]>, bytes: &[u8]) -> io::Result<()> {
     let parent = path.parent().ok_or_else(invalid)?;
-    let temporary = parent.join(format!(".config-{}.tmp", ulid::Ulid::new()));
+    let temporary = parent.join(format!(".config-{}.tmp", ulid::Ulid::generate()));
     let result = (|| {
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
