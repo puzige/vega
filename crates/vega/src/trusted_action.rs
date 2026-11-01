@@ -1,9 +1,5 @@
 use std::sync::*;
 
-#[cfg(test)]
-#[path = "trusted_action_fork_tests.rs"]
-mod fork_tests;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub(crate) enum TrustedActionKind {

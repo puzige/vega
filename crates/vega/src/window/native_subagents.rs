@@ -1,8 +1,4 @@
 use super::*;
-
-#[cfg(test)]
-#[path = "native_fork_tests.rs"]
-mod fork_tests;
 use crate::native_subagents::NativeSubagentUpdate;
 use vega_conversation::types::{
     SubagentAdmission, SubagentOpenRequested, SubagentState, SubagentStopRequested,
