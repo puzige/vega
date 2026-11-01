@@ -16,6 +16,7 @@ use std::collections::BTreeSet;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RunningThreads {
     ids: BTreeSet<String>,
+    awaiting_answers: BTreeSet<String>,
 }
 
 impl RunningThreads {
@@ -30,6 +31,19 @@ impl RunningThreads {
             self.ids.insert(thread_id.to_owned());
         } else {
             self.ids.remove(thread_id);
+            self.awaiting_answers.remove(thread_id);
+        }
+    }
+
+    pub fn is_awaiting_answer(&self, thread_id: &str) -> bool {
+        self.awaiting_answers.contains(thread_id)
+    }
+
+    pub fn set_awaiting_answer(&mut self, thread_id: &str, waiting: bool) {
+        if waiting && self.is_running(thread_id) {
+            self.awaiting_answers.insert(thread_id.to_owned());
+        } else {
+            self.awaiting_answers.remove(thread_id);
         }
     }
 

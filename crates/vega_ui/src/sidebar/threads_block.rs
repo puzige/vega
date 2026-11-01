@@ -1381,7 +1381,13 @@ impl ThreadsBlock {
         let mouse_move_thread_id = row_key.clone();
         let rename_row_key = row_key.clone();
         let row_thread = thread.clone();
-        let accessibility_label = if thread_is_running(&thread.id, cx) {
+        let accessibility_label = if thread_is_awaiting_answer(&thread.id, cx) {
+            format!(
+                "{}, {}",
+                thread.title,
+                vega_i18n::t("ui.waiting_for_your_answer")
+            )
+        } else if thread_is_running(&thread.id, cx) {
             vega_i18n::t_args("ui.title_running", &[("title", &thread.title)])
         } else {
             thread.title.clone()
@@ -1562,6 +1568,7 @@ impl ThreadsBlock {
             .unwrap_or(selector_prefix);
 
         let running = thread_is_running(&thread.id, cx);
+        let awaiting_answer = thread_is_awaiting_answer(&thread.id, cx);
         let menu_open = self.actions_row.as_deref() == Some(row_key.as_str());
         let keyboard_focused = self.focused_thread_action.as_deref() == Some(row_key.as_str());
         let quick_actions_visible =
@@ -1734,7 +1741,29 @@ impl ThreadsBlock {
                 )
         };
         if trailing == SessionRowTrailing::Running {
-            group = group.child(running_indicator());
+            group = if awaiting_answer {
+                group.child(
+                    div()
+                        .id(gpui_kit::SharedString::from(format!(
+                            "{action_prefix}thread-awaiting-answer-{thread_id}"
+                        )))
+                        .size(px(Layout::SIDEBAR_ACTION_SIZE))
+                        .aria_label(vega_i18n::t("ui.waiting_for_your_answer"))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .tooltip(|_, cx| {
+                            crate::icons::tooltip(vega_i18n::t("ui.waiting_for_your_answer"), cx)
+                        })
+                        .child(crate::icons::icon(
+                            crate::icons::Icon::Pause,
+                            colors.text_secondary,
+                        )),
+                )
+            } else {
+                group.child(running_indicator())
+            };
         }
         if trailing == SessionRowTrailing::Unread {
             group = group.child(
