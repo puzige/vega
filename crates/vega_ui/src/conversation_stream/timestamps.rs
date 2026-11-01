@@ -2,6 +2,10 @@ use super::timestamp_format::{TimestampDisplay, format_timestamp};
 use super::*;
 use gpui_kit::Role;
 
+#[cfg(test)]
+#[path = "timestamp_tests.rs"]
+mod tests;
+
 #[derive(Default)]
 pub(super) struct TimestampState {
     pub(super) times: HashMap<String, Option<i64>>,
@@ -188,6 +192,9 @@ impl ConversationStream {
             }
         }
         for (index, entry) in self.entries.iter().enumerate() {
+            if matches!(entry, StreamEntry::Subagents { .. }) {
+                continue;
+            }
             let Some(identity) = self.entry_identities.get(index) else {
                 continue;
             };
@@ -197,8 +204,7 @@ impl ConversationStream {
                 .or(identity.pending_id.as_ref());
             let boundary = matches!(
                 entry,
-                StreamEntry::Subagents { .. }
-                    | StreamEntry::ContextCompaction { .. }
+                StreamEntry::ContextCompaction { .. }
                     | StreamEntry::Summary { .. }
                     | StreamEntry::SkillActivation { .. }
             );
