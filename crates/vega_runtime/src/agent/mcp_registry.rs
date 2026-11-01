@@ -1,5 +1,8 @@
 //! One immutable run-start authority for external MCP tool definitions.
 
+#[cfg(test)]
+mod revocation_tests;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;

@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod suspension_tests;
+
 use std::collections::{HashMap, HashSet};
 use std::net::TcpListener as StdTcpListener;
 type OAuthCallbackStream = tokio::net::TcpStream;
@@ -166,6 +169,11 @@ impl RegistryState {
     }
 
     fn revoke(&mut self, id: &str) {
+        self.suspended.insert(id.to_owned());
+        self.invalidate_connections(id);
+    }
+
+    fn invalidate_connections(&mut self, id: &str) {
         self.step_up_challenges.remove(id);
         self.prepared_oauth
             .retain(|_, pending| pending.server_id != id);
@@ -179,7 +187,6 @@ impl RegistryState {
                 true
             }
         });
-        self.suspended.insert(id.to_owned());
         let epoch = self.epochs.entry(id.to_owned()).or_default();
         *epoch = epoch.wrapping_add(1);
         if let Some(leases) = self.leases.remove(id) {
@@ -265,7 +272,7 @@ impl McpServerSettingsService {
                     .cloned()
                     .collect::<HashSet<_>>();
                 for id in ids {
-                    state.revoke(&id);
+                    state.invalidate_connections(&id);
                 }
                 return Err(error.into());
             }
