@@ -1840,14 +1840,15 @@ impl Render for ConversationStream {
                                                                     ..this.message_interaction()
                                                                 },
                                                             );
-                                                            let user = matches!(entry, StreamEntry::User { .. });
+                                                            let user = matches!(entry, StreamEntry::User { .. } | StreamEntry::UserImages { .. });
+                                                            let user_bubble = matches!(entry, StreamEntry::User { .. });
                                                             let source = match entry {
                                                                 StreamEntry::User { copy, .. } => Some(copy),
                                                                 _ => this.action_copy_source_for_entry(index),
                                                             };
                                                             render_rows::message_with_copy(body, source, render_rows::MessageActions {
                                                                 id: this.entry_identities.get(index).map(|id| id.key.clone()).unwrap_or_else(|| format!("message-{index}")).into(),
-                                                                user, colors: theme(cx).colors, enabled: this.message_actions_enabled(),
+                                                                user, user_bubble, colors: theme(cx).colors, enabled: this.message_actions_enabled(),
                                                                 timestamp: this.entry_timestamp(index), focus: this.timestamp_focus(index),
                                                             }, window, cx)
                                                         },
