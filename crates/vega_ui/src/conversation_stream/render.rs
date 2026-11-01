@@ -208,12 +208,26 @@ impl ConversationStream {
     }
 
     fn render_resume_tail(&self, cx: &mut Context<Self>) -> AnyElement {
+        let stream = cx.entity().downgrade();
+        gpui_kit::container_query(move |_, _, cx| {
+            stream
+                .update(cx, |stream, cx| stream.render_resume_tail_content(cx))
+                .unwrap_or_else(|_| div().into_any_element())
+        })
+        .w_full()
+        .h(px(Layout::READING_NAVIGATION_HEIGHT))
+        .flex_shrink_0()
+        .into_any_element()
+    }
+
+    fn render_resume_tail_content(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        let show_arrow =
-            !self.following_tail() && !self.turn_placement.borrow().automatically_placed();
+        let placement = self.turn_placement.borrow();
+        let show_arrow = !self.following_tail()
+            && !placement.automatically_placed()
+            && !placement.at_reading_bottom(&self.list);
         div()
-            .h(px(Layout::READING_NAVIGATION_HEIGHT))
-            .flex_shrink_0()
+            .size_full()
             .py(px(Layout::READING_NAVIGATION_PADDING))
             .flex()
             .justify_center()
