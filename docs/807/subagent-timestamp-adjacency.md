@@ -26,3 +26,12 @@
 - 缺失前序时间不伪造比较；显式断点、摘要/压缩等真实断点继续抑制前缀。
 
 本地仅格式、差异与静态检查，不运行 Vega、编译或测试。自动测试由现有 PR Check 执行。按仓库现行政策，开发 Rust 测试及其独占接线在云端成功验证并固定源码、完整 SHA 与结果后移除，最终无 Rust 测试 head 再经完整 required CI；不以空集门禁代替开发回归结果。原生 UI 由用户更新后手测。
+
+## 开发验证记录
+
+- 开发验证完整 SHA：`20703e06482e3a4edf40bbf28f9755acc4dfd993`；[测试原始源码](https://github.com/puzige/vega/blob/20703e06482e3a4edf40bbf28f9755acc4dfd993/crates/vega_ui/src/conversation_stream/timestamp_tests.rs)，远端读取确认 blob `c4785f96a15aa51b365bd1d0339d1915d8db7a82`，SHA-256 `d19ce86b54a7f51aa9e43af4eb1fdb9ed02e3aab4f6a04ef9da0fb3228dcfa36`。
+- [Actions 41256592520](https://github.com/puzige/vega/actions/runs/41256592520)：完整 required check 成功；Clippy job `124700950812`，Nextest job `124700951473`，汇总 `124701558493`。`cargo nextest list --workspace --message-format json` 发现 5 项；`cargo nextest run --workspace` 实际执行 5 项，5 通过、0 跳过。三组 Python 脚本回归在同一 Nextest job 成功。
+- 独立审查确认生产修复符合契约；首用户夹具问题已修正并增量复核无发现。此前 run `41255892194` 的回归亦 5/5 通过，但 Clippy 因测试文件多余导入失败；删除未使用导入后取得上述完整成功，不放宽断言。
+- 本地 `cargo fmt --all -- --check`、`git diff --check`、`cargo metadata --no-deps --offline --format-version 1` 成功，未运行 Vega 或测试。
+- 按政策清理测试文件、模块声明和 `gpui_kit/test-support` 独占 dev dependency，生产修复保持不变。最终清理 head 的 required CI 结果以 [PR #808](https://github.com/puzige/vega/pull/808) 精确 head 为准，待取得；不把开发回归结果替代最终门禁。
+- 直接覆盖限于上述 5 项测试：非零行聚合、分多页恢复、压缩及技能来源断点未直接运行开发回归；这些生产路径未更改。原生视觉效果及真实对话验收待用户更新后手测。
