@@ -267,6 +267,12 @@ impl ConversationStream {
             focus: &self.selection_focus,
             actions_enabled: self.message_actions_enabled(),
             user_top: Layout::USER_MESSAGE_PADDING_TOP,
+            stream: None,
+            text_width: self
+                .workspace_width
+                .map(|width| width - 2. * Layout::CONVERSATION_PADDING)
+                .unwrap_or(Layout::CONVERSATION_MAX_WIDTH)
+                .clamp(1., Layout::CONVERSATION_MAX_WIDTH),
         }
     }
 

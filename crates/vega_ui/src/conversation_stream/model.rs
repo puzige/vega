@@ -699,6 +699,13 @@ pub(crate) struct StreamModel {
 }
 
 impl StreamModel {
+    pub(super) fn from_visible_lines(committed_lines: Vec<StreamLine>) -> Self {
+        Self {
+            committed_lines,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn content_revision(&self) -> u64 {
         self.content_revision
     }
@@ -841,6 +848,8 @@ impl StreamModel {
 
 #[derive(Clone)]
 pub(crate) struct MessageCopy {
+    pub(super) user_disclosure:
+        std::rc::Rc<std::cell::RefCell<super::user_disclosure::UserDisclosure>>,
     pub(super) compaction_menu:
         std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<super::selection_menu::MenuBuilder>>>>,
     pub(super) id: u64,
@@ -924,6 +933,7 @@ impl MessageCopy {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
         Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            user_disclosure: Default::default(),
             compaction_menu: Default::default(),
             text: std::rc::Rc::new(std::cell::RefCell::new(text.to_owned())),
             live_projection_unavailable: false,

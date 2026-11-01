@@ -51,6 +51,7 @@ pub struct ThemeColors {
     pub conversation_tool: Rgba,
     pub conversation_divider: Rgba,
     pub conversation_code: Rgba,
+    pub conversation_user_code: Rgba,
     pub conversation_bubble: Rgba,
     pub conversation_user: Rgba,
     /// Main content area background.
@@ -119,7 +120,8 @@ pub const LIGHT: ThemeColors = ThemeColors {
     conversation_tool: rgba(0x767778FF),
     conversation_divider: rgba(0xEDEDEDFF),
     conversation_code: rgba(0xE9EAEAFF),
-    conversation_bubble: rgba(0xE8F3FEFF),
+    conversation_user_code: rgba_alpha(0x000000, 0.05),
+    conversation_bubble: rgba_alpha(0x3478D8, 0.10),
     conversation_user: rgba(0x0C264AFF),
 
     bg_base: rgba(0xFFFFFFFF),
@@ -173,7 +175,8 @@ pub const DARK: ThemeColors = ThemeColors {
     conversation_tool: rgba(0xABABABFF),
     conversation_divider: rgba(0x383838FF),
     conversation_code: rgba(0x262626FF),
-    conversation_bubble: rgba(0x203247FF),
+    conversation_user_code: rgba_alpha(0xFFFFFF, 0.10),
+    conversation_bubble: rgba_alpha(0x6EA8FE, 0.10),
     conversation_user: rgba(0xEDEDEDFF),
 
     bg_base: rgba(0x202020FF),
@@ -311,6 +314,7 @@ pub struct Typography;
 impl Typography {
     pub const CONVERSATION: f32 = 13.5;
     pub const CONVERSATION_LINE_HEIGHT: f32 = 23.0 / Self::CONVERSATION;
+    pub const CONVERSATION_USER_LINE_HEIGHT: f32 = (Self::CONVERSATION + 4.0) / Self::CONVERSATION;
     pub const SETTINGS_TITLE: f32 = 20.0;
     /// Body text: 13px (§3 "正文字体 …13px/1.55 行高").
     pub const BODY: f32 = 13.0;
@@ -402,6 +406,10 @@ impl Layout {
     pub const CONVERSATION_INLINE_GAP: f32 = 6.0;
     pub const CONVERSATION_USER_RATIO: f32 = 0.7;
     pub const CONVERSATION_USER_PADDING: f32 = 16.0;
+    pub const CONVERSATION_USER_PADDING_Y: f32 = 10.0;
+    pub const USER_MESSAGE_COLLAPSE_LINES: usize = 20;
+    pub const USER_MESSAGE_COLLAPSE_CHARACTERS: usize = 10240;
+    pub const USER_MESSAGE_TOGGLE_GAP: f32 = 6.0;
     pub const CONVERSATION_USER_BOTTOM: f32 = 48.0;
     pub const COPY_ACTION_SIZE: f32 = 24.0;
     pub const COPY_ACTION_GAP: f32 = 4.0;
@@ -513,7 +521,7 @@ impl Layout {
     pub const CONTENT_MAX_WIDTH: f32 = 768.0;
     /// Maximum user-message bubble width as a fraction of the message column.
     pub const USER_MESSAGE_MAX_WIDTH_RATIO: f32 = 0.8;
-    pub const USER_MESSAGE_RADIUS: f32 = 16.0;
+    pub const USER_MESSAGE_RADIUS: f32 = 22.0;
     /// Minimum horizontal page padding around a readable content column.
     pub const CONTENT_PADDING: f32 = 16.0;
     /// Radius for ordinary panels and cards.

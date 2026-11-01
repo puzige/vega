@@ -584,6 +584,7 @@
 "ui.show_address" = "Show address"
 "ui.show_archived" = "Show archived"
 "ui.show_in_finder" = "Show in Finder"
+"ui.show_less" = "Show less"
 "ui.show_more" = "Show more"
 "ui.show_overflow_more" = "Show {overflow} more"
 "ui.show_sidebar_b" = "Show sidebar (⌘B)"

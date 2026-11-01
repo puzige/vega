@@ -584,6 +584,7 @@
 "ui.show_address" = "显示地址"
 "ui.show_archived" = "显示已归档"
 "ui.show_in_finder" = "在 Finder 中显示"
+"ui.show_less" = "收起"
 "ui.show_more" = "展开更多"
 "ui.show_overflow_more" = "再显示 {overflow} 个"
 "ui.show_sidebar_b" = "显示侧栏 (⌘B)"

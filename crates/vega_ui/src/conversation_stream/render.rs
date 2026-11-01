@@ -1820,6 +1820,7 @@ impl Render for ConversationStream {
                                                         },
                                                         Some(entry) => {
                                                             this.prepare_partial_compaction_menu(index, cx);
+                                                            let stream = cx.entity().downgrade();
                                                             let body = render_stream_entry(
                                                                 entry,
                                                                 this.entry_identities
@@ -1835,6 +1836,7 @@ impl Render for ConversationStream {
                                                                 cx,
                                                                 render_rows::MessageInteraction {
                                                                     user_top: this.user_message_top(index),
+                                                                    stream: Some(stream),
                                                                     ..this.message_interaction()
                                                                 },
                                                             );
