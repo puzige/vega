@@ -428,15 +428,15 @@ RenderNode → GPUI element 映射、冻结缓存失效策略、虚拟化滚动 
 
 ## 6. 配置与密钥（A1-10/A11-05）
 
-> **文件布局（2026-08-29 人类决策，Zed 式混合）**：配置走 XDG——`${XDG_CONFIG_HOME:-~/.config}/vega/`（全平台一致）；数据按平台——macOS `~/Library/Application Support/ai.vega/`（Bundle-ID 命名空间），Phase 4 Linux `${XDG_DATA_HOME:-~/.local/share}/vega/`。实现为 vega_store 内零依赖解析（`cfg!(target_os)` 门控，不引 dirs/xdg crate）。不做旧 `~/.vega/` 自动迁移（预发布无真实用户）。
+> **#820 取代旧混合布局**：统一根为原生用户目录下 `~/.vega/`，显式绝对路径 `VEGA_HOME` 优先；无效显式覆盖报错、不回退。新版本不自动发现、搬迁或清除旧目录，用户在重启前自行处理需要保留的历史数据，也可全新开始。完整契约见 [#820](820/unified-home-and-safe-migration.md)，配置和手动转移说明见 [用户指南](820/configuration-and-manual-transfer.md)。
 
-- 配置：`${XDG_CONFIG_HOME:-~/.config}/vega/config.toml`：providers（name/base_url/model 列表/定价）、defaults（model/permission_mode）、ui（theme）。
-- 数据：macOS `~/Library/Application Support/ai.vega/`：`vega.db`（SQLite）、`pricing.json`（S7 定价表：内置 deepseek/gpt/claude 主流价格，用户可加自定义模型）、`checkpoints/`（S5 write/edit preimage）；Linux（Phase 4）同构换 XDG 数据根。
+- 配置：根下 `config.yaml`，包含 providers/defaults/ui/agent/credential_bindings、reasoning、model_capabilities 和 MCP 声明；所有编辑走保注释、冲突检测的共享服务。
+- 数据：根下 `data/vega.db`（SQLite，历史图片保留为 BLOB）；持久 scratch、checkpoint 等跟随数据根。外部项目文件不迁移或改写。
 - S5 preimage id 规则：project/thread/call id 的原始 UTF-8 长度必须为 1..=120 bytes；编码为 `id-` + 每个原始 byte 的 lowercase hex，得到 5..=243-byte collision-free path component。空值/超长值直接拒绝，禁止把 provider 原串 join。
 - S5 preimage 布局：`checkpoints/<encoded-project>/<encoded-thread>/<encoded-call>/files/<relative_path>`；call root 的 `metadata.json` 是唯一 reserved 控制文件。它只在目标原先不存在的 write 中、创建目标前原子落盘，内容 exact 为 `{"metadata_version":"preimage_v1","kind":"created_new_file","path":"<normalized-relative>"}`；existing-target write/edit 的 metadata 必须 absent，preimage 只在 files/ 下。用户目标永远位于 files 下，因此名为 `metadata.json` 或 `created-new-file` 也不碰撞。checkpoint root 由 conversation/app 构造后注入 tools；tools 不依赖 store。该目录不是可浏览/可回退的产品 Checkpoint，A5-07/A5-08 仍属 Phase 2。
 - S5 `checkpoint_ref` exact syntax 为 `preimage-v1/<encoded-project>/<encoded-thread>/<encoded-call>`；它是 content-free、相对、opaque 的 wire value，禁止绝对 data root、`.`/`..`、raw id、错误前缀/段数/hex。tool/runtime/provider/UI 不得暴露或推导底层 checkpoint 路径。
 - API key **只存配置根下 `credentials/credentials.toml` 明文凭据文件**，目录 0700、文件 0600；config 只存引用名。R10（2026-09-06 人类裁决）替代 Keychain，不迁移或访问旧 Keychain，已有配置需手动重填 key。安全边界详见 [R10](vega-r10-local-credentials.md)。
-- 远期预留：缓存 `~/Library/Caches/ai.vega`（macOS）/ `${XDG_CACHE_HOME:-~/.cache}/vega`（Linux）；日志 `~/Library/Logs/ai.vega` / `${XDG_STATE_HOME:-~/.local/state}/vega`。
+- 缓存、日志、本机运行状态和用户自行保存的备份位于统一根的 `cache/`、`logs/`、`run/`、`backups/`；`run/` 不作为可移植数据。凭据仍独立 owner-only 存储，不写入 YAML 或日志。
 
 ## 7. 错误模型（统一 VegaError）
 

@@ -70,6 +70,7 @@ impl From<McpStoreError> for McpSettingsError {
     fn from(error: McpStoreError) -> Self {
         match error {
             McpStoreError::Invalid => Self::Invalid,
+            McpStoreError::Configuration => Self::Store,
             McpStoreError::Conflict => Self::Conflict,
             McpStoreError::NotFound => Self::NotFound,
             McpStoreError::Capacity => Self::Capacity,
@@ -244,7 +245,37 @@ impl McpServerSettingsService {
     fn store(&self) -> Result<Store, McpSettingsError> {
         let store = Store::open(&self.database_path).map_err(|_| McpSettingsError::Store)?;
         store.migrate().map_err(|_| McpSettingsError::Store)?;
+        let mut state = self.lock()?;
+        match vega_store::mcp_config::reconcile(
+            store.conn(),
+            &self.config_root.join("config.yaml"),
+            validate_yaml_row,
+        ) {
+            Ok(changed) => {
+                for id in changed {
+                    state.revoke(&id);
+                }
+            }
+            Err(error) => {
+                let ids = state
+                    .epochs
+                    .keys()
+                    .chain(state.leases.keys())
+                    .chain(state.connecting.keys())
+                    .cloned()
+                    .collect::<HashSet<_>>();
+                for id in ids {
+                    state.revoke(&id);
+                }
+                return Err(error.into());
+            }
+        }
+        drop(state);
         Ok(store)
+    }
+
+    pub fn reconcile_declarations(&self) -> Result<(), McpSettingsError> {
+        self.store().map(|_| ())
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, RegistryState>, McpSettingsError> {
@@ -308,6 +339,9 @@ impl McpServerSettingsService {
         let store = self.store()?;
         let state = self.lock()?;
         let row = mcp_servers::create(store.conn(), &draft)?;
+        drop(state);
+        self.reconcile_pending()?;
+        let state = self.lock()?;
         view(&row, &state, &self.config_root)
     }
 
@@ -764,6 +798,7 @@ impl McpServerSettingsService {
             );
             (row, epoch, cancel)
         };
+        self.reconcile_pending()?;
         let client = match row.remote_oauth_client_id.as_deref() {
             Some(client_id) => prepared
                 .server
@@ -994,6 +1029,7 @@ impl McpServerSettingsService {
             }
             row
         };
+        self.reconcile_pending()?;
         if enabled {
             // Settings validation is deliberately transient. The next user
             // run reconnects inside its own Tokio runtime; retaining this
@@ -1146,6 +1182,15 @@ impl McpServerSettingsService {
     pub fn reconcile_pending(&self) -> Result<(), McpSettingsError> {
         let store = self.store()?;
         let _state = self.lock()?;
+        let path = self.config_root.join("config.yaml");
+        let _document =
+            vega_store::yaml_config::begin(&path).map_err(|_| McpSettingsError::Conflict)?;
+        let _permit = vega_store::write_coordination::acquire(
+            store.conn(),
+            vega_store::write_coordination::WriteCategory::McpServers,
+        )
+        .map_err(|_| McpSettingsError::Store)?;
+        vega_store::mcp_config::projection_current(store.conn(), &path)?;
         for entry in mcp_servers::pending_cleanup(store.conn())? {
             if !is_owned_secret_ref(&entry.server_id, &entry.credential_ref)
                 || !mcp_servers::cleanup_target_is_stale(store.conn(), &entry)?
@@ -1233,8 +1278,8 @@ impl McpServerSettingsService {
                 return Err(error);
             }
         };
-        let mut state = self.lock()?;
         let store = self.store()?;
+        let mut state = self.lock()?;
         let current =
             mcp_servers::find(store.conn(), &row.id)?.ok_or(McpSettingsError::NotFound)?;
         if state.epoch(&row.id) != epoch
@@ -1267,7 +1312,19 @@ impl McpServerSettingsService {
             .push((row.config_revision, lease.clone()));
         drop(state);
         let _ = bound_lease.set(lease);
-        Ok(connected.ready)
+        let owner = self.clone();
+        let id = row.id.clone();
+        let revision = row.config_revision;
+        Ok(connected.ready.with_admission_check(Arc::new(move || {
+            let store = owner.store().map_err(|_| ())?;
+            vega_store::mcp_config::admitted(
+                store.conn(),
+                &owner.config_root.join("config.yaml"),
+                &id,
+                revision,
+            )
+            .map_err(|_| ())
+        })))
     }
 }
 
@@ -1362,6 +1419,12 @@ async fn receive_oauth_callback(
         return Err(McpSettingsError::AuthorizationFailed);
     }
     Ok((format!("http://127.0.0.1:{port}{target}"), browser))
+}
+
+fn validate_yaml_row(row: &McpServerRow) -> Result<(), McpStoreError> {
+    let form = form_from_row(row).map_err(|_| McpStoreError::Invalid)?;
+    draft_from_form(&form).map_err(|_| McpStoreError::Invalid)?;
+    Ok(())
 }
 
 fn draft_from_form(form: &McpServerForm) -> Result<McpServerDraft, McpSettingsError> {
@@ -1835,7 +1898,7 @@ async fn connect_row(
             environment: _,
         } => {
             let slots = env_slots_from_row(row)?;
-            let config_path = config_root.join("config.toml");
+            let config_path = config_root.join("config.yaml");
             let config = if slots.is_empty() {
                 vega_store::config::AppConfig::default()
             } else {

@@ -13,6 +13,7 @@ pub mod credential_privacy;
 pub mod git_detect;
 pub mod image_attachments;
 pub mod keystore;
+pub mod mcp_config;
 pub mod mcp_servers;
 pub mod messages;
 pub mod model_capabilities;
@@ -39,6 +40,7 @@ pub mod threads;
 pub mod token_usage;
 pub mod tool_calls;
 pub mod write_coordination;
+pub mod yaml_config;
 
 use std::path::{Path, PathBuf};
 
@@ -104,6 +106,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0051_context_precompute.sql"),
     include_str!("../migrations/0052_submission_diagnostics.sql"),
     include_str!("../migrations/0053_response_start_times.sql"),
+    include_str!("../migrations/0054_mcp_yaml_projection.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.

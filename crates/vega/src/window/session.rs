@@ -737,7 +737,9 @@ impl VegaWindow {
     }
 
     pub(crate) fn composer_config_path(&self) -> Option<std::path::PathBuf> {
-        vega_store::paths::config_dir().map(|dir| dir.join("config.toml"))
+        vega_store::paths::AppPaths::resolve()
+            .ok()
+            .map(|paths| paths.config_file())
     }
 
     pub(crate) fn on_settings_saved(

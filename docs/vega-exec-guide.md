@@ -69,7 +69,7 @@ Ticket 文档统一放在 `docs/<ticket>/`，同编号规格、交接与交付�
 - ❌ 新建数据表/改 DDL 不改 `migrations/` 递增文件（schema 只增不删）
 
 ### 安全红线
-- ❌ API key 写入 config.toml/项目文件/日志/代码（R10 人类裁决：只存配置根下独立 owner-only 明文凭据文件，不访问旧 Keychain）
+- ❌ API key 写入用户配置（包括 config.yaml）/项目文件/日志/代码（R10 人类裁决：只存配置根下独立 owner-only 明文凭据文件，不访问旧 Keychain）
 - ❌ 删/改用户工作区里 Vega 未创建的文件（工具实现必须路径围栏，risks #4）
 - ❌ 权限门禁被任何"便捷路径"绕过（tech-spec §4.3 决策顺序不可改）
 - ❌ 危险命令硬拦截清单被注释/削弱

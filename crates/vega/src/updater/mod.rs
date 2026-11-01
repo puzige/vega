@@ -48,12 +48,27 @@ impl Updater {
     pub(crate) fn start(&mut self) -> mpsc::Receiver<Event> {
         let (commands, receiver) = mpsc::sync_channel(1);
         let (events, updates) = mpsc::channel();
+        let paths = match vega_store::paths::AppPaths::resolve().and_then(|paths| {
+            paths.validate_existing()?;
+            Ok(paths)
+        }) {
+            Ok(paths) => paths,
+            Err(error) => {
+                tracing::error!(%error, "updater paths unavailable");
+                self.state.phase = UpdatePhase::Error;
+                self.state.automatic = false;
+                self.state.message = vega_i18n::t("app.update.config_unavailable").into();
+                self.sender = None;
+                let _ = events.send(Event::State(self.state.clone()));
+                return updates;
+            }
+        };
         self.sender = Some(commands);
         let busy = self.busy.clone();
         if std::thread::Builder::new()
             .name("vega-updater".into())
             .spawn(move || {
-                let mut worker = Worker::new(events, busy);
+                let mut worker = Worker::new(events, busy, paths.root().join("updater.json"));
                 worker.run(receiver);
             })
             .is_err()
@@ -131,12 +146,12 @@ struct Worker {
     staging: Option<tempfile::TempDir>,
     release: Option<network::Release>,
     delta: bool,
-    config: Option<PathBuf>,
+    config: PathBuf,
     busy: Arc<AtomicBool>,
 }
 
 impl Worker {
-    fn new(events: mpsc::Sender<Event>, busy: Arc<AtomicBool>) -> Self {
+    fn new(events: mpsc::Sender<Event>, busy: Arc<AtomicBool>, config: PathBuf) -> Self {
         let mut worker = Self {
             events,
             busy,
@@ -146,7 +161,7 @@ impl Worker {
             staging: None,
             release: None,
             delta: false,
-            config: vega_store::paths::config_dir().map(|root| root.join("updater.json")),
+            config,
         };
         match worker.load_preferences() {
             Ok(preferences) => worker.preferences = preferences,
@@ -182,10 +197,7 @@ impl Worker {
     fn load_preferences(&self) -> UpdateResult<Preferences> {
         use std::io::Read;
         use std::os::unix::fs::OpenOptionsExt;
-        let path = self
-            .config
-            .as_ref()
-            .ok_or_else(|| failure(vega_i18n::t("app.update.config_unavailable")))?;
+        let path = &self.config;
         let mut file = match std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
@@ -208,10 +220,7 @@ impl Worker {
 
     fn persist(&self) -> UpdateResult<()> {
         use std::io::Write;
-        let path = self
-            .config
-            .as_ref()
-            .ok_or_else(|| failure(vega_i18n::t("app.update.config_unavailable")))?;
+        let path = &self.config;
         let root = path
             .parent()
             .ok_or_else(|| failure(vega_i18n::t("app.update.config_unavailable")))?;

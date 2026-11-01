@@ -245,7 +245,7 @@ impl NewTaskDefaults {
         }) {
             Ok(defaults) => defaults,
             Err(error) => {
-                tracing::error!(%error, "failed to read defaults from config.toml");
+                tracing::error!(%error, "failed to read defaults from config.yaml");
                 Self::default()
             }
         }
@@ -254,9 +254,6 @@ impl NewTaskDefaults {
 
 impl Global for NewTaskDefaults {}
 
-/// Cmd+B handler: flips the preference, persists it to `config.toml`, and
-/// refreshes windows. Persistence failures degrade to in-memory state
-/// (ui-spec §4.6: no modals); the next successful toggle rewrites the file.
 pub fn toggle_persisted(cx: &mut App) {
     let collapsed = !cx.global::<SidebarCollapsed>().0;
     cx.set_global(SidebarExplicitlyShown(!collapsed));
@@ -286,7 +283,7 @@ pub fn init(workspace: vega_conversation::types::StartupWorkspace, cx: &mut App)
 
 fn persist_ui(mutate: impl FnOnce(&mut config::AppConfig), what: &'static str, cx: &mut App) {
     if let Err(error) = config::update(mutate) {
-        tracing::error!(%error, "failed to persist {what} to config.toml");
+        tracing::error!(%error, "failed to persist {what} to config.yaml");
     }
     cx.refresh_windows();
 }

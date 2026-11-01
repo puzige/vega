@@ -1,16 +1,5 @@
-//! Application configuration stored at
-//! `${XDG_CONFIG_HOME:-$HOME/.config}/vega/config.toml`
-//! ([`crate::paths`], tech-spec §6).
-//!
-//! The config file never contains credential values: each provider carries
-//! a `key_ref`, which is the reference name of the credential kept in the
-//! local credential file (see [`crate::keystore`]).
-
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
-
-static EDIT_LOCK: Mutex<()> = Mutex::new(());
 
 use serde::{Deserialize, Serialize};
 
@@ -318,126 +307,96 @@ pub struct AppConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub credential_bindings: Vec<vega_credentials::CredentialBinding>,
     /// Configured providers.
+    #[serde(default)]
     pub providers: Vec<ProviderConfig>,
     /// Default model / permission mode.
+    #[serde(default)]
     pub defaults: Defaults,
     /// UI preferences.
+    #[serde(default)]
     pub ui: UiPrefs,
     /// Agent loop guardrails.
     #[serde(default)]
     pub agent: AgentConfig,
 }
 
-/// Comment header written at the top of the config file so every field is
-/// self-documented.
-const FILE_HEADER: &str = "\
-# Vega configuration file.
-#
-# [[providers]]: one block per OpenAI-compatible provider.
-#   name     - provider identifier, also used as the local credential store reference
-#   base_url - OpenAI-compatible endpoint base URL
-#   models   - model IDs offered by this provider
-#   key_ref  - reference name under which the provider's credential is
-#              stored in the local credential file (vega_store::keystore);
-#              the credential value itself is never written to this file
-#
-# [defaults]
-#   model           - default model ID for new conversations
-#   permission_mode - \"readonly\" | \"confirm\" | \"auto\" (default: \"confirm\")
-#
-# [ui]
-#   theme              - UI theme (default: \"dark\")
-#   sidebar_collapsed  - whether the sidebar starts collapsed (default: false)
-#   sidebar_width      - Sidebar width in logical pixels (240..365; default: 304)
-#   projects_collapsed - whether the sidebar 「项目」 block starts collapsed
-#                        (default: false)
-#   sessions_collapsed - whether the sidebar 「会话」 block starts collapsed
-#                        (default: false)
-#
-# [agent]
-#   turn_limit - maximum number of agentic turns (provider round-trips) in one
-#                run before it stops; 0 means unlimited (default: 0). This caps
-#                turns, not tool calls, mirroring Claude Code's --max-turns.
-";
-
-/// Path of the config file: `${XDG_CONFIG_HOME:-$HOME/.config}/vega/config.toml`
-/// (resolved by [`crate::paths`]; `HOME` must be set).
 pub fn config_path() -> Result<PathBuf, ConfigError> {
     let dir = crate::paths::config_dir()
-        .ok_or_else(|| io::Error::other("HOME environment variable is not set"))?;
-    Ok(dir.join("config.toml"))
+        .ok_or_else(|| io::Error::other("configuration root is unavailable"))?;
+    Ok(dir.join("config.yaml"))
 }
 
-/// Load the config from the config root (tech-spec §6).
-///
-/// If the file does not exist, a default template (with explanatory
-/// comments) is written first and the default config is returned.
 pub fn load() -> Result<AppConfig, ConfigError> {
     load_from(&config_path()?)
 }
 
 pub fn load_from(path: &Path) -> Result<AppConfig, ConfigError> {
     let edit = begin_edit(path)?;
-    if !path.exists() {
+    if edit.document.bytes().is_none() {
         edit.save()?;
     }
     Ok(edit.config.clone())
 }
 
-/// Reads an existing config file without creating or modifying anything.
-/// Worker-side validation paths use this variant so a selection request is
-/// strictly read-only until its durable thread update begins.
 pub fn read_from(path: &Path) -> Result<AppConfig, ConfigError> {
-    let text = std::fs::read_to_string(path)?;
-    toml::from_str(&text).map_err(ConfigError::Parse)
+    let bytes = crate::yaml_config::read(path)?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "configuration is absent"))?;
+    crate::yaml_config::decode(&bytes).map_err(ConfigError::Io)
 }
 
-/// A serialized read/edit/save transaction for the single application config file.
-/// Keep this guard alive across any credential rollback. Use `save`, never
-/// `AppConfig::save_to`, while holding the guard (the latter acquires the same lock).
 pub struct ConfigEdit {
-    /// Latest disk state; mutate only fields owned by the requested operation.
     pub config: AppConfig,
-    path: PathBuf,
-    _guard: MutexGuard<'static, ()>,
+    document: crate::yaml_config::Edit,
 }
 
 impl ConfigEdit {
-    /// Atomically publish the edited state while retaining the transaction lock.
     pub fn save(&self) -> Result<(), ConfigError> {
-        self.config.save_to_unlocked(&self.path)
+        if let Some(bytes) = self.document.bytes() {
+            let current: AppConfig = crate::yaml_config::decode(&bytes)?;
+            if self.config == current {
+                self.document.check_current()?;
+                return Ok(());
+            }
+        }
+        let mut fields = serde_json::to_value(&self.config)
+            .map_err(|_| io::Error::other("configuration serialization failed"))?;
+        if let Some(fields) = fields.as_object_mut() {
+            fields
+                .entry("credential_bindings")
+                .or_insert_with(|| serde_json::json!([]));
+        }
+        if let Some(defaults) = fields
+            .get_mut("defaults")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            defaults.insert(
+                "full_access_grant".into(),
+                serde_json::to_value(&self.config.defaults.full_access_grant)
+                    .map_err(|_| io::Error::other("configuration serialization failed"))?,
+            );
+        }
+        self.document.save_fields(&fields)?;
+        Ok(())
     }
 }
 
 pub fn begin_existing_edit(path: &Path) -> Result<ConfigEdit, ConfigError> {
-    let guard = EDIT_LOCK
-        .lock()
-        .map_err(|_| io::Error::other("config edit lock unavailable"))?;
-    let config = read_from(path)?;
-    Ok(ConfigEdit {
-        config,
-        path: path.to_path_buf(),
-        _guard: guard,
-    })
+    let edit = begin_edit(path)?;
+    if edit.document.bytes().is_none() {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "configuration is absent").into());
+    }
+    Ok(edit)
 }
 
 pub fn begin_edit(path: &Path) -> Result<ConfigEdit, ConfigError> {
-    let guard = EDIT_LOCK
-        .lock()
-        .map_err(|_| io::Error::other("config edit lock unavailable"))?;
-    let config = match std::fs::read_to_string(path) {
-        Ok(text) => toml::from_str(&text).map_err(ConfigError::Parse)?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => AppConfig::default(),
-        Err(error) => return Err(ConfigError::Io(error)),
+    let document = crate::yaml_config::begin(path)?;
+    let config = match document.bytes() {
+        Some(bytes) => crate::yaml_config::decode(&bytes)?,
+        None => AppConfig::default(),
     };
-    Ok(ConfigEdit {
-        config,
-        path: path.to_path_buf(),
-        _guard: guard,
-    })
+    Ok(ConfigEdit { config, document })
 }
 
-/// Merge a narrow field mutation onto current disk state and atomically save it.
 pub fn update_from(
     path: &Path,
     mutate: impl FnOnce(&mut AppConfig),
@@ -448,37 +407,18 @@ pub fn update_from(
     Ok(edit.config.clone())
 }
 
-/// Merge a narrow field mutation at the resolved global config path.
 pub fn update(mutate: impl FnOnce(&mut AppConfig)) -> Result<AppConfig, ConfigError> {
     update_from(&config_path()?, mutate)
 }
 
 impl AppConfig {
-    /// Save the config to the config root (atomic write).
     pub fn save(&self) -> Result<(), ConfigError> {
         self.save_to(&config_path()?)
     }
 
-    /// Path-parameterized variant of [`AppConfig::save`]; also used by
-    /// tests.
-    ///
-    /// Writes a sibling `.tmp` file first, then renames it over `path`, so
-    /// readers never observe a partially written file.
     pub fn save_to(&self, path: &Path) -> Result<(), ConfigError> {
-        let _guard = EDIT_LOCK
-            .lock()
-            .map_err(|_| io::Error::other("config edit lock unavailable"))?;
-        self.save_to_unlocked(path)
-    }
-
-    fn save_to_unlocked(&self, path: &Path) -> Result<(), ConfigError> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let body = toml::to_string_pretty(self)?;
-        let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, format!("{FILE_HEADER}\n{body}"))?;
-        std::fs::rename(&tmp, path)?;
-        Ok(())
+        let mut edit = begin_edit(path)?;
+        edit.config = self.clone();
+        edit.save()
     }
 }
