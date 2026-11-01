@@ -338,6 +338,7 @@ mod selection_menu;
 mod thinking;
 mod thinking_slider;
 use thinking::ThinkingBlock;
+mod user_disclosure;
 mod utility_bar;
 
 pub use core::ConversationStream;

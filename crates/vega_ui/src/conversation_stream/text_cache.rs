@@ -28,7 +28,12 @@ struct TextSource {
 impl TextSource {
     fn for_entry(entry: &StreamEntry) -> Option<Self> {
         let (variant, copy, revision) = match entry {
-            StreamEntry::User { copy, .. } => (TextVariant::User, copy, copy.content_generation()),
+            StreamEntry::User { copy, .. } => (
+                TextVariant::User,
+                copy,
+                copy.content_generation()
+                    .wrapping_add(copy.user_disclosure.borrow().revision),
+            ),
             StreamEntry::Assistant { copy, model, .. } => {
                 (TextVariant::Assistant, copy, model.content_revision())
             }

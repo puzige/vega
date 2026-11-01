@@ -849,7 +849,20 @@ pub(super) fn estimate_compaction_activity_height(label: &str, width: f32) -> f3
 }
 
 pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
-    let line_height = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
+    estimate_markdown_height_with_tone(model, width, false)
+}
+
+fn estimate_markdown_height_with_tone(
+    model: &StreamModel,
+    width: f32,
+    in_user_bubble: bool,
+) -> f32 {
+    let line_height = Typography::CONVERSATION
+        * if in_user_bubble {
+            Typography::CONVERSATION_USER_LINE_HEIGHT
+        } else {
+            Typography::CONVERSATION_LINE_HEIGHT
+        };
     let lines = model
         .committed_lines
         .iter()
@@ -868,6 +881,7 @@ pub(crate) fn estimate_markdown_height(model: &StreamModel, width: f32) -> f32 {
                 line,
                 line.in_list,
                 previous.is_some_and(|line| line.in_list),
+                in_user_bubble,
             )
         })
         .sum::<f32>();
@@ -952,12 +966,12 @@ pub(super) fn estimate_user_height(
     if !user_message_is_visible(copy, lines) {
         return 0.;
     }
-    let bubble_width =
-        text_width * Layout::CONVERSATION_USER_RATIO - 2. * Layout::CONVERSATION_USER_PADDING;
-    estimate_markdown_height(model, bubble_width.max(1.))
+    let bubble_width = super::user_disclosure::bubble_width(text_width);
+    let full_height = estimate_markdown_height_with_tone(model, bubble_width, true);
+    super::user_disclosure::estimated_height(copy, bubble_width, full_height)
         + Layout::USER_MESSAGE_PADDING_TOP
         + Layout::CONVERSATION_USER_BOTTOM
-        + 16.
+        + 2. * Layout::CONVERSATION_USER_PADDING_Y
 }
 
 pub(super) fn text_preview(entry: &StreamEntry) -> Option<String> {

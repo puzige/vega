@@ -1835,6 +1835,7 @@ impl Render for ConversationStream {
                                                                 cx,
                                                                 render_rows::MessageInteraction {
                                                                     user_top: this.user_message_top(index),
+                                                                    stream: Some(cx.entity().downgrade()),
                                                                     ..this.message_interaction()
                                                                 },
                                                             );

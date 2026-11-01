@@ -397,6 +397,7 @@ impl PreparedBody {
                 line,
                 line.in_list,
                 previous.is_some_and(|line| line.in_list),
+                false,
             ));
             let quote_marker_depth = line.list_marker_quote_depth();
             let list_inset =
