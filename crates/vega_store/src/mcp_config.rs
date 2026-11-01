@@ -248,12 +248,14 @@ pub(crate) fn stage(conn: &Connection) -> Result<(), McpStoreError> {
         if row.deleting {
             continue;
         }
-        let previous: Option<(String, u64)> = conn.query_row(
+        let previous: Option<(String, i64)> = conn.query_row(
             "SELECT declaration, projected_revision FROM mcp_config_identities WHERE id = ?1 AND tombstoned = 0",
             [&row.id], |row| Ok((row.get(0)?, row.get(1)?)),
         ).optional()?;
         let declaration = match previous {
-            Some((declaration, revision)) if revision == row.config_revision => {
+            Some((declaration, revision))
+                if u64::try_from(revision).ok() == Some(row.config_revision) =>
+            {
                 serde_json::from_str(&declaration).map_err(|_| McpStoreError::Invalid)?
             }
             _ => Declaration::from_row(&row)?,
@@ -275,7 +277,7 @@ fn remember(
     conn.execute(
         "INSERT INTO mcp_config_identities (id, declaration, projected_revision) VALUES (?1, ?2, ?3) \
          ON CONFLICT(id) DO UPDATE SET declaration = excluded.declaration, projected_revision = excluded.projected_revision",
-        params![declaration.id, json(declaration)?, revision],
+        params![declaration.id, json(declaration)?, i64::try_from(revision).map_err(|_| McpStoreError::Invalid)?],
     )?;
     Ok(())
 }
@@ -320,7 +322,7 @@ pub fn reconcile(
     let mut changed = Vec::new();
     for declaration in &declarations {
         let mut row = declaration.row()?;
-        let historical: Option<(String, bool, u64)> = tx.query_row(
+        let historical: Option<(String, bool, i64)> = tx.query_row(
             "SELECT declaration, tombstoned, projected_revision FROM mcp_config_identities WHERE id = ?1",
             [&declaration.id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         ).optional()?;
@@ -338,7 +340,7 @@ pub fn reconcile(
         validate(&row)?;
         let unchanged = historical.as_ref().is_some_and(|(previous, _, revision)| {
             json(declaration).is_ok_and(|value| value == *previous)
-                && old.is_some_and(|row| row.config_revision == *revision)
+                && old.is_some_and(|row| u64::try_from(*revision).ok() == Some(row.config_revision))
         });
         if unchanged {
             continue;

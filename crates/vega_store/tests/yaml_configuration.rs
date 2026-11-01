@@ -9,7 +9,7 @@ impl Installation {
             std::env::temp_dir()
                 .canonicalize()
                 .expect("temporary root")
-                .join(format!("vega-yaml-{}", ulid::Ulid::new())),
+                .join(format!("vega-yaml-{}", ulid::Ulid::generate())),
         )
     }
 
@@ -185,4 +185,22 @@ fn active_configuration_lock_rejects_another_writer() {
     assert!(config::begin_edit(&path).is_err());
     lock.unlock().expect("unlock");
     assert!(config::begin_edit(&path).is_ok());
+}
+
+#[test]
+fn environment_reference_edit_retains_changed_and_untouched_notes() {
+    let root = Installation::new();
+    let path = root.config();
+    config::load_from(&path).expect("initialize");
+    std::fs::write(&path, "schema_version: 1\nmcp_servers:\n  - id: synthetic\n    transport:\n      environment:\n        - variable: FIRST_KEY\n          credential_ref: first\n          extra: keep-first # first-note\n        - variable: SECOND_KEY\n          credential_ref: second\n          extra: keep-second # second-note\n").expect("fixture");
+    yaml_config::update_section(&path, "mcp_servers", &serde_json::json!([{"id":"synthetic", "transport":{"environment":[{"variable":"FIRST_KEY","credential_ref":"rotated"},{"variable":"SECOND_KEY","credential_ref":"second"}]}}]), None).expect("rotate reference");
+    let text = std::fs::read_to_string(&path).expect("read");
+    for retained in ["keep-first", "first-note", "keep-second", "second-note"] {
+        assert!(text.contains(retained));
+    }
+    let value: serde_json::Value = yaml_config::decode(text.as_bytes()).expect("decode");
+    assert_eq!(
+        value["mcp_servers"][0]["transport"]["environment"][0]["credential_ref"],
+        "rotated"
+    );
 }

@@ -8,7 +8,7 @@ impl Installation {
             std::env::temp_dir()
                 .canonicalize()
                 .expect("temporary root")
-                .join(format!("vega-mcp-yaml-{}", ulid::Ulid::new())),
+                .join(format!("vega-mcp-yaml-{}", ulid::Ulid::generate())),
         )
     }
     fn config(&self) -> PathBuf {
