@@ -18,4 +18,13 @@ v0.1.350 已包含 #809 的 TurnPlacement，但普通发送从 `begin_ordinary_p
 
 ## 本轮交付边界
 
-用户明确要求先审阅 diff 与测试结果：仅在独立 worktree/开发分支及 draft PR 验证，不合并、不发布、不安装、不关闭 #818。自动测试仅由现有 Actions 执行，本地仅格式/差异/静态检查。开发 Rust 回归及 test-support 接线保留在开发分支供审阅；未来合并前必须另按仓库规则固定证据并清理，不能进入 master。
+初轮按用户要求停在 draft PR，2026-11-01 用户进一步授权合并 PR #822。自动测试仅由现有 Actions 执行，本地仅格式/差异/静态检查。合并前清理开发 Rust 回归及 test-support 专用接线，生产修复保持不变；最终 head 必须经完整 required CI 确认后合并。合并会触发既有 master 云端发布，不额外安装或重启应用；#818 保持开放，合并后 In review 等待用户手测。
+
+## 开发回归留痕
+
+- 测试及修复版本：`80cd4eda733f94baa38d1c3fe2d8ce4b1ceeb57b`，基线 `632a5a2e554cecadb06d2a9bfa53e5fc3d6730a2`。
+- [原始测试源码](https://github.com/puzige/vega/blob/80cd4eda733f94baa38d1c3fe2d8ce4b1ceeb57b/crates/vega_ui/src/conversation_stream/ordinary_submissions/placement_tests.rs)，Git blob `9eb0faee0f26168954c2b2d1c6ed1e648335bdd6`；SHA-256 `495e5a48f032e8cdf1f7fa9dad1dd1fe55edb5914483850c59d5156c573a18eb`。合并前已通过 GitHub contents API 读回核实可访问。
+- [原始提交 patch](https://github.com/puzige/vega/commit/80cd4eda733f94baa38d1c3fe2d8ce4b1ceeb57b.patch) 包含测试、专用依赖和模块接线，清理后仍可恢复。
+- [Actions 41277413675](https://github.com/puzige/vega/actions/runs/41277413675)：`cargo nextest list --workspace --message-format json` 发现 3；`cargo nextest run --workspace` 执行 3、通过 3、跳过 0。三项分别为普通发送（文本/纯图片/图文）、重复投影保留用户位置、历史恢复补齐但不置顶。
+- 同版本格式、全目标 Clippy、required check 和既有 Python 5 / 15 / 40 项均通过；非实现者静态审查无阻断发现。
+- 最终删测 head 的空集 CI 与上述行为回归结果分开记录；`no Rust tests` 不等于三项行为重新执行或原生 UI 手测通过。

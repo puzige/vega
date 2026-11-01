@@ -1,8 +1,5 @@
 use super::*;
 use gpui_kit::Role;
-
-#[cfg(test)]
-mod placement_tests;
 use vega_conversation::types::{
     AttemptId, CommitFact, OrdinarySubmission, PrimaryFact, RetryBlocker, RetryEligibility,
     SubmissionFailure, SubmissionId,
