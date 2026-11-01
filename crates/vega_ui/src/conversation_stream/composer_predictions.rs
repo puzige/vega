@@ -41,6 +41,10 @@ impl ConversationStream {
     }
 
     fn prediction_environment_eligible(&self, cx: &App) -> bool {
+        !self.model_picker_level.is_open() && self.prediction_environment_valid(cx)
+    }
+
+    fn prediction_environment_valid(&self, cx: &App) -> bool {
         cx.try_global::<ComposerPredictionsEnabled>()
             .is_none_or(|enabled| enabled.0)
             && self.thread.backend == TaskBackend::Native
@@ -69,7 +73,6 @@ impl ConversationStream {
             && self.active_permission.is_none()
             && self.deferred_permission.is_none()
             && !self.actions.visible()
-            && !self.model_picker_level.is_open()
             && !self.permission_picker_open
             && !self.backend_selector_open
             && !self.context_control.open
@@ -150,7 +153,7 @@ impl ConversationStream {
             && self.thread.backend == fence.backend
             && self.input.read(cx).content_revision() == fence.input_revision
             && (!self.pending_queue.busy || self.prediction_waiting_for_queue)
-            && self.prediction_environment_eligible(cx)
+            && self.prediction_environment_valid(cx)
     }
 
     pub fn apply_composer_prediction(
@@ -177,6 +180,10 @@ impl ConversationStream {
     }
 
     pub(crate) fn reconcile_composer_prediction(&mut self, cx: &mut Context<Self>) {
+        let suppressed = self.model_picker_level.is_open();
+        self.input.update(cx, |input, cx| {
+            input.set_prediction_suppressed(suppressed, cx)
+        });
         if self
             .prediction_owner
             .as_ref()

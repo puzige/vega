@@ -335,8 +335,9 @@ fn make_sandbox() -> Result<Sandbox> {
 /// ConversationStream with its empty Composer) opens without any
 /// provider/key interaction.
 fn preseed_profile(home: &Path) -> Result<()> {
-    let data_dir = vega_store::paths::data_dir_from(None, home);
-    std::fs::create_dir_all(&data_dir)?;
+    let paths = vega_store::paths::AppPaths::from_home(Some(home), None)?;
+    paths.initialize_data_dir()?;
+    let data_dir = paths.data_dir();
     let store = vega_store::Store::open(data_dir.join("vega.db"))?;
     store.migrate()?;
     let project =

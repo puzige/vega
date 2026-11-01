@@ -5,6 +5,20 @@ use super::links::link_ranges;
 use super::selection::SelectionDocumentBuilder;
 use super::*;
 use crate::icons::{Icon, icon};
+use gpui_kit::{
+    Radians, Transformation,
+    component::{IconName, IconNamed},
+    svg,
+};
+
+pub(crate) fn user_markdown_model(text: &str) -> StreamModel {
+    let mut stream = MarkdownStream::new();
+    stream.append(text);
+    stream.finish();
+    let mut model = StreamModel::default();
+    model.sync(&stream.snapshot(), &StreamCounters::default());
+    model
+}
 
 pub(crate) fn user_message_lines(block_id: u64, text: &str) -> Vec<StreamLine> {
     let mut lines = vec![StreamLine::new(block_id, LineKind::UserLabel)];
@@ -59,11 +73,13 @@ pub(crate) fn context_compaction_label(
     context_control::status_label_for(status, failure).to_owned()
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct MessageInteraction<'a> {
     pub(crate) focus: &'a FocusHandle,
     pub(crate) actions_enabled: bool,
     pub(crate) user_top: f32,
+    pub(crate) stream: Option<gpui_kit::WeakEntity<ConversationStream>>,
+    pub(crate) text_width: f32,
 }
 
 pub(crate) fn render_entry(entry: &StreamEntry, window: &mut Window, cx: &mut App) -> AnyElement {
@@ -201,15 +217,15 @@ fn render_entry_internal(
                 &colors,
             )
         }
-        StreamEntry::User { lines, copy } => {
+        StreamEntry::User { lines, copy, model } => {
             if !user_message_is_visible(copy, lines) {
                 // 仅图片的轮次不应产生空气泡，也不挂复制入口。
                 return div().h_0().into_any_element();
             }
             if let Some(interaction) = interaction {
-                selectable_user_message(lines, copy, interaction, &colors, window, cx)
+                selectable_user_message(model, copy, interaction, &colors, window, cx)
             } else {
-                user_message_item(lines, &colors, Layout::USER_MESSAGE_PADDING_TOP)
+                user_message_item(model, &colors, Layout::USER_MESSAGE_PADDING_TOP, copy.id)
             }
         }
         StreamEntry::UserImages { images } => attachments::render_user_images(images, cx),
@@ -417,6 +433,7 @@ fn markdown_message_item(
             code_owner,
             None,
             true,
+            false,
             |line, index| {
                 let id = format!("{id_prefix}-markdown-{message_id}-line-{index}");
                 let marker =
@@ -497,120 +514,179 @@ pub(super) fn status_notice_with_icon(
         .into_any_element()
 }
 
-pub(crate) fn user_message_item(
-    lines: &[StreamLine],
-    colors: &ThemeColors,
-    top: f32,
-) -> AnyElement {
-    let mut body = div()
-        .max_w(gpui_kit::relative(Layout::CONVERSATION_USER_RATIO))
-        .bg(colors.conversation_bubble)
-        .rounded(px(Layout::USER_MESSAGE_RADIUS))
-        .text_size(px(Typography::CONVERSATION))
-        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
-        .px(px(Layout::CONVERSATION_USER_PADDING))
-        .py_2()
-        .text_color(colors.conversation_user)
-        .block();
-    for (index, line) in lines.iter().enumerate() {
-        if !matches!(line.kind, LineKind::UserLine { .. }) {
-            continue;
-        }
-        let text = line
-            .spans
-            .iter()
-            .map(|span| span.text.as_str())
-            .collect::<String>();
-        if text.is_empty() {
-            // 空行保留一行正文行高的自然占位（非定高行模型）。
-            body = body.child(div().h(user_line_height()));
-        } else {
-            let runs = block_text_runs(&line.spans, user_body_style(colors), colors);
-            body = body.child(super::inline_code::interactive_text(
-                text,
-                runs,
-                link_ranges(&line.spans),
-                format!("user-message-{}-{index}", line.block_id),
-            ));
-        }
-    }
+fn user_message_bubble(content: AnyElement, colors: &ThemeColors, top: f32) -> AnyElement {
     div()
         .w_full()
+        .min_w_0()
         .flex_shrink_0()
         .pt(px(top))
         .pb(px(Layout::CONVERSATION_USER_BOTTOM))
         .flex()
         .flex_col()
         .items_end()
-        .child(body)
+        .child(
+            div()
+                .max_w(gpui_kit::relative(Layout::CONVERSATION_USER_RATIO))
+                .min_w_0()
+                .bg(Rgba {
+                    a: colors.conversation_bubble.a,
+                    ..colors.accent
+                })
+                .rounded(px(Layout::USER_MESSAGE_RADIUS))
+                .text_size(px(Typography::CONVERSATION))
+                .line_height(gpui_kit::relative(
+                    Typography::CONVERSATION_USER_LINE_HEIGHT,
+                ))
+                .px(px(Layout::CONVERSATION_USER_PADDING))
+                .py(px(Layout::CONVERSATION_USER_PADDING_Y))
+                .text_color(colors.conversation_user)
+                .child(content),
+        )
         .into_any_element()
 }
 
-/// One blank user-message line's natural box: exactly one body line height.
-fn user_line_height() -> Pixels {
-    px(Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT)
+pub(crate) fn user_message_item(
+    model: &StreamModel,
+    colors: &ThemeColors,
+    top: f32,
+    owner: u64,
+) -> AnyElement {
+    let user_colors = ThemeColors {
+        text_primary: colors.conversation_user,
+        ..*colors
+    };
+    let blocks = markdown_blocks(
+        model,
+        &user_colors,
+        Some(owner),
+        None,
+        true,
+        true,
+        |line, index| {
+            let id = format!("user-message-{owner}-{index}");
+            let marker =
+                independent_list_marker(line).map(|marker| render_line(&marker, &user_colors, &id));
+            let content = list_item_content(line);
+            (
+                marker,
+                render_line(content.as_ref().unwrap_or(line), &user_colors, &id),
+            )
+        },
+    );
+    let content = div().w_full().min_w_0().flex().flex_col().children(blocks);
+    user_message_bubble(content.into_any_element(), colors, top)
 }
 
 fn selectable_user_message(
-    lines: &[StreamLine],
+    model: &StreamModel,
     copy: &MessageCopy,
     interaction: MessageInteraction<'_>,
     colors: &ThemeColors,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let selection_color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
-    let mut document =
-        SelectionDocumentBuilder::new(copy.clone(), interaction.focus.clone(), selection_color);
-    let mut body = div()
-        .max_w(gpui_kit::relative(Layout::CONVERSATION_USER_RATIO))
-        .bg(colors.conversation_bubble)
-        .rounded(px(Layout::USER_MESSAGE_RADIUS))
-        .text_size(px(Typography::CONVERSATION))
-        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
-        .px(px(Layout::CONVERSATION_USER_PADDING))
-        .py_2()
-        .text_color(colors.conversation_user)
-        .block();
-    let mut visible_line = false;
-    for line in lines {
-        if !matches!(line.kind, LineKind::UserLine { .. }) {
-            continue;
-        }
-        if visible_line {
-            document.append_literal("\n");
-        }
-        visible_line = true;
-        let text = line
-            .spans
-            .iter()
-            .map(|span| span.text.as_str())
-            .collect::<String>();
-        if text.is_empty() {
-            body = body.child(div().h(user_line_height()));
-        } else {
-            let runs = block_text_runs(&line.spans, user_body_style(colors), colors);
-            let selected =
-                document.append_styled_runs(&text, runs, link_ranges(&line.spans), "user-body");
-            body = body.child(selected);
-        }
-    }
-    let body = div()
+    let user_colors = ThemeColors {
+        text_primary: colors.conversation_user,
+        conversation_code: colors.conversation_user_code,
+        ..*colors
+    };
+    let preview = super::user_disclosure::preview(
+        model,
+        copy,
+        super::user_disclosure::bubble_width(interaction.text_width),
+        &user_colors,
+        window,
+    );
+    let expanded = copy.user_disclosure.borrow().expanded;
+    let collapsed = preview.collapsible && !expanded;
+    let content = selectable_markdown_content(
+        if collapsed { &preview.model } else { model },
+        copy,
+        interaction.clone(),
+        &user_colors,
+        true,
+        window,
+        cx,
+    );
+    let content = div()
         .w_full()
-        .flex_shrink_0()
-        .pt(px(interaction.user_top))
-        .pb(px(Layout::CONVERSATION_USER_BOTTOM))
+        .min_w_0()
         .flex()
         .flex_col()
-        .items_end()
-        .child(body)
-        .into_any_element();
-    selection_context_menu(
-        document.wrap(body, window, cx),
-        copy,
-        false,
-        interaction.actions_enabled,
-    )
+        .child(content)
+        .when(collapsed, |body| body.child(div().child("…")))
+        .when(preview.collapsible, |body| {
+            let id: gpui_kit::SharedString = format!("user-message-disclosure-{}", copy.id).into();
+            let focus = crate::disclosure::focus(id.clone(), window, cx);
+            let mouse_copy = copy.clone();
+            let key_copy = copy.clone();
+            let mouse_stream = interaction.stream.clone();
+            let key_stream = interaction.stream.clone();
+            let focus_background = colors.bg_active_alpha;
+            let label = vega_i18n::t(if expanded {
+                "ui.show_less"
+            } else {
+                "ui.show_more"
+            });
+            body.child(
+                div()
+                    .mt(px(Layout::USER_MESSAGE_TOGGLE_GAP))
+                    .flex()
+                    .justify_start()
+                    .child(
+                        div()
+                            .id(id)
+                            .role(gpui_kit::Role::Button)
+                            .aria_label(label)
+                            .aria_expanded(expanded)
+                            .track_focus(&focus)
+                            .tab_stop(true)
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .flex_shrink_0()
+                            .gap(px(Layout::CONVERSATION_INLINE_GAP))
+                            .h(px(Typography::CONVERSATION
+                                * Typography::CONVERSATION_USER_LINE_HEIGHT))
+                            .whitespace_nowrap()
+                            .text_size(px(Typography::BODY))
+                            .rounded(px(Layout::COPY_ACTION_GAP))
+                            .focus_visible(move |style| style.bg(focus_background))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(move |_, window, cx| {
+                                super::user_disclosure::toggle(
+                                    &mouse_copy,
+                                    &mouse_stream,
+                                    window,
+                                    cx,
+                                )
+                            })
+                            .on_key_down(move |event, window, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                    super::user_disclosure::toggle(
+                                        &key_copy,
+                                        &key_stream,
+                                        window,
+                                        cx,
+                                    );
+                                    cx.stop_propagation();
+                                }
+                            })
+                            .child(label)
+                            .child(
+                                svg()
+                                    .path(IconName::ChevronDown.path())
+                                    .size(px(Layout::CONVERSATION_CHEVRON_SIZE))
+                                    .flex_shrink_0()
+                                    .text_color(colors.conversation_user)
+                                    .with_transformation(Transformation::rotate(Radians(
+                                        if expanded { std::f32::consts::PI } else { 0. },
+                                    ))),
+                            ),
+                    ),
+            )
+        });
+    user_message_bubble(content.into_any_element(), colors, interaction.user_top)
 }
 
 fn selectable_markdown_message(
@@ -664,6 +740,7 @@ pub(crate) fn selectable_markdown_content(
         Some(copy.id),
         Some(selection),
         interaction.actions_enabled,
+        copy_original,
         |line, index| {
             if !matches!(line.kind, LineKind::Rule)
                 && let Some((previous_block, previous_kind, previous_code)) = &previous
@@ -680,7 +757,14 @@ pub(crate) fn selectable_markdown_content(
                 document.append_literal(if same_multiline_block { "\n" } else { "\n\n" });
             }
             let marker = independent_list_marker(line).map(|marker| {
-                render_line_selectable(&marker, colors, &mut document, index, copy.id)
+                render_line_selectable(
+                    &marker,
+                    colors,
+                    &mut document,
+                    index,
+                    copy.id,
+                    copy_original,
+                )
             });
             let content = list_item_content(line);
             let element = render_line_selectable(
@@ -689,6 +773,7 @@ pub(crate) fn selectable_markdown_content(
                 &mut document,
                 index,
                 copy.id,
+                copy_original,
             );
             if !matches!(line.kind, LineKind::Rule) {
                 previous = Some((line.block_id, line.kind, line.code_block.clone()));
@@ -736,6 +821,7 @@ fn markdown_blocks(
     code_owner: Option<u64>,
     selection: Option<CodeDragSelection>,
     actions_enabled: bool,
+    in_user_bubble: bool,
     mut render: impl FnMut(&StreamLine, usize) -> (Option<AnyElement>, AnyElement),
 ) -> Vec<AnyElement> {
     let lines: Vec<_> = model
@@ -753,7 +839,7 @@ fn markdown_blocks(
         let block_id = line.block_id;
         let in_list = line.in_list;
         let previous_in_list = previous.is_some_and(|line| line.in_list);
-        let gap = markdown_block_gap(previous, line, in_list, previous_in_list);
+        let gap = markdown_block_gap(previous, line, in_list, previous_in_list, in_user_bubble);
         let (marker, element) = render(line, index);
         let mut content = vec![element];
         index += 1;
@@ -982,6 +1068,7 @@ pub(crate) fn markdown_block_gap(
     current: &StreamLine,
     in_list: bool,
     previous_in_list: bool,
+    in_user_bubble: bool,
 ) -> f32 {
     let Some(previous) = previous else {
         return 0.;
@@ -1008,6 +1095,7 @@ pub(crate) fn markdown_block_gap(
         match previous.kind {
             LineKind::Heading(_) => Layout::MARKDOWN_HEADING_AFTER,
             LineKind::Code | LineKind::ListItem | LineKind::Table => Layout::MARKDOWN_BLOCK_GAP,
+            _ if in_user_bubble => 0.,
             _ => Layout::CONVERSATION_PARAGRAPH_GAP,
         }
     };
@@ -1059,10 +1147,19 @@ fn render_line_selectable(
     document: &mut SelectionDocumentBuilder,
     line_index: usize,
     message_id: u64,
+    in_user_bubble: bool,
 ) -> AnyElement {
+    let body_style = markdown_body_style(colors.text_primary, in_user_bubble);
     let id_prefix = format!("assistant-{message_id}-line-{line_index}");
     if let Some(table) = &line.table {
-        return render_table_selectable(line.block_id, &id_prefix, table, colors, document);
+        return render_table_selectable(
+            line.block_id,
+            &id_prefix,
+            table,
+            colors,
+            document,
+            in_user_bubble,
+        );
     }
     let text: String = line.spans.iter().map(|span| span.text.as_str()).collect();
     let item = div()
@@ -1073,7 +1170,7 @@ fn render_line_selectable(
         )
         .flex_shrink_0()
         .text_size(px(Typography::CONVERSATION))
-        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
+        .line_height(body_style.line_height)
         .text_color(colors.text_primary);
     match line.kind {
         LineKind::Spacer => item.py(px(6.0)).into_any_element(),
@@ -1122,7 +1219,14 @@ fn render_line_selectable(
             let (size, weight) = heading_style(level);
             let selected = document.append_styled_runs(
                 &text,
-                block_text_runs(&line.spans, heading_run_style(level, colors), colors),
+                block_text_runs(
+                    &line.spans,
+                    TextStyle {
+                        line_height: body_style.line_height,
+                        ..heading_run_style(level, colors)
+                    },
+                    colors,
+                ),
                 link_ranges(&line.spans),
                 &format!("{id_prefix}-heading"),
             );
@@ -1179,7 +1283,7 @@ fn render_line_selectable(
             }
             let content = document.append_styled_runs(
                 &text,
-                block_text_runs(&line.spans, message_run_style(colors.text_primary), colors),
+                block_text_runs(&line.spans, body_style.clone(), colors),
                 link_ranges(&line.spans),
                 &format!("{id_prefix}-list-content"),
             );
@@ -1189,7 +1293,7 @@ fn render_line_selectable(
         LineKind::Paragraph => {
             let selected = document.append_styled_runs(
                 &text,
-                block_text_runs(&line.spans, message_run_style(colors.text_primary), colors),
+                block_text_runs(&line.spans, body_style.clone(), colors),
                 link_ranges(&line.spans),
                 &format!("{id_prefix}-paragraph"),
             );
@@ -1204,13 +1308,14 @@ fn render_table_selectable(
     table: &StreamTable,
     colors: &ThemeColors,
     document: &mut SelectionDocumentBuilder,
+    in_user_bubble: bool,
 ) -> AnyElement {
     let ordinal = table.ordinal;
     let columns = table.alignments.len();
     let weights = table.column_weights();
     let mut body = div()
         .text_size(px(Typography::CONVERSATION))
-        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
+        .line_height(markdown_body_style(colors.text_primary, in_user_bubble).line_height)
         .w_full()
         .min_w(px(Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH * columns as f32))
         .flex_shrink_0()
@@ -1232,7 +1337,7 @@ fn render_table_selectable(
             if column > 0 {
                 document.append_literal("\t");
             }
-            let mut style = message_run_style(colors.text_primary);
+            let mut style = markdown_body_style(colors.text_primary, in_user_bubble);
             if row_index == 0 {
                 style.font_weight = Typography::HEADING_CARD_WEIGHT;
             }
@@ -1274,6 +1379,21 @@ fn render_table_selectable(
             colors.bg_base,
         ))
         .into_any_element()
+}
+
+pub(super) fn user_message_run_style(color: Rgba) -> TextStyle {
+    markdown_body_style(color, true)
+}
+
+fn markdown_body_style(color: Rgba, in_user_bubble: bool) -> TextStyle {
+    TextStyle {
+        line_height: DefiniteLength::Fraction(if in_user_bubble {
+            Typography::CONVERSATION_USER_LINE_HEIGHT
+        } else {
+            Typography::CONVERSATION_LINE_HEIGHT
+        }),
+        ..message_run_style(color)
+    }
 }
 
 pub(crate) fn message_run_style(color: Rgba) -> TextStyle {
@@ -1625,6 +1745,7 @@ pub(crate) fn sample_document(blocks: usize) -> String {
 pub(super) struct MessageActions<'a> {
     pub(super) id: gpui_kit::SharedString,
     pub(super) user: bool,
+    pub(super) user_bubble: bool,
     pub(super) colors: ThemeColors,
     pub(super) enabled: bool,
     pub(super) timestamp: Option<super::timestamp_format::TimestampDisplay>,
@@ -1642,6 +1763,7 @@ pub(super) fn message_with_copy(
     let MessageActions {
         id,
         user,
+        user_bubble,
         colors,
         enabled: actions_enabled,
         timestamp,
@@ -1662,19 +1784,23 @@ pub(super) fn message_with_copy(
         .relative()
         .flex()
         .flex_col()
-        .when(!user, |body| body.pb(px(Layout::MESSAGE_COPY_FOOTER)))
+        .when(!user_bubble, |body| {
+            body.pb(px(Layout::MESSAGE_COPY_FOOTER))
+        })
         .child(body);
     if let Some(focus) = focus {
         wrapper = wrapper.track_focus(focus).tab_stop(true);
     }
     let mut row = div()
         .absolute()
-        .when(user, |row| {
-            row.right_0().bottom(px(
+        .when(user, |row| row.right_0())
+        .when(!user, |row| row.left_0())
+        .when(user_bubble, |row| {
+            row.bottom(px(
                 Layout::CONVERSATION_USER_BOTTOM - Layout::MESSAGE_COPY_FOOTER
             ))
         })
-        .when(!user, |row| row.left_0().bottom_0())
+        .when(!user_bubble, |row| row.bottom_0())
         .flex()
         .items_center();
     if actions_enabled && let Some(copy) = copy.filter(|copy| copy.has_text()) {

@@ -5,9 +5,12 @@ use vega_store::{Store, config};
 use crate::types::{PermissionResetError, StartupError, StartupWorkspace};
 
 pub fn prepare_default_workspace() -> Result<StartupWorkspace, StartupError> {
-    let root = vega_store::paths::data_dir().ok_or(StartupError::PathsUnavailable)?;
-    let config = config::config_path().map_err(|_| StartupError::PathsUnavailable)?;
-    prepare_workspace(&root.join("vega.db"), &config)
+    let paths =
+        vega_store::paths::AppPaths::resolve().map_err(|_| StartupError::PathsUnavailable)?;
+    paths
+        .initialize_data_dir()
+        .map_err(|_| StartupError::PathsUnavailable)?;
+    prepare_workspace(&paths.database_file(), &paths.config_file())
 }
 
 pub fn prepare_workspace(
@@ -47,6 +50,13 @@ pub fn prepare_workspace(
         tx.commit().map_err(|_| StartupError::StorageUnavailable)?;
         (config, selected_project)
     };
+    let config_root = config_path.parent().ok_or(StartupError::PathsUnavailable)?;
+    crate::mcp_settings::McpServerSettingsService::new(
+        database.to_path_buf(),
+        config_root.to_path_buf(),
+    )
+    .reconcile_declarations()
+    .map_err(|_| StartupError::ConfigurationUnavailable)?;
     crate::automation::recover_startup(&store).map_err(|_| StartupError::AutomationRecovery)?;
     let _coordination =
         crate::permission_contracts::coordinate().map_err(|_| StartupError::StorageUnavailable)?;

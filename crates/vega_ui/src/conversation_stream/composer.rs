@@ -397,6 +397,7 @@ impl ConversationStream {
         self.entries.push(StreamEntry::User {
             copy,
             lines: user_message_lines(block_id, &projected),
+            model: user_markdown_model(&projected),
         });
         self.list_append(index);
         if let Some((id, seq)) = durable_user.as_ref() {
@@ -423,6 +424,10 @@ impl ConversationStream {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.model_picker_level.is_open() {
+            cx.stop_propagation();
+            return;
+        }
         if self.action_focus[1].is_focused(window) {
             self.activate_composer_primary(cx);
             cx.stop_propagation();

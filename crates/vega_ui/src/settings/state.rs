@@ -110,7 +110,9 @@ impl SettingsView {
     /// Loads the current config and creates empty form inputs.
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self::from_path(
-            vega_store::paths::config_dir().map(|root| root.join("config.toml")),
+            vega_store::paths::AppPaths::resolve()
+                .ok()
+                .map(|paths| paths.config_file()),
             cx,
         )
     }

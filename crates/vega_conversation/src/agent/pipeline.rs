@@ -2325,18 +2325,25 @@ pub(crate) fn validate_recovered_projection(
                 || output.len() > 256 * 1024 + 64
                 || approval.danger.is_some()
                 || approval.decision == Approval::Always
+                || (approval.source == ApprovalSource::FullAccess && approval.note.is_some())
             {
                 return Err(corrupt());
             }
             let allowed = match status {
                 RuntimeToolStatus::Success => {
                     approval.decision == Approval::Once
-                        && approval.source == ApprovalSource::User
+                        && matches!(
+                            approval.source,
+                            ApprovalSource::User | ApprovalSource::FullAccess
+                        )
                         && output.starts_with("[Untrusted external MCP result]\n")
                 }
                 RuntimeToolStatus::Failed => {
                     approval.decision == Approval::Once
-                        && approval.source == ApprovalSource::User
+                        && matches!(
+                            approval.source,
+                            ApprovalSource::User | ApprovalSource::FullAccess
+                        )
                         && (output.starts_with("[Untrusted external MCP result]\n")
                             || matches!(
                                 output,
@@ -2354,7 +2361,10 @@ pub(crate) fn validate_recovered_projection(
                 }
                 RuntimeToolStatus::Cancelled => {
                     approval.decision == Approval::Once
-                        && approval.source == ApprovalSource::User
+                        && matches!(
+                            approval.source,
+                            ApprovalSource::User | ApprovalSource::FullAccess
+                        )
                         && matches!(
                             output,
                             "Tool error: MCP call outcome unknown after cancellation"
@@ -2891,7 +2901,9 @@ pub(crate) fn approval_source_matches(
             ),
             RuntimeToolStatus::Success
             | RuntimeToolStatus::Failed
-            | RuntimeToolStatus::Cancelled => source == ApprovalSource::User,
+            | RuntimeToolStatus::Cancelled => {
+                matches!(source, ApprovalSource::User | ApprovalSource::FullAccess)
+            }
         };
     }
     match tool {

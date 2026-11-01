@@ -114,6 +114,7 @@ impl ConversationStream {
         prepared: history_preparation::PreparedHistoryEntries,
         cx: &mut Context<Self>,
     ) {
+        self.turn_placement.borrow_mut().reset();
         self.interrupted_tail = page.interrupted_tail.clone();
         let subagents = page.subagents.clone();
         let was_empty = self.entries.is_empty();
@@ -128,6 +129,7 @@ impl ConversationStream {
         hydrated_identities.append(&mut self.entry_identities);
         self.entry_identities = hydrated_identities;
         self.list_prepend(prepended_entries);
+        self.restore_continued_process(cx);
         if prepended_entries > 0 {
             self.grow_entry_indices(0, prepended_entries);
             let stage_top_insets = self.stage_top_insets(cx);
@@ -167,6 +169,7 @@ impl ConversationStream {
     }
 
     pub fn apply_newer_history_page(&mut self, page: HistoryPage, cx: &mut Context<Self>) {
+        self.turn_placement.borrow_mut().reset();
         self.interrupted_tail = page.interrupted_tail.clone();
         let subagents = page.subagents.clone();
         self.ensure_entry_identities();
@@ -178,6 +181,7 @@ impl ConversationStream {
         self.entries.append(&mut hydrated);
         self.entry_identities.append(&mut hydrated_identities);
         self.list_append(previous_len);
+        self.restore_continued_process(cx);
         self.hydration.newer_cursor = page.newer_cursor;
         self.hydration.loading = false;
         self.hydration.paused = false;
@@ -384,6 +388,7 @@ impl ConversationStream {
                     hydrated.push(StreamEntry::User {
                         copy: MessageCopy::new(&content),
                         lines: user_message_lines(block_id, &content),
+                        model: user_markdown_model(&content),
                     });
                     hydrated_identities.push(self.durable_entry_identity(
                         &message_id,
@@ -803,6 +808,7 @@ impl ConversationStream {
         self.message_anchor_hovered = None;
         self.message_anchor_preview_hovered = None;
         self.message_anchor_keyboard_id = None;
+        self.turn_placement.borrow_mut().reset();
         self.list.reset(0);
         self.tool_cards.clear();
         self.preserve_subagent_requests(cx);
@@ -1082,9 +1088,9 @@ impl ConversationStream {
             group.update(cx, |group, cx| group.set_waiting(true, cx));
         }
         self.active_permission_call_id = Some(request.call_id);
-        // The prompt must be visible immediately: re-engage native tail
-        // follow (which also scrolls to the end on the next layout).
-        self.list.set_follow_mode(gpui_kit::FollowMode::Tail);
+        if !self.turn_placement.borrow().active() {
+            self.list.set_follow_mode(gpui_kit::FollowMode::Tail);
+        }
         cx.notify();
     }
 
@@ -1144,7 +1150,9 @@ impl ConversationStream {
         if let Some((_, group)) = &self.active_run_activity {
             group.update(cx, |group, cx| group.set_waiting(true, cx));
         }
-        self.list.set_follow_mode(gpui_kit::FollowMode::Tail);
+        if !self.turn_placement.borrow().active() {
+            self.list.set_follow_mode(gpui_kit::FollowMode::Tail);
+        }
         cx.notify();
     }
 

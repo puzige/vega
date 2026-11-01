@@ -1,83 +1,245 @@
-//! Zero-dependency filesystem layout (tech-spec §6, 2026-08-29 human
-//! decision — Zed-style hybrid):
-//!
-//! - **config root**: `${XDG_CONFIG_HOME:-$HOME/.config}/vega` on every
-//!   platform; `config.toml` lives directly inside it.
-//! - **data root**: macOS `$HOME/Library/Application Support/ai.vega`
-//!   (bundle-id namespace); every
-//!   other platform (Linux, Phase 4) `${XDG_DATA_HOME:-$HOME/.local/share}/vega`.
-//!   `vega.db` lives directly inside it.
-//!
-//! The core resolvers are pure functions over the XDG environment value and
-//! the home directory ([`config_dir_from`]/[`data_dir_from`]) so tests never
-//! touch process environment variables; [`config_dir`]/[`data_dir`] are thin
-//! wrappers that read the real environment. XDG values are honored only when
-//! non-empty and absolute (XDG base-directory spec: relative values are
-//! invalid and ignored).
-//!
-//! There is **no** automatic migration from the legacy `$HOME/.vega/` layout
-//! (pre-release, no real users; tech-spec §6).
+use std::ffi::OsStr;
+use std::path::{Component, Path, PathBuf};
 
-use std::path::{Path, PathBuf};
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AppPathsError {
+    #[error("VEGA_HOME must be a nonempty absolute path without parent traversal")]
+    InvalidOverride,
+    #[error("an absolute user home directory is required")]
+    HomeUnavailable,
+    #[error("unsafe Vega path: {0}")]
+    UnsafePath(PathBuf),
+    #[error("Vega path is inaccessible: {0}")]
+    InaccessiblePath(PathBuf),
+}
 
-/// Resolves the config root from an `XDG_CONFIG_HOME` value and a home dir.
-///
-/// A non-empty absolute `XDG_CONFIG_HOME` wins; otherwise `$home/.config/vega`.
-pub fn config_dir_from(xdg_config_home: Option<&str>, home: &Path) -> PathBuf {
-    match valid_xdg(xdg_config_home) {
-        Some(dir) => dir.join("vega"),
-        None => home.join(".config").join("vega"),
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppPaths {
+    root: PathBuf,
+    explicit: bool,
+}
+
+impl AppPaths {
+    pub fn resolve() -> Result<Self, AppPathsError> {
+        let vega_home = std::env::var_os("VEGA_HOME");
+        if vega_home.is_some() {
+            return Self::from_home(None, vega_home.as_deref());
+        }
+        Self::from_home(std::env::home_dir().as_deref(), None)
+    }
+
+    pub fn from_home(
+        user_home: Option<&Path>,
+        vega_home: Option<&OsStr>,
+    ) -> Result<Self, AppPathsError> {
+        if let Some(value) = vega_home {
+            let path = Path::new(value);
+            if !valid_home_path(path) {
+                return Err(AppPathsError::InvalidOverride);
+            }
+            return Ok(Self {
+                root: path.to_path_buf(),
+                explicit: true,
+            });
+        }
+        let home = user_home
+            .filter(|path| valid_home_path(path))
+            .ok_or(AppPathsError::HomeUnavailable)?;
+        Ok(Self {
+            root: home.join(".vega"),
+            explicit: false,
+        })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn is_explicit(&self) -> bool {
+        self.explicit
+    }
+
+    pub fn config_file(&self) -> PathBuf {
+        self.root.join("config.yaml")
+    }
+
+    pub fn credentials_dir(&self) -> PathBuf {
+        self.root.join("credentials")
+    }
+
+    pub fn data_dir(&self) -> PathBuf {
+        self.root.join("data")
+    }
+
+    pub fn database_file(&self) -> PathBuf {
+        self.data_dir().join("vega.db")
+    }
+
+    pub fn scratch_dir(&self) -> PathBuf {
+        self.data_dir().join("scratch")
+    }
+
+    pub fn skills_dir(&self) -> PathBuf {
+        self.root.join("skills")
+    }
+
+    pub fn logs_dir(&self) -> PathBuf {
+        self.root.join("logs")
+    }
+
+    pub fn cache_dir(&self) -> PathBuf {
+        self.root.join("cache")
+    }
+
+    pub fn run_dir(&self) -> PathBuf {
+        self.root.join("run")
+    }
+
+    pub fn backups_dir(&self) -> PathBuf {
+        self.root.join("backups")
+    }
+
+    pub fn validate_existing(&self) -> Result<(), AppPathsError> {
+        for directory in [
+            self.root.clone(),
+            self.data_dir(),
+            self.credentials_dir(),
+            self.scratch_dir(),
+            self.skills_dir(),
+            self.logs_dir(),
+            self.cache_dir(),
+            self.run_dir(),
+            self.backups_dir(),
+        ] {
+            validate_directory_path(&directory)?;
+        }
+        for file in [self.config_file(), self.database_file()] {
+            match std::fs::symlink_metadata(&file) {
+                Ok(metadata) if metadata.is_file() && !is_link(&metadata) => {}
+                Ok(_) => return Err(AppPathsError::UnsafePath(file)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(AppPathsError::InaccessiblePath(file)),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn initialize_data_dir(&self) -> Result<(), AppPathsError> {
+        self.validate_existing()?;
+        create_private_directory(self.root())?;
+        create_private_directory(&self.data_dir())?;
+        self.validate_existing()
     }
 }
 
-/// Resolves the data root from an `XDG_DATA_HOME` value and a home dir.
-///
-/// macOS uses the bundle-id namespace
-/// `$home/Library/Application Support/ai.vega` regardless of the XDG variable
-/// (tech-spec §6); every other platform behaves like [`config_dir_from`] but
-/// over `XDG_DATA_HOME` and `$home/.local/share/vega`.
-pub fn data_dir_from(xdg_data_home: Option<&str>, home: &Path) -> PathBuf {
-    if cfg!(target_os = "macos") {
-        return home
-            .join("Library")
-            .join("Application Support")
-            .join("ai.vega");
-    }
-    match valid_xdg(xdg_data_home) {
-        Some(dir) => dir.join("vega"),
-        None => home.join(".local").join("share").join("vega"),
-    }
+fn valid_home_path(path: &Path) -> bool {
+    path.is_absolute()
+        && !path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
 }
 
-/// Config root ([`config_dir_from`]) against the process environment.
-///
-/// `None` when `HOME` is unset or empty.
+fn is_link(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return true;
+        }
+    }
+    metadata.file_type().is_symlink()
+}
+
+fn validate_directory_path(path: &Path) -> Result<(), AppPathsError> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        if matches!(component, Component::Prefix(_)) {
+            continue;
+        }
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.is_dir() && !is_link(&metadata) => {}
+            Ok(_) => return Err(AppPathsError::UnsafePath(current)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err(AppPathsError::InaccessiblePath(current)),
+        }
+    }
+    std::fs::read_dir(path).map_err(|_| AppPathsError::InaccessiblePath(path.to_path_buf()))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn create_private_directory(path: &Path) -> Result<(), AppPathsError> {
+    use std::ffi::CString;
+    use std::fs::{File, OpenOptions};
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    let inaccessible = || AppPathsError::InaccessiblePath(path.to_path_buf());
+    let mut directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open("/")
+        .map_err(|_| inaccessible())?;
+    for component in path.components() {
+        let Component::Normal(name) = component else {
+            continue;
+        };
+        let name = CString::new(name.as_bytes()).map_err(|_| inaccessible())?;
+        // SAFETY: directory is live and name is a valid NUL-terminated path component.
+        let mut fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT) {
+            // SAFETY: directory is live and name is a valid NUL-terminated path component.
+            let result = unsafe { libc::mkdirat(directory.as_raw_fd(), name.as_ptr(), 0o700) };
+            if result != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
+                return Err(inaccessible());
+            }
+            // SAFETY: directory is live and name is a valid NUL-terminated path component.
+            fd = unsafe {
+                libc::openat(
+                    directory.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+        }
+        if fd < 0 {
+            return Err(inaccessible());
+        }
+        // SAFETY: a successful openat returned a new descriptor owned by this File.
+        directory = unsafe { File::from_raw_fd(fd) };
+    }
+    let metadata = directory.metadata().map_err(|_| inaccessible())?;
+    // SAFETY: geteuid takes no arguments and reads the effective user identity.
+    let owner = unsafe { libc::geteuid() };
+    if metadata.uid() != owner || metadata.mode() & 0o022 != 0 {
+        return Err(AppPathsError::UnsafePath(path.to_path_buf()));
+    }
+    if metadata.mode() & 0o700 != 0o700 {
+        return Err(inaccessible());
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn create_private_directory(path: &Path) -> Result<(), AppPathsError> {
+    validate_directory_path(path)?;
+    std::fs::create_dir_all(path)
+        .map_err(|_| AppPathsError::InaccessiblePath(path.to_path_buf()))?;
+    validate_directory_path(path)
+}
+
 pub fn config_dir() -> Option<PathBuf> {
-    let home = home_dir()?;
-    let xdg = std::env::var("XDG_CONFIG_HOME").ok();
-    Some(config_dir_from(xdg.as_deref(), &home))
+    AppPaths::resolve().ok().map(|paths| paths.root)
 }
 
-/// Data root ([`data_dir_from`]) against the process environment.
-///
-/// `None` when `HOME` is unset or empty.
 pub fn data_dir() -> Option<PathBuf> {
-    let home = home_dir()?;
-    let xdg = std::env::var("XDG_DATA_HOME").ok();
-    Some(data_dir_from(xdg.as_deref(), &home))
-}
-
-/// The `HOME` environment variable as a path; `None` when unset or empty.
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|home| !home.as_os_str().is_empty())
-}
-
-/// An XDG base-directory value is honored only when it is a non-empty
-/// absolute path (the spec says relative values are invalid and ignored).
-fn valid_xdg(value: Option<&str>) -> Option<&Path> {
-    let value = value?.trim();
-    let path = Path::new(value);
-    (!value.is_empty() && path.is_absolute()).then_some(path)
+    AppPaths::resolve().ok().map(|paths| paths.data_dir())
 }

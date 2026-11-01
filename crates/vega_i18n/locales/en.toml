@@ -178,7 +178,7 @@
 "settings.mcp.health.failed" = "Connection failed"
 "settings.mcp.health.removing" = "Removing; credential cleanup needs a retry"
 "settings.mcp.health.transport" = "Deprecated standalone HTTP+SSE is not supported. Use a Streamable HTTP endpoint."
-"settings.mcp.intro" = "Servers are disabled by default. Enabling and testing require separate confirmation. Each external tool call still requires individual approval."
+"settings.mcp.intro" = "Servers are disabled by default. Enabling and testing require separate confirmation. Tool calls follow the task permission mode."
 "settings.mcp.loading" = "Loading MCP settings…"
 "settings.mcp.local_summary" = "Local stdio · {path}"
 "settings.mcp.loopback_hint" = "Non-HTTPS connections are limited to explicitly enabled 127.0.0.1 / ::1 local test endpoints."

@@ -1633,12 +1633,14 @@ impl Render for ConversationStream {
             let top = self.list.logical_scroll_top();
             let anchor = self.scroll_anchor_snapshot();
             for entry in &mut self.entries {
-                if let StreamEntry::User { copy, lines } = entry
+                if let StreamEntry::User { copy, lines, model } = entry
                     && copy.refresh_live_projection()
                 {
                     let block = self.user_block_seq;
                     self.user_block_seq += 1;
-                    *lines = user_message_lines(block, &copy.original_text());
+                    let text = copy.original_text();
+                    *lines = user_message_lines(block, &text);
+                    *model = user_markdown_model(&text);
                 }
                 if let StreamEntry::Assistant {
                     copy,
@@ -1776,8 +1778,11 @@ impl Render for ConversationStream {
                                 .h_full()
                                 .overflow_hidden()
                                 .child(
-                                    list(
+                                    turn_placement::TurnList::new(
                                         self.list.clone(),
+                                        self.turn_placement.clone(),
+                                        self.foreground_height,
+                                        self.entries.len(),
                                         cx.processor(
                                             move |this: &mut ConversationStream,
                                                   index: usize,
@@ -1815,6 +1820,7 @@ impl Render for ConversationStream {
                                                         },
                                                         Some(entry) => {
                                                             this.prepare_partial_compaction_menu(index, cx);
+                                                            let stream = cx.entity().downgrade();
                                                             let body = render_stream_entry(
                                                                 entry,
                                                                 this.entry_identities
@@ -1830,17 +1836,19 @@ impl Render for ConversationStream {
                                                                 cx,
                                                                 render_rows::MessageInteraction {
                                                                     user_top: this.user_message_top(index),
+                                                                    stream: Some(stream),
                                                                     ..this.message_interaction()
                                                                 },
                                                             );
-                                                            let user = matches!(entry, StreamEntry::User { .. });
+                                                            let user = matches!(entry, StreamEntry::User { .. } | StreamEntry::UserImages { .. });
+                                                            let user_bubble = matches!(entry, StreamEntry::User { .. });
                                                             let source = match entry {
                                                                 StreamEntry::User { copy, .. } => Some(copy),
                                                                 _ => this.action_copy_source_for_entry(index),
                                                             };
                                                             render_rows::message_with_copy(body, source, render_rows::MessageActions {
                                                                 id: this.entry_identities.get(index).map(|id| id.key.clone()).unwrap_or_else(|| format!("message-{index}")).into(),
-                                                                user, colors: theme(cx).colors, enabled: this.message_actions_enabled(),
+                                                                user, user_bubble, colors: theme(cx).colors, enabled: this.message_actions_enabled(),
                                                                 timestamp: this.entry_timestamp(index), focus: this.timestamp_focus(index),
                                                                 fork: this.fork_request_for_entry(index).map(|request| (request, cx.entity().downgrade())),
                                                             }, window, cx)
@@ -1897,7 +1905,6 @@ impl Render for ConversationStream {
                                     )
                                     .h_full()
                                     .w_full()
-                                    .pb(self.foreground_height)
                                     .tracked_scroll_edge_fade(self.list.clone(), colors.bg_base, ScrollFade::reading().top_only().vertical_list())
                                     .preserve_pinned_headers(top_fade_guards),
                                 ),
@@ -1918,13 +1925,38 @@ impl Render for ConversationStream {
             .text_color(colors.text_primary)
             .key_context("ConversationStream")
             .track_focus(&self.selection_focus)
-            .capture_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                if this.context_usage_trigger_hovered && event.keystroke.key == "escape" {
-                    this.context_usage_trigger_hovered = false;
-                    cx.notify();
-                    cx.stop_propagation();
-                }
-            }))
+            .capture_action(
+                cx.listener(|this, _: &crate::text_input::AcceptPrediction, _, cx| {
+                    if this.model_picker_level.is_open() {
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+            .capture_action(cx.listener(
+                |this, _: &crate::text_input::DismissPrediction, window, cx| {
+                    if this.model_picker_level.is_open() {
+                        this.on_model_close(&CloseModel, window, cx);
+                        cx.stop_propagation();
+                    }
+                },
+            ))
+            .capture_key_down(
+                cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    if this.model_picker_level.is_open()
+                        && event.keystroke.key == "escape"
+                        && !this.input.read(cx).is_composing()
+                    {
+                        this.on_model_close(&CloseModel, window, cx);
+                        cx.stop_propagation();
+                        return;
+                    }
+                    if this.context_usage_trigger_hovered && event.keystroke.key == "escape" {
+                        this.context_usage_trigger_hovered = false;
+                        cx.notify();
+                        cx.stop_propagation();
+                    }
+                }),
+            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
