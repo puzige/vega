@@ -188,6 +188,9 @@ impl ConversationStream {
             }
         }
         for (index, entry) in self.entries.iter().enumerate() {
+            if matches!(entry, StreamEntry::Subagents { .. }) {
+                continue;
+            }
             let Some(identity) = self.entry_identities.get(index) else {
                 continue;
             };
@@ -197,8 +200,7 @@ impl ConversationStream {
                 .or(identity.pending_id.as_ref());
             let boundary = matches!(
                 entry,
-                StreamEntry::Subagents { .. }
-                    | StreamEntry::ContextCompaction { .. }
+                StreamEntry::ContextCompaction { .. }
                     | StreamEntry::Summary { .. }
                     | StreamEntry::SkillActivation { .. }
             );
