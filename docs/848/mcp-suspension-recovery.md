@@ -48,3 +48,14 @@ Required scenarios:
 - No historical call dispatch is added; all existing post-connect epoch/revision/current-enabled/deleting checks and per-dispatch admission checks remain unchanged.
 
 Static checks: formatting, diff whitespace, change scope and absence of test-only artifacts in final head. Independent non-implementer review of stopped exact version; latest final-head required CI before merge. Issue remains open/In review pending user tool-call validation.
+
+## Recorded development evidence
+
+- Tested head: `9c901375a8d2d1beda63bfae947ff2cb854a45a5`.
+- [Actions 41355066874](https://github.com/puzige/vega/actions/runs/41355066874): required check and Clippy succeeded; Nextest 15 discovered / 15 executed / 15 passed / 0 skipped. Python suites: 5, 15 and 40 passed.
+- Original [conversation regression source](https://github.com/puzige/vega/blob/9c901375a8d2d1beda63bfae947ff2cb854a45a5/crates/vega_conversation/src/mcp_settings/suspension_tests.rs), Git blob `e1284937bdeb5a508fdcde1dd857dcbfea913552`.
+- Original [runtime lease regression source](https://github.com/puzige/vega/blob/9c901375a8d2d1beda63bfae947ff2cb854a45a5/crates/vega_runtime/src/agent/mcp_registry/revocation_tests.rs), Git blob `26969c13d830cd2b08205c3b4a2a3845312e0f31`. Remote content IDs were read back and matched local files before removal.
+- [Original development patch](https://github.com/puzige/vega/commit/9c901375a8d2d1beda63bfae947ff2cb854a45a5.patch). Earlier failed runs and fixture corrections are recorded in Issue #848; no business/security assertions were relaxed or dropped.
+- Per repository policy, remove the two test modules, their declarations, inert constructor, feature and dev-dependency edge after preserving evidence. Final production change remains only the invalidation split and configuration-error call-site change; no runtime API/manifest diff remains.
+- Local static checks: `cargo fmt --all -- --check`, `git diff --check`, `cargo metadata --no-deps --offline --locked --format-version 1` succeeded. No local code/test execution or compilation.
+- Independent implementation and coverage review found no remaining issue after registered-lease and installed-authorization coverage was added. Final cleanup/head review and full final-head CI are separate gates, pending at this record's creation. Real application/tool-call acceptance remains pending user validation.

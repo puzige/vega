@@ -1,6 +1,3 @@
-#[cfg(test)]
-mod suspension_tests;
-
 use std::collections::{HashMap, HashSet};
 use std::net::TcpListener as StdTcpListener;
 type OAuthCallbackStream = tokio::net::TcpStream;
