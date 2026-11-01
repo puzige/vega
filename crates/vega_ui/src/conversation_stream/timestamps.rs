@@ -188,7 +188,9 @@ impl ConversationStream {
             }
         }
         for (index, entry) in self.entries.iter().enumerate() {
-            if matches!(entry, StreamEntry::Subagents { .. }) {
+            if matches!(entry, StreamEntry::Subagents { .. })
+                || (matches!(entry, StreamEntry::Summary { .. }) && entry.row_count(cx) == 0)
+            {
                 continue;
             }
             let Some(identity) = self.entry_identities.get(index) else {
