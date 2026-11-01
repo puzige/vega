@@ -4,10 +4,11 @@
 
 - User authorization: take over #820, review the proposed approach, land this spec before code, implement only the card scope, prioritize historical data safety.
 - Reviewed source baseline: `632a5a2e554cecadb06d2a9bfa53e5fc3d6730a2`; origin fetched and local master updated before creating `feat/820-unified-home`.
-- Contract version: 1. Implementation has not started. This document is not a claim that migration, locking, dependency approval or validation has succeeded.
+- Contract version: 1.1. Implementation has begun with a pure AppPaths type only; production startup and old path wrappers remain unchanged. This document is not a claim that migration, locking or validation has succeeded.
 - Issue: <https://github.com/puzige/vega/issues/820>. The issue supplies scope and progress; this document supplies the implementation contract.
 - Replaces the old no-migration / XDG configuration / macOS bundle-id data layout decision in [technical spec §6](../vega-tech-spec-p1.md#6-配置与密钥a1-10a11-05) for the completed #820 implementation only. Until the complete cutover is verified, current releases retain their existing behavior.
-- Required implementation prerequisites: approval of the lossless YAML editor in §11; demonstrated offline source exclusion and supported SQLite snapshot protocol in §5. No dependency approval is implied by accepting the card.
+- Required implementation prerequisites: the user explicitly approved the lossless YAML editor and §11 normal dependency closure in this conversation after the initial spec was pushed; demonstrated offline source exclusion and supported SQLite snapshot protocol in §5 remain required.
+- Before implementation, a second fetch/rebase incorporated master `c6568bb821b24c7512f73dc3b5ea3b2fb3f16f0b` (#821/#823 UI changes, no storage-file delta). The original published v1 spec commit `93ae6c763b7176ff953526a1fc8c0038c7e8b67c` remains the historical pre-code source; the rebased local spec commit is `78eefa306d26b18e5da3959b7d4416f613268c50`.
 
 ## 2. Review conclusions and source facts
 
@@ -201,8 +202,21 @@ Expected normal dependency closure with optional/default editor features disable
 
 rowan/countme/hashbrown/rustc-hash/text-size metadata inspected reports MIT OR Apache-2.0 (equivalent spelling for rustc-hash). text-size 1.1.1 license was confirmed from its published archive Cargo.toml at `https://static.crates.io/crates/text-size/text-size-1.1.1.crate`, read in memory without installation or execution. rowan 0.16.2 is yanked in the inspected registry; ensure the actual lock resolution uses approved non-yanked 0.16.1. hashbrown 0.14.5 and rustc-hash 1.1.0 already exist in the baseline lock, but feature unification and final closure still need verification. No upstream dev-dependencies, benchmarks or tests become Vega dependencies.
 
-Approval is pending. Do not modify Cargo manifests/lock or vendor an alternative before approval. Existing rusqlite backup feature is defined as `backup = []` in the pinned package and adds no new crate. Its inspected `Backup::new` requires distinct source/destination connections; `run_to_completion` retries Busy/Locked without a deadline. Migration must instead use bounded steps with cancellation and an explicit busy outcome. Exact writer-exclusion/backup interaction still requires synthetic CI validation; feature availability is not evidence of a safe source protocol.
+Approval received from the user in this conversation for the proposed direct dependency and normal closure above. The approved change is not yet applied to manifests/lock; verify actual resolution and features when adding it. Existing rusqlite backup feature is defined as `backup = []` in the pinned package and adds no new crate. Its inspected `Backup::new` requires distinct source/destination connections; `run_to_completion` retries Busy/Locked without a deadline. Migration must instead use bounded steps with cancellation and an explicit busy outcome. Exact writer-exclusion/backup interaction still requires synthetic CI validation; feature availability is not evidence of a safe source protocol.
 
-## 12. Change record
+## 12. Confirmed implementation blocker: legacy filesystem exclusion
+
+Independent read-only assessment of the pinned writer paths confirmed that no inspected in-app lock establishes exclusion of all mutable legacy files. `ProviderSettingsService::save_provider` owns config_root/config_path without a DB handle and calls `keystore::set_key` then `ConfigEdit::save`. Both writers have process-local mutexes only; credential `renameat` and config rename do not participate in SQLite writer locking. The same issue applies to direct reasoning/model capability saves and already-running tools with scratch filesystem access. Existing per-child delegated flock does not fence those writers.
+
+A DB-only protocol is a candidate: connection A opens existing source without application pragma changes and holds bounded `BEGIN IMMEDIATE`; a separate reader B opened after acquisition backs up to destination C via bounded steps. Do not back up from A's active write transaction: inspected bundled SQLite returns Busy for that source state. This is static feasibility, not a tested protocol, and source WAL/SHM/checkpoint effects still need measurement. Even a successful DB protocol does not freeze config/credentials/scratch/skills.
+
+Process/open-file enumeration and hashes can reject observed activity, but they do not exclude a writer starting after inspection or provide a consistent filesystem generation. No implementation may substitute them for the frozen exclusion requirement.
+
+**Product decision required before historical migration can be enabled:** select an externally enforceable offline workflow covering all selected source volumes, or authorize a concrete OS-enforced isolation design for ordinary-session migration. Merely asking the user to quit apps, or accepting best-effort change detection, is not the existing safety contract. Weakening that contract requires a separate explicit acceptance change; dependency approval did not grant it.
+
+Until that decision, retain existing production startup/path resolution, keep the new pure AppPaths value unconnected, do not add unneeded dependencies or publish a path-only partial cutover. No implementation review, behavioral tests or final CI has yet been performed for the partial foundation.
+
+## 13. Change record
 
 - v1: transcribed #820 into a repository implementation contract; corrected existing YAML dependency, SQLite BLOB images, user model-override classification and legacy-lock assumptions; added explicit dependency and offline-source exclusion release gates. No product behavior change.
+- v1.1: recorded explicit YAML editor approval and refreshed source baseline; began pure path-value implementation without changing current production resolution. Independent assessment confirmed a legacy filesystem exclusion blocker; recorded evidence and requested a product decision without weakening the contract.

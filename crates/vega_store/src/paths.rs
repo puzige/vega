@@ -18,7 +18,102 @@
 //! There is **no** automatic migration from the legacy `$HOME/.vega/` layout
 //! (pre-release, no real users; tech-spec §6).
 
-use std::path::{Path, PathBuf};
+use std::ffi::OsStr;
+use std::path::{Component, Path, PathBuf};
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AppPathsError {
+    #[error("VEGA_HOME must be a nonempty absolute path without parent traversal")]
+    InvalidOverride,
+    #[error("an absolute user home directory is required")]
+    HomeUnavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppPaths {
+    root: PathBuf,
+    explicit: bool,
+}
+
+impl AppPaths {
+    pub fn from_home(
+        user_home: Option<&Path>,
+        vega_home: Option<&OsStr>,
+    ) -> Result<Self, AppPathsError> {
+        if let Some(value) = vega_home {
+            let path = Path::new(value);
+            if !valid_home_path(path) {
+                return Err(AppPathsError::InvalidOverride);
+            }
+            return Ok(Self {
+                root: path.to_path_buf(),
+                explicit: true,
+            });
+        }
+        let home = user_home
+            .filter(|path| valid_home_path(path))
+            .ok_or(AppPathsError::HomeUnavailable)?;
+        Ok(Self {
+            root: home.join(".vega"),
+            explicit: false,
+        })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn is_explicit(&self) -> bool {
+        self.explicit
+    }
+
+    pub fn config_file(&self) -> PathBuf {
+        self.root.join("config.yaml")
+    }
+
+    pub fn credentials_dir(&self) -> PathBuf {
+        self.root.join("credentials")
+    }
+
+    pub fn data_dir(&self) -> PathBuf {
+        self.root.join("data")
+    }
+
+    pub fn database_file(&self) -> PathBuf {
+        self.data_dir().join("vega.db")
+    }
+
+    pub fn scratch_dir(&self) -> PathBuf {
+        self.data_dir().join("scratch")
+    }
+
+    pub fn skills_dir(&self) -> PathBuf {
+        self.root.join("skills")
+    }
+
+    pub fn logs_dir(&self) -> PathBuf {
+        self.root.join("logs")
+    }
+
+    pub fn cache_dir(&self) -> PathBuf {
+        self.root.join("cache")
+    }
+
+    pub fn run_dir(&self) -> PathBuf {
+        self.root.join("run")
+    }
+
+    pub fn backups_dir(&self) -> PathBuf {
+        self.root.join("backups")
+    }
+}
+
+fn valid_home_path(path: &Path) -> bool {
+    path.is_absolute()
+        && !path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+}
 
 /// Resolves the config root from an `XDG_CONFIG_HOME` value and a home dir.
 ///
