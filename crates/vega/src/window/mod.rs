@@ -138,6 +138,7 @@ pub(crate) struct VegaWindow {
     pub(crate) mcp_settings: Option<vega_conversation::McpServerSettingsService>,
     pub(crate) pricing_controller: PricingController,
     pub(crate) stream_view: Option<(String, Entity<ConversationStream>)>,
+    pub(crate) fork_focus_thread: Option<String>,
     conversation_loading: conversation_loading::ConversationLoading,
     thread_scroll_states: scroll_state::ThreadScrollStateLru,
     pub(crate) message_location_route_thread_id: Option<String>,
@@ -289,6 +290,7 @@ impl VegaWindow {
             this.close_branch_if_route_stale(cx);
             this.close_commit_if_route_stale(cx);
             if cx.global::<SettingsOpen>().0 {
+                this.fork_focus_thread = None;
                 return;
             }
             this.invalidate_model_catalog();
@@ -347,6 +349,7 @@ impl VegaWindow {
                 .and_then(|settings| settings.0.clone()),
             pricing_controller: PricingController::new(pricing_service),
             stream_view: None,
+            fork_focus_thread: None,
             conversation_loading: conversation_loading::ConversationLoading::default(),
             thread_scroll_states: scroll_state::ThreadScrollStateLru::default(),
             message_location_route_thread_id: None,

@@ -214,6 +214,8 @@
 "ui.branch_in_new_chat" = "在新聊天中分支"
 "ui.fork_busy" = "请等待当前操作结束后，再创建分支。"
 "ui.fork_failed" = "新聊天创建失败，请重试。"
+"ui.fork_creating" = "正在创建分支…"
+"ui.fork_created_not_opened" = "分支已创建，请从侧栏打开。"
 "ui.fork_historical_delegation" = "Recorded {tool}"
 "ui.copy_message" = "复制消息"
 "ui.copy_original" = "复制原文"

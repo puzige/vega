@@ -15,6 +15,13 @@ impl VegaWindow {
         {
             self.completion_attention.pending_tail_thread = None;
         }
+        if self
+            .fork_focus_thread
+            .as_deref()
+            .is_some_and(|target| Some(target) != thread_id)
+        {
+            self.fork_focus_thread = None;
+        }
         if self.message_location_route_thread_id.as_deref() == thread_id {
             return;
         }

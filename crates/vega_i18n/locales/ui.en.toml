@@ -214,6 +214,8 @@
 "ui.branch_in_new_chat" = "Branch in new chat"
 "ui.fork_busy" = "Wait for the current action to finish, then branch again."
 "ui.fork_failed" = "Could not create the new chat. Try again."
+"ui.fork_creating" = "Creating branch…"
+"ui.fork_created_not_opened" = "Branch created. Open it from the sidebar."
 "ui.fork_historical_delegation" = "Recorded {tool}"
 "ui.copy_message" = "Copy message"
 "ui.copy_original" = "Copy original text"

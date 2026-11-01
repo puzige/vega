@@ -678,6 +678,10 @@ impl Render for VegaWindow {
                                 active.focus_pending = false;
                             }
                         }
+                        if self.fork_focus_thread.as_deref() == Some(thread.id.as_str()) {
+                            self.fork_focus_thread = None;
+                            stream.update(cx, |stream, cx| stream.focus_composer(window, cx));
+                        }
                         if returning_from_settings {
                             stream.update(cx, |stream, cx| {
                                 stream.request_skill_projection(cx);

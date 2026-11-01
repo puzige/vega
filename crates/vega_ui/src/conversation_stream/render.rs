@@ -1822,6 +1822,7 @@ impl Render for ConversationStream {
                                                         },
                                                         Some(entry) => {
                                                             this.prepare_partial_compaction_menu(index, cx);
+                                                            this.prepare_fork_menu(index, cx);
                                                             let stream = cx.entity().downgrade();
                                                             let body = render_stream_entry(
                                                                 entry,
@@ -1853,6 +1854,7 @@ impl Render for ConversationStream {
                                                                 user, user_bubble, colors: theme(cx).colors, enabled: this.message_actions_enabled(),
                                                                 timestamp: this.entry_timestamp(index), focus: this.timestamp_focus(index),
                                                                 fork: this.fork_request_for_entry(index).map(|request| (request, cx.entity().downgrade())),
+                                                                fork_pending: this.fork_pending.as_deref(),
                                                             }, window, cx)
                                                         },
                                                         None => div().into_any_element(),

@@ -850,6 +850,8 @@ impl StreamModel {
 pub(crate) struct MessageCopy {
     pub(super) user_disclosure:
         std::rc::Rc<std::cell::RefCell<super::user_disclosure::UserDisclosure>>,
+    pub(super) fork_menu:
+        std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<super::selection_menu::MenuBuilder>>>>,
     pub(super) compaction_menu:
         std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<super::selection_menu::MenuBuilder>>>>,
     pub(super) id: u64,
@@ -935,6 +937,7 @@ impl MessageCopy {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             user_disclosure: Default::default(),
             compaction_menu: Default::default(),
+            fork_menu: Default::default(),
             text: std::rc::Rc::new(std::cell::RefCell::new(text.to_owned())),
             live_projection_unavailable: false,
             generated_notices: Default::default(),
