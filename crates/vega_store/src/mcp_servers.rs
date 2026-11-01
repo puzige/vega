@@ -738,13 +738,13 @@ pub fn finish_remove(conn: &Connection, id: &str) -> Result<bool, McpStoreError>
         conn,
         crate::write_coordination::WriteCategory::McpServers,
     )?;
-    if let Some(row) = find(&tx, id)? {
-        if row.deleting {
-            tx.execute(
+    if let Some(row) = find(&tx, id)?
+        && row.deleting
+    {
+        tx.execute(
                 "INSERT INTO mcp_config_identities (id, declaration, projected_revision, tombstoned) VALUES (?1, ?2, ?3, 1) ON CONFLICT(id) DO UPDATE SET tombstoned = 1",
                 params![id, serde_json::to_string(&crate::mcp_config::Declaration::from_row(&row)?).map_err(|_| McpStoreError::Invalid)?, i64::try_from(row.config_revision).map_err(|_| McpStoreError::Invalid)?],
-            )?;
-        }
+        )?;
     }
     let count = tx.execute(
         "DELETE FROM mcp_servers WHERE id = ?1 AND deleting = 1 \

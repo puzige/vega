@@ -1,4 +1,4 @@
-use vega_conversation::mcp_settings::McpServerSettingsService;
+use vega_conversation::McpServerSettingsService;
 use vega_conversation::types::{McpEnvironmentVariable, McpServerForm, McpServerTransport};
 
 #[test]
