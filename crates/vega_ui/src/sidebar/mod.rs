@@ -146,6 +146,24 @@ pub fn set_thread_running(thread_id: &str, running: bool, cx: &mut App) {
         .map(|global| global.0.clone())
         .unwrap_or_default();
     next.set(thread_id, running);
+    publish_running_threads(next, cx);
+}
+
+pub fn set_thread_awaiting_answer(thread_id: &str, waiting: bool, cx: &mut App) {
+    let mut next = cx
+        .try_global::<RunningThreadsGlobal>()
+        .map(|global| global.0.clone())
+        .unwrap_or_default();
+    next.set_awaiting_answer(thread_id, waiting);
+    publish_running_threads(next, cx);
+}
+
+pub fn thread_is_awaiting_answer(thread_id: &str, cx: &App) -> bool {
+    cx.try_global::<RunningThreadsGlobal>()
+        .is_some_and(|running| running.0.is_awaiting_answer(thread_id))
+}
+
+fn publish_running_threads(next: vega_conversation::types::RunningThreads, cx: &mut App) {
     if cx
         .try_global::<RunningThreadsGlobal>()
         .is_some_and(|global| global.0 == next)

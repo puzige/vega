@@ -112,9 +112,7 @@ impl VegaWindow {
                 }
                 run.question_notifications.insert(request_id.clone(), None);
                 let queue_generation = run.queue_generation.clone();
-                if self.completion_is_foreground(&thread_id, cx) {
-                    return;
-                }
+                vega_ui::sidebar::set_thread_awaiting_answer(&thread_id, true, cx);
                 let Some(thread) = cx.global::<VegaStore>().0.as_ref().ok().and_then(|store| {
                     vega_conversation::threads::get_thread(store, &thread_id).ok()
                 }) else {
@@ -136,6 +134,9 @@ impl VegaWindow {
                 }
             }
             UserQuestionAttention::Resolved { request_id } => {
+                if stream.read(cx).pending_user_question_id(cx).is_none() {
+                    vega_ui::sidebar::set_thread_awaiting_answer(&thread_id, false, cx);
+                }
                 if let Some(tag) = self
                     .agent_controller
                     .active
