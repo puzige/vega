@@ -6,6 +6,8 @@ pub mod codex_tasks;
 pub mod command_scope;
 mod composer_predictions;
 pub mod display_history;
+#[cfg(test)]
+mod fork_title_tests;
 mod git_workspace;
 pub mod history;
 pub mod link_preview;

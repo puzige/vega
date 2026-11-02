@@ -14,6 +14,7 @@ pub enum ThreadsBlockEvent {
         started: std::time::Instant,
     },
     OpeningChanged,
+    ForkCreated(String),
     DraftOpened,
 }
 
@@ -772,7 +773,9 @@ impl ThreadsBlock {
             return;
         };
         let base_count = if thread.is_standalone() { 7 } else { 9 };
-        let count = (base_count + self.organization_actions(thread_id).len()) as isize;
+        let count = (base_count
+            + usize::from(Self::supports_fork(thread))
+            + self.organization_actions(thread_id).len()) as isize;
         self.actions_highlight =
             (self.actions_highlight as isize + delta).rem_euclid(count) as usize;
         self.actions_scroll.scroll_to_item(self.actions_highlight);
@@ -1049,6 +1052,92 @@ impl ThreadsBlock {
         .detach();
     }
 
+    fn supports_fork(thread: &Thread) -> bool {
+        thread.backend == vega_conversation::types::TaskBackend::Native
+            && !thread.is_standalone()
+            && thread.parent_thread_id.is_none()
+    }
+
+    fn fork_unavailable(&self, thread: &Thread, cx: &App) -> Option<&'static str> {
+        if self.action_pending || task_mutation_busy(cx) || thread_is_running(&thread.id, cx) {
+            return Some("ui.fork_busy");
+        }
+        let available = cx
+            .try_global::<VegaStore>()
+            .and_then(|store| store.0.as_ref().ok())
+            .and_then(|store| {
+                vega_store::thread_fork::latest_fork_cutoff(store.conn(), &thread.id)
+                    .ok()
+                    .flatten()
+            })
+            .is_some();
+        (!available).then_some("ui.fork_no_completed_reply")
+    }
+
+    fn fork_latest(&mut self, thread: &Thread, cx: &mut Context<Self>) {
+        if !Self::supports_fork(thread) {
+            return;
+        }
+        if let Some(reason) = self.fork_unavailable(thread, cx) {
+            self.error = Some(crate::localized_copy::LocalizedCopy::new(reason));
+            cx.notify();
+            return;
+        }
+        let database = cx
+            .global::<VegaStore>()
+            .0
+            .as_ref()
+            .ok()
+            .and_then(|store| store.database_path())
+            .map(Path::to_path_buf);
+        let Some(database) = database else {
+            self.error = Some(crate::localized_copy::LocalizedCopy::new("ui.fork_failed"));
+            cx.notify();
+            return;
+        };
+        self.observe_visit_route(cx);
+        let generation = self.visit_navigation_generation;
+        let route = Self::current_visit_route(cx);
+        let source = thread.id.clone();
+        self.action_pending = true;
+        self.error = None;
+        self.start_visit_loading(&source, cx);
+        crate::navigation::begin_task_mutation(cx);
+        let worker = cx.background_executor().spawn(async move {
+            let store = Store::open_existing(database).map_err(|_| ())?;
+            let _admission =
+                vega_store::thread_admission::try_acquire(store.database_identity(), &source)
+                    .map_err(|_| ())?
+                    .ok_or(())?;
+            conversation::fork_latest_thread(&store, &source).map_err(|_| ())
+        });
+        cx.spawn(async move |this, cx| {
+            let result = worker.await;
+            cx.update(crate::navigation::finish_task_mutation);
+            let _ = this.update(cx, |this, cx| {
+                this.action_pending = false;
+                this.clear_visit_loading(cx);
+                this.observe_visit_route(cx);
+                let current = generation == this.visit_navigation_generation
+                    && route == Self::current_visit_route(cx);
+                this.reload(cx);
+                match result {
+                    Ok(thread) if current => {
+                        cx.emit(ThreadsBlockEvent::ForkCreated(thread.id.clone()));
+                        this.open_thread(&thread.id, cx);
+                    }
+                    Ok(_) => {}
+                    Err(()) => {
+                        this.error =
+                            Some(crate::localized_copy::LocalizedCopy::new("ui.fork_failed"));
+                    }
+                }
+                cx.refresh_windows();
+            });
+        })
+        .detach();
+    }
+
     fn activate_action_index(
         &mut self,
         thread_id: &str,
@@ -1103,7 +1192,13 @@ impl ThreadsBlock {
             }
             (true, 8) | (false, 6) => self.request_delete(&thread, cx),
             (_, index) => {
-                let organization_offset = if project_bound { 9 } else { 7 };
+                let base_count = if project_bound { 9 } else { 7 };
+                let has_fork = Self::supports_fork(&thread);
+                if has_fork && index == base_count {
+                    self.fork_latest(&thread, cx);
+                    return;
+                }
+                let organization_offset = base_count + usize::from(has_fork);
                 if let Some((_, action)) = self
                     .organization_actions(thread_id)
                     .get(index.saturating_sub(organization_offset))
@@ -1934,6 +2029,11 @@ impl ThreadsBlock {
             (vega_i18n::t("ui.go_to_settings"), false),
             (vega_i18n::t("ui.delete"), true),
         ]);
+        let fork_index = Self::supports_fork(thread).then_some(actions.len());
+        let fork_unavailable = self.fork_unavailable(thread, cx);
+        if fork_index.is_some() {
+            actions.push((vega_i18n::t("ui.branch_in_new_chat"), false));
+        }
         let mut actions: Vec<(String, bool)> = actions
             .into_iter()
             .map(|(label, danger)| (label.to_string(), danger))
@@ -1984,6 +2084,9 @@ impl ThreadsBlock {
                     .map(|(index, (label, danger))| {
                         let thread_id = thread.id.clone();
                         let selected = self.actions_highlight == index;
+                        let disabled_reason = (fork_index == Some(index))
+                            .then_some(fork_unavailable)
+                            .flatten();
                         let mut item = div()
                             .id(ElementId::Name(
                                 format!("{action_prefix}thread-action-{thread_id}-{index}").into(),
@@ -1996,7 +2099,9 @@ impl ThreadsBlock {
                             .px_2()
                             .rounded_md()
                             .text_size(px(Typography::SIDEBAR))
-                            .text_color(if danger {
+                            .text_color(if disabled_reason.is_some() {
+                                colors.text_tertiary
+                            } else if danger {
                                 colors.danger
                             } else {
                                 colors.text_primary
@@ -2007,6 +2112,9 @@ impl ThreadsBlock {
                                 MouseButton::Left,
                                 cx.listener(move |this, _, window, cx| {
                                     cx.stop_propagation();
+                                    if disabled_reason.is_some() {
+                                        return;
+                                    }
                                     let clear_action_focus = index == 0
                                         && this.focused_thread_action.is_some()
                                         && this.focused_thread_action == this.actions_row;
@@ -2019,6 +2127,11 @@ impl ThreadsBlock {
                                 }),
                             )
                             .child(label);
+                        if let Some(reason) = disabled_reason {
+                            item = item.tooltip(move |_, cx| {
+                                crate::icons::tooltip(vega_i18n::t(reason), cx)
+                            });
+                        }
                         if selected {
                             item = item.bg(colors.bg_active);
                         }

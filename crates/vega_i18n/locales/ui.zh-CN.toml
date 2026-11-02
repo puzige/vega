@@ -213,6 +213,7 @@
 "ui.copy_final_reply" = "复制最终回复"
 "ui.branch_in_new_chat" = "在新聊天中分支"
 "ui.fork_busy" = "请等待当前操作结束后，再创建分支。"
+"ui.fork_no_completed_reply" = "此对话需要先有一条已完成的回复，才能创建分支。"
 "ui.fork_failed" = "新聊天创建失败，请重试。"
 "ui.fork_creating" = "正在创建分支…"
 "ui.fork_created_not_opened" = "分支已创建，请从侧栏打开。"

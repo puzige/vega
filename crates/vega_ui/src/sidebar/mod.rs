@@ -192,6 +192,7 @@ impl Global for PendingDeleteConfirm {}
 
 pub enum SidebarEvent {
     ThreadDeleted(String),
+    ForkCreated(String),
     ThreadOpened {
         thread_id: String,
         started: std::time::Instant,
@@ -433,6 +434,9 @@ impl Sidebar {
                 });
             }
             ThreadsBlockEvent::OpeningChanged => cx.emit(SidebarEvent::OpeningChanged),
+            ThreadsBlockEvent::ForkCreated(thread_id) => {
+                cx.emit(SidebarEvent::ForkCreated(thread_id.clone()));
+            }
             ThreadsBlockEvent::DraftOpened => {
                 self.projects_block.update(cx, ProjectsBlock::reload);
                 cx.refresh_windows();

@@ -314,6 +314,9 @@ impl VegaWindow {
             .map(|root| Arc::new(PricingSettingsService::new(root.join("pricing.json"))));
         let sidebar = cx.new(Sidebar::new);
         cx.subscribe(&sidebar, |this, _, event: &SidebarEvent, cx| match event {
+            SidebarEvent::ForkCreated(thread_id) => {
+                this.fork_focus_thread = Some(thread_id.clone());
+            }
             SidebarEvent::ThreadDeleted(thread_id) => {
                 this.cancel_composer_prediction_for_thread(thread_id, cx);
                 this.cancel_agent_for_thread(thread_id, cx);

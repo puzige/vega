@@ -85,6 +85,55 @@ fn mapped<'a>(map: &'a BTreeMap<String, String>, id: &str) -> Result<&'a str, Fo
         .ok_or_else(|| corrupt("unresolved prefix reference"))
 }
 
+fn numbered_title(title: &str) -> Option<(&str, u64)> {
+    let (base, suffix) = title.strip_suffix(')')?.rsplit_once(" (")?;
+    let number = suffix.parse::<u64>().ok()?;
+    (number >= 2 && suffix == number.to_string()).then_some((base, number))
+}
+
+fn next_fork_title(
+    tx: &Transaction<'_>,
+    source: &crate::threads::ThreadRow,
+) -> Result<String, ForkError> {
+    let (base, mut number) =
+        if source.forked_from_thread_id.is_some() || source.forked_from_message_id.is_some() {
+            numbered_title(&source.title).unwrap_or((&source.title, 1))
+        } else {
+            (source.title.as_str(), 1)
+        };
+    let mut statement = tx.prepare(
+        "SELECT title FROM threads WHERE project_id=?1 AND parent_thread_id IS NULL AND workspace_owner_thread_id IS NULL",
+    )?;
+    for title in statement.query_map([&source.project_id], |row| row.get::<_, String>(0))? {
+        let title = title?;
+        if let Some((candidate_base, candidate_number)) = numbered_title(&title)
+            && candidate_base == base
+        {
+            number = number.max(candidate_number);
+        }
+    }
+    let next = number
+        .checked_add(1)
+        .ok_or_else(|| corrupt("fork title sequence exhausted"))?;
+    Ok(format!("{base} ({next})"))
+}
+
+pub fn latest_fork_cutoff(
+    conn: &Connection,
+    thread_id: &str,
+) -> Result<Option<String>, rusqlite::Error> {
+    let mut statement = conn.prepare(
+        "SELECT m.id FROM messages m WHERE m.thread_id=?1 AND m.role='assistant' AND m.status='done' AND EXISTS(SELECT 1 FROM assistant_responses r WHERE r.message_id=m.id AND r.kind='final') ORDER BY m.seq DESC,m.id DESC",
+    )?;
+    for message in statement.query_map([thread_id], |row| row.get::<_, String>(0))? {
+        let message = message?;
+        if crate::messages::completed_response_text(conn, &message)?.is_some() {
+            return Ok(Some(message));
+        }
+    }
+    Ok(None)
+}
+
 pub fn clone_prefix(
     tx: &Transaction<'_>,
     source_thread_id: &str,
@@ -142,7 +191,8 @@ pub fn clone_prefix(
         return Err(corrupt("duplicate tool sequence"));
     }
     let destination = fresh_id();
-    tx.execute("INSERT INTO threads(id,project_id,title,mode,permission_mode,model,backend,status,pinned,unread,created_at,updated_at,forked_from_thread_id,forked_from_message_id) VALUES(?1,?2,?3,?4,'confirm',?5,'native','active',0,0,?6,?6,?7,?8)",params![destination,source.project_id,source.title,source.mode,source.model,now,source_thread_id,through_message_id])?;
+    let title = next_fork_title(tx, &source)?;
+    tx.execute("INSERT INTO threads(id,project_id,title,mode,permission_mode,model,backend,status,pinned,unread,created_at,updated_at,forked_from_thread_id,forked_from_message_id) VALUES(?1,?2,?3,?4,'confirm',?5,'native','active',0,0,?6,?6,?7,?8)",params![destination,source.project_id,title,source.mode,source.model,now,source_thread_id,through_message_id])?;
     tx.execute(
         "INSERT INTO thread_timestamp_fork_prefixes(thread_id,prefix_seq) SELECT ?1,prefix_seq FROM thread_timestamp_fork_prefixes WHERE thread_id=?2 AND prefix_seq<?3",
         params![destination, source_thread_id, cutoff.seq],
