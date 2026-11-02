@@ -51,7 +51,11 @@ pub fn origin(conn: &Connection, thread: &str, call: &str) -> rusqlite::Result<M
             thread_id: thread.clone(),
             call_id: call.clone(),
         };
-        if !prefix.is_some_and(|prefix| message_seq <= prefix) {
+        if prefix.is_some_and(|prefix| message_seq > prefix)
+            || (prefix.is_none()
+                && owner.forked_from_thread_id.is_none()
+                && owner.forked_from_message_id.is_none())
+        {
             return Ok(current);
         }
         let (Some(parent), Some(cutoff)) = (
@@ -64,8 +68,11 @@ pub fn origin(conn: &Connection, thread: &str, call: &str) -> rusqlite::Result<M
         if cutoff.thread_id != parent || cutoff.role != "assistant" || cutoff.status != "done" {
             return Err(rusqlite::Error::InvalidQuery);
         }
-        if prefix != Some(cutoff.seq) {
+        if prefix.is_some_and(|prefix| prefix != cutoff.seq) {
             return Err(rusqlite::Error::InvalidQuery);
+        }
+        if message_seq > cutoff.seq {
+            return Ok(current);
         }
         let source = crate::threads::find(conn, parent)?.ok_or(rusqlite::Error::InvalidQuery)?;
         if source.project_id != owner.project_id {

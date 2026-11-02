@@ -52,7 +52,7 @@ fn insert_mutation(
                 path: "/fixture/file".into(),
                 old_string_bytes: 3,
                 new_string_bytes: 4,
-                edit_count: Some(1),
+                edit_count: None,
                 fingerprint_v1: "b".repeat(64),
             },
             vega_tools::EditSuccessOutput {
@@ -167,6 +167,37 @@ fn legacy_fork_and_repeated_fork_recover_without_rewriting_receipts() {
 }
 
 #[test]
+fn early_legacy_fork_without_timestamp_markers_recovers_prefix_and_new_calls() {
+    let store = fixture("write");
+    let first = fork(&store, "source");
+    erase_origins(&store);
+    store
+        .conn()
+        .execute("DELETE FROM thread_timestamp_fork_prefixes", [])
+        .unwrap();
+    assert!(recover_terminal_tools(store.conn(), "project", &first).is_ok());
+    store.conn().execute(
+        "INSERT INTO messages(id,thread_id,seq,role,content,status,created_at) VALUES('new-answer',?1,2,'assistant','done','done',3)", [&first],
+    ).unwrap();
+    insert_mutation(
+        &store,
+        &first,
+        "new-answer",
+        "new-call",
+        2,
+        "write",
+        &first,
+        "new-call",
+    );
+    assert!(recover_terminal_tools(store.conn(), "project", &first).is_ok());
+    store.conn().execute(
+        "UPDATE tool_calls SET output_text=(SELECT output_text FROM tool_calls WHERE id=?1) WHERE id='new-call'",
+        [&cloned_call(&store, &first)],
+    ).unwrap();
+    assert!(recover_terminal_tools(store.conn(), "project", &first).is_err());
+}
+
+#[test]
 fn saved_origins_survive_source_deletion_and_another_fork() {
     let store = fixture("write");
     let first = fork(&store, "source");
@@ -178,7 +209,7 @@ fn saved_origins_survive_source_deletion_and_another_fork() {
 
 #[test]
 fn new_mutations_in_fork_require_their_own_identity_after_source_deletion() {
-    let store = fixture("edit");
+    let store = fixture("write");
     let first = fork(&store, "source");
     delete_source(&store);
     store.conn().execute(
