@@ -213,6 +213,7 @@
 "ui.copy_final_reply" = "Copy final reply"
 "ui.branch_in_new_chat" = "Branch in new chat"
 "ui.fork_busy" = "Wait for the current action to finish, then branch again."
+"ui.fork_no_completed_reply" = "A completed reply is required to branch this conversation."
 "ui.fork_failed" = "Could not create the new chat. Try again."
 "ui.fork_creating" = "Creating branch…"
 "ui.fork_created_not_opened" = "Branch created. Open it from the sidebar."

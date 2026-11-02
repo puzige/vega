@@ -56,10 +56,30 @@ pub fn fork_thread(
     source_thread_id: &str,
     through_message_id: &str,
 ) -> Result<Thread, ForkThreadError> {
+    fork_thread_at(store, source_thread_id, Some(through_message_id))
+}
+
+pub fn fork_latest_thread(
+    store: &Store,
+    source_thread_id: &str,
+) -> Result<Thread, ForkThreadError> {
+    fork_thread_at(store, source_thread_id, None)
+}
+
+fn fork_thread_at(
+    store: &Store,
+    source_thread_id: &str,
+    through_message_id: Option<&str>,
+) -> Result<Thread, ForkThreadError> {
     use vega_store::thread_fork::ForkError;
     let tx = store.immediate_transaction().map_err(ForkError::from)?;
-    let row =
-        vega_store::thread_fork::clone_prefix(&tx, source_thread_id, through_message_id, now_ms())?;
+    let cutoff = match through_message_id {
+        Some(message_id) => message_id.to_owned(),
+        None => vega_store::thread_fork::latest_fork_cutoff(&tx, source_thread_id)
+            .map_err(ForkError::from)?
+            .ok_or(ForkError::InvalidCutoff)?,
+    };
+    let row = vega_store::thread_fork::clone_prefix(&tx, source_thread_id, &cutoff, now_ms())?;
     let source =
         context_compaction::load_source_in_transaction(&tx, &row.id).map_err(ForkError::from)?;
     crate::agent::history_from_context_source(&source, "", None)
