@@ -1847,16 +1847,13 @@ pub(super) fn message_with_copy(
             row = row.child(
                 div()
                     .id("message-fork-pending")
+                    .size(px(Layout::COPY_ACTION_SIZE))
                     .flex()
                     .items_center()
-                    .gap_1()
-                    .h(px(Layout::COPY_ACTION_SIZE))
-                    .px_1()
-                    .text_size(px(Typography::METADATA))
+                    .justify_center()
                     .text_color(colors.text_secondary)
                     .aria_label(vega_i18n::t("ui.fork_creating"))
-                    .child(indicator)
-                    .child(vega_i18n::t("ui.fork_creating")),
+                    .child(indicator),
             );
         } else if !fork_enabled {
             row = row.child(

@@ -76,6 +76,8 @@ pub fn fork_thread(
         crate::attachments::validate_images(&attachments)
             .map_err(|error| ForkError::CorruptHistory(error.to_string()))?;
     }
+    crate::agent::recover_terminal_tools(&tx, &row.project_id, &row.id)
+        .map_err(ForkThreadError::History)?;
     let thread = thread_from_row(&row).map_err(ForkThreadError::History)?;
     tx.commit().map_err(ForkError::from)?;
     Ok(thread)
