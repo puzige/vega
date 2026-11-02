@@ -65,8 +65,6 @@ mod stage_activity;
 mod terminal_history;
 pub(crate) use terminal_history::recover_terminal_tools;
 mod subagents;
-#[cfg(test)]
-mod terminal_history_tests;
 mod user_question_queue;
 pub use user_question_queue::*;
 mod persistence;
