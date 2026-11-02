@@ -10,6 +10,7 @@ pub mod context_precompute;
 pub mod context_projection;
 pub mod credential_continuation;
 pub mod credential_privacy;
+pub mod fork_mutations;
 pub mod git_detect;
 pub mod image_attachments;
 pub mod keystore;
@@ -107,6 +108,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0052_submission_diagnostics.sql"),
     include_str!("../migrations/0053_response_start_times.sql"),
     include_str!("../migrations/0054_mcp_yaml_projection.sql"),
+    include_str!("../migrations/0055_fork_mutation_origins.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.

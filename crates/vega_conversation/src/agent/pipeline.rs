@@ -1546,56 +1546,8 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             )?
         };
 
-        let completed_tool_results = tool_calls::terminal_results(&transaction, &thread_id)
-            .map_err(|error| runtime_store_error(std::io::Error::other(error.to_string())))?
-            .into_iter()
-            .map(|(call_id, call)| -> Result<_, ConversationError> {
-                let approval = ApprovalAudit::from_json(&call.approval).map_err(|_| {
-                    ConversationError::CorruptRow(format!(
-                        "terminal tool call {call_id} has invalid approval"
-                    ))
-                })?;
-                let status = match call.status.as_str() {
-                    "success" => RuntimeToolStatus::Success,
-                    "failed" => RuntimeToolStatus::Failed,
-                    "rejected" => RuntimeToolStatus::Rejected,
-                    "cancelled" => RuntimeToolStatus::Cancelled,
-                    other => {
-                        return Err(ConversationError::CorruptRow(format!(
-                            "terminal tool call {call_id} has status {other}"
-                        )));
-                    }
-                };
-                let canonical_input = validate_recovered_projection(
-                    &thread.project_id,
-                    &thread_id,
-                    &call_id,
-                    &call.tool,
-                    &call.input_json,
-                    &call.output,
-                    status,
-                    &approval,
-                    call.exit_code,
-                    call.duration_ms,
-                )?;
-                let completed = vega_runtime::CompletedToolCall {
-                    tool: call.tool,
-                    input_json: canonical_input,
-                    result: vega_runtime::RuntimeToolResult {
-                        call_id: call_id.clone(),
-                        output: call.output,
-                        status,
-                        reused: true,
-                        exit_code: call.exit_code,
-                        duration_ms: call.duration_ms,
-                        truncated: None,
-                        approval: Some(approval_audit_to_runtime(&approval)),
-                        remember_rule: None,
-                    },
-                };
-                Ok((call_id, completed))
-            })
-            .collect::<Result<_, _>>()?;
+        let completed_tool_results =
+            recover_terminal_tools(&transaction, &thread.project_id, &thread_id)?;
         let next_tool_seq =
             tool_calls::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
         let foreign_call_ids =
