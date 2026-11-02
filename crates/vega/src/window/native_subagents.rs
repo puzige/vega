@@ -312,22 +312,22 @@ impl VegaWindow {
         {
             return;
         }
-        if !stream.read(cx).fork_is_idle()
+        if !stream.read(cx).fork_is_idle(cx)
             || self
                 .agent_controller
                 .active
                 .contains_key(&request.thread_id)
             || thread_is_running(&request.thread_id, cx)
         {
-            stream.update(cx, |stream, cx| {
-                stream.apply_codex_route_error("ui.fork_busy", cx)
-            });
             return;
         }
         let route = self.message_location_route_generation;
         let Some(database) = self.context_database(cx) else {
             stream.update(cx, |stream, cx| {
-                stream.apply_codex_route_error("ui.fork_failed", cx)
+                stream.apply_codex_route_failure(
+                    vega_ui::localized_copy::LocalizedCopy::new("ui.fork_failed"),
+                    cx,
+                )
             });
             return;
         };
@@ -335,9 +335,6 @@ impl VegaWindow {
             self.trusted_actions
                 .acquire(TrustedActionKind::ConversationFork, route, 0)
         else {
-            stream.update(cx, |stream, cx| {
-                stream.apply_codex_route_error("ui.fork_busy", cx)
-            });
             return;
         };
         stream.update(cx, |stream, cx| {
@@ -380,12 +377,20 @@ impl VegaWindow {
                             cx.refresh_windows();
                         } else {
                             stream.update(cx, |stream, cx| {
-                                stream.apply_codex_route_error("ui.fork_created_not_opened", cx)
+                                stream.apply_codex_route_failure(
+                                    vega_ui::localized_copy::LocalizedCopy::new(
+                                        "ui.fork_created_not_opened",
+                                    ),
+                                    cx,
+                                )
                             });
                         }
                     }
                     Err(()) => stream.update(cx, |stream, cx| {
-                        stream.apply_codex_route_error("ui.fork_failed", cx)
+                        stream.apply_codex_route_failure(
+                            vega_ui::localized_copy::LocalizedCopy::new("ui.fork_failed"),
+                            cx,
+                        )
                     }),
                 }
             });

@@ -12,6 +12,12 @@ This revision adds source-message pending feedback, shared button/context-menu a
 
 Validation choice: focused static lifecycle/API/identity inspection plus exact-head Actions fmt/Clippy/Nextest and existing Python checks. No new Rust development tests or test-only support; the historical suite below is not restored or claimed as a current-cycle test run. This UI-only delta leaves Store copy, archive/history adapters, admission and lease ownership unchanged. Native paint, animation, real menu interaction and focus require user manual acceptance, not source-string tests. Local format/diff checks pass; current-cycle independent review and cloud results pending at this revision's creation. Exact versions/results are recorded in the follow-up PR and #519.
 
+## User acceptance follow-up: disable Fork while running
+
+Latest user revision requests disabled Fork without busy red text or extra explanation. Footer, message menu construction and activation now share `fork_is_idle(cx)`, checking stream actions, active assistant, pending Fork and shared thread runtime ownership. Handler running/controller/lease guards remain and reject silently. Already-open menu activation rechecks availability; completion still clears pending and keeps destination route/focus fences unchanged. True creation and navigation errors use `LocalizedCopy::new` rather than literal key strings, preserving language rendering.
+
+Validation: local `cargo fmt --all -- --check` and `git diff --check` pass. Focused call-site/state/static review covers all four production files; no dependencies, Rust tests, test support, Store/history or generic CI changes. No local runtime/build/test. Independent non-writer delta review and exact-head complete Actions remain pending at this revision; final version/results will be fixed in the follow-up PR and #519. Historical tests below are not current-cycle execution evidence. User manual checks: running footer/menu both disabled without red busy text, idle controls recover, a menu opened before running cannot dispatch, pending feedback remains, and real failures display localized text.
+
 ## Development regressions
 
 Immutable source head: `e717bf67fbe066315e64d5a4625a3875f88eac24`.

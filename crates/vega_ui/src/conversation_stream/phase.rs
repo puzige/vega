@@ -283,8 +283,10 @@ impl ConversationStream {
                 .any(|(index, _)| self.fork_request_for_entry(index).as_ref() == Some(request))
     }
 
-    pub fn fork_is_idle(&self) -> bool {
-        self.message_actions_enabled() && self.fork_pending.is_none()
+    pub fn fork_is_idle(&self, cx: &App) -> bool {
+        self.message_actions_enabled()
+            && self.fork_pending.is_none()
+            && !crate::sidebar::thread_is_running(&self.thread.id, cx)
     }
 
     pub fn set_fork_pending(&mut self, message_id: Option<String>, cx: &mut Context<Self>) {
@@ -293,7 +295,7 @@ impl ConversationStream {
     }
 
     pub(crate) fn request_fork(&mut self, request: &ForkRequested, cx: &mut Context<Self>) {
-        if self.fork_pending.is_none() && self.accepts_fork_request(request) {
+        if self.fork_is_idle(cx) && self.accepts_fork_request(request) {
             cx.emit(request.clone());
         }
     }
@@ -309,6 +311,7 @@ impl ConversationStream {
         };
         let weak = cx.entity().downgrade();
         let pending = self.fork_pending.is_some();
+        let disabled = !self.fork_is_idle(cx);
         *copy.fork_menu.borrow_mut() = Some(std::rc::Rc::new(move |menu, _, _| {
             let weak = weak.clone();
             let request = request.clone();
@@ -318,7 +321,7 @@ impl ConversationStream {
                 } else {
                     "ui.branch_in_new_chat"
                 }))
-                .disabled(pending)
+                .disabled(disabled)
                 .on_click(move |_, _, cx| {
                     let _ = weak.update(cx, |stream, cx| stream.request_fork(&request, cx));
                 }),

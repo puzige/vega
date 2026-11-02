@@ -1757,6 +1757,7 @@ pub(super) struct MessageActions<'a> {
     pub(super) focus: Option<&'a FocusHandle>,
     pub(super) fork: Option<(ForkRequested, gpui_kit::WeakEntity<ConversationStream>)>,
     pub(super) fork_pending: Option<&'a str>,
+    pub(super) fork_enabled: bool,
 }
 
 pub(super) fn message_with_copy(
@@ -1776,6 +1777,7 @@ pub(super) fn message_with_copy(
         focus,
         fork,
         fork_pending,
+        fork_enabled,
     } = actions;
     if copy.is_none_or(|copy| !copy.has_text()) && timestamp.is_none() {
         return body;
@@ -1856,7 +1858,7 @@ pub(super) fn message_with_copy(
                     .child(indicator)
                     .child(vega_i18n::t("ui.fork_creating")),
             );
-        } else if fork_pending.is_some() {
+        } else if !fork_enabled {
             row = row.child(
                 div()
                     .id("message-fork-disabled")
@@ -1864,7 +1866,7 @@ pub(super) fn message_with_copy(
                     .flex()
                     .items_center()
                     .justify_center()
-                    .aria_label(vega_i18n::t("ui.fork_creating"))
+                    .aria_label(vega_i18n::t("ui.branch_in_new_chat"))
                     .opacity(if focused { 0.5 } else { 0. })
                     .group_hover(group.clone(), |style| style.opacity(0.5))
                     .child(icon(Icon::GitBranch, colors.text_tertiary)),
