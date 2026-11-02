@@ -3,6 +3,8 @@ use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use gpui_kit::MouseMoveEvent;
 use gpui_kit::component::{IconName, spinner::Spinner};
 use vega_conversation::types::ThreadUpdate;
+#[cfg(test)]
+mod fork_menu_tests;
 mod organization;
 use organization::{Organization, OrganizationSection};
 
@@ -1062,16 +1064,22 @@ impl ThreadsBlock {
         if self.action_pending || task_mutation_busy(cx) || thread_is_running(&thread.id, cx) {
             return Some("ui.fork_busy");
         }
-        let available = cx
-            .try_global::<VegaStore>()
-            .and_then(|store| store.0.as_ref().ok())
-            .and_then(|store| {
-                vega_store::thread_fork::latest_fork_cutoff(store.conn(), &thread.id)
-                    .ok()
-                    .flatten()
-            })
-            .is_some();
-        (!available).then_some("ui.fork_no_completed_reply")
+        Self::fork_cutoff_unavailable(
+            cx.try_global::<VegaStore>()
+                .and_then(|store| store.0.as_ref().ok()),
+            &thread.id,
+        )
+    }
+
+    fn fork_cutoff_unavailable(store: Option<&Store>, thread_id: &str) -> Option<&'static str> {
+        let Some(store) = store else {
+            return Some("ui.fork_failed");
+        };
+        match vega_store::thread_fork::latest_fork_cutoff(store.conn(), thread_id) {
+            Ok(Some(_)) => None,
+            Ok(None) => Some("ui.fork_no_completed_reply"),
+            Err(_) => Some("ui.fork_failed"),
+        }
     }
 
     fn fork_latest(&mut self, thread: &Thread, cx: &mut Context<Self>) {
