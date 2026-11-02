@@ -1855,20 +1855,7 @@ pub(super) fn message_with_copy(
                     .aria_label(vega_i18n::t("ui.fork_creating"))
                     .child(indicator),
             );
-        } else if !fork_enabled {
-            row = row.child(
-                div()
-                    .id("message-fork-disabled")
-                    .size(px(Layout::COPY_ACTION_SIZE))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .aria_label(vega_i18n::t("ui.branch_in_new_chat"))
-                    .opacity(if focused { 0.5 } else { 0. })
-                    .group_hover(group.clone(), |style| style.opacity(0.5))
-                    .child(icon(Icon::GitBranch, colors.text_tertiary)),
-            );
-        } else {
+        } else if fork_enabled {
             row = row.child(
                 crate::icons::icon_button(
                     Icon::GitBranch,
