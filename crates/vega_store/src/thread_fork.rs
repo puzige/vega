@@ -342,7 +342,7 @@ fn copy_responses(
         let rounds=conn.prepare("SELECT r.call_id FROM tool_call_rounds r LEFT JOIN tool_calls c ON c.id=r.call_id WHERE r.message_id=?1 AND r.response_id=?2 AND c.message_id=r.message_id")?
             .query_map(params![source,id],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM tool_call_rounds WHERE message_id=?1 AND response_id=?2",
+            "SELECT COUNT(*) FROM tool_call_rounds r JOIN tool_calls c ON c.id=r.call_id WHERE r.message_id=?1 AND r.response_id=?2",
             params![source, id],
             |row| row.get(0),
         )?;
