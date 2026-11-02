@@ -3,8 +3,6 @@ use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use gpui_kit::MouseMoveEvent;
 use gpui_kit::component::{IconName, spinner::Spinner};
 use vega_conversation::types::ThreadUpdate;
-#[cfg(test)]
-mod fork_menu_tests;
 mod organization;
 use organization::{Organization, OrganizationSection};
 

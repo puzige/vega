@@ -1784,6 +1784,10 @@ pub(super) fn message_with_copy(
     }
     let group: gpui_kit::SharedString = format!("message-copy-group-{id}").into();
     let focused = focus.is_some_and(|focus| focus.contains_focused(window, cx));
+    let fork_is_pending = fork
+        .as_ref()
+        .is_some_and(|(request, _)| fork_pending == Some(request.message_id.as_str()));
+    let footer_visible = focused || fork_is_pending;
     let mut wrapper = div()
         .id(id)
         .group(group.clone())
@@ -1827,14 +1831,14 @@ pub(super) fn message_with_copy(
                     .id(("message-copy", copy.id))
                     .size(px(Layout::COPY_ACTION_SIZE))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .opacity(if focused { 1. } else { 0. })
+                    .opacity(if footer_visible { 1. } else { 0. })
                     .group_hover(group.clone(), |style| style.opacity(1.))
                     .focus_visible(|style| style.opacity(1.).bg(colors.bg_active))
             },
         ));
     }
     if let Some((request, stream)) = fork {
-        if fork_pending == Some(request.message_id.as_str()) {
+        if fork_is_pending {
             let indicator = if window.is_window_active() && !cx.reduce_motion() {
                 gpui_kit::component::spinner::Spinner::new()
                     .ease(gpui_kit::linear)
@@ -1868,7 +1872,7 @@ pub(super) fn message_with_copy(
                 .id("message-fork")
                 .size(px(Layout::COPY_ACTION_SIZE))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .opacity(if focused { 1. } else { 0. })
+                .opacity(if footer_visible { 1. } else { 0. })
                 .group_hover(group.clone(), |style| style.opacity(1.))
                 .focus_visible(|style| style.opacity(1.).bg(colors.bg_active)),
             );
@@ -1881,7 +1885,7 @@ pub(super) fn message_with_copy(
                 .aria_label(timestamp.accessible)
                 .text_size(px(Typography::METADATA))
                 .text_color(colors.text_tertiary)
-                .opacity(if focused { 1. } else { 0. })
+                .opacity(if footer_visible { 1. } else { 0. })
                 .group_hover(group, |style| style.opacity(1.))
                 .child(timestamp.message),
         );

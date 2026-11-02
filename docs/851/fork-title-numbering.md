@@ -20,6 +20,10 @@ Forked conversations must be distinguishable by a trailing sequence number, matc
 - Only Native top-level project conversations support Fork. Keep the item disabled while the target is running, another task mutation is pending, or no trusted completed reply exists; expose the existing busy reason, or a localized no-completed-reply reason. Recheck eligibility on activation and persisted activity under the worker transaction/admission lock.
 - Run copying off the UI thread, prevent duplicate submissions, preserve drafts, and open the new numbered fork only if the originating navigation route remains current. If navigation moved, retain the successfully created fork in the list without switching the user back. Surface failures without changing the source. Clear pending state on success or failure and preserve existing menu keyboard indexing and organization actions.
 
+## Pending message footer (additional user request)
+
+While the message's own Fork is creating, keep its entire existing footer visible after the pointer leaves: Copy, the same-size pending indicator and timestamp. Do not force other messages' footers visible. Completion/failure clears pending through the existing lifecycle and restores normal hover/focus visibility. Keep Copy behavior, action guards, geometry, accessibility, reduced-motion fallback and running-state hiding unchanged. No new visible text is required.
+
 ## Implementation and validation
 
 Allocate the stored title at `vega_store::thread_fork::clone_prefix`, with a private title allocator. All UI projections already consume the persisted thread title. Add an atomic latest-Final conversation Fork entry and a sidebar background action that reuses the existing validated clone boundary.
