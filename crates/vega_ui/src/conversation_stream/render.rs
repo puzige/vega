@@ -1869,6 +1869,7 @@ impl Render for ConversationStream {
                                                                 timestamp: this.entry_timestamp(index), focus: this.timestamp_focus(index),
                                                                 fork: this.fork_request_for_entry(index).map(|request| (request, cx.entity().downgrade())),
                                                                 fork_pending: this.fork_pending.as_deref(),
+                                                                fork_enabled: this.fork_is_idle(cx),
                                                             }, window, cx)
                                                         },
                                                         None => div().into_any_element(),
