@@ -624,19 +624,21 @@ impl Element for SelectableMessage {
                     let focus = focus.clone();
                     let content = content.clone();
                     window.defer(cx, move |window, cx| {
-                        if (projected && copy.content_generation() == generation)
-                            || (!projected
-                                && copy.visible_text().as_deref() == Some(content.as_ref()))
-                        {
-                            copy.set_local_selection_range(range.clone());
-                            copy.set_selected_text(
-                                copy.selection_generation(),
-                                content[range].to_owned(),
-                            );
-                            handle.set_local_selection(true, cx);
-                            focus.focus(window, cx);
-                            window.refresh();
-                        }
+                        window.defer(cx, move |window, cx| {
+                            if (projected && copy.content_generation() == generation)
+                                || (!projected
+                                    && copy.visible_text().as_deref() == Some(content.as_ref()))
+                            {
+                                copy.set_local_selection_range(range.clone());
+                                copy.set_selected_text(
+                                    copy.selection_generation(),
+                                    content[range].to_owned(),
+                                );
+                                handle.set_local_selection(true, cx);
+                                focus.focus(window, cx);
+                                window.refresh();
+                            }
+                        });
                     });
                     if fragmented {
                         cx.stop_propagation();
