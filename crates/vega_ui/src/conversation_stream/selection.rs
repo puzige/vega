@@ -613,9 +613,12 @@ impl Element for SelectableMessage {
                         offset - run.logical_range.start,
                         event.click_count,
                     )?;
-                    Some(run.logical_range.start + range.start..run.logical_range.start + range.end)
+                    Some((
+                        run.logical_range.start + range.start..run.logical_range.start + range.end,
+                        run.content_range != run.logical_range,
+                    ))
                 });
-                if let Some(range) = selected {
+                if let Some((range, fragmented)) = selected {
                     let copy = copy.clone();
                     let handle = handle.clone();
                     let focus = focus.clone();
@@ -635,7 +638,9 @@ impl Element for SelectableMessage {
                             window.refresh();
                         }
                     });
-                    cx.stop_propagation();
+                    if fragmented {
+                        cx.stop_propagation();
+                    }
                 }
             }
         });
