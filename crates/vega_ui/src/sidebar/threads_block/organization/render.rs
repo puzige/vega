@@ -2,9 +2,6 @@ use super::*;
 use gpui_kit::{Bounds, Pixels, Point};
 use std::{cell::Cell, rc::Rc};
 
-#[cfg(test)]
-mod tests;
-
 #[derive(Clone)]
 pub(super) enum Control {
     View(SidebarView),

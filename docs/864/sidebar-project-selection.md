@@ -20,6 +20,15 @@
 
 按仓库政策，开发 Rust 测试及独占依赖/接线在留存完整源码 SHA 和实际云端结果后移除；最终 head 再跑完整 required CI，并由非实现写入者审查。合并后用户手测转圈场景、两种视图的鼠标/键盘选择折叠、快速切换与失败恢复。CI 不代表真实系统验收。
 
+## 已执行验证与证据
+
+- 开发验证提交：`654205378c1cb68d45a6e1cd0b050b98ef3051eb`；[Actions 41599538305](https://github.com/puzige/vega/actions/runs/41599538305) 的 fmt、Clippy、三组 Python 检查和 required check 成功。Nextest 发现 6、执行 6、通过 6、跳过 0。
+- 六项覆盖：写许可不可用时选择仍立即返回；连续选择合并；失败保留选择并可重试；移除项目后旧结果不回投；数据库切换后旧结果不回投；折叠与选择持久化效果独立。
+- 可恢复标签：`evidence/864-sidebar-tests-65420537`，已推送并读回两个源码 blob：[选择回归](https://github.com/puzige/vega/blob/654205378c1cb68d45a6e1cd0b050b98ef3051eb/crates/vega_ui/src/sidebar/projects_block/tests.rs)、[折叠回归](https://github.com/puzige/vega/blob/654205378c1cb68d45a6e1cd0b050b98ef3051eb/crates/vega_ui/src/sidebar/threads_block/organization/render/tests.rs)。
+- 非实现者静态审查绑定上述开发提交，无阻塞发现。控制动作回归没有绘制并操作实际嵌套按钮；原生鼠标冒泡、Tab/Shift-Tab、Enter/Space 及真实转圈场景仍待用户手测，不把控制逻辑验证称为真实 UI 验收。
+- 同步基线 `4b1eb052fec30a01d6420e8475042958a014535b` 后 `git range-diff` 确认任务提交等价；新基线仅增加流式文字渐入。按政策清理开发 Rust 测试、两个模块接线及临时 dev-dependencies，生产代码与已测版本逐字等价（排除上述模块接线）。
+- 本地执行 `cargo fmt --all -- --check`、`git diff --check` 和生产等价静态比较均通过。未本地运行 Vega、编译、Clippy、测试或打包。最终待合并 head 的完整 required CI、Rust 0 发现/0 执行清点及清理差异审查尚待取得，以 PR #866 后续记录为准。
+
 ## 后续方向（不在本卡实现）
 
 后续单独梳理 UI 主线程上的持久化写入。默认后台执行；需要持久化成功才能继续的操作使用异步等待及局部运行态，不以强一致要求作为阻塞 UI 线程的理由。全局迁移需逐项确认事务、顺序、取消、错误与旧结果边界。

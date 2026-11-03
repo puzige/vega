@@ -51,9 +51,6 @@ pub struct ProjectsBlock {
     selection_requested: Option<(String, PathBuf)>,
 }
 
-#[cfg(test)]
-mod tests;
-
 impl ProjectsBlock {
     /// Creates the block and loads the project list.
     pub fn new(cx: &mut Context<Self>) -> Self {
