@@ -227,6 +227,3 @@ fn complete(state: &mut SaveState, request: &Request, result: Result<(), Localiz
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

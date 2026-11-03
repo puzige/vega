@@ -705,6 +705,3 @@ impl ThreadsBlock {
         );
     }
 }
-
-#[cfg(test)]
-mod isolation_tests;

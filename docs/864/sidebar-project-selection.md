@@ -84,4 +84,12 @@
 
 - 开发版本 `b8eeb5b8c13e2d4615e91d3091888230e165717c` 的 [Actions 41615097834](https://github.com/puzige/vega/actions/runs/41615097834) 编译失败，未取得测试执行结果；不是行为测试通过或有效行为失败。修正按钮 trait 导入、侧栏方法可见性及自动化 fixture 的实际 API。
 - 独立静态审查提出项目移除与 worker 启动竞争、组织刷新缺数据库隔离、项目移除旧路由错误覆盖三个阻塞项。`d5bf636d0cf308eda3ee77d2bd9f2d43ae64ab88` 增量复核确认前后两项静态修复，但指出旧缓存 revision 仍可能挡住新库低 revision 快照；补充缓存数据库归属、切库清空关联投影及真实高 revision 旧缓存回归（不手动清空 fixture）。
-- `d5bf636d` 的 [Actions 41619347093](https://github.com/puzige/vega/actions/runs/41619347093) 仍在编译阶段失败：组织模块缺 `PathBuf` 导入。按原始错误补齐；未执行行为测试。后续版本继续交云端和独立增量审查，PR 保持 draft、未合并。
+- `d5bf636d` 的 [Actions 41619347093](https://github.com/puzige/vega/actions/runs/41619347093) 仍在编译阶段失败：组织模块缺 `PathBuf` 导入。按原始错误补齐；未执行行为测试。
+- 后续导航测试修复为显式导入避免 GPUI 测试宏名递归、调用现有窗口构造器。首次实际执行 30 项为 21 通过、9 失败；准入提前拒绝时观测 helper 应按生产语义将缺省 global 视为 0。修正后 22 通过、8 个配置夹具前置失败。分层云端诊断证明完整文档解码正常，最终定位 macOS 临时路径符号链接祖先被既有安全规则拒绝；仅 canonicalize 测试临时目录，不改变生产安全校验或行为断言。
+
+### 扩围开发验证与可恢复源码
+
+- 全绿开发提交：`ec1674a0dc630daea3f9fa2d4f8ad0a72e8225f3`；[Actions 41628306439](https://github.com/puzige/vega/actions/runs/41628306439)。Nextest job `125891157670` 发现 31、执行 31、通过 31、跳过 0（30 项行为回归和 1 项配置诊断）；Clippy `125891157224`、required `125893362337` 成功，Python 5 + 15 + 40 项成功。
+- 可恢复远端标签：`evidence/864-expanded-tests-ec1674a0`，已读回指向上述完整 SHA。[配置回归](https://github.com/puzige/vega/blob/evidence/864-expanded-tests-ec1674a0/crates/vega_ui/src/sidebar/preferences/tests.rs) blob `5c0a33ea28aacb73a3e42e6ceeaa6b44dbdb6e8d`；[真实子任务删除回归](https://github.com/puzige/vega/blob/evidence/864-expanded-tests-ec1674a0/crates/vega_conversation/src/threads/deletion_tests.rs) blob `f1f27e7b0e931c397c1b5414c70ae3ac2b04761b`。同一标签保留导航、行变更/项目移除、组织隔离、预计算删除和诊断全部原始源码及依赖接线。
+- 非实现者增量审查确认生产阻塞项均静态闭合，并独立读取上述精确 SHA 的云端计数；测试修复没有放宽断言、ignore 或删除回归。原生 UI 与现场卡顿仍未验收。
+- 后续单独清理开发测试、诊断及专用依赖/接线，不改变已测生产实现；最终 head 的无 Rust 测试清点、独立清理审查及完整 required CI 仍须完成，不能用开发全绿冒充最终交付门禁。

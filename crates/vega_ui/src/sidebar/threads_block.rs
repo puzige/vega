@@ -2217,6 +2217,3 @@ fn merge_update(thread: &mut Thread, update: &ThreadUpdate) {
         thread.status = status;
     }
 }
-
-#[cfg(test)]
-mod write_tests;

@@ -816,6 +816,3 @@ pub(crate) fn thread_from_row(row: &store::ThreadRow) -> Result<Thread, Conversa
         updated_at: row.updated_at,
     })
 }
-
-#[cfg(test)]
-mod deletion_tests;

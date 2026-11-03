@@ -592,6 +592,3 @@ impl Drop for ContextPrecomputePause {
         }
     }
 }
-
-#[cfg(test)]
-mod deletion_tests;
