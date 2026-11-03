@@ -2,7 +2,23 @@
 
 ## 当前阶段
 
-开发验证中，未合并、未安装、未用户验收。功能 PR：[#874](https://github.com/puzige/vega/pull/874)。Issue 保持 In progress。
+原始功能已通过 [PR #874](https://github.com/puzige/vega/pull/874) 合并，合并提交 `28859f6f00b674141c6222172c8c1f1e3c18588a`；未安装、未用户验收。追加反馈修复见 [PR #875](https://github.com/puzige/vega/pull/875)，当前清理后最终门禁待验证。Issue 保持 OPEN / In progress。
+
+## 追加反馈：空查询技能与已配置容量
+
+- 裸 `$` 展示当前可用技能；裸 `/` 保留默认命令并追加技能，后续输入过滤。未扩展授权、Codex 或输入排除边界。
+- 已配置容量误报的确定根因：失败诊断查询仅返回 36 列，共用解码器需要 39 列；补齐协议/凭据分类尾列。菜单区分加载中、读取失败和真正未知容量，不修改用户设置或数据。
+- 开发 head：`df6a0a4776b0b45fc38bd681ad1bba61039b2cf5`；基线：`280c2822c01d922f88a7327d8067c1dfa7156c86`。
+- [Actions 41675962031](https://github.com/puzige/vega/actions/runs/41675962031)：11 发现 / 11 执行 / 11 通过 / 0 失败 / 0 跳过；其中 6 条技能查询 GPUI、3 条真实 Store 容量投影、2 条菜单状态/错误恢复 GPUI。Clippy、60 条 Python 测试和 required gate 通过。容量断言包括输入 300000、输出预留 128000、总容量 428000 及失败归属/分类。
+- 独立静态审查：空查询 `280c2822..4efb7fb0`、容量 `4efb7fb0..df6a0a47` 均无可操作发现。没有本地运行、编译、构建或测试。
+- 源码已固定至标签 [`evidence/644-followup-development-df6a0a47`](https://github.com/puzige/vega/tree/evidence/644-followup-development-df6a0a47) 和 [PR 留证评论](https://github.com/puzige/vega/pull/875#issuecomment-6609996241)。基线至开发 head 的 `git diff --binary` SHA-256：`12d199aa728fe4dd89c18c413f9a3a9c6ed9ab9570430af061ee4e35be8f00c5`。
+
+| 临时测试源码 | SHA-256 |
+|---|---|
+| `crates/vega_ui/src/conversation_stream/composer_actions/empty_query_tests.rs` | `98868431fd8d5bc32756a84be9067385b7beae506454b5e5191edbacf44375d1` |
+| `crates/vega_conversation/src/capacity_projection_tests.rs` | `6910c3e0a0394793be6dc0da7587aec9db2bb1e8fdfd0b60cb4609e5b4be37b5` |
+
+成功留证后删除上述临时源码、独占模块接线、GPUI test-support 和独占锁依赖，生产行为不变，锁文件恢复为基线生产依赖图。本地 `cargo fmt --all -- --check`、`git diff --check` 通过，静态清点无临时测试属性/模块及 test-support 残留。清理后的独立审查及最终完整 required CI 尚待完成；Rust 空集必须记为 `no Rust tests`（0 发现 / 0 执行），不能替代上述开发回归结果。实际桌面交互及真实模型压缩仍待用户手测。
 
 实施规格：[composer-entry-implementation.md](composer-entry-implementation.md)。用户追加裁决：立即引导允许在安全消费边界新增已校验技能；已激活技能的冻结快照不可替换；失败保留消息与绑定并明确提示。
 
