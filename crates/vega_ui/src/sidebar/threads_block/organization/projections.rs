@@ -596,6 +596,9 @@ impl ThreadsBlock {
             )
             .children((trailing == SessionRowTrailing::Unread).then(|| {
                 div()
+                    .id(ElementId::Name(
+                        format!("project-thread-unread-{}", thread.id).into(),
+                    ))
                     .when(thread.last_response_failed, |dot| {
                         dot.aria_label(vega_i18n::t("ui.failed"))
                     })

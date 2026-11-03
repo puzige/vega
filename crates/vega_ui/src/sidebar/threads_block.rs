@@ -1818,6 +1818,9 @@ impl ThreadsBlock {
         if trailing == SessionRowTrailing::Unread {
             group = group.child(
                 div()
+                    .id(gpui_kit::SharedString::from(format!(
+                        "{action_prefix}thread-unread-{thread_id}"
+                    )))
                     .when(thread.last_response_failed, |dot| {
                         dot.aria_label(vega_i18n::t("ui.failed"))
                     })
