@@ -30,4 +30,11 @@ Issue: https://github.com/puzige/vega/issues/862
 
 ## 首版实现与静态验证
 
-基线：`f7cd2aab`（完整 SHA 见 PR）。新增诊断迁移 0056；读取器类型化并贯穿最终 Provider 检查、摘要、运行准备与历史恢复。安全暂停仍使用原 `unavailable` 收据；未改消费/恢复/工具执行规则。当前未增加 Rust 测试，本地只执行 `cargo fmt --all -- --check`、`git diff --check`、本地化 TOML 解析/键一致性。编译、Clippy、Python 与 Nextest 空集清点待 PR Check；真实恢复待用户手测。
+基线：`f7cd2aabf4bd84326f3f868f4ddd4288d2cf96ea`。新增诊断迁移 0056；读取器类型化并贯穿最终 Provider 检查、摘要、运行准备与历史恢复。安全暂停仍使用原 `unavailable` 收据；未改消费/恢复/工具执行规则。当前未增加 Rust 测试，本地只执行 `cargo fmt --all -- --check`、`git diff --check`、本地化 TOML 解析/键一致性。首轮 CI 发现隐私帮助函数使用未声明依赖，已用来源处类型推断修正；`b4437ea78c90ac116854feba90a171fee591ab8b` 的 required CI 已通过，但该版本仍有下列审查问题，不能放行；最终增量需重新审查和 CI。
+
+## 独立审查修正
+
+- MCP 已完成调用后的结果净化失败保留类型化原因，与结果超限分开。内容安全的失败信息随终态回执传到运行层；先持久化完成事实、加入上下文/完成集合，再发出既有安全错误，建立 continuation。通用工具结果净化的同类失败也走此边界；不恢复未验证的原始结果，不自动重试远端操作。
+- 启动期四个 readiness 入口保留 `CredentialRead` 分类并映射到准备失败诊断。准备诊断 JSON 增加白名单阶段/原因及已有 SQLite/I/O 元数据，启动期提示不再统一引导检查 key。取消仍独立处理。
+- 通用 MCP 设置保留原 Conflict/Invalid/Store 映射；类型化安全读取独立处理配置协调及启动期清理，不把设置操作误称为可恢复的会话错误。
+- 最终 required CI、无 Rust 测试清点与独立增量复核待完成；真实 UI 和不重放恢复仍需用户手测。

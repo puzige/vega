@@ -1012,6 +1012,8 @@ pub struct RuntimeToolResult {
     pub approval: Option<RuntimeApprovalAudit>,
     /// Exact rule selected by Always even when a later ReadOnly step rejects.
     pub remember_rule: Option<RuntimePermissionTarget>,
+    /// Safety failure after execution; persist the terminal receipt before pausing.
+    pub credential_failure: Option<crate::CredentialReadError>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

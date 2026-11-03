@@ -1461,7 +1461,12 @@ pub(crate) fn run_agent_worker_with_mcp(
                             tokio::select! {
                                 biased;
                                 _ = cancel.cancelled() => Err(()),
-                                readiness = service.ready_for_run() => readiness.map_err(|_| ()),
+                                readiness = service.ready_for_run() => readiness.map_err(|error| {
+                                    preparation_failure = match error {
+                                        vega_conversation::mcp_settings::McpSettingsError::CredentialRead(error) => runtime_failure(PreparationStage::Launch, &error.into()),
+                                        _ => PreparationFailure::new(PreparationStage::Launch, PreparationReason::Pipeline),
+                                    };
+                                }),
                             }
                         })
                         .map(|readiness| {
@@ -1540,7 +1545,12 @@ pub(crate) fn run_agent_worker_with_mcp(
                             tokio::select! {
                                 biased;
                                 _ = cancel.cancelled() => Err(()),
-                                readiness = service.ready_for_run() => readiness.map_err(|_| ()),
+                                readiness = service.ready_for_run() => readiness.map_err(|error| {
+                                    preparation_failure = match error {
+                                        vega_conversation::mcp_settings::McpSettingsError::CredentialRead(error) => runtime_failure(PreparationStage::Launch, &error.into()),
+                                        _ => PreparationFailure::new(PreparationStage::Launch, PreparationReason::Pipeline),
+                                    };
+                                }),
                             }
                         })
                         .map(|readiness| {
@@ -1612,7 +1622,12 @@ pub(crate) fn run_agent_worker_with_mcp(
                             tokio::select! {
                                 biased;
                                 _ = cancel.cancelled() => Err(()),
-                                readiness = service.ready_for_run() => readiness.map_err(|_| ()),
+                                readiness = service.ready_for_run() => readiness.map_err(|error| {
+                                    preparation_failure = match error {
+                                        vega_conversation::mcp_settings::McpSettingsError::CredentialRead(error) => runtime_failure(PreparationStage::Launch, &error.into()),
+                                        _ => PreparationFailure::new(PreparationStage::Launch, PreparationReason::Pipeline),
+                                    };
+                                }),
                             }
                         })
                         .map(|readiness| {
@@ -1684,7 +1699,12 @@ pub(crate) fn run_agent_worker_with_mcp(
                             tokio::select! {
                                 biased;
                                 _ = cancel.cancelled() => Err(()),
-                                readiness = service.ready_for_run() => readiness.map_err(|_| ()),
+                                readiness = service.ready_for_run() => readiness.map_err(|error| {
+                                    preparation_failure = match error {
+                                        vega_conversation::mcp_settings::McpSettingsError::CredentialRead(error) => runtime_failure(PreparationStage::Launch, &error.into()),
+                                        _ => PreparationFailure::new(PreparationStage::Launch, PreparationReason::Pipeline),
+                                    };
+                                }),
                             }
                         })
                         .map(|readiness| {

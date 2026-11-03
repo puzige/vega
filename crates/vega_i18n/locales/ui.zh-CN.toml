@@ -858,3 +858,6 @@
 "ui.timestamp.separator_older" = "{date} {time}"
 "ui.timestamp.message" = "{date} {time}"
 "ui.timestamp.accessible" = "{date} {time}"
+
+"ui.ordinary_send.safety_storage_failed" = "本地存储或配置不可用，消息准备未能完成安全检查，请稍后重试。"
+"ui.ordinary_send.safety_state_failed" = "消息准备未能验证安全状态，请重试；若仍失败，请重新打开会话。"

@@ -7,6 +7,12 @@ use crate::{ContextCheck, ContextCompactionRequest, ContextRuntimeError};
 fn redact_runtime_tool_result(config: &RuntimeToolConfig, result: &mut RuntimeToolResult) {
     match config.redact_tool_output(&result.output) {
         Ok(output) => result.output = output,
+        Err(VegaError::CredentialRead(error)) => {
+            result.credential_failure.get_or_insert(error);
+            result.output = "Tool call completed; result withheld because the safety check failed. Do not repeat the call.".to_string();
+            result.status = RuntimeToolStatus::Failed;
+            result.truncated = None;
+        }
         Err(_) => {
             result.output = "Tool error: credential safety check unavailable".to_string();
             result.status = RuntimeToolStatus::Failed;
@@ -17,9 +23,8 @@ fn redact_runtime_tool_result(config: &RuntimeToolConfig, result: &mut RuntimeTo
 }
 
 fn invalidate_history_result(config: &RuntimeToolConfig, result: &mut RuntimeToolResult) {
-    result.output = config
-        .redact_tool_output(CONVERSATION_HISTORY_RETRY_OUTPUT)
-        .unwrap_or_else(|_| "Tool error: credential safety check unavailable".to_string());
+    result.output = CONVERSATION_HISTORY_RETRY_OUTPUT.to_string();
+    redact_runtime_tool_result(config, result);
     result.status = RuntimeToolStatus::Failed;
     result.truncated = None;
     result.exit_code = None;
@@ -27,9 +32,7 @@ fn invalidate_history_result(config: &RuntimeToolConfig, result: &mut RuntimeToo
 }
 
 fn redact_history_rejection(config: &RuntimeToolConfig, result: &mut RuntimeToolResult) {
-    result.output = config
-        .redact_tool_output(&result.output)
-        .unwrap_or_else(|_| "Tool error: credential safety check unavailable".to_string());
+    redact_runtime_tool_result(config, result);
 }
 
 fn request_output_cap(
@@ -1181,6 +1184,27 @@ where
     let mut final_text = String::new();
     let mut tool_call_count = 0usize;
     let mut executed_tool_call_count = 0usize;
+    macro_rules! pause_after_safety_failure {
+        ($failure:expr) => {
+            if let Some(error) = $failure {
+                emit!(
+                    events,
+                    sink,
+                    RuntimeEvent::Error(Arc::new(VegaError::from(error)))
+                );
+                return Ok(outcome(
+                    events,
+                    messages,
+                    final_text,
+                    tool_call_count,
+                    executed_tool_call_count,
+                    false,
+                    true,
+                ));
+            }
+        };
+    }
+
     // Agentic turn counter: the outer `loop` below issues exactly one provider
     // request per iteration. `turn_limit == 0` means unlimited (Claude Code's
     // `--max-turns` default); a positive value soft-stops before issuing the
@@ -3278,6 +3302,7 @@ where
                     }
                 );
                 messages.push(ChatMessage::runtime_tool_result(&call, &terminal));
+                let safety_failure = terminal.credential_failure;
                 completed.insert(
                     call.id.clone(),
                     CompletedToolCall {
@@ -3286,6 +3311,7 @@ where
                         result: terminal,
                     },
                 );
+                pause_after_safety_failure!(safety_failure);
                 continue;
             }
             if mixed_question_batch {
@@ -3329,6 +3355,7 @@ where
                 };
                 recovery.observe(&call, &result);
                 messages.push(ChatMessage::runtime_tool_result(&call, &result));
+                pause_after_safety_failure!(result.credential_failure);
                 continue;
             }
             if let Some(prior) = completed.get(&call.id).cloned() {
@@ -3395,6 +3422,7 @@ where
                 );
                 emit!(events, sink, RuntimeEvent::ToolCallFinished(result.clone()));
                 messages.push(ChatMessage::runtime_tool_result(&call, &result));
+                pause_after_safety_failure!(result.credential_failure);
                 continue;
             }
             if batch_policy == BatchPolicy::RejectOtherTools
@@ -3418,6 +3446,7 @@ where
                 recovery.observe(&call, &result);
                 emit!(events, sink, RuntimeEvent::ToolCallFinished(result.clone()));
                 messages.push(ChatMessage::runtime_tool_result(&call, &result));
+                let safety_failure = result.credential_failure;
                 completed.insert(
                     call.id.clone(),
                     CompletedToolCall {
@@ -3426,6 +3455,7 @@ where
                         result,
                     },
                 );
+                pause_after_safety_failure!(safety_failure);
                 continue;
             }
             if !skill_authority_current(skill_config.as_ref()) {
@@ -3863,6 +3893,7 @@ where
             if let Some(run) = &tool_config.computer_use {
                 run.trim_messages(&mut messages);
             }
+            let safety_failure = result.credential_failure;
             completed.insert(
                 call.id,
                 CompletedToolCall {
@@ -3872,6 +3903,7 @@ where
                 },
             );
 
+            pause_after_safety_failure!(safety_failure);
             if cancelled_while_running || cancel.is_cancelled() {
                 emit!(events, sink, RuntimeEvent::Interrupted);
                 return Ok(outcome(

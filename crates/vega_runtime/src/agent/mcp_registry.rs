@@ -644,11 +644,19 @@ impl FrozenMcpTool {
         self.revoked.clone()
     }
 
-    pub(crate) fn safe_result_text(&self, output: &McpDispatchOutput) -> Result<String, ()> {
-        let credentials = self.known_credentials.snapshot().map_err(|_| ())?;
+    pub(crate) fn safe_result_text(
+        &self,
+        output: &McpDispatchOutput,
+    ) -> Result<String, crate::CredentialReadError> {
+        let credentials = self.known_credentials.snapshot()?;
         let mut text = output.text.clone();
         if let Some(structured) = &output.structured_content {
-            let json = serde_json::to_string(structured).map_err(|_| ())?;
+            let json = serde_json::to_string(structured).map_err(|_| {
+                crate::CredentialReadError::new(
+                    crate::CredentialReadStage::Mcp,
+                    crate::CredentialReadReason::Configuration,
+                )
+            })?;
             if !text.is_empty() {
                 text.push('\n');
             }

@@ -75,6 +75,7 @@ pub(crate) fn recover_terminal_tools(
                     truncated: None,
                     approval: Some(approval_audit_to_runtime(&approval)),
                     remember_rule: None,
+                    credential_failure: None,
                 },
             };
             Ok((call_id, completed))

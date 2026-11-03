@@ -275,7 +275,35 @@ impl McpServerSettingsService {
     }
 
     fn store(&self) -> Result<Store, McpSettingsError> {
-        self.credential_store().map_err(Into::into)
+        let store = Store::open(&self.database_path).map_err(|_| McpSettingsError::Store)?;
+        store.migrate().map_err(|_| McpSettingsError::Store)?;
+        let mut state = self.lock()?;
+        match vega_store::mcp_config::reconcile(
+            store.conn(),
+            &self.config_root.join("config.yaml"),
+            validate_yaml_row,
+        ) {
+            Ok(changed) => {
+                for id in changed {
+                    state.revoke(&id);
+                }
+            }
+            Err(error) => {
+                let ids = state
+                    .epochs
+                    .keys()
+                    .chain(state.leases.keys())
+                    .chain(state.connecting.keys())
+                    .cloned()
+                    .collect::<HashSet<_>>();
+                for id in ids {
+                    state.invalidate_connections(&id);
+                }
+                return Err(error.into());
+            }
+        }
+        drop(state);
+        Ok(store)
     }
 
     fn credential_store(&self) -> Result<Store, CredentialReadError> {
@@ -1157,9 +1185,10 @@ impl McpServerSettingsService {
     /// A new run uses only enabled, actually connected rows. Reconnection may
     /// refresh discovery, but it cannot replay any historical tool call.
     pub async fn ready_for_run(&self) -> Result<McpRunReadiness, McpSettingsError> {
-        self.reconcile_pending()?;
-        let store = self.store()?;
-        let rows: Vec<_> = mcp_servers::list(store.conn())?
+        self.reconcile_pending_for_run()?;
+        let store = self.credential_store()?;
+        let rows: Vec<_> = mcp_servers::list(store.conn())
+            .map_err(mcp_read_error)?
             .into_iter()
             .filter(|row| row.enabled)
             .collect();
@@ -1255,6 +1284,51 @@ impl McpServerSettingsService {
             .filter(|row| row.deleting)
         {
             let _ = mcp_servers::finish_remove(store.conn(), &row.id)?;
+        }
+        Ok(())
+    }
+
+    fn reconcile_pending_for_run(&self) -> Result<(), CredentialReadError> {
+        let store = self.credential_store()?;
+        let _state = self
+            .lock()
+            .map_err(|_| crate::credential_errors::state_error(CredentialReadStage::Mcp))?;
+        let path = self.config_root.join("config.yaml");
+        let _document = vega_store::yaml_config::begin(&path).map_err(|error| {
+            CredentialReadError::configuration_io(CredentialReadStage::Mcp, error.kind())
+        })?;
+        let _permit = vega_store::write_coordination::acquire(
+            store.conn(),
+            vega_store::write_coordination::WriteCategory::McpServers,
+        )
+        .map_err(|error| CredentialReadError::database(CredentialReadStage::Mcp, error))?;
+        vega_store::mcp_config::projection_current(store.conn(), &path).map_err(mcp_read_error)?;
+        for entry in mcp_servers::pending_cleanup(store.conn()).map_err(mcp_read_error)? {
+            if !is_owned_secret_ref(&entry.server_id, &entry.credential_ref)
+                || !mcp_servers::cleanup_target_is_stale(store.conn(), &entry)
+                    .map_err(mcp_read_error)?
+            {
+                return Err(crate::credential_errors::state_error(
+                    CredentialReadStage::Mcp,
+                ));
+            }
+            match vega_store::keystore::delete_key(&self.config_root, &entry.credential_ref) {
+                Ok(()) | Err(vega_store::keystore::Error::Missing) => {}
+                Err(error) => {
+                    return Err(crate::credential_errors::credential_error(
+                        CredentialReadStage::Mcp,
+                        error,
+                    ));
+                }
+            }
+            mcp_servers::acknowledge_cleanup(store.conn(), &entry).map_err(mcp_read_error)?;
+        }
+        for row in mcp_servers::list(store.conn())
+            .map_err(mcp_read_error)?
+            .into_iter()
+            .filter(|row| row.deleting)
+        {
+            let _ = mcp_servers::finish_remove(store.conn(), &row.id).map_err(mcp_read_error)?;
         }
         Ok(())
     }

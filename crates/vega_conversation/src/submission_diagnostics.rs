@@ -53,6 +53,8 @@ pub fn runtime_failure(
         sqlite_code: metrics.sqlite_code,
         sqlite_extended_code: metrics.sqlite_extended_code,
         io_kind: metrics.io_kind,
+        credential_stage: metrics.credential_stage,
+        credential_reason: metrics.credential_reason,
     }
 }
 

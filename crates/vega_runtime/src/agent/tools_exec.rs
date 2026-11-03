@@ -1517,6 +1517,7 @@ pub(crate) fn terminal_result(
         truncated: None,
         approval,
         remember_rule: None,
+        credential_failure: None,
     }
 }
 
@@ -1858,10 +1859,20 @@ pub(crate) async fn execute_prepared_waiting(
                         }
                         (result, false)
                     }
-                    _ => (
+                    Err(error) => {
+                        let mut result = terminal_result(
+                            &call,
+                            "MCP call completed; result withheld because the safety check failed. Do not repeat the call.".to_string(),
+                            RuntimeToolStatus::Failed,
+                            None,
+                        );
+                        result.credential_failure = Some(error);
+                        (result, false)
+                    }
+                    Ok(_) => (
                         terminal_result(
                             &call,
-                            "Tool error: MCP result failed or exceeded limit".to_string(),
+                            "Tool error: MCP result exceeded limit".to_string(),
                             RuntimeToolStatus::Failed,
                             None,
                         ),
@@ -2023,6 +2034,7 @@ pub(crate) async fn execute_prepared_waiting(
                         truncated: Some(output.truncated),
                         approval: None,
                         remember_rule: None,
+                        credential_failure: None,
                     },
                     false,
                 ),
@@ -2130,6 +2142,7 @@ pub(crate) fn mutation_result(
                     truncated: Some(output.truncated),
                     approval: None,
                     remember_rule: None,
+                    credential_failure: None,
                 }
             } else {
                 terminal_result(
@@ -2266,6 +2279,7 @@ fn readonly_result(
                 truncated: Some(output.truncated || line_truncated),
                 approval: None,
                 remember_rule: None,
+                credential_failure: None,
             }
         }
         Err(message) => RuntimeToolResult {
@@ -2278,6 +2292,7 @@ fn readonly_result(
             truncated: None,
             approval: None,
             remember_rule: None,
+            credential_failure: None,
         },
     }
 }
@@ -2302,6 +2317,7 @@ pub(crate) fn failed_tool_result(call: &RuntimeToolCall, message: String) -> Run
         truncated: None,
         approval: None,
         remember_rule: None,
+        credential_failure: None,
     }
 }
 
