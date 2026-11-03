@@ -166,33 +166,65 @@ impl VegaWindow {
         true
     }
 
-    // The short shared write guard blocks later task-menu writes, never typing.
     pub(super) fn record_navigation_visit(&mut self, thread: Thread, cx: &mut Context<Self>) {
+        let database = cx
+            .global::<VegaStore>()
+            .0
+            .as_ref()
+            .ok()
+            .and_then(|store| store.database_path())
+            .map(PathBuf::from);
+        let generation = self.navigation.generation;
+        let route = Projection::read(cx, self.draft_id()).route();
+        let id = thread.id.clone();
+        let worker_database = database.clone();
         vega_ui::navigation::begin_task_mutation(cx);
-        let result = match &cx.global::<VegaStore>().0 {
-            Ok(store) => vega_conversation::threads::visit_thread(store, &thread.id)
-                .map_err(|_| NavigationError::Unavailable),
-            Err(_) => Err(NavigationError::Unavailable),
-        };
-        vega_ui::navigation::finish_task_mutation(cx);
-        match result {
-            Ok(visited) => {
-                if let Some(mut current) = cx.global::<OpenedThread>().0.clone()
-                    && current.id == thread.id
-                    && current.project_id == thread.project_id
+        let worker = cx.background_executor().spawn(async move {
+            let database = worker_database.ok_or(NavigationError::Unavailable)?;
+            vega_conversation::threads::persist_thread_visit(&database, &id)
+                .map_err(|_| NavigationError::Unavailable)
+        });
+        cx.spawn(async move |this, cx| {
+            let result = worker.await;
+            cx.update(vega_ui::navigation::finish_task_mutation);
+            let _ = this.update(cx, |this, cx| {
+                let current_database = cx
+                    .global::<VegaStore>()
+                    .0
+                    .as_ref()
+                    .ok()
+                    .and_then(|store| store.database_path())
+                    .map(PathBuf::from);
+                if current_database != database
+                    || this.navigation.generation != generation
+                    || Projection::read(cx, this.draft_id()).route() != route
                 {
-                    current.unread = visited.unread;
-                    current.updated_at = visited.updated_at;
-                    cx.set_global(OpenedThread(Some(current)));
+                    return;
                 }
-                self.navigation.error = None;
-                cx.set_global(NavigationState::default());
-                self.sidebar.update(cx, Sidebar::reload_sessions);
-            }
-            Err(_) => self.navigation.error = Some(vega_i18n::t("app.navigation.visit_failed")),
-        }
-        self.publish_navigation(cx);
-        cx.refresh_windows();
+                match result {
+                    Ok(visited) => {
+                        if let Some(mut current) = cx.global::<OpenedThread>().0.clone()
+                            && current.id == thread.id
+                            && current.project_id == thread.project_id
+                        {
+                            current.unread = visited.unread;
+                            current.updated_at = current.updated_at.max(visited.updated_at);
+                            cx.set_global(OpenedThread(Some(current)));
+                        }
+                        this.navigation.error = None;
+                        cx.set_global(NavigationState::default());
+                        this.sidebar.update(cx, Sidebar::reload_sessions);
+                    }
+                    Err(_) => {
+                        this.navigation.error = Some(vega_i18n::t("app.navigation.visit_failed"))
+                    }
+                }
+                this.publish_navigation(cx);
+                cx.refresh_windows();
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
 
@@ -510,3 +542,6 @@ impl VegaWindow {
         .detach();
     }
 }
+
+#[cfg(test)]
+mod write_tests;

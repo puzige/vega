@@ -440,29 +440,61 @@ impl ProjectsBlock {
         if !crate::navigation::allow_task_navigation(None, cx) {
             return;
         }
-        crate::navigation::begin_task_mutation(cx);
-        let result = with_store(cx, |store| {
-            projects::remove(store.conn(), project_id).map_err(|error| {
-                crate::localized_copy::LocalizedCopy::with_args(
-                    "ui.could_not_remove_the_project_error",
-                    vec![("error", (error).to_string().into())],
+        let database = with_store(cx, |store| {
+            store.database_path().map(Path::to_path_buf).ok_or_else(|| {
+                crate::localized_copy::LocalizedCopy::new(
+                    "ui.project_storage_requires_a_file_backed_database",
                 )
             })
         });
-        crate::navigation::finish_task_mutation(cx);
-        match result {
-            Ok(removed) => {
-                self.error = None;
-                self.reload(cx);
-                if removed {
-                    cx.emit(ProjectsBlockEvent::Removed(project_id.to_string()));
+        let Ok(database) = database else {
+            self.error = database.err();
+            cx.notify();
+            return;
+        };
+        let id = project_id.to_string();
+        let worker_id = id.clone();
+        let worker_database = database.clone();
+        let selection_generation = self.selection_generation;
+        self.error = None;
+        crate::navigation::begin_task_mutation(cx);
+        let worker = cx.background_executor().spawn(async move {
+            vega_conversation::sidebar_organization::remove_project(&worker_database, &worker_id)
+                .map_err(crate::localized_copy::LocalizedCopy::from)
+        });
+        cx.spawn(async move |this, cx| {
+            let result = worker.await;
+            cx.update(crate::navigation::finish_task_mutation);
+            let _ = this.update(cx, |this, cx| {
+                let current_database =
+                    with_store(cx, |store| Ok(store.database_path().map(Path::to_path_buf)))
+                        .ok()
+                        .flatten();
+                if current_database.as_ref() != Some(&database) {
+                    return;
                 }
-            }
-            Err(message) => {
-                self.error = Some(message);
+                match result {
+                    Ok(removed) => {
+                        this.projects.retain(|project| project.id != id);
+                        this.invalidate_branches();
+                        if this.selection_generation == selection_generation {
+                            this.error = None;
+                        }
+                        if removed {
+                            cx.emit(ProjectsBlockEvent::Removed(id));
+                        }
+                        this.reload_background(cx);
+                    }
+                    Err(error) if this.selection_generation == selection_generation => {
+                        this.error = Some(error)
+                    }
+                    Err(_) => {}
+                }
                 cx.notify();
-            }
-        }
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     pub(crate) fn open_picker(&mut self, cx: &mut Context<Self>) {
