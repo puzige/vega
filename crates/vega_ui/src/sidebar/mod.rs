@@ -6,7 +6,7 @@ use std::{
 };
 
 use gpui_kit::component::{
-    Sizable,
+    Disableable, Sizable,
     button::{Button, ButtonCustomVariant, ButtonVariants},
 };
 use gpui_kit::prelude::*;
@@ -103,11 +103,21 @@ impl Global for ProjectWorkerActivity {}
 
 /// Acquire ownership before spawning a project Agent worker. The returned
 /// token must live inside the worker closure until that worker truly exits.
-pub fn register_project_worker(project_id: &str, cx: &mut App) -> Arc<()> {
+pub fn register_project_worker(project_id: &str, cx: &mut App) -> Option<Arc<()>> {
     if cx.try_global::<ProjectWorkerActivity>().is_none() {
         cx.set_global(ProjectWorkerActivity(Default::default()));
     }
     cx.update_global::<ProjectWorkerActivity, _>(|activity, _| activity.0.register(project_id))
+}
+
+fn begin_project_removal(
+    project_id: &str,
+    cx: &mut App,
+) -> Option<vega_conversation::types::ProjectRemoval> {
+    if cx.try_global::<ProjectWorkerActivity>().is_none() {
+        cx.set_global(ProjectWorkerActivity(Default::default()));
+    }
+    cx.update_global::<ProjectWorkerActivity, _>(|activity, _| activity.0.begin_removal(project_id))
 }
 
 /// Fail closed on project unregistration while any window's worker is alive.

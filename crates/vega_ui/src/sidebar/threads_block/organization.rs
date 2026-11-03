@@ -16,6 +16,7 @@ use reorder::ReorderState;
 mod render;
 
 struct OrganizationRequestToken {
+    database: PathBuf,
     generation: u64,
     epoch: u64,
     origin_route: (Option<String>, Option<String>, bool),
@@ -411,6 +412,7 @@ impl ThreadsBlock {
         );
         let was_mutation = action.is_some();
         let request = OrganizationRequestToken {
+            database: database.clone(),
             generation,
             epoch,
             origin_route,
@@ -418,8 +420,8 @@ impl ThreadsBlock {
             was_mutation,
         };
         let worker = cx.background_executor().spawn(async move {
-            let store =
-                Store::open(database).map_err(crate::localized_copy::LocalizedCopy::storage)?;
+            let store = Store::open_existing(database)
+                .map_err(crate::localized_copy::LocalizedCopy::storage)?;
             match action {
                 Some(action) => service::apply(&store, revision, action),
                 None => service::snapshot(&store).map(|snapshot| SidebarOrganizationOutcome {
@@ -446,6 +448,7 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) {
         let OrganizationRequestToken {
+            database,
             generation,
             epoch,
             origin_route,
@@ -459,6 +462,15 @@ impl ThreadsBlock {
             return;
         }
         org.pending = false;
+        let current_database =
+            with_store(cx, |store| Ok(store.database_path().map(Path::to_path_buf)))
+                .ok()
+                .flatten();
+        if current_database.as_ref() != Some(&database) {
+            org.refresh_queued = false;
+            self.refresh_organization(cx);
+            return;
+        }
         let current_epoch = cx
             .try_global::<crate::navigation::TaskMutationState>()
             .map_or(0, |s| s.epoch);
@@ -659,3 +671,6 @@ impl ThreadsBlock {
         );
     }
 }
+
+#[cfg(test)]
+mod isolation_tests;

@@ -47,6 +47,7 @@ pub struct ProjectsBlock {
     reload_pending: bool,
     reload_requested: bool,
     selection_generation: u64,
+    route_generation: u64,
     selection_pending: bool,
     selection_requested: Option<(String, PathBuf)>,
 }
@@ -77,9 +78,22 @@ impl ProjectsBlock {
             reload_pending: false,
             reload_requested: false,
             selection_generation: 0,
+            route_generation: 0,
             selection_pending: false,
             selection_requested: None,
         };
+        cx.observe_global::<SelectedProject>(|this, _| {
+            this.route_generation = this.route_generation.wrapping_add(1)
+        })
+        .detach();
+        cx.observe_global::<OpenedThread>(|this, _| {
+            this.route_generation = this.route_generation.wrapping_add(1)
+        })
+        .detach();
+        cx.observe_global::<SettingsOpen>(|this, _| {
+            this.route_generation = this.route_generation.wrapping_add(1)
+        })
+        .detach();
         view.reload(cx);
         cx.spawn(async move |this, cx| {
             loop {
@@ -110,7 +124,6 @@ impl ProjectsBlock {
         }) {
             Ok(projects) => {
                 self.projects = projects;
-                self.error = None;
             }
             Err(message) => self.error = Some(message),
         }
@@ -172,9 +185,9 @@ impl ProjectsBlock {
                         Ok(projects) => {
                             this.projects = projects;
                             this.invalidate_branches();
-                            this.error = None;
                         }
-                        Err(error) => this.error = Some(error),
+                        Err(error) if this.error.is_none() => this.error = Some(error),
+                        Err(_) => {}
                     }
                     cx.notify();
                 }
@@ -421,6 +434,18 @@ impl ProjectsBlock {
         .detach();
     }
 
+    fn current_route(&self, cx: &App) -> (Option<String>, Option<String>, bool) {
+        (
+            cx.global::<SelectedProject>().0.clone(),
+            cx.global::<OpenedThread>()
+                .0
+                .as_ref()
+                .map(|thread| thread.id.clone()),
+            cx.try_global::<SettingsOpen>()
+                .is_some_and(|settings| settings.0),
+        )
+    }
+
     pub(super) fn remove_project(&mut self, project_id: &str, cx: &mut Context<Self>) {
         self.invalidate_background_reload();
         if task_mutation_busy(cx) {
@@ -452,15 +477,29 @@ impl ProjectsBlock {
             cx.notify();
             return;
         };
+        let Some(removal) = begin_project_removal(project_id, cx) else {
+            self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.project_tasks_are_still_running_stop_them_and",
+            ));
+            cx.notify();
+            return;
+        };
         let id = project_id.to_string();
         let worker_id = id.clone();
         let worker_database = database.clone();
-        let selection_generation = self.selection_generation;
-        self.error = None;
+        let route_generation = self.route_generation;
+        let route = self.current_route(cx);
         crate::navigation::begin_task_mutation(cx);
         let worker = cx.background_executor().spawn(async move {
-            vega_conversation::sidebar_organization::remove_project(&worker_database, &worker_id)
-                .map_err(crate::localized_copy::LocalizedCopy::from)
+            let result = vega_conversation::sidebar_organization::remove_project(
+                &worker_database,
+                &worker_id,
+            )
+            .map_err(crate::localized_copy::LocalizedCopy::from);
+            if result.is_ok() {
+                removal.commit();
+            }
+            result
         });
         cx.spawn(async move |this, cx| {
             let result = worker.await;
@@ -477,7 +516,9 @@ impl ProjectsBlock {
                     Ok(removed) => {
                         this.projects.retain(|project| project.id != id);
                         this.invalidate_branches();
-                        if this.selection_generation == selection_generation {
+                        if this.route_generation == route_generation
+                            && this.current_route(cx) == route
+                        {
                             this.error = None;
                         }
                         if removed {
@@ -485,7 +526,10 @@ impl ProjectsBlock {
                         }
                         this.reload_background(cx);
                     }
-                    Err(error) if this.selection_generation == selection_generation => {
+                    Err(error)
+                        if this.route_generation == route_generation
+                            && this.current_route(cx) == route =>
+                    {
                         this.error = Some(error)
                     }
                     Err(_) => {}
