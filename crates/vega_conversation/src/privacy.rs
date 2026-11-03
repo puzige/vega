@@ -19,9 +19,6 @@ static LIVE: OnceLock<Mutex<LiveCredentials>> = OnceLock::new();
 fn unavailable() -> CredentialReadError {
     crate::credential_errors::state_error(CredentialReadStage::Privacy)
 }
-fn database_error(error: rusqlite::Error) -> CredentialReadError {
-    CredentialReadError::database(CredentialReadStage::Privacy, error)
-}
 
 pub fn register_database(database: PathBuf, root: PathBuf) {
     if let Ok(mut live) = LIVE.get_or_init(Default::default).lock() {
@@ -145,14 +142,15 @@ pub(crate) fn refresh_authority_values(
     root: &std::path::Path,
 ) -> Result<Vec<String>, CredentialReadError> {
     let result = (|| {
-        let store = Store::open(database).map_err(database_error)?;
+        let store = Store::open(database)
+            .map_err(|error| CredentialReadError::database(CredentialReadStage::Privacy, error))?;
         let key = key(root)?;
         let mut owner = known(&store, Some(root))?;
         owner.sort();
         let encoded = serde_json::to_string(&owner).map_err(|_| unavailable())?;
         let epoch = fingerprint(key.as_bytes(), "owner-epoch", &encoded);
         vega_store::credential_privacy::refresh_epoch(store.conn(), &epoch)
-            .map_err(database_error)?;
+            .map_err(|error| CredentialReadError::database(CredentialReadStage::Privacy, error))?;
         Ok((epoch, owner))
     })();
     let mut epochs = AUTHORITY
@@ -209,7 +207,8 @@ pub fn exception_filter(
 ) -> Result<CredentialExceptionFilter, CredentialReadError> {
     refresh_authority(&database, &root)?;
     let key = key(&root)?;
-    let store = Store::open(&database).map_err(database_error)?;
+    let store = Store::open(&database)
+        .map_err(|error| CredentialReadError::database(CredentialReadStage::Privacy, error))?;
     let epoch = AUTHORITY
         .get_or_init(Default::default)
         .lock()
@@ -219,7 +218,7 @@ pub fn exception_filter(
         .ok_or_else(unavailable)?;
     let revision = exception_revision(&database, &thread).ok_or_else(unavailable)?;
     let allowed: HashSet<_> = vega_store::credential_privacy::exceptions(store.conn(), &thread)
-        .map_err(database_error)?
+        .map_err(|error| CredentialReadError::database(CredentialReadStage::Privacy, error))?
         .into_iter()
         .collect();
     Ok(Arc::new(move |text, finding| {
