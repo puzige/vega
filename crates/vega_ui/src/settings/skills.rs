@@ -35,6 +35,7 @@ enum SkillAction {
     Reload,
     PreviewProject,
     PreviewGlobal,
+    PreviewSource { source_id: String },
     ImportFolder,
     PreviewSkill { source_id: String, name: String },
     Mutate(SkillSettingsMutation),
@@ -45,6 +46,9 @@ enum SkillOperation {
     Reload,
     PreviewProject,
     PreviewGlobal,
+    PreviewSource {
+        source_id: String,
+    },
     PreviewImported(PathBuf),
     PreviewSkill {
         source_id: String,
@@ -139,6 +143,9 @@ impl SettingsView {
                 SkillOperation::PreviewGlobal => service
                     .preview_vega_global_root()
                     .map(SkillOperationResult::Root),
+                SkillOperation::PreviewSource { source_id } => service
+                    .preview_source_root(&source_id)
+                    .map(SkillOperationResult::Root),
                 SkillOperation::PreviewImported(path) => service
                     .preview_imported_root(&path)
                     .map(SkillOperationResult::Root),
@@ -228,6 +235,11 @@ impl SettingsView {
                 self.skills_operation(SkillOperation::PreviewProject, cx)
             }
             SkillAction::PreviewGlobal => self.skills_operation(SkillOperation::PreviewGlobal, cx),
+            SkillAction::PreviewSource { source_id } => {
+                if !self.skills.busy {
+                    self.skills_operation(SkillOperation::PreviewSource { source_id }, cx);
+                }
+            }
             SkillAction::ImportFolder => self.pick_skills_root(cx),
             SkillAction::PreviewSkill { source_id, name } => {
                 self.skills_operation(SkillOperation::PreviewSkill { source_id, name }, cx)
@@ -411,19 +423,40 @@ impl SettingsView {
                     .font_weight(Typography::HEADING_CARD_WEIGHT)
                     .child(source.source_label.clone()),
             )
-            .child(skill_toggle_row(
-                t("settings.skills.enable_directory"),
-                source.enabled,
-                &format!("skills-source-enabled-{}", source.id),
-                SkillSettingsMutation::SetSource {
-                    source_id: source.id.clone(),
-                    enabled: !source.enabled,
-                    automatic: source.automatic,
+            .child(
+                if !source.enabled
+                    && source.diagnostic.as_deref() == Some("changed_review_required")
+                {
+                    settings_field(
+                        t("settings.skills.enable_directory"),
+                        None,
+                        skill_button(
+                            t("settings.skills.review_directory").into(),
+                            format!("skills-source-review-{}", source.id),
+                            SkillAction::PreviewSource {
+                                source_id: source.id.clone(),
+                            },
+                            colors,
+                            cx,
+                        ),
+                        colors,
+                    )
+                } else {
+                    skill_toggle_row(
+                        t("settings.skills.enable_directory"),
+                        source.enabled,
+                        &format!("skills-source-enabled-{}", source.id),
+                        SkillSettingsMutation::SetSource {
+                            source_id: source.id.clone(),
+                            enabled: !source.enabled,
+                            automatic: source.automatic,
+                        },
+                        !self.skills.busy,
+                        colors,
+                        cx,
+                    )
                 },
-                !self.skills.busy,
-                colors,
-                cx,
-            ))
+            )
             .child(skill_toggle_row(
                 t("settings.skills.auto_directory"),
                 source.automatic,

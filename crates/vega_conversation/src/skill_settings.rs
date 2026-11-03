@@ -300,6 +300,19 @@ impl SkillSettingsService {
         })
     }
 
+    pub fn preview_source_root(
+        &self,
+        source_id: &str,
+    ) -> Result<SkillRootPreview, SkillSettingsError> {
+        let store = self.store()?;
+        let row = self.find_scoped_source(&store, source_id)?;
+        match parse_scope(&row.scope)? {
+            SkillUiScope::Project => self.preview_project_root(),
+            SkillUiScope::VegaGlobal => self.preview_vega_global_root(),
+            SkillUiScope::Imported => self.preview_imported_root(Path::new(&row.configured_root)),
+        }
+    }
+
     /// Preview the selected project's exact root, if one exists.
     pub fn preview_project_root(&self) -> Result<SkillRootPreview, SkillSettingsError> {
         let epoch = self.preview_epoch()?;
