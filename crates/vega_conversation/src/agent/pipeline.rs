@@ -2296,6 +2296,9 @@ pub(crate) fn validate_recovered_projection(
                             || matches!(
                                 output,
                                 "Tool error: MCP result failed or exceeded limit"
+                                    | "Tool error: MCP result exceeded limit"
+                                    | "MCP call completed; result withheld because the safety check failed. Do not repeat the call."
+                                    | "Tool error: credential safety check unavailable"
                                     | "Tool error: MCP invalid protocol response"
                                     | "Tool error: MCP protocol error"
                                     | "Tool error: MCP unsupported transport"

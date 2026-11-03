@@ -9,7 +9,7 @@ fn redact_runtime_tool_result(config: &RuntimeToolConfig, result: &mut RuntimeTo
         Ok(output) => result.output = output,
         Err(VegaError::CredentialRead(error)) => {
             result.credential_failure.get_or_insert(error);
-            result.output = "Tool call completed; result withheld because the safety check failed. Do not repeat the call.".to_string();
+            result.output = "Tool error: credential safety check unavailable".to_string();
             result.status = RuntimeToolStatus::Failed;
             result.truncated = None;
         }
@@ -32,7 +32,15 @@ fn invalidate_history_result(config: &RuntimeToolConfig, result: &mut RuntimeToo
 }
 
 fn redact_history_rejection(config: &RuntimeToolConfig, result: &mut RuntimeToolResult) {
-    redact_runtime_tool_result(config, result);
+    match config.redact_tool_output(&result.output) {
+        Ok(output) => result.output = output,
+        Err(error) => {
+            if let VegaError::CredentialRead(error) = error {
+                result.credential_failure.get_or_insert(error);
+            }
+            result.output = "Tool error: credential safety check unavailable".to_string();
+        }
+    }
 }
 
 fn request_output_cap(
@@ -3393,7 +3401,8 @@ where
                 let mut result = prior.result;
                 result.reused = true;
                 result.truncated = None;
-                let original = (call.name == context_history::TOOL)
+                let original = (call.name == context_history::TOOL
+                    && result.status != RuntimeToolStatus::Rejected)
                     .then(|| (result.status, result.output.clone()));
                 if call.name == context_history::TOOL
                     && result.status == RuntimeToolStatus::Rejected
