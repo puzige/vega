@@ -10,6 +10,28 @@ use yaml_edit::{Mapping, YamlFile, YamlKind, YamlNode};
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 static EDIT_LOCK: Mutex<()> = Mutex::new(());
 
+#[cfg(test)]
+#[test]
+fn existing_configuration_reports_exact_validation_boundary() {
+    let text = "schema_version: 1\n";
+    let parsed: Value = serde_saphyr::from_str_with_options(text, options()).expect("YAML parse");
+    assert_eq!(
+        parsed.get("schema_version").and_then(Value::as_u64),
+        Some(1),
+        "schema"
+    );
+    let file = YamlFile::from_str(text).expect("editing parser");
+    assert_eq!(file.documents().count(), 1, "document count");
+    assert!(file.directives().next().is_none(), "directives");
+    let mapping = file
+        .document()
+        .and_then(|document| document.as_mapping())
+        .expect("root mapping");
+    validate_mapping(&mapping, 0).expect("node validation");
+    let _: crate::config::AppConfig = serde_json::from_value(parsed).expect("typed configuration");
+    let _: crate::config::AppConfig = decode(text.as_bytes()).expect("complete decoding");
+}
+
 pub struct Edit {
     path: PathBuf,
     bytes: std::cell::RefCell<Option<Vec<u8>>>,
