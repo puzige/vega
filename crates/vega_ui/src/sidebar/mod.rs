@@ -400,6 +400,9 @@ impl Sidebar {
                 clear_opened_thread_of_other_project(project_id, cx);
                 self.sessions_block.update(cx, ThreadsBlock::reload);
             }
+            ProjectsBlockEvent::VisitRecorded => {
+                self.sessions_block.update(cx, ThreadsBlock::reload);
+            }
             ProjectsBlockEvent::Removed(project_id) => {
                 // 移除的是当前项目：回退到无选中态（会话块显示引导文案）。
                 if cx.global::<SelectedProject>().0.as_deref() == Some(project_id.as_str()) {

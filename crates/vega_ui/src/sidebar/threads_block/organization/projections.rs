@@ -257,21 +257,7 @@ impl ThreadsBlock {
                         .focusable()
                         .tab_stop(true)
                         .role(gpui_kit::Role::Button)
-                        .aria_label(vega_i18n::t_args(
-                            "ui.disclosure_state",
-                            &[
-                                ("name", &project.name),
-                                (
-                                    "state",
-                                    if collapsed {
-                                        vega_i18n::t("ui.collapsed")
-                                    } else {
-                                        vega_i18n::t("ui.expanded")
-                                    },
-                                ),
-                            ],
-                        ))
-                        .aria_expanded(!collapsed)
+                        .aria_label(project.name.clone())
                         .cursor_pointer()
                         .when(selected, |row| row.bg(colors.bg_active))
                         .hover(move |row| {
@@ -298,7 +284,7 @@ impl ThreadsBlock {
                                 }
                                 cx.stop_propagation();
                                 this.control_action(
-                                    Control::ToggleProject(toggle_project.clone()),
+                                    Control::Project(toggle_project.clone()),
                                     window,
                                     cx,
                                 );
@@ -309,21 +295,14 @@ impl ThreadsBlock {
                                 if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                                     cx.stop_propagation();
                                     this.control_action(
-                                        Control::ToggleProject(keyboard_project.clone()),
+                                        Control::Project(keyboard_project.clone()),
                                         window,
                                         cx,
                                     );
                                 }
                             },
                         ))
-                        .child(crate::icons::icon(
-                            if collapsed {
-                                crate::icons::Icon::Folder
-                            } else {
-                                crate::icons::Icon::FolderOpen
-                            },
-                            colors.text_secondary,
-                        ))
+                        .child(self.project_disclosure(project, collapsed, cx))
                         .child(
                             div()
                                 .flex_1()

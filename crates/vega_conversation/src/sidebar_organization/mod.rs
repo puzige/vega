@@ -16,6 +16,14 @@ pub fn snapshot(store: &Store) -> Result<SidebarOrganizationSnapshot, SidebarOrg
     tx.commit().map_err(storage)?;
     Ok(result)
 }
+pub fn record_project_visit(
+    database: &std::path::Path,
+    project_id: &str,
+) -> Result<(), SidebarOrganizationError> {
+    let store = Store::open_existing(database).map_err(storage)?;
+    vega_store::projects::touch_last_opened(store.conn(), project_id).map_err(storage)
+}
+
 fn read_snapshot(store: &Store) -> Result<SidebarOrganizationSnapshot, SidebarOrganizationError> {
     let conn = store.conn();
     let (tasks, groups) = sql::counts(conn).map_err(storage)?;
