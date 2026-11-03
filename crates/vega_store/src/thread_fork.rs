@@ -88,7 +88,7 @@ fn mapped<'a>(map: &'a BTreeMap<String, String>, id: &str) -> Result<&'a str, Fo
 fn numbered_title(title: &str) -> Option<(&str, u64)> {
     let (base, suffix) = title.strip_suffix(')')?.rsplit_once(" (")?;
     let number = suffix.parse::<u64>().ok()?;
-    (number >= 2 && suffix == number.to_string()).then_some((base, number))
+    (number >= 1 && suffix == number.to_string()).then_some((base, number))
 }
 
 fn next_fork_title(
@@ -97,9 +97,9 @@ fn next_fork_title(
 ) -> Result<String, ForkError> {
     let (base, mut number) =
         if source.forked_from_thread_id.is_some() || source.forked_from_message_id.is_some() {
-            numbered_title(&source.title).unwrap_or((&source.title, 1))
+            numbered_title(&source.title).unwrap_or((&source.title, 0))
         } else {
-            (source.title.as_str(), 1)
+            (source.title.as_str(), 0)
         };
     let mut statement = tx.prepare(
         "SELECT title FROM threads WHERE project_id=?1 AND parent_thread_id IS NULL AND workspace_owner_thread_id IS NULL",
