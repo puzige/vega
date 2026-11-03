@@ -1,7 +1,10 @@
-use super::*;
-use gpui_kit::{AppContext, TestAppContext};
-use vega_conversation::threads as conversation;
-use vega_ui::sidebar::SelectedProject;
+use super::VegaWindow;
+use gpui_kit::{AppContext, Entity, TestAppContext};
+use vega_conversation::{threads as conversation, types::Thread};
+use vega_ui::{
+    settings::SettingsOpen,
+    sidebar::{OpenedThread, SelectedProject, VegaStore},
+};
 
 fn setup(cx: &mut TestAppContext) -> (tempfile::TempDir, Entity<VegaWindow>, Thread) {
     let directory = tempfile::tempdir().unwrap();
