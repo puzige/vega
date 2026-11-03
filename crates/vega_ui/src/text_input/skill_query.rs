@@ -17,8 +17,7 @@ impl TextInput {
             return None;
         }
         let query = &prefix[start + 1..];
-        if query.is_empty()
-            || query.chars().next().is_some_and(char::is_numeric)
+        if query.chars().next().is_some_and(char::is_numeric)
             || query.chars().any(|ch| {
                 ch.is_whitespace() || ch.is_control() || matches!(ch, '/' | '\\' | ':' | '`' | '$')
             })
