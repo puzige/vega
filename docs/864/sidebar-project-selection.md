@@ -83,4 +83,5 @@
 ### 扩围首轮结果与审查修复
 
 - 开发版本 `b8eeb5b8c13e2d4615e91d3091888230e165717c` 的 [Actions 41615097834](https://github.com/puzige/vega/actions/runs/41615097834) 编译失败，未取得测试执行结果；不是行为测试通过或有效行为失败。修正按钮 trait 导入、侧栏方法可见性及自动化 fixture 的实际 API。
-- 独立静态审查提出项目移除与 worker 启动竞争、组织刷新缺数据库隔离、项目移除旧路由错误覆盖三个阻塞项。本轮按上述契约修复并增加回归，当前仍待新版本 Actions 和独立增量复核，PR 保持 draft、未合并。
+- 独立静态审查提出项目移除与 worker 启动竞争、组织刷新缺数据库隔离、项目移除旧路由错误覆盖三个阻塞项。`d5bf636d0cf308eda3ee77d2bd9f2d43ae64ab88` 增量复核确认前后两项静态修复，但指出旧缓存 revision 仍可能挡住新库低 revision 快照；补充缓存数据库归属、切库清空关联投影及真实高 revision 旧缓存回归（不手动清空 fixture）。
+- `d5bf636d` 的 [Actions 41619347093](https://github.com/puzige/vega/actions/runs/41619347093) 仍在编译阶段失败：组织模块缺 `PathBuf` 导入。按原始错误补齐；未执行行为测试。后续版本继续交云端和独立增量审查，PR 保持 draft、未合并。

@@ -1,7 +1,10 @@
 #![allow(dead_code)]
 
 use super::*;
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+};
 use vega_conversation::sidebar_organization as service;
 use vega_conversation::types::{
     SidebarCollapseTarget, SidebarGroupColor, SidebarOrganizationAction,
@@ -26,6 +29,7 @@ struct OrganizationRequestToken {
 
 pub(super) struct Organization {
     pub(super) snapshot: Option<SidebarOrganizationSnapshot>,
+    database: Option<PathBuf>,
     projects: Entity<ProjectsBlock>,
     pending: bool,
     reorder: ReorderState,
@@ -196,8 +200,11 @@ impl ThreadsBlock {
     ) {
         projects.update(cx, |projects, _| projects.organization_mode = true);
         cx.observe(&projects, |_, _, cx| cx.notify()).detach();
+        cx.observe_global::<VegaStore>(|this, cx| this.refresh_organization(cx))
+            .detach();
         self.organization = Some(Organization {
             snapshot: None,
+            database: None,
             projects,
             pending: false,
             reorder: ReorderState::new(cx),
@@ -353,6 +360,40 @@ impl ThreadsBlock {
         action: Option<SidebarOrganizationAction>,
         cx: &mut Context<Self>,
     ) {
+        let database = with_store(cx, |store| {
+            store.database_path().map(Path::to_path_buf).ok_or_else(|| {
+                crate::localized_copy::LocalizedCopy::new(
+                    "ui.organization_storage_requires_a_file_backed_database",
+                )
+            })
+        });
+        let current_database = database.as_ref().ok().cloned();
+        let Some(org) = self.organization.as_mut() else {
+            return;
+        };
+        if org.database != current_database {
+            org.database = current_database;
+            org.snapshot = None;
+            org.project_threads_visible.clear();
+            org.project_threads_total.clear();
+            org.project_growth_paused.clear();
+            org.editor = None;
+            org.menu = None;
+            org.menu_anchor = None;
+            org.reveal_project = None;
+            org.reorder = ReorderState::new(cx);
+            self.threads.clear();
+            self.archived.clear();
+            self.loaded_project = None;
+            self.recents_total = 0;
+            self.selected_row = None;
+            self.close_actions();
+            cx.notify();
+            if action.is_some() {
+                self.refresh_organization(cx);
+                return;
+            }
+        }
         let Some(org) = self.organization.as_mut() else {
             return;
         };
@@ -369,13 +410,6 @@ impl ThreadsBlock {
         if action.is_some() && org.snapshot.is_none() {
             return;
         }
-        let database = with_store(cx, |store| {
-            store.database_path().map(Path::to_path_buf).ok_or_else(|| {
-                crate::localized_copy::LocalizedCopy::new(
-                    "ui.organization_storage_requires_a_file_backed_database",
-                )
-            })
-        });
         let Ok(database) = database else {
             self.error = database.err();
             cx.notify();
