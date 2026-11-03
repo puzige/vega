@@ -24,7 +24,10 @@ fn stored(cx: &TestAppContext, id: &str) -> Thread {
 }
 
 fn pending(cx: &TestAppContext) -> usize {
-    cx.read(|cx| cx.global::<crate::navigation::TaskMutationState>().pending)
+    cx.read(|cx| {
+        cx.try_global::<crate::navigation::TaskMutationState>()
+            .map_or(0, |state| state.pending)
+    })
 }
 
 #[gpui_kit::test]
