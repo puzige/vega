@@ -36,6 +36,14 @@
 - 同步基线 `4b1eb052fec30a01d6420e8475042958a014535b` 后 `git range-diff` 确认任务提交等价；新基线仅增加流式文字渐入。按政策清理开发 Rust 测试、两个模块接线及临时 dev-dependencies，生产代码与已测版本逐字等价（排除上述模块接线）。
 - 本地执行 `cargo fmt --all -- --check`、`git diff --check` 和生产等价静态比较均通过。未本地运行 Vega、编译、Clippy、测试或打包。`5d4d22c76d5e4ba7f38ae3dcf352e54879df2a5b` 的 [Actions 41601833117](https://github.com/puzige/vega/actions/runs/41601833117) 完整 required CI 成功，确认 no Rust tests（0 发现/0 执行），清理增量审查无阻塞发现。此为追加置顶前证据，不替代置顶增量和最终新 head 验证；PR 尚未合并。
 
+## 置顶增量验证与未决门禁
+
+- 开发提交 `142f4ac4a3f2a2ad4f19933c11400002c63a2f75` 的 [Actions 41605714229](https://github.com/puzige/vega/actions/runs/41605714229) 全部成功：Rust 6 发现/6 执行/6 通过/0 跳过，Python 三组 5+15+40 项通过，fmt/Clippy/required 成功。
+- 六项覆盖：写许可占用时立即返回并拒绝重复提交（含取消置顶）；失败保留状态后重试；数据库切换忽略旧完成；视图释放仍回收全局变更围栏；组织快照同步且不导航；离开原路由后失败不覆盖当前错误。
+- 已推送可恢复标签 `evidence/864-pin-tests-142f4ac4`，并通过 API 读回[完整置顶测试源码](https://github.com/puzige/vega/blob/142f4ac4a3f2a2ad4f19933c11400002c63a2f75/crates/vega_ui/src/sidebar/threads_block/pin/tests.rs)，blob `ad13b9754131cfb371d1b04e60c8c2f318089da6`。按开发测试生命周期清理源码、模块接线及临时依赖，不删除证据。
+- 两次新增置顶非实现者审查执行均返回 failed，没有有效审查结论，未知副作用为空且已 released。不是产品测试失败，也不是审查通过；不继续盲目重试。独立审查为合并阻塞，需恢复审查执行或由另一位非实现者审查置顶增量及最终清理差异。
+- 清理后最终 head 仍须完整 required CI 并确认 Rust 0 发现/0 执行；结果在 PR #866 回写。原生按钮/鼠标/键盘与真实卡顿场景仍待用户手测，未安装或运行应用。
+
 ## 后续方向（不在本卡实现）
 
 后续单独梳理 UI 主线程上的持久化写入。默认后台执行；需要持久化成功才能继续的操作使用异步等待及局部运行态，不以强一致要求作为阻塞 UI 线程的理由。全局迁移需逐项确认事务、顺序、取消、错误与旧结果边界。
