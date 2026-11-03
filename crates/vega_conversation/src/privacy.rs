@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use vega_runtime::{CredentialConfidence, CredentialExceptionFilter};
+use vega_runtime::{CredentialReadError, CredentialReadStage};
 use vega_store::Store;
 
 const KEY_REF: &str = "vega-privacy-fingerprint-v1";
@@ -15,8 +16,11 @@ static KEY_LOCK: Mutex<()> = Mutex::new(());
 type LiveCredentials = HashMap<PathBuf, Option<(u64, Vec<String>)>>;
 static LIVE: OnceLock<Mutex<LiveCredentials>> = OnceLock::new();
 
-fn unavailable() -> ConversationError {
-    ConversationError::Store(vega_i18n::t("domain.privacy.unavailable").into())
+fn unavailable() -> CredentialReadError {
+    crate::credential_errors::state_error(CredentialReadStage::Privacy)
+}
+fn database_error(error: rusqlite::Error) -> CredentialReadError {
+    CredentialReadError::database(CredentialReadStage::Privacy, error)
 }
 
 pub fn register_database(database: PathBuf, root: PathBuf) {
@@ -40,19 +44,20 @@ pub fn registered_root(store: &Store) -> Option<PathBuf> {
         .cloned()
 }
 
-fn known(store: &Store, root: Option<&std::path::Path>) -> Result<Vec<String>, ConversationError> {
+fn known(
+    store: &Store,
+    root: Option<&std::path::Path>,
+) -> Result<Vec<String>, CredentialReadError> {
     let Some(root) = root else {
         return Ok(Vec::new());
     };
     let before = vega_store::keystore::revision(root);
-    let result = crate::mcp_settings::all_owner_credentials(root, store)
-        .map_err(|_| unavailable())
-        .and_then(|values| {
-            if before != vega_store::keystore::revision(root) {
-                return Err(unavailable());
-            }
-            Ok(values)
-        });
+    let result = crate::mcp_settings::all_owner_credentials(root, store).and_then(|values| {
+        if before != vega_store::keystore::revision(root) {
+            return Err(unavailable());
+        }
+        Ok(values)
+    });
     if let Ok(mut live) = LIVE.get_or_init(Default::default).lock() {
         live.insert(
             root.to_path_buf(),
@@ -101,16 +106,21 @@ fn fingerprint(key: &[u8], rule: &str, content: &str) -> String {
         .collect()
 }
 
-fn key(root: &std::path::Path) -> Result<String, ConversationError> {
+fn key(root: &std::path::Path) -> Result<String, CredentialReadError> {
     let _lock = KEY_LOCK.lock().map_err(|_| unavailable())?;
     match vega_store::keystore::get_key(root, KEY_REF) {
         Ok(key) => Ok(key),
         Err(vega_store::keystore::Error::Missing) => {
             let key = vega_credentials::random_token().map_err(|_| unavailable())?;
-            vega_store::keystore::set_key(root, KEY_REF, &key).map_err(|_| unavailable())?;
+            vega_store::keystore::set_key(root, KEY_REF, &key).map_err(|error| {
+                crate::credential_errors::credential_error(CredentialReadStage::Privacy, error)
+            })?;
             Ok(key)
         }
-        Err(_) => Err(unavailable()),
+        Err(error) => Err(crate::credential_errors::credential_error(
+            CredentialReadStage::Privacy,
+            error,
+        )),
     }
 }
 
@@ -126,23 +136,23 @@ pub(crate) fn invalidate_authority(root: &std::path::Path) {
 pub fn refresh_authority(
     database: &std::path::Path,
     root: &std::path::Path,
-) -> Result<(), ConversationError> {
+) -> Result<(), CredentialReadError> {
     refresh_authority_values(database, root).map(|_| ())
 }
 
 pub(crate) fn refresh_authority_values(
     database: &std::path::Path,
     root: &std::path::Path,
-) -> Result<Vec<String>, ConversationError> {
+) -> Result<Vec<String>, CredentialReadError> {
     let result = (|| {
-        let store = Store::open(database).map_err(|_| unavailable())?;
+        let store = Store::open(database).map_err(database_error)?;
         let key = key(root)?;
         let mut owner = known(&store, Some(root))?;
         owner.sort();
         let encoded = serde_json::to_string(&owner).map_err(|_| unavailable())?;
         let epoch = fingerprint(key.as_bytes(), "owner-epoch", &encoded);
         vega_store::credential_privacy::refresh_epoch(store.conn(), &epoch)
-            .map_err(|_| unavailable())?;
+            .map_err(database_error)?;
         Ok((epoch, owner))
     })();
     let mut epochs = AUTHORITY
@@ -196,10 +206,10 @@ pub fn exception_filter(
     database: PathBuf,
     thread: String,
     root: PathBuf,
-) -> Result<CredentialExceptionFilter, ConversationError> {
+) -> Result<CredentialExceptionFilter, CredentialReadError> {
     refresh_authority(&database, &root)?;
     let key = key(&root)?;
-    let store = Store::open(&database).map_err(|_| unavailable())?;
+    let store = Store::open(&database).map_err(database_error)?;
     let epoch = AUTHORITY
         .get_or_init(Default::default)
         .lock()
@@ -209,7 +219,7 @@ pub fn exception_filter(
         .ok_or_else(unavailable)?;
     let revision = exception_revision(&database, &thread).ok_or_else(unavailable)?;
     let allowed: HashSet<_> = vega_store::credential_privacy::exceptions(store.conn(), &thread)
-        .map_err(|_| unavailable())?
+        .map_err(database_error)?
         .into_iter()
         .collect();
     Ok(Arc::new(move |text, finding| {
@@ -455,7 +465,7 @@ pub fn set_exception(
         .filter(|finding| !finding.exact)
         .ok_or_else(unavailable)?;
     if snapshot.findings.get(index) != Some(finding) {
-        return Err(unavailable());
+        return Err(unavailable().into());
     }
     let database = store.database_path().ok_or_else(unavailable)?;
     invalidate_exceptions(database, thread)?;

@@ -768,7 +768,7 @@ async fn compact_thread_manually_owned(
             crate::privacy::exception_filter(database_path.clone(), thread_id.to_owned(), root)
         })
         .transpose()
-        .map_err(|_| failure(VegaError::CredentialCheckUnavailable, None))?;
+        .map_err(|error| failure(error.into(), None))?;
     let preparation_exceptions = exceptions.clone();
     let (model, source, history) = tokio::task::spawn_blocking({
         let database_path = database_path.clone();
@@ -1526,7 +1526,7 @@ fn reject_unprojected_shell_credentials(
         return Ok(());
     }
     let credentials = match credential_reader {
-        Some(reader) => reader().map_err(|_| VegaError::CredentialCheckUnavailable)?,
+        Some(reader) => reader().map_err(VegaError::from)?,
         None => Vec::new(),
     };
     if outputs.iter().any(|output| {
@@ -1732,8 +1732,8 @@ impl ConversationCompactionHook<'_> {
                 let credentials = match &self.credential_reader {
                     Some(reader) => match reader() {
                         Ok(credentials) => credentials,
-                        Err(()) => {
-                            let error = VegaError::CredentialCheckUnavailable;
+                        Err(error) => {
+                            let error = VegaError::from(error);
                             if let Some(diagnostics) = &self.diagnostics {
                                 let metrics = super::diagnostics::with_failure_metrics(
                                     summary_store_metrics(&collection.metrics),

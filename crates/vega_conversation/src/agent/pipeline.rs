@@ -1070,14 +1070,12 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     let credential_values = if let Some(reader) = &config.run_credential_reader {
         reader
             .prepare(&credential_authority.fence, &assistant_message_id)
-            .map_err(|_| {
-                ConversationError::Runtime(Arc::new(VegaError::CredentialCheckUnavailable))
-            })?
+            .map_err(|error| ConversationError::Runtime(Arc::new(error.into())))?
     } else {
         match &config.owner_credential_reader {
-            Some(reader) => reader().map_err(|_| {
-                ConversationError::Runtime(Arc::new(VegaError::CredentialCheckUnavailable))
-            })?,
+            Some(reader) => {
+                reader().map_err(|error| ConversationError::Runtime(Arc::new(error.into())))?
+            }
             None => Vec::new(),
         }
     };
@@ -1642,9 +1640,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     if let Some(reader) = &config.run_credential_reader {
         reader
             .activate(&permission_fence, &assistant_message_id)
-            .map_err(|_| {
-                ConversationError::Runtime(Arc::new(VegaError::CredentialCheckUnavailable))
-            })?;
+            .map_err(|error| ConversationError::Runtime(Arc::new(error.into())))?;
     }
     if let Some(request) = title_request {
         request.with_thread_admission(admission.clone()).launch(

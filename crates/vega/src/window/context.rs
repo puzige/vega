@@ -772,14 +772,11 @@ pub(crate) fn run_manual_context_worker(
         vega_conversation::McpServerSettingsService::new(database.clone(), credential_root.clone());
     let provider_credential_reader: vega_runtime::CredentialReader =
         std::sync::Arc::new(move || {
-            vega_conversation::privacy::refresh_authority(&authority_database, &credential_root)
-                .map_err(|_| ())?;
-            let mut values = owner_service
-                .current_owner_credential_values()
-                .map_err(|_| ())?;
+            vega_conversation::privacy::refresh_authority(&authority_database, &credential_root)?;
+            let mut values = owner_service.current_owner_credential_values()?;
             values.push(
                 vega_store::keystore::get_key(&credential_root, &credential_key_ref)
-                    .map_err(|_| ())?,
+                    .map_err(vega_conversation::provider_credential_error)?,
             );
             Ok(values)
         });

@@ -284,6 +284,13 @@ fn mcp_error_label(error: McpSettingsError) -> SettingsText {
         McpSettingsError::NotFound => SettingsText::key("settings.mcp.error.missing"),
         McpSettingsError::Capacity => SettingsText::key("settings.mcp.error.capacity"),
         McpSettingsError::Store => SettingsText::key("settings.mcp.error.store"),
+        McpSettingsError::CredentialRead(error) => {
+            SettingsText::key(if error.reason.needs_credential_settings() {
+                "domain.failure.credential_storage"
+            } else {
+                "domain.failure.credential_check"
+            })
+        }
         McpSettingsError::CredentialBindingRequired => {
             SettingsText::key("settings.mcp.error.bindings")
         }

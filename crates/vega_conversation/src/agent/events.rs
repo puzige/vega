@@ -1240,7 +1240,9 @@ pub(crate) fn persist_runtime_event(
             )?;
             let reason = match error.as_ref() {
                 VegaError::CredentialExposureBlocked => Some("exposure".to_owned()),
-                VegaError::CredentialCheckUnavailable => Some("unavailable".to_owned()),
+                VegaError::CredentialCheckUnavailable | VegaError::CredentialRead(_) => {
+                    Some("unavailable".to_owned())
+                }
                 VegaError::CredentialProjectionInvalid { tool_index } => {
                     Some(format!("projection:{tool_index}"))
                 }

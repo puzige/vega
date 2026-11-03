@@ -29,6 +29,7 @@ pub fn runtime_failure(
         | vega_runtime::VegaError::ReasoningReplayIncomplete => Reason::Reasoning,
         vega_runtime::VegaError::CredentialExposureBlocked
         | vega_runtime::VegaError::CredentialCheckUnavailable
+        | vega_runtime::VegaError::CredentialRead(_)
         | vega_runtime::VegaError::CredentialContinuationUnavailable
         | vega_runtime::VegaError::CredentialProjectionInvalid { .. } => Reason::CredentialSafety,
         vega_runtime::VegaError::Context(_) => Reason::Context,

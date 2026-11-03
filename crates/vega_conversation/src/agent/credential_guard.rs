@@ -10,7 +10,7 @@ use vega_runtime::{ChatRequest, EventStream, Provider, VegaError};
 /// The reader never enters a Debug value, request, event, audit, or log.
 pub struct OwnerCredentialProvider {
     provider: Arc<dyn Provider>,
-    known: Arc<dyn Fn() -> Result<Vec<String>, ()> + Send + Sync>,
+    known: Arc<dyn Fn() -> Result<Vec<String>, vega_runtime::CredentialReadError> + Send + Sync>,
     exceptions: Option<vega_runtime::CredentialExceptionFilter>,
 }
 
@@ -18,7 +18,9 @@ impl OwnerCredentialProvider {
     /// Wrap a provider with the current owner-only credential authority.
     pub fn new(
         provider: Arc<dyn Provider>,
-        known: Arc<dyn Fn() -> Result<Vec<String>, ()> + Send + Sync>,
+        known: Arc<
+            dyn Fn() -> Result<Vec<String>, vega_runtime::CredentialReadError> + Send + Sync,
+        >,
     ) -> Self {
         Self {
             provider,
@@ -46,7 +48,9 @@ impl OwnerCredentialProvider {
     /// OpenAI calls it again immediately before every HTTP attempt, while the
     /// outer wrapper still protects other providers and auxiliary requests.
     pub fn pre_attempt_guard(
-        known: Arc<dyn Fn() -> Result<Vec<String>, ()> + Send + Sync>,
+        known: Arc<
+            dyn Fn() -> Result<Vec<String>, vega_runtime::CredentialReadError> + Send + Sync,
+        >,
     ) -> impl Fn(&ChatRequest) -> Result<(), VegaError> + Send + Sync + 'static {
         move |request| reject_owner_secret(request, known.as_ref())
     }
@@ -78,7 +82,7 @@ fn contains_json_secret(
 
 pub(crate) fn reject_owner_secret(
     request: &ChatRequest,
-    reader: &(dyn Fn() -> Result<Vec<String>, ()> + Send + Sync),
+    reader: &(dyn Fn() -> Result<Vec<String>, vega_runtime::CredentialReadError> + Send + Sync),
 ) -> Result<(), VegaError> {
     reject_owner_secret_with_policy(request, reader, None)
 }
@@ -414,10 +418,10 @@ fn contains_response_secret(
 
 pub(crate) fn reject_owner_secret_with_policy(
     request: &ChatRequest,
-    reader: &(dyn Fn() -> Result<Vec<String>, ()> + Send + Sync),
+    reader: &(dyn Fn() -> Result<Vec<String>, vega_runtime::CredentialReadError> + Send + Sync),
     exceptions: Option<&vega_runtime::CredentialExceptionFilter>,
 ) -> Result<(), VegaError> {
-    let known = reader().map_err(|_| VegaError::CredentialCheckUnavailable)?;
+    let known = reader().map_err(VegaError::from)?;
     if history_request_unsafe(request, &known, exceptions) {
         return Err(blocked());
     }
@@ -484,10 +488,10 @@ fn project_json(
 
 pub(crate) fn project_owner_secrets_with_policy(
     mut request: ChatRequest,
-    reader: &(dyn Fn() -> Result<Vec<String>, ()> + Send + Sync),
+    reader: &(dyn Fn() -> Result<Vec<String>, vega_runtime::CredentialReadError> + Send + Sync),
     exceptions: Option<&vega_runtime::CredentialExceptionFilter>,
 ) -> Result<ChatRequest, VegaError> {
-    let known = reader().map_err(|_| VegaError::CredentialCheckUnavailable)?;
+    let known = reader().map_err(VegaError::from)?;
     let report = if let Some(check) = &request.history_safety {
         inspect_history(&request, check, &known, exceptions)
     } else if history_fragments_unsafe(&request, &known, exceptions) {
@@ -714,7 +718,12 @@ impl Provider for OwnerCredentialProvider {
                 project_owner_secrets_with_policy(request, known.as_ref(), exceptions.as_ref())
             })
             .await
-            .map_err(|_| VegaError::CredentialCheckUnavailable)??;
+            .map_err(|_| {
+                VegaError::from(vega_runtime::CredentialReadError::new(
+                    vega_runtime::CredentialReadStage::Worker,
+                    vega_runtime::CredentialReadReason::Worker,
+                ))
+            })??;
             self.provider.prepare_accounting_request(request).await
         })
     }
@@ -732,7 +741,7 @@ impl Provider for OwnerCredentialProvider {
             let request =
                 project_owner_secrets_with_policy(request, known.as_ref(), exceptions.as_ref())?;
             reject_owner_secret_with_policy(&request, known.as_ref(), exceptions.as_ref())?;
-            let credentials = known().map_err(|_| VegaError::CredentialCheckUnavailable)?;
+            let credentials = known().map_err(VegaError::from)?;
             let mut response = provider
                 .chat_stream_with_submission(request, cancel, submission)
                 .await?;
@@ -777,7 +786,7 @@ impl Provider for OwnerCredentialProvider {
             let request =
                 project_owner_secrets_with_policy(request, known.as_ref(), exceptions.as_ref())?;
             reject_owner_secret_with_policy(&request, known.as_ref(), exceptions.as_ref())?;
-            let credentials = known().map_err(|_| VegaError::CredentialCheckUnavailable)?;
+            let credentials = known().map_err(VegaError::from)?;
             let mut response = provider.chat_stream_recovering(request, cancel).await?;
             if let Some(id) = &mut response.metadata.request_id {
                 *id = vega_runtime::redact_sensitive_credential_text_with_policy(
@@ -802,7 +811,7 @@ impl Provider for OwnerCredentialProvider {
             let request =
                 project_owner_secrets_with_policy(request, known.as_ref(), exceptions.as_ref())?;
             reject_owner_secret_with_policy(&request, known.as_ref(), exceptions.as_ref())?;
-            let credentials = known().map_err(|_| VegaError::CredentialCheckUnavailable)?;
+            let credentials = known().map_err(VegaError::from)?;
             let stream = provider.chat_stream_once(request, cancel).await?;
             Ok(protected_stream(stream, credentials, exceptions))
         })
@@ -820,7 +829,7 @@ impl Provider for OwnerCredentialProvider {
             let request =
                 project_owner_secrets_with_policy(request, known.as_ref(), exceptions.as_ref())?;
             reject_owner_secret_with_policy(&request, known.as_ref(), exceptions.as_ref())?;
-            let credentials = known().map_err(|_| VegaError::CredentialCheckUnavailable)?;
+            let credentials = known().map_err(VegaError::from)?;
             let stream = provider.chat_stream(request, cancel).await?;
             Ok(protected_stream(stream, credentials, exceptions))
         })

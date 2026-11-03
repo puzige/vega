@@ -83,6 +83,9 @@ pub enum RunFailureKind {
     #[allow(missing_docs)]
     CredentialExposureBlocked,
     CredentialCheckUnavailable,
+    CredentialStorageUnavailable,
+    CredentialInternalUnavailable,
+    CredentialStateUnavailable,
     ProjectInstructionsUnavailable,
     ProjectPathInvalid,
     CredentialContinuationUnavailable,
@@ -136,6 +139,16 @@ impl RunFailureKind {
     pub(crate) fn from_diagnostic(
         metrics: &vega_store::run_diagnostics::DiagnosticMetrics,
     ) -> Self {
+        if metrics.failure_kind.as_deref() == Some("credential_check") {
+            return match metrics.credential_reason.as_deref() {
+                Some(
+                    "missing" | "unsafe" | "malformed" | "limit" | "credential_io" | "unsupported",
+                ) => Self::CredentialStorageUnavailable,
+                Some("database" | "configuration") => Self::CredentialInternalUnavailable,
+                Some("state" | "worker") => Self::CredentialStateUnavailable,
+                _ => Self::CredentialCheckUnavailable,
+            };
+        }
         if let Some(reason) = metrics.runtime_reason.as_deref() {
             return match reason {
                 "database" if matches!(metrics.sqlite_code, Some(5 | 6)) => {
@@ -358,6 +371,19 @@ impl RunFailureKind {
             } => Self::ProviderRejected,
             vega_runtime::VegaError::CredentialExposureBlocked => Self::CredentialExposureBlocked,
             vega_runtime::VegaError::CredentialCheckUnavailable => Self::CredentialCheckUnavailable,
+            vega_runtime::VegaError::CredentialRead(error) => {
+                if error.reason.needs_credential_settings() {
+                    Self::CredentialStorageUnavailable
+                } else if matches!(
+                    error.reason,
+                    vega_runtime::CredentialReadReason::Database
+                        | vega_runtime::CredentialReadReason::Configuration
+                ) {
+                    Self::CredentialInternalUnavailable
+                } else {
+                    Self::CredentialStateUnavailable
+                }
+            }
             vega_runtime::VegaError::ProjectInstructions(error)
                 if error.failure() == vega_tools::ProjectInstructionsFailure::InvalidRootPath =>
             {
@@ -455,6 +481,15 @@ impl RunFailureKind {
             }
             Self::CredentialCheckUnavailable => {
                 vega_i18n::t("domain.failure.credential_check").into()
+            }
+            Self::CredentialStorageUnavailable => {
+                vega_i18n::t("domain.failure.credential_storage").into()
+            }
+            Self::CredentialInternalUnavailable => {
+                vega_i18n::t("domain.failure.credential_internal").into()
+            }
+            Self::CredentialStateUnavailable => {
+                vega_i18n::t("domain.failure.credential_state").into()
             }
             Self::ProjectInstructionsUnavailable => {
                 vega_i18n::t("domain.failure.project_instructions").into()

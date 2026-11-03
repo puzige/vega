@@ -42,7 +42,7 @@ impl vega_runtime::RuntimeSubagentHook for StageHook {
                 .credential_reader()
                 .map(|reader| reader())
                 .transpose()
-                .map_err(|_| VegaError::CredentialCheckUnavailable)?
+                .map_err(VegaError::from)?
                 .unwrap_or_default();
             if vega_runtime::redact_sensitive_credential_text_with_policy(&input_text, &known, None)
                 != input_text
