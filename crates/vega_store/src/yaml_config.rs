@@ -13,7 +13,7 @@ static EDIT_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(test)]
 #[test]
 fn existing_configuration_reports_exact_validation_boundary() {
-    let text = "schema_version: 1\n";
+    let text = "schema_version: 1\ncredential_bindings: []\nproviders: []\ndefaults:\n  model: ''\n  permission_mode: confirm\n  permission_revision: 0\n  full_access_grant: null\nui:\n  theme: dark\n  language: en\n  sidebar_collapsed: false\n  sidebar_width: 304.0\n  projects_collapsed: false\n  sessions_collapsed: false\nagent:\n  composer_predictions_enabled: true\n  running_message_behavior: queue\n  desktop_use_enabled: false\n  browser_use_enabled: false\n  turn_limit: 0\n  codex_acp_profile: null\n";
     let parsed: Value = serde_saphyr::from_str_with_options(text, options()).expect("YAML parse");
     assert_eq!(
         parsed.get("schema_version").and_then(Value::as_u64),
