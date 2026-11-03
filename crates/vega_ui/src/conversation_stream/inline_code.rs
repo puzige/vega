@@ -1,11 +1,11 @@
 use std::{cell::RefCell, collections::BTreeMap, ops::Range, rc::Rc};
 
 use gpui_kit::{
-    AnyElement, App, AvailableSpace, BorderStyle, Bounds, Corners, Edges, Element, ElementId,
-    GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
-    PaintQuad, Pixels, SharedString, StyledText, TextAlign, TextLayout, TextRun, TextStyle,
-    TextStyleRefinement, WhiteSpace, Window, WrappedLine, WrappedLineLayout, point, px, size,
-    transparent_black,
+    AnyElement, App, AvailableSpace, BorderStyle, Bounds, ContentMask, Corners, Edges, Element,
+    ElementId, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
+    LayoutId, PaintQuad, Pixels, SharedString, StyledText, TextAlign, TextLayout, TextRun,
+    TextStyle, TextStyleRefinement, WhiteSpace, Window, WrappedLine, WrappedLineLayout, point, px,
+    size, transparent_black,
 };
 use vega_theme::Layout;
 
@@ -255,31 +255,63 @@ pub(super) fn paint_backgrounds(layout: &TextLayout, runs: &[TextRun], window: &
                 line_backgrounds.partition_point(|(range, _)| range.end <= line_offset + start);
             let last =
                 line_backgrounds.partition_point(|(range, _)| range.start < line_offset + end);
-            for (range, color) in line_backgrounds.get(first..last).unwrap_or_default() {
-                let from = range.start.max(line_offset + start);
-                let to = range.end.min(line_offset + end);
-                if from < to {
-                    let left = x + x_for_index(from - line_offset)
-                        - start_x
-                        - px(Layout::MARKDOWN_INLINE_CODE_PADDING_X);
-                    let right = x + x_for_index(to - line_offset) - start_x
-                        + px(Layout::MARKDOWN_INLINE_CODE_PADDING_X);
-                    if right > left {
-                        let fragment_size = size(right - left, height);
-                        window.paint_quad(PaintQuad {
-                            bounds: Bounds::new(
-                                point(left, y + (line_height - height) / 2.),
-                                fragment_size,
-                            ),
-                            corner_radii: Corners::all(px(Layout::MARKDOWN_INLINE_CODE_RADIUS))
-                                .clamp_radii_for_quad_size(fragment_size),
-                            background: (*color).into(),
-                            border_widths: Edges::default(),
-                            border_color: transparent_black(),
-                            border_style: BorderStyle::default(),
-                        });
+            let mut group_start = first;
+            while group_start < last {
+                let mut group_end = group_start + 1;
+                while group_end < last
+                    && line_backgrounds[group_end - 1].0.end == line_backgrounds[group_end].0.start
+                {
+                    group_end += 1;
+                }
+                let from = line_backgrounds[group_start]
+                    .0
+                    .start
+                    .max(line_offset + start);
+                let to = line_backgrounds[group_end - 1].0.end.min(line_offset + end);
+                let left = x + x_for_index(from - line_offset)
+                    - start_x
+                    - px(Layout::MARKDOWN_INLINE_CODE_PADDING_X);
+                let right = x + x_for_index(to - line_offset) - start_x
+                    + px(Layout::MARKDOWN_INLINE_CODE_PADDING_X);
+                let top = y + (line_height - height) / 2.;
+                if from < to && right > left {
+                    let fragment_size = size(right - left, height);
+                    let outline = Bounds::new(point(left, top), fragment_size);
+                    let corner_radii = Corners::all(px(Layout::MARKDOWN_INLINE_CODE_RADIUS))
+                        .clamp_radii_for_quad_size(fragment_size);
+                    let scale = window.scale_factor();
+                    let mut boundaries = vec![left];
+                    boundaries.extend(line_backgrounds[group_start..group_end - 1].iter().map(
+                        |(range, _)| {
+                            let edge = x + x_for_index(range.end - line_offset) - start_x;
+                            px((f32::from(edge) * scale).round() / scale)
+                        },
+                    ));
+                    boundaries.push(right);
+                    for (index, (_, color)) in
+                        line_backgrounds[group_start..group_end].iter().enumerate()
+                    {
+                        let clip_left = boundaries[index];
+                        let clip_right = boundaries[index + 1];
+                        if clip_right > clip_left {
+                            let bounds = Bounds::new(
+                                point(clip_left, top),
+                                size(clip_right - clip_left, height),
+                            );
+                            window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                                window.paint_quad(PaintQuad {
+                                    bounds: outline,
+                                    corner_radii,
+                                    background: (*color).into(),
+                                    border_widths: Edges::default(),
+                                    border_color: transparent_black(),
+                                    border_style: BorderStyle::default(),
+                                });
+                            });
+                        }
                     }
                 }
+                group_start = group_end;
             }
             start = end;
             y += line_height;
