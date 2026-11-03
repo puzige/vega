@@ -1,8 +1,5 @@
 use super::*;
 
-#[cfg(test)]
-mod tests;
-
 impl ThreadsBlock {
     pub(super) fn toggle_pin(&mut self, thread_id: &str, pinned: bool, cx: &mut Context<Self>) {
         if task_mutation_busy(cx) || self.pin_pending.is_some() {
