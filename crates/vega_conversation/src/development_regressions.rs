@@ -449,10 +449,15 @@ async fn acceptance_rolls_back(fault: &str) {
                 .unwrap();
         }
         "fence" => {
-            fixture.store.conn().execute(
-                "UPDATE threads SET permission_revision = permission_revision + 1 WHERE id = 'thread'",
-                [],
-            ).unwrap();
+            let changed = fixture
+                .store
+                .conn()
+                .execute(
+                    "UPDATE threads SET permission_revision = permission_revision + 1 WHERE id = ?1",
+                    [&original.thread_id],
+                )
+                .unwrap();
+            assert_eq!(changed, 1);
         }
         table => fixture
             .store
