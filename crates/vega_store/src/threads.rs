@@ -2,7 +2,10 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 /// The `SELECT` column list shared by the row-loading queries.
 const COLUMNS: &str = "id, project_id, title, mode, permission_mode, model, backend, \
-                       status, pinned, unread, created_at, updated_at, parent_thread_id, workspace_owner_thread_id, forked_from_thread_id, forked_from_message_id, permission_revision, full_access_grant, reasoning_preferences";
+                       status, pinned, unread, created_at, updated_at, parent_thread_id, workspace_owner_thread_id, forked_from_thread_id, forked_from_message_id, permission_revision, full_access_grant, reasoning_preferences, \
+                       CASE WHEN unread THEN COALESCE((SELECT status = 'failed' FROM messages \
+                       WHERE thread_id = threads.id AND role IN ('user', 'assistant') \
+                       ORDER BY seq DESC LIMIT 1), 0) ELSE 0 END";
 
 /// A raw `threads` row, field-for-field with the DDL.
 ///
@@ -10,6 +13,7 @@ const COLUMNS: &str = "id, project_id, title, mode, permission_mode, model, back
 /// one layer up in `vega_conversation`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadRow {
+    pub last_response_failed: bool,
     pub reasoning_preferences: Option<String>,
     pub parent_thread_id: Option<String>,
     pub workspace_owner_thread_id: Option<String>,
@@ -531,6 +535,7 @@ fn thread_from_row(row: &rusqlite::Row) -> rusqlite::Result<ThreadRow> {
         status: row.get(7)?,
         pinned: row.get(8)?,
         unread: row.get(9)?,
+        last_response_failed: row.get(19)?,
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
     })

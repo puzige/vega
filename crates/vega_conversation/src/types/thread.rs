@@ -79,6 +79,7 @@ impl ThreadStatus {
 /// raw provider id string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Thread {
+    pub last_response_failed: bool,
     pub reasoning_preferences: Option<Vec<super::SessionReasoningPreference>>,
     pub parent_thread_id: Option<String>,
     pub forked_from_thread_id: Option<String>,
