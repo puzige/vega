@@ -220,6 +220,13 @@ pub fn link_source(
     )?;
     ensure_generation(&tx, expected_consent_generation)?;
     tx.execute(
+        "DELETE FROM skill_sources WHERE scope = ?1 AND \
+         ((scope = 'project' AND project_id = ?2) OR \
+          scope = 'vega_global' OR \
+          (scope = 'imported' AND configured_root = ?3))",
+        params![input.scope, input.project_id, input.configured_root],
+    )?;
+    tx.execute(
         "INSERT INTO skill_sources \
          (id, scope, project_id, configured_root, canonical_root, root_dev, root_ino, \
           import_order, enabled, automatic, created_at) \
