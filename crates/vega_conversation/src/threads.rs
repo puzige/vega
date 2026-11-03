@@ -414,6 +414,16 @@ pub fn set_thread_status(
     Ok(())
 }
 
+pub fn persist_thread_pinned(
+    database: &std::path::Path,
+    thread_id: &str,
+    pinned: bool,
+) -> Result<Thread, ConversationError> {
+    let store = Store::open_existing(database).map_err(store_error)?;
+    set_thread_pinned(&store, thread_id, pinned)?;
+    get_thread(&store, thread_id)
+}
+
 pub fn set_thread_pinned(
     store: &Store,
     thread_id: &str,
