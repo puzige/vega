@@ -78,12 +78,7 @@ pub fn set_width(width: f32, cx: &mut App) {
 
 /// Persists the accepted width when a pointer drag completes.
 pub fn persist_width(cx: &mut App) {
-    let width = width(cx);
-    persist_ui(
-        |config| config.ui.sidebar_width = width,
-        "sidebar_width",
-        cx,
-    );
+    preferences::submit(preferences::Patch::Width(width(cx)), cx);
 }
 
 /// Explicit reveal overrides automatic narrow-window collapse for this app session.
@@ -93,19 +88,7 @@ impl Global for SidebarExplicitlyShown {}
 
 /// Show the sidebar using its existing persisted preference path.
 pub fn show_persisted(cx: &mut App) {
-    cx.set_global(SidebarExplicitlyShown(true));
-    cx.set_global(SidebarCollapsed(false));
-    cx.set_global(ProjectsCollapsed(false));
-    cx.set_global(SessionsCollapsed(false));
-    persist_ui(
-        |config| {
-            config.ui.sidebar_collapsed = false;
-            config.ui.projects_collapsed = false;
-            config.ui.sessions_collapsed = false;
-        },
-        "sidebar reveal",
-        cx,
-    );
+    preferences::submit(preferences::Patch::Show, cx);
 }
 
 pub struct SelectedProject(pub Option<String>);
@@ -275,13 +258,7 @@ impl Global for NewTaskDefaults {}
 
 pub fn toggle_persisted(cx: &mut App) {
     let collapsed = !cx.global::<SidebarCollapsed>().0;
-    cx.set_global(SidebarExplicitlyShown(!collapsed));
-    cx.set_global(SidebarCollapsed(collapsed));
-    persist_ui(
-        |config| config.ui.sidebar_collapsed = collapsed,
-        "sidebar_collapsed",
-        cx,
-    );
+    preferences::submit(preferences::Patch::SidebarCollapsed(collapsed), cx);
 }
 
 pub fn init(workspace: vega_conversation::types::StartupWorkspace, cx: &mut App) {
@@ -297,35 +274,46 @@ pub fn init(workspace: vega_conversation::types::StartupWorkspace, cx: &mut App)
     cx.set_global(SidebarWidth(config::clamp_sidebar_width(
         config.ui.sidebar_width,
     )));
+    preferences::initialize(path.clone(), cx);
     cx.set_global(NewTaskDefaults::from_config(Some(&path), &config.defaults));
-}
-
-fn persist_ui(mutate: impl FnOnce(&mut config::AppConfig), what: &'static str, cx: &mut App) {
-    if let Err(error) = config::update(mutate) {
-        tracing::error!(%error, "failed to persist {what} to config.yaml");
-    }
-    cx.refresh_windows();
 }
 
 fn toggle_projects_block(cx: &mut App) {
     let collapsed = !cx.global::<ProjectsCollapsed>().0;
-    cx.set_global(ProjectsCollapsed(collapsed));
-    persist_ui(
-        |config| config.ui.projects_collapsed = collapsed,
-        "projects_collapsed",
-        cx,
-    );
+    preferences::submit(preferences::Patch::ProjectsCollapsed(collapsed), cx);
 }
 
-/// 「会话」block collapse toggle (persists `ui.sessions_collapsed`).
 fn toggle_sessions_block(cx: &mut App) {
     let collapsed = !cx.global::<SessionsCollapsed>().0;
-    cx.set_global(SessionsCollapsed(collapsed));
-    persist_ui(
-        |config| config.ui.sessions_collapsed = collapsed,
-        "sessions_collapsed",
-        cx,
-    );
+    preferences::submit(preferences::Patch::SessionsCollapsed(collapsed), cx);
+}
+
+pub fn preference_save_notice(cx: &App) -> Option<AnyElement> {
+    let status = preferences::status(cx);
+    let error = status.error?;
+    let colors = theme(cx).colors;
+    Some(
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .py_1()
+            .text_size(px(Typography::METADATA))
+            .text_color(colors.danger)
+            .child(div().flex_1().child(error.render()))
+            .child(
+                Button::new("retry-sidebar-preferences")
+                    .label(if status.saving {
+                        vega_i18n::t("ui.saving")
+                    } else {
+                        vega_i18n::t("ui.retry")
+                    })
+                    .disabled(!status.can_retry)
+                    .on_click(|_, _, cx| preferences::retry(cx)),
+            )
+            .into_any_element(),
+    )
 }
 
 /// Mutations and accepted navigation visits share one short application fence.
@@ -398,10 +386,12 @@ impl Sidebar {
             ProjectsBlockEvent::Selected(project_id)
             | ProjectsBlockEvent::Registered(project_id) => {
                 clear_opened_thread_of_other_project(project_id, cx);
-                self.sessions_block.update(cx, ThreadsBlock::reload);
+                self.sessions_block
+                    .update(cx, ThreadsBlock::reload_background);
             }
             ProjectsBlockEvent::VisitRecorded => {
-                self.sessions_block.update(cx, ThreadsBlock::reload);
+                self.sessions_block
+                    .update(cx, ThreadsBlock::reload_background);
             }
             ProjectsBlockEvent::Removed(project_id) => {
                 // 移除的是当前项目：回退到无选中态（会话块显示引导文案）。
@@ -409,7 +399,8 @@ impl Sidebar {
                     cx.set_global(SelectedProject(None));
                 }
                 clear_opened_thread_of_project(project_id, cx);
-                self.sessions_block.update(cx, ThreadsBlock::reload);
+                self.sessions_block
+                    .update(cx, ThreadsBlock::reload_background);
             }
         }
         if let ProjectsBlockEvent::Registered(id) = event {
@@ -465,34 +456,71 @@ impl Sidebar {
             });
             return;
         }
+        let database = with_store(cx, |store| {
+            store.database_path().map(Path::to_path_buf).ok_or_else(|| {
+                crate::localized_copy::LocalizedCopy::new(
+                    "ui.task_storage_requires_a_file_backed_database",
+                )
+            })
+        });
+        let Ok(database) = database else {
+            self.sessions_block.update(cx, |block, cx| {
+                block.error = database.err();
+                cx.notify();
+            });
+            return;
+        };
+        let route = self
+            .sessions_block
+            .update(cx, |block, cx| block.mutation_route(cx));
+        let worker_database = database.clone();
+        let id = thread.id.clone();
         cx.set_global(PendingDeleteConfirm(None));
         crate::navigation::begin_task_mutation(cx);
-        let result = with_store(cx, |store| {
-            conversation::delete_thread(store, &thread.id)
+        let worker = cx.background_executor().spawn(async move {
+            conversation::persist_thread_deletion(&worker_database, &id)
                 .map_err(crate::localized_copy::LocalizedCopy::from)
         });
-        crate::navigation::finish_task_mutation(cx);
-        match result {
-            Ok(()) => {
-                cx.emit(SidebarEvent::ThreadDeleted(thread.id.clone()));
-                // 删除的是打开中的会话：内容区回落 §4.6 空态。
-                if cx
-                    .global::<OpenedThread>()
-                    .0
-                    .as_ref()
-                    .is_some_and(|opened| opened.id == thread.id)
-                {
-                    cx.set_global(OpenedThread(None));
+        cx.spawn(async move |this, cx| {
+            let result = worker.await;
+            cx.update(crate::navigation::finish_task_mutation);
+            let _ = this.update(cx, |this, cx| {
+                let current_database =
+                    with_store(cx, |store| Ok(store.database_path().map(Path::to_path_buf)))
+                        .ok()
+                        .flatten();
+                if current_database.as_ref() != Some(&database) {
+                    return;
                 }
-                self.sessions_block.update(cx, ThreadsBlock::reload);
-            }
-            Err(message) => self.sessions_block.update(cx, |block, _| {
-                block.error = Some(crate::localized_copy::LocalizedCopy::with_args(
-                    "ui.could_not_delete_the_conversation_message",
-                    vec![("message", message)],
-                ));
-            }),
-        }
+                match result {
+                    Ok(()) => {
+                        cx.emit(SidebarEvent::ThreadDeleted(thread.id.clone()));
+                        if cx
+                            .global::<OpenedThread>()
+                            .0
+                            .as_ref()
+                            .is_some_and(|opened| opened.id == thread.id)
+                        {
+                            cx.set_global(OpenedThread(None));
+                        }
+                        this.sessions_block.update(cx, |block, cx| {
+                            block.remove_deleted_row(&thread.id, cx);
+                        });
+                    }
+                    Err(message) => this.sessions_block.update(cx, |block, cx| {
+                        if route == block.mutation_route(cx) {
+                            block.error = Some(crate::localized_copy::LocalizedCopy::with_args(
+                                "ui.could_not_delete_the_conversation_message",
+                                vec![("message", message)],
+                            ));
+                        }
+                        cx.notify();
+                    }),
+                }
+                cx.refresh_windows();
+            });
+        })
+        .detach();
         cx.refresh_windows();
     }
 
@@ -528,7 +556,8 @@ impl Sidebar {
     }
 
     pub fn reload_sessions(&mut self, cx: &mut Context<Self>) {
-        self.sessions_block.update(cx, ThreadsBlock::reload);
+        self.sessions_block
+            .update(cx, ThreadsBlock::reload_background);
     }
 
     /// Empty-state entry point for the existing project picker. The block
@@ -748,6 +777,7 @@ impl Render for Sidebar {
     }
 }
 
+mod preferences;
 mod projects_block;
 mod row_helpers;
 mod threads_block;

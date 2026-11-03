@@ -414,6 +414,50 @@ pub fn set_thread_status(
     Ok(())
 }
 
+pub fn persist_thread_update(
+    database: &std::path::Path,
+    thread_id: &str,
+    update: &ThreadUpdate,
+) -> Result<Thread, ConversationError> {
+    let store = Store::open_existing(database).map_err(store_error)?;
+    match update {
+        ThreadUpdate {
+            status: Some(status),
+            title: None,
+            pinned: None,
+            unread: None,
+        } => {
+            set_thread_status(&store, thread_id, *status)?;
+        }
+        ThreadUpdate {
+            pinned: Some(pinned),
+            title: None,
+            status: None,
+            unread: None,
+        } => {
+            set_thread_pinned(&store, thread_id, *pinned)?;
+        }
+        _ => update_thread(&store, thread_id, update)?,
+    }
+    get_thread(&store, thread_id)
+}
+
+pub fn persist_thread_deletion(
+    database: &std::path::Path,
+    thread_id: &str,
+) -> Result<(), ConversationError> {
+    let store = Store::open_existing(database).map_err(store_error)?;
+    delete_thread(&store, thread_id)
+}
+
+pub fn persist_thread_visit(
+    database: &std::path::Path,
+    thread_id: &str,
+) -> Result<Thread, ConversationError> {
+    let store = Store::open_existing(database).map_err(store_error)?;
+    visit_thread(&store, thread_id)
+}
+
 pub fn persist_thread_pinned(
     database: &std::path::Path,
     thread_id: &str,
