@@ -1,7 +1,10 @@
 #![allow(dead_code)]
 
 use super::*;
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+};
 use vega_conversation::sidebar_organization as service;
 use vega_conversation::types::{
     SidebarCollapseTarget, SidebarGroupColor, SidebarOrganizationAction,
@@ -16,6 +19,7 @@ use reorder::ReorderState;
 mod render;
 
 struct OrganizationRequestToken {
+    database: PathBuf,
     generation: u64,
     epoch: u64,
     origin_route: (Option<String>, Option<String>, bool),
@@ -25,6 +29,7 @@ struct OrganizationRequestToken {
 
 pub(super) struct Organization {
     pub(super) snapshot: Option<SidebarOrganizationSnapshot>,
+    database: Option<PathBuf>,
     projects: Entity<ProjectsBlock>,
     pending: bool,
     reorder: ReorderState,
@@ -195,8 +200,11 @@ impl ThreadsBlock {
     ) {
         projects.update(cx, |projects, _| projects.organization_mode = true);
         cx.observe(&projects, |_, _, cx| cx.notify()).detach();
+        cx.observe_global::<VegaStore>(|this, cx| this.refresh_organization(cx))
+            .detach();
         self.organization = Some(Organization {
             snapshot: None,
+            database: None,
             projects,
             pending: false,
             reorder: ReorderState::new(cx),
@@ -352,6 +360,40 @@ impl ThreadsBlock {
         action: Option<SidebarOrganizationAction>,
         cx: &mut Context<Self>,
     ) {
+        let database = with_store(cx, |store| {
+            store.database_path().map(Path::to_path_buf).ok_or_else(|| {
+                crate::localized_copy::LocalizedCopy::new(
+                    "ui.organization_storage_requires_a_file_backed_database",
+                )
+            })
+        });
+        let current_database = database.as_ref().ok().cloned();
+        let Some(org) = self.organization.as_mut() else {
+            return;
+        };
+        if org.database != current_database {
+            org.database = current_database;
+            org.snapshot = None;
+            org.project_threads_visible.clear();
+            org.project_threads_total.clear();
+            org.project_growth_paused.clear();
+            org.editor = None;
+            org.menu = None;
+            org.menu_anchor = None;
+            org.reveal_project = None;
+            org.reorder = ReorderState::new(cx);
+            self.threads.clear();
+            self.archived.clear();
+            self.loaded_project = None;
+            self.recents_total = 0;
+            self.selected_row = None;
+            self.close_actions();
+            cx.notify();
+            if action.is_some() {
+                self.refresh_organization(cx);
+                return;
+            }
+        }
         let Some(org) = self.organization.as_mut() else {
             return;
         };
@@ -368,13 +410,6 @@ impl ThreadsBlock {
         if action.is_some() && org.snapshot.is_none() {
             return;
         }
-        let database = with_store(cx, |store| {
-            store.database_path().map(Path::to_path_buf).ok_or_else(|| {
-                crate::localized_copy::LocalizedCopy::new(
-                    "ui.organization_storage_requires_a_file_backed_database",
-                )
-            })
-        });
         let Ok(database) = database else {
             self.error = database.err();
             cx.notify();
@@ -411,6 +446,7 @@ impl ThreadsBlock {
         );
         let was_mutation = action.is_some();
         let request = OrganizationRequestToken {
+            database: database.clone(),
             generation,
             epoch,
             origin_route,
@@ -418,8 +454,8 @@ impl ThreadsBlock {
             was_mutation,
         };
         let worker = cx.background_executor().spawn(async move {
-            let store =
-                Store::open(database).map_err(crate::localized_copy::LocalizedCopy::storage)?;
+            let store = Store::open_existing(database)
+                .map_err(crate::localized_copy::LocalizedCopy::storage)?;
             match action {
                 Some(action) => service::apply(&store, revision, action),
                 None => service::snapshot(&store).map(|snapshot| SidebarOrganizationOutcome {
@@ -446,6 +482,7 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) {
         let OrganizationRequestToken {
+            database,
             generation,
             epoch,
             origin_route,
@@ -459,6 +496,15 @@ impl ThreadsBlock {
             return;
         }
         org.pending = false;
+        let current_database =
+            with_store(cx, |store| Ok(store.database_path().map(Path::to_path_buf)))
+                .ok()
+                .flatten();
+        if current_database.as_ref() != Some(&database) {
+            org.refresh_queued = false;
+            self.refresh_organization(cx);
+            return;
+        }
         let current_epoch = cx
             .try_global::<crate::navigation::TaskMutationState>()
             .map_or(0, |s| s.epoch);

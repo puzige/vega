@@ -2,6 +2,7 @@ use super::*;
 use gpui_kit::BackgroundExecutor;
 use std::{
     collections::HashMap,
+    path::PathBuf,
     time::{Duration, Instant},
 };
 use vega_conversation::{
@@ -17,6 +18,7 @@ pub enum ProjectsBlockEvent {
     Removed(String),
     /// Folder registration and its organization reveal have durably committed.
     Registered(String),
+    VisitRecorded,
 }
 
 impl EventEmitter<ProjectsBlockEvent> for ProjectsBlock {}
@@ -44,6 +46,10 @@ pub struct ProjectsBlock {
     reload_generation: u64,
     reload_pending: bool,
     reload_requested: bool,
+    selection_generation: u64,
+    route_generation: u64,
+    selection_pending: bool,
+    selection_requested: Option<(String, PathBuf)>,
 }
 
 impl ProjectsBlock {
@@ -71,7 +77,23 @@ impl ProjectsBlock {
             reload_generation: 0,
             reload_pending: false,
             reload_requested: false,
+            selection_generation: 0,
+            route_generation: 0,
+            selection_pending: false,
+            selection_requested: None,
         };
+        cx.observe_global::<SelectedProject>(|this, _| {
+            this.route_generation = this.route_generation.wrapping_add(1)
+        })
+        .detach();
+        cx.observe_global::<OpenedThread>(|this, _| {
+            this.route_generation = this.route_generation.wrapping_add(1)
+        })
+        .detach();
+        cx.observe_global::<SettingsOpen>(|this, _| {
+            this.route_generation = this.route_generation.wrapping_add(1)
+        })
+        .detach();
         view.reload(cx);
         cx.spawn(async move |this, cx| {
             loop {
@@ -102,7 +124,6 @@ impl ProjectsBlock {
         }) {
             Ok(projects) => {
                 self.projects = projects;
-                self.error = None;
             }
             Err(message) => self.error = Some(message),
         }
@@ -164,9 +185,9 @@ impl ProjectsBlock {
                         Ok(projects) => {
                             this.projects = projects;
                             this.invalidate_branches();
-                            this.error = None;
                         }
-                        Err(error) => this.error = Some(error),
+                        Err(error) if this.error.is_none() => this.error = Some(error),
+                        Err(_) => {}
                     }
                     cx.notify();
                 }
@@ -324,30 +345,105 @@ impl ProjectsBlock {
         }
     }
 
-    /// Click = select: touch `last_opened_at`, cache the selection in the
-    /// global, then let the orchestrator resync the session block.
     pub(super) fn select_project(&mut self, project_id: &str, cx: &mut Context<Self>) {
+        if !self.projects.iter().any(|project| project.id == project_id) {
+            return;
+        }
         self.invalidate_background_reload();
-        let result = with_store(cx, |store| {
-            projects::touch_last_opened(store.conn(), project_id).map_err(|error| {
-                crate::localized_copy::LocalizedCopy::with_args(
-                    "ui.could_not_update_project_status_error",
-                    vec![("error", (error).to_string().into())],
+        self.selection_generation = self.selection_generation.wrapping_add(1);
+        self.error = None;
+        cx.set_global(SelectedProject(Some(project_id.to_string())));
+        cx.emit(ProjectsBlockEvent::Selected(project_id.to_string()));
+        let database = with_store(cx, |store| {
+            store.database_path().map(Path::to_path_buf).ok_or_else(|| {
+                crate::localized_copy::LocalizedCopy::new(
+                    "ui.project_storage_requires_a_file_backed_database",
                 )
             })
         });
-        match result {
-            Ok(_) => {
-                self.error = None;
-                cx.set_global(SelectedProject(Some(project_id.to_string())));
-                self.reload(cx);
-                cx.emit(ProjectsBlockEvent::Selected(project_id.to_string()));
+        match database {
+            Ok(database) => {
+                self.selection_requested = Some((project_id.to_string(), database));
+                self.start_selection_write(cx);
             }
-            Err(message) => {
-                self.error = Some(message);
-                cx.notify();
+            Err(error) => {
+                self.selection_requested = None;
+                self.error = Some(error);
             }
         }
+        cx.notify();
+    }
+
+    fn start_selection_write(&mut self, cx: &mut Context<Self>) {
+        if self.selection_pending {
+            return;
+        }
+        let Some((project_id, database)) = self.selection_requested.take() else {
+            return;
+        };
+        let current_database =
+            with_store(cx, |store| Ok(store.database_path().map(Path::to_path_buf)))
+                .ok()
+                .flatten();
+        if current_database.as_ref() != Some(&database)
+            || !self.projects.iter().any(|project| project.id == project_id)
+        {
+            return;
+        }
+        self.selection_pending = true;
+        let generation = self.selection_generation;
+        let worker_project = project_id.clone();
+        let worker_database = database.clone();
+        let worker = cx.background_executor().spawn(async move {
+            vega_conversation::sidebar_organization::record_project_visit(
+                &worker_database,
+                &worker_project,
+            )
+            .map_err(|error| {
+                crate::localized_copy::LocalizedCopy::with_args(
+                    "ui.could_not_update_project_status_error",
+                    vec![("error", error.to_string().into())],
+                )
+            })
+        });
+        cx.spawn(async move |this, cx| {
+            let result = worker.await;
+            let _ = this.update(cx, |this, cx| {
+                this.selection_pending = false;
+                let current_database =
+                    with_store(cx, |store| Ok(store.database_path().map(Path::to_path_buf)))
+                        .ok()
+                        .flatten();
+                if this.selection_generation == generation
+                    && current_database.as_ref() == Some(&database)
+                    && cx.global::<SelectedProject>().0.as_deref() == Some(project_id.as_str())
+                    && this.projects.iter().any(|project| project.id == project_id)
+                {
+                    match result {
+                        Ok(()) => {
+                            this.reload_background(cx);
+                            cx.emit(ProjectsBlockEvent::VisitRecorded);
+                        }
+                        Err(error) => this.error = Some(error),
+                    }
+                    cx.notify();
+                }
+                this.start_selection_write(cx);
+            });
+        })
+        .detach();
+    }
+
+    fn current_route(&self, cx: &App) -> (Option<String>, Option<String>, bool) {
+        (
+            cx.global::<SelectedProject>().0.clone(),
+            cx.global::<OpenedThread>()
+                .0
+                .as_ref()
+                .map(|thread| thread.id.clone()),
+            cx.try_global::<SettingsOpen>()
+                .is_some_and(|settings| settings.0),
+        )
     }
 
     pub(super) fn remove_project(&mut self, project_id: &str, cx: &mut Context<Self>) {
@@ -369,29 +465,80 @@ impl ProjectsBlock {
         if !crate::navigation::allow_task_navigation(None, cx) {
             return;
         }
-        crate::navigation::begin_task_mutation(cx);
-        let result = with_store(cx, |store| {
-            projects::remove(store.conn(), project_id).map_err(|error| {
-                crate::localized_copy::LocalizedCopy::with_args(
-                    "ui.could_not_remove_the_project_error",
-                    vec![("error", (error).to_string().into())],
+        let database = with_store(cx, |store| {
+            store.database_path().map(Path::to_path_buf).ok_or_else(|| {
+                crate::localized_copy::LocalizedCopy::new(
+                    "ui.project_storage_requires_a_file_backed_database",
                 )
             })
         });
-        crate::navigation::finish_task_mutation(cx);
-        match result {
-            Ok(removed) => {
-                self.error = None;
-                self.reload(cx);
-                if removed {
-                    cx.emit(ProjectsBlockEvent::Removed(project_id.to_string()));
+        let Ok(database) = database else {
+            self.error = database.err();
+            cx.notify();
+            return;
+        };
+        let Some(removal) = begin_project_removal(project_id, cx) else {
+            self.error = Some(crate::localized_copy::LocalizedCopy::new(
+                "ui.project_tasks_are_still_running_stop_them_and",
+            ));
+            cx.notify();
+            return;
+        };
+        let id = project_id.to_string();
+        let worker_id = id.clone();
+        let worker_database = database.clone();
+        let route_generation = self.route_generation;
+        let route = self.current_route(cx);
+        crate::navigation::begin_task_mutation(cx);
+        let worker = cx.background_executor().spawn(async move {
+            let result = vega_conversation::sidebar_organization::remove_project(
+                &worker_database,
+                &worker_id,
+            )
+            .map_err(crate::localized_copy::LocalizedCopy::from);
+            if result.is_ok() {
+                removal.commit();
+            }
+            result
+        });
+        cx.spawn(async move |this, cx| {
+            let result = worker.await;
+            cx.update(crate::navigation::finish_task_mutation);
+            let _ = this.update(cx, |this, cx| {
+                let current_database =
+                    with_store(cx, |store| Ok(store.database_path().map(Path::to_path_buf)))
+                        .ok()
+                        .flatten();
+                if current_database.as_ref() != Some(&database) {
+                    return;
                 }
-            }
-            Err(message) => {
-                self.error = Some(message);
+                match result {
+                    Ok(removed) => {
+                        this.projects.retain(|project| project.id != id);
+                        this.invalidate_branches();
+                        if this.route_generation == route_generation
+                            && this.current_route(cx) == route
+                        {
+                            this.error = None;
+                        }
+                        if removed {
+                            cx.emit(ProjectsBlockEvent::Removed(id));
+                        }
+                        this.reload_background(cx);
+                    }
+                    Err(error)
+                        if this.route_generation == route_generation
+                            && this.current_route(cx) == route =>
+                    {
+                        this.error = Some(error)
+                    }
+                    Err(_) => {}
+                }
                 cx.notify();
-            }
-        }
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     pub(crate) fn open_picker(&mut self, cx: &mut Context<Self>) {

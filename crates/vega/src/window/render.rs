@@ -773,6 +773,7 @@ impl Render for VegaWindow {
                             })
                             .flatten(),
                     )
+                    .children(vega_ui::sidebar::preference_save_notice(cx))
                     .children(preparation_error)
                     .child(div().flex_1().min_h_0().child(content)),
             )

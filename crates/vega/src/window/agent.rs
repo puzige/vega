@@ -1010,6 +1010,16 @@ impl VegaWindow {
             return;
         };
 
+        let Some(worker_activity) =
+            vega_ui::sidebar::register_project_worker(&thread.project_id, cx)
+        else {
+            stream.update(cx, |stream, cx| {
+                stream.reject_composer_submission(cx);
+                stream.apply_agent_busy(cx);
+            });
+            return;
+        };
+
         let precompute_lease = match &cx.global::<VegaStore>().0 {
             Ok(store) => self
                 .context_precompute_owner
@@ -1125,7 +1135,6 @@ impl VegaWindow {
             .or_default()
             .clone();
 
-        let worker_activity = vega_ui::sidebar::register_project_worker(&thread.project_id, cx);
         let replay_registry = cx
             .try_global::<crate::app_agent::AppReplaySessions>()
             .map(|sessions| sessions.0.clone());
@@ -1662,6 +1671,15 @@ impl VegaWindow {
             });
             return;
         };
+        let Some(worker_activity) =
+            vega_ui::sidebar::register_project_worker(&draft.project_id, cx)
+        else {
+            stream.update(cx, |stream, cx| {
+                stream.reject_composer_submission(cx);
+                stream.apply_agent_busy(cx);
+            });
+            return;
+        };
         let materialized = match &cx.global::<VegaStore>().0 {
             Ok(store) => {
                 vega_conversation::codex_tasks::materialize_codex_draft(store, &draft, &snapshot)
@@ -1767,7 +1785,7 @@ impl VegaWindow {
         stream.update(cx, ConversationStream::begin_composer_run);
         self.ensure_agent_artifact_route(&thread, &stream, cx);
         self.begin_artifact_agent_generation(generation, &stream);
-        let worker_activity = vega_ui::sidebar::register_project_worker(&thread.project_id, cx);
+
         let (sender, receiver) = mpsc::sync_channel(AGENT_EVENT_CAPACITY);
         let worker_request = crate::codex_agent::CodexWorkerRequest {
             database_path,

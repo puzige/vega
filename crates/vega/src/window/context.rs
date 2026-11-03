@@ -177,6 +177,20 @@ impl VegaWindow {
         {
             return;
         }
+        let project_id = cx
+            .global::<OpenedThread>()
+            .0
+            .as_ref()
+            .map(|thread| thread.project_id.clone())
+            .unwrap_or_default();
+        let Some(activity) = vega_ui::sidebar::register_project_worker(&project_id, cx) else {
+            let mut record = context_record(request.request_id, ContextCompactionStatus::Failed);
+            record.failure = Some(ContextCompactionFailureCode::Unavailable);
+            stream.update(cx, |stream, cx| {
+                stream.apply_context_status(&owner.thread_id, &owner.model, record, cx)
+            });
+            return;
+        };
         let reasoning = stream.read(cx).frozen_reasoning_for_submit();
         let allowed = !self.agent_controller.active.contains_key(&owner.thread_id)
             && self.context_controller.manual.is_none()
@@ -231,13 +245,6 @@ impl VegaWindow {
         let pricing = self.pricing_controller.catalog_for_run(&owner.model);
         let thread_id = owner.thread_id.clone();
         let model = owner.model.clone();
-        let project_id = cx
-            .global::<OpenedThread>()
-            .0
-            .as_ref()
-            .map(|thread| thread.project_id.clone())
-            .unwrap_or_default();
-        let activity = vega_ui::sidebar::register_project_worker(&project_id, cx);
         let completion = ManualContextRun {
             owner: owner.clone(),
             request_id,

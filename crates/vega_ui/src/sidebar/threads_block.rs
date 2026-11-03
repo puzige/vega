@@ -4,6 +4,8 @@ use gpui_kit::MouseMoveEvent;
 use gpui_kit::component::{IconName, spinner::Spinner};
 use vega_conversation::types::ThreadUpdate;
 mod organization;
+mod pin;
+mod reload;
 use organization::{Organization, OrganizationSection};
 
 /// Events emitted by the session block.
@@ -63,6 +65,7 @@ pub struct ThreadsBlock {
     /// Inline error message (ui-spec §4.6).
     pub(crate) error: Option<crate::localized_copy::LocalizedCopy>,
     action_pending: bool,
+    row_pending: Option<String>,
     visit_pending: bool,
     visit_loading: Option<(String, std::time::Instant)>,
     deferred_visit: Option<(String, u64, Option<String>)>,
@@ -120,6 +123,7 @@ impl ThreadsBlock {
             editing: None,
             error: None,
             action_pending: false,
+            row_pending: None,
             visit_pending: false,
             visit_loading: None,
             deferred_visit: None,
@@ -459,49 +463,12 @@ impl ThreadsBlock {
 
     /// Runs one thread mutation, reloads the cached rows, and surfaces a
     /// failure as the block's inline error bar (ui-spec §4.6).
-    fn mutate_thread(
-        &mut self,
-        operation: impl FnOnce(&Store) -> Result<(), crate::localized_copy::LocalizedCopy>,
-        cx: &mut Context<Self>,
-    ) {
-        if task_mutation_busy(cx) {
-            self.error = Some(crate::localized_copy::LocalizedCopy::new(
-                "ui.a_task_is_being_saved_try_again_shortly",
-            ));
-            cx.notify();
-            return;
-        }
-        crate::navigation::begin_task_mutation(cx);
-        let result = with_store(cx, operation);
-        crate::navigation::finish_task_mutation(cx);
-        if result.is_ok() {
-            self.hovered = None;
-            self.hover_suppressed_until_move = true;
-        }
-        self.reload(cx);
-        if let Err(message) = result {
-            self.error = Some(message);
-        }
-        cx.notify();
-    }
-
-    /// Hover pin toggle (裁决①：hover 操作组里的置顶切换，再点取消).
-    fn toggle_pin(&mut self, thread_id: &str, pinned: bool, cx: &mut Context<Self>) {
-        self.mutate_thread(
-            |store| {
-                conversation::set_thread_pinned(store, thread_id, !pinned)
-                    .map_err(crate::localized_copy::LocalizedCopy::from)
-            },
-            cx,
-        );
-    }
-
-    /// 归档 (active → archived) or 恢复 (archived → active).
     fn set_thread_status(&mut self, thread_id: &str, status: ThreadStatus, cx: &mut Context<Self>) {
-        self.mutate_thread(
-            |store| {
-                conversation::set_thread_status(store, thread_id, status)
-                    .map_err(crate::localized_copy::LocalizedCopy::from)
+        self.persist_row_update(
+            thread_id,
+            ThreadUpdate {
+                status: Some(status),
+                ..Default::default()
             },
             cx,
         );
@@ -838,37 +805,14 @@ impl ThreadsBlock {
             && update.status.is_none()
             && update.pinned.is_none()
         {
-            crate::navigation::begin_task_mutation(cx);
-            let result = with_store(cx, |store| {
-                conversation::update_thread(store, &thread.id, &update)
-                    .map_err(crate::localized_copy::LocalizedCopy::from)
-            });
-            crate::navigation::finish_task_mutation(cx);
-            match result {
-                Ok(()) => {
-                    for row in self
-                        .threads
-                        .iter_mut()
-                        .chain(self.archived.iter_mut())
-                        .filter(|row| row.id == thread.id)
-                    {
-                        row.unread = unread;
-                    }
-                    if let Some(mut opened) = cx.global::<OpenedThread>().0.clone()
-                        && opened.id == thread.id
-                        && opened.project_id == thread.project_id
-                    {
-                        opened.unread = unread;
-                        cx.set_global(OpenedThread(Some(opened)));
-                    }
-                    self.error = None;
-                    if self.organization.is_some() {
-                        self.refresh_organization(cx);
-                    }
-                }
-                Err(error) => self.error = Some(error),
-            }
-            cx.refresh_windows();
+            self.persist_row_update(
+                &thread.id,
+                ThreadUpdate {
+                    unread: Some(unread),
+                    ..Default::default()
+                },
+                cx,
+            );
             return;
         }
         let generation = self.project_generation;
@@ -1677,8 +1621,11 @@ impl ThreadsBlock {
         let awaiting_answer = thread_is_awaiting_answer(&thread.id, cx);
         let menu_open = self.actions_row.as_deref() == Some(row_key.as_str());
         let keyboard_focused = self.focused_thread_action.as_deref() == Some(row_key.as_str());
-        let quick_actions_visible =
-            self.hovered.as_deref() == Some(row_key.as_str()) && !menu_open && !keyboard_focused;
+        let row_pending = self.row_pending.as_deref() == Some(thread.id.as_str());
+        let quick_actions_visible = row_pending
+            || (self.hovered.as_deref() == Some(row_key.as_str())
+                && !menu_open
+                && !keyboard_focused);
         let mut trigger = div()
             .id(ElementId::Name(
                 format!("{action_prefix}thread-actions-{thread_id}").into(),
@@ -1886,7 +1833,9 @@ impl ThreadsBlock {
         group = group.child(trigger);
         if quick_actions_visible {
             let pinned = thread.pinned;
-            let pin_label = if pinned {
+            let pin_label = if row_pending {
+                vega_i18n::t("ui.saving")
+            } else if pinned {
                 vega_i18n::t("ui.unpin")
             } else {
                 vega_i18n::t("ui.pin")
@@ -1910,17 +1859,30 @@ impl ThreadsBlock {
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
-                        this.toggle_pin(&pin_thread_id, pinned, cx);
+                        if !row_pending {
+                            this.toggle_pin(&pin_thread_id, pinned, cx);
+                        }
                     }),
                 )
-                .child(crate::icons::icon(
-                    crate::icons::Icon::Pin,
-                    if pinned {
-                        colors.accent
-                    } else {
-                        colors.text_secondary
-                    },
-                ));
+                .when(row_pending, |button| {
+                    button.child(
+                        Spinner::new()
+                            .ease(gpui_kit::linear)
+                            .with_size(px(Layout::ICON_SIZE))
+                            .icon(IconName::LoaderCircle)
+                            .color(colors.text_secondary.into()),
+                    )
+                })
+                .when(!row_pending, |button| {
+                    button.child(crate::icons::icon(
+                        crate::icons::Icon::Pin,
+                        if pinned {
+                            colors.accent
+                        } else {
+                            colors.text_secondary
+                        },
+                    ))
+                });
             let archive_button = div()
                 .id(ElementId::Name(
                     format!("{action_prefix}thread-archive-{thread_id}").into(),
@@ -1963,16 +1925,27 @@ impl ThreadsBlock {
                         );
                     }),
                 )
-                .child(
-                    gpui_kit::component::Icon::new(if archived {
-                        IconName::Undo2
-                    } else {
-                        IconName::Inbox
-                    })
-                    .with_size(px(16.))
-                    .text_color(colors.text_secondary)
-                    .flex_shrink_0(),
-                );
+                .when(row_pending, |button| {
+                    button.child(
+                        Spinner::new()
+                            .ease(gpui_kit::linear)
+                            .with_size(px(Layout::ICON_SIZE))
+                            .icon(IconName::LoaderCircle)
+                            .color(colors.text_secondary.into()),
+                    )
+                })
+                .when(!row_pending, |button| {
+                    button.child(
+                        gpui_kit::component::Icon::new(if archived {
+                            IconName::Undo2
+                        } else {
+                            IconName::Inbox
+                        })
+                        .with_size(px(16.))
+                        .text_color(colors.text_secondary)
+                        .flex_shrink_0(),
+                    )
+                });
             let quick_actions = div()
                 .absolute()
                 .top_0()
