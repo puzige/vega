@@ -330,6 +330,7 @@ mod run_activity;
 mod run_notice;
 mod shimmer;
 mod sticky_disclosure;
+mod stream_fade;
 mod subagents;
 mod text_cache;
 mod timestamp_format;

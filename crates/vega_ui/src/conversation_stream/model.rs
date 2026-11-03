@@ -861,6 +861,7 @@ pub(crate) struct MessageCopy {
         std::rc::Rc<std::cell::RefCell<Vec<super::generated_notice::GeneratedNoticeFragment>>>,
     display_model_text: std::rc::Rc<std::cell::RefCell<Option<String>>>,
     stream_finished: std::rc::Rc<std::cell::Cell<bool>>,
+    pub(super) stream_fade: Option<std::rc::Rc<std::cell::RefCell<super::stream_fade::StreamFade>>>,
     selection_scope: gpui_kit::base::TextSelectionScopeId,
     selection_handle: std::rc::Rc<std::cell::RefCell<Option<gpui_kit::base::TextSelectionHandle>>>,
     selection_generation: std::rc::Rc<std::cell::Cell<u64>>,
@@ -943,6 +944,7 @@ impl MessageCopy {
             generated_notices: Default::default(),
             display_model_text: Default::default(),
             stream_finished: Default::default(),
+            stream_fade: None,
             selection_scope: gpui_kit::base::TextSelectionScopeId::new(),
             selection_handle: std::rc::Rc::new(std::cell::RefCell::new(None)),
             selection_generation: std::rc::Rc::new(std::cell::Cell::new(0)),
@@ -953,6 +955,19 @@ impl MessageCopy {
             projected_identity: std::rc::Rc::new(std::cell::Cell::new(None)),
             projected_selection: Default::default(),
             selection_subscriptions: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+        }
+    }
+
+    pub(super) fn streaming() -> Self {
+        Self {
+            stream_fade: Some(Default::default()),
+            ..Self::default()
+        }
+    }
+
+    fn sync_stream_fade(&self, model: &StreamModel) {
+        if let Some(fade) = &self.stream_fade {
+            fade.borrow_mut().sync(model);
         }
     }
 
@@ -1027,7 +1042,11 @@ impl MessageCopy {
         counters: &StreamCounters,
     ) -> bool {
         if self.generated_notices.borrow().is_empty() {
-            return model.sync(&stream.snapshot(), counters);
+            let changed = model.sync(&stream.snapshot(), counters);
+            if changed {
+                self.sync_stream_fade(model);
+            }
+            return changed;
         }
         let text = self.display_text();
         if self.display_model_text.borrow().as_ref() == Some(&text) {
@@ -1047,6 +1066,7 @@ impl MessageCopy {
         model.content_revision = revision.wrapping_add(1);
         *self.display_model_text.borrow_mut() = Some(text);
         self.invalidate_selection();
+        self.sync_stream_fade(model);
         true
     }
 
@@ -1057,6 +1077,9 @@ impl MessageCopy {
         counters: &StreamCounters,
     ) {
         stream.finish();
+        if let Some(fade) = &self.stream_fade {
+            fade.borrow_mut().finish();
+        }
         self.stream_finished.set(true);
         *self.display_model_text.borrow_mut() = None;
         self.sync_model(stream, model, counters);

@@ -1666,7 +1666,7 @@ impl ConversationStream {
                 let entry_index = if entry_index == usize::MAX {
                     let index = self.entries.len();
                     self.entries.push(StreamEntry::Assistant {
-                        copy: MessageCopy::default(),
+                        copy: MessageCopy::streaming(),
                         stream: Box::new(MarkdownStream::new()),
                         model: StreamModel::default(),
                         failure: None,
