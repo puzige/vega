@@ -166,6 +166,13 @@ impl SettingsView {
             cx.notify();
         })
         .detach();
+        cx.observe_global::<SkillsSettingsRequested>(|this, cx| {
+            if cx.global::<SkillsSettingsRequested>().0 {
+                cx.set_global(SkillsSettingsRequested(false));
+                this.request_settings_section(6, cx);
+            }
+        })
+        .detach();
         cx.observe_global::<SettingsOpen>(|this, cx| {
             if !cx.global::<SettingsOpen>().0 {
                 this.settings_motion.interrupt();
@@ -272,6 +279,12 @@ impl SettingsView {
             pending_section: None,
             pending_settings_close: false,
             section: if cx
+                .try_global::<SkillsSettingsRequested>()
+                .is_some_and(|request| request.0)
+            {
+                cx.set_global(SkillsSettingsRequested(false));
+                6
+            } else if cx
                 .try_global::<PricingSettingsRequested>()
                 .is_some_and(|request| request.0)
             {

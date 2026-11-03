@@ -40,6 +40,7 @@ pub(crate) struct SubmittedDraft {
     pub(crate) submission: Option<vega_conversation::types::SubmissionId>,
     pub(crate) text: String,
     pub(crate) reference_mentions: Vec<vega_conversation::types::FileReferenceMention>,
+    pub(crate) skill_mentions: Vec<vega_conversation::types::SkillMention>,
     pub(crate) images: Vec<ImageAttachment>,
 }
 
@@ -176,7 +177,6 @@ pub struct ConversationStream {
     pub(crate) skill_projection: Option<SkillComposerProjection>,
     pub(crate) skill_projection_generation: u64,
     pub(crate) skill_mutation_pending: bool,
-    pub(crate) skill_intent: Option<SkillSelectionIntent>,
     pub(crate) active_skills: Vec<vega_conversation::types::ActiveSkillView>,
     pub(crate) active_skill_focuses: Vec<[FocusHandle; 2]>,
     pub(crate) actions: ComposerActions,
@@ -370,7 +370,13 @@ impl ConversationStream {
             .detach();
         let input = cx.new(|cx| {
             TextInput::new_multiline(cx, "", COMPOSER_ROWS)
-                .with_placeholder_key("ui.describe_a_task_or_use_to_reference_files")
+                .with_placeholder_key(if thread.backend == TaskBackend::Codex {
+                    "ui.describe_a_task_or_use_to_reference_files"
+                } else if thread.project_id.is_empty() {
+                    "ui.composer_prompt_standalone"
+                } else {
+                    "ui.composer_prompt_project"
+                })
                 .with_image_paste()
                 .with_edit_menu()
         });
@@ -622,7 +628,6 @@ impl ConversationStream {
             skill_projection: None,
             skill_projection_generation: 0,
             skill_mutation_pending: false,
-            skill_intent: None,
             active_skills: Vec::new(),
             active_skill_focuses: Vec::new(),
             actions: ComposerActions::default(),
@@ -1932,6 +1937,7 @@ impl ConversationStream {
                 images: draft.images,
                 references,
                 reference_mentions: draft.reference_mentions,
+                skill_mentions: draft.skill_mentions,
                 permission_fence: None,
             },
             cx,

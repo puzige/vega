@@ -192,13 +192,21 @@ pub struct RuntimeSteeringInput {
     pub id: String,
     pub assistant_message_id: String,
     pub message: ChatMessage,
+    pub skill_selections: Vec<SkillSelection>,
 }
 
 pub trait RuntimeSteeringSource: Send + Sync {
     fn ready(&self) -> BoxFuture<'_, Result<Option<String>, VegaError>> {
         Box::pin(async { Ok(None) })
     }
-    fn take(&self) -> BoxFuture<'_, Result<Option<RuntimeSteeringInput>, VegaError>>;
+    fn take(
+        &self,
+        frozen: Vec<SkillSelection>,
+    ) -> BoxFuture<'_, Result<Option<RuntimeSteeringInput>, VegaError>>;
+    fn acknowledge<'a>(
+        &'a self,
+        input: &'a RuntimeSteeringInput,
+    ) -> BoxFuture<'a, Result<(), VegaError>>;
 }
 
 /// Headless tool and permission facts for one task.

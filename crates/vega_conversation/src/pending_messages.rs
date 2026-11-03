@@ -25,6 +25,8 @@ struct StoredSubmission {
     references: Vec<String>,
     #[serde(default)]
     reference_mentions: Vec<crate::types::FileReferenceMention>,
+    #[serde(default)]
+    skill_mentions: Vec<crate::types::SkillMention>,
 }
 
 fn failure() -> ConversationError {
@@ -54,6 +56,8 @@ pub fn enqueue_cached_projection(
     let _coordination = crate::permission_contracts::coordinate()?;
     crate::permission_contracts::require_admission_open(store)?;
     require_authority(store, message)?;
+    crate::types::SkillMention::selections(&message.content, &message.skill_mentions)
+        .ok_or_else(failure)?;
     crate::attachments::validate_images(&message.images).map_err(|_| failure())?;
     let payload = serde_json::to_string(&StoredSubmission {
         content: message.content.clone(),
@@ -65,6 +69,7 @@ pub fn enqueue_cached_projection(
         permission_fence: message.permission_fence.clone(),
         references: message.references.clone(),
         reference_mentions: message.reference_mentions.clone(),
+        skill_mentions: message.skill_mentions.clone(),
     })
     .map_err(|_| failure())?;
     if message.content.is_empty() && message.images.is_empty() {
@@ -209,6 +214,8 @@ pub fn recover_cached_projection(
 
 pub(crate) fn decode(row: rows::PendingMessageRow) -> Result<PendingMessage, ConversationError> {
     let payload: StoredSubmission = serde_json::from_str(&row.payload).map_err(|_| failure())?;
+    crate::types::SkillMention::selections(&payload.content, &payload.skill_mentions)
+        .ok_or_else(failure)?;
     let images = payload
         .images
         .into_iter()
@@ -231,6 +238,7 @@ pub(crate) fn decode(row: rows::PendingMessageRow) -> Result<PendingMessage, Con
         permission_fence: payload.permission_fence,
         references: payload.references,
         reference_mentions: payload.reference_mentions,
+        skill_mentions: payload.skill_mentions,
     })
 }
 
@@ -332,6 +340,7 @@ pub(crate) fn verify_dispatch(
     require_authority(store, &message)
 }
 
+#[derive(Clone)]
 pub struct QueueSteeringSource {
     database: PathBuf,
     workspace: PathBuf,
@@ -342,6 +351,14 @@ pub struct QueueSteeringSource {
     cancel: CancellationToken,
     admission: Option<crate::types::ThreadAdmission>,
     authority: Arc<OnceLock<crate::types::PermissionFence>>,
+    prepared: Arc<std::sync::Mutex<Option<PreparedSteering>>>,
+}
+
+struct PreparedSteering {
+    row: rows::PendingMessageRow,
+    input: RuntimeSteeringInput,
+    frozen: Vec<vega_runtime::skills::SkillSelection>,
+    admission: crate::types::ThreadAdmission,
 }
 
 impl QueueSteeringSource {
@@ -379,6 +396,7 @@ impl QueueSteeringSource {
             cancel,
             admission: None,
             authority: Arc::new(OnceLock::new()),
+            prepared: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }
@@ -405,7 +423,10 @@ impl RuntimeSteeringSource for QueueSteeringSource {
         .boxed()
     }
 
-    fn take(&self) -> BoxFuture<'_, Result<Option<RuntimeSteeringInput>, VegaError>> {
+    fn take(
+        &self,
+        frozen: Vec<vega_runtime::skills::SkillSelection>,
+    ) -> BoxFuture<'_, Result<Option<RuntimeSteeringInput>, VegaError>> {
         let database = self.database.clone();
         let workspace = self.workspace.clone();
         let thread_id = self.thread_id.clone();
@@ -415,6 +436,7 @@ impl RuntimeSteeringSource for QueueSteeringSource {
         let cancel = self.cancel.clone();
         let admission = self.admission.clone();
         let authority = self.authority.get().cloned();
+        let prepared = self.prepared.clone();
         async move {
             tokio::task::spawn_blocking(move || {
                 if cancel.is_cancelled() {
@@ -464,6 +486,8 @@ impl RuntimeSteeringSource for QueueSteeringSource {
                     }
                     _ => pending_failure(Stage::PendingReferences, Reason::References),
                 })?;
+                let skill_selections =
+                    validate_steering_skills(&store, &message, &_admission, &frozen)?;
                 let original_content = message.content.clone();
                 let content = if refs.is_empty() {
                     message.content.clone()
@@ -494,20 +518,28 @@ impl RuntimeSteeringSource for QueueSteeringSource {
                 {
                     return Ok(None);
                 }
-                if !rows::claim_steer(&tx, &thread_id, &message.id, &generation)? {
-                    return Ok(None);
-                }
                 let seq = vega_store::messages::next_seq(&tx, &thread_id)?;
                 tx.commit()?;
                 let mut chat = ChatMessage::new(ChatRole::User, content);
                 chat.images = message.images;
-                Ok(Some(RuntimeSteeringInput {
+                let input = RuntimeSteeringInput {
                     original_content,
                     id: message.id,
                     assistant_message_id: ulid::Ulid::generate().to_string(),
                     user_message_seq: seq,
                     message: chat,
-                }))
+                    skill_selections,
+                };
+                *prepared
+                    .lock()
+                    .map_err(|_| pending_failure(Stage::PendingWorker, Reason::Worker))? =
+                    Some(PreparedSteering {
+                        row,
+                        input: input.clone(),
+                        frozen,
+                        admission: _admission,
+                    });
+                Ok(Some(input))
             })
             .await
             .map_err(|_| pending_failure(Stage::PendingWorker, Reason::Worker))?
@@ -515,6 +547,102 @@ impl RuntimeSteeringSource for QueueSteeringSource {
         }
         .boxed()
     }
+
+    fn acknowledge<'a>(
+        &'a self,
+        input: &'a RuntimeSteeringInput,
+    ) -> BoxFuture<'a, Result<(), VegaError>> {
+        let input = input.clone();
+        let this = self.clone();
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let store = Store::open(&this.database)?;
+                let _coordination = crate::permission_contracts::coordinate()
+                    .map_err(|_| pending_failure(Stage::PendingAdmission, Reason::Admission))?;
+                let mut prepared = this
+                    .prepared
+                    .lock()
+                    .map_err(|_| pending_failure(Stage::PendingWorker, Reason::Worker))?;
+                let staged = prepared
+                    .as_ref()
+                    .ok_or_else(|| pending_failure(Stage::PendingClaim, Reason::Admission))?;
+                let row = &staged.row;
+                crate::thread_access::verify(&store, &this.thread_id, &staged.admission)
+                    .map_err(|_| pending_failure(Stage::PendingAdmission, Reason::Admission))?;
+                let message = decode(row.clone())
+                    .map_err(|_| pending_failure(Stage::PendingDecode, Reason::PendingDecode))?;
+                if this.cancel.is_cancelled()
+                    || input.id != row.id
+                    || input.user_message_seq != staged.input.user_message_seq
+                    || input.assistant_message_id != staged.input.assistant_message_id
+                    || input.message != staged.input.message
+                    || input.skill_selections != staged.input.skill_selections
+                    || input.original_content != message.content
+                    || require_authority(&store, &message).as_ref().ok() != this.authority.get()
+                {
+                    return Err(pending_failure(Stage::PendingAdmission, Reason::Admission));
+                }
+                if validate_steering_skills(&store, &message, &staged.admission, &staged.frozen)?
+                    != input.skill_selections
+                {
+                    return Err(pending_failure(Stage::PendingAdmission, Reason::Admission));
+                }
+                let tx = store.immediate_transaction()?;
+                if this.cancel.is_cancelled()
+                    || rows::next_steer(&tx, &this.thread_id, &this.generation)?.as_ref()
+                        != Some(row)
+                    || vega_store::messages::next_seq(&tx, &this.thread_id)?
+                        != input.user_message_seq
+                    || !rows::claim_steer(&tx, &this.thread_id, &input.id, &this.generation)?
+                {
+                    return Err(pending_failure(Stage::PendingClaim, Reason::Admission));
+                }
+                tx.commit()?;
+                *prepared = None;
+                Ok(())
+            })
+            .await
+            .map_err(|_| pending_failure(Stage::PendingWorker, Reason::Worker))?
+        }
+        .boxed()
+    }
+}
+
+fn validate_steering_skills(
+    store: &Store,
+    message: &PendingMessage,
+    admission: &crate::types::ThreadAdmission,
+    frozen: &[vega_runtime::skills::SkillSelection],
+) -> Result<Vec<vega_runtime::skills::SkillSelection>, VegaError> {
+    if message.skill_mentions.is_empty() {
+        return Ok(Vec::new());
+    }
+    let thread = vega_store::threads::find(store.conn(), &message.thread_id)?
+        .ok_or_else(|| pending_failure(Stage::PendingAdmission, Reason::Admission))?;
+    let root = vega_store::paths::config_dir()
+        .ok_or_else(|| pending_failure(Stage::PendingAdmission, Reason::Admission))?;
+    let database = store
+        .database_path()
+        .ok_or_else(|| pending_failure(Stage::PendingAdmission, Reason::Admission))?
+        .to_path_buf();
+    crate::skill_settings::SkillSettingsService::new(
+        database,
+        root,
+        (!thread.project_id.is_empty()).then_some(thread.project_id),
+    )
+    .validate_mentions_with_owner(
+        &message.thread_id,
+        &message.content,
+        &message.skill_mentions,
+        admission,
+        frozen,
+    )
+    .map_err(|error| VegaError::Tool {
+        tool: "skill".into(),
+        message: format!(
+            "{error}. Review the skill in Settings, then retry or remove the queued message."
+        ),
+    })
 }
 
 fn pending_failure(stage: Stage, reason: Reason) -> VegaError {

@@ -1067,6 +1067,49 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     {
         return Err(ConversationError::InvalidTaskIdentity);
     }
+    let mentions = ordinary
+        .map(|preparation| {
+            (
+                preparation.run.submission.raw().text(),
+                preparation.run.skill_mentions.as_slice(),
+            )
+        })
+        .or_else(|| {
+            config.pending_authority.as_ref().map(|authority| {
+                (
+                    authority.message.content.as_str(),
+                    authority.message.skill_mentions.as_slice(),
+                )
+            })
+        });
+    let selections = match mentions {
+        Some((content, mentions)) if !mentions.is_empty() => {
+            let root =
+                vega_store::paths::config_dir().ok_or(ConversationError::InvalidTaskIdentity)?;
+            crate::skill_settings::SkillSettingsService::new(
+                database_path.clone(),
+                root,
+                (!credential_authority.thread.project_id.is_empty())
+                    .then(|| credential_authority.thread.project_id.clone()),
+            )
+            .validate_mentions_with_owner(&thread_id, content, mentions, &admission, &[])
+            .map_err(|error| ConversationError::Store(error.to_string()))?
+        }
+        _ => Vec::new(),
+    };
+    if ordinary.is_some_and(|preparation| preparation.run.explicit_skills != selections) {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
+    let mut skill_launch = super::skills::prepare_skill_run(
+        &store,
+        &credential_authority.thread.project_id,
+        &thread_id,
+        &assistant_message_id,
+        !uses_existing_user
+            && config.credential_continuation_id.is_none()
+            && config.interrupted_assistant.is_none(),
+        &selections,
+    )?;
     let credential_values = if let Some(reader) = &config.run_credential_reader {
         reader
             .prepare(&credential_authority.fence, &assistant_message_id)
@@ -1544,6 +1587,111 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             )?
         };
 
+        if let Some(launch) = skill_launch
+            .as_mut()
+            .filter(|launch| !launch.explicit.is_empty())
+        {
+            let runtime_config = RuntimeToolConfig::new(
+                match run_mode {
+                    ThreadMode::Ask => RuntimeRunMode::Ask,
+                    ThreadMode::Plan => RuntimeRunMode::Plan,
+                    ThreadMode::Execute => RuntimeRunMode::Execute,
+                },
+                match permission_mode {
+                    crate::types::PermissionMode::ReadOnly => RuntimePermissionMode::ReadOnly,
+                    crate::types::PermissionMode::Confirm => RuntimePermissionMode::Confirm,
+                    crate::types::PermissionMode::Auto => RuntimePermissionMode::Auto,
+                    crate::types::PermissionMode::FullAccess => RuntimePermissionMode::FullAccess,
+                },
+                checkpoint_scope_id(&thread.project_id, &thread_id),
+                thread_id.clone(),
+                checkpoint_root.clone(),
+                exact_rules.clone(),
+            )
+            .with_mcp_servers(config.preparation_mcp.clone())
+            .with_computer_use(config.computer_use.clone())
+            .with_stage(config.stage_hook.clone())
+            .with_automation(config.automation_hook.clone())
+            .with_conversation_history_reader(super::context_history::reader(
+                database_path.clone(),
+                thread_id.clone(),
+            ));
+            let mut projected = vec![vega_runtime::ChatMessage::new(
+                vega_runtime::ChatRole::System,
+                system_prompt.clone(),
+            )];
+            projected.extend(history.clone());
+            let budget = match (context_budget, config.preparation_model.as_ref()) {
+                (Some(budget), Some(model)) => Some(
+                    budget
+                        .with_model_limits(
+                            model.definition.context_window,
+                            model.definition.max_output_tokens,
+                        )
+                        .map_err(|error| {
+                            ConversationError::Runtime(Arc::new(VegaError::Context(error.into())))
+                        })?,
+                ),
+                (budget, _) => budget,
+            };
+            let preflight_reasoning = match (&reasoning, &config.preparation_model) {
+                (Some(reasoning), _) => Some(reasoning.clone()),
+                (None, Some(model)) => Some(
+                    vega_runtime::model_compat::freeze_choice(
+                        model,
+                        vega_runtime::ReasoningChoice::ProviderDefault,
+                    )
+                    .map_err(|error| ConversationError::Runtime(Arc::new(error)))?,
+                ),
+                (None, None) => None,
+            };
+            let audits = runtime_config
+                .prepare_explicit_skills(
+                    &vega_runtime::ChatRequest {
+                        model: thread.model.clone(),
+                        messages: projected,
+                        reasoning: preflight_reasoning,
+                        ..Default::default()
+                    },
+                    budget,
+                    &mut launch.run,
+                    &launch.explicit,
+                    config.subagent_host.is_some() && run_mode == ThreadMode::Execute,
+                )
+                .map_err(|error| ConversationError::Runtime(Arc::new(error)))?;
+            let binding = launch
+                .run
+                .binding()
+                .ok_or(ConversationError::InvalidTaskIdentity)?;
+            let settings = vega_store::skills::read_settings(&transaction)
+                .map_err(|error| ConversationError::Store(error.to_string()))?;
+            if settings.consent_generation != binding.consent_generation()
+                || settings.revocation_generation != binding.revocation_generation()
+            {
+                return Err(ConversationError::InvalidTaskIdentity);
+            }
+            for audit in audits {
+                vega_store::skills::append_activation_audit(
+                    &transaction,
+                    vega_store::skills::NewSkillActivationAudit {
+                        run_id: binding.run_id(),
+                        thread_id: binding.thread_id(),
+                        name: &audit.name,
+                        source_scope: audit.source_scope.map(|scope| match scope {
+                            vega_runtime::skills::SourceScope::Project => "project",
+                            vega_runtime::skills::SourceScope::VegaGlobal => "vega_global",
+                            vega_runtime::skills::SourceScope::Imported => "imported",
+                        }),
+                        content_sha256: audit.content_sha256.as_deref(),
+                        origin: "explicit_user",
+                        status: audit.status,
+                        created_at: now,
+                    },
+                )
+                .map_err(|error| ConversationError::Store(error.to_string()))?;
+            }
+            launch.explicit.clear();
+        }
         let completed_tool_results =
             recover_terminal_tools(&transaction, &thread.project_id, &thread_id)?;
         let next_tool_seq =
@@ -1663,6 +1811,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     let history_safety =
         super::context_history::history_safety(database_path.clone(), thread_id.clone());
     Ok(PreparedRun {
+        skill_launch,
         permission_fence,
         _admission: admission,
         _delegated_owner: delegated_owner,

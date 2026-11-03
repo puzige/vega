@@ -58,7 +58,7 @@ pub(super) struct OrdinaryPreparationRequest {
     config: Option<PathBuf>,
     draft: Option<Thread>,
     expected: Thread,
-    skills: Option<(SkillSettingsService, SkillSelectionIntent)>,
+    skills: Option<SkillSettingsService>,
     cancel: tokio_util::sync::CancellationToken,
 }
 
@@ -131,6 +131,7 @@ impl OrdinaryPreparationRequest {
     ) -> OrdinaryPreparationOutcome {
         let admission = self.run.worker.admission().clone();
         let mut materialized = None;
+        let mut selections = Vec::new();
         let result = committed.and_then(|(store, thread)| {
             let thread_id = self.run.submission.snapshot().thread_id;
             materialized = self.draft.as_ref().map(|source| {
@@ -147,9 +148,15 @@ impl OrdinaryPreparationRequest {
                         &error,
                     ))
                 })?;
-            if let Some((service, intent)) = &self.skills {
-                service
-                    .ensure_composer_pin_with_owner(&thread_id, intent, self.run.worker.admission())
+            if let Some(service) = &self.skills {
+                selections = service
+                    .validate_mentions_with_owner(
+                        &thread_id,
+                        self.run.submission.raw().text(),
+                        &self.run.skill_mentions,
+                        self.run.worker.admission(),
+                        &[],
+                    )
                     .map_err(|error| {
                         SubmissionFailure::Preparation(PreparationFailure::new(
                             PreparationStage::Skills,
@@ -189,7 +196,7 @@ impl OrdinaryPreparationRequest {
             .complete(result.as_ref().map(|_| ()).map_err(|failure| *failure));
         let launch = match result {
             Ok((workspace, thread)) => Ok(OrdinaryLaunch::new(
-                self.run,
+                self.run.with_validated_skills(selections),
                 self.database,
                 workspace,
                 thread,
@@ -401,7 +408,7 @@ impl VegaWindow {
         let context = crate::ordinary_submission::OrdinaryContext::new(
             stream.read(cx).thread_snapshot(),
             self.draft_for_route(&request.thread_id),
-            request.skill_intent.clone(),
+            request.skill_mentions.clone(),
             self.composer_config_path(),
         );
         if crate::ordinary_submission::retain_context(submission.id(), context).is_err() {
@@ -448,33 +455,32 @@ impl VegaWindow {
             stream.update(cx, ConversationStream::refresh_ordinary_submissions);
             return;
         };
-        let skills = match context.skill.clone() {
-            Some(intent) => {
-                let service = context
-                    .config
-                    .as_deref()
-                    .and_then(std::path::Path::parent)
-                    .map(|root| {
-                        SkillSettingsService::new(
-                            database.clone(),
-                            root.to_path_buf(),
-                            context.thread.project_binding().map(str::to_owned),
-                        )
-                    });
-                let Some(service) = service else {
-                    finish_root(
-                        OrdinaryRun::new(submission, Arc::new(worker)),
-                        Err(SubmissionFailure::Preparation(PreparationFailure::new(
-                            PreparationStage::Skills,
-                            PreparationReason::State,
-                        ))),
-                    );
-                    stream.update(cx, ConversationStream::refresh_ordinary_submissions);
-                    return;
-                };
-                Some((service, intent))
-            }
-            None => None,
+        let skills = if !context.skill_mentions.is_empty() {
+            let service = context
+                .config
+                .as_deref()
+                .and_then(std::path::Path::parent)
+                .map(|root| {
+                    SkillSettingsService::new(
+                        database.clone(),
+                        root.to_path_buf(),
+                        context.thread.project_binding().map(str::to_owned),
+                    )
+                });
+            let Some(service) = service else {
+                finish_root(
+                    OrdinaryRun::new(submission, Arc::new(worker)),
+                    Err(SubmissionFailure::Preparation(PreparationFailure::new(
+                        PreparationStage::Skills,
+                        PreparationReason::State,
+                    ))),
+                );
+                stream.update(cx, ConversationStream::refresh_ordinary_submissions);
+                return;
+            };
+            Some(service)
+        } else {
+            None
         };
         let cancel = tokio_util::sync::CancellationToken::new();
         if crate::ordinary_submission::set_cancel(
@@ -528,7 +534,8 @@ impl VegaWindow {
         self.agent_controller.preparation_stream = Some(stream.clone());
         stream.update(cx, |stream, cx| stream.set_trusted_action_busy(true, cx));
         let request = OrdinaryPreparationRequest {
-            run: OrdinaryRun::new(submission.clone(), Arc::new(worker)),
+            run: OrdinaryRun::new(submission.clone(), Arc::new(worker))
+                .with_skill_mentions(context.skill_mentions),
             registered,
             database,
             config: context.config,

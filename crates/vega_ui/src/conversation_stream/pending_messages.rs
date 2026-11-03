@@ -399,7 +399,12 @@ impl ConversationStream {
 
     fn restore_pending_draft(&mut self, message: PendingMessage, cx: &mut Context<Self>) {
         self.input.update(cx, |input, cx| {
-            input.set_text_with_references(&message.content, &message.reference_mentions, cx)
+            input.set_text_with_bindings(
+                &message.content,
+                &message.reference_mentions,
+                &message.skill_mentions,
+                cx,
+            )
         });
         for image in self.history_image_previews(message.images, cx) {
             self.attachment_generation = self.attachment_generation.saturating_add(1);

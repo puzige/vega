@@ -310,16 +310,15 @@ impl ConversationStream {
         let text = self.input.read(cx).text().to_string();
         let references = self.input.read(cx).reference_paths();
         let reference_mentions = self.input.read(cx).reference_mentions();
+        let skill_mentions = self.input.read(cx).skill_mentions();
         self.composer_submit_pending = true;
-        self.pending_submission_revision = self
-            .actions
-            .running
-            .then(|| self.input.read(cx).content_revision());
+        self.pending_submission_revision = Some(self.input.read(cx).content_revision());
         self.submitted_attachments = self.attachments.clone();
         self.submitted_draft = Some(SubmittedDraft {
             submission: None,
             text: text.clone(),
             reference_mentions: reference_mentions.clone(),
+            skill_mentions: skill_mentions.clone(),
             images: self
                 .attachments
                 .iter()
@@ -343,7 +342,7 @@ impl ConversationStream {
             content: text,
             references,
             reference_mentions,
-            skill_intent: self.skill_intent.clone(),
+            skill_mentions,
             reasoning: self.frozen_reasoning_for_submit(),
         });
         cx.notify();
@@ -358,7 +357,7 @@ impl ConversationStream {
         }
         self.composer_submit_pending = false;
         self.submitted_draft = None;
-        self.pending_submission_revision = None;
+        let submitted_revision = self.pending_submission_revision.take();
         self.pending_behavior_override = None;
         let copy = MessageCopy::from_live_text(content);
         let projected = copy.original_text();
@@ -367,7 +366,9 @@ impl ConversationStream {
         }
         self.history_cursor = None;
         self.history_draft = None;
-        if self.input.read(cx).text() == content {
+        if submitted_revision == Some(self.input.read(cx).content_revision())
+            && self.input.read(cx).text() == content
+        {
             self.input.update(cx, TextInput::clear);
         }
         let durable_user = self.timestamps.accepted_user.take();

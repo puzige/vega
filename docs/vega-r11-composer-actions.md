@@ -2,6 +2,10 @@
 
 Status: implementation contract, 2026-09-06. Extends the existing composer, thread-setting persistence and real worker cancellation contracts. No new dependency, table, provider capability or credential behavior.
 
+## Current entry contract
+
+[#644](644/composer-entry-implementation.md) supersedes the old `+` and slash vocabulary below: `+` adds project references/images only; modes and actions use the typed slash projection, Skills use per-message inline mentions. Existing Stop, IME, durable mode acknowledgment and owner fences remain. `/compact` completion/explicit submission follows #667. Historical verification below is not evidence for this implementation.
+
 ## User behavior
 
 - While a worker prepares or runs, the send position exposes **停止**. Activation cancels only the current stream/thread worker token, dismisses its pending permission, and shows **停止中…** until the existing terminal drain completes. Ownership remains busy until that terminal, preventing overlapping workers and late commits into a new generation. If the channel disconnects, terminal drain releases leftover message/permission presentation without claiming durable success; existing restart recovery owns interrupted durable-row repair. The input remains editable for the next draft. Terminal cancellation shows **已停止**, never the generic provider-failure message.

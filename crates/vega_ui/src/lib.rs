@@ -230,6 +230,8 @@ pub fn init(cx: &mut App) {
             Some("ConversationStream && !Composer"),
         ),
         KeyBinding::new("cmd-x", text_input::Cut, None),
+        KeyBinding::new("cmd-z", text_input::Undo, Some("TextInput")),
+        KeyBinding::new("cmd-shift-z", text_input::Redo, Some("TextInput")),
         KeyBinding::new(
             "enter",
             settings::ActivatePricingAction,

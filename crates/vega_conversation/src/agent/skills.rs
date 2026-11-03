@@ -273,6 +273,7 @@ pub(super) fn prepare_skill_run(
     thread_id: &str,
     run_id: &str,
     direct_user: bool,
+    selections: &[SkillSelection],
 ) -> Result<Option<PreparedSkills>, ConversationError> {
     let config_dir = vega_store::paths::config_dir();
     prepare_skill_run_with_config_dir(
@@ -282,6 +283,7 @@ pub(super) fn prepare_skill_run(
         run_id,
         direct_user,
         config_dir.as_deref(),
+        selections,
     )
 }
 
@@ -292,6 +294,7 @@ pub(super) fn prepare_skill_run_with_config_dir(
     run_id: &str,
     direct_user: bool,
     config_dir: Option<&Path>,
+    selections: &[SkillSelection],
 ) -> Result<Option<PreparedSkills>, ConversationError> {
     if !direct_user {
         return Ok(None);
@@ -318,7 +321,7 @@ pub(super) fn prepare_skill_run_with_config_dir(
     let stored_approvals =
         skills::list_approved_skills(store.conn()).map_err(|_| invalid_store())?;
     let pins = skills::list_thread_pins(store.conn(), thread_id).map_err(|_| invalid_store())?;
-    if sources.is_empty() && pins.is_empty() {
+    if sources.is_empty() && pins.is_empty() && selections.is_empty() {
         return Ok(None);
     }
     let mut candidates = Vec::new();
@@ -378,7 +381,7 @@ pub(super) fn prepare_skill_run_with_config_dir(
         .map_err(|_| invalid_store())?;
         approvals.push(approval);
     }
-    let mut explicit = Vec::new();
+    let mut explicit = selections.to_vec();
     for pin in &pins {
         let selected = approvals
             .iter()
@@ -400,15 +403,24 @@ pub(super) fn prepare_skill_run_with_config_dir(
                     )
             })
             .ok_or_else(unavailable)?;
-        explicit.push(selected.selection());
+        let selection = selected.selection();
+        if !explicit.contains(&selection) {
+            explicit.push(selection);
+        }
+    }
+    if explicit.len() > vega_runtime::skills::MAX_RUN_ACTIVATIONS
+        || explicit.iter().enumerate().any(|(index, selection)| {
+            explicit[..index]
+                .iter()
+                .any(|other| other.name() == selection.name())
+        })
+    {
+        return Err(unavailable());
     }
     let auto_enabled = (project_settings.enabled && project_settings.automatic)
         || (settings.global_enabled && settings.automatic_enabled);
     let catalog =
         SkillCatalog::freeze(candidates, &approvals, auto_enabled).map_err(|_| invalid_store())?;
-    if catalog.model_catalog().is_empty() && explicit.is_empty() {
-        return Ok(None);
-    }
     let binding = RunBinding::for_catalog(
         run_id,
         thread_id,

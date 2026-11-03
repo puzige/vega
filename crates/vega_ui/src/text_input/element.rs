@@ -167,12 +167,25 @@ impl Element for TextElement {
                 .map(|mention| mention.range())
                 .collect()
         };
+        let skill_spans: Vec<Range<usize>> = if input.masked {
+            Vec::new()
+        } else {
+            input
+                .skill_mentions()
+                .into_iter()
+                .map(|mention| mention.range)
+                .collect()
+        };
         let marked = input.marked_range.clone();
         let base_run = run.clone();
         let build_runs = move |global_start: usize, chunk_len: usize| -> Vec<TextRun> {
             let chunk_end = global_start + chunk_len;
             let mut bounds = vec![0usize, chunk_len];
-            for span in mention_spans.iter().chain(marked.iter()) {
+            for span in mention_spans
+                .iter()
+                .chain(skill_spans.iter())
+                .chain(marked.iter())
+            {
                 if span.start > global_start && span.start < chunk_end {
                     bounds.push(span.start - global_start);
                 }
@@ -196,17 +209,27 @@ impl Element for TextElement {
                 let in_mention = mention_spans
                     .iter()
                     .any(|span| span.start <= absolute_start && absolute_end <= span.end);
+                let in_skill = skill_spans
+                    .iter()
+                    .any(|span| span.start <= absolute_start && absolute_end <= span.end);
                 let in_marked = marked
                     .as_ref()
                     .is_some_and(|span| span.start <= absolute_start && absolute_end <= span.end);
                 runs.push(TextRun {
                     len: end - start,
-                    color: if in_mention {
+                    font: {
+                        let mut font = base_run.font.clone();
+                        if in_skill {
+                            font.weight = Typography::HEADING_CARD_WEIGHT;
+                        }
+                        font
+                    },
+                    color: if in_mention || in_skill {
                         accent.into()
                     } else {
                         base_run.color
                     },
-                    underline: in_marked.then_some(UnderlineStyle {
+                    underline: (in_marked || in_skill).then_some(UnderlineStyle {
                         color: Some(base_run.color),
                         thickness: px(1.0),
                         wavy: false,
@@ -584,6 +607,8 @@ impl Render for TextInput {
         let mut container = div()
             .flex_1()
             .key_context("TextInput")
+            .role(gpui_kit::Role::TextInput)
+            .aria_label(self.accessible_label())
             .when(self.prediction_text().is_some(), |input| {
                 input.key_context("TextInput TextInputPrediction")
             })
@@ -606,6 +631,8 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::redo))
             .on_action(cx.listener(Self::insert_newline))
             .on_action(cx.listener(Self::accept_prediction))
             .on_action(cx.listener(Self::dismiss_prediction))

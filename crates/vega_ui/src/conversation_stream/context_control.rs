@@ -102,6 +102,31 @@ impl ContextControl {
 }
 
 impl ConversationStream {
+    pub(crate) fn compact_command_availability(&self, cx: &App) -> Option<&'static str> {
+        if !self.attachments.is_empty()
+            || !self.input.read(cx).reference_mentions().is_empty()
+            || !self.input.read(cx).skill_mentions().is_empty()
+        {
+            Some("ui.compact_remove_attachments")
+        } else if self.draft_route
+            || !self.can_submit_message(cx)
+            || self.model_selection_blocked(cx)
+            || self.actions.running
+            || self.permissions_revoked
+            || self.has_pending_model_selection()
+        {
+            Some("ui.command_busy")
+        } else if self.context_control.model_input_limit.is_none() {
+            Some("ui.command_configure_capacity")
+        } else if !self.context_control.compactable
+            || self.context_control.source_fingerprint.is_none()
+        {
+            Some("ui.command_no_compactable_history")
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn submit_compact_command(&mut self, cx: &mut Context<Self>) -> bool {
         if self.thread.backend != TaskBackend::Native {
             return false;
@@ -115,20 +140,8 @@ impl ConversationStream {
         }
         let error = if requirements.len() > 8192 {
             Some("ui.compact_requirements_too_long")
-        } else if !self.attachments.is_empty()
-            || !self.input.read(cx).reference_mentions().is_empty()
-            || self.skill_intent.is_some()
-        {
-            Some("ui.compact_remove_attachments")
-        } else if !self.can_submit_message(cx)
-            || self.actions.running
-            || self.permissions_revoked
-            || !self.context_control.compactable
-            || self.context_control.source_fingerprint.is_none()
-        {
-            Some("ui.compact_unavailable")
         } else {
-            None
+            self.compact_command_availability(cx)
         };
         if let Some(error) = error {
             self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(error));

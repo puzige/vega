@@ -25,7 +25,8 @@ the current card, not authorization to start another Ready card.
    for invalid input. Do not claim these values are verified provider limits.
    If a user explicitly clears capacity to unknown, sends remain possible and
    budgeted automatic compression waits for configured capacity.
-3. Remove capacity, reserve, and automatic-compression controls from the
+3. Current amendment: [#644](../644/composer-entry-implementation.md) supersedes only the manual-action removal below with slash discovery; #667 owns `/compact` completion and explicit submission, including summary requirements. Model policy remains in Providers and no capacity editor returns to Composer.
+   Remove capacity, reserve, and automatic-compression controls from the
    Composer, including its `上下文` chip. The user also explicitly chose to
    remove the manual `立即压缩` UI action rather than relocate it: only
    automatic compression is visible. No duplicate model policy may remain

@@ -83,6 +83,8 @@ pub struct PersistenceActorConfig {
     pub(crate) pending_message_id: Option<String>,
     pub(crate) pending_authority: Option<crate::types::PendingInputAuthority>,
     pub(crate) steering_source: Option<Arc<dyn vega_runtime::RuntimeSteeringSource>>,
+    pub(crate) preparation_mcp: Vec<vega_runtime::McpReadyServer>,
+    pub(crate) preparation_model: Option<Box<vega_runtime::model_compat::ResolvedModel>>,
     pub(crate) steering_authority: Option<Arc<std::sync::OnceLock<crate::types::PermissionFence>>>,
     pub(crate) computer_use: Option<vega_runtime::computer_use::ComputerUseRun>,
     pub automatic_title: Option<crate::types::AutomaticTitleRequest>,
@@ -618,6 +620,7 @@ pub(crate) struct RuntimeEnvelope {
 }
 
 pub(crate) struct PreparedRun {
+    pub(crate) skill_launch: Option<super::skills::PreparedSkills>,
     pub(crate) permission_fence: crate::types::PermissionFence,
     pub(crate) _admission: crate::types::ThreadAdmission,
     pub(crate) _delegated_owner: Option<Arc<vega_store::delegated_ownership::DelegatedOwnership>>,

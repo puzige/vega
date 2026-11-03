@@ -1474,7 +1474,7 @@ impl VegaWindow {
             });
             return;
         }
-        if request.skill_intent.is_some() {
+        if !request.skill_mentions.is_empty() {
             stream.update(cx, |stream, cx| {
                 stream.reject_composer_submission(cx);
                 stream.apply_codex_route_failure(
