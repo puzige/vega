@@ -589,11 +589,11 @@ async fn accept_steering(
     }
     let mut accepted = input.clone();
     accepted.skills = match (candidate.as_ref().and_then(SkillRun::binding), snapshot) {
-        (Some(binding), Some(snapshot)) => Some(RuntimeSteeringSkills {
+        (Some(binding), Some(snapshot)) => Some(Box::new(RuntimeSteeringSkills {
             binding: binding.clone(),
             snapshot,
             audits: activation_events,
-        }),
+        })),
         _ if !activation_events.is_empty() => return Err(skill_runtime_error()),
         _ => None,
     };

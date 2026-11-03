@@ -164,7 +164,7 @@ impl Fixture {
             store.conn(),
             vega_store::threads::NewThread {
                 reasoning_preferences: None,
-                id: "thread",
+                id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
                 project_id: &project.id,
                 title: "development",
                 mode: "execute",
@@ -289,13 +289,13 @@ impl Fixture {
         PendingMessage,
         CancellationToken,
     ) {
-        let thread = vega_store::threads::find(self.store.conn(), "thread")
+        let thread = vega_store::threads::find(self.store.conn(), "01ARZ3NDEKTSV4RRFFQ69G5FAV")
             .unwrap()
             .unwrap();
         let fence = crate::permission_contracts::capture_fence(&self.store, &thread).unwrap();
         let message = PendingMessage {
             id: "pending".into(),
-            thread_id: "thread".into(),
+            thread_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
             generation: "generation".into(),
             behavior: PendingMessageBehavior::Steer,
             content: if mentions.is_empty() {
@@ -311,12 +311,13 @@ impl Fixture {
             permission_fence: Some(fence.clone()),
         };
         pending_messages::enqueue(&self.store, &message).unwrap();
-        let admission = crate::thread_access::acquire(&self.store, "thread").unwrap();
+        let admission =
+            crate::thread_access::acquire(&self.store, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
         let cancel = CancellationToken::new();
         let source = pending_messages::QueueSteeringSource::new(
             self.root.join("state.sqlite"),
             self.root.clone(),
-            "thread".into(),
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
             "generation".into(),
             Arc::new(|| Ok(Vec::new())),
             cancel.clone(),
@@ -338,7 +339,7 @@ fn insert_streaming_assistant(fixture: &Fixture) {
         fixture.store.conn(),
         &vega_store::messages::MessageRow {
             id: "active-assistant".into(),
-            thread_id: "thread".into(),
+            thread_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
             seq: 0,
             role: "assistant".into(),
             kind: "text".into(),
@@ -360,7 +361,7 @@ fn persist_acceptance(
     crate::agent::persist_runtime_event(
         &fixture.store,
         &fixture.project_id,
-        "thread",
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
         "active-assistant",
         "development-model",
         false,
@@ -392,7 +393,7 @@ async fn acceptance_rolls_back(fault: &str) {
     let settings = skills::read_settings(fixture.store.conn()).unwrap();
     let binding = RunBinding::for_catalog(
         "active-assistant",
-        "thread",
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
         settings.consent_generation,
         settings.revocation_generation,
         &catalog,
@@ -422,15 +423,19 @@ async fn acceptance_rolls_back(fault: &str) {
     assert_eq!(activation.receipt.status, "loaded");
     assert!(!activation.must_pause);
     candidate.continue_at(&input.assistant_message_id).unwrap();
-    input.skills = Some(vega_runtime::RuntimeSteeringSkills {
+    input.skills = Some(Box::new(vega_runtime::RuntimeSteeringSkills {
         binding: candidate.binding().unwrap().clone(),
         snapshot: candidate.export_snapshot().unwrap(),
         audits: vec![activation.audit],
-    });
+    }));
     source.acknowledge(&input).await.unwrap();
-    let queued = vega_store::pending_messages::find(fixture.store.conn(), "thread", &original.id)
-        .unwrap()
-        .unwrap();
+    let queued = vega_store::pending_messages::find(
+        fixture.store.conn(),
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        &original.id,
+    )
+    .unwrap()
+    .unwrap();
     match fault {
         "epoch" => {
             fixture
@@ -469,12 +474,16 @@ async fn acceptance_rolls_back(fault: &str) {
             "{error}"
         );
     }
-    let retained = vega_store::pending_messages::find(fixture.store.conn(), "thread", &original.id)
-        .unwrap()
-        .unwrap();
+    let retained = vega_store::pending_messages::find(
+        fixture.store.conn(),
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        &original.id,
+    )
+    .unwrap()
+    .unwrap();
     assert!(retained == queued);
     assert!(!retained.payload.is_empty());
-    let recovered = pending_messages::load(&fixture.store, "thread").unwrap();
+    let recovered = pending_messages::load(&fixture.store, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
     assert_eq!(recovered.len(), 1);
     assert_eq!(recovered[0].content, original.content);
     assert_eq!(recovered[0].skill_mentions, original.skill_mentions);
@@ -514,7 +523,7 @@ async fn acceptance_rolls_back(fault: &str) {
         .unwrap();
     assert_eq!(next_snapshots, 0);
     assert!(
-        skills::list_activation_audits(fixture.store.conn(), "thread")
+        skills::list_activation_audits(fixture.store.conn(), "01ARZ3NDEKTSV4RRFFQ69G5FAV")
             .unwrap()
             .is_empty()
     );
@@ -540,7 +549,7 @@ async fn acceptance_rolls_back(fault: &str) {
         let metadata = persist_acceptance(&fixture, &input).unwrap();
         assert!(metadata.len() >= 2);
         assert!(
-            pending_messages::load(&fixture.store, "thread")
+            pending_messages::load(&fixture.store, "01ARZ3NDEKTSV4RRFFQ69G5FAV")
                 .unwrap()
                 .is_empty()
         );
@@ -552,7 +561,9 @@ async fn acceptance_rolls_back(fault: &str) {
             snapshot.bytes,
             input.skills.as_ref().unwrap().snapshot.bytes()
         );
-        let audits = skills::list_activation_audits(fixture.store.conn(), "thread").unwrap();
+        let audits =
+            skills::list_activation_audits(fixture.store.conn(), "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+                .unwrap();
         assert_eq!(audits.len(), 1);
         assert_eq!(audits[0].run_id, input.assistant_message_id);
         assert_eq!(audits[0].origin, "explicit_user");
@@ -597,13 +608,14 @@ async fn audit_storage_failure_rolls_back_snapshot_and_whole_acceptance() {
 fn worker_validation_is_read_only_and_only_frozen_exact_identity_skips_changed_disk() {
     let fixture = Fixture::new();
     let (mention, selection) = fixture.reviewed_skill();
-    let admission = crate::thread_access::acquire(&fixture.store, "thread").unwrap();
+    let admission =
+        crate::thread_access::acquire(&fixture.store, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
     let service = fixture.service();
     let settings = skills::read_settings(fixture.store.conn()).unwrap();
     assert_eq!(
         service
             .validate_mentions_with_owner(
-                "thread",
+                "01ARZ3NDEKTSV4RRFFQ69G5FAV",
                 "$alpha",
                 std::slice::from_ref(&mention),
                 &admission,
@@ -615,7 +627,7 @@ fn worker_validation_is_read_only_and_only_frozen_exact_identity_skips_changed_d
     fixture.write_skill("unreviewed-new-bytes");
     assert_eq!(
         service.validate_mentions_with_owner(
-            "thread",
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
             "$alpha",
             std::slice::from_ref(&mention),
             &admission,
@@ -626,7 +638,7 @@ fn worker_validation_is_read_only_and_only_frozen_exact_identity_skips_changed_d
     assert_eq!(
         service
             .validate_mentions_with_owner(
-                "thread",
+                "01ARZ3NDEKTSV4RRFFQ69G5FAV",
                 "$alpha",
                 std::slice::from_ref(&mention),
                 &admission,
@@ -638,7 +650,13 @@ fn worker_validation_is_read_only_and_only_frozen_exact_identity_skips_changed_d
     let mut stale = mention;
     stale.intent.expected_consent_generation += 1;
     assert_eq!(
-        service.validate_mentions_with_owner("thread", "$alpha", &[stale], &admission, &[]),
+        service.validate_mentions_with_owner(
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "$alpha",
+            &[stale],
+            &admission,
+            &[]
+        ),
         Err(SkillSettingsError::Stale)
     );
     assert_eq!(
@@ -646,7 +664,7 @@ fn worker_validation_is_read_only_and_only_frozen_exact_identity_skips_changed_d
         settings
     );
     assert!(
-        skills::list_thread_pins(fixture.store.conn(), "thread")
+        skills::list_thread_pins(fixture.store.conn(), "01ARZ3NDEKTSV4RRFFQ69G5FAV")
             .unwrap()
             .is_empty()
     );
@@ -656,7 +674,8 @@ fn worker_validation_is_read_only_and_only_frozen_exact_identity_skips_changed_d
 fn revoked_generation_rejects_even_an_exact_frozen_selection() {
     let fixture = Fixture::new();
     let (mention, selection) = fixture.reviewed_skill();
-    let admission = crate::thread_access::acquire(&fixture.store, "thread").unwrap();
+    let admission =
+        crate::thread_access::acquire(&fixture.store, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
     let settings = skills::read_settings(fixture.store.conn()).unwrap();
     skills::set_project_settings(
         fixture.store.conn(),
@@ -668,7 +687,7 @@ fn revoked_generation_rejects_even_an_exact_frozen_selection() {
     .unwrap();
     assert_eq!(
         fixture.service().validate_mentions_with_owner(
-            "thread",
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
             "$alpha",
             &[mention],
             &admission,
@@ -677,7 +696,7 @@ fn revoked_generation_rejects_even_an_exact_frozen_selection() {
         Err(SkillSettingsError::Stale)
     );
     assert!(
-        skills::list_thread_pins(fixture.store.conn(), "thread")
+        skills::list_thread_pins(fixture.store.conn(), "01ARZ3NDEKTSV4RRFFQ69G5FAV")
             .unwrap()
             .is_empty()
     );
@@ -688,7 +707,7 @@ async fn failed_steer_ack_keeps_original_queued_and_can_retry_original_input() {
     let fixture = Fixture::new();
     let (source, original, _) = fixture.enqueue();
     let input = source.take(Vec::new()).await.unwrap().unwrap();
-    let queued = pending_messages::load(&fixture.store, "thread").unwrap();
+    let queued = pending_messages::load(&fixture.store, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
     assert_eq!(queued.len(), 1);
     assert_eq!(queued[0].content, original.content);
     let mut changed = input.clone();
@@ -700,13 +719,13 @@ async fn failed_steer_ack_keeps_original_queued_and_can_retry_original_input() {
         && detail.reason == vega_runtime::RuntimeFailureReason::Admission),
         "{error}"
     );
-    let retained = pending_messages::load(&fixture.store, "thread").unwrap();
+    let retained = pending_messages::load(&fixture.store, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
     assert_eq!(retained.len(), 1);
     assert_eq!(retained[0].content, original.content);
     assert_eq!(retained[0].permission_fence, original.permission_fence);
     assert_eq!(source.ready().await.unwrap(), Some(original.id));
     assert_eq!(
-        vega_store::messages::next_seq(fixture.store.conn(), "thread").unwrap(),
+        vega_store::messages::next_seq(fixture.store.conn(), "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap(),
         input.user_message_seq
     );
     source.acknowledge(&input).await.unwrap();
@@ -718,10 +737,13 @@ async fn cancelled_steer_ack_preserves_dispatchable_message() {
     let fixture = Fixture::new();
     let (source, original, cancel) = fixture.enqueue();
     let input = source.take(Vec::new()).await.unwrap().unwrap();
-    let queued =
-        vega_store::pending_messages::next_steer(fixture.store.conn(), "thread", "generation")
-            .unwrap()
-            .unwrap();
+    let queued = vega_store::pending_messages::next_steer(
+        fixture.store.conn(),
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "generation",
+    )
+    .unwrap()
+    .unwrap();
     cancel.cancel();
     let error = source.acknowledge(&input).await.unwrap_err();
     assert!(
@@ -730,14 +752,17 @@ async fn cancelled_steer_ack_preserves_dispatchable_message() {
         && detail.reason == vega_runtime::RuntimeFailureReason::Admission),
         "{error}"
     );
-    let retained =
-        vega_store::pending_messages::next_steer(fixture.store.conn(), "thread", "generation")
-            .unwrap()
-            .unwrap();
+    let retained = vega_store::pending_messages::next_steer(
+        fixture.store.conn(),
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "generation",
+    )
+    .unwrap()
+    .unwrap();
     assert!(retained == queued);
     assert_eq!(retained.id, original.id);
     assert_eq!(
-        pending_messages::load(&fixture.store, "thread").unwrap()[0].content,
+        pending_messages::load(&fixture.store, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap()[0].content,
         original.content
     );
 }
@@ -764,17 +789,17 @@ async fn skill_revocation_between_take_and_ack_preserves_message_and_binding() {
         if tool == "skill" && message.contains("Settings") && message.contains("retry")),
         "{error}"
     );
-    let retained = pending_messages::load(&fixture.store, "thread").unwrap();
+    let retained = pending_messages::load(&fixture.store, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
     assert_eq!(retained.len(), 1);
     assert_eq!(retained[0].content, original.content);
     assert_eq!(retained[0].skill_mentions, original.skill_mentions);
     assert_eq!(source.ready().await.unwrap(), Some(original.id));
     assert_eq!(
-        vega_store::messages::next_seq(fixture.store.conn(), "thread").unwrap(),
+        vega_store::messages::next_seq(fixture.store.conn(), "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap(),
         input.user_message_seq
     );
     assert!(
-        skills::list_thread_pins(fixture.store.conn(), "thread")
+        skills::list_thread_pins(fixture.store.conn(), "01ARZ3NDEKTSV4RRFFQ69G5FAV")
             .unwrap()
             .is_empty()
     );
@@ -785,10 +810,11 @@ fn worker_rejects_an_admission_from_another_database() {
     let fixture = Fixture::new();
     let other = Fixture::new();
     let (mention, _) = fixture.reviewed_skill();
-    let foreign_admission = crate::thread_access::acquire(&other.store, "thread").unwrap();
+    let foreign_admission =
+        crate::thread_access::acquire(&other.store, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
     assert_eq!(
         fixture.service().validate_mentions_with_owner(
-            "thread",
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
             "$alpha",
             &[mention],
             &foreign_admission,
@@ -797,7 +823,7 @@ fn worker_rejects_an_admission_from_another_database() {
         Err(SkillSettingsError::Stale)
     );
     assert!(
-        skills::list_thread_pins(fixture.store.conn(), "thread")
+        skills::list_thread_pins(fixture.store.conn(), "01ARZ3NDEKTSV4RRFFQ69G5FAV")
             .unwrap()
             .is_empty()
     );

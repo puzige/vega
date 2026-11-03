@@ -193,7 +193,7 @@ pub struct RuntimeSteeringInput {
     pub assistant_message_id: String,
     pub message: ChatMessage,
     pub skill_selections: Vec<SkillSelection>,
-    pub skills: Option<RuntimeSteeringSkills>,
+    pub skills: Option<Box<RuntimeSteeringSkills>>,
 }
 
 #[derive(Clone)]
