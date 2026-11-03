@@ -1182,12 +1182,11 @@ fn render_line_selectable(
             colors,
             document,
             in_user_bubble,
-            |row| fade.opacity(row),
+            fade,
         );
     }
     let text: String = line.spans.iter().map(|span| span.text.as_str()).collect();
     let item = div()
-        .opacity(fade.opacity(0))
         .when(
             line.kind != LineKind::Code
                 && !(line.kind == LineKind::ListItem && line.spans.is_empty()),
@@ -1209,7 +1208,11 @@ fn render_line_selectable(
         LineKind::UserLine { .. } => {
             let selected = document.append_styled_runs(
                 &text,
-                block_text_runs(&line.spans, user_body_style(colors), colors),
+                fade.runs(
+                    0,
+                    stream_fade::TextPart::Body,
+                    block_text_runs(&line.spans, user_body_style(colors), colors),
+                ),
                 link_ranges(&line.spans),
                 &format!("{id_prefix}-user"),
             );
@@ -1219,7 +1222,11 @@ fn render_line_selectable(
         LineKind::Code => {
             let selected = document.append_styled_runs(
                 &text,
-                block_text_runs(&line.spans, code_run_style(colors.text_primary), colors),
+                fade.runs(
+                    0,
+                    stream_fade::TextPart::Body,
+                    block_text_runs(&line.spans, code_run_style(colors.text_primary), colors),
+                ),
                 link_ranges(&line.spans),
                 &format!("{id_prefix}-code"),
             );
@@ -1244,13 +1251,17 @@ fn render_line_selectable(
             let (size, weight) = heading_style(level);
             let selected = document.append_styled_runs(
                 &text,
-                block_text_runs(
-                    &line.spans,
-                    TextStyle {
-                        line_height: body_style.line_height,
-                        ..heading_run_style(level, colors)
-                    },
-                    colors,
+                fade.runs(
+                    0,
+                    stream_fade::TextPart::Body,
+                    block_text_runs(
+                        &line.spans,
+                        TextStyle {
+                            line_height: body_style.line_height,
+                            ..heading_run_style(level, colors)
+                        },
+                        colors,
+                    ),
                 ),
                 link_ranges(&line.spans),
                 &format!("{id_prefix}-heading"),
@@ -1265,9 +1276,30 @@ fn render_line_selectable(
             let marker = format!("{} ", line.marker);
             document.append_literal(&"  ".repeat(line.depth));
             let mut row = div().pl(px(line.list_marker_inset())).flex().flex_row();
-            let marker_text = document.append_styled(
+            let marker_text = document.append_styled_runs(
                 &marker,
-                StyledText::new(marker.clone()),
+                fade.runs(
+                    0,
+                    stream_fade::TextPart::Marker,
+                    vec![
+                        TextStyle {
+                            color: if line.marker == "•" {
+                                colors.text_primary
+                            } else {
+                                colors.text_secondary
+                            }
+                            .into(),
+                            font_weight: if line.marker == "•" {
+                                FontWeight::BOLD
+                            } else {
+                                FontWeight::NORMAL
+                            },
+                            ..body_style.clone()
+                        }
+                        .to_run(marker.len()),
+                    ],
+                ),
+                Vec::new(),
                 &format!("{id_prefix}-list-marker"),
             );
             row = row.child(
@@ -1288,9 +1320,25 @@ fn render_line_selectable(
             );
             if let Some(checked) = line.checked {
                 let checkbox = if checked { "[x]" } else { "[ ]" };
-                let checkbox_text = document.append_styled(
+                let checkbox_text = document.append_styled_runs(
                     checkbox,
-                    StyledText::new(checkbox),
+                    fade.runs(
+                        0,
+                        stream_fade::TextPart::Checkbox,
+                        vec![
+                            TextStyle {
+                                color: if checked {
+                                    colors.success
+                                } else {
+                                    colors.text_tertiary
+                                }
+                                .into(),
+                                ..body_style.clone()
+                            }
+                            .to_run(checkbox.len()),
+                        ],
+                    ),
+                    Vec::new(),
                     &format!("{id_prefix}-list-checkbox"),
                 );
                 row = row.child(
@@ -1308,7 +1356,11 @@ fn render_line_selectable(
             }
             let content = document.append_styled_runs(
                 &text,
-                block_text_runs(&line.spans, body_style.clone(), colors),
+                fade.runs(
+                    0,
+                    stream_fade::TextPart::Body,
+                    block_text_runs(&line.spans, body_style.clone(), colors),
+                ),
                 link_ranges(&line.spans),
                 &format!("{id_prefix}-list-content"),
             );
@@ -1318,7 +1370,11 @@ fn render_line_selectable(
         LineKind::Paragraph => {
             let selected = document.append_styled_runs(
                 &text,
-                block_text_runs(&line.spans, body_style.clone(), colors),
+                fade.runs(
+                    0,
+                    stream_fade::TextPart::Body,
+                    block_text_runs(&line.spans, body_style.clone(), colors),
+                ),
                 link_ranges(&line.spans),
                 &format!("{id_prefix}-paragraph"),
             );
@@ -1334,7 +1390,7 @@ fn render_table_selectable(
     colors: &ThemeColors,
     document: &mut SelectionDocumentBuilder,
     in_user_bubble: bool,
-    opacity: impl Fn(usize) -> f32,
+    fade: &stream_fade::LineFade<'_>,
 ) -> AnyElement {
     let ordinal = table.ordinal;
     let columns = table.alignments.len();
@@ -1352,7 +1408,6 @@ fn render_table_selectable(
             document.append_literal("\n");
         }
         let mut row = div()
-            .opacity(opacity(row_index))
             .w_full()
             .flex()
             .flex_row()
@@ -1376,7 +1431,11 @@ fn render_table_selectable(
             let cell_text: String = spans.iter().map(|span| span.text.as_str()).collect();
             let selected = document.append_styled_runs(
                 &cell_text,
-                block_text_runs(spans, style, colors),
+                fade.runs(
+                    row_index,
+                    stream_fade::TextPart::Cell(column),
+                    block_text_runs(spans, style, colors),
+                ),
                 link_ranges(spans),
                 &format!("{id_prefix}-table-{block_id}-{ordinal}-{row_index}-{column}"),
             );

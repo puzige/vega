@@ -351,11 +351,19 @@ impl RunIndex {
                 (start..offset, run)
             })
             .collect::<Vec<_>>();
-        let code = runs
-            .iter()
-            .filter(|(range, run)| !range.is_empty() && run.background_color.is_some())
-            .map(|(range, _)| range.clone())
-            .collect();
+        let mut code: Vec<Range<usize>> = Vec::new();
+        for (range, run) in &runs {
+            if range.is_empty() || run.background_color.is_none() {
+                continue;
+            }
+            if let Some(previous) = code.last_mut()
+                && previous.end == range.start
+            {
+                previous.end = range.end;
+            } else {
+                code.push(range.clone());
+            }
+        }
         Self {
             runs,
             code,
