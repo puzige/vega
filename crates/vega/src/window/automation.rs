@@ -63,7 +63,7 @@ impl VegaWindow {
                 vega_i18n::t("app.automation.native_commands").into(),
                 cx,
             );
-        } else if !request.images.is_empty() || request.skill_intent.is_some() {
+        } else if !request.images.is_empty() || !request.skill_mentions.is_empty() {
             self.automation_error(
                 &stream,
                 vega_i18n::t("app.automation.no_attachments").into(),

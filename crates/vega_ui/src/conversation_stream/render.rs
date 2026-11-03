@@ -312,6 +312,22 @@ impl ConversationStream {
                                 error.render(),
                                 colors.danger,
                             ))
+                            .when(!self.input.read(cx).skill_mentions().is_empty(), |row| {
+                                row.child(
+                                    super::privacy::PrivacyButton::new(
+                                        "composer-skill-settings",
+                                        colors,
+                                    )
+                                    .label(vega_i18n::t("ui.open_skill_settings"))
+                                    .on_click(|_, _, cx| {
+                                        cx.set_global(crate::settings::SkillsSettingsRequested(
+                                            true,
+                                        ));
+                                        cx.set_global(crate::settings::SettingsOpen(true));
+                                        cx.refresh_windows();
+                                    }),
+                                )
+                            })
                     }),
             )
             .children(
@@ -490,7 +506,7 @@ impl ConversationStream {
                             .when(file_selector_active && !file_retry_visible, |row| {
                                 row.key_context("FileSelect")
                             })
-                            .when(self.actions.visible(), |row| {
+                            .when(self.composer_actions_visible(cx), |row| {
                                 row.key_context("ComposerActions")
                             })
                             .child(self.render_composer_actions(cx))
@@ -506,18 +522,29 @@ impl ConversationStream {
                             .justify_between()
                             .gap_2()
                             .when(self.compact_workspace, |row| row.gap_1())
-                            .child(
-                                crate::icons::localized_icon_button(
-                                    crate::icons::Icon::Plus,
-                                    "ui.add_context_or_change_mode",
-                                    colors,
-                                    cx.listener(|this, _, window, cx| {
-                                        this.open_composer_actions(window, cx)
-                                    }),
+                            .when(self.context_menu_available(), |row| {
+                                let trigger_bounds = self.actions.trigger_bounds.clone();
+                                row.child(
+                                    crate::icons::localized_icon_button(
+                                        crate::icons::Icon::Plus,
+                                        "ui.add_context",
+                                        colors,
+                                        cx.listener(|this, _, window, cx| {
+                                            this.open_composer_actions(window, cx)
+                                        }),
+                                    )
+                                    .size(px(Layout::TITLEBAR_CONTROL_SIZE))
+                                    .track_focus(&self.action_focus[0])
+                                    .child(
+                                        gpui_kit::canvas(
+                                            move |bounds, _, _| trigger_bounds.set(Some(bounds)),
+                                            |_, _, _, _| {},
+                                        )
+                                        .absolute()
+                                        .size_full(),
+                                    ),
                                 )
-                                .size(px(Layout::TITLEBAR_CONTROL_SIZE))
-                                .track_focus(&self.action_focus[0]),
-                            )
+                            })
                             .when(self.thread.backend == TaskBackend::Native, |row| {
                                 row.child(self.render_permission_status(cx))
                             })

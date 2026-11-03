@@ -4,15 +4,13 @@ use std::sync::{Mutex, OnceLock};
 
 use tokio_util::sync::CancellationToken;
 use vega_conversation::agent::{OrdinaryRun, finish_ordinary_worker};
-use vega_conversation::types::{
-    AttemptId, SkillSelectionIntent, SubmissionFailure, SubmissionId, Thread,
-};
+use vega_conversation::types::{AttemptId, SkillMention, SubmissionFailure, SubmissionId, Thread};
 
 #[derive(Clone)]
 pub(crate) struct OrdinaryContext {
     pub(crate) thread: Thread,
     pub(crate) draft: Option<Thread>,
-    pub(crate) skill: Option<SkillSelectionIntent>,
+    pub(crate) skill_mentions: Vec<SkillMention>,
     pub(crate) config: Option<PathBuf>,
     cancellation: Option<(AttemptId, CancellationToken)>,
 }
@@ -21,13 +19,13 @@ impl OrdinaryContext {
     pub(crate) fn new(
         thread: Thread,
         draft: Option<Thread>,
-        skill: Option<SkillSelectionIntent>,
+        skill_mentions: Vec<SkillMention>,
         config: Option<PathBuf>,
     ) -> Self {
         Self {
             thread,
             draft,
-            skill,
+            skill_mentions,
             config,
             cancellation: None,
         }

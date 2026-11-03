@@ -189,6 +189,9 @@ impl Global for SettingsOpen {}
 pub struct PricingSettingsRequested(pub bool);
 impl Global for PricingSettingsRequested {}
 
+pub struct SkillsSettingsRequested(pub bool);
+impl Global for SkillsSettingsRequested {}
+
 /// Fixed permission-mode vocabulary (matches `vega_store::config::Defaults`).
 const PERMISSION_MODES: [&str; 4] = ["readonly", "confirm", "auto", "full_access"];
 

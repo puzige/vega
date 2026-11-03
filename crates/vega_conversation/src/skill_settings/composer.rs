@@ -8,6 +8,108 @@ use crate::types::{
 };
 
 impl SkillSettingsService {
+    pub fn validate_mentions_with_owner(
+        &self,
+        thread_id: &str,
+        content: &str,
+        mentions: &[crate::types::SkillMention],
+        admission: &vega_store::thread_admission::ThreadAdmission,
+        frozen: &[vega_runtime::skills::SkillSelection],
+    ) -> Result<Vec<vega_runtime::skills::SkillSelection>, SkillSettingsError> {
+        let intents = crate::types::SkillMention::selections(content, mentions)
+            .ok_or(SkillSettingsError::Invalid)?;
+        let store =
+            Store::open_read_only(&self.database_path).map_err(|_| SkillSettingsError::Store)?;
+        crate::thread_access::verify(&store, thread_id, admission)
+            .map_err(|_| SkillSettingsError::Stale)?;
+        self.composer_thread(&store, thread_id)?;
+        let settings = skills::read_settings(store.conn())?;
+        let approvals = skills::list_approved_skills(store.conn())?;
+        let mut selections = Vec::new();
+        for intent in intents {
+            if settings.consent_generation != intent.expected_consent_generation {
+                return Err(SkillSettingsError::Stale);
+            }
+            let row = self.find_scoped_source(&store, &intent.source_id)?;
+            let enabled = if row.scope == "project" {
+                skills::read_project_settings(
+                    store.conn(),
+                    row.project_id
+                        .as_deref()
+                        .ok_or(SkillSettingsError::Invalid)?,
+                )?
+                .enabled
+            } else {
+                settings.global_enabled
+            };
+            let approval = approvals
+                .iter()
+                .find(|approval| {
+                    approval.source_id == intent.source_id && approval.name == intent.name
+                })
+                .ok_or(SkillSettingsError::Stale)?;
+            if !enabled
+                || !row.enabled
+                || !approval.enabled
+                || approval.approved_sha256 != intent.content_sha256
+            {
+                return Err(SkillSettingsError::Stale);
+            }
+            let source = self.rebind(&store, &row)?;
+            let selection = vega_runtime::skills::SkillApproval::from_persisted_parts(
+                &source,
+                vega_runtime::skills::PersistedSkillApproval {
+                    scope: source.identity().scope(),
+                    canonical_root: Path::new(&row.canonical_root),
+                    root_dev: row
+                        .root_dev
+                        .parse()
+                        .map_err(|_| SkillSettingsError::Invalid)?,
+                    root_ino: row
+                        .root_ino
+                        .parse()
+                        .map_err(|_| SkillSettingsError::Invalid)?,
+                    name: &intent.name,
+                    approved_sha256: &intent.content_sha256,
+                    source_label: &approval.source_label,
+                    enabled: true,
+                    automatic: false,
+                },
+            )
+            .map_err(|_| SkillSettingsError::Stale)?
+            .selection();
+            if !frozen.contains(&selection) {
+                let candidate = source
+                    .discover()
+                    .map_err(|_| SkillSettingsError::Stale)?
+                    .candidates
+                    .into_iter()
+                    .find(|candidate| {
+                        candidate.name == intent.name && candidate.sha256 == intent.content_sha256
+                    })
+                    .ok_or(SkillSettingsError::Stale)?;
+                source
+                    .load_candidate(&candidate)
+                    .map_err(|_| SkillSettingsError::Stale)?;
+            }
+            if selections
+                .iter()
+                .any(|existing: &vega_runtime::skills::SkillSelection| {
+                    existing.name() == selection.name() && existing != &selection
+                })
+            {
+                return Err(SkillSettingsError::Invalid);
+            }
+            selections.push(selection);
+        }
+        if skills::read_settings(store.conn())? != settings {
+            return Err(SkillSettingsError::Stale);
+        }
+        crate::thread_access::verify(&store, thread_id, admission)
+            .map_err(|_| SkillSettingsError::Stale)?;
+        Ok(selections)
+    }
+
     /// First-send retry is idempotent after an earlier worker committed its
     /// exact pin but its UI acknowledgement was cancelled/lost. An existing
     /// pin is accepted only if the current approval and file still project as

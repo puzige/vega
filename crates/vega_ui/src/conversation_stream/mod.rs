@@ -149,7 +149,7 @@ pub struct ComposerSubmitted {
     pub content: String,
     pub references: Vec<String>,
     pub reference_mentions: Vec<vega_conversation::types::FileReferenceMention>,
-    pub skill_intent: Option<SkillSelectionIntent>,
+    pub skill_mentions: Vec<vega_conversation::types::SkillMention>,
     /// Run-start reasoning snapshot captured from the displayed exact
     /// provider/model projection. Raw reasoning text is never part of this
     /// event.

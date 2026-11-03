@@ -439,6 +439,7 @@ pub struct ActiveSkillSummary {
 
 /// One direct-user run's immutable catalog and incrementally frozen content.
 /// The host must cancel this session when UI consent is revoked mid-run.
+#[derive(Clone)]
 pub struct SkillRun {
     catalog: SkillCatalog,
     binding: Option<RunBinding>,
@@ -508,6 +509,26 @@ impl SkillRun {
 
     pub fn model_catalog(&self) -> &str {
         self.catalog.model_catalog()
+    }
+
+    pub fn active_selections(&self) -> Vec<SkillSelection> {
+        self.active
+            .iter()
+            .map(|active| SkillSelection::from_candidate(&active.candidate))
+            .collect()
+    }
+
+    pub fn continue_at(&mut self, run_id: &str) -> Result<(), SkillError> {
+        if let Some(binding) = &self.binding {
+            self.binding = Some(RunBinding::from_trusted_parts(
+                run_id,
+                binding.thread_id(),
+                binding.consent_generation(),
+                binding.revocation_generation(),
+                binding.catalog_sha256(),
+            )?);
+        }
+        Ok(())
     }
 
     /// Trusted run binding, if this state was created for durable storage.
@@ -627,7 +648,9 @@ impl SkillRun {
             .iter()
             .find(|loaded| loaded.candidate.name == candidate.name)
         {
-            let status = if existing.candidate.source.identity() == candidate.source.identity() {
+            let status = if existing.candidate.source.identity() == candidate.source.identity()
+                && existing.candidate.sha256 == candidate.sha256
+            {
                 "already_loaded"
             } else {
                 "name_conflict"

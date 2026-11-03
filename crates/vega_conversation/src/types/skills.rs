@@ -140,12 +140,44 @@ pub struct SkillComposerProjection {
 
 /// A draft-only, content-free user choice. It is not Store authority: first
 /// send must revalidate the root, exact bytes and approval inside a worker.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SkillSelectionIntent {
     pub source_id: String,
     pub name: String,
     pub content_sha256: String,
     pub expected_consent_generation: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SkillMention {
+    pub range: std::ops::Range<usize>,
+    pub text: String,
+    pub intent: SkillSelectionIntent,
+}
+
+impl SkillMention {
+    pub fn selections(content: &str, mentions: &[Self]) -> Option<Vec<SkillSelectionIntent>> {
+        let mut ranges = mentions
+            .iter()
+            .map(|mention| &mention.range)
+            .collect::<Vec<_>>();
+        ranges.sort_by_key(|range| range.start);
+        if ranges.windows(2).any(|pair| pair[0].end > pair[1].start) {
+            return None;
+        }
+        let mut selections = Vec::new();
+        for mention in mentions {
+            if mention.text.is_empty()
+                || content.get(mention.range.clone()) != Some(mention.text.as_str())
+            {
+                return None;
+            }
+            if !selections.contains(&mention.intent) {
+                selections.push(mention.intent.clone());
+            }
+        }
+        (selections.len() <= vega_runtime::skills::MAX_RUN_ACTIVATIONS).then_some(selections)
+    }
 }
 
 /// Content-free, already-durable activation displayed only for the current

@@ -44,6 +44,7 @@ impl EntityInputHandler for TextInput {
     fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.prediction = None;
         self.marked_range = None;
+        self.composition_history_active = false;
         cx.notify();
     }
 
@@ -61,15 +62,9 @@ impl EntityInputHandler for TextInput {
             .unwrap_or_else(|| self.selected_range.clone());
         let range = self.clamp_range(range);
 
-        self.prediction = None;
-        self.content_revision = self.content_revision.wrapping_add(1);
-        self.content =
-            (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
-                .into();
-        self.remap_mentions(range.clone(), new_text.len());
-        self.selected_range = range.start + new_text.len()..range.start + new_text.len();
-        self.marked_range.take();
-        self.update_logical_viewport();
+        self.record_edit();
+        self.apply_edit(range, new_text);
+        self.composition_history_active = false;
         cx.notify();
     }
 
@@ -88,26 +83,31 @@ impl EntityInputHandler for TextInput {
             .unwrap_or_else(|| self.selected_range.clone());
         let range = self.clamp_range(range);
 
-        self.prediction = None;
-        self.content_revision = self.content_revision.wrapping_add(1);
-        self.content =
-            (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
-                .into();
-        self.remap_mentions(range.clone(), new_text.len());
+        self.record_edit();
+        self.apply_edit(range.clone(), new_text);
+        self.composition_history_active = !new_text.is_empty();
         if !new_text.is_empty() {
             self.marked_range = Some(range.start..range.start + new_text.len());
         } else {
             self.marked_range = None;
         }
-        // Both ends of the new selection are relative to the *start* of the
-        // replaced range, matching the platform contract (see Zed's editor
-        // InputHandler); the gpui input example maps the end against
-        // `range.end` instead, which corrupts the selection whenever a
-        // non-empty marked range is replaced (e.g. IME recomposition) and
-        // would panic in the masked display mapping below.
         self.selected_range = new_selected_range_utf16
             .as_ref()
-            .map(|range_utf16| self.range_from_utf16(range_utf16))
+            .map(|range_utf16| {
+                let offset = |utf16: usize| {
+                    let mut units = 0;
+                    new_text
+                        .chars()
+                        .take_while(|ch| {
+                            let include = units < utf16;
+                            units += ch.len_utf16();
+                            include
+                        })
+                        .map(char::len_utf8)
+                        .sum::<usize>()
+                };
+                offset(range_utf16.start)..offset(range_utf16.end)
+            })
             .map(|new_range| range.start + new_range.start..range.start + new_range.end)
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
         self.selected_range = self.clamp_range(self.selected_range.clone());

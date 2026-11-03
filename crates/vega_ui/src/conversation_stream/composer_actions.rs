@@ -2,11 +2,127 @@
 use super::*;
 use crate::interaction::InteractionExt;
 use gpui_kit::{Focusable, Role};
-use vega_conversation::types::{ComputerUseControl, ControlPhase};
 
-/// Thread-mode `+`-menu rows, in the order the slash parser also accepts.
-/// Labels come from [`mode_command`], so the menu and the parser cannot drift.
-const MODE_ORDER: [ThreadMode; 3] = [ThreadMode::Ask, ThreadMode::Plan, ThreadMode::Execute];
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommandId {
+    Ask,
+    Plan,
+    Execute,
+    Compact,
+    Goal,
+    Loop,
+    Fork,
+}
+
+#[derive(Clone, Copy)]
+enum CommandExecution {
+    Mode(ThreadMode),
+    Complete,
+    Fork,
+}
+
+struct ComposerCommand {
+    id: CommandId,
+    token: &'static str,
+    label_key: &'static str,
+    aliases: &'static [&'static str],
+    default_visible: bool,
+    requires_empty_draft: bool,
+    execution: CommandExecution,
+}
+
+const COMMANDS: [ComposerCommand; 7] = [
+    ComposerCommand {
+        id: CommandId::Ask,
+        token: "/ask",
+        label_key: "ui.command_ask",
+        aliases: &["询问", "问答"],
+        default_visible: true,
+        requires_empty_draft: false,
+        execution: CommandExecution::Mode(ThreadMode::Ask),
+    },
+    ComposerCommand {
+        id: CommandId::Plan,
+        token: "/plan",
+        label_key: "ui.command_plan",
+        aliases: &["计划"],
+        default_visible: true,
+        requires_empty_draft: false,
+        execution: CommandExecution::Mode(ThreadMode::Plan),
+    },
+    ComposerCommand {
+        id: CommandId::Execute,
+        token: "/execute",
+        label_key: "ui.command_execute",
+        aliases: &["执行"],
+        default_visible: true,
+        requires_empty_draft: false,
+        execution: CommandExecution::Mode(ThreadMode::Execute),
+    },
+    ComposerCommand {
+        id: CommandId::Compact,
+        token: "/compact",
+        label_key: "ui.command_compact",
+        aliases: &["压缩"],
+        default_visible: true,
+        requires_empty_draft: true,
+        execution: CommandExecution::Complete,
+    },
+    ComposerCommand {
+        id: CommandId::Goal,
+        token: "/goal",
+        label_key: "ui.ongoing_goal",
+        aliases: &["目标"],
+        default_visible: false,
+        requires_empty_draft: false,
+        execution: CommandExecution::Complete,
+    },
+    ComposerCommand {
+        id: CommandId::Loop,
+        token: "/loop",
+        label_key: "ui.recurring_task",
+        aliases: &["定时", "周期"],
+        default_visible: false,
+        requires_empty_draft: false,
+        execution: CommandExecution::Complete,
+    },
+    ComposerCommand {
+        id: CommandId::Fork,
+        token: "/fork",
+        label_key: "ui.command_fork",
+        aliases: &["分叉"],
+        default_visible: false,
+        requires_empty_draft: true,
+        execution: CommandExecution::Fork,
+    },
+];
+
+impl CommandId {
+    fn command(self) -> &'static ComposerCommand {
+        &COMMANDS[self as usize]
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommandAvailability {
+    Available,
+    Disabled(&'static str),
+    Hidden,
+}
+
+impl ComposerCommand {
+    fn matches(&self, query: &str) -> bool {
+        let query = query.strip_prefix('/').unwrap_or(query).to_lowercase();
+        if query.is_empty() {
+            return self.default_visible;
+        }
+        self.token[1..].starts_with(&query)
+            || self.aliases.iter().any(|alias| alias.starts_with(&query))
+            || vega_i18n::t(self.label_key)
+                .to_lowercase()
+                .starts_with(&query)
+    }
+}
 
 pub(crate) const PERMISSION_ORDER: [PermissionMode; 4] = [
     PermissionMode::ReadOnly,
@@ -14,16 +130,6 @@ pub(crate) const PERMISSION_ORDER: [PermissionMode; 4] = [
     PermissionMode::Auto,
     PermissionMode::FullAccess,
 ];
-
-/// The exact slash command for one run mode. Single source for both the
-/// accepted vocabulary and the `+`-menu label.
-fn mode_command(mode: ThreadMode) -> &'static str {
-    match mode {
-        ThreadMode::Ask => "/ask",
-        ThreadMode::Plan => "/plan",
-        ThreadMode::Execute => "/execute",
-    }
-}
 
 pub(crate) fn permission_label(mode: PermissionMode) -> &'static str {
     match mode {
@@ -59,74 +165,45 @@ pub(crate) const PERMISSION_PICKER_TITLE: &str = "ui.how_should_actions_be_appro
 
 pub(crate) const PERMISSION_PICKER_LEARN_MORE: &str = "ui.learn_more";
 
-/// One selectable `+`-menu row. Rendering, keyboard highlight indices, and
-/// click dispatch all consume this one projection, so they cannot drift.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ComposerActionRow {
-    Goal,
-    Loop,
     AddImages,
-    CredentialReview,
-    Compact,
-    ComputerTakeover,
-    /// `@` project-file reference (menu only).
     FileReference,
-    /// One `/ask` `/plan` `/execute` thread-mode command.
-    Mode(ThreadMode),
-    /// One permission-mode choice (menu only).
-    Permission(PermissionMode),
+    Command(CommandId),
+    Skill(usize),
 }
 
 impl ComposerActionRow {
     fn label(self) -> &'static str {
         match self {
-            Self::Compact => "/compact",
-            Self::Goal => vega_i18n::t("ui.ongoing_goal"),
-            Self::Loop => vega_i18n::t("ui.recurring_task"),
             Self::AddImages => vega_i18n::t("ui.add_images"),
-            Self::CredentialReview => vega_i18n::t("ui.review_credentials"),
-            Self::ComputerTakeover => vega_i18n::t("ui.take_over_computer_control"),
             Self::FileReference => vega_i18n::t("ui.reference_project_files"),
-            Self::Mode(mode) => mode_command(mode),
-            Self::Permission(mode) => permission_label(mode),
+            Self::Command(id) => vega_i18n::t(id.command().label_key),
+            Self::Skill(_) => "",
         }
     }
 
-    /// Whether this row shows the thread's current authoritative value.
     fn is_selected(self, thread: &Thread) -> bool {
-        match self {
-            Self::Compact
-            | Self::Goal
-            | Self::Loop
-            | Self::AddImages
-            | Self::ComputerTakeover
-            | Self::CredentialReview => false,
-            Self::FileReference => false,
-            Self::Mode(mode) => thread.mode == mode,
-            Self::Permission(mode) => thread.permission_mode == mode,
-        }
+        matches!(self, Self::Command(id)
+            if matches!(id.command().execution, CommandExecution::Mode(mode) if thread.mode == mode))
     }
-}
-
-#[derive(Clone)]
-struct ComposerTakeover {
-    control: ComputerUseControl,
-    epoch: u64,
-    message_id: String,
-    control_generation: u64,
 }
 
 #[derive(Default)]
 pub(crate) struct ComposerActions {
     menu: bool,
     menu_rows: Vec<ComposerActionRow>,
-    menu_generation: u64,
-    control_generation: u64,
-    takeover: Option<ComposerTakeover>,
+    pub(super) menu_generation: u64,
+    pub(super) control_generation: u64,
     slash: Option<String>,
+    skill_query: Option<(std::ops::Range<usize>, String)>,
+    pub(super) skill_projection_requested: bool,
     dismissed: Option<String>,
     highlight: usize,
+    scroll: ScrollHandle,
+    pub(super) trigger_bounds: std::rc::Rc<std::cell::Cell<Option<gpui_kit::Bounds<Pixels>>>>,
     pub(crate) pending_mode: Option<(ThreadMode, String, String)>,
+    pending_mode_revision: u64,
     pub(crate) running: bool,
     stopping: bool,
     pub(crate) restore_focus: bool,
@@ -137,7 +214,7 @@ impl ComposerActions {
     fn close_menu(&mut self) {
         self.menu = false;
         self.menu_rows.clear();
-        self.takeover = None;
+        self.skill_query = None;
         self.menu_generation = self.menu_generation.wrapping_add(1);
     }
 
@@ -146,60 +223,7 @@ impl ComposerActions {
     }
 
     pub(crate) fn visible(&self) -> bool {
-        self.menu || self.slash.is_some()
-    }
-
-    /// Thread-mode commands matching the current slash query. The `+` menu
-    /// itself always offers all three (empty query).
-    fn modes(&self) -> Vec<(&'static str, ThreadMode)> {
-        MODE_ORDER
-            .into_iter()
-            .map(|mode| (mode_command(mode), mode))
-            .filter(|(command, _)| {
-                self.slash
-                    .as_ref()
-                    .is_none_or(|query| command.starts_with(query))
-            })
-            .collect()
-    }
-
-    /// The exact visible rows, in render order. `highlight` indexes this
-    /// vector, so navigation, rendering, and dispatch share one projection.
-    ///
-    /// The permission group is `+`-menu-only: a slash query keeps the legacy
-    /// mode-command filtering and never offers permission rows.
-    fn rows(&self, backend: TaskBackend) -> Vec<ComposerActionRow> {
-        let mut rows = Vec::new();
-        if !self.visible() {
-            return rows;
-        }
-        if self.menu {
-            rows.push(ComposerActionRow::FileReference);
-        }
-        if backend == TaskBackend::Native {
-            rows.extend(
-                self.modes()
-                    .into_iter()
-                    .map(|(_, mode)| ComposerActionRow::Mode(mode)),
-            );
-        }
-        if backend == TaskBackend::Native
-            && self
-                .slash
-                .as_ref()
-                .is_none_or(|query| "/compact".starts_with(query))
-        {
-            rows.push(ComposerActionRow::Compact);
-        }
-        if self.menu && backend == TaskBackend::Native {
-            rows.extend(
-                PERMISSION_ORDER
-                    .into_iter()
-                    .map(ComposerActionRow::Permission),
-            );
-            rows.push(ComposerActionRow::AddImages);
-        }
-        rows
+        self.menu || self.slash.is_some() || self.skill_query.is_some()
     }
 }
 
@@ -426,17 +450,22 @@ impl ConversationStream {
             return;
         }
 
-        let text = input.read(cx).text();
+        let text = input.read(cx).text().to_owned();
+        let skill_query = (self.thread.backend == TaskBackend::Native
+            && self.actions.dismissed.as_deref() != Some(text.as_str())
+            && !self.actions.menu)
+            .then(|| input.read(cx).trailing_skill_query())
+            .flatten();
         let token = text.split_whitespace().next().unwrap_or("");
-        let slash = if text.starts_with('/')
-            && (MODE_ORDER
-                .into_iter()
-                .any(|mode| mode_command(mode).starts_with(token))
-                || (self.thread.backend == TaskBackend::Native
-                    && text == token
-                    && token != "/compact"
-                    && "/compact".starts_with(token)))
-            && self.actions.dismissed.as_deref() != Some(text)
+        let slash = if self.thread.backend == TaskBackend::Native
+            && text.starts_with('/')
+            && skill_query.is_none()
+            && !token[1..].contains('/')
+            && (text == token
+                || COMMANDS.iter().any(|command| {
+                    command.matches(token) && matches!(command.execution, CommandExecution::Mode(_))
+                }))
+            && self.actions.dismissed.as_deref() != Some(text.as_str())
             && !self.actions.menu
             && self.actions.pending_mode.is_none()
         {
@@ -444,9 +473,24 @@ impl ConversationStream {
         } else {
             None
         };
-        if self.actions.slash != slash {
+        if self.actions.slash != slash || self.actions.skill_query != skill_query {
             self.actions.highlight = 0;
+            self.actions.scroll.scroll_to_item(0);
+            self.actions.menu_generation = self.actions.menu_generation.wrapping_add(1);
             self.actions.slash = slash;
+            self.actions.skill_query = skill_query;
+        }
+        if (self.actions.skill_query.is_some()
+            || self
+                .actions
+                .slash
+                .as_ref()
+                .is_some_and(|query| query.len() > 1))
+            && self.skill_projection.is_none()
+            && !self.actions.skill_projection_requested
+        {
+            self.actions.skill_projection_requested = true;
+            self.request_skill_projection(cx);
         }
         cx.notify();
     }
@@ -455,36 +499,25 @@ impl ConversationStream {
         if self.input.read(cx).is_composing() {
             return;
         }
+        if !self.context_menu_available() {
+            return;
+        }
         let open = !self.actions.menu;
         self.close_composer_popovers(cx);
         self.actions.menu = open;
         if open {
-            self.actions.menu_rows = self.actions.rows(self.thread.backend);
-            self.actions.takeover = self.computer_use_control.as_ref().and_then(|control| {
-                let status = control.status();
-                let (message_id, _) = self.active_agent_message.as_ref()?;
-                (status.phase == ControlPhase::Running).then(|| ComposerTakeover {
-                    control: control.clone(),
-                    epoch: status.epoch,
-                    message_id: message_id.clone(),
-                    control_generation: self.actions.control_generation,
-                })
-            });
-            if self.actions.takeover.is_some() {
+            self.actions.menu_rows.clear();
+            if !self.thread.project_id.is_empty() {
                 self.actions
                     .menu_rows
-                    .push(ComposerActionRow::ComputerTakeover);
+                    .push(ComposerActionRow::FileReference);
             }
             if self.thread.backend == TaskBackend::Native {
-                self.actions
-                    .menu_rows
-                    .push(ComposerActionRow::CredentialReview);
-                self.actions
-                    .menu_rows
-                    .extend([ComposerActionRow::Goal, ComposerActionRow::Loop]);
+                self.actions.menu_rows.push(ComposerActionRow::AddImages);
             }
         }
         self.actions.highlight = 0;
+        self.actions.scroll.scroll_to_item(0);
         self.focus_composer(window, cx);
         cx.notify();
     }
@@ -518,10 +551,10 @@ impl ConversationStream {
         if self.input.read(cx).is_composing() {
             return;
         }
-        let mut controls = vec![
-            self.input.read(cx).focus_handle(cx),
-            self.action_focus[0].clone(),
-        ];
+        let mut controls = vec![self.input.read(cx).focus_handle(cx)];
+        if self.context_menu_available() {
+            controls.push(self.action_focus[0].clone());
+        }
         if self.thread.backend == TaskBackend::Native && !self.permission_change_pending() {
             controls.push(self.permission_editor.trigger.clone());
         }
@@ -611,7 +644,12 @@ impl ConversationStream {
             cx.propagate();
             return;
         }
+        if !self.composer_actions_visible(cx) {
+            cx.propagate();
+            return;
+        }
         self.actions.highlight = self.actions.highlight.saturating_sub(1);
+        self.actions.scroll.scroll_to_item(self.actions.highlight);
         cx.stop_propagation();
         cx.notify();
     }
@@ -626,8 +664,13 @@ impl ConversationStream {
             cx.propagate();
             return;
         }
+        if !self.composer_actions_visible(cx) {
+            cx.propagate();
+            return;
+        }
         self.actions.highlight =
-            (self.actions.highlight + 1).min(self.composer_action_rows().len().saturating_sub(1));
+            (self.actions.highlight + 1).min(self.composer_action_rows(cx).len().saturating_sub(1));
+        self.actions.scroll.scroll_to_item(self.actions.highlight);
         cx.stop_propagation();
         cx.notify();
     }
@@ -639,6 +682,10 @@ impl ConversationStream {
         cx: &mut Context<Self>,
     ) {
         if self.input.read(cx).is_composing() {
+            cx.propagate();
+            return;
+        }
+        if !self.composer_actions_visible(cx) {
             cx.propagate();
             return;
         }
@@ -655,25 +702,54 @@ impl ConversationStream {
         if self.input.read(cx).is_composing() {
             return;
         }
-        let Some(row) = self.composer_action_rows().get(index).copied() else {
+        let rows = self.composer_action_rows(cx);
+        let Some(row) = rows.get(index.min(rows.len().saturating_sub(1))).copied() else {
             return;
         };
         self.select_composer_row(row, window, cx);
     }
 
-    fn composer_takeover_enabled(&self) -> bool {
-        self.actions.takeover.as_ref().is_some_and(|takeover| {
-            let status = takeover.control.status();
-            self.actions.menu
-                && self.actions.control_generation == takeover.control_generation
-                && self.computer_use_control.is_some()
-                && self
-                    .active_agent_message
-                    .as_ref()
-                    .is_some_and(|(id, _)| id == &takeover.message_id)
-                && status.phase == ControlPhase::Running
-                && status.epoch == takeover.epoch
-        })
+    pub(crate) fn context_menu_available(&self) -> bool {
+        self.thread.backend == TaskBackend::Native || !self.thread.project_id.is_empty()
+    }
+
+    fn composer_fork_request(&self) -> Option<ForkRequested> {
+        (0..self.entries.len())
+            .rev()
+            .find_map(|index| self.fork_request_for_entry(index))
+    }
+
+    fn command_availability(&self, command: &ComposerCommand, cx: &App) -> CommandAvailability {
+        if self.thread.backend != TaskBackend::Native {
+            return CommandAvailability::Hidden;
+        }
+        if command.id == CommandId::Compact && self.draft_route
+            || command.id == CommandId::Fork
+                && (self.draft_route || self.composer_fork_request().is_none())
+        {
+            return CommandAvailability::Hidden;
+        }
+        if self.model_selection_blocked(cx)
+            || self.has_pending_model_selection()
+            || self.actions.pending_mode.is_some()
+            || self.composer_resume_pending
+            || self.permissions_revoked
+        {
+            return CommandAvailability::Disabled("ui.command_busy");
+        }
+        if command.requires_empty_draft && !self.attachments.is_empty() {
+            return CommandAvailability::Disabled("ui.command_remove_attachments");
+        }
+        if command.id == CommandId::Compact {
+            return self.compact_command_availability(cx).map_or(
+                CommandAvailability::Available,
+                CommandAvailability::Disabled,
+            );
+        }
+        if command.id == CommandId::Fork && !self.fork_is_idle(cx) {
+            return CommandAvailability::Disabled("ui.command_busy");
+        }
+        CommandAvailability::Available
     }
 
     fn select_composer_row(
@@ -686,75 +762,62 @@ impl ConversationStream {
             return;
         }
         match row {
-            ComposerActionRow::Compact => {
-                let original = self.input.read(cx).text().to_owned();
-                let prefix = self.actions.slash.as_deref().or_else(|| {
-                    (original == "/compact"
-                        || original
-                            .strip_prefix("/compact")
-                            .is_some_and(|rest| rest.starts_with(char::is_whitespace)))
-                    .then_some("/compact")
-                });
-                let remainder = prefix
-                    .and_then(|prefix| original.strip_prefix(prefix))
-                    .unwrap_or(&original)
-                    .trim_start();
-                let command = format!("/compact {remainder}");
-                self.close_composer_popovers(cx);
-                self.input
-                    .update(cx, |input, cx| input.set_text(&command, cx));
-                self.focus_composer(window, cx);
-                cx.notify();
-            }
-            ComposerActionRow::Goal | ComposerActionRow::Loop => {
-                let command = if row == ComposerActionRow::Goal {
-                    "/goal"
-                } else {
-                    "/loop"
-                };
-                let original = self.input.read(cx).text().to_owned();
-                self.actions.close_menu();
-                self.actions.slash = None;
-                self.input.update(cx, |input, cx| {
-                    input.set_text(&format!("{command} {original}"), cx)
-                });
-                self.focus_composer(window, cx);
-                cx.notify();
-            }
-            ComposerActionRow::ComputerTakeover => {
-                if !self.composer_takeover_enabled() {
-                    self.focus_composer(window, cx);
-                    cx.notify();
-                    return;
+            ComposerActionRow::Command(id) => {
+                let command = id.command();
+                match self.command_availability(command, cx) {
+                    CommandAvailability::Hidden => return,
+                    CommandAvailability::Disabled(reason) => {
+                        self.controller_error =
+                            Some(crate::localized_copy::LocalizedCopy::new(reason));
+                        cx.notify();
+                        return;
+                    }
+                    CommandAvailability::Available => {}
                 }
-                let Some(takeover) = self.actions.takeover.clone() else {
+                let Some(query) = self.actions.slash.as_deref() else {
                     return;
                 };
-                if takeover.control.pause_at(takeover.epoch).is_ok() {
-                    self.actions.close_menu();
-                    self.focus_composer(window, cx);
-                    cx.notify();
+                let original = self.input.read(cx).text().to_owned();
+                if !original.starts_with(query) || !command.matches(query) {
+                    return;
+                }
+                match command.execution {
+                    CommandExecution::Mode(mode) => self.select_composer_mode(mode, window, cx),
+                    CommandExecution::Complete => {
+                        let range = 0..query.len();
+                        let completed = format!("{} ", command.token);
+                        self.close_composer_popovers(cx);
+                        self.input.update(cx, |input, cx| {
+                            input.replace_composer_token(range, &completed, cx)
+                        });
+                        self.focus_composer(window, cx);
+                        cx.notify();
+                    }
+                    CommandExecution::Fork => {
+                        if let Some(request) = self.composer_fork_request() {
+                            self.close_composer_popovers(cx);
+                            self.request_fork(&request, cx);
+                            self.focus_composer(window, cx);
+                        }
+                    }
                 }
             }
-            ComposerActionRow::CredentialReview => {
-                self.actions.close_menu();
-                self.request_privacy(PrivacyAction::Review, cx);
-                self.focus_composer(window, cx);
-                cx.notify();
+            ComposerActionRow::Skill(index) => {
+                let candidate = self
+                    .skill_projection
+                    .as_ref()
+                    .and_then(|projection| projection.candidates.get(index))
+                    .cloned();
+                if let Some(candidate) = candidate {
+                    self.choose_skill_candidate(&candidate, cx);
+                    self.focus_composer(window, cx);
+                }
             }
             ComposerActionRow::AddImages => {
                 self.actions.close_menu();
                 self.pick_images(cx);
             }
             ComposerActionRow::FileReference => self.insert_file_reference_token(window, cx),
-            ComposerActionRow::Mode(mode) => self.select_composer_mode(mode, window, cx),
-            ComposerActionRow::Permission(mode) => {
-                self.actions.close_menu();
-                self.actions.slash = None;
-                self.request_permission_mode(mode, cx);
-                self.focus_composer(window, cx);
-                cx.notify();
-            }
         }
     }
 
@@ -768,8 +831,12 @@ impl ConversationStream {
         } else {
             " "
         };
-        let text = format!("{draft}{separator}@");
-        self.input.update(cx, |input, cx| input.set_text(&text, cx));
+        let separator = separator.to_owned();
+        let end = draft.len();
+        let insertion = format!("{separator}@");
+        self.input.update(cx, |input, cx| {
+            input.replace_composer_token(end..end, &insertion, cx)
+        });
         self.focus_composer(window, cx);
         let input = self.input.clone();
         self.sync_at_query(&input, cx);
@@ -794,6 +861,7 @@ impl ConversationStream {
             let original = self.input.read(cx).text().to_owned();
             let remainder = original[prefix.len()..].to_owned();
             self.actions.pending_mode = Some((mode, original, remainder));
+            self.actions.pending_mode_revision = self.input.read(cx).content_revision();
         }
         self.actions.close_menu();
         self.actions.slash = None;
@@ -818,50 +886,121 @@ impl ConversationStream {
         if let Some((_, original, remainder)) = self.actions.pending_mode.take()
             && !self.input.read(cx).is_composing()
             && self.input.read(cx).text() == original
+            && self.input.read(cx).content_revision() == self.actions.pending_mode_revision
         {
-            self.input
-                .update(cx, |input, cx| input.set_text(&remainder, cx));
+            let consumed = original.len() - remainder.len();
+            self.input.update(cx, |input, cx| {
+                input.replace_composer_token(0..consumed, "", cx)
+            });
         }
     }
 
-    fn composer_action_rows(&self) -> Vec<ComposerActionRow> {
+    fn composer_action_rows(&self, cx: &App) -> Vec<ComposerActionRow> {
         if self.actions.menu {
-            self.actions.menu_rows.clone()
-        } else {
-            self.actions.rows(self.thread.backend)
+            return self.actions.menu_rows.clone();
         }
+        let text = self.input.read(cx).text();
+        let mut rows = Vec::new();
+        if let Some(query) = self.actions.slash.as_deref() {
+            rows.extend(
+                COMMANDS
+                    .iter()
+                    .filter(|command| {
+                        command.matches(query)
+                            && (text == query
+                                || matches!(command.execution, CommandExecution::Mode(_)))
+                            && self.command_availability(command, cx) != CommandAvailability::Hidden
+                    })
+                    .map(|command| ComposerActionRow::Command(command.id)),
+            );
+        }
+        if let Some((_, query)) = self.skill_mention_query(cx) {
+            rows.extend(
+                self.matching_skill_candidates(&query)
+                    .into_iter()
+                    .map(ComposerActionRow::Skill),
+            );
+        }
+        rows
+    }
+
+    pub(crate) fn composer_actions_visible(&self, cx: &App) -> bool {
+        self.actions.visible() && !self.composer_action_rows(cx).is_empty()
+    }
+
+    pub(super) fn skill_mention_query(&self, cx: &App) -> Option<(std::ops::Range<usize>, String)> {
+        if let Some(query) = &self.actions.skill_query {
+            return (self.input.read(cx).trailing_skill_query().as_ref() == Some(query))
+                .then(|| query.clone());
+        }
+        let query = self.actions.slash.as_ref()?;
+        (query.len() > 1 && self.input.read(cx).text() == query)
+            .then(|| (0..query.len(), query[1..].to_owned()))
+    }
+
+    fn matching_skill_candidates(&self, query: &str) -> Vec<usize> {
+        let Some(projection) = &self.skill_projection else {
+            return Vec::new();
+        };
+        let query = query.to_lowercase();
+        let mut matches: Vec<_> = projection
+            .candidates
+            .iter()
+            .enumerate()
+            .filter_map(|(index, candidate)| {
+                let name = candidate.name.to_lowercase();
+                let source = candidate.source_label.to_lowercase();
+                (name.contains(&query) || source.contains(&query)).then_some((
+                    !name.starts_with(&query) && !source.starts_with(&query),
+                    index,
+                ))
+            })
+            .collect();
+        matches.sort_by_key(|item| item.0);
+        matches.into_iter().map(|(_, index)| index).collect()
     }
 
     pub(crate) fn render_composer_actions(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        let rows = self.composer_action_rows();
+        let rows = self.composer_action_rows(cx);
+        if !self.actions.visible() || rows.is_empty() {
+            return div().into_any_element();
+        }
         let generation = self.actions.menu_generation;
         let menu = self.actions.menu;
+        let revision = self.input.read(cx).content_revision();
+        let projection_generation = self.skill_projection_generation;
         let mut children = Vec::with_capacity(rows.len() + 1);
         for (index, row) in rows.iter().enumerate() {
-            // One separator between the thread-mode commands and the
-            // permission group keeps the two vocabularies readable without
-            // inventing a second row style.
-            if matches!(row, ComposerActionRow::Permission(PermissionMode::ReadOnly)) && index > 0 {
-                children.push(
-                    div()
-                        .h(px(1.))
-                        .my_1()
-                        .bg(colors.border_subtle)
-                        .into_any_element(),
-                );
-            }
-            let highlighted = self.actions.highlight == index;
-            let enabled =
-                *row != ComposerActionRow::ComputerTakeover || self.composer_takeover_enabled();
+            let highlighted = self.actions.highlight.min(rows.len().saturating_sub(1)) == index;
+            let reason = match row {
+                ComposerActionRow::Command(id) => match self.command_availability(id.command(), cx)
+                {
+                    CommandAvailability::Disabled(reason) => Some(reason),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let enabled = reason.is_none();
             let selected = row.is_selected(&self.thread);
-            let label = row.label();
+            let label = match row {
+                ComposerActionRow::Skill(index) => self
+                    .skill_projection
+                    .as_ref()
+                    .and_then(|projection| projection.candidates.get(*index))
+                    .map(|candidate| format!("{} · {}", candidate.name, candidate.source_label))
+                    .unwrap_or_default(),
+                _ => row.label().to_owned(),
+            };
             let row = *row;
             children.push(
                 div()
                     .id(format!("composer-action-{generation}-{index}"))
-                    .aria_label(label)
-                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                    .aria_label(reason.map_or_else(
+                        || label.clone(),
+                        |reason| format!("{label}: {}", vega_i18n::t(reason)),
+                    ))
+                    .min_h(px(Typography::SIDEBAR_LINE_HEIGHT))
                     .px_2()
                     .flex()
                     .items_center()
@@ -870,11 +1009,6 @@ impl ConversationStream {
                     .text_size(px(Typography::SIDEBAR))
                     .text_color(if !enabled {
                         colors.text_tertiary
-                    } else if matches!(
-                        row,
-                        ComposerActionRow::Permission(PermissionMode::FullAccess)
-                    ) {
-                        colors.warning
                     } else if selected || highlighted {
                         colors.brand_primary
                     } else {
@@ -885,65 +1019,93 @@ impl ConversationStream {
                         row.cursor_pointer()
                             .hover(move |row| row.bg(colors.bg_hover))
                     })
-                    .when(!enabled, |row| {
-                        row.aria_label(vega_i18n::t("ui.take_over_computer_control_expired"))
-                            .tooltip(|_, cx| {
-                                crate::icons::tooltip(
-                                    vega_i18n::t(
-                                        "ui.this_takeover_has_expired_close_and_reopen_the",
-                                    ),
-                                    cx,
-                                )
-                            })
-                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if this.actions.menu_generation == generation
                             && this.actions.menu == menu
-                            && this.composer_action_rows().contains(&row)
+                            && this.input.read(cx).content_revision() == revision
+                            && this.skill_projection_generation == projection_generation
+                            && this.composer_action_rows(cx).contains(&row)
                         {
                             this.select_composer_row(row, window, cx);
                         }
                     }))
-                    // Fixed-width marker column: every label starts on the
-                    // same x, with or without a check.
                     .child(
                         div()
                             .when(selected, |marker| marker.child("✓"))
                             .w(px(Typography::SIDEBAR))
                             .flex_shrink_0(),
                     )
-                    .when(
-                        matches!(
-                            row,
-                            ComposerActionRow::Permission(PermissionMode::FullAccess)
-                        ),
-                        |row| {
-                            row.child(crate::icons::icon(
-                                crate::icons::Icon::Warning,
-                                colors.warning,
-                            ))
+                    .child(div().flex().flex_col().child(label).when_some(
+                        reason,
+                        |item, reason| {
+                            item.child(
+                                div()
+                                    .text_color(colors.text_secondary)
+                                    .child(vega_i18n::t(reason)),
+                            )
+                        },
+                    ))
+                    .when_some(
+                        match row {
+                            ComposerActionRow::Command(id) => Some(id.command().token),
+                            _ => None,
+                        },
+                        |item, token| {
+                            item.child(
+                                div()
+                                    .ml_auto()
+                                    .text_color(colors.text_secondary)
+                                    .child(token),
+                            )
                         },
                     )
-                    .child(label)
                     .into_any_element(),
             );
         }
-        div()
-            .id("composer-actions-menu")
-            .w_full()
-            .flex()
-            .flex_col()
-            .when(!children.is_empty(), |menu| {
-                menu.p_2()
-                    .mb_2()
-                    .rounded(px(Layout::MENU_RADIUS))
-                    .bg(colors.bg_elevated)
-                    .border_1()
-                    .border_color(colors.border_subtle)
-                    .shadow_sm()
-            })
-            .children(children)
-            .into_any_element()
+        gpui_kit::deferred(
+            div()
+                .id("composer-actions-menu")
+                .absolute()
+                .bottom(gpui_kit::relative(1.0))
+                .mb_2()
+                .left_0()
+                .w(px(Layout::MENU_MAX_WIDTH))
+                .max_w_full()
+                .occlude()
+                .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                    let on_trigger = this.context_menu_available()
+                        && this
+                            .actions
+                            .trigger_bounds
+                            .get()
+                            .is_some_and(|bounds| bounds.contains(&event.position));
+                    if !on_trigger && this.actions.visible() && !this.input.read(cx).is_composing()
+                    {
+                        this.actions.dismissed = Some(this.input.read(cx).text().to_owned());
+                        this.actions.close_menu();
+                        this.actions.slash = None;
+                        cx.notify();
+                    }
+                }))
+                .p_2()
+                .rounded(px(Layout::MENU_RADIUS))
+                .bg(colors.bg_elevated)
+                .border_1()
+                .border_color(colors.border_subtle)
+                .shadow_sm()
+                .child(
+                    div()
+                        .id("composer-actions-scroll")
+                        .max_h(px(Layout::COMPOSER_PICKER_MAX_HEIGHT))
+                        .overflow_y_scroll()
+                        .track_scroll(&self.actions.scroll)
+                        .flex()
+                        .flex_col()
+                        .children(children),
+                ),
+        )
+        .with_priority(2)
+        .into_any_element()
     }
 
     pub(crate) fn render_composer_stop(&self, cx: &mut Context<Self>) -> AnyElement {

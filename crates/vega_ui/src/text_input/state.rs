@@ -25,6 +25,10 @@ impl TextInput {
             selection_reversed: false,
             marked_range: None,
             mentions: Vec::new(),
+            skill_mentions: Vec::new(),
+            undo_history: std::collections::VecDeque::new(),
+            redo_history: std::collections::VecDeque::new(),
+            composition_history_active: false,
             last_lines: Vec::new(),
             navigation_lines: Vec::new(),
             navigation_revision: 0,
@@ -104,6 +108,10 @@ impl TextInput {
         self.content_revision = self.content_revision.wrapping_add(1);
         self.content = "".into();
         self.mentions.clear();
+        self.skill_mentions.clear();
+        self.undo_history.clear();
+        self.redo_history.clear();
+        self.composition_history_active = false;
         self.selected_range = 0..0;
         self.selection_reversed = false;
         self.marked_range = None;
@@ -120,6 +128,10 @@ impl TextInput {
         self.content_revision = self.content_revision.wrapping_add(1);
         self.content = text.to_string().into();
         self.mentions.clear();
+        self.skill_mentions.clear();
+        self.undo_history.clear();
+        self.redo_history.clear();
+        self.composition_history_active = false;
         self.selected_range = self.content.len()..self.content.len();
         self.selection_reversed = false;
         self.marked_range = None;
@@ -156,24 +168,13 @@ impl TextInput {
         mentions: &[vega_conversation::types::FileReferenceMention],
         cx: &mut Context<Self>,
     ) {
-        self.set_text(text, cx);
-        let mut cursor = 0;
-        for mention in mentions {
-            if mention.range.start < cursor
-                || mention.range.start >= mention.range.end
-                || text.get(mention.range.clone()) != Some(format!("@{}", mention.path).as_str())
-            {
-                continue;
-            }
-            cursor = mention.range.end;
-            self.mentions
-                .push(Mention::new(mention.range.clone(), mention.path.clone()));
-        }
-        cx.notify();
+        self.set_text_with_bindings(text, mentions, &[], cx);
     }
 
     pub(crate) fn push_mention(&mut self, range: Range<usize>, path: &str) {
         self.mentions
+            .retain(|mention| mention.range.end <= range.start || mention.range.start >= range.end);
+        self.skill_mentions
             .retain(|mention| mention.range.end <= range.start || mention.range.start >= range.end);
         let mention = Mention::new(range.clone(), path);
         let position = self
@@ -185,34 +186,10 @@ impl TextInput {
     }
 
     pub(crate) fn remap_mentions(&mut self, edited: Range<usize>, inserted: usize) {
-        if self.mentions.is_empty() {
-            return;
-        }
-        let removed = edited.end.saturating_sub(edited.start);
-        let delta = inserted as isize - removed as isize;
-        let insertion = edited.start == edited.end;
-        self.mentions.retain_mut(|mention| {
-            let start = mention.range.start;
-            let end = mention.range.end;
-            let dropped = if insertion {
-                start < edited.start && edited.start < end
-            } else {
-                edited.start < end && edited.end > start
-            };
-            if dropped {
-                return false;
-            }
-            let shift = if insertion {
-                edited.start <= start
-            } else {
-                edited.end <= start
-            };
-            if shift {
-                mention.range.start = (start as isize + delta).max(0) as usize;
-                mention.range.end = (end as isize + delta).max(0) as usize;
-            }
-            true
-        });
+        self.mentions
+            .retain_mut(|mention| bindings::remap_binding(&mut mention.range, &edited, inserted));
+        self.skill_mentions
+            .retain_mut(|mention| bindings::remap_binding(&mut mention.range, &edited, inserted));
     }
 
     pub fn prediction_text(&self) -> Option<&str> {
@@ -249,7 +226,7 @@ impl TextInput {
             return;
         }
         if let Some(suggestion) = self.prediction.take() {
-            self.set_text(&suggestion, cx);
+            self.replace_composer_token(0..self.content.len(), &suggestion, cx);
         }
     }
 
@@ -317,22 +294,17 @@ impl TextInput {
     }
 
     pub fn complete_at_query(&mut self, path: &str, cx: &mut Context<Self>) {
+        if self.is_composing() || !self.selected_range.is_empty() {
+            return;
+        }
         let Some((range, _)) = self.trailing_at_query() else {
             return;
         };
         let replacement = format!("{path} ");
-        self.prediction = None;
-        self.content_revision = self.content_revision.wrapping_add(1);
-        self.content =
-            (self.content[..range.start].to_owned() + &replacement + &self.content[range.end..])
-                .into();
-        let end = range.start + replacement.len();
-        self.remap_mentions(range.clone(), replacement.len());
+        self.record_edit();
         let token_start = range.start.saturating_sub(1);
+        self.apply_edit(range, &replacement);
         self.push_mention(token_start..token_start + 1 + path.len(), path);
-        self.selected_range = end..end;
-        self.selection_reversed = false;
-        self.update_logical_viewport();
         cx.notify();
     }
 
@@ -546,7 +518,9 @@ impl TextInput {
                 window.play_system_bell();
                 return;
             }
-            self.select_to(prev, cx);
+            let range = self.range_to_utf16(&(prev..self.cursor_offset()));
+            self.replace_text_in_range(Some(range), "", window, cx);
+            return;
         }
         self.replace_text_in_range(None, "", window, cx);
     }
@@ -558,7 +532,9 @@ impl TextInput {
                 window.play_system_bell();
                 return;
             }
-            self.select_to(next, cx);
+            let range = self.range_to_utf16(&(self.cursor_offset()..next));
+            self.replace_text_in_range(Some(range), "", window, cx);
+            return;
         }
         self.replace_text_in_range(None, "", window, cx);
     }

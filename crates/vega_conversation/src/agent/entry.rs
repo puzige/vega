@@ -763,7 +763,9 @@ where
     let preparation_system_prompt = system_prompt.to_string();
     let preparation_user_id = user_message_id.clone();
     let preparation_assistant_id = assistant_message_id.clone();
-    let preparation_config = actor_config.clone();
+    let mut preparation_config = actor_config.clone();
+    preparation_config.preparation_mcp = mcp_servers.clone();
+    preparation_config.preparation_model = provider.model_snapshot().map(Box::new);
     let preparation_uses_existing_user = persisted_user_message_id.is_some();
     let preparation_pricing = pricing_catalog;
     let preparation_reasoning = reasoning;
@@ -842,38 +844,7 @@ where
             database_path.clone(),
             thread_id.to_string(),
         ));
-    let skill_launch = super::skills::prepare_skill_run(
-        store,
-        &prepared.project_id,
-        thread_id,
-        &prepared.assistant_message_id,
-        persisted_user_message_id.is_none()
-            && continuation.is_none()
-            && actor_config.interrupted_assistant.is_none(),
-    );
-    let skill_launch = match skill_launch {
-        Ok(launch) => launch,
-        Err(error) => {
-            let cleanup = finish_prepared_terminal(
-                prepared.database_path.clone(),
-                prepared.assistant_message_id.clone(),
-                "failed",
-                ordinary.clone(),
-                admission.clone(),
-            )
-            .await;
-            super::ordinary::record_cleanup(ordinary.as_ref(), cleanup.is_ok());
-            forward_pipeline_error(
-                &mut event_sink,
-                Some(prepared.assistant_message_id.clone()),
-                Arc::new(VegaError::Tool {
-                    tool: "skill".to_string(),
-                    message: "Skill selection unavailable or settings invalid".to_string(),
-                }),
-            );
-            return Err(error);
-        }
-    };
+    let skill_launch = prepared.skill_launch.take();
     let skill_authority = skill_launch
         .as_ref()
         .and_then(|launch| launch.run.binding())

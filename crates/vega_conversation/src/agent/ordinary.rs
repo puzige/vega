@@ -13,6 +13,8 @@ pub struct OrdinaryRun {
     pub worker: Arc<OrdinaryWorker>,
     lifetime: Arc<OrdinaryLifetime>,
     pub(crate) thread: Option<crate::types::Thread>,
+    pub skill_mentions: Vec<crate::types::SkillMention>,
+    pub(crate) explicit_skills: Vec<vega_runtime::skills::SkillSelection>,
 }
 
 struct OrdinaryLifetime {
@@ -77,7 +79,22 @@ impl OrdinaryRun {
             worker,
             lifetime,
             thread: None,
+            skill_mentions: Vec::new(),
+            explicit_skills: Vec::new(),
         }
+    }
+
+    pub fn with_skill_mentions(mut self, mentions: Vec<crate::types::SkillMention>) -> Self {
+        self.skill_mentions = mentions;
+        self
+    }
+
+    pub fn with_validated_skills(
+        mut self,
+        selections: Vec<vega_runtime::skills::SkillSelection>,
+    ) -> Self {
+        self.explicit_skills = selections;
+        self
     }
 
     pub fn with_thread_snapshot(mut self, thread: crate::types::Thread) -> Self {

@@ -9,7 +9,7 @@ impl ConversationStream {
         self.skill_projection_generation = self.skill_projection_generation.wrapping_add(1);
         self.skill_projection = None;
         self.skill_mutation_pending = false;
-        self.skill_intent = None;
+        self.actions.skill_projection_requested = false;
         self.active_skills.clear();
         self.active_skill_focuses.clear();
     }
@@ -21,6 +21,7 @@ impl ConversationStream {
         self.skill_projection_generation = self.skill_projection_generation.wrapping_add(1);
         self.skill_projection = None;
         self.skill_mutation_pending = false;
+        self.actions.skill_projection_requested = false;
         cx.notify();
     }
 
@@ -50,6 +51,8 @@ impl ConversationStream {
         if generation != self.skill_projection_generation {
             return;
         }
+        self.actions.menu_generation = self.actions.menu_generation.wrapping_add(1);
+        self.actions.skill_projection_requested = false;
         match result {
             Ok(projection) if projection.thread_id == self.thread.id => {
                 self.skill_projection = Some(projection);
@@ -65,14 +68,15 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// A draft stores only an exact choice intent. A durable thread requests
-    /// a worker-side CAS pin, blocking repeat clicks until acknowledgement.
     pub fn choose_skill_candidate(
         &mut self,
         candidate: &SkillComposerCandidate,
         cx: &mut Context<Self>,
     ) {
-        if self.skill_mutation_pending || self.composer_submit_pending || self.actions.running {
+        if self.skill_mutation_pending
+            || self.composer_submit_pending
+            || self.input.read(cx).is_composing()
+        {
             return;
         }
         let Some(projection) = self.skill_projection.as_ref() else {
@@ -86,34 +90,19 @@ impl ConversationStream {
         }) {
             return;
         }
-        if self.draft_route {
-            let intent = SkillSelectionIntent {
-                source_id: candidate.source_id.clone(),
-                name: candidate.name.clone(),
-                content_sha256: candidate.content_sha256.clone(),
-                expected_consent_generation: expected_generation,
-            };
-            self.skill_intent = (self.skill_intent.as_ref() != Some(&intent)).then_some(intent);
-            cx.notify();
+        let Some((range, _)) = self.skill_mention_query(cx) else {
             return;
-        }
-        self.skill_mutation_pending = true;
-        cx.emit(SkillComposerMutationRequested {
-            thread_id: self.thread.id.clone(),
-            project_id: self.thread.project_id.clone(),
-            owner_generation: self.skill_projection_generation,
-            expected_generation,
-            mutation: if candidate.selected {
-                SkillComposerMutation::Unpin {
-                    name: candidate.name.clone(),
-                }
-            } else {
-                SkillComposerMutation::Pin {
-                    source_id: candidate.source_id.clone(),
-                    name: candidate.name.clone(),
-                    content_sha256: candidate.content_sha256.clone(),
-                }
-            },
+        };
+        let intent = SkillSelectionIntent {
+            source_id: candidate.source_id.clone(),
+            name: candidate.name.clone(),
+            content_sha256: candidate.content_sha256.clone(),
+            expected_consent_generation: expected_generation,
+        };
+        let text = format!("${} [{}]", candidate.name, candidate.source_label);
+        self.close_composer_popovers(cx);
+        self.input.update(cx, |input, cx| {
+            input.insert_skill_mention(range, &text, intent, cx)
         });
         cx.notify();
     }
@@ -181,7 +170,6 @@ impl ConversationStream {
 
     pub fn finish_submitted_skill_pin(&mut self, success: bool, cx: &mut Context<Self>) {
         if success {
-            self.skill_intent = None;
             self.controller_runtime_error = None;
             self.controller_error = None;
             self.request_skill_projection(cx);

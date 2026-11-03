@@ -248,6 +248,7 @@ impl VegaWindow {
             permission_fence: Some(permission_fence),
             references: request.references.clone(),
             reference_mentions: request.reference_mentions.clone(),
+            skill_mentions: request.skill_mentions.clone(),
         };
         let content = message.content.clone();
         let mut projection = stream.read(cx).pending_queue().clone();

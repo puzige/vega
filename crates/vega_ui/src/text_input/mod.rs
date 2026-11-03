@@ -8,6 +8,7 @@ use gpui_kit::{
     ShapedLine, SharedString, Style, TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window,
     actions, div, fill, point, px, relative, size,
 };
+use vega_conversation::types::{FileReferenceMention, SkillMention, SkillSelectionIntent};
 use vega_theme::{Typography, theme};
 
 actions!(
@@ -30,6 +31,8 @@ actions!(
         Paste,
         Cut,
         Copy,
+        Undo,
+        Redo,
         InsertNewline,
         AcceptPrediction,
         DismissPrediction
@@ -102,6 +105,10 @@ pub struct TextInput {
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
     mentions: Vec<Mention>,
+    skill_mentions: Vec<SkillMention>,
+    undo_history: std::collections::VecDeque<history::EditorSnapshot>,
+    redo_history: std::collections::VecDeque<history::EditorSnapshot>,
+    composition_history_active: bool,
     /// Layout cache from the last paint (one entry per display line).
     last_lines: Vec<LineLayout>,
     navigation_lines: Vec<LineLayout>,
@@ -119,9 +126,12 @@ pub struct TextInput {
     total_visual_rows: usize,
 }
 
+mod bindings;
 mod element;
+mod history;
 mod input_handler;
 mod mouse_selection;
+mod skill_query;
 mod state;
 
 /// Explicit Composer-only clipboard intent; never log clipboard payloads.
