@@ -602,9 +602,7 @@ impl Element for SelectableMessage {
             TextSelection::activate_scope(scope, window, cx);
             if event.click_count >= 2 {
                 let selected = runs.borrow().iter().find_map(|run| {
-                    if !run.bounds.contains(&event.position)
-                        || run.content_range == run.logical_range
-                    {
+                    if !run.bounds.contains(&event.position) {
                         return None;
                     }
                     let offset = run.layout.index_for_position(event.position).ok()?
