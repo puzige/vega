@@ -480,12 +480,7 @@ impl ConversationStream {
             self.actions.slash = slash;
             self.actions.skill_query = skill_query;
         }
-        if (self.actions.skill_query.is_some()
-            || self
-                .actions
-                .slash
-                .as_ref()
-                .is_some_and(|query| query.len() > 1))
+        if (self.actions.skill_query.is_some() || self.actions.slash.is_some())
             && self.skill_projection.is_none()
             && !self.actions.skill_projection_requested
         {
@@ -934,8 +929,7 @@ impl ConversationStream {
                 .then(|| query.clone());
         }
         let query = self.actions.slash.as_ref()?;
-        (query.len() > 1 && self.input.read(cx).text() == query)
-            .then(|| (0..query.len(), query[1..].to_owned()))
+        (self.input.read(cx).text() == query).then(|| (0..query.len(), query[1..].to_owned()))
     }
 
     fn matching_skill_candidates(&self, query: &str) -> Vec<usize> {
