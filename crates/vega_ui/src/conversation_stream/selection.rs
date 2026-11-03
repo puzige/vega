@@ -602,9 +602,7 @@ impl Element for SelectableMessage {
             TextSelection::activate_scope(scope, window, cx);
             if event.click_count >= 2 {
                 let selected = runs.borrow().iter().find_map(|run| {
-                    if !run.bounds.contains(&event.position)
-                        || run.content_range == run.logical_range
-                    {
+                    if !run.bounds.contains(&event.position) {
                         return None;
                     }
                     let offset = run.layout.index_for_position(event.position).ok()?
@@ -615,29 +613,36 @@ impl Element for SelectableMessage {
                         offset - run.logical_range.start,
                         event.click_count,
                     )?;
-                    Some(run.logical_range.start + range.start..run.logical_range.start + range.end)
+                    Some((
+                        run.logical_range.start + range.start..run.logical_range.start + range.end,
+                        run.content_range != run.logical_range,
+                    ))
                 });
-                if let Some(range) = selected {
+                if let Some((range, fragmented)) = selected {
                     let copy = copy.clone();
                     let handle = handle.clone();
                     let focus = focus.clone();
                     let content = content.clone();
                     window.defer(cx, move |window, cx| {
-                        if (projected && copy.content_generation() == generation)
-                            || (!projected
-                                && copy.visible_text().as_deref() == Some(content.as_ref()))
-                        {
-                            copy.set_local_selection_range(range.clone());
-                            copy.set_selected_text(
-                                copy.selection_generation(),
-                                content[range].to_owned(),
-                            );
-                            handle.set_local_selection(true, cx);
-                            focus.focus(window, cx);
-                            window.refresh();
-                        }
+                        window.defer(cx, move |window, cx| {
+                            if (projected && copy.content_generation() == generation)
+                                || (!projected
+                                    && copy.visible_text().as_deref() == Some(content.as_ref()))
+                            {
+                                copy.set_local_selection_range(range.clone());
+                                copy.set_selected_text(
+                                    copy.selection_generation(),
+                                    content[range].to_owned(),
+                                );
+                                handle.set_local_selection(true, cx);
+                                focus.focus(window, cx);
+                                window.refresh();
+                            }
+                        });
                     });
-                    cx.stop_propagation();
+                    if fragmented {
+                        cx.stop_propagation();
+                    }
                 }
             }
         });
