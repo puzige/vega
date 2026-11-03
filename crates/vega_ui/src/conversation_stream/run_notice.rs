@@ -70,10 +70,16 @@ impl RunNotice {
             RunNoticeKind::Failure(
                 RunFailureKind::CredentialExposureBlocked
                     | RunFailureKind::CredentialCheckUnavailable
+                    | RunFailureKind::CredentialStorageUnavailable
+                    | RunFailureKind::CredentialInternalUnavailable
+                    | RunFailureKind::CredentialStateUnavailable
                     | RunFailureKind::CredentialProjectionInvalid(_)
             ) | RunNoticeKind::FailureWithCompaction(
                 RunFailureKind::CredentialExposureBlocked
                     | RunFailureKind::CredentialCheckUnavailable
+                    | RunFailureKind::CredentialStorageUnavailable
+                    | RunFailureKind::CredentialInternalUnavailable
+                    | RunFailureKind::CredentialStateUnavailable
                     | RunFailureKind::CredentialProjectionInvalid(_),
                 _
             )
@@ -103,6 +109,19 @@ impl RunNotice {
         }
         let recovery_id = self.message_id.clone();
         let credential_failure = self.can_resume_credentials() && !reading_preview;
+        let credential_settings = matches!(
+            self.kind,
+            RunNoticeKind::Failure(
+                RunFailureKind::CredentialStorageUnavailable
+                    | RunFailureKind::CredentialExposureBlocked
+                    | RunFailureKind::CredentialProjectionInvalid(_)
+            ) | RunNoticeKind::FailureWithCompaction(
+                RunFailureKind::CredentialStorageUnavailable
+                    | RunFailureKind::CredentialExposureBlocked
+                    | RunFailureKind::CredentialProjectionInvalid(_),
+                _
+            )
+        );
         let color = match self.kind {
             RunNoticeKind::Retrying { .. } => colors.text_secondary,
             RunNoticeKind::McpUnavailable(_)
@@ -149,17 +168,19 @@ impl RunNotice {
                                 },
                             )),
                         )
-                        .child(
-                            PrivacyButton::new(
-                                format!("credential-settings-{}", self.message_id),
-                                *colors,
+                        .when(credential_settings, |row| {
+                            row.child(
+                                PrivacyButton::new(
+                                    format!("credential-settings-{}", self.message_id),
+                                    *colors,
+                                )
+                                .label(vega_i18n::t("ui.check_credential_settings"))
+                                .on_click(|_, _, cx| {
+                                    cx.set_global(crate::settings::SettingsOpen(true));
+                                    cx.refresh_windows();
+                                }),
                             )
-                            .label(vega_i18n::t("ui.check_credential_settings"))
-                            .on_click(|_, _, cx| {
-                                cx.set_global(crate::settings::SettingsOpen(true));
-                                cx.refresh_windows();
-                            }),
-                        ),
+                        }),
                 )
             })
             .into_any_element()

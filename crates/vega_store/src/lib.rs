@@ -109,6 +109,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0053_response_start_times.sql"),
     include_str!("../migrations/0054_mcp_yaml_projection.sql"),
     include_str!("../migrations/0055_fork_mutation_origins.sql"),
+    include_str!("../migrations/0056_credential_check_diagnostics.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.

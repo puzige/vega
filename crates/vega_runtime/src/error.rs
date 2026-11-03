@@ -247,6 +247,8 @@ pub enum VegaError {
     #[error("credential safety check unavailable")]
     CredentialCheckUnavailable,
     #[error(transparent)]
+    CredentialRead(crate::CredentialReadError),
+    #[error(transparent)]
     ProjectInstructions(#[from] vega_tools::ProjectInstructionsError),
     #[error("credential continuation is unavailable")]
     CredentialContinuationUnavailable,
@@ -353,6 +355,7 @@ impl fmt::Debug for VegaError {
             Self::Cancelled => formatter.write_str("Cancelled"),
             Self::CredentialExposureBlocked => formatter.write_str("CredentialExposureBlocked"),
             Self::CredentialCheckUnavailable => formatter.write_str("CredentialCheckUnavailable"),
+            Self::CredentialRead(error) => fmt::Debug::fmt(error, formatter),
             Self::ProjectInstructions(error) => formatter
                 .debug_tuple("ProjectInstructions")
                 .field(error)
@@ -604,6 +607,18 @@ impl VegaError {
             }
             Self::CredentialExposureBlocked => ("runtime", "credential_exposure", None),
             Self::CredentialCheckUnavailable => ("runtime", "credential_check", None),
+            Self::CredentialRead(error) => {
+                metrics.credential_stage = Some(error.stage.as_str());
+                metrics.credential_reason = Some(error.reason.as_str());
+                if let Some(detail) = error.storage {
+                    metrics.runtime_stage = Some(detail.stage.as_str());
+                    metrics.runtime_reason = Some(detail.reason.as_str());
+                    metrics.sqlite_code = detail.sqlite_code;
+                    metrics.sqlite_extended_code = detail.sqlite_extended_code;
+                    metrics.io_kind = detail.io_kind.map(|kind| kind.as_str());
+                }
+                ("runtime", "credential_check", None)
+            }
             Self::ProjectInstructions(error)
                 if error.failure() == vega_tools::ProjectInstructionsFailure::InvalidRootPath =>
             {

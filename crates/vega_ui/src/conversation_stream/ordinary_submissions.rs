@@ -121,11 +121,19 @@ fn preparation_message(
     use vega_conversation::submission_diagnostics::{
         PreparationReason as Reason, PreparationStage as Stage,
     };
+    if let Some(reason) = detail.credential_reason {
+        return match reason {
+            "missing" | "unsafe" | "malformed" | "limit" | "credential_io" | "unsupported" => {
+                "ui.ordinary_send.credential_failed"
+            }
+            "database" | "configuration" => "ui.ordinary_send.safety_storage_failed",
+            _ => "ui.ordinary_send.safety_state_failed",
+        };
+    }
     match detail.reason {
         Reason::Database => "ui.ordinary_send.database_failed",
-        Reason::CredentialUnavailable | Reason::CredentialSafety => {
-            "ui.ordinary_send.credential_failed"
-        }
+        Reason::CredentialUnavailable => "ui.ordinary_send.credential_failed",
+        Reason::CredentialSafety => "ui.ordinary_send.safety_state_failed",
         Reason::ProviderUnavailable => "ui.ordinary_send.preflight_failed",
         Reason::Capability | Reason::Reasoning if detail.stage == Stage::Conversation => {
             "ui.ordinary_send.model_failed"

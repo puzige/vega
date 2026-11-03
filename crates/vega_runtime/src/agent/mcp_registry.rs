@@ -29,7 +29,8 @@ const MAX_PROVIDER_DESCRIPTION_BYTES: usize = MAX_DESCRIPTION_BYTES + 640;
 
 /// Owner-held values are used only at the MCP trust boundary. Never derive
 /// Debug/Serialize or put a match value in an error, event, or audit record.
-type CredentialReader = Arc<dyn Fn() -> Result<Vec<String>, ()> + Send + Sync>;
+type CredentialReader =
+    Arc<dyn Fn() -> Result<Vec<String>, crate::CredentialReadError> + Send + Sync>;
 
 #[derive(Clone, Default)]
 pub(crate) struct KnownCredentials {
@@ -49,7 +50,7 @@ impl KnownCredentials {
         self.values.dedup();
     }
 
-    fn snapshot(&self) -> Result<CredentialSnapshot, ()> {
+    fn snapshot(&self) -> Result<CredentialSnapshot, crate::CredentialReadError> {
         let mut values = self.values.clone();
         for reader in &self.readers {
             values.extend(reader()?.into_iter().filter(|value| !value.is_empty()));
@@ -373,7 +374,7 @@ impl McpReadyServer {
     /// tokens while this connection keeps its original bearer.
     pub fn with_known_credentials_reader(
         mut self,
-        reader: Arc<dyn Fn() -> Result<Vec<String>, ()> + Send + Sync>,
+        reader: Arc<dyn Fn() -> Result<Vec<String>, crate::CredentialReadError> + Send + Sync>,
     ) -> Self {
         Arc::make_mut(&mut self.known_credentials).add_reader(reader);
         self
@@ -643,11 +644,19 @@ impl FrozenMcpTool {
         self.revoked.clone()
     }
 
-    pub(crate) fn safe_result_text(&self, output: &McpDispatchOutput) -> Result<String, ()> {
+    pub(crate) fn safe_result_text(
+        &self,
+        output: &McpDispatchOutput,
+    ) -> Result<String, crate::CredentialReadError> {
         let credentials = self.known_credentials.snapshot()?;
         let mut text = output.text.clone();
         if let Some(structured) = &output.structured_content {
-            let json = serde_json::to_string(structured).map_err(|_| ())?;
+            let json = serde_json::to_string(structured).map_err(|_| {
+                crate::CredentialReadError::new(
+                    crate::CredentialReadStage::Mcp,
+                    crate::CredentialReadReason::Configuration,
+                )
+            })?;
             if !text.is_empty() {
                 text.push('\n');
             }
@@ -765,7 +774,7 @@ impl RunCapabilitySnapshot {
                     candidate
                         .known_credentials
                         .snapshot()
-                        .map_err(|_| invalid_catalog())?,
+                        .map_err(VegaError::from)?,
                 );
             }
             let credentials = &credential_snapshots[&credential_identity];

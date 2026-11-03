@@ -858,3 +858,6 @@
 "ui.timestamp.separator_older" = "{date} at {time}"
 "ui.timestamp.message" = "{date} {time}"
 "ui.timestamp.accessible" = "{date} at {time}"
+
+"ui.ordinary_send.safety_storage_failed" = "Message preparation could not complete the safety check because local storage or configuration is unavailable. Retry shortly."
+"ui.ordinary_send.safety_state_failed" = "Message preparation could not validate its safety state. Retry; if it persists, reopen the conversation."

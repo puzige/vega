@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 pub const PROVIDER_CREDENTIAL_REDACTION_MARKER: &str = "[REDACTED:provider_credential]";
 
-pub type CredentialReader = Arc<dyn Fn() -> Result<Vec<String>, ()> + Send + Sync>;
+pub type CredentialReader =
+    Arc<dyn Fn() -> Result<Vec<String>, crate::CredentialReadError> + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CredentialConfidence {

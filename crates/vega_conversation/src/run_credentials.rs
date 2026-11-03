@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
+use vega_runtime::{CredentialReadError, CredentialReadReason, CredentialReadStage};
 
 use crate::types::PermissionFence;
 use vega_runtime::{CredentialExceptionFilter, CredentialReader};
@@ -64,7 +65,9 @@ impl RunCredentialReader {
     pub fn reader(&self) -> CredentialReader {
         let this = self.clone();
         Arc::new(move || {
-            let accepted = this.inner.accepted.get().ok_or(())?;
+            let accepted = this.inner.accepted.get().ok_or_else(|| {
+                crate::credential_errors::state_error(CredentialReadStage::Authority)
+            })?;
             this.read_values(&accepted.fence)
         })
     }
@@ -81,7 +84,7 @@ impl RunCredentialReader {
         })
     }
 
-    fn read_values(&self, fence: &PermissionFence) -> Result<Vec<String>, ()> {
+    fn read_values(&self, fence: &PermissionFence) -> Result<Vec<String>, CredentialReadError> {
         let result = self.read_current_values(fence);
         if result.is_err()
             && let Some(root) = &self.inner.root
@@ -91,23 +94,46 @@ impl RunCredentialReader {
         result
     }
 
-    fn read_current_values(&self, fence: &PermissionFence) -> Result<Vec<String>, ()> {
+    fn read_current_values(
+        &self,
+        fence: &PermissionFence,
+    ) -> Result<Vec<String>, CredentialReadError> {
         let optional = fence.run_mode == "execute" && fence.permission_mode == "full_access";
         let mut values = Vec::new();
         for reference in &self.inner.binding_refs {
-            let root = self.inner.root.as_ref().ok_or(())?;
-            match vega_store::keystore::lookup_existing_key(root, reference).map_err(|_| ())? {
+            let root = self.inner.root.as_ref().ok_or_else(|| {
+                crate::credential_errors::state_error(CredentialReadStage::Authority)
+            })?;
+            match vega_store::keystore::lookup_existing_key(root, reference).map_err(|error| {
+                match error {
+                    vega_store::keystore::LookupError::StoreAbsent => CredentialReadError::new(
+                        CredentialReadStage::Bindings,
+                        CredentialReadReason::Missing,
+                    ),
+                    vega_store::keystore::LookupError::Storage(error) => {
+                        crate::credential_errors::credential_error(
+                            CredentialReadStage::Bindings,
+                            error,
+                        )
+                    }
+                }
+            })? {
                 Some(value) => values.push(value),
                 None if optional => {}
-                None => return Err(()),
+                None => {
+                    return Err(CredentialReadError::new(
+                        CredentialReadStage::Bindings,
+                        CredentialReadReason::Missing,
+                    ));
+                }
             }
         }
         values.extend((self.inner.required)()?);
         if let Some(root) = &self.inner.root {
-            values.extend(
-                crate::privacy::refresh_authority_values(&self.inner.database, root)
-                    .map_err(|_| ())?,
-            );
+            values.extend(crate::privacy::refresh_authority_values(
+                &self.inner.database,
+                root,
+            )?);
         }
         Ok(values)
     }
@@ -116,18 +142,24 @@ impl RunCredentialReader {
         &self,
         fence: &PermissionFence,
         message: &str,
-    ) -> Result<Vec<String>, ()> {
+    ) -> Result<Vec<String>, CredentialReadError> {
         if !fence.is_valid()
             || match self.inner.accepted.get() {
                 Some(accepted) => !accepted.matches(fence, message),
                 None => fence.delegation.is_some() || fence.thread_id != self.inner.thread,
             }
         {
-            return Err(());
+            return Err(crate::credential_errors::state_error(
+                CredentialReadStage::Authority,
+            ));
         }
-        let store = vega_store::Store::open_read_only(&self.inner.database).map_err(|_| ())?;
+        let store = vega_store::Store::open_read_only(&self.inner.database).map_err(|error| {
+            CredentialReadError::database(CredentialReadStage::Authority, error)
+        })?;
         if store.database_identity().permission_fence_key() != fence.database_identity {
-            return Err(());
+            return Err(crate::credential_errors::state_error(
+                CredentialReadStage::Authority,
+            ));
         }
         let values = self.read_values(fence)?;
         if fence.delegation.is_none() {
@@ -142,19 +174,31 @@ impl RunCredentialReader {
                         root.clone(),
                     )
                 })
-                .transpose()
-                .map_err(|_| ())?;
-            *self.inner.exceptions.lock().map_err(|_| ())? = filter;
+                .transpose()?;
+            *self.inner.exceptions.lock().map_err(|_| {
+                crate::credential_errors::state_error(CredentialReadStage::Authority)
+            })? = filter;
         }
         Ok(values)
     }
 
-    pub(crate) fn activate(&self, fence: &PermissionFence, message: &str) -> Result<(), ()> {
+    pub(crate) fn activate(
+        &self,
+        fence: &PermissionFence,
+        message: &str,
+    ) -> Result<(), CredentialReadError> {
         if let Some(accepted) = self.inner.accepted.get() {
-            return accepted.matches(fence, message).then_some(()).ok_or(());
+            return accepted
+                .matches(fence, message)
+                .then_some(())
+                .ok_or_else(|| {
+                    crate::credential_errors::state_error(CredentialReadStage::Authority)
+                });
         }
         if !fence.is_valid() || fence.delegation.is_some() || fence.thread_id != self.inner.thread {
-            return Err(());
+            return Err(crate::credential_errors::state_error(
+                CredentialReadStage::Authority,
+            ));
         }
         self.inner
             .accepted
@@ -162,6 +206,6 @@ impl RunCredentialReader {
                 fence: fence.clone(),
                 message: message.to_owned(),
             })
-            .map_err(|_| ())
+            .map_err(|_| crate::credential_errors::state_error(CredentialReadStage::Authority))
     }
 }

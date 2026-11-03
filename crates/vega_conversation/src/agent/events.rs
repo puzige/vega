@@ -1240,7 +1240,9 @@ pub(crate) fn persist_runtime_event(
             )?;
             let reason = match error.as_ref() {
                 VegaError::CredentialExposureBlocked => Some("exposure".to_owned()),
-                VegaError::CredentialCheckUnavailable => Some("unavailable".to_owned()),
+                VegaError::CredentialCheckUnavailable | VegaError::CredentialRead(_) => {
+                    Some("unavailable".to_owned())
+                }
                 VegaError::CredentialProjectionInvalid { tool_index } => {
                     Some(format!("projection:{tool_index}"))
                 }
@@ -1812,10 +1814,15 @@ pub(crate) fn validate_reused_terminal(
         .map(u64::try_from)
         .transpose()
         .map_err(|_| safe_audit_error(&state.tool))?;
+    let rejected_safety_projection = state.status == "rejected"
+        && result.status == RuntimeToolStatus::Rejected
+        && result.credential_failure.is_some()
+        && result.output == "Tool error: credential safety check unavailable";
     if state.tool == "read_conversation"
-        && result.status == RuntimeToolStatus::Failed
         && state.output_text.as_deref() != Some(result.output.as_str())
-        && super::pipeline::valid_history_retry_output(&result.output)
+        && ((result.status == RuntimeToolStatus::Failed
+            && super::pipeline::valid_history_retry_output(&result.output))
+            || rejected_safety_projection)
     {
         let status = match state.status.as_str() {
             "success" => RuntimeToolStatus::Success,
@@ -1850,9 +1857,28 @@ pub(crate) fn validate_reused_terminal(
             persisted_duration,
         )
         .map_err(|_| safe_audit_error(&state.tool))?;
-        return tool_inputs_semantically_equal(&state.tool, &canonical, &state.input_json)
-            .then_some(())
-            .ok_or_else(|| safe_audit_error(&state.tool));
+        if !tool_inputs_semantically_equal(&state.tool, &canonical, &state.input_json) {
+            return Err(safe_audit_error(&state.tool));
+        }
+        if rejected_safety_projection {
+            let projected = validate_recovered_projection(
+                project_id,
+                thread_id,
+                &result.call_id,
+                &state.tool,
+                &state.input_json,
+                &result.output,
+                result.status,
+                &approval,
+                result.exit_code,
+                result.duration_ms,
+            )
+            .map_err(|_| safe_audit_error(&state.tool))?;
+            if !tool_inputs_semantically_equal(&state.tool, &projected, &state.input_json) {
+                return Err(safe_audit_error(&state.tool));
+            }
+        }
+        return Ok(());
     }
     if state.status != expected_status
         || runtime_approval != approval

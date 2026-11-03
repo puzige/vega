@@ -58,6 +58,8 @@ pub struct PreparationFailure {
     pub sqlite_code: Option<i32>,
     pub sqlite_extended_code: Option<i32>,
     pub io_kind: Option<&'static str>,
+    pub credential_stage: Option<&'static str>,
+    pub credential_reason: Option<&'static str>,
 }
 
 impl PreparationFailure {
@@ -68,6 +70,8 @@ impl PreparationFailure {
             sqlite_code: None,
             sqlite_extended_code: None,
             io_kind: None,
+            credential_stage: None,
+            credential_reason: None,
         }
     }
 }
@@ -101,7 +105,25 @@ pub fn append(conn: &Connection, event: &PreparationEvent) -> rusqlite::Result<(
             PreparationState::Started | PreparationState::Prepared
         ) == event.failure.is_some()
         || event.failure.is_some_and(|failure| {
-            failure.io_kind.is_some_and(|kind| {
+            !matches!(
+                (failure.credential_stage, failure.credential_reason),
+                (None, None)
+                    | (
+                        Some("provider" | "bindings" | "mcp" | "privacy" | "authority" | "worker"),
+                        Some(
+                            "missing"
+                                | "unsafe"
+                                | "malformed"
+                                | "limit"
+                                | "credential_io"
+                                | "unsupported"
+                                | "database"
+                                | "configuration"
+                                | "state"
+                                | "worker"
+                        )
+                    )
+            ) || failure.io_kind.is_some_and(|kind| {
                 !matches!(
                     kind,
                     "not_found"

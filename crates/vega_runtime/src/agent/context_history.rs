@@ -88,7 +88,7 @@ pub fn project_page(
     config: &RuntimeToolConfig,
 ) -> Result<String, VegaError> {
     let credentials = match &config.credential_reader {
-        Some(reader) => reader().map_err(|_| VegaError::CredentialCheckUnavailable)?,
+        Some(reader) => reader().map_err(VegaError::from)?,
         None => Vec::new(),
     };
     filter(&mut page, &credentials, config);

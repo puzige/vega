@@ -61,11 +61,7 @@ fn json<T: Serialize>(value: &T) -> Result<String, McpStoreError> {
 }
 
 fn io_error(error: io::Error) -> McpStoreError {
-    match error.kind() {
-        io::ErrorKind::WouldBlock => McpStoreError::Conflict,
-        io::ErrorKind::InvalidData => McpStoreError::Invalid,
-        _ => McpStoreError::Configuration,
-    }
+    McpStoreError::ConfigurationIo(error.kind())
 }
 
 fn digest(bytes: Option<&[u8]>) -> Vec<u8> {

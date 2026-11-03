@@ -375,7 +375,21 @@ fn append_credential_continuations(
                 crate::types::RunFailureKind::CredentialOutcomeUnknown
             } else if receipt.state == "ready" {
                 match receipt.reason.as_str() {
-                    "unavailable" => crate::types::RunFailureKind::CredentialCheckUnavailable,
+                    "unavailable" => vega_store::run_diagnostics::read_by_run(
+                        store.conn(),
+                        &row.thread_id,
+                        &row.id,
+                    )
+                    .map_err(|error| ConversationError::Store(error.to_string()))?
+                    .iter()
+                    .rev()
+                    .find(|event| {
+                        event.event.metrics.failure_kind.as_deref() == Some("credential_check")
+                    })
+                    .map(|event| {
+                        crate::types::RunFailureKind::from_diagnostic(&event.event.metrics)
+                    })
+                    .unwrap_or(crate::types::RunFailureKind::CredentialCheckUnavailable),
                     reason if reason.starts_with("projection:") => reason
                         .strip_prefix("projection:")
                         .and_then(|value| value.parse().ok())

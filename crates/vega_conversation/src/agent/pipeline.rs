@@ -1070,14 +1070,12 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     let credential_values = if let Some(reader) = &config.run_credential_reader {
         reader
             .prepare(&credential_authority.fence, &assistant_message_id)
-            .map_err(|_| {
-                ConversationError::Runtime(Arc::new(VegaError::CredentialCheckUnavailable))
-            })?
+            .map_err(|error| ConversationError::Runtime(Arc::new(error.into())))?
     } else {
         match &config.owner_credential_reader {
-            Some(reader) => reader().map_err(|_| {
-                ConversationError::Runtime(Arc::new(VegaError::CredentialCheckUnavailable))
-            })?,
+            Some(reader) => {
+                reader().map_err(|error| ConversationError::Runtime(Arc::new(error.into())))?
+            }
             None => Vec::new(),
         }
     };
@@ -1642,9 +1640,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     if let Some(reader) = &config.run_credential_reader {
         reader
             .activate(&permission_fence, &assistant_message_id)
-            .map_err(|_| {
-                ConversationError::Runtime(Arc::new(VegaError::CredentialCheckUnavailable))
-            })?;
+            .map_err(|error| ConversationError::Runtime(Arc::new(error.into())))?;
     }
     if let Some(request) = title_request {
         request.with_thread_admission(admission.clone()).launch(
@@ -2056,10 +2052,11 @@ pub(crate) fn validate_recovered_projection(
                         }
                         ApprovalSource::Recovery => {
                             valid_history_call_projection(input_json)
-                                && credential_redaction_only(
+                                && (credential_redaction_only(
                                     vega_store::recovery::RECOVERY_REJECTED_OUTPUT,
                                     output,
-                                )
+                                ) || output
+                                    == "Tool error: credential safety check unavailable")
                         }
                         ApprovalSource::Cancelled => {
                             request.is_some()
@@ -2300,6 +2297,9 @@ pub(crate) fn validate_recovered_projection(
                             || matches!(
                                 output,
                                 "Tool error: MCP result failed or exceeded limit"
+                                    | "Tool error: MCP result exceeded limit"
+                                    | "MCP call completed; result withheld because the safety check failed. Do not repeat the call."
+                                    | "Tool error: credential safety check unavailable"
                                     | "Tool error: MCP invalid protocol response"
                                     | "Tool error: MCP protocol error"
                                     | "Tool error: MCP unsupported transport"

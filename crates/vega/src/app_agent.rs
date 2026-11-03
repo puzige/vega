@@ -10,7 +10,8 @@ use vega_store::Store;
 use vega_ui::conversation_stream::*;
 use vega_ui::plan_card::PlanReviewRequested;
 
-type CredentialReader = Arc<dyn Fn() -> Result<Vec<String>, ()> + Send + Sync>;
+type CredentialReader =
+    Arc<dyn Fn() -> Result<Vec<String>, vega_runtime::CredentialReadError> + Send + Sync>;
 
 pub(crate) const AGENT_EVENT_POLL: Duration = Duration::from_millis(4);
 pub(crate) const AGENT_EVENT_CAPACITY: usize = 256;
@@ -1270,7 +1271,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                 Arc::new(move || {
                     vega_store::keystore::get_key(&root, &key_ref)
                         .map(|key| vec![key])
-                        .map_err(|_| ())
+                        .map_err(vega_conversation::provider_credential_error)
                 }) as CredentialReader
             });
         let binding_refs = config.as_ref().map(|config| {
@@ -1281,7 +1282,7 @@ pub(crate) fn run_agent_worker_with_mcp(
         let selected_provider_reader = provider_credential_reader.clone();
         let required_credential_reader: CredentialReader = Arc::new(move || {
             let mut known = match &owner {
-                Some(service) => service.current_owner_credential_values().map_err(|_| ())?,
+                Some(service) => service.current_owner_credential_values()?,
                 None => Vec::new(),
             };
             if let Some(reader) = &selected_provider_reader {
@@ -1460,7 +1461,12 @@ pub(crate) fn run_agent_worker_with_mcp(
                             tokio::select! {
                                 biased;
                                 _ = cancel.cancelled() => Err(()),
-                                readiness = service.ready_for_run() => readiness.map_err(|_| ()),
+                                readiness = service.ready_for_run() => readiness.map_err(|error| {
+                                    preparation_failure = match error {
+                                        vega_conversation::McpSettingsError::CredentialRead(error) => runtime_failure(PreparationStage::Launch, &error.into()),
+                                        _ => PreparationFailure::new(PreparationStage::Launch, PreparationReason::Pipeline),
+                                    };
+                                }),
                             }
                         })
                         .map(|readiness| {
@@ -1539,7 +1545,12 @@ pub(crate) fn run_agent_worker_with_mcp(
                             tokio::select! {
                                 biased;
                                 _ = cancel.cancelled() => Err(()),
-                                readiness = service.ready_for_run() => readiness.map_err(|_| ()),
+                                readiness = service.ready_for_run() => readiness.map_err(|error| {
+                                    preparation_failure = match error {
+                                        vega_conversation::McpSettingsError::CredentialRead(error) => runtime_failure(PreparationStage::Launch, &error.into()),
+                                        _ => PreparationFailure::new(PreparationStage::Launch, PreparationReason::Pipeline),
+                                    };
+                                }),
                             }
                         })
                         .map(|readiness| {
@@ -1611,7 +1622,12 @@ pub(crate) fn run_agent_worker_with_mcp(
                             tokio::select! {
                                 biased;
                                 _ = cancel.cancelled() => Err(()),
-                                readiness = service.ready_for_run() => readiness.map_err(|_| ()),
+                                readiness = service.ready_for_run() => readiness.map_err(|error| {
+                                    preparation_failure = match error {
+                                        vega_conversation::McpSettingsError::CredentialRead(error) => runtime_failure(PreparationStage::Launch, &error.into()),
+                                        _ => PreparationFailure::new(PreparationStage::Launch, PreparationReason::Pipeline),
+                                    };
+                                }),
                             }
                         })
                         .map(|readiness| {
@@ -1683,7 +1699,12 @@ pub(crate) fn run_agent_worker_with_mcp(
                             tokio::select! {
                                 biased;
                                 _ = cancel.cancelled() => Err(()),
-                                readiness = service.ready_for_run() => readiness.map_err(|_| ()),
+                                readiness = service.ready_for_run() => readiness.map_err(|error| {
+                                    preparation_failure = match error {
+                                        vega_conversation::McpSettingsError::CredentialRead(error) => runtime_failure(PreparationStage::Launch, &error.into()),
+                                        _ => PreparationFailure::new(PreparationStage::Launch, PreparationReason::Pipeline),
+                                    };
+                                }),
                             }
                         })
                         .map(|readiness| {

@@ -374,7 +374,7 @@ impl RuntimeToolConfig {
 
     pub(crate) fn redact_tool_output(&self, output: &str) -> Result<String, VegaError> {
         let credentials = match &self.credential_reader {
-            Some(reader) => reader().map_err(|_| VegaError::CredentialCheckUnavailable)?,
+            Some(reader) => reader().map_err(VegaError::from)?,
             None => Vec::new(),
         };
         Ok(redact_sensitive_credential_text_with_policy(
@@ -1012,6 +1012,7 @@ pub struct RuntimeToolResult {
     pub approval: Option<RuntimeApprovalAudit>,
     /// Exact rule selected by Always even when a later ReadOnly step rejects.
     pub remember_rule: Option<RuntimePermissionTarget>,
+    pub credential_failure: Option<crate::CredentialReadError>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1053,6 +1054,8 @@ pub enum RuntimeDiagnosticFailure {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RuntimeDiagnosticMetrics {
+    pub credential_stage: Option<&'static str>,
+    pub credential_reason: Option<&'static str>,
     pub runtime_stage: Option<&'static str>,
     pub protocol_reason: Option<&'static str>,
     pub runtime_reason: Option<&'static str>,

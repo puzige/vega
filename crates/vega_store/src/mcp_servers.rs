@@ -65,6 +65,8 @@ pub enum McpStoreError {
     Invalid,
     #[error("MCP configuration is unavailable")]
     Configuration,
+    #[error("MCP configuration I/O failed ({0:?})")]
+    ConfigurationIo(std::io::ErrorKind),
     #[error("MCP configuration changed; reload before editing")]
     Conflict,
     #[error("MCP server not found")]

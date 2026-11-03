@@ -474,7 +474,7 @@ impl RuntimeSteeringSource for QueueSteeringSource {
                         message.content
                     )
                 };
-                let values = credentials().map_err(|_| VegaError::CredentialCheckUnavailable)?;
+                let values = credentials().map_err(VegaError::from)?;
                 let content = vega_runtime::redact_sensitive_credential_text_with_policy(
                     &content,
                     &values,

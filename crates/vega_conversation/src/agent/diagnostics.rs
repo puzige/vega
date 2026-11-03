@@ -225,6 +225,8 @@ impl DiagnosticsWriter {
             metrics: DiagnosticMetrics {
                 runtime_stage: attempt.metrics.runtime_stage.map(str::to_owned),
                 protocol_reason: attempt.metrics.protocol_reason.map(str::to_owned),
+                credential_stage: attempt.metrics.credential_stage.map(str::to_owned),
+                credential_reason: attempt.metrics.credential_reason.map(str::to_owned),
                 runtime_reason: attempt.metrics.runtime_reason.map(str::to_owned),
                 sqlite_code: attempt.metrics.sqlite_code,
                 sqlite_extended_code: attempt.metrics.sqlite_extended_code,
@@ -393,6 +395,8 @@ pub(crate) fn failure_metrics(error: &vega_runtime::VegaError) -> DiagnosticMetr
     let mut metrics = DiagnosticMetrics {
         runtime_stage: detail.runtime_stage.map(str::to_owned),
         protocol_reason: detail.protocol_reason.map(str::to_owned),
+        credential_stage: detail.credential_stage.map(str::to_owned),
+        credential_reason: detail.credential_reason.map(str::to_owned),
         runtime_reason: detail.runtime_reason.map(str::to_owned),
         sqlite_code: detail.sqlite_code,
         sqlite_extended_code: detail.sqlite_extended_code,
@@ -433,6 +437,8 @@ pub(crate) fn with_failure_metrics(
     let detail = failure_metrics(error);
     metrics.runtime_stage = detail.runtime_stage;
     metrics.protocol_reason = detail.protocol_reason;
+    metrics.credential_stage = detail.credential_stage;
+    metrics.credential_reason = detail.credential_reason;
     metrics.runtime_reason = detail.runtime_reason;
     metrics.sqlite_code = detail.sqlite_code;
     metrics.sqlite_extended_code = detail.sqlite_extended_code;

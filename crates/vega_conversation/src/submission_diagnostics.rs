@@ -29,6 +29,7 @@ pub fn runtime_failure(
         | vega_runtime::VegaError::ReasoningReplayIncomplete => Reason::Reasoning,
         vega_runtime::VegaError::CredentialExposureBlocked
         | vega_runtime::VegaError::CredentialCheckUnavailable
+        | vega_runtime::VegaError::CredentialRead(_)
         | vega_runtime::VegaError::CredentialContinuationUnavailable
         | vega_runtime::VegaError::CredentialProjectionInvalid { .. } => Reason::CredentialSafety,
         vega_runtime::VegaError::Context(_) => Reason::Context,
@@ -52,6 +53,8 @@ pub fn runtime_failure(
         sqlite_code: metrics.sqlite_code,
         sqlite_extended_code: metrics.sqlite_extended_code,
         io_kind: metrics.io_kind,
+        credential_stage: metrics.credential_stage,
+        credential_reason: metrics.credential_reason,
     }
 }
 

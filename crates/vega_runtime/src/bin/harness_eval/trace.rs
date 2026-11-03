@@ -295,7 +295,9 @@ pub(super) fn failure_category(error: &VegaError) -> &'static str {
         VegaError::Provider { .. } | VegaError::ProviderDiagnostic { .. } => "provider_failure",
         VegaError::Cancelled => "cancelled",
         VegaError::CredentialExposureBlocked => "credential_exposure_blocked",
-        VegaError::CredentialCheckUnavailable => "credential_check_unavailable",
+        VegaError::CredentialCheckUnavailable | VegaError::CredentialRead(_) => {
+            "credential_check_unavailable"
+        }
         VegaError::Io(_) => "io_failure",
         VegaError::Tool { .. } => "tool_failure",
         _ => "runtime_failure",

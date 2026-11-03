@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::net::TcpListener as StdTcpListener;
+use vega_runtime::{CredentialReadError, CredentialReadReason, CredentialReadStage};
 type OAuthCallbackStream = tokio::net::TcpStream;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -30,6 +31,8 @@ pub enum McpSettingsError {
     Store,
     #[error("{}", vega_i18n::t("domain.mcp.credential"))]
     Credential,
+    #[error(transparent)]
+    CredentialRead(CredentialReadError),
     #[error("{}", vega_i18n::t("domain.mcp.credentialbindingrequired"))]
     CredentialBindingRequired,
     #[error("{}", vega_i18n::t("domain.mcp.authorizationrequired"))]
@@ -55,6 +58,7 @@ impl McpSettingsError {
             Self::Capacity => "capacity_exceeded",
             Self::Store => "storage_failed",
             Self::Credential => "credential_missing",
+            Self::CredentialRead(_) => "credential_check_unavailable",
             Self::CredentialBindingRequired => "credential_binding_required",
             Self::AuthorizationRequired => "authorization_required",
             Self::CimdUnavailable => "cimd_unavailable",
@@ -71,11 +75,35 @@ impl From<McpStoreError> for McpSettingsError {
         match error {
             McpStoreError::Invalid => Self::Invalid,
             McpStoreError::Configuration => Self::Store,
+            McpStoreError::ConfigurationIo(kind) => match kind {
+                std::io::ErrorKind::WouldBlock => Self::Conflict,
+                std::io::ErrorKind::InvalidData => Self::Invalid,
+                _ => Self::Store,
+            },
             McpStoreError::Conflict => Self::Conflict,
             McpStoreError::NotFound => Self::NotFound,
             McpStoreError::Capacity => Self::Capacity,
             McpStoreError::Sql(_) => Self::Store,
         }
+    }
+}
+
+impl From<CredentialReadError> for McpSettingsError {
+    fn from(error: CredentialReadError) -> Self {
+        Self::CredentialRead(error)
+    }
+}
+
+fn mcp_read_error(error: McpStoreError) -> CredentialReadError {
+    match error {
+        McpStoreError::Sql(error) => CredentialReadError::database(CredentialReadStage::Mcp, error),
+        McpStoreError::ConfigurationIo(kind) => {
+            CredentialReadError::configuration_io(CredentialReadStage::Mcp, kind)
+        }
+        _ => CredentialReadError::new(
+            CredentialReadStage::Mcp,
+            CredentialReadReason::Configuration,
+        ),
     }
 }
 
@@ -278,6 +306,43 @@ impl McpServerSettingsService {
         Ok(store)
     }
 
+    fn credential_store(&self) -> Result<Store, CredentialReadError> {
+        let store = Store::open(&self.database_path)
+            .map_err(|error| CredentialReadError::database(CredentialReadStage::Mcp, error))?;
+        store
+            .migrate()
+            .map_err(|error| CredentialReadError::database(CredentialReadStage::Mcp, error))?;
+        let mut state = self
+            .lock()
+            .map_err(|_| crate::credential_errors::state_error(CredentialReadStage::Mcp))?;
+        match vega_store::mcp_config::reconcile(
+            store.conn(),
+            &self.config_root.join("config.yaml"),
+            validate_yaml_row,
+        ) {
+            Ok(changed) => {
+                for id in changed {
+                    state.revoke(&id);
+                }
+            }
+            Err(error) => {
+                let ids = state
+                    .epochs
+                    .keys()
+                    .chain(state.leases.keys())
+                    .chain(state.connecting.keys())
+                    .cloned()
+                    .collect::<HashSet<_>>();
+                for id in ids {
+                    state.invalidate_connections(&id);
+                }
+                return Err(mcp_read_error(error));
+            }
+        }
+        drop(state);
+        Ok(store)
+    }
+
     pub fn reconcile_declarations(&self) -> Result<(), McpSettingsError> {
         self.store().map(|_| ())
     }
@@ -286,9 +351,10 @@ impl McpServerSettingsService {
         self.registry.lock().map_err(|_| McpSettingsError::Store)
     }
 
-    fn enabled_known_credentials(&self) -> Result<Vec<String>, McpSettingsError> {
-        let store = self.store()?;
-        let mut known = mcp_servers::list(store.conn())?
+    fn enabled_known_credentials(&self) -> Result<Vec<String>, CredentialReadError> {
+        let store = self.credential_store()?;
+        let mut known = mcp_servers::list(store.conn())
+            .map_err(mcp_read_error)?
             .into_iter()
             .filter(|row| row.enabled)
             .map(|row| known_credentials_from_row(&self.config_root, &row))
@@ -304,7 +370,7 @@ impl McpServerSettingsService {
     /// Owner-only current values for the final provider projection boundary.
     /// This is called again before every model request, including summaries;
     /// it intentionally includes disabled servers and other Provider keys.
-    pub fn current_owner_credential_values(&self) -> Result<Vec<String>, McpSettingsError> {
+    pub fn current_owner_credential_values(&self) -> Result<Vec<String>, CredentialReadError> {
         self.enabled_known_credentials()
     }
 
@@ -1119,9 +1185,10 @@ impl McpServerSettingsService {
     /// A new run uses only enabled, actually connected rows. Reconnection may
     /// refresh discovery, but it cannot replay any historical tool call.
     pub async fn ready_for_run(&self) -> Result<McpRunReadiness, McpSettingsError> {
-        self.reconcile_pending()?;
-        let store = self.store()?;
-        let rows: Vec<_> = mcp_servers::list(store.conn())?
+        self.reconcile_pending_for_run()?;
+        let store = self.credential_store()?;
+        let rows: Vec<_> = mcp_servers::list(store.conn())
+            .map_err(mcp_read_error)?
             .into_iter()
             .filter(|row| row.enabled)
             .collect();
@@ -1137,8 +1204,9 @@ impl McpServerSettingsService {
         // connection so a just-refreshed OAuth token is included as well.
         let known_credentials = self.enabled_known_credentials()?;
         let credential_owner = self.clone();
-        let credential_reader: Arc<dyn Fn() -> Result<Vec<String>, ()> + Send + Sync> =
-            Arc::new(move || credential_owner.enabled_known_credentials().map_err(|_| ()));
+        let credential_reader: Arc<
+            dyn Fn() -> Result<Vec<String>, vega_runtime::CredentialReadError> + Send + Sync,
+        > = Arc::new(move || credential_owner.enabled_known_credentials());
         let mut ready_servers = Vec::new();
         let mut unavailable = Vec::new();
         for (row, result) in rows.into_iter().zip(results) {
@@ -1216,6 +1284,51 @@ impl McpServerSettingsService {
             .filter(|row| row.deleting)
         {
             let _ = mcp_servers::finish_remove(store.conn(), &row.id)?;
+        }
+        Ok(())
+    }
+
+    fn reconcile_pending_for_run(&self) -> Result<(), CredentialReadError> {
+        let store = self.credential_store()?;
+        let _state = self
+            .lock()
+            .map_err(|_| crate::credential_errors::state_error(CredentialReadStage::Mcp))?;
+        let path = self.config_root.join("config.yaml");
+        let _document = vega_store::yaml_config::begin(&path).map_err(|error| {
+            CredentialReadError::configuration_io(CredentialReadStage::Mcp, error.kind())
+        })?;
+        let _permit = vega_store::write_coordination::acquire(
+            store.conn(),
+            vega_store::write_coordination::WriteCategory::McpServers,
+        )
+        .map_err(|error| CredentialReadError::database(CredentialReadStage::Mcp, error))?;
+        vega_store::mcp_config::projection_current(store.conn(), &path).map_err(mcp_read_error)?;
+        for entry in mcp_servers::pending_cleanup(store.conn()).map_err(mcp_read_error)? {
+            if !is_owned_secret_ref(&entry.server_id, &entry.credential_ref)
+                || !mcp_servers::cleanup_target_is_stale(store.conn(), &entry)
+                    .map_err(mcp_read_error)?
+            {
+                return Err(crate::credential_errors::state_error(
+                    CredentialReadStage::Mcp,
+                ));
+            }
+            match vega_store::keystore::delete_key(&self.config_root, &entry.credential_ref) {
+                Ok(()) | Err(vega_store::keystore::Error::Missing) => {}
+                Err(error) => {
+                    return Err(crate::credential_errors::credential_error(
+                        CredentialReadStage::Mcp,
+                        error,
+                    ));
+                }
+            }
+            mcp_servers::acknowledge_cleanup(store.conn(), &entry).map_err(mcp_read_error)?;
+        }
+        for row in mcp_servers::list(store.conn())
+            .map_err(mcp_read_error)?
+            .into_iter()
+            .filter(|row| row.deleting)
+        {
+            let _ = mcp_servers::finish_remove(store.conn(), &row.id).map_err(mcp_read_error)?;
         }
         Ok(())
     }
@@ -1671,26 +1784,30 @@ fn oauth_token_values(envelope: &str) -> Result<Vec<String>, McpSettingsError> {
 pub(crate) fn all_owner_credentials(
     config_root: &std::path::Path,
     store: &Store,
-) -> Result<Vec<String>, McpSettingsError> {
+) -> Result<Vec<String>, CredentialReadError> {
     // A reference name is not a credential type: a Provider may legitimately
     // be named `mcp-demo-oauth`. Only validated MCP records can identify an
     // owner-only OAuth token envelope; every other key is opaque.
     let mut oauth_refs = HashSet::new();
-    for row in mcp_servers::list(store.conn())? {
+    for row in mcp_servers::list(store.conn()).map_err(mcp_read_error)? {
         if row.transport == "remote"
             && row.remote_auth_mode.as_deref() == Some("oauth")
             && let Some(reference) = row.remote_credential_ref
         {
             if !is_owned_secret_ref(&row.id, &reference) || !reference.ends_with("-oauth") {
-                return Err(McpSettingsError::Credential);
+                return Err(CredentialReadError::new(
+                    CredentialReadStage::Mcp,
+                    CredentialReadReason::Malformed,
+                ));
             }
             oauth_refs.insert(reference);
         }
     }
-    for pending in mcp_servers::pending_cleanup(store.conn())? {
+    for pending in mcp_servers::pending_cleanup(store.conn()).map_err(mcp_read_error)? {
         if pending.credential_ref.ends_with("-oauth")
             && is_owned_secret_ref(&pending.server_id, &pending.credential_ref)
-            && mcp_servers::cleanup_target_is_stale(store.conn(), &pending)?
+            && mcp_servers::cleanup_target_is_stale(store.conn(), &pending)
+                .map_err(mcp_read_error)?
         {
             oauth_refs.insert(pending.credential_ref);
         }
@@ -1698,17 +1815,29 @@ pub(crate) fn all_owner_credentials(
     let references = match vega_store::keystore::available_refs(config_root) {
         Ok(references) => references,
         Err(vega_store::keystore::Error::Missing) => return Ok(Vec::new()),
-        Err(_) => return Err(McpSettingsError::Credential),
+        Err(error) => {
+            return Err(crate::credential_errors::credential_error(
+                CredentialReadStage::Mcp,
+                error,
+            ));
+        }
     };
     let mut known = Vec::new();
     for reference in references {
         let value = match vega_store::keystore::get_key(config_root, &reference) {
             Ok(value) => value,
             Err(vega_store::keystore::Error::Missing) => continue,
-            Err(_) => return Err(McpSettingsError::Credential),
+            Err(error) => {
+                return Err(crate::credential_errors::credential_error(
+                    CredentialReadStage::Mcp,
+                    error,
+                ));
+            }
         };
         if oauth_refs.contains(&reference) {
-            known.extend(oauth_token_values(&value)?);
+            known.extend(oauth_token_values(&value).map_err(|_| {
+                CredentialReadError::new(CredentialReadStage::Mcp, CredentialReadReason::Malformed)
+            })?);
         } else {
             known.push(value);
         }
@@ -1719,9 +1848,15 @@ pub(crate) fn all_owner_credentials(
 fn known_credentials_from_row(
     config_root: &std::path::Path,
     row: &McpServerRow,
-) -> Result<Vec<String>, McpSettingsError> {
+) -> Result<Vec<String>, CredentialReadError> {
     let references = match row.transport.as_str() {
-        "local" => env_slots_from_row(row)?
+        "local" => env_slots_from_row(row)
+            .map_err(|_| {
+                CredentialReadError::new(
+                    CredentialReadStage::Mcp,
+                    CredentialReadReason::Configuration,
+                )
+            })?
             .into_iter()
             .map(|slot| slot.credential_ref)
             .collect::<Vec<_>>(),
@@ -1738,12 +1873,22 @@ fn known_credentials_from_row(
                 {
                     vec![reference.clone()]
                 }
-                Some(_) => return Err(McpSettingsError::Credential),
+                Some(_) => {
+                    return Err(CredentialReadError::new(
+                        CredentialReadStage::Mcp,
+                        CredentialReadReason::Malformed,
+                    ));
+                }
                 None => Vec::new(),
             }
         }
         "remote" => Vec::new(),
-        _ => return Err(McpSettingsError::Store),
+        _ => {
+            return Err(CredentialReadError::new(
+                CredentialReadStage::Mcp,
+                CredentialReadReason::Configuration,
+            ));
+        }
     };
     let mut known = Vec::new();
     for reference in references {
@@ -1752,10 +1897,17 @@ fn known_credentials_from_row(
             // A missing reference is not an owner-held value; ensure_ready
             // already reports that server as unavailable.
             Err(vega_store::keystore::Error::Missing) => continue,
-            Err(_) => return Err(McpSettingsError::Credential),
+            Err(error) => {
+                return Err(crate::credential_errors::credential_error(
+                    CredentialReadStage::Mcp,
+                    error,
+                ));
+            }
         };
         if row.remote_auth_mode.as_deref() == Some("oauth") {
-            known.extend(oauth_token_values(&value)?);
+            known.extend(oauth_token_values(&value).map_err(|_| {
+                CredentialReadError::new(CredentialReadStage::Mcp, CredentialReadReason::Malformed)
+            })?);
         } else {
             known.push(value);
         }
