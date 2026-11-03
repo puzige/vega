@@ -734,6 +734,14 @@ pub(crate) fn selectable_markdown_content(
     let body = div().w_full().min_w_0().flex_shrink_0().flex().flex_col();
     let mut previous: Option<(u64, LineKind, Option<Arc<StreamCodeBlock>>)> = None;
     let selection = document.code_drag_selection(window, cx);
+    let mut fade_block = None;
+    let mut fade_line = 0;
+    let fade = copy
+        .stream_fade
+        .as_ref()
+        .map_or_else(stream_fade::FadeFrame::default, |fade| {
+            fade.borrow_mut().frame(window, cx.reduce_motion())
+        });
     let blocks = markdown_blocks(
         model,
         colors,
@@ -742,6 +750,13 @@ pub(crate) fn selectable_markdown_content(
         interaction.actions_enabled,
         copy_original,
         |line, index| {
+            if fade_block == Some(line.block_id) {
+                fade_line += 1;
+            } else {
+                fade_block = Some(line.block_id);
+                fade_line = 0;
+            }
+            let line_fade = fade.line(line.block_id, fade_line);
             if !matches!(line.kind, LineKind::Rule)
                 && let Some((previous_block, previous_kind, previous_code)) = &previous
             {
@@ -764,6 +779,7 @@ pub(crate) fn selectable_markdown_content(
                     index,
                     copy.id,
                     copy_original,
+                    &line_fade,
                 )
             });
             let content = list_item_content(line);
@@ -774,6 +790,7 @@ pub(crate) fn selectable_markdown_content(
                 index,
                 copy.id,
                 copy_original,
+                &line_fade,
             );
             if !matches!(line.kind, LineKind::Rule) {
                 previous = Some((line.block_id, line.kind, line.code_block.clone()));
@@ -1153,6 +1170,7 @@ fn render_line_selectable(
     line_index: usize,
     message_id: u64,
     in_user_bubble: bool,
+    fade: &stream_fade::LineFade<'_>,
 ) -> AnyElement {
     let body_style = markdown_body_style(colors.text_primary, in_user_bubble);
     let id_prefix = format!("assistant-{message_id}-line-{line_index}");
@@ -1164,10 +1182,12 @@ fn render_line_selectable(
             colors,
             document,
             in_user_bubble,
+            |row| fade.opacity(row),
         );
     }
     let text: String = line.spans.iter().map(|span| span.text.as_str()).collect();
     let item = div()
+        .opacity(fade.opacity(0))
         .when(
             line.kind != LineKind::Code
                 && !(line.kind == LineKind::ListItem && line.spans.is_empty()),
@@ -1314,6 +1334,7 @@ fn render_table_selectable(
     colors: &ThemeColors,
     document: &mut SelectionDocumentBuilder,
     in_user_bubble: bool,
+    opacity: impl Fn(usize) -> f32,
 ) -> AnyElement {
     let ordinal = table.ordinal;
     let columns = table.alignments.len();
@@ -1331,6 +1352,7 @@ fn render_table_selectable(
             document.append_literal("\n");
         }
         let mut row = div()
+            .opacity(opacity(row_index))
             .w_full()
             .flex()
             .flex_row()
