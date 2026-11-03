@@ -4,6 +4,7 @@ use gpui_kit::MouseMoveEvent;
 use gpui_kit::component::{IconName, spinner::Spinner};
 use vega_conversation::types::ThreadUpdate;
 mod organization;
+mod pin;
 use organization::{Organization, OrganizationSection};
 
 /// Events emitted by the session block.
@@ -63,6 +64,7 @@ pub struct ThreadsBlock {
     /// Inline error message (ui-spec §4.6).
     pub(crate) error: Option<crate::localized_copy::LocalizedCopy>,
     action_pending: bool,
+    pin_pending: Option<String>,
     visit_pending: bool,
     visit_loading: Option<(String, std::time::Instant)>,
     deferred_visit: Option<(String, u64, Option<String>)>,
@@ -120,6 +122,7 @@ impl ThreadsBlock {
             editing: None,
             error: None,
             action_pending: false,
+            pin_pending: None,
             visit_pending: false,
             visit_loading: None,
             deferred_visit: None,
@@ -483,17 +486,6 @@ impl ThreadsBlock {
             self.error = Some(message);
         }
         cx.notify();
-    }
-
-    /// Hover pin toggle (裁决①：hover 操作组里的置顶切换，再点取消).
-    fn toggle_pin(&mut self, thread_id: &str, pinned: bool, cx: &mut Context<Self>) {
-        self.mutate_thread(
-            |store| {
-                conversation::set_thread_pinned(store, thread_id, !pinned)
-                    .map_err(crate::localized_copy::LocalizedCopy::from)
-            },
-            cx,
-        );
     }
 
     /// 归档 (active → archived) or 恢复 (archived → active).
@@ -1677,8 +1669,11 @@ impl ThreadsBlock {
         let awaiting_answer = thread_is_awaiting_answer(&thread.id, cx);
         let menu_open = self.actions_row.as_deref() == Some(row_key.as_str());
         let keyboard_focused = self.focused_thread_action.as_deref() == Some(row_key.as_str());
-        let quick_actions_visible =
-            self.hovered.as_deref() == Some(row_key.as_str()) && !menu_open && !keyboard_focused;
+        let pin_pending = self.pin_pending.as_deref() == Some(thread.id.as_str());
+        let quick_actions_visible = pin_pending
+            || (self.hovered.as_deref() == Some(row_key.as_str())
+                && !menu_open
+                && !keyboard_focused);
         let mut trigger = div()
             .id(ElementId::Name(
                 format!("{action_prefix}thread-actions-{thread_id}").into(),
@@ -1886,7 +1881,9 @@ impl ThreadsBlock {
         group = group.child(trigger);
         if quick_actions_visible {
             let pinned = thread.pinned;
-            let pin_label = if pinned {
+            let pin_label = if pin_pending {
+                vega_i18n::t("ui.saving")
+            } else if pinned {
                 vega_i18n::t("ui.unpin")
             } else {
                 vega_i18n::t("ui.pin")
@@ -1910,17 +1907,30 @@ impl ThreadsBlock {
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
-                        this.toggle_pin(&pin_thread_id, pinned, cx);
+                        if !pin_pending {
+                            this.toggle_pin(&pin_thread_id, pinned, cx);
+                        }
                     }),
                 )
-                .child(crate::icons::icon(
-                    crate::icons::Icon::Pin,
-                    if pinned {
-                        colors.accent
-                    } else {
-                        colors.text_secondary
-                    },
-                ));
+                .when(pin_pending, |button| {
+                    button.child(
+                        Spinner::new()
+                            .ease(gpui_kit::linear)
+                            .with_size(px(Layout::ICON_SIZE))
+                            .icon(IconName::LoaderCircle)
+                            .color(colors.text_secondary.into()),
+                    )
+                })
+                .when(!pin_pending, |button| {
+                    button.child(crate::icons::icon(
+                        crate::icons::Icon::Pin,
+                        if pinned {
+                            colors.accent
+                        } else {
+                            colors.text_secondary
+                        },
+                    ))
+                });
             let archive_button = div()
                 .id(ElementId::Name(
                     format!("{action_prefix}thread-archive-{thread_id}").into(),
