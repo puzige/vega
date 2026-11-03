@@ -952,6 +952,7 @@ impl VegaWindow {
                     header.child(
                         div()
                             .id("vega-update-notice")
+                            .mr_3()
                             .focusable()
                             .tab_stop(true)
                             .h(px(Layout::TITLEBAR_CONTROL_SIZE))
