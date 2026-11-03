@@ -638,8 +638,21 @@ pub fn save_snapshot(
     conn: &Connection,
     input: NewSkillSnapshot<'_>,
 ) -> Result<(), SkillStoreError> {
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::Skills,
+    )?;
+    save_snapshot_in_transaction(&tx, input)?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn save_snapshot_in_transaction(
+    tx: &crate::write_coordination::WriteTransaction<'_>,
+    input: NewSkillSnapshot<'_>,
+) -> Result<(), SkillStoreError> {
     let _permit =
-        crate::write_coordination::acquire(conn, crate::write_coordination::WriteCategory::Skills)?;
+        crate::write_coordination::acquire(tx, crate::write_coordination::WriteCategory::Skills)?;
     if !valid_id(input.run_id)
         || !valid_id(input.thread_id)
         || !valid_hash(input.catalog_sha256)
@@ -658,11 +671,7 @@ pub fn save_snapshot(
         i64::try_from(input.consent_generation).map_err(|_| SkillStoreError::InvalidInput)?;
     let revoked =
         i64::try_from(input.revocation_generation).map_err(|_| SkillStoreError::InvalidInput)?;
-    let tx = crate::write_coordination::WriteTransaction::new(
-        conn,
-        crate::write_coordination::WriteCategory::Skills,
-    )?;
-    let settings = read_settings(&tx)?;
+    let settings = read_settings(tx)?;
     if settings.consent_generation != input.consent_generation
         || settings.revocation_generation != input.revocation_generation
     {
@@ -704,7 +713,6 @@ pub fn save_snapshot(
             input.updated_at,
         ],
     )?;
-    tx.commit()?;
     Ok(())
 }
 

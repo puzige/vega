@@ -529,6 +529,7 @@ impl RuntimeSteeringSource for QueueSteeringSource {
                     user_message_seq: seq,
                     message: chat,
                     skill_selections,
+                    skills: None,
                 };
                 *prepared
                     .lock()
@@ -606,6 +607,47 @@ impl RuntimeSteeringSource for QueueSteeringSource {
         }
         .boxed()
     }
+
+    fn release<'a>(
+        &'a self,
+        input: &'a RuntimeSteeringInput,
+    ) -> BoxFuture<'a, Result<(), VegaError>> {
+        let this = self.clone();
+        let id = input.id.clone();
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let store = Store::open(&this.database)?;
+                let tx = store.immediate_transaction()?;
+                tx.execute(
+                    "UPDATE pending_messages SET state = 'pending' WHERE thread_id = ?1 \
+                     AND id = ?2 AND generation = ?3 AND state = 'claimed'",
+                    (&this.thread_id, &id, &this.generation),
+                )?;
+                tx.commit()?;
+                Ok(())
+            })
+            .await
+            .map_err(|_| pending_failure(Stage::PendingWorker, Reason::Worker))?
+        }
+        .boxed()
+    }
+}
+
+pub(crate) fn verify_steering_acceptance(
+    store: &Store,
+    input: &RuntimeSteeringInput,
+    thread_id: &str,
+) -> Result<(), VegaError> {
+    let row = rows::find(store.conn(), thread_id, &input.id)?
+        .ok_or_else(|| pending_failure(Stage::PendingAdmission, Reason::Admission))?;
+    let message =
+        decode(row).map_err(|_| pending_failure(Stage::PendingDecode, Reason::PendingDecode))?;
+    if message.content != input.original_content || message.images != input.message.images {
+        return Err(pending_failure(Stage::PendingAdmission, Reason::Admission));
+    }
+    require_authority(store, &message)
+        .map_err(|_| pending_failure(Stage::PendingAdmission, Reason::Admission))?;
+    Ok(())
 }
 
 fn validate_steering_skills(

@@ -53,6 +53,8 @@ mod credential_guard;
 mod diagnostics;
 mod entry;
 mod events;
+#[cfg(test)]
+pub(crate) use events::persist_runtime_event;
 mod ordinary;
 mod permission_queue;
 mod scope_permission;

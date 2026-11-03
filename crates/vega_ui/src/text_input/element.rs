@@ -605,6 +605,7 @@ impl Render for TextInput {
         // The multi-line Composer input renders bare: the composer card
         // around it supplies bg/border/rounding for the whole row.
         let mut container = div()
+            .id("text-input")
             .flex_1()
             .key_context("TextInput")
             .role(gpui_kit::Role::TextInput)

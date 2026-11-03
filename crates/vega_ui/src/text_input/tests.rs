@@ -1,5 +1,4 @@
 use super::{Backspace, Copy, Cut, Delete, Paste, Redo, TextInput, Undo};
-use gpui_kit as gpui;
 use gpui_kit::{AppContext, Context, EntityInputHandler, TestAppContext, Window};
 use std::ops::Range;
 use vega_conversation::types::{FileReferenceMention, SkillMention, SkillSelectionIntent};

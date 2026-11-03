@@ -17,7 +17,7 @@ use vega_store::skills::{self, SkillSnapshotRecord, SkillSourceRecord};
 
 use crate::types::ConversationError;
 
-pub(super) struct PreparedSkills {
+pub(crate) struct PreparedSkills {
     pub run: SkillRun,
     pub explicit: Vec<SkillSelection>,
 }

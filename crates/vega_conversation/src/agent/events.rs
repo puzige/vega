@@ -92,7 +92,7 @@ where
             return Ok(());
         };
 
-        let RuntimeEnvelope { event, ack } = envelope;
+        let RuntimeEnvelope { event, mut ack } = envelope;
         let invalid_boundary = match &event {
             RuntimeEvent::AssistantResponseStarted {
                 text_start_bytes, ..
@@ -175,6 +175,11 @@ where
                         .await
                     {
                         Ok(metadata) => (|| {
+                            if matches!(&event, RuntimeEvent::SteeringAccepted(_))
+                                && let Some(ack) = ack.take()
+                            {
+                                let _ = ack.send(Ok(()));
+                            }
                             for timestamp in metadata {
                                 event_sink(&timestamp)?;
                                 events.push(timestamp);
@@ -565,7 +570,7 @@ pub(crate) fn persist_runtime_event(
     event: &RuntimeEvent,
     execution_duration_ms: Option<i64>,
     active_response_id: Option<&str>,
-) -> Result<(), VegaError> {
+) -> Result<Vec<ConversationEvent>, VegaError> {
     match event {
         RuntimeEvent::ResponseRetrying {
             text_start_bytes, ..
@@ -603,7 +608,10 @@ pub(crate) fn persist_runtime_event(
         }
         RuntimeEvent::ReasoningCompleted { .. } => {}
         RuntimeEvent::SteeringAccepted(input) => {
+            let _coordination = crate::permission_contracts::coordinate()
+                .map_err(|_| safe_audit_error("steering"))?;
             let tx = store.immediate_transaction()?;
+            crate::pending_messages::verify_steering_acceptance(store, input, thread_id)?;
             let admitted_at = vega_store::pending_messages::find(&tx, thread_id, &input.id)?
                 .ok_or_else(runtime_state_error)?
                 .created_at;
@@ -677,7 +685,44 @@ pub(crate) fn persist_runtime_event(
             for (ordinal, image) in input.message.images.iter().enumerate() {
                 vega_store::image_attachments::insert(&tx, &input.id, ordinal, image.bytes())?;
             }
+            if let Some(skills) = &input.skills {
+                let snapshot = skill_snapshot_input(
+                    thread_id,
+                    &input.assistant_message_id,
+                    &skills.binding,
+                    &skills.snapshot,
+                )?;
+                vega_store::skills::save_snapshot_in_transaction(&tx, snapshot)
+                    .map_err(skill_store_error)?;
+                for audit in &skills.audits {
+                    vega_store::skills::append_activation_audit(
+                        &tx,
+                        skill_activation_audit(thread_id, &input.assistant_message_id, audit),
+                    )
+                    .map_err(skill_store_error)?;
+                }
+            } else if !input.skill_selections.is_empty() {
+                return Err(safe_audit_error("skill"));
+            }
+            let mut metadata = Vec::new();
+            if messages::timestamp_break_before(&tx, &input.id)? {
+                metadata.push(ConversationEvent::TimestampBreakBefore {
+                    message_id: input.id.clone(),
+                });
+            }
+            metadata.push(ConversationEvent::MessageTimestamp {
+                message_id: input.id.clone(),
+                sent_at_ms: crate::types::valid_message_timestamp(
+                    Some(admitted_at),
+                    crate::types::unix_now_ms(),
+                ),
+            });
+            metadata.push(ConversationEvent::MessageTimestamp {
+                message_id: input.assistant_message_id.clone(),
+                sent_at_ms: None,
+            });
             tx.commit()?;
+            return Ok(metadata);
         }
         RuntimeEvent::BuiltinSkillActivated(activation) => {
             vega_store::computer_use_delivery::activate_builtin(
@@ -799,27 +844,9 @@ pub(crate) fn persist_runtime_event(
                 let binding = binding.as_ref().ok_or_else(|| safe_audit_error("skill"))?;
                 persist_skill_snapshot(store, thread_id, message_id, binding, snapshot)?;
             }
-            let scope = audit.source_scope.map(|scope| match scope {
-                vega_runtime::skills::SourceScope::Project => "project",
-                vega_runtime::skills::SourceScope::VegaGlobal => "vega_global",
-                vega_runtime::skills::SourceScope::Imported => "imported",
-            });
-            let origin = match audit.origin {
-                vega_runtime::skills::ActivationOrigin::ExplicitUser => "explicit_user",
-                vega_runtime::skills::ActivationOrigin::Model => "model",
-            };
             vega_store::skills::append_activation_audit(
                 store.conn(),
-                vega_store::skills::NewSkillActivationAudit {
-                    run_id: message_id,
-                    thread_id,
-                    name: &audit.name,
-                    source_scope: scope,
-                    content_sha256: audit.content_sha256.as_deref(),
-                    origin,
-                    status: audit.status,
-                    created_at: now_ms(),
-                },
+                skill_activation_audit(thread_id, message_id, audit),
             )
             .map_err(skill_store_error)?;
         }
@@ -1271,7 +1298,31 @@ pub(crate) fn persist_runtime_event(
         | RuntimeEvent::ToolCallFinished(_)
         | RuntimeEvent::ToolReadFinished { .. } => {}
     }
-    Ok(())
+    Ok(Vec::new())
+}
+
+fn skill_activation_audit<'a>(
+    thread_id: &'a str,
+    message_id: &'a str,
+    audit: &'a vega_runtime::skills::ActivationAudit,
+) -> vega_store::skills::NewSkillActivationAudit<'a> {
+    vega_store::skills::NewSkillActivationAudit {
+        run_id: message_id,
+        thread_id,
+        name: &audit.name,
+        source_scope: audit.source_scope.map(|scope| match scope {
+            vega_runtime::skills::SourceScope::Project => "project",
+            vega_runtime::skills::SourceScope::VegaGlobal => "vega_global",
+            vega_runtime::skills::SourceScope::Imported => "imported",
+        }),
+        content_sha256: audit.content_sha256.as_deref(),
+        origin: match audit.origin {
+            vega_runtime::skills::ActivationOrigin::ExplicitUser => "explicit_user",
+            vega_runtime::skills::ActivationOrigin::Model => "model",
+        },
+        status: audit.status,
+        created_at: now_ms(),
+    }
 }
 
 fn persist_skill_snapshot(
@@ -1281,23 +1332,32 @@ fn persist_skill_snapshot(
     binding: &vega_runtime::skills::RunBinding,
     snapshot: &vega_runtime::skills::SkillRunSnapshot,
 ) -> Result<(), VegaError> {
+    vega_store::skills::save_snapshot(
+        store.conn(),
+        skill_snapshot_input(thread_id, message_id, binding, snapshot)?,
+    )
+    .map_err(skill_store_error)
+}
+
+fn skill_snapshot_input<'a>(
+    thread_id: &str,
+    message_id: &str,
+    binding: &'a vega_runtime::skills::RunBinding,
+    snapshot: &'a vega_runtime::skills::SkillRunSnapshot,
+) -> Result<vega_store::skills::NewSkillSnapshot<'a>, VegaError> {
     if binding.run_id() != message_id || binding.thread_id() != thread_id {
         return Err(safe_audit_error("skill"));
     }
-    vega_store::skills::save_snapshot(
-        store.conn(),
-        vega_store::skills::NewSkillSnapshot {
-            run_id: binding.run_id(),
-            thread_id: binding.thread_id(),
-            consent_generation: binding.consent_generation(),
-            revocation_generation: binding.revocation_generation(),
-            catalog_sha256: binding.catalog_sha256(),
-            snapshot_sha256: snapshot.sha256(),
-            bytes: snapshot.bytes(),
-            updated_at: now_ms(),
-        },
-    )
-    .map_err(skill_store_error)
+    Ok(vega_store::skills::NewSkillSnapshot {
+        run_id: binding.run_id(),
+        thread_id: binding.thread_id(),
+        consent_generation: binding.consent_generation(),
+        revocation_generation: binding.revocation_generation(),
+        catalog_sha256: binding.catalog_sha256(),
+        snapshot_sha256: snapshot.sha256(),
+        bytes: snapshot.bytes(),
+        updated_at: now_ms(),
+    })
 }
 
 fn skill_store_error(error: vega_store::skills::SkillStoreError) -> VegaError {

@@ -382,7 +382,7 @@ impl PersistenceActor {
                                 } else {
                                     None
                                 };
-                                persist_runtime_event(
+                                let acceptance_metadata = persist_runtime_event(
                                     &store,
                                     &project_id,
                                     &thread_id,
@@ -395,6 +395,9 @@ impl PersistenceActor {
                                     execution_duration_ms,
                                     active_response_id.as_deref(),
                                 )?;
+                                if matches!(event.as_ref(), RuntimeEvent::SteeringAccepted(_)) {
+                                    return Ok(acceptance_metadata);
+                                }
                                 if usage.is_some()
                                     && let Some((parent_thread, parent_message)) =
                                         &config.delegated_parent
@@ -440,9 +443,6 @@ impl PersistenceActor {
                                     transaction.commit()?;
                                 }
                                 let timestamp_owner = match event.as_ref() {
-                                    RuntimeEvent::SteeringAccepted(input) => {
-                                        Some((input.id.as_str(), true))
-                                    }
                                     RuntimeEvent::AssistantResponseStarted { .. }
                                     | RuntimeEvent::ResponseRetrying { .. }
                                     | RuntimeEvent::Finished(_) => {
@@ -483,12 +483,6 @@ impl PersistenceActor {
                                             clock,
                                             crate::types::unix_now_ms(),
                                         ),
-                                    });
-                                }
-                                if let RuntimeEvent::SteeringAccepted(input) = event.as_ref() {
-                                    metadata.push(ConversationEvent::MessageTimestamp {
-                                        message_id: input.assistant_message_id.clone(),
-                                        sent_at_ms: None,
                                     });
                                 }
                                 Ok(metadata)

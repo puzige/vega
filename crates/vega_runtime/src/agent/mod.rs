@@ -193,6 +193,14 @@ pub struct RuntimeSteeringInput {
     pub assistant_message_id: String,
     pub message: ChatMessage,
     pub skill_selections: Vec<SkillSelection>,
+    pub skills: Option<RuntimeSteeringSkills>,
+}
+
+#[derive(Clone)]
+pub struct RuntimeSteeringSkills {
+    pub binding: crate::skills::RunBinding,
+    pub snapshot: crate::skills::SkillRunSnapshot,
+    pub audits: Vec<crate::skills::ActivationAudit>,
 }
 
 pub trait RuntimeSteeringSource: Send + Sync {
@@ -207,6 +215,12 @@ pub trait RuntimeSteeringSource: Send + Sync {
         &'a self,
         input: &'a RuntimeSteeringInput,
     ) -> BoxFuture<'a, Result<(), VegaError>>;
+    fn release<'a>(
+        &'a self,
+        _input: &'a RuntimeSteeringInput,
+    ) -> BoxFuture<'a, Result<(), VegaError>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// Headless tool and permission facts for one task.

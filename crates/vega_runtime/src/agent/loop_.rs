@@ -4,6 +4,10 @@ use super::*;
 use crate::skills::{BatchPolicy, classify_tool_batch};
 use crate::{ContextCheck, ContextCompactionRequest, ContextRuntimeError};
 
+#[cfg(test)]
+#[path = "steering_development_regressions.rs"]
+mod steering_development_regressions;
+
 fn redact_runtime_tool_result(config: &RuntimeToolConfig, result: &mut RuntimeToolResult) {
     match config.redact_tool_output(&result.output) {
         Ok(output) => result.output = output,
@@ -491,7 +495,7 @@ async fn accept_steering(
     budget: Option<crate::ContextBudget>,
     accounting: InputAccounting<'_>,
     cancel: &CancellationToken,
-) -> Result<Vec<RuntimeEvent>, VegaError> {
+) -> Result<(Option<SkillRun>, RuntimeEvent), VegaError> {
     crate::images::validate_messages(std::slice::from_ref(&input.message))?;
     if cancel.is_cancelled() || !skill_authority_current(config) {
         return Err(VegaError::Cancelled);
@@ -583,36 +587,42 @@ async fn accept_steering(
     if cancel.is_cancelled() || !skill_authority_current(config) {
         return Err(VegaError::Cancelled);
     }
-    let mut events = vec![RuntimeEvent::SteeringAccepted(input.clone())];
-    if let (Some(config), Some(candidate)) = (config, candidate) {
-        let binding = candidate.binding().cloned();
-        let previous = {
-            let mut run = config.run.lock().map_err(|_| skill_runtime_error())?;
-            std::mem::replace(&mut *run, candidate)
-        };
-        if let Err(error) = source.acknowledge(input).await {
-            *config.run.lock().map_err(|_| skill_runtime_error())? = previous;
-            return Err(error);
-        }
-        if let (Some(binding), Some(snapshot)) = (&binding, snapshot) {
-            events.push(RuntimeEvent::SkillSnapshot {
-                binding: binding.clone(),
-                snapshot,
-            });
-        }
-        events.extend(
-            activation_events
-                .into_iter()
-                .map(|audit| RuntimeEvent::SkillActivation {
-                    audit,
-                    binding: binding.clone(),
-                    snapshot: None,
-                }),
-        );
-    } else {
-        source.acknowledge(input).await?;
+    let mut accepted = input.clone();
+    accepted.skills = match (candidate.as_ref().and_then(SkillRun::binding), snapshot) {
+        (Some(binding), Some(snapshot)) => Some(RuntimeSteeringSkills {
+            binding: binding.clone(),
+            snapshot,
+            audits: activation_events,
+        }),
+        _ if !activation_events.is_empty() => return Err(skill_runtime_error()),
+        _ => None,
+    };
+    source.acknowledge(input).await?;
+    Ok((candidate, RuntimeEvent::SteeringAccepted(accepted)))
+}
+
+async fn commit_steering<F, Fut>(
+    source: &dyn RuntimeSteeringSource,
+    input: &RuntimeSteeringInput,
+    config: Option<&RuntimeSkillConfig>,
+    staged: (Option<SkillRun>, RuntimeEvent),
+    events: &mut Vec<RuntimeEvent>,
+    sink: &mut F,
+) -> Result<(), VegaError>
+where
+    F: FnMut(RuntimeEvent) -> Fut,
+    Fut: Future<Output = Result<(), VegaError>>,
+{
+    let (candidate, event) = staged;
+    if let Err(error) = sink(event.clone()).await {
+        source.release(input).await?;
+        return Err(error);
     }
-    Ok(events)
+    if let (Some(config), Some(candidate)) = (config, candidate) {
+        *config.run.lock().map_err(|_| skill_runtime_error())? = candidate;
+    }
+    events.push(event);
+    Ok(())
 }
 
 fn skill_system_prompt(base: &str, run: &SkillRun) -> Result<String, VegaError> {
@@ -3277,7 +3287,7 @@ where
                         false,
                     ));
                 }
-                for event in accept_steering(
+                let staged = accept_steering(
                     source.as_ref(),
                     &input,
                     skill_config.as_ref(),
@@ -3294,10 +3304,16 @@ where
                     },
                     &cancel,
                 )
-                .await?
-                {
-                    emit!(events, sink, event);
-                }
+                .await?;
+                commit_steering(
+                    source.as_ref(),
+                    &input,
+                    skill_config.as_ref(),
+                    staged,
+                    &mut events,
+                    &mut sink,
+                )
+                .await?;
                 direct_user_skill_round = true;
                 progress = progress::ProgressReporter::new();
                 recovery = progress_recovery::ProgressRecovery::default();
@@ -4199,7 +4215,7 @@ where
                     false,
                 ));
             }
-            for event in accept_steering(
+            let staged = accept_steering(
                 source.as_ref(),
                 &input,
                 skill_config.as_ref(),
@@ -4216,10 +4232,16 @@ where
                 },
                 &cancel,
             )
-            .await?
-            {
-                emit!(events, sink, event);
-            }
+            .await?;
+            commit_steering(
+                source.as_ref(),
+                &input,
+                skill_config.as_ref(),
+                staged,
+                &mut events,
+                &mut sink,
+            )
+            .await?;
             direct_user_skill_round = true;
             progress = progress::ProgressReporter::new();
             recovery = progress_recovery::ProgressRecovery::default();
