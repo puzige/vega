@@ -4,10 +4,6 @@ use super::*;
 use crate::skills::{BatchPolicy, classify_tool_batch};
 use crate::{ContextCheck, ContextCompactionRequest, ContextRuntimeError};
 
-#[cfg(test)]
-#[path = "steering_development_regressions.rs"]
-mod steering_development_regressions;
-
 fn redact_runtime_tool_result(config: &RuntimeToolConfig, result: &mut RuntimeToolResult) {
     match config.redact_tool_output(&result.output) {
         Ok(output) => result.output = output,

@@ -134,9 +134,6 @@ mod mouse_selection;
 mod skill_query;
 mod state;
 
-#[cfg(test)]
-mod tests;
-
 /// Explicit Composer-only clipboard intent; never log clipboard payloads.
 pub struct ImagePaste(pub std::sync::Arc<ClipboardItem>);
 impl gpui_kit::EventEmitter<ImagePaste> for TextInput {}

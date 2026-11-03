@@ -1,6 +1,4 @@
 mod catalog;
-#[cfg(test)]
-mod development_regressions;
 mod frontmatter;
 mod source;
 

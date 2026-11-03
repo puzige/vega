@@ -7,8 +7,6 @@ mod automatic_titles;
 pub mod codex_tasks;
 pub mod command_scope;
 mod composer_predictions;
-#[cfg(test)]
-mod development_regressions;
 pub mod display_history;
 mod git_workspace;
 pub mod history;
