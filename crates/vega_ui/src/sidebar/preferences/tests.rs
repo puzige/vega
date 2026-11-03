@@ -8,7 +8,9 @@ use super::*;
 fn configuration() -> (TempDir, PathBuf) {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("config.yaml");
-    config::load_from(&path).unwrap();
+    fs::write(&path, "schema_version: 1\ncredential_bindings: []\nproviders: []\ndefaults:\n  model: ''\n  permission_mode: confirm\n  permission_revision: 0\n  full_access_grant: null\nui:\n  theme: dark\n  language: en\n  sidebar_collapsed: false\n  sidebar_width: 304.0\n  projects_collapsed: false\n  sessions_collapsed: false\nagent:\n  composer_predictions_enabled: true\n  running_message_behavior: queue\n  desktop_use_enabled: false\n  browser_use_enabled: false\n  turn_limit: 0\n  codex_acp_profile: null\n").unwrap();
+    let loaded = config::read_from(&path).unwrap();
+    assert_eq!(loaded.ui.sidebar_width, config::SIDEBAR_WIDTH_DEFAULT);
     (directory, path)
 }
 
