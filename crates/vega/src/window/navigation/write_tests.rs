@@ -28,7 +28,7 @@ fn setup(cx: &mut TestAppContext) -> (tempfile::TempDir, Entity<VegaWindow>, Thr
         cx.set_global(OpenedThread(Some(thread.clone())));
         cx.set_global(SettingsOpen(false));
     });
-    let root = cx.new(|cx| VegaWindow::new_with_services(cx, false));
+    let root = cx.new(|cx| VegaWindow::with_background_services(false, cx));
     cx.run_until_parked();
     (directory, root, thread)
 }
