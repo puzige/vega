@@ -40,6 +40,7 @@ pub(crate) struct ContextControl {
     automatic: bool,
     settings: Option<ContextSettings>,
     model_input_limit: Option<u64>,
+    projection_loaded: bool,
     last_call_total: Option<u64>,
     next_request: Option<NextRequestEstimate>,
     live_call: Option<PrimaryContextCall>,
@@ -74,6 +75,7 @@ impl ContextControl {
             automatic: false,
             settings: None,
             model_input_limit: None,
+            projection_loaded: false,
             last_call_total: None,
             next_request: None,
             live_call: None,
@@ -116,6 +118,10 @@ impl ConversationStream {
             || self.has_pending_model_selection()
         {
             Some("ui.command_busy")
+        } else if self.context_control.error == Some(LOAD_ERROR) {
+            Some(LOAD_ERROR)
+        } else if !self.context_control.projection_loaded {
+            Some("ui.loading")
         } else if self.context_control.model_input_limit.is_none() {
             Some("ui.command_configure_capacity")
         } else if !self.context_control.compactable
@@ -397,6 +403,7 @@ impl ConversationStream {
             && self.context_control.reserve.read(cx).text().is_empty();
         self.context_control.settings = settings;
         self.context_control.model_input_limit = usage.model_input_limit;
+        self.context_control.projection_loaded = true;
         if self.context_control.last_call_total.is_none() {
             self.context_control.last_call_total = usage.last_call_total;
         }

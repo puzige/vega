@@ -227,6 +227,73 @@ fn stale_projection_and_codex_do_not_expose_skills(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn compact_availability_distinguishes_loading_failure_and_unknown_capacity(
+    cx: &mut TestAppContext,
+) {
+    with_stream(cx, |stream, _, cx| {
+        query(stream, "/", cx);
+        assert_eq!(stream.compact_command_availability(cx), Some("ui.loading"));
+        let thread_id = stream.thread.id.clone();
+        let model = stream.thread.model.clone();
+        assert!(stream.apply_context_load_error(&thread_id, &model, cx));
+        assert_eq!(
+            stream.compact_command_availability(cx),
+            Some("ui.could_not_load_context_information_try_again_later")
+        );
+        assert!(stream.apply_context_projection(
+            &thread_id,
+            &model,
+            None,
+            ContextUsageProjection::default(),
+            true,
+            cx,
+        ));
+        assert_eq!(
+            stream.compact_command_availability(cx),
+            Some("ui.command_configure_capacity")
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn configured_capacity_recovers_after_load_failure_without_accepting_stale_results(
+    cx: &mut TestAppContext,
+) {
+    with_stream(cx, |stream, _, cx| {
+        query(stream, "/", cx);
+        let thread_id = stream.thread.id.clone();
+        let model = stream.thread.model.clone();
+        stream.set_compaction_source("current-history".into());
+        assert!(!stream.apply_context_projection(
+            &thread_id,
+            "other-model",
+            None,
+            ContextUsageProjection::new(Some(300000), None, None),
+            true,
+            cx,
+        ));
+        assert_eq!(stream.compact_command_availability(cx), Some("ui.loading"));
+        assert!(stream.apply_context_load_error(&thread_id, &model, cx));
+        assert!(stream.apply_context_projection(
+            &thread_id,
+            &model,
+            None,
+            ContextUsageProjection::new(Some(300000), None, None),
+            true,
+            cx,
+        ));
+        assert_eq!(stream.compact_command_availability(cx), None);
+        assert!(!stream.apply_context_load_error(&thread_id, "other-model", cx));
+        assert_eq!(stream.compact_command_availability(cx), None);
+        assert!(stream.apply_context_load_error(&thread_id, &model, cx));
+        assert_eq!(
+            stream.compact_command_availability(cx),
+            Some("ui.could_not_load_context_information_try_again_later")
+        );
+    });
+}
+
+#[gpui_kit::test]
 fn bare_dollar_keeps_numeric_code_path_selection_and_ime_guards(cx: &mut TestAppContext) {
     with_stream(cx, |stream, window, cx| {
         for text in [

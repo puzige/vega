@@ -1,4 +1,6 @@
 pub mod agent;
+#[cfg(test)]
+mod capacity_projection_tests;
 mod credential_errors;
 pub use credential_errors::provider_credential_error;
 mod artifact;
