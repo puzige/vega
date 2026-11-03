@@ -2052,10 +2052,11 @@ pub(crate) fn validate_recovered_projection(
                         }
                         ApprovalSource::Recovery => {
                             valid_history_call_projection(input_json)
-                                && credential_redaction_only(
+                                && (credential_redaction_only(
                                     vega_store::recovery::RECOVERY_REJECTED_OUTPUT,
                                     output,
-                                )
+                                ) || output
+                                    == "Tool error: credential safety check unavailable")
                         }
                         ApprovalSource::Cancelled => {
                             request.is_some()
