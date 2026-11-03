@@ -1,7 +1,7 @@
 use super::*;
 
 impl ThreadsBlock {
-    pub(super) fn mutation_route(
+    pub(in crate::sidebar) fn mutation_route(
         &mut self,
         cx: &mut Context<Self>,
     ) -> (u64, (Option<String>, Option<String>, bool)) {
@@ -12,7 +12,7 @@ impl ThreadsBlock {
         )
     }
 
-    pub(super) fn remove_deleted_row(&mut self, id: &str, cx: &mut Context<Self>) {
+    pub(in crate::sidebar) fn remove_deleted_row(&mut self, id: &str, cx: &mut Context<Self>) {
         self.threads.retain(|row| row.id != id);
         self.archived.retain(|row| row.id != id);
         if let Some(snapshot) = self
@@ -33,7 +33,7 @@ impl ThreadsBlock {
         self.reload_background(cx);
     }
 
-    pub(super) fn reload_background(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::sidebar) fn reload_background(&mut self, cx: &mut Context<Self>) {
         if self.organization.is_some() {
             self.refresh_organization(cx);
             return;

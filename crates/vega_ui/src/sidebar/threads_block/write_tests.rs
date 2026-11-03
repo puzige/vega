@@ -326,47 +326,147 @@ fn project_removal_failure_retries_and_old_database_completion_does_not_clear_ro
 #[gpui_kit::test]
 fn archive_pauses_automation_in_the_same_persisted_operation(cx: &mut TestAppContext) {
     let (_directory, block, thread) = setup(cx);
-    let automation = cx.read(|cx| {
-        vega_conversation::automation::execute(
-            cx.global::<VegaStore>().0.as_ref().unwrap(),
-            vega_conversation::types::AutomationCommand::Create(
-                vega_conversation::types::AutomationCreateInput {
-                    thread_id: thread.id.clone(),
-                    title: "scheduled".to_string(),
-                    prompt: "run".to_string(),
-                    kind: vega_conversation::types::AutomationKind::Once,
-                    once_at: Some(chrono::Utc::now() + chrono::Duration::days(1)),
-                    cron_expr: None,
-                    timezone: "UTC".to_string(),
-                    status: vega_conversation::types::AutomationStatus::Active,
-                    inherit_active_context: false,
-                },
-            ),
+    cx.read(|cx| {
+        let task = vega_conversation::types::AutomationTask {
+            thread_id: thread.id.clone(),
+            kind: vega_conversation::types::AutomationKind::Loop,
+            identity: "automation".into(),
+            revision: 1,
+            permission_authorization: None,
+            instruction: "run".into(),
+            status: vega_conversation::types::AutomationStatus::Active,
+            token_budget: None,
+            used_tokens: 0,
+            usage_complete: true,
+            elapsed_ms: 0,
+            interval_seconds: Some(60),
+            next_due_ms: 1,
+            expires_at_ms: None,
+            no_progress: 0,
+            blocker_count: 0,
+            blocker: None,
+            reason: None,
+            system_reason: None,
+            updated_at_ms: 1,
+        };
+        vega_store::automation::save_task(
+            cx.global::<VegaStore>().0.as_ref().unwrap().conn(),
+            &thread.id,
+            "loop",
+            &task.identity,
+            task.revision,
+            &serde_json::to_string(&task).unwrap(),
         )
-        .unwrap()
+        .unwrap();
     });
-    let vega_conversation::types::AutomationCommandResult::Task(automation) = automation else {
-        panic!("created task expected");
-    };
     block.update(cx, |block, cx| {
         block.set_thread_status(&thread.id, ThreadStatus::Archived, cx)
     });
     cx.run_until_parked();
     cx.read(|cx| {
-        let result = vega_conversation::automation::execute(
+        let tasks = vega_conversation::automation::load(
             cx.global::<VegaStore>().0.as_ref().unwrap(),
-            vega_conversation::types::AutomationCommand::Detail {
-                task_id: automation.id,
-            },
+            &thread.id,
         )
         .unwrap();
-        let vega_conversation::types::AutomationCommandResult::Task(task) = result else {
-            panic!("task expected");
-        };
+        let task = &tasks[0];
         assert_eq!(
             task.status,
             vega_conversation::types::AutomationStatus::Paused
         );
     });
     assert_eq!(stored(cx, &thread.id).status, ThreadStatus::Archived);
+}
+
+#[gpui_kit::test]
+fn project_removal_holds_worker_admission_until_commit_and_failure_releases_it(
+    cx: &mut TestAppContext,
+) {
+    let (directory, _block, thread) = setup(cx);
+    let block = cx.new(ProjectsBlock::new);
+    let worker = cx.update(|cx| register_project_worker(&thread.project_id, cx).unwrap());
+    block.update(cx, |block, cx| block.remove_project(&thread.project_id, cx));
+    assert_eq!(pending(cx), 0);
+    assert_eq!(stored(cx, &thread.id).project_id, thread.project_id);
+    drop(worker);
+    let path = directory.path().join("sidebar.db");
+    let moved = directory.path().join("moved.db");
+    std::fs::rename(&path, &moved).unwrap();
+    block.update(cx, |block, cx| block.remove_project(&thread.project_id, cx));
+    cx.update(|cx| assert!(register_project_worker(&thread.project_id, cx).is_none()));
+    cx.run_until_parked();
+    let worker = cx.update(|cx| register_project_worker(&thread.project_id, cx).unwrap());
+    drop(worker);
+    std::fs::rename(moved, &path).unwrap();
+    let blocker = Store::open_existing(&path).unwrap();
+    let permit = vega_store::write_coordination::acquire(
+        blocker.conn(),
+        vega_store::write_coordination::WriteCategory::Messages,
+    )
+    .unwrap();
+    block.update(cx, |block, cx| block.remove_project(&thread.project_id, cx));
+    cx.update(|cx| assert!(register_project_worker(&thread.project_id, cx).is_none()));
+    drop(permit);
+    cx.run_until_parked();
+    assert_eq!(stored(cx, &thread.id).project_id, "");
+    cx.update(|cx| assert!(register_project_worker(&thread.project_id, cx).is_none()));
+    assert_eq!(pending(cx), 0);
+}
+
+#[gpui_kit::test]
+fn project_failure_survives_plain_refresh_until_real_retry_succeeds(cx: &mut TestAppContext) {
+    let (directory, _block, thread) = setup(cx);
+    let block = cx.new(ProjectsBlock::new);
+    let path = directory.path().join("sidebar.db");
+    let moved = directory.path().join("moved.db");
+    std::fs::rename(&path, &moved).unwrap();
+    block.update(cx, |block, cx| block.remove_project(&thread.project_id, cx));
+    cx.run_until_parked();
+    cx.read(|cx| assert!(block.read(cx).error.is_some()));
+    std::fs::rename(moved, path).unwrap();
+    block.update(cx, |block, cx| block.reload_background(cx));
+    cx.run_until_parked();
+    cx.read(|cx| assert!(block.read(cx).error.is_some()));
+    block.update(cx, |block, cx| block.remove_project(&thread.project_id, cx));
+    cx.run_until_parked();
+    cx.read(|cx| assert!(block.read(cx).error.is_none()));
+}
+
+#[gpui_kit::test]
+fn project_failure_after_leaving_and_returning_route_preserves_current_error(
+    cx: &mut TestAppContext,
+) {
+    let (directory, _block, thread) = setup(cx);
+    let block = cx.new(ProjectsBlock::new);
+    std::fs::rename(
+        directory.path().join("sidebar.db"),
+        directory.path().join("moved.db"),
+    )
+    .unwrap();
+    block.update(cx, |block, cx| block.remove_project(&thread.project_id, cx));
+    cx.update(|cx| cx.set_global(SettingsOpen(true)));
+    cx.update(|cx| cx.set_global(SettingsOpen(false)));
+    block.update(cx, |block, _| {
+        block.error = Some("current route failure".to_string().into())
+    });
+    cx.run_until_parked();
+    cx.read(|cx| {
+        assert_eq!(
+            block.read(cx).error.as_ref().unwrap().render(),
+            "current route failure"
+        )
+    });
+    assert_eq!(pending(cx), 0);
+}
+
+#[gpui_kit::test]
+fn shared_row_pin_and_unpin_still_commit_without_navigation(cx: &mut TestAppContext) {
+    let (_directory, block, thread) = setup(cx);
+    block.update(cx, |block, cx| block.toggle_pin(&thread.id, false, cx));
+    cx.run_until_parked();
+    assert!(stored(cx, &thread.id).pinned);
+    block.update(cx, |block, cx| block.toggle_pin(&thread.id, true, cx));
+    cx.run_until_parked();
+    assert!(!stored(cx, &thread.id).pinned);
+    cx.read(|cx| assert!(cx.global::<OpenedThread>().0.is_none()));
 }
