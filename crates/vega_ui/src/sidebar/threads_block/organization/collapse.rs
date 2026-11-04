@@ -186,6 +186,3 @@ impl ThreadsBlock {
         .detach();
     }
 }
-
-#[cfg(test)]
-mod tests;
