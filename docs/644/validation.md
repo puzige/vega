@@ -2,7 +2,15 @@
 
 ## 当前阶段
 
-原始功能已通过 [PR #874](https://github.com/puzige/vega/pull/874) 合并，合并提交 `28859f6f00b674141c6222172c8c1f1e3c18588a`；未安装、未用户验收。追加反馈修复见 [PR #875](https://github.com/puzige/vega/pull/875)，当前清理后最终门禁待验证。Issue 保持 OPEN / In progress。
+原始功能已通过 [PR #874](https://github.com/puzige/vega/pull/874) 合并，合并提交 `28859f6f00b674141c6222172c8c1f1e3c18588a`。追加修复 [PR #875](https://github.com/puzige/vega/pull/875) 已合并为 `3cf6573b9fdbcbf59de9d5ba3b46defab836401f`，最终 [Actions 41678421619](https://github.com/puzige/vega/actions/runs/41678421619) required CI 成功：60 条 Python 通过、Rust `no Rust tests`（0 发现 / 0 执行）；首次 Clippy 因 hosted macOS 容量不足未分配运行器而取消，失败任务重跑通过。当前进程运行 `/Applications/Vega.app` 0.1.384，release ref 指向该合并提交。用户第二轮手测未通过，继续修复，Issue 保持 OPEN / In progress。
+
+## 第二轮反馈：有历史却禁止手动压缩
+
+- 截图提示由未配置改为 `No history to compact`，裸 `$` 仍无候选。不能再按未更新或上一轮回归已通过推断本轮成功。
+- 确定源码缺陷：容量投影要求最后用户消息位于 index > 0；默认空闲手动 worker 又未初始进入响应组规划且 owner 为 None，因此单用户多完整工具响应组也被拒绝。修复入口和执行器共用 checkpoint-aware 响应组规划，保持 NoContinuation/来源围栏/配对/缩小/安装门禁。
+- 独立审查发现初稿会在常规刷新中逐组深复制整份来源；范围投影改为先筛选再复制所需文本片段、工具和图片，增量静态审查确认原 P2 已解决，校验与字段语义不变。仍有元数据扫描，不宣称所有规划复杂度为线性。
+- 只读元数据：当前目录根身份匹配且启用，逐项批准表为空；15 个子目录项为符号链接，发现器按既有安全合同拒绝；剩余 1 个普通子目录没有批准。未读取私有消息/工具输出或凭据，未写用户配置/数据、未自动授权、未放宽链接边界。最新会话元数据已是 4 条已完成用户消息且无 checkpoint，不等同于原截图时刻，不能据此声称复现该 UI 快照。
+- 本轮开发回归正在补充；仅本地格式/差异静态检查，尚未执行云端行为回归，未合并、未安装。
 
 ## 追加反馈：空查询技能与已配置容量
 

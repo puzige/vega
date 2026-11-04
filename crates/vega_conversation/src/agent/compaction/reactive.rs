@@ -288,6 +288,14 @@ impl ResponsePlanner {
         Ok(())
     }
 
+    pub(super) fn start_manual(
+        &mut self,
+        source: &ContextSource,
+    ) -> Result<projection::PlannedProjection, ContextCompactionFailure> {
+        self.start_reactive(ContextCompactionTrigger::Manual)?;
+        self.plan(source, None)
+    }
+
     pub(super) fn align(&mut self, plan: &ProjectionPlan) {
         self.split = self.groups.iter().position(|group| match &group.fragment {
             ProjectionFragment::Source { range } => plan.fragments.iter().any(|fragment| {
@@ -388,7 +396,7 @@ impl ResponsePlanner {
     pub(super) fn plan(
         &self,
         source: &ContextSource,
-        request: &ContextCompactionRequest,
+        source_owner_id: Option<&str>,
     ) -> Result<projection::PlannedProjection, ContextCompactionFailure> {
         if self.head >= self.split
             || self
@@ -473,7 +481,7 @@ impl ResponsePlanner {
                         || matches!(&group.fragment, ProjectionFragment::TaskReference { message_id } if *message_id == task.id)
                 })
         });
-        if request.source_owner_id.is_some()
+        if source_owner_id.is_some()
             && !retained_task
             && let Some(task) = task
         {
@@ -501,12 +509,12 @@ impl ResponsePlanner {
             history_dependencies: None,
             schema: 1,
             strategy: ProjectionStrategy::Reactive,
-            continuation: if request.source_owner_id.is_some() {
+            continuation: if source_owner_id.is_some() {
                 ContinuationMode::ContinueExistingRun
             } else {
                 ContinuationMode::NoContinuation
             },
-            source_owner_id: request.source_owner_id.clone(),
+            source_owner_id: source_owner_id.map(str::to_owned),
             task_message_id: task.map(|task| task.id.clone()),
             covered,
             omitted,

@@ -470,10 +470,9 @@ pub fn read_context_projection_with_provider(
     let compactable = settings
         .as_ref()
         .is_some_and(|settings| settings.context_limit.is_some())
-        && history
-            .iter()
-            .rposition(|message| message.role == ChatRole::User)
-            .is_some_and(|index| index > 0);
+        && reactive::ResponsePlanner::new(&source, checkpoint.as_ref(), None)
+            .and_then(|mut planner| planner.start_manual(&source))
+            .is_ok();
     let status = latest_status(&transaction, thread_id, expected_model)
         .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
     let last_status_message_id = status.as_ref().and_then(|status| {
@@ -2156,28 +2155,35 @@ impl ConversationCompactionHook<'_> {
                 ContextCompactionTrigger::InputOverflow { .. }
                     | ContextCompactionTrigger::HardLimit
             );
-        let mut response_planner = if self.partial_selection.is_none() && (reactive_trigger || full)
-        {
-            Some(reactive::ResponsePlanner::new(
-                &source,
-                checkpoint.as_ref(),
-                request.source_owner_id.as_deref(),
-            )?)
-        } else {
-            None
-        };
+        let manual = request.trigger == ContextCompactionTrigger::Manual
+            && request.source_owner_id.is_none();
+        let mut response_planner =
+            if self.partial_selection.is_none() && (reactive_trigger || full || manual) {
+                Some(reactive::ResponsePlanner::new(
+                    &source,
+                    checkpoint.as_ref(),
+                    request.source_owner_id.as_deref(),
+                )?)
+            } else {
+                None
+            };
         let mut planned_projection = if let Some(selection) = &self.partial_selection {
             Some(projection::partial_plan(
                 &source,
                 checkpoint.as_ref(),
                 selection,
             )?)
+        } else if manual {
+            let planner = response_planner.as_mut().ok_or_else(|| {
+                failure(context_error(ContextRuntimeError::InvalidProjection), None)
+            })?;
+            Some(planner.start_manual(&source)?)
         } else if reactive_trigger {
             let planner = response_planner.as_mut().ok_or_else(|| {
                 failure(context_error(ContextRuntimeError::InvalidProjection), None)
             })?;
             planner.start_reactive(request.trigger)?;
-            Some(planner.plan(&source, &request)?)
+            Some(planner.plan(&source, request.source_owner_id.as_deref())?)
         } else if full {
             Some(projection::full_plan(
                 &source,
@@ -2395,7 +2401,7 @@ impl ConversationCompactionHook<'_> {
                         return Err(problem);
                     }
                     let next = planner
-                        .plan(&source, &request)
+                        .plan(&source, request.source_owner_id.as_deref())
                         .map_err(|failure| execution.failure(*failure.error))?;
                     projection_plan = next.plan;
                     history = next.summary_history;
@@ -2457,7 +2463,7 @@ impl ConversationCompactionHook<'_> {
                     && planner.fallback(None)
                 {
                     let next = planner
-                        .plan(&source, &request)
+                        .plan(&source, request.source_owner_id.as_deref())
                         .map_err(|failure| execution.failure(*failure.error))?;
                     projection_plan = next.plan;
                     history = next.summary_history;
@@ -3319,3 +3325,6 @@ fn normalize_summary(text: &str) -> Result<String, ContextRuntimeError> {
     }
     Ok(format!("Summary:\n{summary}"))
 }
+
+#[cfg(test)]
+mod manual_history_tests;
