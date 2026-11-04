@@ -67,6 +67,7 @@ pub struct SkillRootPreview {
 /// Never log, persist in an audit row, or send to a provider before approval.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SkillBodyPreview {
+    pub linked_paths: Option<(PathBuf, PathBuf)>,
     pub token: String,
     pub source_id: String,
     pub name: String,

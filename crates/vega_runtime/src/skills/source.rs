@@ -83,6 +83,7 @@ pub enum SkillError {
     InvalidName,
     InvalidFormat,
     MalformedYaml,
+    InvalidMetadata,
     ForbiddenTag,
     Stale,
     NotActivated,
@@ -106,6 +107,7 @@ impl SkillError {
             Self::InvalidName => "invalid_name",
             Self::InvalidFormat => "invalid_format",
             Self::MalformedYaml => "malformed_yaml",
+            Self::InvalidMetadata => "invalid_metadata",
             Self::ForbiddenTag => "forbidden_tag",
             Self::Stale => "stale",
             Self::NotActivated => "not_activated",
@@ -127,6 +129,31 @@ pub struct SkillSource {
     canonical_root: PathBuf,
     root_dev: u64,
     root_ino: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    linked_target: Option<LinkedSkillTarget>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct LinkedSkillTarget {
+    name: String,
+    canonical_directory: PathBuf,
+    link_dev: u64,
+    link_ino: u64,
+    target_dev: u64,
+    target_ino: u64,
+}
+
+impl LinkedSkillTarget {
+    pub fn canonical_directory(&self) -> &Path {
+        &self.canonical_directory
+    }
+
+    fn valid(&self) -> bool {
+        valid_name(&self.name)
+            && self.canonical_directory.is_absolute()
+            && self.canonical_directory.as_os_str().as_bytes().len() <= 4096
+            && !self.canonical_directory.as_os_str().as_bytes().contains(&0)
+    }
 }
 
 /// A bounded candidate with only its name, source identity and content hash.
@@ -204,6 +231,7 @@ impl SkillSource {
             canonical_root,
             root_dev: metadata.dev(),
             root_ino: metadata.ino(),
+            linked_target: None,
         })
     }
 
@@ -234,7 +262,10 @@ impl SkillSource {
     /// Validate stored shape without reading a source. An unactivated Skill
     /// still passes the live descriptor/hash fence on its later load.
     pub(super) fn snapshot_shape_valid(&self) -> bool {
-        self.configured_root.is_absolute()
+        self.linked_target
+            .as_ref()
+            .is_none_or(LinkedSkillTarget::valid)
+            && self.configured_root.is_absolute()
             && self.canonical_root.is_absolute()
             && self.configured_root.as_os_str().as_bytes().len() <= 4096
             && self.canonical_root.as_os_str().as_bytes().len() <= 4096
@@ -260,7 +291,97 @@ impl SkillSource {
         {
             return Err(SkillError::RootChanged);
         }
+        if let Some(target) = &self.linked_target {
+            self.open_linked_target(target)?;
+        }
         Ok(file)
+    }
+
+    pub fn linked_target(&self) -> Option<&LinkedSkillTarget> {
+        self.linked_target.as_ref()
+    }
+
+    pub fn target_binding(&self) -> Result<Option<String>, SkillError> {
+        self.linked_target
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|_| SkillError::InvalidFormat)
+    }
+
+    pub fn parse_target_binding(
+        value: Option<&str>,
+    ) -> Result<Option<LinkedSkillTarget>, SkillError> {
+        let target: Option<LinkedSkillTarget> = value
+            .map(|text| {
+                if text.len() > 8192 {
+                    return Err(SkillError::InvalidFormat);
+                }
+                serde_json::from_str(text).map_err(|_| SkillError::InvalidFormat)
+            })
+            .transpose()?;
+        if target.as_ref().is_some_and(|target| !target.valid()) {
+            return Err(SkillError::UnsafePath);
+        }
+        Ok(target)
+    }
+
+    fn bind_linked_child(&self, name: &str) -> Result<Self, SkillError> {
+        let entry = self.canonical_root.join(name);
+        let link = fs::symlink_metadata(&entry).map_err(|_| SkillError::Stale)?;
+        if !link.file_type().is_symlink() {
+            return Err(SkillError::Stale);
+        }
+        let canonical_directory = entry.canonicalize().map_err(|_| SkillError::UnsafePath)?;
+        let directory = open_absolute_directory(&canonical_directory)?;
+        let metadata = directory.metadata().map_err(|_| SkillError::Io)?;
+        let mut source = self.clone();
+        source.linked_target = Some(LinkedSkillTarget {
+            name: name.to_owned(),
+            canonical_directory,
+            link_dev: link.dev(),
+            link_ino: link.ino(),
+            target_dev: metadata.dev(),
+            target_ino: metadata.ino(),
+        });
+        source.ensure_current()?;
+        Ok(source)
+    }
+
+    fn open_linked_target(&self, target: &LinkedSkillTarget) -> Result<File, SkillError> {
+        if !target.valid() {
+            return Err(SkillError::UnsafePath);
+        }
+        let entry = self.canonical_root.join(&target.name);
+        let link = fs::symlink_metadata(&entry).map_err(|_| SkillError::Stale)?;
+        if !link.file_type().is_symlink()
+            || link.dev() != target.link_dev
+            || link.ino() != target.link_ino
+            || entry.canonicalize().map_err(|_| SkillError::Stale)? != target.canonical_directory
+        {
+            return Err(SkillError::Stale);
+        }
+        let directory = open_absolute_directory(&target.canonical_directory)?;
+        let metadata = directory.metadata().map_err(|_| SkillError::Io)?;
+        if metadata.dev() != target.target_dev || metadata.ino() != target.target_ino {
+            return Err(SkillError::Stale);
+        }
+        Ok(directory)
+    }
+
+    fn access_root(&self, relative: &Path) -> Result<(File, Vec<OsString>), SkillError> {
+        let mut components = normal_components(relative)?;
+        let root = self.ensure_current()?;
+        match &self.linked_target {
+            Some(target) => {
+                if components.len() < 2 || components[0] != OsStr::new(&target.name) {
+                    return Err(SkillError::UnsafePath);
+                }
+                components.remove(0);
+                Ok((self.open_linked_target(target)?, components))
+            }
+            None => Ok((root, components)),
+        }
     }
 
     /// Discover only immediate `<root>/<name>/SKILL.md` candidates.
@@ -278,19 +399,25 @@ impl SkillSource {
                 continue;
             }
             let entry = fs::symlink_metadata(child.path()).map_err(|_| SkillError::Io)?;
-            if entry.file_type().is_symlink() {
-                if discovered.diagnostics.len() >= MAX_CANDIDATES_PER_ROOT {
-                    return Err(SkillError::TooManyCandidates);
+            let source = if entry.file_type().is_symlink() {
+                match self.bind_linked_child(name) {
+                    Ok(source) => source,
+                    Err(error) => {
+                        if discovered.diagnostics.len() >= MAX_CANDIDATES_PER_ROOT {
+                            return Err(SkillError::TooManyCandidates);
+                        }
+                        discovered.diagnostics.push(SkillDiagnostic {
+                            name: name.into(),
+                            error,
+                        });
+                        continue;
+                    }
                 }
-                discovered.diagnostics.push(SkillDiagnostic {
-                    name: name.into(),
-                    error: SkillError::UnsafePath,
-                });
+            } else if entry.is_dir() {
+                self.clone()
+            } else {
                 continue;
-            }
-            if !entry.is_dir() {
-                continue;
-            }
+            };
             let skill_file = child.path().join("SKILL.md");
             match fs::symlink_metadata(skill_file) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -301,12 +428,12 @@ impl SkillSource {
             if candidate_count > MAX_CANDIDATES_PER_ROOT {
                 return Err(SkillError::TooManyCandidates);
             }
-            match self.read_skill_md(name) {
+            match source.read_skill_md(name) {
                 Ok(bytes) => match super::frontmatter::parse_skill_md(&bytes, name) {
                     Ok(document) => discovered.candidates.push(SkillCandidate {
                         name: name.into(),
                         description: document.metadata.description,
-                        source: self.clone(),
+                        source: source.clone(),
                         sha256: sha256(&bytes),
                         size_bytes: bytes.len(),
                     }),
@@ -336,10 +463,12 @@ impl SkillSource {
 
     /// Re-read and verify a discovered candidate before activation.
     pub fn load_candidate(&self, candidate: &SkillCandidate) -> Result<Vec<u8>, SkillError> {
-        if candidate.source != *self {
+        if candidate.source.identity() != self.identity()
+            || (self.linked_target.is_some() && candidate.source != *self)
+        {
             return Err(SkillError::Stale);
         }
-        let bytes = self.read_skill_md(&candidate.name)?;
+        let bytes = candidate.source.read_skill_md(&candidate.name)?;
         if bytes.len() != candidate.size_bytes || sha256(&bytes) != candidate.sha256 {
             return Err(SkillError::Stale);
         }
@@ -373,8 +502,7 @@ impl SkillSource {
         if !valid_name(name) || !valid_asset_path(path) {
             return Err(SkillError::UnsafePath);
         }
-        let components = normal_components(&Path::new(name).join(path))?;
-        let root = self.ensure_current()?;
+        let (root, components) = self.access_root(&Path::new(name).join(path))?;
         let opened = open_chain(&root, &components)?;
         let before = opened.file.metadata().map_err(|_| SkillError::Io)?;
         if !before.is_file() {
@@ -410,8 +538,7 @@ impl SkillSource {
     }
 
     fn read_relative(&self, relative: &Path, limit: usize) -> Result<Vec<u8>, SkillError> {
-        let components = normal_components(relative)?;
-        let root = self.ensure_current()?;
+        let (root, components) = self.access_root(relative)?;
         let mut opened = open_chain(&root, &components)?;
         let before = opened.file.metadata().map_err(|_| SkillError::Io)?;
         if !before.is_file() {
@@ -571,6 +698,25 @@ fn normal_components(path: &Path) -> Result<Vec<OsString>, SkillError> {
 struct OpenedChain {
     directories: Vec<File>,
     file: File,
+}
+
+fn open_absolute_directory(path: &Path) -> Result<File, SkillError> {
+    if !path.is_absolute() {
+        return Err(SkillError::UnsafePath);
+    }
+    let mut directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open("/")
+        .map_err(|_| SkillError::Io)?;
+    for component in path.components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(name) => directory = open_child(&directory, name, true)?,
+            _ => return Err(SkillError::UnsafePath),
+        }
+    }
+    Ok(directory)
 }
 
 fn open_chain(root: &File, components: &[OsString]) -> Result<OpenedChain, SkillError> {

@@ -83,7 +83,7 @@ pub fn parse_skill_md(bytes: &[u8], directory_name: &str) -> Result<SkillDocumen
         with_snippet: false,
     };
     let parsed: RawMetadata = serde_saphyr::from_str_with_options(yaml, options)
-        .map_err(|_| SkillError::MalformedYaml)?;
+        .map_err(|_| SkillError::InvalidMetadata)?;
     if !valid_name(&parsed.name) || parsed.name != directory_name {
         return Err(SkillError::InvalidName);
     }
