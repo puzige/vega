@@ -258,6 +258,7 @@ impl ThreadsBlock {
                         .tab_stop(true)
                         .role(gpui_kit::Role::Button)
                         .aria_label(project.name.clone())
+                        .aria_expanded(!collapsed)
                         .cursor_pointer()
                         .when(selected, |row| row.bg(colors.bg_active))
                         .hover(move |row| {
@@ -284,7 +285,7 @@ impl ThreadsBlock {
                                 }
                                 cx.stop_propagation();
                                 this.control_action(
-                                    Control::Project(toggle_project.clone()),
+                                    Control::ToggleProject(toggle_project.clone()),
                                     window,
                                     cx,
                                 );
@@ -295,14 +296,21 @@ impl ThreadsBlock {
                                 if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                                     cx.stop_propagation();
                                     this.control_action(
-                                        Control::Project(keyboard_project.clone()),
+                                        Control::ToggleProject(keyboard_project.clone()),
                                         window,
                                         cx,
                                     );
                                 }
                             },
                         ))
-                        .child(self.project_disclosure(project, collapsed, cx))
+                        .child(crate::icons::icon(
+                            if collapsed {
+                                crate::icons::Icon::Folder
+                            } else {
+                                crate::icons::Icon::FolderOpen
+                            },
+                            colors.text_secondary,
+                        ))
                         .child(
                             div()
                                 .flex_1()
