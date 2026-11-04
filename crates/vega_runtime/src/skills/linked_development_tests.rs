@@ -16,22 +16,22 @@ impl From<SkillError> for TestError {
 }
 impl From<std::io::Error> for TestError {
     fn from(error: std::io::Error) -> Self {
-        Self(format!("{error}"))
+        Self(error.to_string())
     }
 }
 impl From<serde_json::Error> for TestError {
     fn from(error: serde_json::Error) -> Self {
-        Self(format!("{error}"))
+        Self(error.to_string())
     }
 }
 impl From<std::num::ParseIntError> for TestError {
     fn from(error: std::num::ParseIntError) -> Self {
-        Self(format!("{error}"))
+        Self(error.to_string())
     }
 }
 impl From<&str> for TestError {
     fn from(error: &str) -> Self {
-        Self(format!("{error}"))
+        Self(error.to_string())
     }
 }
 
