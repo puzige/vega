@@ -71,6 +71,7 @@ impl SkillSettingsService {
                         .map_err(|_| SkillSettingsError::Invalid)?,
                     name: &intent.name,
                     approved_sha256: &intent.content_sha256,
+                    target_binding: approval.target_binding.as_deref(),
                     source_label: &approval.source_label,
                     enabled: true,
                     automatic: false,
@@ -85,7 +86,7 @@ impl SkillSettingsService {
                     .candidates
                     .into_iter()
                     .find(|candidate| {
-                        candidate.name == intent.name && candidate.sha256 == intent.content_sha256
+                        vega_runtime::skills::SkillSelection::from_candidate(candidate) == selection
                     })
                     .ok_or(SkillSettingsError::Stale)?;
                 source
@@ -331,6 +332,14 @@ impl SkillSettingsService {
                 source
                     .load_candidate(&candidate)
                     .map_err(|_| SkillSettingsError::Stale)?;
+                if candidate
+                    .source
+                    .target_binding()
+                    .map_err(|_| SkillSettingsError::Stale)?
+                    != approval.target_binding
+                {
+                    return Err(SkillSettingsError::Stale);
+                }
                 let pins = skills::list_thread_pins(store.conn(), thread_id)?;
                 if pins.len() >= vega_runtime::skills::MAX_RUN_ACTIVATIONS
                     && !pins.iter().any(|pin| pin.name == name)

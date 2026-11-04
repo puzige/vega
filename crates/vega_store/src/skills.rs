@@ -83,6 +83,7 @@ pub struct SkillApprovalRecord {
     pub enabled: bool,
     pub automatic: bool,
     pub reviewed_at: i64,
+    pub target_binding: Option<String>,
 }
 
 /// Controller-created approval; only a UI-reviewed `SkillCandidate` may
@@ -95,6 +96,7 @@ pub struct NewSkillApproval<'a> {
     pub enabled: bool,
     pub automatic: bool,
     pub reviewed_at: i64,
+    pub target_binding: Option<&'a str>,
 }
 
 /// Read the singleton authority row. A missing row is a corrupt migration,
@@ -362,6 +364,9 @@ pub fn approve_skill(
         || !valid_name(input.name)
         || !valid_name(input.source_label)
         || !valid_hash(input.approved_sha256)
+        || input
+            .target_binding
+            .is_some_and(|value| value.len() > 8192 || value.contains('\0'))
     {
         return Err(SkillStoreError::InvalidInput);
     }
@@ -370,30 +375,39 @@ pub fn approve_skill(
         crate::write_coordination::WriteCategory::Skills,
     )?;
     ensure_generation(&tx, expected_consent_generation)?;
-    let old: Option<(String, i64, i64, String)> = tx
+    let old: Option<(String, i64, i64, String, Option<String>)> = tx
         .query_row(
-            "SELECT approved_sha256, enabled, automatic, source_label \
+            "SELECT approved_sha256, enabled, automatic, source_label, target_binding \
              FROM skill_approvals WHERE source_id = ?1 AND name = ?2",
             params![input.source_id, input.name],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .optional()?;
     let changed = old
         .as_ref()
-        .is_none_or(|(hash, enabled, automatic, label)| {
+        .is_none_or(|(hash, enabled, automatic, label, target)| {
             hash != input.approved_sha256
                 || (*enabled != 0) != input.enabled
                 || (*automatic != 0) != input.automatic
                 || label != input.source_label
+                || target.as_deref() != input.target_binding
         });
     tx.execute(
         "INSERT INTO skill_approvals \
-         (source_id, name, approved_sha256, source_label, enabled, automatic, reviewed_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+         (source_id, name, approved_sha256, source_label, enabled, automatic, reviewed_at, target_binding) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
          ON CONFLICT(source_id, name) DO UPDATE SET \
          approved_sha256 = excluded.approved_sha256, source_label = excluded.source_label, \
          enabled = excluded.enabled, automatic = excluded.automatic, \
-         reviewed_at = excluded.reviewed_at",
+         reviewed_at = excluded.reviewed_at, target_binding = excluded.target_binding",
         params![
             input.source_id,
             input.name,
@@ -402,14 +416,18 @@ pub fn approve_skill(
             input.enabled,
             input.automatic,
             input.reviewed_at,
+            input.target_binding,
         ],
     )?;
     if changed {
-        let revokes = old.as_ref().is_some_and(|(hash, enabled, automatic, _)| {
-            hash != input.approved_sha256
-                || (*enabled != 0 && !input.enabled)
-                || (*automatic != 0 && !input.automatic)
-        });
+        let revokes = old
+            .as_ref()
+            .is_some_and(|(hash, enabled, automatic, _, target)| {
+                hash != input.approved_sha256
+                    || (*enabled != 0 && !input.enabled)
+                    || (*automatic != 0 && !input.automatic)
+                    || target.as_deref() != input.target_binding
+            });
         bump_generations(&tx, revokes)?;
     }
     tx.commit()?;
@@ -466,7 +484,7 @@ pub fn list_approved_skills(
     conn: &Connection,
 ) -> Result<Vec<SkillApprovalRecord>, SkillStoreError> {
     let mut stmt = conn.prepare(
-        "SELECT source_id, name, approved_sha256, source_label, enabled, automatic, reviewed_at \
+        "SELECT source_id, name, approved_sha256, source_label, enabled, automatic, reviewed_at, target_binding \
          FROM skill_approvals ORDER BY source_id COLLATE BINARY, name COLLATE BINARY",
     )?;
     Ok(stmt
@@ -522,6 +540,7 @@ fn approval_from_row(row: &Row<'_>) -> Result<SkillApprovalRecord, rusqlite::Err
         enabled: row.get::<_, i64>(4)? != 0,
         automatic: row.get::<_, i64>(5)? != 0,
         reviewed_at: row.get(6)?,
+        target_binding: row.get(7)?,
     })
 }
 

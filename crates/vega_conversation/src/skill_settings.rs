@@ -72,6 +72,7 @@ struct RootTicket {
 }
 
 struct SkillTicket {
+    target_binding: Option<String>,
     token: String,
     consent_generation: u64,
     source_id: String,
@@ -229,7 +230,14 @@ impl SkillSettingsService {
             }
             for candidate in discovery.candidates {
                 let approval = approvals.get(&(row.id.clone(), candidate.name.clone()));
-                let current = approval.is_some_and(|item| item.approved_sha256 == candidate.sha256);
+                let target_binding = candidate
+                    .source
+                    .target_binding()
+                    .map_err(|_| SkillSettingsError::Invalid)?;
+                let current = approval.is_some_and(|item| {
+                    item.approved_sha256 == candidate.sha256
+                        && item.target_binding == target_binding
+                });
                 let scope_enabled = if scope == SkillUiScope::Project {
                     project_settings.enabled
                 } else {
@@ -491,6 +499,10 @@ impl SkillSettingsService {
             return Err(SkillSettingsError::Stale);
         }
         previews.skill = Some(SkillTicket {
+            target_binding: candidate
+                .source
+                .target_binding()
+                .map_err(|_| SkillSettingsError::Invalid)?,
             token: token.clone(),
             consent_generation: generation,
             source_id: source_id.to_owned(),
@@ -498,6 +510,12 @@ impl SkillSettingsService {
             sha256: candidate.sha256.clone(),
         });
         Ok(SkillBodyPreview {
+            linked_paths: candidate.source.linked_target().map(|target| {
+                (
+                    source.canonical_root().join(name),
+                    target.canonical_directory().to_path_buf(),
+                )
+            }),
             token,
             source_id: source_id.to_owned(),
             name: name.to_owned(),
@@ -702,7 +720,14 @@ impl SkillSettingsService {
             .into_iter()
             .find(|candidate| candidate.name == ticket.name)
             .ok_or(SkillSettingsError::Stale)?;
-        if candidate.sha256 != ticket.sha256 || source.load_candidate(&candidate).is_err() {
+        if candidate.sha256 != ticket.sha256
+            || candidate
+                .source
+                .target_binding()
+                .map_err(|_| SkillSettingsError::Stale)?
+                != ticket.target_binding
+            || source.load_candidate(&candidate).is_err()
+        {
             return Err(SkillSettingsError::Stale);
         }
         skills::approve_skill(
@@ -712,6 +737,7 @@ impl SkillSettingsService {
                 source_id: &ticket.source_id,
                 name: &ticket.name,
                 approved_sha256: &ticket.sha256,
+                target_binding: ticket.target_binding.as_deref(),
                 source_label: &source_label(&ticket.source_id),
                 enabled: true,
                 automatic: false,

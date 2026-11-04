@@ -373,6 +373,7 @@ pub(super) fn prepare_skill_run_with_config_dir(
                 root_ino: record.root_ino.parse().map_err(|_| invalid_store())?,
                 name: &stored.name,
                 approved_sha256: &stored.approved_sha256,
+                target_binding: stored.target_binding.as_deref(),
                 source_label: &stored.source_label,
                 enabled: stored.enabled,
                 automatic,

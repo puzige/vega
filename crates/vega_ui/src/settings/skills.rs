@@ -675,6 +675,17 @@ impl SettingsView {
                 colors.text_primary,
             ))
             .child(format!("{} · {}", preview.name, preview.description))
+            .when_some(preview.linked_paths.as_ref(), |panel, (entry, target)| {
+                panel
+                    .child(t_args(
+                        "settings.skills.directory",
+                        &[("path", &entry.to_string_lossy())],
+                    ))
+                    .child(t_args(
+                        "settings.skills.actual_target",
+                        &[("path", &target.to_string_lossy())],
+                    ))
+            })
             .child(t_args(
                 "settings.skills.sha256",
                 &[("sha", &preview.content_sha256)],
@@ -812,6 +823,7 @@ fn skill_diagnostic_label(diagnostic: &str) -> &str {
         "invalid_name" => t("settings.skills.diagnostic.invalid_name"),
         "invalid_format" => t("settings.skills.diagnostic.invalid_format"),
         "malformed_yaml" => t("settings.skills.diagnostic.malformed_yaml"),
+        "invalid_metadata" => t("settings.skills.diagnostic.invalid_metadata"),
         "forbidden_tag" => t("settings.skills.diagnostic.forbidden_tag"),
         "stale" => t("settings.skills.diagnostic.stale"),
         "io" => t("settings.skills.diagnostic.io"),

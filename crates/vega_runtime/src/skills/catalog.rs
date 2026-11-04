@@ -30,6 +30,8 @@ const ASSET_METADATA_PREFIX: &str = "[Lower-trust Skill asset metadata]\n";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillApproval {
     source: SourceIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target: Option<super::source::LinkedSkillTarget>,
     name: String,
     approved_sha256: String,
     source_label: String,
@@ -47,6 +49,7 @@ pub struct PersistedSkillApproval<'a> {
     pub root_ino: u64,
     pub name: &'a str,
     pub approved_sha256: &'a str,
+    pub target_binding: Option<&'a str>,
     pub source_label: &'a str,
     pub enabled: bool,
     pub automatic: bool,
@@ -66,6 +69,7 @@ impl SkillApproval {
         candidate.source.load_candidate(candidate)?;
         Ok(Self {
             source: candidate.source.identity(),
+            target: candidate.source.linked_target().cloned(),
             name: candidate.name.clone(),
             approved_sha256: candidate.sha256.clone(),
             source_label: source_label.into(),
@@ -100,6 +104,7 @@ impl SkillApproval {
         }
         Ok(Self {
             source: identity,
+            target: SkillSource::parse_target_binding(stored.target_binding)?,
             name: stored.name.into(),
             approved_sha256: stored.approved_sha256.into(),
             source_label: stored.source_label.into(),
@@ -118,6 +123,7 @@ impl SkillApproval {
     pub fn selection(&self) -> SkillSelection {
         SkillSelection {
             source: self.source.clone(),
+            target: self.target.clone(),
             name: self.name.clone(),
             sha256: self.approved_sha256.clone(),
         }
@@ -147,6 +153,8 @@ impl SkillApproval {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillSelection {
     source: SourceIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target: Option<super::source::LinkedSkillTarget>,
     name: String,
     sha256: String,
 }
@@ -155,6 +163,7 @@ impl SkillSelection {
     pub fn from_candidate(candidate: &SkillCandidate) -> Self {
         Self {
             source: candidate.source.identity(),
+            target: candidate.source.linked_target().cloned(),
             name: candidate.name.clone(),
             sha256: candidate.sha256.clone(),
         }
@@ -246,7 +255,9 @@ impl SkillCatalog {
             if !approval.enabled {
                 continue;
             }
-            if approval.approved_sha256 != candidate.sha256 {
+            if approval.approved_sha256 != candidate.sha256
+                || approval.target.as_ref() != candidate.source.linked_target()
+            {
                 exclusions.push(CatalogExclusion {
                     selection: SkillSelection::from_candidate(&candidate),
                     error: SkillError::Stale,
@@ -624,6 +635,7 @@ impl SkillRun {
             entry.candidate.name == selection.name
                 && entry.candidate.source.identity() == selection.source
                 && entry.candidate.sha256 == selection.sha256
+                && entry.candidate.source.linked_target() == selection.target.as_ref()
         }) else {
             return outcome(
                 &selection.name,
@@ -650,6 +662,7 @@ impl SkillRun {
         {
             let status = if existing.candidate.source.identity() == candidate.source.identity()
                 && existing.candidate.sha256 == candidate.sha256
+                && existing.candidate.source.linked_target() == candidate.source.linked_target()
             {
                 "already_loaded"
             } else {

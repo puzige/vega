@@ -420,6 +420,7 @@
 "settings.skills.diagnostic.hardlink" = "不允许硬链接文件"
 "settings.skills.diagnostic.invalid_format" = "Skill 元数据格式无效"
 "settings.skills.diagnostic.invalid_name" = "Skill 名称无效或与目录不一致"
+"settings.skills.diagnostic.invalid_metadata" = "元数据结构不兼容，请检查字段类型（metadata 的值必须是字符串）"
 "settings.skills.diagnostic.invalid_utf8" = "内容不是有效的 UTF-8 文本"
 "settings.skills.diagnostic.io" = "无法读取 Skill"
 "settings.skills.diagnostic.malformed_yaml" = "YAML 元数据无效"

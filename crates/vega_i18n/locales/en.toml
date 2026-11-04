@@ -420,6 +420,7 @@
 "settings.skills.diagnostic.hardlink" = "Hard-linked files are not allowed"
 "settings.skills.diagnostic.invalid_format" = "Invalid Skill metadata format"
 "settings.skills.diagnostic.invalid_name" = "Invalid or mismatched Skill name"
+"settings.skills.diagnostic.invalid_metadata" = "Unsupported metadata structure; check field types (metadata values must be strings)"
 "settings.skills.diagnostic.invalid_utf8" = "Content is not valid UTF-8 text"
 "settings.skills.diagnostic.io" = "Could not read the Skill"
 "settings.skills.diagnostic.malformed_yaml" = "Invalid YAML metadata"
