@@ -279,7 +279,18 @@ impl Provider for SummaryProvider {
         cancel: CancellationToken,
     ) -> futures::future::BoxFuture<'static, Result<vega_runtime::EventStream, VegaError>> {
         assert!(!cancel.is_cancelled());
-        assert!(request.tools.is_empty());
+        if request.tools.is_empty() {
+            assert!(request.tool_choice.is_none());
+        } else {
+            assert!(matches!(
+                request.tool_choice,
+                Some(vega_runtime::ToolChoice::None)
+            ));
+            assert_eq!(
+                request.tools,
+                vega_runtime::tool_definitions(vega_runtime::RuntimeRunMode::Ask)
+            );
+        }
         assert_complete_pairs(&request.messages);
         self.requests
             .lock()
