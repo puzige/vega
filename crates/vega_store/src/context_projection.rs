@@ -139,36 +139,82 @@ impl SourceRange {
 
     pub fn project(&self, source: &ContextSource) -> Result<ContextSource, ContextCheckpointError> {
         self.validate(source)?;
-        let mut projected = source.clone();
-        projected.messages.retain(|message| {
-            let seq = message.seq as u64;
-            self.after.as_ref().is_none_or(|after| {
-                seq > after.message_seq || (seq == after.message_seq && after.assistant.is_some())
-            }) && self
-                .through
-                .as_ref()
-                .is_none_or(|through| seq <= through.message_seq)
-        });
-        projected.tool_calls.retain(|call| {
-            projected
-                .messages
-                .iter()
-                .any(|message| message.id == call.message_id)
-                && self.after.as_ref().is_none_or(|after| {
-                    call.message_id != after.message_id
-                        || after
-                            .assistant
-                            .as_ref()
-                            .is_none_or(|cursor| call.seq as u64 > cursor.tool_seq)
+        let messages = source
+            .messages
+            .iter()
+            .filter(|message| {
+                let seq = message.seq as u64;
+                self.after.as_ref().is_none_or(|after| {
+                    seq > after.message_seq
+                        || (seq == after.message_seq && after.assistant.is_some())
+                }) && self
+                    .through
+                    .as_ref()
+                    .is_none_or(|through| seq <= through.message_seq)
+            })
+            .map(|message| {
+                let start = self
+                    .after
+                    .as_ref()
+                    .filter(|after| after.message_id == message.id)
+                    .and_then(|after| after.assistant.as_ref())
+                    .map_or(0, |cursor| cursor.text_bytes as usize);
+                let end = self
+                    .through
+                    .as_ref()
+                    .filter(|through| through.message_id == message.id)
+                    .and_then(|through| through.assistant.as_ref())
+                    .map_or(message.content.len(), |cursor| cursor.text_bytes as usize);
+                let content = message
+                    .content
+                    .get(start..end)
+                    .ok_or(ContextCheckpointError::IncompleteCoverage)?
+                    .to_owned();
+                Ok(crate::messages::MessageRow {
+                    id: message.id.clone(),
+                    thread_id: message.thread_id.clone(),
+                    seq: message.seq,
+                    role: message.role.clone(),
+                    kind: message.kind.clone(),
+                    content,
+                    status: message.status.clone(),
+                    created_at: message.created_at,
+                    plan_status: message.plan_status.clone(),
+                    plan_review_note: message.plan_review_note.clone(),
+                    plan_reviewed_at: message.plan_reviewed_at,
                 })
-                && self.through.as_ref().is_none_or(|through| {
-                    call.message_id != through.message_id
-                        || through
-                            .assistant
-                            .as_ref()
-                            .is_none_or(|cursor| call.seq as u64 <= cursor.tool_seq)
-                })
-        });
+            })
+            .collect::<Result<Vec<_>, ContextCheckpointError>>()?;
+        let tool_calls = source
+            .tool_calls
+            .iter()
+            .filter(|call| {
+                messages.iter().any(|message| message.id == call.message_id)
+                    && self.after.as_ref().is_none_or(|after| {
+                        call.message_id != after.message_id
+                            || after
+                                .assistant
+                                .as_ref()
+                                .is_none_or(|cursor| call.seq as u64 > cursor.tool_seq)
+                    })
+                    && self.through.as_ref().is_none_or(|through| {
+                        call.message_id != through.message_id
+                            || through
+                                .assistant
+                                .as_ref()
+                                .is_none_or(|cursor| call.seq as u64 <= cursor.tool_seq)
+                    })
+            })
+            .cloned()
+            .collect();
+        let mut projected = ContextSource {
+            thread_id: source.thread_id.clone(),
+            source_version: source.source_version,
+            fingerprint: source.fingerprint.clone(),
+            messages,
+            tool_calls,
+            images: Vec::new(),
+        };
         for message in &mut projected.messages {
             let start = self
                 .after
@@ -176,17 +222,7 @@ impl SourceRange {
                 .filter(|after| after.message_id == message.id)
                 .and_then(|after| after.assistant.as_ref())
                 .map_or(0, |cursor| cursor.text_bytes as usize);
-            let end = self
-                .through
-                .as_ref()
-                .filter(|through| through.message_id == message.id)
-                .and_then(|through| through.assistant.as_ref())
-                .map_or(message.content.len(), |cursor| cursor.text_bytes as usize);
-            let text = message
-                .content
-                .get(start..end)
-                .ok_or(ContextCheckpointError::IncompleteCoverage)?;
-            message.content = text.to_owned();
+            let end = start + message.content.len();
             if (start != 0
                 || self.after.as_ref().is_some_and(|after| {
                     after.message_id == message.id && after.assistant.is_some()
@@ -211,18 +247,23 @@ impl SourceRange {
                 }
             }
         }
-        projected.images.retain(|image| {
-            projected
-                .messages
-                .iter()
-                .any(|message| message.id == image.message_id)
-                && image.artifact_call_id.as_ref().is_none_or(|id| {
-                    projected
-                        .tool_calls
-                        .iter()
-                        .any(|call| call.id == *id && call.message_id == image.message_id)
-                })
-        });
+        projected.images = source
+            .images
+            .iter()
+            .filter(|image| {
+                projected
+                    .messages
+                    .iter()
+                    .any(|message| message.id == image.message_id)
+                    && image.artifact_call_id.as_ref().is_none_or(|id| {
+                        projected
+                            .tool_calls
+                            .iter()
+                            .any(|call| call.id == *id && call.message_id == image.message_id)
+                    })
+            })
+            .cloned()
+            .collect();
         if let Some(after) = &self.after
             && after.assistant.is_some()
         {
