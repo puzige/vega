@@ -596,9 +596,19 @@ impl ThreadsBlock {
             )
             .children((trailing == SessionRowTrailing::Unread).then(|| {
                 div()
+                    .id(ElementId::Name(
+                        format!("project-thread-unread-{}", thread.id).into(),
+                    ))
+                    .when(thread.last_response_failed, |dot| {
+                        dot.aria_label(vega_i18n::t("ui.failed"))
+                    })
                     .size(px(Layout::MESSAGE_ANCHOR_TRACK_WIDTH * 3.))
                     .rounded_full()
-                    .bg(colors.accent)
+                    .bg(if thread.last_response_failed {
+                        colors.danger
+                    } else {
+                        colors.accent
+                    })
             }))
             .children((trailing == SessionRowTrailing::Running).then(|| {
                 div()

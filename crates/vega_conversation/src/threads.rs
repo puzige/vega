@@ -236,6 +236,7 @@ fn assemble_thread(
 ) -> Thread {
     let now = now_ms();
     Thread {
+        last_response_failed: false,
         reasoning_preferences: None,
         parent_thread_id: None,
         forked_from_thread_id: None,
@@ -788,6 +789,7 @@ pub(crate) fn thread_from_row(row: &store::ThreadRow) -> Result<Thread, Conversa
         ConversationError::CorruptRow(format!("permission_mode: {}", row.permission_mode))
     })?;
     Ok(Thread {
+        last_response_failed: row.last_response_failed,
         reasoning_preferences: row
             .reasoning_preferences
             .as_deref()

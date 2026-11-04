@@ -1818,6 +1818,12 @@ impl ThreadsBlock {
         if trailing == SessionRowTrailing::Unread {
             group = group.child(
                 div()
+                    .id(gpui_kit::SharedString::from(format!(
+                        "{action_prefix}thread-unread-{thread_id}"
+                    )))
+                    .when(thread.last_response_failed, |dot| {
+                        dot.aria_label(vega_i18n::t("ui.failed"))
+                    })
                     .size(px(Layout::SIDEBAR_ACTION_SIZE))
                     .flex()
                     .items_center()
@@ -1826,7 +1832,11 @@ impl ThreadsBlock {
                         div()
                             .size(px(Layout::MESSAGE_ANCHOR_TRACK_WIDTH * 3.))
                             .rounded_full()
-                            .bg(colors.accent),
+                            .bg(if thread.last_response_failed {
+                                colors.danger
+                            } else {
+                                colors.accent
+                            }),
                     ),
             );
         }
