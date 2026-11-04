@@ -133,10 +133,11 @@ fn calendar_ordinal(civil: &libc::tm) -> i64 {
 }
 
 fn format_time(civil: &libc::tm) -> String {
+    let hour = format!("{:02}", civil.tm_hour);
     let minute = format!("{:02}", civil.tm_min);
     t_args(
         "ui.timestamp.time_24",
-        &[("hour", &civil.tm_hour.to_string()), ("minute", &minute)],
+        &[("hour", &hour), ("minute", &minute)],
     )
 }
 
