@@ -62,11 +62,12 @@ fn uncancelled_save_merges_latest_state_and_preserves_other_metadata() -> TestRe
     let before = noncollapse_state(&store)?;
     save_collapsed(&store, &[(SidebarCollapseTarget::Pinned, true)])?;
     let cancellation = CancellationToken::new();
-    let update = save_collapsed_with_cancel(
+    let (base_revision, update) = save_collapsed_with_cancel(
         &store,
         &[(SidebarCollapseTarget::Ungrouped, true)],
         &cancellation,
     )?;
+    assert_eq!(base_revision, 8);
     assert_eq!(update.revision, 9);
     assert_eq!(
         update.collapsed,
@@ -79,7 +80,7 @@ fn uncancelled_save_merges_latest_state_and_preserves_other_metadata() -> TestRe
     assert_eq!(noncollapse_state(&store)?, before);
     assert_eq!(
         save_collapsed_with_cancel(&store, &[], &cancellation)?,
-        update
+        (9, update)
     );
     assert!(store.conn().is_autocommit());
     Ok(())

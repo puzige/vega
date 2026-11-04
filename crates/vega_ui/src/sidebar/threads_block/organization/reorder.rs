@@ -325,15 +325,15 @@ impl ThreadsBlock {
         let hover_item = item.clone();
         row.relative()
             .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                if event.pressed_button.is_none() {
-                    if this.organization.as_ref().is_some_and(|org| {
+                if event.pressed_button.is_none()
+                    && this.organization.as_ref().is_some_and(|org| {
                         org.reorder
                             .pointer_order
                             .as_ref()
                             .is_some_and(|(source, _)| source != &hover_item)
-                    }) {
-                        this.clear_reorder_projection(cx);
-                    }
+                    })
+                {
+                    this.clear_reorder_projection(cx);
                 }
             }))
             .on_drag(ReorderDrag { label }, move |drag, _, window, cx| {

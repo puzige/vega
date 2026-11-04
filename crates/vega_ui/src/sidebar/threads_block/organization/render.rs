@@ -595,7 +595,7 @@ impl ThreadsBlock {
         let rows = recents.iter().take(self.recents_visible).map(|thread| {
             let archived = thread.status == ThreadStatus::Archived;
             self.render_recent_row(
-                &thread,
+                thread,
                 &opened_id,
                 archived,
                 "standalone-thread-row-",

@@ -6,14 +6,14 @@ pub fn save_collapsed(
     store: &Store,
     changes: &[(SidebarCollapseTarget, bool)],
 ) -> Result<SidebarCollapseUpdate, SidebarOrganizationError> {
-    save_collapsed_with_cancel(store, changes, &CancellationToken::new())
+    save_collapsed_with_cancel(store, changes, &CancellationToken::new()).map(|(_, update)| update)
 }
 
 pub fn save_collapsed_with_cancel(
     store: &Store,
     changes: &[(SidebarCollapseTarget, bool)],
     cancellation: &CancellationToken,
-) -> Result<SidebarCollapseUpdate, SidebarOrganizationError> {
+) -> Result<(u64, SidebarCollapseUpdate), SidebarOrganizationError> {
     let tx = WriteTransaction::new_with_cancel(store.conn(), WriteCategory::Sidebar, || {
         cancellation.is_cancelled()
     })
@@ -54,7 +54,7 @@ pub fn save_collapsed_with_cancel(
     }
     check_cancellation(cancellation)?;
     tx.commit().map_err(storage)?;
-    Ok(update)
+    Ok((revision, update))
 }
 
 fn check_cancellation(cancellation: &CancellationToken) -> Result<(), SidebarOrganizationError> {

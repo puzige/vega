@@ -1,10 +1,9 @@
 use super::*;
-use gpui_kit::gpui;
 use gpui_kit::{AppContext, TestAppContext};
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
-use vega_conversation::types::{SidebarGroup, SidebarPreferences};
+use vega_conversation::types::{SidebarGroup, SidebarPreferences, SidebarProjectView};
 use vega_store::write_coordination::{self, WriteCategory};
 
 fn project(id: &str) -> SidebarCollapseTarget {
@@ -762,6 +761,85 @@ fn real_save_failure_rolls_back_and_retry_preserves_unrelated_errors(cx: &mut Te
             "unrelated route error"
         );
     });
+    drop(block);
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn collapse_completion_cannot_certify_stale_metadata_or_lose_external_preferences(
+    cx: &mut TestAppContext,
+) {
+    let database = DatabaseFixture::new();
+    let block = block_fixture(&database, cx);
+    let mut preferences = database.snapshot().preferences;
+    preferences.hide_project_threads_from_recents = true;
+    let external = service::apply(
+        &database.open(),
+        0,
+        SidebarOrganizationAction::SetPreferences(preferences),
+    )
+    .expect("external preference update");
+    assert_eq!(external.snapshot.revision, 1);
+    block.update(cx, |block, cx| {
+        block.toggle_organization_collapse(project("project-a"), cx)
+    });
+    pump_until(cx, |cx| {
+        !block
+            .read(cx)
+            .organization
+            .as_ref()
+            .expect("organization")
+            .collapse
+            .in_flight
+    });
+    block.read_with(cx, |block, _| {
+        let org = block.organization.as_ref().expect("organization");
+        let snapshot = org.snapshot.as_ref().expect("snapshot");
+        assert_eq!(snapshot.revision, 0);
+        assert!(!snapshot.preferences.hide_project_threads_from_recents);
+        assert_eq!(snapshot.collapsed, vec![project("project-a")]);
+        assert!(
+            org.pending,
+            "intervening metadata must be reconciled before generic writes"
+        );
+        assert!(matches!(
+            service::apply(
+                &database.open(),
+                snapshot.revision,
+                SidebarOrganizationAction::SetPreferences(snapshot.preferences.clone())
+            ),
+            Err(
+                vega_conversation::types::SidebarOrganizationError::Conflict {
+                    expected: 0,
+                    actual: 2
+                }
+            )
+        ));
+    });
+    await_saves(&block, cx);
+    block.update(cx, |block, cx| {
+        let snapshot = block
+            .organization
+            .as_ref()
+            .expect("organization")
+            .snapshot
+            .as_ref()
+            .expect("snapshot");
+        assert_eq!(snapshot.revision, 2);
+        assert!(snapshot.preferences.hide_project_threads_from_recents);
+        let mut preferences = snapshot.preferences.clone();
+        preferences.project_view = SidebarProjectView::Timeline;
+        block.submit_organization(SidebarOrganizationAction::SetPreferences(preferences), cx);
+    });
+    await_saves(&block, cx);
+    let persisted = database.snapshot();
+    assert!(persisted.preferences.hide_project_threads_from_recents);
+    assert_eq!(
+        persisted.preferences.project_view,
+        SidebarProjectView::Timeline
+    );
+    assert!(persisted.preferences.manual_thread_order.is_empty());
+    assert_eq!(persisted.collapsed, vec![project("project-a")]);
     drop(block);
     cx.run_until_parked();
 }

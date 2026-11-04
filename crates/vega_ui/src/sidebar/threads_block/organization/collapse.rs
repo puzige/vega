@@ -102,7 +102,6 @@ impl ThreadsBlock {
         if let Some(snapshot) = org.snapshot.as_mut() {
             let snapshot = std::rc::Rc::make_mut(snapshot);
             snapshot.collapsed = collapsed;
-            snapshot.revision = snapshot.revision.max(org.collapse.revision);
             for target in &snapshot.collapsed {
                 if let SidebarCollapseTarget::Project(id) = target {
                     org.project_threads_visible
@@ -161,6 +160,16 @@ impl ThreadsBlock {
                 {
                     return;
                 }
+                let result = result.map(|(base_revision, update)| {
+                    if let Some(snapshot) = org.snapshot.as_mut() {
+                        if snapshot.revision == base_revision {
+                            std::rc::Rc::make_mut(snapshot).revision = update.revision;
+                        } else {
+                            org.refresh_queued = true;
+                        }
+                    }
+                    update
+                });
                 org.collapse.finish(&batch, result);
                 this.apply_local_collapse();
                 this.start_collapse_save(cx);
