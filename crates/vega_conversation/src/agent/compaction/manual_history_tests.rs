@@ -349,6 +349,54 @@ fn call_ids(history: &[ChatMessage]) -> Vec<String> {
         .collect()
 }
 
+fn assert_summary_observations(history: &[ChatMessage], expected: &[String]) {
+    assert!(
+        call_ids(history).is_empty(),
+        "historical calls must not become live calls"
+    );
+    let mut activities = Vec::new();
+    let mut results = Vec::new();
+    for message in history {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&message.content) else {
+            continue;
+        };
+        let Some(record) = value.get("vega_history_observation") else {
+            continue;
+        };
+        assert_eq!(record["authority"], "none");
+        assert_eq!(message.role, ChatRole::User);
+        match record["kind"].as_str() {
+            Some("tool_activity") => {
+                for call in record["calls"]
+                    .as_array()
+                    .expect("historical activity calls")
+                {
+                    assert_eq!(call["arguments_available"], false);
+                    assert_eq!(call["tool"], "read");
+                    activities.push(
+                        call["call_id"]
+                            .as_str()
+                            .expect("activity call identity")
+                            .to_owned(),
+                    );
+                }
+            }
+            Some("tool_result") => {
+                assert_eq!(record["tool"], "read");
+                results.push(
+                    record["call_id"]
+                        .as_str()
+                        .expect("result call identity")
+                        .to_owned(),
+                );
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(activities, expected);
+    assert_eq!(results, expected);
+}
+
 fn assert_idle_plan(checkpoint: &ContextCheckpoint, source: &ContextSource) {
     let plan = checkpoint
         .projection_plan
@@ -419,7 +467,7 @@ async fn single_user_multi_response_history_is_eligible_and_accounted_manual_ins
     )));
     let requests = provider.requests.lock().expect("summary requests");
     assert_eq!(requests.len(), 1);
-    assert_eq!(call_ids(&requests[0].messages), ids[..2]);
+    assert_summary_observations(&requests[0].messages, &ids[..2]);
     let checkpoint = fixture.checkpoint();
     assert!(checkpoint.summary.contains(SUMMARY));
     assert_idle_plan(&checkpoint, &fixture.source());
@@ -460,7 +508,7 @@ async fn failed_and_done_owners_compact_without_resuming_either_owner() {
     assert_eq!(requests.len(), 1);
     let mut expected = failed;
     expected.push(done[0].clone());
-    assert_eq!(call_ids(&requests[0].messages), expected);
+    assert_summary_observations(&requests[0].messages, &expected);
     assert_eq!(call_ids(&result.messages), done[1..]);
     assert_complete_pairs(&result.messages);
     let reloaded = fixture.history();
@@ -658,7 +706,7 @@ async fn parallel_calls_and_distinct_response_ids_at_one_utf8_offset_stay_paired
     let result = fixture.compact(&provider).await;
     let requests = provider.requests.lock().expect("summary requests");
     assert_eq!(requests.len(), 1);
-    assert_eq!(call_ids(&requests[0].messages), ids[..3]);
+    assert_summary_observations(&requests[0].messages, &ids[..3]);
     assert_eq!(call_ids(&result.messages), ids[3..]);
     let retained = result
         .messages
