@@ -1,3 +1,4 @@
+"ui.collapse_save_failed_retry" = "Could not save the expanded state. Click the project again to retry. {error}"
 "sidebar.pinned" = "Pinned"
 "sidebar.projects" = "Projects"
 "sidebar.recents" = "Recents"

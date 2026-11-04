@@ -1,3 +1,4 @@
+"ui.collapse_save_failed_retry" = "展开状态保存失败，请再次点击项目重试。{error}"
 "sidebar.pinned" = "置顶"
 "sidebar.projects" = "项目"
 "sidebar.recents" = "最近"

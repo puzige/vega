@@ -117,6 +117,9 @@ impl ThreadsBlock {
                         if let Some(org) = this.organization.as_mut()
                             && let Some(snapshot) = org.snapshot.as_mut()
                         {
+                            let snapshot = std::rc::Rc::make_mut(snapshot);
+                            org.task_projection = None;
+                            org.focus_dirty = true;
                             for row in &mut snapshot.threads {
                                 if row.id == thread.id {
                                     merge_update(row, &committed);

@@ -87,6 +87,7 @@ impl ThreadsBlock {
             Control::Archive => {
                 let show_archived = if let Some(organization) = self.organization.as_mut() {
                     organization.archive = !organization.archive;
+                    organization.task_projection = None;
                     organization.archive
                 } else {
                     false
@@ -239,15 +240,13 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        // Every value the sections need is copied out before the first
-        // `&mut self` section renderer runs, so no borrow of
-        // `self.organization` is held across it. `render_recents_pi` is
-        // `&mut self` because lazy loading records the live total.
         let Some((snapshot, show_archived, menu_open)) = self.organization.as_ref().map(|org| {
             (
                 org.snapshot.clone().map(|mut snapshot| {
                     if let Some((_, order)) = &org.reorder.pointer_order {
-                        snapshot.preferences.manual_thread_order = order.clone();
+                        std::rc::Rc::make_mut(&mut snapshot)
+                            .preferences
+                            .manual_thread_order = order.clone();
                     }
                     snapshot
                 }),
@@ -266,6 +265,7 @@ impl ThreadsBlock {
                 .child(self.section_label(vega_i18n::t("ui.loading_335"), cx))
                 .into_any_element();
         };
+        self.prepare_task_projection(&snapshot);
         self.prepare_reorder();
         let mut body = div()
             .id("sidebar-organization")
@@ -332,6 +332,17 @@ impl ThreadsBlock {
                 .clone()
                 .map(|message| error_bar(message, &colors)),
         );
+        if let Some(org) = &self.organization {
+            for (_, error) in &org.collapse.errors {
+                body = body.child(error_bar(
+                    crate::localized_copy::LocalizedCopy::with_args(
+                        "ui.collapse_save_failed_retry",
+                        vec![("error", error.clone())],
+                    ),
+                    &colors,
+                ));
+            }
+        }
         body.into_any_element()
     }
 
@@ -468,12 +479,9 @@ impl ThreadsBlock {
     ) -> Option<AnyElement> {
         let colors = theme(cx).colors;
         let label = vega_i18n::t("sidebar.pinned");
-        let mut pinned: Vec<_> = self
-            .eligible_threads(show_archived)
-            .into_iter()
-            .filter(|thread| thread.pinned)
-            .collect();
-        pinned = super::projections::sorted_threads(&pinned, &snapshot.preferences);
+        let _ = (snapshot, show_archived);
+        let projection = self.task_projection();
+        let pinned = &projection.pinned;
         if pinned.is_empty() {
             return None;
         }
@@ -526,16 +534,9 @@ impl ThreadsBlock {
     ) -> AnyElement {
         let colors = theme(cx).colors;
         let label = vega_i18n::t("sidebar.recents");
-        let recents: Vec<_> = self
-            .eligible_threads(show_archived)
-            .into_iter()
-            .filter(|thread| {
-                !thread.pinned
-                    && (!snapshot.preferences.hide_project_threads_from_recents
-                        || thread.is_standalone())
-            })
-            .collect();
-        let recents = super::projections::sorted_threads(&recents, &snapshot.preferences);
+        let _ = (snapshot, show_archived);
+        let projection = self.task_projection();
+        let recents = &projection.recents;
         let header_actions_visible = self.hovered_section == Some(OrganizationSection::Recents)
             || self.focused_section == Some(OrganizationSection::Recents)
             || self
@@ -591,20 +592,17 @@ impl ThreadsBlock {
         let empty = recents.is_empty();
 
         self.recents_total = recents.len();
-        let rows = recents
-            .into_iter()
-            .take(self.recents_visible)
-            .map(|thread| {
-                let archived = thread.status == ThreadStatus::Archived;
-                self.render_recent_row(
-                    &thread,
-                    &opened_id,
-                    archived,
-                    "standalone-thread-row-",
-                    true,
-                    cx,
-                )
-            });
+        let rows = recents.iter().take(self.recents_visible).map(|thread| {
+            let archived = thread.status == ThreadStatus::Archived;
+            self.render_recent_row(
+                thread,
+                &opened_id,
+                archived,
+                "standalone-thread-row-",
+                true,
+                cx,
+            )
+        });
         let empty = empty.then(|| {
             div()
                 .id("organization-recents-empty")
@@ -687,7 +685,6 @@ impl ThreadsBlock {
             5
         };
         let all_projects: Vec<_> = ordered.into_iter().collect();
-        self.sync_project_task_windows(&all_projects, show_archived);
         let mut rows = div().id("organization-projects-scroll").flex().flex_col();
         for project in all_projects.into_iter().take(visible_count) {
             rows = rows.child(self.render_pi_project(project, snapshot, show_archived, cx));
@@ -963,23 +960,13 @@ impl ThreadsBlock {
                 cx,
             ));
         if !collapsed {
-            let mut tasks: Vec<_> = self
-                .threads
-                .iter()
-                .filter(|thread| thread.project_id == project.id)
-                .filter(|thread| !thread.pinned)
-                .cloned()
-                .collect();
-            if show_archived {
-                tasks.extend(
-                    self.archived
-                        .iter()
-                        .filter(|thread| thread.project_id == project.id)
-                        .filter(|thread| !thread.pinned)
-                        .cloned(),
-                );
-            }
-            tasks = super::projections::sorted_threads(&tasks, &snapshot.preferences);
+            let _ = show_archived;
+            let projection = self.task_projection();
+            let tasks = projection
+                .projects
+                .get(&project.id)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
             let (visible_count, has_hidden) = if let Some(organization) = self.organization.as_mut()
             {
                 organization
@@ -999,10 +986,10 @@ impl ThreadsBlock {
                     tasks.len() > super::PROJECT_TASKS_PAGE,
                 )
             };
-            let has_pinned = self
-                .eligible_threads(show_archived)
+            let has_pinned = projection
+                .pinned
                 .iter()
-                .any(|thread| thread.project_id == project.id && thread.pinned);
+                .any(|thread| thread.project_id == project.id);
             let opened_id = cx
                 .global::<OpenedThread>()
                 .0

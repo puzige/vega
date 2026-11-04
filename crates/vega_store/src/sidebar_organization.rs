@@ -4,6 +4,37 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 
+pub fn read_collapse(conn: &Connection) -> rusqlite::Result<(i64, String)> {
+    conn.query_row(
+        "SELECT revision,collapsed FROM sidebar_organization WHERE singleton=1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+}
+
+pub fn group_exists(conn: &Connection, group_id: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sidebar_groups WHERE id=?1)",
+        [group_id],
+        |row| row.get(0),
+    )
+}
+
+pub fn write_collapse(conn: &Connection, revision: i64, collapsed: &str) -> rusqlite::Result<()> {
+    let _permit = crate::write_coordination::acquire(
+        conn,
+        crate::write_coordination::WriteCategory::Sidebar,
+    )?;
+    let updated = conn.execute(
+        "UPDATE sidebar_organization SET revision=?1,collapsed=?2 WHERE singleton=1",
+        params![revision, collapsed],
+    )?;
+    if updated != 1 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    Ok(())
+}
+
 pub fn next_revision(revision: u64) -> Option<u64> {
     revision
         .checked_add(1)

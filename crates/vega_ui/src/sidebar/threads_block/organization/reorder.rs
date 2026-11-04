@@ -94,6 +94,7 @@ impl ThreadsBlock {
         {
             return;
         }
+        org.task_projection = None;
         org.reorder.pointer_order = org.snapshot.as_ref().map(|snapshot| {
             (
                 item.clone(),
@@ -110,6 +111,9 @@ impl ThreadsBlock {
             && !org.reorder.gesture
             && org.reorder.pointer_order.take().is_some()
         {
+            if let Some(org) = self.organization.as_mut() {
+                org.task_projection = None;
+            }
             cx.notify();
         }
     }
@@ -129,6 +133,7 @@ impl ThreadsBlock {
 
     pub(super) fn reset_reorder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(org) = self.organization.as_mut().filter(|org| org.reorder.gesture) {
+            org.task_projection = None;
             org.reorder.gesture = false;
             org.reorder.source = None;
             org.reorder.pointer_order = None;
@@ -239,6 +244,7 @@ impl ThreadsBlock {
         let Some(org) = self.organization.as_mut().filter(|org| org.reorder.gesture) else {
             return;
         };
+        org.task_projection = None;
         org.reorder.source = None;
         org.reorder.pointer_order = None;
         cx.stop_active_drag(window);
@@ -259,6 +265,7 @@ impl ThreadsBlock {
         let Some(org) = self.organization.as_mut().filter(|org| org.reorder.gesture) else {
             return;
         };
+        org.task_projection = None;
         org.reorder.gesture = false;
         org.reorder.pointer_order = None;
         let source = org.reorder.source.take();
@@ -316,32 +323,24 @@ impl ThreadsBlock {
         let drag_entity = cx.entity().downgrade();
         let drag_item = item.clone();
         let hover_item = item.clone();
-        let pressed_item = item.clone();
         row.relative()
             .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                if event.pressed_button.is_none() {
-                    if this.organization.as_ref().is_some_and(|org| org.pending) {
-                        this.hold_reorder_projection(&hover_item);
-                    } else if this.organization.as_ref().is_some_and(|org| {
+                if event.pressed_button.is_none()
+                    && this.organization.as_ref().is_some_and(|org| {
                         org.reorder
                             .pointer_order
                             .as_ref()
                             .is_some_and(|(source, _)| source != &hover_item)
-                    }) {
-                        this.clear_reorder_projection(cx);
-                    }
+                    })
+                {
+                    this.clear_reorder_projection(cx);
                 }
             }))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, _| {
-                    this.hold_reorder_projection(&pressed_item);
-                }),
-            )
             .on_drag(ReorderDrag { label }, move |drag, _, window, cx| {
                 drag_entity
                     .update(cx, |this, cx| {
                         this.close_actions();
+                        this.hold_reorder_projection(&drag_item);
                         if let Some(org) = this.organization.as_mut() {
                             org.menu = None;
                             org.menu_anchor = None;
