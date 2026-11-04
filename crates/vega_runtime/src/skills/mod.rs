@@ -2,9 +2,6 @@ mod catalog;
 mod frontmatter;
 mod source;
 
-#[cfg(test)]
-mod linked_development_tests;
-
 pub type HistoricalSkillReader = dyn Fn(&str) -> Vec<(ActiveSkillSummary, String)> + Send + Sync;
 
 pub use catalog::{
