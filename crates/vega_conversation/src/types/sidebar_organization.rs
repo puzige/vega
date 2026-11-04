@@ -65,6 +65,12 @@ pub enum SidebarCollapseTarget {
     Pinned,
     Ungrouped,
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidebarCollapseUpdate {
+    pub revision: u64,
+    pub collapsed: Vec<SidebarCollapseTarget>,
+}
+
 /// Registered project metadata; no filesystem reads are performed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SidebarProject {

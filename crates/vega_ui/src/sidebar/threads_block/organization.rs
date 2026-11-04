@@ -11,9 +11,11 @@ use vega_conversation::types::{
     SidebarOrganizationOutcome, SidebarOrganizationSnapshot, SidebarProject, SidebarTaskSort,
     SidebarTimelineBucket, SidebarView,
 };
+mod collapse;
 mod menu;
 mod projections;
 mod reorder;
+mod task_projection;
 pub(super) use reorder::ReorderItem;
 use reorder::ReorderState;
 mod render;
@@ -28,7 +30,10 @@ struct OrganizationRequestToken {
 }
 
 pub(super) struct Organization {
-    pub(super) snapshot: Option<SidebarOrganizationSnapshot>,
+    pub(super) snapshot: Option<std::rc::Rc<SidebarOrganizationSnapshot>>,
+    collapse: collapse::CollapseState,
+    pub(super) task_projection: Option<std::rc::Rc<task_projection::TaskProjection>>,
+    pub(super) focus_dirty: bool,
     database: Option<PathBuf>,
     projects: Entity<ProjectsBlock>,
     pending: bool,
@@ -204,6 +209,9 @@ impl ThreadsBlock {
             .detach();
         self.organization = Some(Organization {
             snapshot: None,
+            collapse: collapse::CollapseState::default(),
+            task_projection: None,
+            focus_dirty: true,
             database: None,
             projects,
             pending: false,
@@ -373,6 +381,12 @@ impl ThreadsBlock {
         };
         if org.database != current_database {
             org.database = current_database;
+            org.generation = org.generation.wrapping_add(1);
+            org.pending = false;
+            org.refresh_queued = false;
+            org.collapse = collapse::CollapseState::default();
+            org.task_projection = None;
+            org.focus_dirty = true;
             org.snapshot = None;
             org.project_threads_visible.clear();
             org.project_threads_total.clear();
@@ -397,7 +411,11 @@ impl ThreadsBlock {
         let Some(org) = self.organization.as_mut() else {
             return;
         };
-        if org.pending || task_mutation_busy(cx) {
+        if org.pending
+            || org.collapse.in_flight
+            || !org.collapse.intents.is_empty()
+            || task_mutation_busy(cx)
+        {
             org.refresh_queued = true;
             if action.is_some() {
                 self.error = Some(crate::localized_copy::LocalizedCopy::new(
@@ -512,7 +530,7 @@ impl ThreadsBlock {
         let mut created_id = None;
         match result {
             Ok(outcome) => {
-                let snapshot = outcome.snapshot;
+                let mut snapshot = outcome.snapshot;
                 created_id = outcome.created_thread.map(|t| t.id);
                 if submitted_editor
                     .as_ref()
@@ -531,22 +549,26 @@ impl ThreadsBlock {
                     .as_ref()
                     .is_none_or(|old| old.revision <= snapshot.revision)
                 {
-                    let totals: HashMap<String, usize> = snapshot
+                    let mut totals: HashMap<String, usize> = snapshot
                         .projects
                         .iter()
-                        .map(|project| {
-                            let total = snapshot
-                                .threads
-                                .iter()
-                                .filter(|thread| {
-                                    thread.project_id == project.id
-                                        && !thread.pinned
-                                        && (thread.status == ThreadStatus::Active || org.archive)
-                                })
-                                .count();
-                            (project.id.clone(), total)
-                        })
+                        .map(|project| (project.id.clone(), 0))
                         .collect();
+                    for thread in &snapshot.threads {
+                        if !thread.pinned
+                            && (thread.status == ThreadStatus::Active || org.archive)
+                            && let Some(total) = totals.get_mut(&thread.project_id)
+                        {
+                            *total += 1;
+                        }
+                    }
+                    org.collapse
+                        .accept(vega_conversation::types::SidebarCollapseUpdate {
+                            revision: snapshot.revision,
+                            collapsed: snapshot.collapsed.clone(),
+                        });
+                    org.collapse.retain_targets(&snapshot);
+                    snapshot.collapsed = org.collapse.effective();
                     org.sync_project_task_totals(totals);
                     org.project_growth_paused
                         .retain(|id| org.project_threads_total.contains_key(id));
@@ -558,20 +580,32 @@ impl ThreadsBlock {
                         }
                     }
                     if !metadata_stale {
-                        self.threads = snapshot
+                        let active = snapshot
                             .threads
                             .iter()
-                            .filter(|t| t.status == ThreadStatus::Active)
-                            .cloned()
-                            .collect();
-                        self.archived = snapshot
+                            .filter(|t| t.status == ThreadStatus::Active);
+                        let archived = snapshot
                             .threads
                             .iter()
-                            .filter(|t| t.status == ThreadStatus::Archived)
-                            .cloned()
-                            .collect();
+                            .filter(|t| t.status == ThreadStatus::Archived);
+                        if !self.threads.iter().eq(active.clone())
+                            || !self.archived.iter().eq(archived.clone())
+                        {
+                            self.threads = active.cloned().collect();
+                            self.archived = archived.cloned().collect();
+                            org.task_projection = None;
+                            org.focus_dirty = true;
+                        }
                     }
-                    org.snapshot = Some(snapshot);
+                    if org.snapshot.as_ref().is_none_or(|old| {
+                        old.threads != snapshot.threads
+                            || old.preferences != snapshot.preferences
+                            || old.projects != snapshot.projects
+                    }) {
+                        org.task_projection = None;
+                        org.focus_dirty = true;
+                    }
+                    org.snapshot = Some(std::rc::Rc::new(snapshot));
                 }
                 if was_mutation {
                     self.error = None;
@@ -585,6 +619,7 @@ impl ThreadsBlock {
             }
         }
         let refresh = std::mem::take(&mut org.refresh_queued) || metadata_stale;
+        self.start_collapse_save(cx);
         let route_matches = origin_route
             == (
                 cx.global::<SelectedProject>().0.clone(),
@@ -659,18 +694,24 @@ impl ThreadsBlock {
         target: SidebarCollapseTarget,
         cx: &mut Context<Self>,
     ) {
-        let collapsed = self
-            .organization
-            .as_ref()
-            .and_then(|o| o.snapshot.as_ref())
-            .is_some_and(|s| s.collapsed.contains(&target));
-        self.submit_organization(
-            SidebarOrganizationAction::SetCollapsed {
-                target,
-                collapsed: !collapsed,
-            },
-            cx,
-        );
+        let current_database =
+            with_store(cx, |store| Ok(store.database_path().map(Path::to_path_buf)))
+                .ok()
+                .flatten();
+        let Some(org) = self.organization.as_mut() else {
+            return;
+        };
+        if org.database != current_database {
+            self.refresh_organization(cx);
+            return;
+        }
+        if org.snapshot.is_none() {
+            return;
+        }
+        org.collapse.toggle(target);
+        self.apply_local_collapse();
+        cx.notify();
+        self.start_collapse_save(cx);
     }
     fn new_group_task(&mut self, group_id: String, cx: &mut Context<Self>) {
         if !crate::navigation::allow_task_navigation(None, cx) {

@@ -636,48 +636,53 @@ impl ThreadsBlock {
     }
 
     fn sync_contextual_focus(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let row_keys: HashSet<_> = self
-            .threads
-            .iter()
-            .chain(self.archived.iter())
-            .flat_map(|thread| {
-                let prefixes: &[&str] = if self.organization.is_none() {
-                    &["thread-row-"]
-                } else if thread.pinned {
-                    &["pinned-thread-row-"]
-                } else if thread.is_standalone() {
-                    &["standalone-thread-row-"]
-                } else {
-                    &["project-thread-row-", "standalone-thread-row-"]
-                };
-                prefixes
-                    .iter()
-                    .map(move |prefix| format!("{prefix}{}", thread.id))
-            })
-            .collect();
-        self.thread_action_focuses
-            .retain(|key, _| row_keys.contains(key));
-        for key in row_keys {
-            self.thread_action_focuses
-                .entry(key)
-                .or_insert_with(|| cx.focus_handle());
-        }
-        if let Some(snapshot) = self
-            .organization
-            .as_ref()
-            .and_then(|organization| organization.snapshot.as_ref())
-        {
-            let project_ids: HashSet<_> = snapshot
-                .projects
+        if self.organization.as_ref().is_none_or(|org| org.focus_dirty) {
+            let row_keys: HashSet<_> = self
+                .threads
                 .iter()
-                .map(|project| project.id.clone())
+                .chain(self.archived.iter())
+                .flat_map(|thread| {
+                    let prefixes: &[&str] = if self.organization.is_none() {
+                        &["thread-row-"]
+                    } else if thread.pinned {
+                        &["pinned-thread-row-"]
+                    } else if thread.is_standalone() {
+                        &["standalone-thread-row-"]
+                    } else {
+                        &["project-thread-row-", "standalone-thread-row-"]
+                    };
+                    prefixes
+                        .iter()
+                        .map(move |prefix| format!("{prefix}{}", thread.id))
+                })
                 .collect();
-            self.project_focuses
-                .retain(|id, _| project_ids.contains(id));
-            for project in &snapshot.projects {
-                self.project_focuses
-                    .entry(project.id.clone())
+            self.thread_action_focuses
+                .retain(|key, _| row_keys.contains(key));
+            for key in row_keys {
+                self.thread_action_focuses
+                    .entry(key)
                     .or_insert_with(|| cx.focus_handle());
+            }
+            if let Some(snapshot) = self
+                .organization
+                .as_ref()
+                .and_then(|organization| organization.snapshot.as_ref())
+            {
+                let project_ids: HashSet<_> = snapshot
+                    .projects
+                    .iter()
+                    .map(|project| project.id.clone())
+                    .collect();
+                self.project_focuses
+                    .retain(|id, _| project_ids.contains(id));
+                for project in &snapshot.projects {
+                    self.project_focuses
+                        .entry(project.id.clone())
+                        .or_insert_with(|| cx.focus_handle());
+                }
+            }
+            if let Some(org) = self.organization.as_mut() {
+                org.focus_dirty = false;
             }
         }
         self.focused_project = self
@@ -875,6 +880,10 @@ impl ThreadsBlock {
                             if let Some(at) = renamed_at {
                                 row.updated_at = row.updated_at.max(at);
                             }
+                        }
+                        if let Some(org) = this.organization.as_mut() {
+                            org.task_projection = None;
+                            org.focus_dirty = true;
                         }
                         if let Some(mut opened) = cx
                             .global::<OpenedThread>()

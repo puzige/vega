@@ -20,7 +20,13 @@ impl ThreadsBlock {
             .as_mut()
             .and_then(|org| org.snapshot.as_mut())
         {
-            snapshot.threads.retain(|row| row.id != id);
+            std::rc::Rc::make_mut(snapshot)
+                .threads
+                .retain(|row| row.id != id);
+        }
+        if let Some(org) = self.organization.as_mut() {
+            org.task_projection = None;
+            org.focus_dirty = true;
         }
         if self
             .editing

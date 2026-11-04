@@ -92,6 +92,10 @@ fn read_snapshot(store: &Store) -> Result<SidebarOrganizationSnapshot, SidebarOr
     })
 }
 
+mod collapse;
+pub use collapse::{save_collapsed, save_collapsed_with_cancel};
+#[cfg(test)]
+mod collapse_tests;
 mod ordering;
 pub use ordering::sorted_threads;
 mod mutations;
