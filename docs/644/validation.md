@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-原始功能已通过 [PR #874](https://github.com/puzige/vega/pull/874) 合并，合并提交 `28859f6f00b674141c6222172c8c1f1e3c18588a`。追加修复 [PR #875](https://github.com/puzige/vega/pull/875) 已合并为 `3cf6573b9fdbcbf59de9d5ba3b46defab836401f`，最终 [Actions 41678421619](https://github.com/puzige/vega/actions/runs/41678421619) required CI 成功：60 条 Python 通过、Rust `no Rust tests`（0 发现 / 0 执行）；首次 Clippy 因 hosted macOS 容量不足未分配运行器而取消，失败任务重跑通过。当前进程运行 `/Applications/Vega.app` 0.1.384，release ref 指向该合并提交。用户第二轮手测未通过，继续修复，Issue 保持 OPEN / In progress。
+原始功能已通过 [PR #874](https://github.com/puzige/vega/pull/874) 合并，合并提交 `28859f6f00b674141c6222172c8c1f1e3c18588a`。追加修复 [PR #875](https://github.com/puzige/vega/pull/875) 已合并为 `3cf6573b9fdbcbf59de9d5ba3b46defab836401f`，最终 [Actions 41678421619](https://github.com/puzige/vega/actions/runs/41678421619) required CI 成功：60 条 Python 通过、Rust `no Rust tests`（0 发现 / 0 执行）；首次 Clippy 因 hosted macOS 容量不足未分配运行器而取消，失败任务重跑通过。本轮排查时进程运行 `/Applications/Vega.app` 0.1.384，release ref 指向该合并提交；这是当时快照，不代表最新安装状态。用户第二轮手测未通过，继续修复，Issue 保持 OPEN / In progress。
 
 ## 第二轮反馈：有历史却禁止手动压缩
 
@@ -10,7 +10,10 @@
 - 确定源码缺陷：容量投影要求最后用户消息位于 index > 0；默认空闲手动 worker 又未初始进入响应组规划且 owner 为 None，因此单用户多完整工具响应组也被拒绝。修复入口和执行器共用 checkpoint-aware 响应组规划，保持 NoContinuation/来源围栏/配对/缩小/安装门禁。
 - 独立审查发现初稿会在常规刷新中逐组深复制整份来源；范围投影改为先筛选再复制所需文本片段、工具和图片，增量静态审查确认原 P2 已解决，校验与字段语义不变。仍有元数据扫描，不宣称所有规划复杂度为线性。
 - 只读元数据：当前目录根身份匹配且启用，逐项批准表为空；15 个子目录项为符号链接，发现器按既有安全合同拒绝；剩余 1 个普通子目录没有批准。未读取私有消息/工具输出或凭据，未写用户配置/数据、未自动授权、未放宽链接边界。最新会话元数据已是 4 条已完成用户消息且无 checkpoint，不等同于原截图时刻，不能据此声称复现该 UI 快照。
-- 本轮开发回归正在补充；仅本地格式/差异静态检查，尚未执行云端行为回归，未合并、未安装。
+- [PR #880](https://github.com/puzige/vega/pull/880) 开发 head `e57b76849f2baa7f70021f62402a36c38fd915f8` 的 [Actions 41751977188](https://github.com/puzige/vega/actions/runs/41751977188) 全部成功：Nextest `126318981077` 实际启动 6 条并执行/通过 6 条、失败/跳过 0；Clippy `126318981453`、required gate `126320811908` 成功，60 条 Python 测试通过。覆盖真实 accounted 手动服务、摘要调用、缩小、安装/重载、多 owner、pending user、平行工具组与再次规划；不冒充真实 provider/UI 验收，也未覆盖全部取消/CAS/预计算竞态。
+- 前两轮分别为 [41749512249](https://github.com/puzige/vega/actions/runs/41749512249) 6 执行/1 通过/5 失败和 [41750791033](https://github.com/puzige/vega/actions/runs/41750791033) 6 执行/3 通过/3 失败，均 0 跳过。仅修正夹具：摘要 fork 保留原工具定义但明确 `ToolChoice::None`；历史调用在 provider 投影后变为无权限观察而非 live calls。新增断言严格核对 activity/result 的精确有序身份、`authority: none`、参数不可用，保留原边界/配对/缩小/落库断言。两项修正经独立静态增量审查，无可操作发现，未改生产权限投影。
+- 留证标签 [`evidence/644-manual-development-e57b7684`](https://github.com/puzige/vega/tree/evidence/644-manual-development-e57b7684) 与 [PR 评论](https://github.com/puzige/vega/pull/880#issuecomment-6621635420) 固定可恢复源码。`manual_history_tests.rs` SHA-256：`b5801d50d0b332a895c5fcf9034d0f47ed3b001177b481e612f2b58a9e0c7cc6`；基线 `3cf6573b9fdbcbf59de9d5ba3b46defab836401f` 至开发 head 的 `git diff --binary` SHA-256：`752e6f82c8394d419de16d59d854197e5cf087d528f72faa6f3dfa891363092f`。
+- 留证后仅清理临时测试文件及独占模块接线，无新增依赖。同步最新基线 `08e624e2ee260eb0bc6cacc5757d8468b0cc0692`，三项侧栏改动不涉及压缩路径；三个任务提交 `range-diff` 均等价。最终版本独立清理审查和 required CI 待完成，须确认 Rust `no Rust tests`（0 发现/0 执行），不能用空集替代 6 条开发回归。未本地运行 Vega、编译、构建或测试；未合并、未安装，用户手测仍待通过。
 
 ## 追加反馈：空查询技能与已配置容量
 
