@@ -75,6 +75,9 @@ impl ThreadsBlock {
                         for row in this.threads.iter_mut().chain(this.archived.iter_mut()) {
                             if row.id == thread.id {
                                 merge_update(row, &committed);
+                                if committed.unread.is_some() {
+                                    row.last_response_failed = thread.last_response_failed;
+                                }
                             }
                         }
                         if committed.status.is_some() {
@@ -106,6 +109,9 @@ impl ThreadsBlock {
                             && opened.id == thread.id
                         {
                             merge_update(&mut opened, &committed);
+                            if committed.unread.is_some() {
+                                opened.last_response_failed = thread.last_response_failed;
+                            }
                             cx.set_global(OpenedThread(Some(opened)));
                         }
                         if let Some(org) = this.organization.as_mut()
@@ -114,6 +120,9 @@ impl ThreadsBlock {
                             for row in &mut snapshot.threads {
                                 if row.id == thread.id {
                                     merge_update(row, &committed);
+                                    if committed.unread.is_some() {
+                                        row.last_response_failed = thread.last_response_failed;
+                                    }
                                 }
                             }
                         }

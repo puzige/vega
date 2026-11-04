@@ -26,6 +26,7 @@
 1. `vega_store/src/threads.rs` 的共享查询列增加只读派生 `last_response_failed`：只对 unread 行，读取同线程最后一条 user/assistant 消息的 status 是否 failed，按已有唯一 `(thread_id, seq)` 索引倒序查找，空集为 false。包含 user 防止旧失败跨越新提交；不按单条工具错误推断整轮失败。
 2. 经 `vega_conversation::types::Thread` 和 `thread_from_row` 传递派生布尔值，draft 初始化 false，不改可写 ThreadUpdate 或 DDL。
 3. 两处现有未读点依该字段选择 `colors.danger` / `colors.accent`，失败添加现有 `ui.failed` 可访问名称；原尺寸、尾槽优先级和已读生命周期不变。
+4. 集成 #866 的异步未读更新时，仅在 committed update 包含 unread 的成功回调中，将 worker 重读的 `last_response_failed` 与 unread 配套回填普通 active/archived 行、OpenedThread 和 organization snapshot；不整体替换 Thread，不覆盖其他异步字段，不改变失败、数据库/路由校验和刷新行为。已读失败 → 手动未读应立即恢复红点及 Failed 名称；再次标已读再标未读仍按最新终态着色，done/interrupted/空消息仍为蓝点。
 
 ## 风险与验证
 
@@ -36,3 +37,4 @@
 ## 变更记录
 
 - v1：用户授权建卡并接手实现；先明确验收与最小计划，再修改生产代码。
+- v2：接续独立审查后，更新集成基线至 `3cf6573b9fdbcbf59de9d5ba3b46defab836401f`。#866 成功回调只合并可写字段，导致手动未读遗漏失败投影；补充上述最小回填契约，验收与范围不变。
