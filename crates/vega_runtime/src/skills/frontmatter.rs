@@ -3,7 +3,7 @@
 use super::source::{MAX_SKILL_BYTES, SkillError, valid_name};
 use serde::Deserialize;
 use serde_json::Value;
-use serde_saphyr::granit_parser::{Event, Parser, Tag};
+use serde_saphyr::granit_parser::{Event, Parser, ScalarStyle, Tag};
 use serde_saphyr::{DuplicateKeyPolicy, MergeKeyPolicy};
 use std::collections::BTreeMap;
 
@@ -83,6 +83,7 @@ pub fn parse_skill_md(bytes: &[u8], directory_name: &str) -> Result<SkillDocumen
         duplicate_keys: DuplicateKeyPolicy::Error,
         merge_keys: MergeKeyPolicy::Error,
         strict_booleans: true,
+        no_schema: true,
         with_snippet: false,
     };
     let parsed: RawMetadata = serde_saphyr::from_str_with_options(yaml, options)
@@ -184,12 +185,14 @@ fn check_yaml_events(yaml: &str) -> Result<(), SkillError> {
     let mut events = 0;
     let mut aliases = 0;
     let mut anchors = 0;
+    let mut fields = FieldTypes::default();
     for event in Parser::new_from_str(yaml) {
         let (event, _) = event.map_err(|_| SkillError::MalformedYaml)?;
         events += 1;
         if events > MAX_YAML_EVENTS {
             return Err(SkillError::TooLarge);
         }
+        fields.observe(&event);
         match event {
             Event::DocumentStart(_, _) => {
                 documents += 1;
@@ -222,7 +225,98 @@ fn check_yaml_events(yaml: &str) -> Result<(), SkillError> {
     if documents != 1 {
         return Err(SkillError::InvalidFormat);
     }
-    Ok(())
+    fields.error.map_or(Ok(()), Err)
+}
+
+#[derive(Default)]
+struct FieldTypes {
+    depth: usize,
+    expecting_key: bool,
+    field: Option<SkillError>,
+    error: Option<SkillError>,
+    hazardous_anchors: BTreeMap<usize, bool>,
+    containers: Vec<usize>,
+}
+
+impl FieldTypes {
+    fn observe(&mut self, event: &Event<'_>) {
+        match event {
+            Event::MappingStart(_, anchor, _) | Event::SequenceStart(_, anchor, _) => {
+                if self.depth == 0 {
+                    self.expecting_key = true;
+                }
+                self.depth += 1;
+                self.containers.push(*anchor);
+                if *anchor != 0 {
+                    self.hazardous_anchors.insert(*anchor, false);
+                }
+            }
+            Event::MappingEnd | Event::SequenceEnd => {
+                self.depth = self.depth.saturating_sub(1);
+                self.containers.pop();
+                self.finish_value();
+            }
+            Event::Scalar(value, style, anchor, tag) => {
+                if self.depth == 1 && self.expecting_key {
+                    self.field = field_error(value);
+                    self.expecting_key = false;
+                    return;
+                }
+                let hazardous = match tag.as_deref().and_then(Tag::core_suffix) {
+                    Some("str" | "null") => false,
+                    Some(_) => true,
+                    None => {
+                        *style == ScalarStyle::Plain
+                            && matches!(
+                                value.to_ascii_lowercase().as_str(),
+                                ".nan" | ".inf" | "+.inf" | "-.inf"
+                            )
+                    }
+                };
+                if *anchor != 0 {
+                    self.hazardous_anchors.insert(*anchor, hazardous);
+                }
+                self.record_hazard(hazardous);
+                self.finish_value();
+            }
+            Event::Alias(anchor) => {
+                let hazardous = self.hazardous_anchors.get(anchor).copied().unwrap_or(false);
+                self.record_hazard(hazardous);
+                self.finish_value();
+            }
+            _ => {}
+        }
+    }
+
+    fn record_hazard(&mut self, hazardous: bool) {
+        if hazardous {
+            self.error = self.error.or(self.field);
+            for anchor in &self.containers {
+                if *anchor != 0 {
+                    self.hazardous_anchors.insert(*anchor, true);
+                }
+            }
+        }
+    }
+
+    fn finish_value(&mut self) {
+        if self.depth == 1 {
+            self.expecting_key = true;
+            self.field = None;
+        }
+    }
+}
+
+fn field_error(name: &str) -> Option<SkillError> {
+    match name {
+        "name" => Some(SkillError::InvalidNameField),
+        "description" => Some(SkillError::InvalidDescription),
+        "license" => Some(SkillError::InvalidLicense),
+        "compatibility" => Some(SkillError::InvalidCompatibility),
+        "metadata" => Some(SkillError::InvalidMetadata),
+        "allowed-tools" => Some(SkillError::InvalidAllowedTools),
+        _ => None,
+    }
 }
 
 fn allow_core_tag(tag: &Tag) -> Result<(), SkillError> {

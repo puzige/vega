@@ -59,6 +59,10 @@ fn non_string_tool_declarations_are_rejected_without_coercion() {
         "[null]",
         "false",
         "42",
+        "[Read, .NaN, +.Inf]",
+        "-.Inf",
+        "!!int 7",
+        "[!!bool true]",
     ] {
         let result = parse(&format!("allowed-tools: {value}\n"));
         assert_eq!(result, Err(SkillError::InvalidAllowedTools), "{value}");
@@ -66,6 +70,45 @@ fn non_string_tool_declarations_are_rejected_without_coercion() {
     assert_eq!(
         SkillError::InvalidAllowedTools.code(),
         "invalid_allowed_tools"
+    );
+}
+
+#[test]
+fn tagged_and_aliased_types_keep_field_context() {
+    for (field, expected) in [
+        ("license", SkillError::InvalidLicense),
+        ("compatibility", SkillError::InvalidCompatibility),
+        ("metadata", SkillError::InvalidMetadata),
+        ("allowed-tools", SkillError::InvalidAllowedTools),
+    ] {
+        for value in ["!!int 7", "!!float .Inf", "!!bool true"] {
+            assert_eq!(parse(&format!("{field}: {value}\n")), Err(expected));
+            assert_eq!(
+                parse(&format!("extra: &value {value}\n{field}: *value\n")),
+                Err(expected)
+            );
+        }
+    }
+    assert_eq!(
+        parse("extra: &value [.NaN]\nallowed-tools: *value\n"),
+        Err(SkillError::InvalidAllowedTools)
+    );
+    assert_eq!(
+        parse("extra: &value .NaN\nallowed-tools: [*value]\n"),
+        Err(SkillError::InvalidAllowedTools)
+    );
+    let valid = parse("allowed-tools: [!!str .NaN, '.Inf', '7', 'true']\n").unwrap();
+    assert_eq!(
+        valid.metadata.allowed_tools.as_deref(),
+        Some(".NaN .Inf 7 true")
+    );
+    assert_eq!(
+        parse("extra: &value !!str .NaN\nallowed-tools: [*value]\n")
+            .unwrap()
+            .metadata
+            .allowed_tools
+            .as_deref(),
+        Some(".NaN")
     );
 }
 
@@ -184,7 +227,8 @@ fn yaml_safety_limits_still_reject_invalid_documents() {
 
 #[test]
 fn discovery_accepts_both_formats_and_emits_safe_field_codes() {
-    let root = std::env::temp_dir().join(format!("vega-skill-declaration-{}", ulid::Ulid::new()));
+    let root =
+        std::env::temp_dir().join(format!("vega-skill-declaration-{}", ulid::Ulid::generate()));
     std::fs::create_dir(&root).unwrap();
     for (name, fields) in [
         ("string-skill", "allowed-tools: Read\n"),
