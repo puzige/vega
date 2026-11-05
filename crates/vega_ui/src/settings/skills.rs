@@ -590,19 +590,22 @@ impl SettingsView {
         let colors = theme(cx).colors;
         let source_name = skill_source_name(source, projection);
         let toggle_label = format!("{} · {}", candidate.name, source.configured_root.display());
+        let mut full_label = format!("{} ({source_name})", candidate.name);
         let mut text = div()
             .flex_1()
             .min_w_0()
             .flex()
             .flex_col()
             .gap_1()
-            .child(div().text_ellipsis().child(candidate.name.clone()));
+            .child(div().min_w_0().truncate().child(candidate.name.clone()));
         if let Some(description) = &candidate.description {
+            full_label.push_str(&format!(": {description}"));
             text = text.child(
                 div()
+                    .min_w_0()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_secondary)
-                    .text_ellipsis()
+                    .truncate()
                     .child(description.clone()),
             );
         }
@@ -616,22 +619,33 @@ impl SettingsView {
             .as_deref()
             .or(source.diagnostic.as_deref())
         {
+            let label = skill_diagnostic_label(diagnostic).to_owned();
+            full_label.push_str(&format!(": {label}"));
             text = text.child(
                 div()
+                    .min_w_0()
+                    .truncate()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.warning)
-                    .child(skill_diagnostic_label(diagnostic).to_owned()),
+                    .child(label),
             );
         } else if !source_enabled {
+            let label = t("settings.skills.source_disabled");
+            full_label.push_str(&format!(": {label}"));
             text = text.child(
                 div()
+                    .min_w_0()
+                    .truncate()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_secondary)
-                    .child(t("settings.skills.source_disabled")),
+                    .child(label),
             );
         } else if let Some(label) = skill_shadow_label(projection, candidate) {
+            full_label.push_str(&format!(": {label}"));
             text = text.child(
                 div()
+                    .min_w_0()
+                    .truncate()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_secondary)
                     .child(label),
@@ -639,6 +653,8 @@ impl SettingsView {
         }
         let mut row = div()
             .id(format!("skills-candidate-{}-{}", source.id, candidate.name))
+            .aria_label(full_label.clone())
+            .tooltip(move |_, cx| crate::icons::tooltip(full_label.clone(), cx))
             .flex()
             .items_center()
             .gap(px(Layout::SETTINGS_CONTENT_GAP))
@@ -666,7 +682,7 @@ impl SettingsView {
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_secondary)
                     .max_w(px(Layout::SETTINGS_LABEL_WIDTH))
-                    .text_ellipsis()
+                    .truncate()
                     .child(source_name),
             );
         if candidate.content_sha256.is_some() {
