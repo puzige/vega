@@ -2,6 +2,7 @@
 
 use super::source::{MAX_SKILL_BYTES, SkillError, valid_name};
 use serde::Deserialize;
+use serde_json::Value;
 use serde_saphyr::granit_parser::{Event, Parser, Tag};
 use serde_saphyr::{DuplicateKeyPolicy, MergeKeyPolicy};
 use std::collections::BTreeMap;
@@ -33,14 +34,16 @@ pub struct SkillDocument {
 
 #[derive(Deserialize)]
 struct RawMetadata {
-    name: String,
-    description: String,
-    license: Option<String>,
-    compatibility: Option<String>,
     #[serde(default)]
-    metadata: BTreeMap<String, String>,
+    name: Value,
+    #[serde(default)]
+    description: Value,
+    license: Option<Value>,
+    compatibility: Option<Value>,
+    #[serde(default = "empty_metadata")]
+    metadata: Value,
     #[serde(rename = "allowed-tools")]
-    allowed_tools: Option<String>,
+    allowed_tools: Option<Value>,
 }
 
 /// Parse a bounded complete SKILL.md; reject non-core tags before Serde can
@@ -83,31 +86,69 @@ pub fn parse_skill_md(bytes: &[u8], directory_name: &str) -> Result<SkillDocumen
         with_snippet: false,
     };
     let parsed: RawMetadata = serde_saphyr::from_str_with_options(yaml, options)
-        .map_err(|_| SkillError::InvalidMetadata)?;
-    if !valid_name(&parsed.name) || parsed.name != directory_name {
+        .map_err(|_| SkillError::InvalidFormat)?;
+    let name = field_string(&parsed.name, SkillError::InvalidNameField)?;
+    if !valid_name(&name) || name != directory_name {
         return Err(SkillError::InvalidName);
     }
-    if parsed.description.trim().is_empty() || parsed.description.chars().count() > 1024 {
-        return Err(SkillError::InvalidFormat);
+    let description = field_string(&parsed.description, SkillError::InvalidDescription)?;
+    if description.trim().is_empty() || description.chars().count() > 1024 {
+        return Err(SkillError::InvalidDescription);
     }
-    if parsed
-        .compatibility
+    let license = optional_string(parsed.license.as_ref(), SkillError::InvalidLicense)?;
+    let compatibility = optional_string(
+        parsed.compatibility.as_ref(),
+        SkillError::InvalidCompatibility,
+    )?;
+    if compatibility
         .as_ref()
         .is_some_and(|value| value.is_empty() || value.chars().count() > 500)
     {
-        return Err(SkillError::InvalidFormat);
+        return Err(SkillError::InvalidCompatibility);
     }
+    let metadata = parsed
+        .metadata
+        .as_object()
+        .ok_or(SkillError::InvalidMetadata)?
+        .iter()
+        .map(|(key, value)| {
+            field_string(value, SkillError::InvalidMetadata).map(|value| (key.clone(), value))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let allowed_tools = match parsed.allowed_tools {
+        None => None,
+        Some(Value::Array(values)) => Some(
+            values
+                .iter()
+                .map(|value| field_string(value, SkillError::InvalidAllowedTools))
+                .collect::<Result<Vec<_>, _>>()?
+                .join(" "),
+        ),
+        Some(value) => Some(field_string(&value, SkillError::InvalidAllowedTools)?),
+    };
     Ok(SkillDocument {
         metadata: SkillMetadata {
-            name: parsed.name,
-            description: parsed.description,
-            license: parsed.license,
-            compatibility: parsed.compatibility,
-            metadata: parsed.metadata,
-            allowed_tools: parsed.allowed_tools,
+            name,
+            description,
+            license,
+            compatibility,
+            metadata,
+            allowed_tools,
         },
         body: body.to_string(),
     })
+}
+
+fn empty_metadata() -> Value {
+    Value::Object(Default::default())
+}
+
+fn field_string(value: &Value, error: SkillError) -> Result<String, SkillError> {
+    value.as_str().map(str::to_owned).ok_or(error)
+}
+
+fn optional_string(value: Option<&Value>, error: SkillError) -> Result<Option<String>, SkillError> {
+    value.map(|value| field_string(value, error)).transpose()
 }
 
 fn split_frontmatter(text: &str) -> Result<(&str, &str), SkillError> {
@@ -190,3 +231,7 @@ fn allow_core_tag(tag: &Tag) -> Result<(), SkillError> {
         _ => Err(SkillError::ForbiddenTag),
     }
 }
+
+#[cfg(test)]
+#[path = "frontmatter_development_tests.rs"]
+mod development_tests;
