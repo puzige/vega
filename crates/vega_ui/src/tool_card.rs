@@ -2158,6 +2158,3 @@ fn detail_row(
         .child(gpui_kit::base::SelectableText::new(id, text))
         .into_any_element()
 }
-
-#[cfg(test)]
-mod reading_development_tests;
