@@ -15,6 +15,9 @@ use crate::context_projection::{ProjectionFragment, ProjectionPlan};
 use crate::image_attachments::ImageRow;
 use crate::messages::MessageRow;
 
+mod legacy_redaction;
+pub use legacy_redaction::{PreparedLegacyRedaction, prepare_legacy_thread_redaction};
+
 /// The largest setting accepted by the store.  This mirrors the runtime's
 /// bounded `u32` provider conversion without making the store depend on the
 /// runtime crate.

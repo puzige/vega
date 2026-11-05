@@ -172,7 +172,7 @@ pub(super) fn verify_resume(
         .map_err(|_| failure("permission coordination unavailable"))?;
     crate::permission_contracts::require_admission_open(store)
         .map_err(|_| failure("permission admission unavailable"))?;
-    let tx = store.immediate_transaction()?;
+    let tx = store.conn().unchecked_transaction()?;
     let state = vega_store::permission_contracts::load_state(&tx)?;
     let parent = vega_store::permission_contracts::load_run_fence(
         &tx,

@@ -1372,6 +1372,9 @@ async fn create_child(
         }
         crate::thread_access::verify(&store, &snapshot.agent_id, &admission)
             .map_err(|_| failure("child admission identity changed"))?;
+        let prepared_workspace =
+            crate::threads::task_workspace_root(&store, &snapshot.parent_thread_id)
+                .map_err(|_| failure("parent workspace unavailable"))?;
         let tx = store
             .immediate_transaction()
             .map_err(|_| failure("storage unavailable"))?;
@@ -1521,6 +1524,9 @@ async fn create_child(
             &settings.authority.permission_fence,
         )
         .map_err(|_| failure("delegated permission source changed"))?;
+        if prepared_workspace.to_str() != Some(permission_fence.workspace.as_str()) {
+            return Err(failure("delegated workspace changed"));
+        }
         let encoded = serde_json::to_string(&permission_fence)
             .map_err(|_| failure("delegated permission snapshot unavailable"))?;
         vega_store::permission_contracts::record_delegated_fence(

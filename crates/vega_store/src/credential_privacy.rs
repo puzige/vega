@@ -459,10 +459,6 @@ pub fn source_message_id(
 }
 
 pub fn refresh_epoch(conn: &Connection, digest: &str) -> rusqlite::Result<()> {
-    let _permit = crate::write_coordination::acquire(
-        conn,
-        crate::write_coordination::WriteCategory::Credentials,
-    )?;
     fn current(conn: &Connection) -> rusqlite::Result<Option<String>> {
         conn.query_row(
             "SELECT digest FROM credential_privacy_epoch WHERE singleton=1",

@@ -133,6 +133,12 @@ pub struct SkillSource {
     linked_target: Option<LinkedSkillTarget>,
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct PreparedSkillSource {
+    file: Metadata,
+    directories: Vec<(u64, u64)>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct LinkedSkillTarget {
     name: String,
@@ -476,6 +482,56 @@ impl SkillSource {
     }
 
     /// Read a bounded `SKILL.md` file from this approved root.
+    pub(super) fn prepare_candidate(
+        &self,
+        candidate: &SkillCandidate,
+    ) -> Result<(Vec<u8>, PreparedSkillSource), SkillError> {
+        if candidate.source.identity() != self.identity()
+            || (self.linked_target.is_some() && candidate.source != *self)
+        {
+            return Err(SkillError::Stale);
+        }
+        if !valid_name(&candidate.name) {
+            return Err(SkillError::InvalidName);
+        }
+        let (bytes, prepared) = candidate.source.read_relative_with_version(
+            &Path::new(&candidate.name).join("SKILL.md"),
+            MAX_SKILL_BYTES,
+        )?;
+        std::str::from_utf8(&bytes).map_err(|_| SkillError::InvalidUtf8)?;
+        if bytes.len() != candidate.size_bytes || sha256(&bytes) != candidate.sha256 {
+            return Err(SkillError::Stale);
+        }
+        Ok((bytes, prepared))
+    }
+
+    pub(super) fn validate_prepared_candidate(
+        &self,
+        name: &str,
+        prepared: &PreparedSkillSource,
+    ) -> Result<(), SkillError> {
+        if !valid_name(name) {
+            return Err(SkillError::InvalidName);
+        }
+        let (root, components) = self.access_root(&Path::new(name).join("SKILL.md"))?;
+        let opened = open_chain(&root, &components)?;
+        let current = opened.file.metadata().map_err(|_| SkillError::Io)?;
+        if !current.is_file()
+            || !same_file_state(&prepared.file, &current)
+            || opened.directories.len() != prepared.directories.len()
+        {
+            return Err(SkillError::Stale);
+        }
+        for (directory, expected) in opened.directories.iter().zip(&prepared.directories) {
+            let metadata = directory.metadata().map_err(|_| SkillError::Io)?;
+            if (metadata.dev(), metadata.ino()) != *expected {
+                return Err(SkillError::Stale);
+            }
+        }
+        self.ensure_current()?;
+        Ok(())
+    }
+
     pub fn read_skill_md(&self, name: &str) -> Result<Vec<u8>, SkillError> {
         if !valid_name(name) {
             return Err(SkillError::InvalidName);
@@ -538,6 +594,15 @@ impl SkillSource {
     }
 
     fn read_relative(&self, relative: &Path, limit: usize) -> Result<Vec<u8>, SkillError> {
+        self.read_relative_with_version(relative, limit)
+            .map(|(bytes, _)| bytes)
+    }
+
+    fn read_relative_with_version(
+        &self,
+        relative: &Path,
+        limit: usize,
+    ) -> Result<(Vec<u8>, PreparedSkillSource), SkillError> {
         let (root, components) = self.access_root(relative)?;
         let mut opened = open_chain(&root, &components)?;
         let before = opened.file.metadata().map_err(|_| SkillError::Io)?;
@@ -579,7 +644,21 @@ impl SkillSource {
             return Err(SkillError::Stale);
         }
         let _root = self.ensure_current()?;
-        Ok(first)
+        let directories = opened
+            .directories
+            .iter()
+            .map(|directory| {
+                let metadata = directory.metadata().map_err(|_| SkillError::Io)?;
+                Ok((metadata.dev(), metadata.ino()))
+            })
+            .collect::<Result<Vec<_>, SkillError>>()?;
+        Ok((
+            first,
+            PreparedSkillSource {
+                file: before,
+                directories,
+            },
+        ))
     }
 }
 

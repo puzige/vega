@@ -244,6 +244,150 @@ pub fn exception_filter(
     }))
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct CredentialStorageVersion(Vec<(u64, u64, u64, i64, i64, i64, i64)>);
+
+impl CredentialStorageVersion {
+    pub(crate) fn capture(root: &std::path::Path) -> Result<Self, CredentialReadError> {
+        use std::os::unix::fs::MetadataExt;
+        let root = root.canonicalize().map_err(|_| unavailable())?;
+        let mut states = Vec::new();
+        for path in [
+            root.clone(),
+            root.join("credentials"),
+            root.join("credentials/credentials.toml"),
+        ] {
+            let metadata = std::fs::symlink_metadata(path).map_err(|_| unavailable())?;
+            if metadata.file_type().is_symlink() {
+                return Err(unavailable());
+            }
+            states.push((
+                metadata.dev(),
+                metadata.ino(),
+                metadata.len(),
+                metadata.mtime(),
+                metadata.mtime_nsec(),
+                metadata.ctime(),
+                metadata.ctime_nsec(),
+            ));
+        }
+        Ok(Self(states))
+    }
+}
+
+pub(crate) fn prepare_redaction_storage(
+    root: &std::path::Path,
+) -> Result<CredentialStorageVersion, CredentialReadError> {
+    key(root)?;
+    CredentialStorageVersion::capture(root)
+}
+
+pub(crate) struct PreparedRedactionAuthority {
+    root: PathBuf,
+    database: PathBuf,
+    thread: String,
+    credential_revision: u64,
+    exception_revision: u64,
+    epoch: String,
+    exceptions: Vec<(String, String)>,
+    rule_version: &'static str,
+    storage: CredentialStorageVersion,
+    policy: CredentialExceptionFilter,
+}
+
+impl PreparedRedactionAuthority {
+    pub(crate) fn capture(
+        store: &Store,
+        thread: &str,
+        root: &std::path::Path,
+        credential_revision: u64,
+        owner_values: &[String],
+        storage: CredentialStorageVersion,
+        allow_exceptions: bool,
+    ) -> Result<Self, CredentialReadError> {
+        let database = store.database_path().ok_or_else(unavailable)?.to_owned();
+        let key = key(root)?;
+        let mut owner = owner_values.to_vec();
+        owner.sort();
+        let encoded = serde_json::to_string(&owner).map_err(|_| unavailable())?;
+        let epoch = fingerprint(key.as_bytes(), "owner-epoch", &encoded);
+        let revision = exception_revision(&database, thread).ok_or_else(unavailable)?;
+        let transaction = store
+            .conn()
+            .unchecked_transaction()
+            .map_err(|error| CredentialReadError::database(CredentialReadStage::Privacy, error))?;
+        let mut exceptions = vega_store::credential_privacy::exceptions(&transaction, thread)
+            .map_err(|error| CredentialReadError::database(CredentialReadStage::Privacy, error))?;
+        exceptions.sort();
+        transaction
+            .commit()
+            .map_err(|error| CredentialReadError::database(CredentialReadStage::Privacy, error))?;
+        let allowed: HashSet<_> = exceptions.iter().cloned().collect();
+        let policy: CredentialExceptionFilter = Arc::new(move |text, finding| {
+            if !allow_exceptions || finding.confidence == CredentialConfidence::KnownExact {
+                return false;
+            }
+            text.get(finding.start..finding.end).is_some_and(|content| {
+                allowed.contains(&(
+                    finding.rule_id.to_owned(),
+                    fingerprint(key.as_bytes(), finding.rule_id, content),
+                ))
+            })
+        });
+        let authority = Self {
+            root: root.to_owned(),
+            database: database.clone(),
+            thread: thread.to_owned(),
+            credential_revision,
+            exception_revision: revision,
+            epoch,
+            exceptions,
+            rule_version: RULE_VERSION,
+            storage,
+            policy,
+        };
+        authority.validate(store)?;
+        Ok(authority)
+    }
+
+    pub(crate) fn policy(&self) -> &CredentialExceptionFilter {
+        &self.policy
+    }
+
+    pub(crate) fn validate(&self, store: &Store) -> Result<(), CredentialReadError> {
+        if self.rule_version != RULE_VERSION
+            || store.database_path() != Some(self.database.as_path())
+            || self.credential_revision == u64::MAX
+            || vega_store::keystore::revision(&self.root) != self.credential_revision
+            || CredentialStorageVersion::capture(&self.root)? != self.storage
+            || exception_revision(&self.database, &self.thread) != Some(self.exception_revision)
+            || !AUTHORITY
+                .get_or_init(Default::default)
+                .lock()
+                .map_err(|_| unavailable())?
+                .get(&self.root)
+                .is_some_and(|epoch| epoch == &self.epoch)
+        {
+            return Err(unavailable());
+        }
+        let epoch: Option<String> = store
+            .conn()
+            .query_row(
+                "SELECT (SELECT digest FROM credential_privacy_epoch WHERE singleton=1)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| CredentialReadError::database(CredentialReadStage::Privacy, error))?;
+        let mut exceptions = vega_store::credential_privacy::exceptions(store.conn(), &self.thread)
+            .map_err(|error| CredentialReadError::database(CredentialReadStage::Privacy, error))?;
+        exceptions.sort();
+        if epoch.as_deref() != Some(self.epoch.as_str()) || exceptions != self.exceptions {
+            return Err(unavailable());
+        }
+        Ok(())
+    }
+}
+
 pub struct DisplayProjection {
     known: Vec<String>,
     filter: Option<CredentialExceptionFilter>,

@@ -262,6 +262,7 @@ pub fn capture_authority(
     {
         return Err(ConversationError::InvalidTaskIdentity);
     }
+    crate::threads::task_workspace_root(store, &source.id)?;
     crate::permission_contracts::capture_fence(store, &row)
 }
 

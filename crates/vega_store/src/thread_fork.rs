@@ -134,6 +134,50 @@ pub fn latest_fork_cutoff(
     Ok(None)
 }
 
+pub fn prefix_images(
+    conn: &Connection,
+    source_thread_id: &str,
+    through_message_id: &str,
+) -> Result<Vec<crate::image_attachments::ImageRow>, ForkError> {
+    let cutoff =
+        crate::messages::find(conn, through_message_id)?.ok_or(ForkError::InvalidCutoff)?;
+    if cutoff.thread_id != source_thread_id {
+        return Err(ForkError::InvalidCutoff);
+    }
+    let scope = "FROM image_attachments a JOIN messages m ON m.id=a.message_id WHERE m.thread_id=?1 AND m.seq<=?2";
+    let size: i64 = conn.query_row(
+        &format!("SELECT COALESCE(SUM(length(a.encoded)),0) {scope}"),
+        params![source_thread_id, cutoff.seq],
+        |row| row.get(0),
+    )?;
+    if size > 32 * 1024 * 1024 {
+        return Err(corrupt("attachment history exceeds 32 MiB"));
+    }
+    let mut statement = conn.prepare(&format!(
+        "SELECT a.message_id,a.ordinal,a.encoded,(SELECT s.call_id FROM computer_screenshot_artifacts s WHERE s.message_id=a.message_id AND s.ordinal=a.ordinal) {scope} ORDER BY m.seq,m.id,a.ordinal"
+    ))?;
+    let mut rows = statement.query(params![source_thread_id, cutoff.seq])?;
+    let mut images = Vec::new();
+    let mut total = 0usize;
+    while let Some(row) = rows.next()? {
+        let value = row.get_ref(2)?;
+        let bytes = value
+            .as_blob()
+            .map_err(|_| corrupt("invalid attachment bytes"))?;
+        total = total.saturating_add(bytes.len());
+        if total > 32 * 1024 * 1024 {
+            return Err(corrupt("attachment history exceeds 32 MiB"));
+        }
+        images.push(crate::image_attachments::ImageRow {
+            message_id: row.get(0)?,
+            ordinal: row.get(1)?,
+            artifact_call_id: row.get(3)?,
+            encoded: bytes.to_vec(),
+        });
+    }
+    Ok(images)
+}
+
 pub fn clone_prefix(
     tx: &Transaction<'_>,
     source_thread_id: &str,

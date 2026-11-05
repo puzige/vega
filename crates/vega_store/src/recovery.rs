@@ -29,10 +29,6 @@ pub fn recover_thread(
     thread_id: &str,
     now_ms: i64,
 ) -> Result<RecoveryCounts, rusqlite::Error> {
-    let _permit = crate::write_coordination::acquire(
-        conn,
-        crate::write_coordination::WriteCategory::Delegation,
-    )?;
     let owner = crate::delegated_ownership::acquire_for_thread(conn, thread_id)?;
     let tx = crate::write_coordination::WriteTransaction::new(
         conn,

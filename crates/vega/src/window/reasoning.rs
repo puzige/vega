@@ -268,23 +268,21 @@ fn save_reasoning_default_retry(
     }
     let store = vega_store::Store::open_existing(database.ok_or(DefaultRetryError::Unavailable)?)
         .map_err(|_| DefaultRetryError::Unavailable)?;
-    let transaction = store
-        .immediate_transaction()
-        .map_err(|_| DefaultRetryError::Unavailable)?;
-    let preferences = vega_conversation::threads::get_thread(&store, &request.thread_id)
-        .map_err(|_| DefaultRetryError::Unavailable)?
-        .reasoning_preferences;
-    match retry_session_preference_matches(preferences.as_deref(), request) {
-        Err(DefaultRetryError::Superseded(_)) => {
-            return Err(DefaultRetryError::Superseded(preferences));
-        }
-        result => result?,
-    }
-    let result = save_reasoning_defaults(&job.path, &job.snapshot, &job.base, &job.patch);
-    transaction
-        .commit()
-        .map_err(|_| DefaultRetryError::Unavailable)?;
-    Ok((result, preferences))
+    vega_conversation::session_reasoning::with_current_preferences(
+        &store,
+        &request.thread_id,
+        |preferences| {
+            match retry_session_preference_matches(preferences.as_deref(), request) {
+                Err(DefaultRetryError::Superseded(_)) => {
+                    return Err(DefaultRetryError::Superseded(preferences));
+                }
+                result => result?,
+            }
+            let result = save_reasoning_defaults(&job.path, &job.snapshot, &job.base, &job.patch);
+            Ok((result, preferences))
+        },
+    )
+    .map_err(|_| DefaultRetryError::Unavailable)?
 }
 
 fn reasoning_result_confirms_request(
