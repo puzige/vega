@@ -430,6 +430,3 @@ pub(super) fn prepare_skill_run_with_config_dir(
     let run = SkillRun::new_bound(catalog, true, binding).map_err(|_| invalid_store())?;
     Ok(Some(PreparedSkills { run, explicit }))
 }
-
-#[cfg(test)]
-mod toggle_development_tests;

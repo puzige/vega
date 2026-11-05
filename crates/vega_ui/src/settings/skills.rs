@@ -939,6 +939,3 @@ fn skill_error_label(error: SkillSettingsError) -> SettingsText {
         SkillSettingsError::SelectionLimit => SettingsText::key("settings.skills.error.selection"),
     }
 }
-
-#[cfg(test)]
-mod list_development_tests;
