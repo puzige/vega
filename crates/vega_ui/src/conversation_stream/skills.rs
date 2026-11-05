@@ -10,8 +10,6 @@ impl ConversationStream {
         self.skill_projection = None;
         self.skill_mutation_pending = false;
         self.actions.skill_projection_requested = false;
-        self.active_skills.clear();
-        self.active_skill_focuses.clear();
     }
 
     /// Settings may change consent while a catalog/mutation worker is still
@@ -130,31 +128,6 @@ impl ConversationStream {
         cx.notify();
     }
 
-    pub fn disable_active_skill(&mut self, name: String, cx: &mut Context<Self>) {
-        if self.skill_mutation_pending || self.draft_route {
-            return;
-        }
-        let Some(projection) = self.skill_projection.as_ref() else {
-            return;
-        };
-        let Some(active) = self.active_skills.iter().find(|item| item.name == name) else {
-            return;
-        };
-        self.skill_mutation_pending = true;
-        cx.emit(SkillComposerMutationRequested {
-            thread_id: self.thread.id.clone(),
-            project_id: self.thread.project_id.clone(),
-            owner_generation: self.skill_projection_generation,
-            expected_generation: projection.consent_generation,
-            mutation: SkillComposerMutation::DisableFuture {
-                name: active.name.clone(),
-                source_label: active.source_label.clone(),
-                content_sha256: active.content_sha256.clone(),
-            },
-        });
-        cx.notify();
-    }
-
     pub fn finish_skill_mutation(&mut self, success: bool, cx: &mut Context<Self>) {
         self.skill_mutation_pending = false;
         if success {
@@ -183,98 +156,5 @@ impl ConversationStream {
             ));
             cx.notify();
         }
-    }
-
-    pub(crate) fn render_active_skills(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        let mut row = div()
-            .key_context("Composer")
-            .on_action(cx.listener(Self::next_composer_control))
-            .on_action(cx.listener(Self::previous_composer_control))
-            .flex()
-            .flex_col()
-            .gap_1();
-        for (index, skill) in self.active_skills.iter().enumerate() {
-            let name = skill.name.clone();
-            let focus = &self.active_skill_focuses[index];
-            row = row.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_size(px(Typography::METADATA))
-                    .text_color(colors.text_secondary)
-                    .child(vega_i18n::t_args(
-                        "ui.using_name_source",
-                        &[("name", &skill.name), ("source", &skill.source_label)],
-                    ))
-                    .child(
-                        div()
-                            .id("active-skill-stop")
-                            .focusable()
-                            .track_focus(&focus[0])
-                            .tab_stop(true)
-                            .aria_label(vega_i18n::t("ui.stop_current_task"))
-                            .focus_visible(move |style| {
-                                style.border_1().border_color(colors.brand_primary)
-                            })
-                            .cursor_pointer()
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    this.request_composer_stop(cx);
-                                }),
-                            )
-                            .on_key_down(cx.listener(
-                                |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                        this.request_composer_stop(cx);
-                                        cx.stop_propagation();
-                                    }
-                                },
-                            ))
-                            .child(vega_i18n::t("ui.stop")),
-                    )
-                    .child(
-                        div()
-                            .id("active-skill-disable")
-                            .focusable()
-                            .track_focus(&focus[1])
-                            .tab_stop(true)
-                            .aria_label(vega_i18n::t("ui.disable_future_activations_of_this_skill"))
-                            .focus_visible(move |style| {
-                                style.border_1().border_color(colors.brand_primary)
-                            })
-                            .cursor_pointer()
-                            .on_key_down(cx.listener({
-                                let name = name.clone();
-                                move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                        this.disable_active_skill(name.clone(), cx);
-                                        cx.stop_propagation();
-                                    }
-                                }
-                            }))
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    this.disable_active_skill(name.clone(), cx);
-                                }),
-                            )
-                            .child(vega_i18n::t("ui.disable_future_activations")),
-                    ),
-            );
-        }
-        row.when(!self.active_skills.is_empty(), |row| {
-            row.child(
-                div()
-                    .text_size(px(Typography::METADATA))
-                    .text_color(colors.text_secondary)
-                    .child(vega_i18n::t(
-                        "ui.stopping_or_disabling_does_not_undo_completed_actions",
-                    )),
-            )
-        })
-        .into_any_element()
     }
 }

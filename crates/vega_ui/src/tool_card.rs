@@ -55,7 +55,7 @@ impl ToolActivityCategory {
             Self::Mcp => vega_i18n::t("ui.call_mcp"),
             Self::CodexAcp => "Codex ACP",
             Self::ComputerUse => vega_i18n::t("ui.use_computer_or_browser"),
-            Self::Skill => vega_i18n::t("ui.use_skill"),
+            Self::Skill => vega_i18n::t("ui.read_skill"),
             Self::Other => vega_i18n::t("ui.use_tools"),
         }
     }
@@ -72,7 +72,8 @@ impl ToolActivityCategory {
             Self::Mcp => Icon::Plug,
             Self::CodexAcp => Icon::Bot,
             Self::ComputerUse => Icon::Monitor,
-            Self::Skill | Self::Other => Icon::Wrench,
+            Self::Skill => Icon::BookOpen,
+            Self::Other => Icon::Wrench,
         }
     }
 }
@@ -267,6 +268,32 @@ impl ToolCard {
         };
         card.refresh_summary();
         card
+    }
+
+    pub(crate) fn activated_skill(name: String) -> Self {
+        Self::hydrated(
+            Some(ToolCardInputProjection::Skill {
+                kind: vega_conversation::types::SkillToolKind::Load,
+                name: Some(name),
+                path_bytes: None,
+                path_sha256: None,
+            }),
+            ToolCallStatus::Success,
+            None,
+            Some(ToolCardResultProjection::Skill {
+                status: ToolCallStatus::Success,
+                outcome: SkillCardOutcome::Loaded,
+                reused: false,
+            }),
+            None,
+        )
+    }
+
+    pub(crate) fn reads_skill(&self, name: &str) -> bool {
+        matches!(&self.input, Some(ToolCardInputProjection::Skill {
+            kind: vega_conversation::types::SkillToolKind::Load,
+            name: Some(loaded), ..
+        }) if loaded == name)
     }
 
     /// Whether a duplicate proposal is semantically identical.
@@ -653,6 +680,9 @@ impl ToolCard {
     }
 
     pub(crate) fn description_headline(&self) -> Option<(String, Icon)> {
+        if matches!(self.input, Some(ToolCardInputProjection::Skill { .. })) {
+            return Some((self.headline_title(), self.leading_icon()));
+        }
         self.description_title()
             .map(|title| (title, self.leading_icon()))
     }
@@ -1154,6 +1184,9 @@ impl ToolCard {
         {
             return None;
         }
+        if matches!(self.input, Some(ToolCardInputProjection::Skill { .. })) {
+            return None;
+        }
         let description = self.description.as_deref()?;
         let status_key = match self.activity_state() {
             ToolActivityState::Success => return Some(description.to_string()),
@@ -1323,13 +1356,26 @@ impl ToolCard {
             (
                 Some(ToolCardInputProjection::Skill { name, .. }),
                 Some(ToolCardResultProjection::Skill { outcome, .. }),
-            ) => skill_summary(name.as_deref(), outcome),
+            ) => match outcome {
+                SkillCardOutcome::Loaded
+                | SkillCardOutcome::AlreadyLoaded
+                | SkillCardOutcome::ResourceRead { .. }
+                | SkillCardOutcome::AssetMetadata { .. } => vega_i18n::t_args(
+                    "ui.loaded_skill_name",
+                    &[(
+                        "name",
+                        name.as_deref()
+                            .unwrap_or_else(|| vega_i18n::t("ui.unknown")),
+                    )],
+                ),
+                _ => skill_summary(name.as_deref(), outcome),
+            },
             (Some(ToolCardInputProjection::Skill { name, .. }), None) => vega_i18n::t_args(
                 "ui.action_skill",
                 &[
                     (
                         "action",
-                        &generic_verb("use", self.activity_state(), self.status),
+                        &generic_verb("read", self.activity_state(), self.status),
                     ),
                     (
                         "name",
@@ -1524,7 +1570,7 @@ impl ToolCard {
     }
 
     fn has_detail(&self) -> bool {
-        if self.description.is_some() && self.description_detail().is_some() {
+        if self.uses_target_detail() && self.description_detail().is_some() {
             return true;
         }
         match &self.input {
@@ -1541,7 +1587,7 @@ impl ToolCard {
     }
 
     fn detail_row_count(&self) -> usize {
-        if self.description.is_some()
+        if self.uses_target_detail()
             && let Some(detail) = self.description_detail()
         {
             return detail.logical_rows();
@@ -1559,6 +1605,11 @@ impl ToolCard {
         }
     }
 
+    fn uses_target_detail(&self) -> bool {
+        self.description.is_some()
+            || matches!(self.input, Some(ToolCardInputProjection::Skill { .. }))
+    }
+
     fn description_detail(&self) -> Option<ToolDetail> {
         let target = match &self.input {
             Some(ToolCardInputProjection::ReadOnly { detail_target, .. }) => detail_target.clone(),
@@ -1572,14 +1623,20 @@ impl ToolCard {
         Some(ToolDetail {
             title: None,
             command: Some(target),
-            output: self.output_rows.clone(),
+            output: match (&self.input, &self.result) {
+                (
+                    Some(ToolCardInputProjection::Skill { name, .. }),
+                    Some(ToolCardResultProjection::Skill { outcome, .. }),
+                ) => vec![skill_summary(name.as_deref(), outcome)],
+                _ => self.output_rows.clone(),
+            },
             output_copy: None,
             footer: Some((self.terminal_footer(), self.activity_state())),
         })
     }
 
     fn detail(&self) -> Option<ToolDetail> {
-        if self.description.is_some()
+        if self.uses_target_detail()
             && let Some(detail) = self.description_detail()
         {
             return Some(detail);
@@ -2101,3 +2158,6 @@ fn detail_row(
         .child(gpui_kit::base::SelectableText::new(id, text))
         .into_any_element()
 }
+
+#[cfg(test)]
+mod reading_development_tests;
