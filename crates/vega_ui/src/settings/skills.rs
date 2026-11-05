@@ -723,14 +723,17 @@ impl SettingsView {
                 &[("count", &(preview.candidates.len()).to_string())],
             ))
             .children(preview.candidates.iter().map(|candidate| {
-                div().text_color(colors.text_secondary).child(format!(
-                    "{} · {}",
-                    candidate.name,
-                    candidate
-                        .diagnostic
-                        .as_deref()
-                        .unwrap_or(t("settings.skills.awaiting_review"))
-                ))
+                let label = candidate.diagnostic.as_deref().map_or_else(
+                    || candidate.name.clone(),
+                    |diagnostic| {
+                        format!(
+                            "{} · {}",
+                            candidate.name,
+                            skill_diagnostic_label(diagnostic)
+                        )
+                    },
+                );
+                div().text_color(colors.text_secondary).child(label)
             }))
             .child(t("settings.skills.link_warning"))
             .child(skill_button(
