@@ -422,7 +422,7 @@ pub fn approve_skill(
     if changed {
         let revokes = old
             .as_ref()
-            .is_some_and(|(hash, enabled, automatic, _, target)| {
+            .is_none_or(|(hash, enabled, automatic, _, target)| {
                 hash != input.approved_sha256
                     || (*enabled != 0 && !input.enabled)
                     || (*automatic != 0 && !input.automatic)
@@ -813,6 +813,7 @@ pub struct ThreadSkillPin {
     pub approved_sha256: String,
     pub source_label: String,
     pub pinned_at: i64,
+    pub target_binding: Option<String>,
 }
 
 /// Exact UI selection to pin; must still match an enabled approval now.
@@ -826,6 +827,7 @@ pub struct NewThreadSkillPin<'a> {
     pub approved_sha256: &'a str,
     pub source_label: &'a str,
     pub pinned_at: i64,
+    pub target_binding: Option<&'a str>,
 }
 
 /// Pin only an exact currently enabled/root-reviewed Skill. A future source
@@ -845,6 +847,9 @@ pub fn save_thread_pin(
         || !valid_name(pin.name)
         || !valid_hash(pin.approved_sha256)
         || !valid_name(pin.source_label)
+        || pin
+            .target_binding
+            .is_some_and(|value| value.len() > 8192 || value.contains('\0'))
     {
         return Err(SkillStoreError::InvalidInput);
     }
@@ -858,11 +863,10 @@ pub fn save_thread_pin(
             "SELECT 1 FROM threads AS t JOIN skill_sources AS s \
              ON s.scope = ?2 AND s.canonical_root = ?3 AND s.root_dev = ?4 \
              AND s.root_ino = ?5 AND s.enabled = 1 \
-             JOIN skill_approvals AS a ON a.source_id = s.id AND a.name = ?6 \
-             AND a.approved_sha256 = ?7 AND a.source_label = ?8 AND a.enabled = 1 \
+             LEFT JOIN skill_approvals AS a ON a.source_id = s.id AND a.name = ?6 \
              JOIN skill_settings AS gs ON gs.id = 1 \
              LEFT JOIN skill_project_settings AS ps ON ps.project_id = s.project_id \
-             WHERE t.id = ?1 AND \
+             WHERE t.id = ?1 AND COALESCE(a.enabled, 1) = 1 AND \
              ((s.scope = 'project' AND s.project_id = t.project_id \
                AND COALESCE(ps.enabled, 0) = 1) OR \
               (s.scope != 'project' AND gs.global_enabled = 1)) LIMIT 1",
@@ -873,8 +877,6 @@ pub fn save_thread_pin(
                 pin.root_dev,
                 pin.root_ino,
                 pin.name,
-                pin.approved_sha256,
-                pin.source_label,
             ],
             |row| row.get(0),
         )
@@ -885,12 +887,13 @@ pub fn save_thread_pin(
     tx.execute(
         "INSERT INTO thread_skill_pins \
          (thread_id, scope, canonical_root, root_dev, root_ino, name, approved_sha256, \
-          source_label, pinned_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+          source_label, pinned_at, target_binding) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
          ON CONFLICT(thread_id, name) DO UPDATE SET \
          scope = excluded.scope, canonical_root = excluded.canonical_root, \
          root_dev = excluded.root_dev, root_ino = excluded.root_ino, \
          approved_sha256 = excluded.approved_sha256, \
-         source_label = excluded.source_label, pinned_at = excluded.pinned_at",
+         source_label = excluded.source_label, pinned_at = excluded.pinned_at, \
+          target_binding = excluded.target_binding",
         params![
             pin.thread_id,
             pin.scope,
@@ -901,6 +904,7 @@ pub fn save_thread_pin(
             pin.approved_sha256,
             pin.source_label,
             pin.pinned_at,
+            pin.target_binding,
         ],
     )?;
     bump_generations(&tx, false)?;
@@ -946,7 +950,7 @@ pub fn list_thread_pins(
     }
     let mut stmt = conn.prepare(
         "SELECT thread_id, scope, canonical_root, root_dev, root_ino, name, approved_sha256, \
-         source_label, pinned_at FROM thread_skill_pins WHERE thread_id = ?1 \
+         source_label, pinned_at, target_binding FROM thread_skill_pins WHERE thread_id = ?1 \
          ORDER BY name COLLATE BINARY",
     )?;
     Ok(stmt
@@ -965,6 +969,7 @@ fn pin_from_row(row: &Row<'_>) -> Result<ThreadSkillPin, rusqlite::Error> {
         approved_sha256: row.get(6)?,
         source_label: row.get(7)?,
         pinned_at: row.get(8)?,
+        target_binding: row.get(9)?,
     })
 }
 

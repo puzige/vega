@@ -1,6 +1,5 @@
 //! Trusted Store-to-runtime Skills projection for one direct user turn.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -9,8 +8,8 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use vega_runtime::skills::{
-    ActiveSkillSummary, PersistedSkillApproval, RunBinding, SkillApproval, SkillCatalog, SkillRun,
-    SkillSelection, SkillSource, SourceScope,
+    ActiveSkillSummary, RunBinding, SkillApproval, SkillCatalog, SkillRun, SkillSelection,
+    SkillSource, SourceScope,
 };
 use vega_store::messages;
 use vega_store::skills::{self, SkillSnapshotRecord, SkillSourceRecord};
@@ -326,7 +325,6 @@ pub(super) fn prepare_skill_run_with_config_dir(
     }
     let mut candidates = Vec::new();
     let mut approvals = Vec::new();
-    let mut source_by_id = HashMap::new();
     for record in &sources {
         let enabled = record.enabled
             && if record.scope == "project" {
@@ -349,38 +347,30 @@ pub(super) fn prepare_skill_run_with_config_dir(
             Ok(discovery) => discovery,
             Err(_) => continue,
         };
-        candidates.extend(discovery.candidates);
-        source_by_id.insert(record.id.as_str(), (record, source));
-    }
-    for stored in &stored_approvals {
-        let Some((record, source)) = source_by_id.get(stored.source_id.as_str()) else {
-            continue;
-        };
-        let automatic = stored.automatic
-            && record.automatic
+        let automatic = record.automatic
             && if record.scope == "project" {
                 project_settings.automatic
             } else {
                 settings.automatic_enabled
             };
-        let scope = source.identity().scope();
-        let approval = SkillApproval::from_persisted_parts(
-            source,
-            PersistedSkillApproval {
-                scope,
-                canonical_root: Path::new(&record.canonical_root),
-                root_dev: record.root_dev.parse().map_err(|_| invalid_store())?,
-                root_ino: record.root_ino.parse().map_err(|_| invalid_store())?,
-                name: &stored.name,
-                approved_sha256: &stored.approved_sha256,
-                target_binding: stored.target_binding.as_deref(),
-                source_label: &stored.source_label,
-                enabled: stored.enabled,
+        for candidate in discovery.candidates {
+            let enabled = stored_approvals
+                .iter()
+                .find(|stored| stored.source_id == record.id && stored.name == candidate.name)
+                .is_none_or(|stored| stored.enabled);
+            if !enabled {
+                continue;
+            }
+            let approval = SkillApproval::reviewed(
+                &candidate,
+                &crate::skill_settings::source_label(&record.id),
+                true,
                 automatic,
-            },
-        )
-        .map_err(|_| invalid_store())?;
-        approvals.push(approval);
+            )
+            .map_err(|_| invalid_store())?;
+            approvals.push(approval);
+            candidates.push(candidate);
+        }
     }
     let mut explicit = selections.to_vec();
     for pin in &pins {
@@ -396,6 +386,13 @@ pub(super) fn prepare_skill_run_with_config_dir(
                     && identity.canonical_root() == Path::new(&pin.canonical_root)
                     && identity.device().to_string() == pin.root_dev
                     && identity.inode().to_string() == pin.root_ino
+                    && candidates.iter().any(|candidate| {
+                        SkillSelection::from_candidate(candidate) == approval.selection()
+                            && candidate
+                                .source
+                                .target_binding()
+                                .is_ok_and(|binding| binding == pin.target_binding)
+                    })
                     && matches!(
                         (identity.scope(), pin.scope.as_str()),
                         (SourceScope::Project, "project")
@@ -433,3 +430,6 @@ pub(super) fn prepare_skill_run_with_config_dir(
     let run = SkillRun::new_bound(catalog, true, binding).map_err(|_| invalid_store())?;
     Ok(Some(PreparedSkills { run, explicit }))
 }
+
+#[cfg(test)]
+mod toggle_development_tests;

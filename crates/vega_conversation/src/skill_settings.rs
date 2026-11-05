@@ -220,6 +220,7 @@ impl SkillSettingsService {
                     name: diagnostic.name,
                     description: None,
                     content_sha256: None,
+                    target_binding: None,
                     approved_sha256: approval.map(|item| item.approved_sha256.clone()),
                     size_bytes: None,
                     enabled: approval.is_some_and(|item| item.enabled),
@@ -234,10 +235,7 @@ impl SkillSettingsService {
                     .source
                     .target_binding()
                     .map_err(|_| SkillSettingsError::Invalid)?;
-                let current = approval.is_some_and(|item| {
-                    item.approved_sha256 == candidate.sha256
-                        && item.target_binding == target_binding
-                });
+                let enabled = approval.is_none_or(|item| item.enabled);
                 let scope_enabled = if scope == SkillUiScope::Project {
                     project_settings.enabled
                 } else {
@@ -248,31 +246,20 @@ impl SkillSettingsService {
                 } else {
                     settings.automatic_enabled
                 };
-                if current
-                    && row.enabled
-                    && row.automatic
-                    && scope_enabled
-                    && scope_auto
-                    && approval.is_some_and(|item| item.enabled && item.automatic)
-                {
+                if enabled && row.enabled && row.automatic && scope_enabled && scope_auto {
                     eligible.push(candidate.clone());
                 }
                 view.candidates.push(SkillCandidateView {
                     name: candidate.name,
                     description: Some(candidate.description),
                     content_sha256: Some(candidate.sha256.clone()),
+                    target_binding,
                     approved_sha256: approval.map(|item| item.approved_sha256.clone()),
                     size_bytes: Some(candidate.size_bytes),
-                    enabled: approval.is_some_and(|item| item.enabled),
-                    automatic: approval.is_some_and(|item| item.automatic),
+                    enabled,
+                    automatic: enabled,
                     model_winner: false,
-                    diagnostic: if approval.is_none() {
-                        Some("review_required".into())
-                    } else if !current {
-                        Some("changed_review_required".into())
-                    } else {
-                        None
-                    },
+                    diagnostic: None,
                 });
             }
             view.candidates.sort_by(|a, b| a.name.cmp(&b.name));
@@ -412,6 +399,7 @@ impl SkillSettingsService {
                 name: candidate.name,
                 description: Some(candidate.description),
                 content_sha256: Some(candidate.sha256),
+                target_binding: None,
                 approved_sha256: None,
                 size_bytes: Some(candidate.size_bytes),
                 enabled: false,
@@ -427,6 +415,7 @@ impl SkillSettingsService {
                         name: diagnostic.name,
                         description: None,
                         content_sha256: None,
+                        target_binding: None,
                         approved_sha256: None,
                         size_bytes: None,
                         enabled: false,
@@ -590,14 +579,36 @@ impl SkillSettingsService {
                 enabled,
                 automatic,
             } => {
-                self.find_scoped_source(&store, &source_id)?;
-                skills::set_approval_preferences(
+                let _ = automatic;
+                let row = self.find_scoped_source(&store, &source_id)?;
+                let source = self.rebind(&store, &row)?;
+                let candidate = source
+                    .discover()
+                    .map_err(|_| SkillSettingsError::Invalid)?
+                    .candidates
+                    .into_iter()
+                    .find(|candidate| candidate.name == name)
+                    .ok_or(SkillSettingsError::NotFound)?;
+                source
+                    .load_candidate(&candidate)
+                    .map_err(|_| SkillSettingsError::Stale)?;
+                let target_binding = candidate
+                    .source
+                    .target_binding()
+                    .map_err(|_| SkillSettingsError::Stale)?;
+                skills::approve_skill(
                     store.conn(),
                     expected_generation,
-                    &source_id,
-                    &name,
-                    enabled,
-                    automatic,
+                    NewSkillApproval {
+                        source_id: &source_id,
+                        name: &name,
+                        approved_sha256: &candidate.sha256,
+                        target_binding: target_binding.as_deref(),
+                        source_label: &source_label(&source_id),
+                        enabled,
+                        automatic: enabled,
+                        reviewed_at: now_ms(),
+                    },
                 )?;
             }
             SkillSettingsMutation::UnlinkSource { source_id } => {
@@ -844,7 +855,7 @@ fn scope_text(scope: SkillUiScope) -> &'static str {
     }
 }
 
-fn source_label(id: &str) -> String {
+pub(crate) fn source_label(id: &str) -> String {
     let digest = format!("{:x}", Sha256::digest(id.as_bytes()));
     format!("skill-{}", &digest[..16])
 }

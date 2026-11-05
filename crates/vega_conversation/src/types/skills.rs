@@ -15,6 +15,7 @@ pub struct SkillCandidateView {
     pub name: String,
     pub description: Option<String>,
     pub content_sha256: Option<String>,
+    pub target_binding: Option<String>,
     pub approved_sha256: Option<String>,
     pub size_bytes: Option<usize>,
     pub enabled: bool,
@@ -118,6 +119,7 @@ pub struct SkillComposerCandidate {
     pub description: String,
     pub source_label: String,
     pub content_sha256: String,
+    pub target_binding: Option<String>,
     pub scope: SkillUiScope,
     pub selected: bool,
 }
@@ -146,6 +148,8 @@ pub struct SkillSelectionIntent {
     pub source_id: String,
     pub name: String,
     pub content_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_binding: Option<String>,
     pub expected_consent_generation: u64,
 }
 
@@ -198,6 +202,7 @@ pub enum SkillComposerMutation {
         source_id: String,
         name: String,
         content_sha256: String,
+        target_binding: Option<String>,
     },
     Unpin {
         name: String,

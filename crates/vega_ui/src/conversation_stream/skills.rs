@@ -87,6 +87,7 @@ impl ConversationStream {
             item.source_id == candidate.source_id
                 && item.name == candidate.name
                 && item.content_sha256 == candidate.content_sha256
+                && item.target_binding == candidate.target_binding
         }) {
             return;
         }
@@ -97,6 +98,7 @@ impl ConversationStream {
             source_id: candidate.source_id.clone(),
             name: candidate.name.clone(),
             content_sha256: candidate.content_sha256.clone(),
+            target_binding: candidate.target_binding.clone(),
             expected_consent_generation: expected_generation,
         };
         let text = format!("${} [{}]", candidate.name, candidate.source_label);
