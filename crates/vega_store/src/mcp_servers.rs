@@ -69,6 +69,8 @@ pub enum McpStoreError {
     ConfigurationIo(std::io::ErrorKind),
     #[error(transparent)]
     ConfigurationFailure(crate::yaml_config::ConfigurationFailure),
+    #[error("MCP configuration lock is busy ({0:?})")]
+    ConfigurationBusy(crate::yaml_config::ConfigurationLockBusy),
     #[error("MCP configuration changed; reload before editing")]
     Conflict,
     #[error("MCP server not found")]

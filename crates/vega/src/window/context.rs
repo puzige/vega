@@ -776,7 +776,8 @@ pub(crate) fn run_manual_context_worker(
         .unwrap_or_else(|_| Arc::new(|_, _| false));
     let authority_database = database.clone();
     let owner_service =
-        vega_conversation::McpServerSettingsService::new(database.clone(), credential_root.clone());
+        vega_conversation::McpServerSettingsService::new(database.clone(), credential_root.clone())
+            .with_configuration_cancel(cancel.clone());
     let provider_credential_reader: vega_runtime::CredentialReader =
         std::sync::Arc::new(move || {
             vega_conversation::privacy::refresh_authority(&authority_database, &credential_root)?;

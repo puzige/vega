@@ -78,6 +78,7 @@ impl From<McpStoreError> for McpSettingsError {
             McpStoreError::ConfigurationFailure(failure) => {
                 Self::CredentialRead(configuration_failure(failure))
             }
+            McpStoreError::ConfigurationBusy(_) => Self::Conflict,
             McpStoreError::ConfigurationIo(kind) => match kind {
                 std::io::ErrorKind::WouldBlock => Self::Conflict,
                 std::io::ErrorKind::InvalidData => Self::Invalid,
@@ -133,6 +134,14 @@ fn mcp_read_error(error: McpStoreError) -> CredentialReadError {
     match error {
         McpStoreError::Sql(error) => CredentialReadError::database(CredentialReadStage::Mcp, error),
         McpStoreError::ConfigurationFailure(failure) => configuration_failure(failure),
+        McpStoreError::ConfigurationBusy(busy) => {
+            let mut error = CredentialReadError::new(
+                CredentialReadStage::Mcp,
+                CredentialReadReason::Configuration,
+            );
+            error.configuration_lock = Some(busy.as_str());
+            error
+        }
         McpStoreError::ConfigurationIo(kind) => {
             CredentialReadError::configuration_io(CredentialReadStage::Mcp, kind)
         }
@@ -299,6 +308,50 @@ pub struct McpServerSettingsService {
     database_path: PathBuf,
     config_root: PathBuf,
     registry: Arc<Mutex<RegistryState>>,
+    configuration_cancel: CancellationToken,
+    configuration_budget: Option<Arc<Mutex<ConfigurationRetryBudget>>>,
+    configuration_retry_enabled: bool,
+    configuration_invalidation: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[derive(Default)]
+struct ConfigurationRetryBudget {
+    started: Option<Instant>,
+    attempts: u64,
+    wait_ms: u64,
+}
+
+impl ConfigurationRetryBudget {
+    fn next_delay(
+        &mut self,
+        busy: vega_store::yaml_config::ConfigurationLockBusy,
+    ) -> Result<Duration, CredentialReadError> {
+        let started = *self.started.get_or_insert_with(Instant::now);
+        self.attempts = self.attempts.saturating_add(1).min(6);
+        let attempts = self.attempts;
+        let previous_wait_ms = self.wait_ms;
+        let error = |wait_ms| {
+            let mut error = mcp_read_error(McpStoreError::ConfigurationBusy(busy));
+            error.configuration_lock_attempts = Some(attempts);
+            error.configuration_lock_wait_ms = Some(wait_ms);
+            error
+        };
+        tracing::debug!(
+            configuration_lock = busy.as_str(),
+            configuration_lock_attempts = attempts,
+            configuration_lock_wait_ms = previous_wait_ms,
+            "configuration lock acquisition busy"
+        );
+        if self.attempts >= 6 || started.elapsed() >= Duration::from_millis(500) {
+            return Err(error(previous_wait_ms));
+        }
+        let delay = Duration::from_millis(10 << (self.attempts - 1));
+        if started.elapsed() + delay > Duration::from_millis(500) {
+            return Err(error(previous_wait_ms));
+        }
+        self.wait_ms += delay.as_millis() as u64;
+        Ok(delay)
+    }
 }
 
 impl McpServerSettingsService {
@@ -307,10 +360,20 @@ impl McpServerSettingsService {
             database_path,
             config_root,
             registry: Arc::new(Mutex::new(RegistryState::default())),
+            configuration_cancel: CancellationToken::new(),
+            configuration_budget: None,
+            configuration_retry_enabled: false,
+            configuration_invalidation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
     fn store(&self) -> Result<Store, McpSettingsError> {
+        if self.configuration_retry_enabled {
+            return self
+                .configuration_operation()
+                .credential_store()
+                .map_err(Into::into);
+        }
         let store = Store::open(&self.database_path).map_err(|_| McpSettingsError::Store)?;
         store.migrate().map_err(|_| McpSettingsError::Store)?;
         let mut state = self.lock()?;
@@ -342,19 +405,152 @@ impl McpServerSettingsService {
         Ok(store)
     }
 
+    pub fn with_configuration_cancel(mut self, cancel: CancellationToken) -> Self {
+        self.configuration_cancel = cancel;
+        self.configuration_budget = None;
+        self.configuration_retry_enabled = true;
+        self
+    }
+
+    fn configuration_operation(&self) -> Self {
+        let mut operation = self.clone();
+        operation.configuration_retry_enabled = true;
+        if operation.configuration_budget.is_none() {
+            operation.configuration_budget =
+                Some(Arc::new(Mutex::new(ConfigurationRetryBudget::default())));
+        }
+        operation
+    }
+
+    fn configuration_guard(
+        &self,
+    ) -> Result<
+        (
+            std::sync::MutexGuard<'_, RegistryState>,
+            vega_store::yaml_config::Edit,
+        ),
+        CredentialReadError,
+    > {
+        let budget = self
+            .configuration_budget
+            .clone()
+            .unwrap_or_else(|| Arc::new(Mutex::new(ConfigurationRetryBudget::default())));
+        loop {
+            if self.configuration_cancel.is_cancelled() {
+                return Err(crate::credential_errors::state_error(
+                    CredentialReadStage::Mcp,
+                ));
+            }
+            let busy = match self.registry.try_lock() {
+                Ok(mut state) => {
+                    if self
+                        .configuration_invalidation
+                        .swap(false, std::sync::atomic::Ordering::SeqCst)
+                    {
+                        Self::invalidate_configuration(&mut state);
+                    }
+                    match vega_store::yaml_config::try_begin(&self.config_root.join("config.yaml"))
+                    {
+                        Ok(document) => {
+                            let retry = budget.lock().map_err(|_| {
+                                crate::credential_errors::state_error(CredentialReadStage::Mcp)
+                            })?;
+                            if retry.attempts > 0 {
+                                tracing::debug!(
+                                    configuration_lock_attempts = retry.attempts,
+                                    configuration_lock_wait_ms = retry.wait_ms,
+                                    "configuration lock acquisition recovered"
+                                );
+                            }
+                            return Ok((state, document));
+                        }
+                        Err(error) => {
+                            let busy = vega_store::yaml_config::lock_busy(&error);
+                            if let Some(busy) = busy {
+                                drop(state);
+                                busy
+                            } else {
+                                let mut state = state;
+                                Self::invalidate_configuration(&mut state);
+                                return Err(mcp_read_error(vega_store::mcp_config::io_error(
+                                    error,
+                                )));
+                            }
+                        }
+                    }
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    vega_store::yaml_config::ConfigurationLockBusy::Registry
+                }
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err(crate::credential_errors::state_error(
+                        CredentialReadStage::Mcp,
+                    ));
+                }
+            };
+            let result = budget
+                .lock()
+                .map_err(|_| crate::credential_errors::state_error(CredentialReadStage::Mcp))?
+                .next_delay(busy);
+            let delay = match result {
+                Ok(delay) => delay,
+                Err(error) => {
+                    if self.configuration_cancel.is_cancelled() {
+                        return Err(crate::credential_errors::state_error(
+                            CredentialReadStage::Mcp,
+                        ));
+                    }
+                    self.configuration_invalidation
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    if let Ok(mut state) = self.registry.try_lock() {
+                        Self::invalidate_configuration(&mut state);
+                        self.configuration_invalidation
+                            .store(false, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    return Err(error);
+                }
+            };
+            let until = Instant::now() + delay;
+            while Instant::now() < until {
+                if self.configuration_cancel.is_cancelled() {
+                    return Err(crate::credential_errors::state_error(
+                        CredentialReadStage::Mcp,
+                    ));
+                }
+                std::thread::sleep(
+                    until
+                        .saturating_duration_since(Instant::now())
+                        .min(Duration::from_millis(10)),
+                );
+            }
+        }
+    }
+
+    fn invalidate_configuration(state: &mut RegistryState) {
+        let ids = state
+            .epochs
+            .keys()
+            .chain(state.leases.keys())
+            .chain(state.connecting.keys())
+            .cloned()
+            .collect::<HashSet<_>>();
+        for id in ids {
+            state.invalidate_connections(&id);
+        }
+    }
+
     fn credential_store(&self) -> Result<Store, CredentialReadError> {
         let store = Store::open(&self.database_path)
             .map_err(|error| CredentialReadError::database(CredentialReadStage::Mcp, error))?;
         store
             .migrate()
             .map_err(|error| CredentialReadError::database(CredentialReadStage::Mcp, error))?;
-        let mut state = self
-            .lock()
-            .map_err(|_| crate::credential_errors::state_error(CredentialReadStage::Mcp))?;
-        match vega_store::mcp_config::reconcile(
+        let (mut state, document) = self.configuration_guard()?;
+        match vega_store::mcp_config::reconcile_with_edit(
             store.conn(),
             &self.config_root.join("config.yaml"),
             validate_yaml_row,
+            document,
         ) {
             Ok(changed) => {
                 for id in changed {
@@ -362,20 +558,10 @@ impl McpServerSettingsService {
                 }
             }
             Err(error) => {
-                let ids = state
-                    .epochs
-                    .keys()
-                    .chain(state.leases.keys())
-                    .chain(state.connecting.keys())
-                    .cloned()
-                    .collect::<HashSet<_>>();
-                for id in ids {
-                    state.invalidate_connections(&id);
-                }
+                Self::invalidate_configuration(&mut state);
                 return Err(mcp_read_error(error));
             }
         }
-        drop(state);
         Ok(store)
     }
 
@@ -384,7 +570,14 @@ impl McpServerSettingsService {
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, RegistryState>, McpSettingsError> {
-        self.registry.lock().map_err(|_| McpSettingsError::Store)
+        let mut state = self.registry.lock().map_err(|_| McpSettingsError::Store)?;
+        if self
+            .configuration_invalidation
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            Self::invalidate_configuration(&mut state);
+        }
+        Ok(state)
     }
 
     fn enabled_known_credentials(&self) -> Result<Vec<String>, CredentialReadError> {
@@ -407,7 +600,7 @@ impl McpServerSettingsService {
     /// This is called again before every model request, including summaries;
     /// it intentionally includes disabled servers and other Provider keys.
     pub fn current_owner_credential_values(&self) -> Result<Vec<String>, CredentialReadError> {
-        self.enabled_known_credentials()
+        self.configuration_operation().enabled_known_credentials()
     }
 
     /// Re-read owner-held values at the final lower-trust Settings boundary.
@@ -1221,6 +1414,12 @@ impl McpServerSettingsService {
     /// A new run uses only enabled, actually connected rows. Reconnection may
     /// refresh discovery, but it cannot replay any historical tool call.
     pub async fn ready_for_run(&self) -> Result<McpRunReadiness, McpSettingsError> {
+        self.configuration_operation()
+            .ready_for_run_operation()
+            .await
+    }
+
+    async fn ready_for_run_operation(&self) -> Result<McpRunReadiness, McpSettingsError> {
         self.reconcile_pending_for_run()?;
         let store = self.credential_store()?;
         let rows: Vec<_> = mcp_servers::list(store.conn())
@@ -1242,7 +1441,11 @@ impl McpServerSettingsService {
         let credential_owner = self.clone();
         let credential_reader: Arc<
             dyn Fn() -> Result<Vec<String>, vega_runtime::CredentialReadError> + Send + Sync,
-        > = Arc::new(move || credential_owner.enabled_known_credentials());
+        > = Arc::new(move || {
+            let mut owner = credential_owner.clone();
+            owner.configuration_budget = None;
+            owner.current_owner_credential_values()
+        });
         let mut ready_servers = Vec::new();
         let mut unavailable = Vec::new();
         for (row, result) in rows.into_iter().zip(results) {
@@ -1329,11 +1532,8 @@ impl McpServerSettingsService {
 
     fn reconcile_pending_for_run(&self) -> Result<(), CredentialReadError> {
         let store = self.credential_store()?;
-        let _state = self
-            .lock()
-            .map_err(|_| crate::credential_errors::state_error(CredentialReadStage::Mcp))?;
+        let (_state, _document) = self.configuration_guard()?;
         let path = self.config_root.join("config.yaml");
-        let _document = vega_store::yaml_config::begin(&path).map_err(configuration_io)?;
         if !cleanup_pending(&store, &path).map_err(mcp_read_error)? {
             return Ok(());
         }
@@ -1473,7 +1673,8 @@ impl McpServerSettingsService {
             .push((row.config_revision, lease.clone()));
         drop(state);
         let _ = bound_lease.set(lease);
-        let owner = self.clone();
+        let mut owner = self.clone();
+        owner.configuration_budget = None;
         let id = row.id.clone();
         let revision = row.config_revision;
         Ok(connected.ready.with_admission_check(Arc::new(move || {
@@ -2276,3 +2477,6 @@ async fn connect_row(
         }
     }
 }
+
+#[cfg(test)]
+mod configuration_retry_tests;

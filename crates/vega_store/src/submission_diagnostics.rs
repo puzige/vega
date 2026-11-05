@@ -60,6 +60,9 @@ pub struct PreparationFailure {
     pub io_kind: Option<&'static str>,
     pub credential_stage: Option<&'static str>,
     pub credential_reason: Option<&'static str>,
+    pub configuration_lock: Option<&'static str>,
+    pub configuration_lock_attempts: Option<u64>,
+    pub configuration_lock_wait_ms: Option<u64>,
 }
 
 impl PreparationFailure {
@@ -72,6 +75,9 @@ impl PreparationFailure {
             io_kind: None,
             credential_stage: None,
             credential_reason: None,
+            configuration_lock: None,
+            configuration_lock_attempts: None,
+            configuration_lock_wait_ms: None,
         }
     }
 }
@@ -129,6 +135,10 @@ pub fn append(conn: &Connection, event: &PreparationEvent) -> rusqlite::Result<(
                                 | "worker"
                         )
                     )
+            ) || !crate::run_diagnostics::valid_configuration_lock(
+                failure.configuration_lock,
+                failure.configuration_lock_attempts,
+                failure.configuration_lock_wait_ms,
             ) || failure.io_kind.is_some_and(|kind| {
                 !matches!(
                     kind,

@@ -60,7 +60,10 @@ fn json<T: Serialize>(value: &T) -> Result<String, McpStoreError> {
     serde_json::to_string(value).map_err(|_| McpStoreError::Invalid)
 }
 
-fn io_error(error: io::Error) -> McpStoreError {
+pub fn io_error(error: io::Error) -> McpStoreError {
+    if let Some(busy) = crate::yaml_config::lock_busy(&error) {
+        return McpStoreError::ConfigurationBusy(busy);
+    }
     match crate::yaml_config::failure(&error) {
         Some(failure) => McpStoreError::ConfigurationFailure(failure),
         None => McpStoreError::ConfigurationIo(error.kind()),
@@ -348,6 +351,15 @@ pub fn reconcile(
     validate: impl Fn(&McpServerRow) -> Result<(), McpStoreError>,
 ) -> Result<Vec<String>, McpStoreError> {
     let edit = crate::yaml_config::begin(path).map_err(io_error)?;
+    reconcile_with_edit(conn, path, validate, edit)
+}
+
+pub fn reconcile_with_edit(
+    conn: &Connection,
+    path: &Path,
+    validate: impl Fn(&McpServerRow) -> Result<(), McpStoreError>,
+    edit: crate::yaml_config::Edit,
+) -> Result<Vec<String>, McpStoreError> {
     let mut bytes = edit.bytes();
     let mut declarations = parse(bytes.as_deref())?;
     if projection_unchanged(conn, bytes.as_deref(), &declarations, &validate)? {

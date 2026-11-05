@@ -74,6 +74,7 @@ impl RunNotice {
                     | RunFailureKind::CredentialInternalUnavailable
                     | RunFailureKind::ConfigurationRepairRequired
                     | RunFailureKind::ConfigurationAccessUnavailable
+                    | RunFailureKind::ConfigurationBusy
                     | RunFailureKind::CredentialStateUnavailable
                     | RunFailureKind::CredentialProjectionInvalid(_)
             ) | RunNoticeKind::FailureWithCompaction(
@@ -83,6 +84,7 @@ impl RunNotice {
                     | RunFailureKind::CredentialInternalUnavailable
                     | RunFailureKind::ConfigurationRepairRequired
                     | RunFailureKind::ConfigurationAccessUnavailable
+                    | RunFailureKind::ConfigurationBusy
                     | RunFailureKind::CredentialStateUnavailable
                     | RunFailureKind::CredentialProjectionInvalid(_),
                 _

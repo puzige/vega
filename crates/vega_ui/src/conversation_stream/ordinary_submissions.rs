@@ -131,6 +131,9 @@ fn preparation_message(
     use vega_conversation::submission_diagnostics::{
         PreparationReason as Reason, PreparationStage as Stage,
     };
+    if detail.configuration_lock.is_some() {
+        return "ui.ordinary_send.configuration_busy";
+    }
     if let Some(reason) = detail.credential_reason {
         return match reason {
             "missing" | "unsafe" | "malformed" | "limit" | "credential_io" | "unsupported" => {

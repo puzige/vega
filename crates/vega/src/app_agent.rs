@@ -1119,6 +1119,7 @@ pub(crate) fn run_agent_worker_with_mcp(
     precompute_lease: Option<ContextPrecomputeLease>,
     admission: ThreadAdmission,
 ) {
+    let mcp_service = mcp_service.map(|service| service.with_configuration_cancel(cancel.clone()));
     let ordinary = match &mut run {
         PendingAgentRun::UserMessage(submission) => submission
             .ordinary
