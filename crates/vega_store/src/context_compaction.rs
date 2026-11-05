@@ -18,9 +18,6 @@ use crate::messages::MessageRow;
 mod legacy_redaction;
 pub use legacy_redaction::{PreparedLegacyRedaction, prepare_legacy_thread_redaction};
 
-#[cfg(test)]
-mod legacy_redaction_development_tests;
-
 /// The largest setting accepted by the store.  This mirrors the runtime's
 /// bounded `u32` provider conversion without making the store depend on the
 /// runtime crate.

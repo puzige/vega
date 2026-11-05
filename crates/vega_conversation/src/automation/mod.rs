@@ -2,8 +2,6 @@ mod parser;
 mod permission;
 mod reset;
 mod runtime;
-#[cfg(test)]
-mod write_lock_development_tests;
 pub use parser::parse_command;
 pub use permission::AutomationPermissionService;
 pub(crate) use reset::pause_for_reset_in_transaction;

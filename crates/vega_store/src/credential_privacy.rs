@@ -523,6 +523,3 @@ pub fn source_label_key(
 pub fn source_label(conn: &Connection, field: &str, id: &str) -> rusqlite::Result<String> {
     source_label_key(conn, field, id).map(|key| vega_i18n::t(key).into())
 }
-
-#[cfg(test)]
-mod write_lock_development_tests;

@@ -1,7 +1,3 @@
-#[cfg(test)]
-#[path = "stage_recovery_development_tests.rs"]
-mod development_tests;
-
 use super::*;
 use serde_json::{Value, json};
 use vega_store::delegated_ownership::DelegatedOwnership;

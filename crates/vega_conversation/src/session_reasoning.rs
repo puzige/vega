@@ -110,6 +110,3 @@ pub fn project(
     };
     Ok(profile)
 }
-
-#[cfg(test)]
-mod write_lock_development_tests;

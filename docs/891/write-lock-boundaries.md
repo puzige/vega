@@ -57,7 +57,17 @@
 
 首轮开发 head `f353b3b7d2da71e53659fa2aeaada74fee86de9c`、[PR #893](https://github.com/puzige/vega/pull/893)、[Actions 41994478809](https://github.com/puzige/vega/actions/runs/41994478809) 在编译阶段失败：通知计数错误读取为 `usize`，图片 BLOB 错误缺少到 `ForkError` 的转换；两项按原日志修正，Rust 发现/执行数量未取得。独审发现的权限快照与实际策略未绑定、技能错误误分类已修复草稿：以实际 owner 值生成 epoch，固定同一例外行构造不可变策略，复核文件身份/版本、epoch、例外行与 revision；新增撤销交错、owner/epoch 不匹配、文件替换和技能错误回归。增量独审及新 head CI 待完成。
 
-同步新基线 `a98be7a5e6cac93fe95bf47cb8d450f03108150a`，仅含不重叠工具卡片/文档变化；保护脏改动后 rebase 并恢复成功。本地完整 `cargo fmt --all -- --check` 与 `git diff --check` 已执行通过；新修复仍须当前版本静态检查。实际成功编译/发现/执行数量、required check、与 #887 组合兼容均待取得；实际 reasoning UI 重试、跨进程 pending 竞争及服务清理路径不能由现有静态结论冒充已验证。所有开发 Rust 测试保留至云端证据固定，随后清理并对最终无测试 head 重跑门禁。
+同步新基线 `a98be7a5e6cac93fe95bf47cb8d450f03108150a`，仅含不重叠工具卡片/文档变化；保护脏改动后 rebase 并恢复成功。本地完整 `cargo fmt --all -- --check` 与 `git diff --check` 已执行通过；新修复仍须当前版本静态检查。本段为开发过程记录，最终当前证据见下节；与 #887 组合兼容仍待取得；实际 reasoning UI 重试、跨进程 pending 竞争及服务清理路径不能由现有静态结论冒充已验证。所有开发 Rust 测试保留至云端证据固定，随后清理并对最终无测试 head 重跑门禁。
+
+## 已固定开发验证与最终候选
+
+- 开发通过 head：`20ce663cecae3fb6c38ff77deda98629145320d0`；[Actions 41999430525](https://github.com/puzige/vega/actions/runs/41999430525)，Nextest job `127150633023`、Clippy `127150633345`、required check `127153091563` 全部 success。
+- 实际 Rust **47 发现 / 47 执行 / 47 通过 / 0 失败 / 0 跳过**。保留 Python 三组分别 5、15、40 项，均 OK。日志前段 shell 分支脚本文字里的 `no Rust tests` 不是此次执行结果。
+- 可恢复源码：远端标签 [`evidence/891-write-lock-tests-20ce663c`](https://github.com/puzige/vega/tree/evidence/891-write-lock-tests-20ce663c)，已 push 并用 ls-remote 读回完整 SHA；[原始提交 patch](https://github.com/puzige/vega/commit/20ce663cecae3fb6c38ff77deda98629145320d0.patch)。内容 API 读回权限回归 blob `8a7d2315a8521524f667d16d753fc6d761823643`。
+- 第三轮曾 40 通过 / 7 失败：六个配置 fixture 的 macOS 临时路径符号链接祖先触发合法围栏，改用 canonicalize 真实根；超量图片原构造先被 schema ordinal 约束拒绝，改为直接调用生产验证函数。生产校验及预算拒绝断言未放宽；预算用例只证明 validator 拒绝，不冒充完整 fork 回滚。第四轮上述修正全通过。
+- 独审：读取/工作区、配置/偏好和准备集成已结束；权限绑定、技能拒绝契约、可空查询和夹具增量均无剩余发现。静态结论不替代真实 UI/跨进程验证。
+- 最终清理：移除 11 个开发 Rust 测试文件及 11 处独占模块声明，生产代码仅删除测试接线；未变更 manifest/lock/workflow/Python/生产与安全断言。当前 `cargo fmt --all -- --check`、`git diff --check` 通过；Rust test/cfg(test) 属性静态清点 0。最终无测试 head 完整 required CI **待执行**，必须明确记录 `no Rust tests`（0 发现/0 执行），不称测试通过。
+- 用户手测仍待：实际 reasoning UI 重试、MCP 同步/清理与 #887 组合；原现场具体持锁者仍未知。Issue 保持开放，用户验收前不 Done。
 
 ## 验证政策与非目标
 

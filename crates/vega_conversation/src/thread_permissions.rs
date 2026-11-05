@@ -1,7 +1,3 @@
-#[cfg(test)]
-#[path = "thread_permissions_development_tests.rs"]
-mod development_tests;
-
 use std::path::PathBuf;
 
 use vega_store::{Store, threads};

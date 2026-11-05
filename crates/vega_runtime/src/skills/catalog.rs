@@ -10,9 +10,6 @@ use std::path::Path;
 mod snapshot;
 pub use snapshot::{MAX_RUN_SNAPSHOT_BYTES, RunBinding, SkillRunSnapshot};
 
-#[cfg(test)]
-mod preparation_development_tests;
-
 /// Maximum serialized model-facing directory, including labels and framing.
 pub const MAX_CATALOG_BYTES: usize = 128 * 1024;
 /// Bound on distinct Skill activations in one direct-user run.

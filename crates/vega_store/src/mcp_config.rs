@@ -497,6 +497,3 @@ pub fn projection_current(
     }
     Ok(declarations)
 }
-
-#[cfg(test)]
-mod write_lock_development_tests;
