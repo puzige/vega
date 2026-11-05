@@ -2,183 +2,111 @@
 
 **Native AI Agent Desktop** — Rust + GPUI 原生 Agent 工作台
 
-> The agent command center that flies: native speed, any model, every token accounted for.
-
 <p>
-  <img src="assets/logo/vega-icon--smile-light.svg" width="128" alt="Vega logo">
+  <img src="assets/logo/vega-icon-smile-light.svg" width="128" alt="Vega logo">
 </p>
 
-Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agent 工作台，但**不是 Electron 套壳**——用 Rust + GPUI（Zed 的 GPU 框架）+ Metal 原生渲染，万行会话流 120fps，内存仅为 Electron 同类产品的 1/10。
+Vega 将模型对话、编码任务、工具执行和改动审阅放进同一个 macOS 原生工作台。界面使用 Rust + [GPUI](https://www.gpui.rs/) 和 Metal 渲染，不依赖 Electron；自研 Vega Runtime 直连模型 API，也支持通过 ACP 接入 Codex。
 
-**三根支柱：**
+- **围绕项目工作**：管理项目与会话，引用文件，查看工具活动、Git Diff 和生成的产物。
+- **自主选择模型与扩展**：配置 Provider、模型与推理偏好，通过 MCP 和 Skills 扩展任务能力。
+- **掌握执行边界**：区分询问、规划与执行，选择权限策略，查看 Token 用量与费用信息。
 
-- 🏎️ **原生性能** — GPUI + Metal，冷启动 <50ms，长任务挂一天不膨胀
-- 🧠 **Runtime 自主 + 生态开放** — 自研 Vega Runtime（直连模型 API）+ ACP 编排外部 agent（codex / claude-code），不被任何一家绑定
-- 💎 **Token 透明 + Harness 质量** — API 调用级真实成本、跨模型性价比、预算硬控制；Agent 行为可审计、可复现、可回滚
+[安装与上手](#安装与上手) · [配置与扩展](#配置与扩展) · [开发](#开发) · [文档导航](#文档导航)
 
 ## 状态
 
-当前交付政策见 [验证与快速交付政策](docs/vega-rust-test-delivery-lifecycle.md)（[执行规则](docs/vega-exec-guide.md#72-快速交付与按风险验证当前规则)）：最小改动快速交付，按风险选择验证，可直接修复或先实现后补必要测试，不强制 TDD 或 RED/GREEN。**Rust 测试只供开发辅助和留痕，不得进入 master**：合并前移除测试及独占接线，验证最终 Rust 0 发现/0 执行。本地只静态检查，云端 required CI 与用户手测要求不变；不批量恢复历史 Rust 测试，保留现存 Python 测试。以下测试数量与本地验证结果均为历史记录，不代表当前现状或本地执行授权。
+Vega 正在持续开发。以下能力概览描述当前 `master` 源码，不表示任意旧版安装均已具备；可下载版本及变更记录以 [GitHub Releases](https://github.com/puzige/vega/releases) 为准。
 
-**2026-09-05 本地 review 更新**：[当前交付与待办](docs/vega-review-current-status.md) 是本轮入口。模型选择、UI 翻新、受信 Git、权限确认、Thinking、@file、Diff 刷新及 Provider/models 表单已本地集成。最新完整功能测试为 898 通过 / 0 失败 / 1 忽略，严格clippy/build/fmt通过。共享worker计数已修复；Astra随后修复了已排队结果被超时检查遗漏的确定性竞态，Git相关149/149及最终build通过；历史Diff/Artifact失败与该竞态的关联未证实，旧证据保留。Thinking 的独立配置原生保存、重启保持与深色显示已验收，不能据此宣称 Phase 1 完成。UI 参考本地 Zcode，性能测试按用户最新要求延期。以下 Sprint 状态保留历史验收边界。
+目前发布面向 **macOS Apple Silicon（arm64）**，不在此承诺 Intel Mac、Windows 或 Linux 桌面版支持。原生渲染是技术选择，不代表已经达到特定帧率、启动耗时或相对内存指标；历史 Sprint 报告和测试数字也不代表当前版本的验收结果。
 
-📋 **（脚手架）、（侧边栏 & 项目模型）、（流式会话渲染）、（Runtime 核心）、（写工具、权限门禁与三模式）、（Diff 审阅 & 产物）已完成并验收；（Token 经济：定价目录、API 校准、流式计数与任务成本汇总）已完成自动化/Mock 验收（mock 账单零误差；真实账单 dogfood 为 `real provider/billing pending`）；（打磨 & 里程碑：性能埋点真值化、分页水合、Stop/Resume、P0 收口、1000 行重构）已收口为 `engineering fixture passed`——性能 gate（P7 首帧 / P8 空闲 RSS）按  冻结基线如实 `performance gate failed`，与  虚拟化、 调优一并 **deferred-to-final-optimization**（期末统一优化批，主人决策 2026-08-31）**。真实账单 <5%、ProMotion 120fps、真实仓库任务、7 天 dogfood 为 `human/hardware pending`，由  人类收口。真实 API/dogfood、人工 UI 与未达性能项边界见各 Sprint 验收报告。全部设计文档在 [`docs/`](docs/)：
+## 核心能力
 
-2026-09-25 更新：上面的 deferral 是历史验收记录；当前 P1 独立排期验证并加固现有可变高度长会话列表，范围与验收见 [相关规格](docs/148/vega-issue-148-long-session-scroll.md)。
-
-| 文档 | 内容 |
+| 能力 | 使用方式与边界 |
 |---|---|
-| [Chat compatibility](docs/494/vega-issue-494-chat-auto-adapt.md) | #494 模型差异内部适配、Step 工具回传及思考设置收敛；[统一适配 v3](docs/494/vega-issue-494-chat-compat-v3.md) / [兼容基线与能力编辑 v4](docs/494/vega-issue-494-model-compat-baseline.md) / [分层说明](docs/494/vega-issue-494-model-adapter-review.html) / [交付记录](docs/494/vega-issue-494-delivery.md) |
-| [markdown link preview](docs/486/vega-issue-486-markdown-link-preview.md) | #486 链接外观与完整预览；真实列表借用修复已获五项行为 GREEN，最终门禁/手测见[修复交付记录](docs/486/vega-issue-486-crash-repair-delivery.md)、[Bug 方案](docs/486/vega-issue-486-list-state-borrow-crash.md)、[历史记录](docs/486/vega-issue-486-delivery.md) |
-| [composer predictions](docs/469/vega-issue-469-composer-predictions.md) | 下一轮输入建议、默认开关、键盘接受、IME 与异步生命周期契约 |
-| [tool block codex parity](docs/vega-tool-block-codex-parity.md) | Shell 启动崩溃修复、Codex 工具列表对齐与运行时间保留 |
-| [review current status](docs/vega-review-current-status.md) | 当前本地交付、真实验收结果、待办和历史报告勘误入口 |
-| [prd](docs/vega-prd.md) | PRD v0.3.3：7 项锁定决策、模块 A1-A12、5 Phase 路线图 |
-| [acp codex research](docs/vega-acp-codex-research.md) | ACP 接入 Codex 调研：已确认的使用方式、协议与版本、架构改动及验收矩阵 |
-| [acp codex v1 spec](docs/vega-acp-codex-v1-spec.md) | A4 首版规格草案：新任务选择 Codex，完整执行、审批、停止、恢复及实施卡拆分 |
-| [codex task routing](docs/287/vega-issue-287-a4-c2b-codex-task-routing.md) |  Codex New Task 路由、session-before-prompt 顺序与验收矩阵 |
-| [issue workflow](docs/vega-issue-workflow.md) | 问题/需求的 GitHub Issue 收集、Project 流转与 PRD/spec 分工 |
-| [external grep](docs/426/vega-issue-426-external-grep.md) | grep 外部读取权限、目录范围、目标冻结与权限卡回归 |
-| [network retry](docs/350/vega-issue-350-network-retry.md) | 网络中断自动重试、当前回复回滚和重连状态契约 |
-| [ask user question](docs/445/vega-issue-445-ask-user-question.md) | Vega 原生结构化提问工具、Composer 分页、无限等待与问答历史契约 |
-| [multi agent](docs/448/vega-issue-448-multi-agent.md) | Native 并行子任务、独立子会话、权限与生命周期合同 |
-| [subagent startup diagnostics](docs/487/vega-issue-487-subagent-startup-diagnostics.md) | 子任务启动回执、准备事务与具体运行错误诊断修复规格 |
-| [subagent startup delivery](docs/487/vega-issue-487-subagent-startup-diagnostics-delivery.md) | 先行测试、云端复现、修复与交付证据 |
-| [hover auto scroll](docs/402/vega-issue-402-hover-auto-scroll.md) | 悬停正文不再触发滚动：上游补丁升级、行为契约与验收矩阵 |
-| [full access](docs/58/vega-issue-58-full-access.md) | 独立 Full access 模式、沙箱边界与生产链路验收 |
-| [markdown](docs/59/vega-issue-59-markdown.md) | Markdown 表格的结构化单元格与窄窗布局 |
-| [thinking](docs/61/vega-issue-61-thinking.md) | Thinking 流式展示、事件顺序与显示边界 |
-| [reasoning summary](docs/71/vega-issue-71-reasoning-summary.md) | 实时思考摘要标题、Responses 接入与内容回退 |
-| [model picker](docs/68/vega-issue-68-model-picker.md) | 无思考档位模型的菜单入口规格与测试矩阵 |
-| [model picker delivery](docs/68/vega-issue-68-model-picker-delivery.md) | 测试先行、门禁与原生验收记录 |
-| [tool activity](docs/70/vega-issue-70-tool-activity.md) | 紧凑工具活动分组、渐进展开与安全显示规格 |
-| [branch entry](docs/191/vega-issue-191-branch-entry.md) | 历史底行分支入口契约；入口要求由 取代，Git 安全语义保留 |
-| [composer footer no branch](docs/294/vega-issue-294-composer-footer-no-branch.md) | Composer 底行移除分支入口，保留新建任务 utility bar |
-| [composer footer no branch delivery](docs/294/vega-issue-294-composer-footer-no-branch-delivery.md) | 生产 GPUI 红绿回归、定向证据与用户手测状态 |
-| [branch list capacity](docs/191/vega-issue-191-branch-list-capacity.md) | 分支列表路径容量、资源上界与准确错误状态 |
-| [branch list capacity delivery](docs/191/vega-issue-191-branch-list-capacity-delivery.md) | 分支列表容量修复的定向测试、PR 与原生验收状态 |
-| [long session scroll](docs/148/vega-issue-148-long-session-scroll.md) | 长会话虚拟滚动的基线、稳定锚点与定向验收 |
-| [run diagnostics spec](docs/171/vega-issue-171-run-diagnostics-spec.md) | 运行诊断、失败分类与脱敏持久化规格 |
-| [run diagnostics delivery](docs/171/vega-issue-171-run-diagnostics-delivery.md) | 实现计划、定向验收与交付证据 |
-| [composer width](docs/100/vega-issue-100-composer-width.md) | Composer 与正文列统一为 768px（参考实现共用同一宽度 token） |
-| [scroll to bottom](docs/98/vega-issue-98-scroll-to-bottom.md) | 历史悬浮按钮契约；布局由 的固定阅读导航行取代，追尾行为保留 |
-| [tool activity delivery](docs/70/vega-issue-70-tool-activity-delivery.md) | 测试先行矩阵、门禁与原生验收记录 |
-| [skills](docs/74/vega-issue-74-skills.md) | Agent Skills v1 项目/全局发现、自动触发与权限边界（评审草案） |
-| [skills delivery](docs/74/vega-issue-74-skills-delivery.md) | 测试先行验收矩阵（均未运行） |
-| [computer browser use](docs/75/vega-issue-75-computer-browser-use.md) | 受管 macOS 桌面、浏览器单标签与用户接管规格 |
-| [desktop access](docs/75/vega-issue-75-desktop-access.md) | 全窗口访问与应用目录身份 |
-| [window observation](docs/75/vega-issue-75-window-observation.md) | 只读截图、观察失败恢复与 live 工具卡修复 |
-| [computer browser delivery](docs/75/vega-issue-75-computer-browser-delivery.md) | 定向回归、协议限制与用户手测记录 |
-| [remove pi agent](docs/81/vega-issue-81-remove-pi-agent.md) | 移除 Pi Agent 凭据导入并保留 Provider 设置与通用 Skills 导入 |
-| [remove pi agent delivery](docs/81/vega-issue-81-remove-pi-agent-delivery.md) | 定向验收、规格更新和未完成门禁记录 |
-| [tool call limit](docs/114/vega-issue-114-tool-call-limit.md) | 把硬编码 tool call 上限改为可配的 agentic turn 上限（默认不限，对齐 Claude Code） |
-| [review focus](docs/192/vega-issue-192-review-focus.md) | 全局打开 Review 保留 Composer 焦点，显式激活 tab 才聚焦内容 |
-| [pr check pipeline](docs/123/vega-issue-123-pr-check-pipeline.md) | PR check + master build 云端流水线；门禁全部上云，删除本地 hooks/脚本 |
-| [issues 58 59 61 delivery](docs/vega-issues-58-59-61-delivery.md) | //测试、原生模型回复与安装验收记录 |
-| [feature teardown](docs/vega-feature-teardown.md) | 五家竞品功能矩阵与取舍依据 |
-| [features](docs/vega-features.md) | 功能点全表（Phase 1 P0 ×38） |
-| [auto update](docs/178/vega-issue-178-auto-update.md) | 自动更新调研方案（实现契约由 冻结） |
-| [independent update signing](docs/181/vega-issue-181-independent-update-signing.md) | 独立 Ed25519 更新签名、Applications 原位安装与旧版迁移 |
-| [auto update](docs/181/vega-issue-181-auto-update.md) | macOS 自动更新：设置、签名门禁、显式重启安装 |
-| [delivery](docs/181/vega-issue-181-delivery.md) | 自动更新交付状态、手测步骤与恢复方式 |
-| [ui redesign review](docs/296/vega-issue-296-ui-redesign-review.md) | UI v3 已批准方案总览：18点反馈统一设计 |
-| [design guidelines](docs/vega-design-guidelines.md) | 已批准统一设计守则 v2：平台依据、共享语言、基线与目标边界 |
-| [ui redesign v3](docs/296/vega-issue-296-ui-redesign-v3.md) | UI v3 详细 spec：18点映射、阶段/数据契约、冲突替代与验收 |
-| [single activity](docs/296/vega-issue-296-single-activity.md) | UI 验收修订：每轮单一动态过程、右侧 hover 展开及语义状态图标 |
-| [single activity delivery](docs/296/vega-issue-296-single-activity-delivery.md) | 单一过程入口的定向测试与独立审查证据 |
-| [v3 delivery](docs/296/vega-issue-296-v3-delivery.md) | UI v3 实施、定向验证、独立审查与交付状态 |
-| [desktop ui unification](docs/vega-desktop-ui-unification.md) | 第一轮历史规格；新目标见 UI v3 已批准规格 |
-| [delivery](docs/296/vega-issue-296-delivery.md) | 组合验证、三片交付证据、原生手测边界 |
-| [ui spec](docs/vega-ui-spec.md) | UI 规格与可测量验收准线 |
-| [screenshot parity](docs/vega-r21-screenshot-parity.md) | 当前 Codex 截图像素对标：可变 Sidebar、Environment、Settings、Composer 与浮层 |
-| [workspace panel polish](docs/vega-r22-workspace-panel-polish.md) | Workspace / Terminal Panel 工具栏分组、间距与对齐修复 |
-| [workspace panel polish delivery](docs/vega-r22-workspace-panel-polish-delivery.md) |  自动化、原生视觉验收与残余记录 |
-| [sidebar footer fill](docs/vega-r23-sidebar-footer-fill.md) | Sidebar 底部设置入口的 32px 行高与内容列满宽修正 |
-| [sidebar footer fill delivery](docs/vega-r23-sidebar-footer-fill-delivery.md) |  自动化、打包安装与 Light/Dark 原生验收记录 |
-| [sidebar footer edge to edge](docs/vega-r24-sidebar-footer-edge-to-edge.md) | 用户复验修正：Sidebar 设置 footer 铺满 rail 左右与底部边界 |
-| [sidebar footer edge to edge delivery](docs/vega-r24-sidebar-footer-edge-to-edge-delivery.md) |  可见 surface 自动化、打包重装与 Light/Dark 原生验收记录 |
-| [sidebar navigation](docs/vega-r25-sidebar-navigation.md) | Codex 风格中性侧栏：文件夹状态图标、灰色选中态、柔和圆角与内嵌设置行 |
-| [sidebar navigation delivery](docs/vega-r25-sidebar-navigation-delivery.md) |  自动化、打包重装与 Light/Dark 原生验收记录 |
-| [sidebar sections hover](docs/vega-r26-sidebar-sections-hover.md) | Pinned / Projects / Recents 分组与 hover/focus 菜单渐进显现契约 |
-| [sidebar sections hover delivery](docs/vega-r26-sidebar-sections-hover-delivery.md) |  自动化、打包安装与 Light/Dark 原生 hover 验收记录 |
-| [sidebar row alignment](docs/vega-r27-sidebar-row-alignment.md) | Pinned 去重图标、固定任务列与 Folder 8px 间距修正契约 |
-| [sidebar row alignment delivery](docs/vega-r27-sidebar-row-alignment-delivery.md) |  侧栏行对齐、原生验收与安装交付记录 |
-| [sidebar heading case](docs/vega-r28-sidebar-heading-case.md) | Sidebar 分组标题改为 Pinned / Projects / Recents 普通首字母大写 |
-| [sidebar heading case delivery](docs/vega-r28-sidebar-heading-case-delivery.md) |  标题大小写、测试与原生安装验收记录 |
-| [sidebar progressive lists](docs/vega-r29-sidebar-progressive-lists.md) | Projects 5 条、Recents 10 条的 Show More 渐进列表与自然区块布局 |
-| [sidebar progressive lists delivery](docs/vega-r29-sidebar-progressive-lists-delivery.md) |  渐进列表、间距、测试与原生安装验收记录 |
-| [sidebar typography](docs/vega-r30-sidebar-typography.md) | Sidebar 主条目 15px、分组与辅助信息 13px 的字号对齐契约 |
-| [sidebar typography delivery](docs/vega-r30-sidebar-typography-delivery.md) |  侧栏字号、回归测试与原生安装验收记录 |
-| [sidebar typography revert pinned leading](docs/vega-r31-sidebar-typography-revert-pinned-leading.md) | 回退  字号并让 Pinned 标题顶到分组内容左缘 |
-| [sidebar typography revert pinned leading delivery](docs/vega-r31-sidebar-typography-revert-pinned-leading-delivery.md) |  字号回退、Pinned 左缘与原生安装验收记录 |
-| [tech spec p1](docs/vega-tech-spec-p1.md) | Phase 1 SDD 技术规格（DDL/trait/状态机） |
-| [tech risks](docs/vega-tech-risks.md) | 五大技术难点攻坚方案 |
-| [exec guide](docs/vega-exec-guide.md) | 执行宪法（红线/白名单/验收协议） |
-| [phase1 plan](docs/vega-phase1-plan.md) | Phase 1 八 Sprint 计划 |
-| [tasks](docs/vega-s1-tasks.md) |  任务卡 （已完成） |
-| [tasks](docs/vega-s2-tasks.md) |  任务卡 （已完成） |
-| [tasks](docs/vega-s3-tasks.md) |  任务卡 （流式会话渲染，已完成） |
-| [tasks](docs/vega-s4-tasks.md) |  任务卡 （Runtime 核心，已完成） |
-| [report](docs/vega-s4-report.md) |  验收报告（DoD、门禁、红线与偏离） |
-| [tasks](docs/vega-s5-tasks.md) |  任务卡 （写工具、权限门禁与三模式，已完成） |
-| [report](docs/vega-s5-report.md) |  验收报告（mock E2E、DoD、UI/性能边界与偏离） |
-| [tasks](docs/vega-s6-tasks.md) |  任务卡 （Diff 审阅、产物、Open in、分支与 commit，SDD 已定稿） |
-| [report](docs/vega-s6-report.md) |  验收报告（production E2E、DoD、红线与人工/硬件边界） |
-| [tasks](docs/vega-s7-tasks.md) |  任务卡 （Token 经济：定价、校准、流式计数与任务汇总，已完成） |
-| [report](docs/vega-s7-report.md) |  验收报告（mock 账单零误差 E2E、DoD、carryforward 核销与真实账单 KPI 边界） |
-| [tasks](docs/vega-s8-tasks.md) |  任务卡 （性能调优、硬件实测与 Phase 1 收口，SDD 已冻结） |
-| [sdd](docs/vega-s8-sdd.md) |  验收 SDD（C1-C8 冻结契约、七状态词表与证据基线） |
-| [report](docs/vega-s8-report.md) |  验收报告（ 冻结性能基线、逐卡 DoD、carryforward 核销与期末优化批偏离） |
-| [packaging](docs/vega-packaging.md) | macOS 打包与分发（`cargo xtask package`、.app 结构、受支持安装路径、独立更新签名与可选 Apple 公证） |
-| [release](docs/vega-release.md) | 发版指南（master 自动 patch、Ed25519 manifest、可选 Apple 公证、失败恢复） |
+| 多模型对话 | 在设置中管理 Provider、模型、推理偏好与能力配置；Native 运行时适配模型 API 差异。实际能力取决于所选模型与服务。 |
+| 项目与编码任务 | 引用项目文件和图片，读写文件、执行命令，结合工具活动、Diff 与产物检查结果。工具执行受当前模式和权限约束。 |
+| 长任务与上下文 | 流式 Markdown、代码高亮和可展开的执行过程；支持上下文压缩、停止任务及中断后的显式续接，不因重启自动恢复执行。 |
+| 会话分支 | 从符合条件的 Native 历史回复创建新分支，保留原会话；分支不继承活跃执行权或旧权限批准。 |
+| Skills 与 MCP | 管理技能并在单条消息中引用；连接 MCP 服务扩展工具。服务启用、认证和执行授权是不同步骤。 |
+| 桌面操作 | 观察 macOS 窗口、截图及受控操作，支持暂停和用户接管；需要相应系统权限，不等于可绕过应用或系统限制。 |
+| Codex 接入 | 通过 ACP 在项目中使用外部 Codex Agent；需单独配置和认证，其模型、模式与审批遵循外部 Agent 的能力，不与 Native 设置混用。 |
+| 用量与日常体验 | 查看 Token 用量与费用信息，使用中英文界面、主题和应用更新。费用取决于可用的用量与定价数据，不是已核验的服务商账单。 |
 
-## 关键决策（详见 PRD）
+## 安装与上手
 
-- **GUI**：GPUI（Zed 官方仓库 git rev 锁定起步 → vendor fork 演化）· **平台**：macOS First（Metal）
-- **形态**：Agent 工作台，**不是 IDE**——代码只做 viewer + diff 审阅，编辑交接外部 IDE
-- **执行模型**：自研 Runtime 优先 + ACP 编排并存 · **Remote/SSH**：Phase 4 再说
+1. 在 [Releases](https://github.com/puzige/vega/releases/latest) 下载 `Vega-macos-arm64.zip` 和同版 `.sha256`，核对下载完整性。正式发布的更新清单另有独立 Ed25519 签名；SHA-256 摘要本身不证明发布者身份。
+2. 解压后将 `Vega.app` 放到 `/Applications/Vega.app` 或 `~/Applications/Vega.app`，从安装位置打开，不把构建目录作为日常安装位置。
+3. 在设置中添加 Provider，保存 API Key 并选择模型；密钥通过界面保存，不写进项目文件或 YAML。
+4. 选择项目或创建独立任务，确认模型、任务模式和权限后发送需求。需要 Codex 时先在 Agents 设置中完成外部 Agent 配置与认证。
+
+**从旧版升级前请注意**：当前版本使用 `~/.vega`，不会自动迁移旧目录中的历史、凭据或配置。启动后看不到旧历史不代表旧数据已删除；需要保留数据时，先阅读[配置与手动转移说明](docs/820/configuration-and-manual-transfer.md)，不要直接改配置后缀或复制运行中的 SQLite 主文件。
+
+应用更新支持签名校验和确认后重启安装。独立更新签名与 Apple Developer ID 签名、公证不是一回事；若 macOS 拒绝打开，先检查该版本的签名、公证与发布说明，**不要关闭 Gatekeeper 或移除 quarantine 来绕过保护**。详见[安装与分发](docs/vega-packaging.md)和[更新机制](docs/181/vega-issue-181-independent-update-signing.md)。
+
+## 配置与扩展
+
+### 模型与凭据
+
+优先通过设置界面管理 Provider、模型、推理偏好和模型能力。Native 使用 Vega 配置；ACP 任务使用外部 Agent 返回的配置和认证流程。不要把“可配置”理解为所有模型都支持图片、推理或工具调用。
+
+默认目录布局：
+
+```text
+~/.vega/
+├── config.yaml                   # Provider、默认模型、界面、模型能力与 MCP 配置
+├── credentials/credentials.toml  # 独立凭据文件，不纳入项目版本管理
+├── data/vega.db                  # 会话与任务数据库
+├── data/scratch/                 # 独立任务文件
+└── skills/                       # 技能目录
+```
+
+可用非空绝对路径 `VEGA_HOME` 隔离另一套数据；无效路径会报错，不静默回退。凭据文件为受文件权限保护的独立明文存储，不是加密保险库。YAML 格式、凭据权限与手动转移步骤见[配置说明](docs/820/configuration-and-manual-transfer.md)。
+
+### Skills、MCP 与执行权限
+
+- **Skills**：在设置中管理，在消息输入中引用所需技能；引用作用于该条消息，不等于永久固定到会话。外部链接目录的授权与恢复需显式检查。
+- **MCP**：在设置中添加、编辑和启用服务，按需完成认证。配置文件声明不自动授予执行权；工具仍受当前运行的权限策略约束。
+- **模式与权限**：Ask / Plan / Execute 描述任务方式，ReadOnly / Confirm / Auto / Full access 描述权限策略。Full access 需明确授权，具有更高风险；Ask / Plan 不因选中 Full access 就变成可写执行模式。运行中的权限快照不会因设置改变而立即收紧，需要立即中止时使用 Stop。
+
+具体边界见[权限与沙箱](docs/624/vega-permission-sandbox-alignment.md)、[Skills](docs/74/vega-issue-74-skills.md)和 [MCP](docs/73/vega-issue-73-mcp.md) 规格。
 
 ## 开发
 
-本项目采用 **SDD（Spec-Driven Development）**：spec 先行，代码不允许先于 spec。
-参与开发前必读 [`AGENTS.md`](AGENTS.md) 和 [`docs/vega-exec-guide.md`](docs/vega-exec-guide.md)。
-自动测试保留进程内业务、安全、存储与 UI 回归；按 [2026-09-25 用户裁决](docs/149/vega-issue-149-remove-real-e2e.md) 优先 mock 外部依赖并保留业务断言，纯真实系统契约改由用户手测。
-
-交付节奏（2026-09-23 用户裁决）：接卡置 `In progress` → 实现（**本地只跑本卡功能点测试，不跑全量**）→ 开 PR → 云端 `pr-check` 绿 → **Agent 主动合并 master** → 卡片改 `In review` → **停下等用户手测**；用户手测通过才回写/关 Issue/Done，不通过退回 `In progress`；CI 通过并合并后允许自动删除已合并远端任务分支，证据/完整 SHA/patch 须可恢复，本地分支/worktree 依[安全清理规则](docs/vega-issue-workflow.md#分支与-worktree-清理规则)处理，不授权删除用户数据。详见 [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)。
+参与前先读 [`AGENTS.md`](AGENTS.md) 和[执行指南](docs/vega-exec-guide.md)。项目采用 SDD，行为改动需对应具体规格；使用独立分支与 worktree，通过 PR 交付，不直接向 `master` push。
 
 ### 前置要求（macOS）
 
-- **完整 Xcode**：GPUI 编译 Metal 着色器需要 `metal` 工具，仅 Command Line Tools 不够。安装 Xcode 后切换开发目录：
+- Apple Silicon Mac 与完整 Xcode；GPUI 的 Metal 着色器工具链不能仅由 Command Line Tools 替代。
+- 通过 [rustup](https://rustup.rs/) 管理 Rust，工具链版本以 [`rust-toolchain.toml`](rust-toolchain.toml) 为准。
 
-  ```sh
-  sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-  # 若安装的是 Xcode-beta，则对应 /Applications/Xcode-beta.app/Contents/Developer
-  ```
-
-- **Rust（rustup）**：通过 [rustup](https://rustup.rs/) 安装；进入仓库后会自动按 [`rust-toolchain.toml`](rust-toolchain.toml) 下载并使用 1.98.0 工具链。
+**当前仓库规则禁止 Agent 在本地运行 Vega 代码、编译、构建、打包或测试**，包括 `cargo check`、Clippy 和定向 test / nextest。本地只做低 CPU、快速完成的差异、格式与静态检查；自动测试交 GitHub Actions，打包走云端发布。不因历史文档含本地命令而视为已获执行授权。
 
 ### 质量门禁（云端 CI）
 
-**门禁全部在云端，本地 commit/push 不做任何强制检查、不排队、不锁 target**（当前 PR gate 见 [相关规格](docs/175/vega-issue-175-single-pr-check.md)；门禁迁移背景见 [相关规格](docs/123/vega-issue-123-pr-check-pipeline.md)）。本地不再安装 git hooks；`.githooks/`、`scripts/verify.py` 与 `cargo-lock` 调度器已删除。
+| Workflow | 当前职责 |
+|---|---|
+| [`pr-check.yml`](.github/workflows/pr-check.yml) | PR 面向 `master` 时，并行运行 Clippy 与 Nextest 两个 job：前者检查格式和全目标 Clippy，后者运行三组 Python 检查及 workspace Nextest；汇总为 required check `check (fmt, clippy, test)`。 |
+| [`cicd.yml`](.github/workflows/cicd.yml) | `master` push 后调用发布 workflow，为合并版本自动预留 patch 版本并发布。 |
+| [`release.yml`](.github/workflows/release.yml) | 统一处理自动发布、`v*` tag 和手动发布，构建 arm64 包、签署更新资产并发布 GitHub Release；Apple 签名与公证取决于发布凭据配置。 |
 
-PR check 与 master CICD 是两条独立 workflow（2026-09-22 拆分）。从 2026-09-24 起，PR check 保持单个无分片 job，并恢复 master 写入的 Cargo 缓存；两条 workflow 使用相同 `shared-key: vega-master-build`，PR 只读，master 是唯一写入方（[相关规格](docs/179/vega-issue-179-shared-pr-cicd-cache.md)）。
+Rust 测试仅供开发辅助和留痕，不得进入 `master`；现存 Python 测试保留。最终 Rust 空集必须如实记录为 **0 发现 / 0 执行**，不能写成“Rust 测试通过”。详情见[验证与交付政策](docs/vega-rust-test-delivery-lifecycle.md)。
 
-| Workflow | 触发 | 检查 |
-|---|---|---|
-| [`.github/workflows/pr-check.yml`](.github/workflows/pr-check.yml) | `pull_request`（base `master`） | 单个 `macos-latest` job `check (fmt, clippy, test)`，依次运行 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings` 和 `cargo test --workspace --no-fail-fast -- --test-threads=1`（含 doc-tests）；全部成功才放行 |
-| [`.github/workflows/cicd.yml`](.github/workflows/cicd.yml)（workflow 名 `master`） | `push` 到 `master`（PR merge 后） | `cargo xtask package`，产物上传为 artifact（不发 Release） |
+合并前需完成非实现者独立审查并通过最终 head 的 required CI；CI 不能替代原生界面和真实系统权限的用户验收。发布流程见[发版指南](docs/vega-release.md)。
 
-**Master 只允许 PR merge，不允许直接 push。** PR 必须通过云端 `check` 才能合并；分支保护由 admin 在 GitHub Settings → Branches 开启并勾选 required check。发布仍由 `v*` tag 触发（[release](docs/vega-release.md)）。
+## 文档导航
 
-本地可直接运行 `cargo fmt/clippy/test` 自查，但云端 CI 是合并前的唯一强制门禁。本地定向 nextest 仍可使用 `.config/nextest.toml`；PR gate 不使用 nextest。
+README 保留上手与关键入口；Ticket 规格、交接和验收记录在 [`docs/<ticket>/`](docs/README.md)，历史报告继续保留在 `docs/`，不作为当前完成度声明。
 
-### 构建与运行
-
-```sh
-cargo run -p vega
-```
-
-首次构建会通过 git 依赖拉取 Zed monorepo（约 1–3 GB 进入 `~/.cargo/git` 缓存）并编译 GPUI 依赖链，耗时 10 分钟量级，属正常现象；之后为增量构建。
+| 主题 | 入口 |
+|---|---|
+| 协作与交付 | [仓库规则](AGENTS.md) · [执行指南](docs/vega-exec-guide.md) · [Issue 工作流](docs/vega-issue-workflow.md) |
+| 产品与设计 | [设计守则](docs/vega-design-guidelines.md) · [UI v3](docs/296/vega-issue-296-ui-redesign-v3.md) |
+| 模型兼容 | [统一适配](docs/494/vega-issue-494-chat-compat-v3.md) · [兼容基线与能力配置](docs/494/vega-issue-494-model-compat-baseline.md) |
+| 上下文与分支 | [上下文压缩](docs/667/vega-issue-667-claude-compaction.md) · [Native 会话分支](docs/851/validation.md) |
+| 外部 Agent | [ACP / Codex](docs/vega-acp-codex-v1-spec.md) |
+| 扩展与桌面操作 | [Skills](docs/74/vega-issue-74-skills.md) · [MCP](docs/73/vega-issue-73-mcp.md) · [桌面权限引导](docs/307/vega-issue-307-cua-onboarding.md) |
+| 配置与发布 | [配置及手动转移](docs/820/configuration-and-manual-transfer.md) · [打包与安装](docs/vega-packaging.md) · [发版指南](docs/vega-release.md) |
 
 ## License
 
