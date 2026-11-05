@@ -72,7 +72,7 @@ impl ToolActivityCategory {
             Self::Mcp => Icon::Plug,
             Self::CodexAcp => Icon::Bot,
             Self::ComputerUse => Icon::Monitor,
-            Self::Skill => Icon::BookOpen,
+            Self::Skill => Icon::Wrench,
             Self::Other => Icon::Wrench,
         }
     }
@@ -1611,25 +1611,35 @@ impl ToolCard {
     }
 
     fn description_detail(&self) -> Option<ToolDetail> {
+        if let Some(ToolCardInputProjection::Skill { name, .. }) = &self.input {
+            let Some(ToolCardResultProjection::Skill { outcome, .. }) = &self.result else {
+                return None;
+            };
+            return match outcome {
+                SkillCardOutcome::AlreadyLoaded
+                | SkillCardOutcome::ResourceRead { .. }
+                | SkillCardOutcome::AssetMetadata { .. } => Some(ToolDetail {
+                    title: None,
+                    command: None,
+                    output: vec![skill_summary(name.as_deref(), outcome)],
+                    output_copy: None,
+                    footer: None,
+                }),
+                _ => None,
+            };
+        }
         let target = match &self.input {
             Some(ToolCardInputProjection::ReadOnly { detail_target, .. }) => detail_target.clone(),
             Some(
                 ToolCardInputProjection::Write { path, .. }
                 | ToolCardInputProjection::Edit { path, .. },
             ) => Some(path.clone()),
-            Some(ToolCardInputProjection::Skill { name, .. }) => name.clone(),
             _ => None,
         }?;
         Some(ToolDetail {
             title: None,
             command: Some(target),
-            output: match (&self.input, &self.result) {
-                (
-                    Some(ToolCardInputProjection::Skill { name, .. }),
-                    Some(ToolCardResultProjection::Skill { outcome, .. }),
-                ) => vec![skill_summary(name.as_deref(), outcome)],
-                _ => self.output_rows.clone(),
-            },
+            output: self.output_rows.clone(),
             output_copy: None,
             footer: Some((self.terminal_footer(), self.activity_state())),
         })
