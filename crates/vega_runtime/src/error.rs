@@ -610,6 +610,9 @@ impl VegaError {
             Self::CredentialRead(error) => {
                 metrics.credential_stage = Some(error.stage.as_str());
                 metrics.credential_reason = Some(error.reason.as_str());
+                metrics.configuration_lock = error.configuration_lock;
+                metrics.configuration_lock_attempts = error.configuration_lock_attempts;
+                metrics.configuration_lock_wait_ms = error.configuration_lock_wait_ms;
                 if let Some(detail) = error.storage {
                     metrics.runtime_stage = Some(detail.stage.as_str());
                     metrics.runtime_reason = Some(detail.reason.as_str());

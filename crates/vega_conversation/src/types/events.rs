@@ -88,6 +88,7 @@ pub enum RunFailureKind {
     ConfigurationRestartRequired,
     ConfigurationRepairRequired,
     ConfigurationAccessUnavailable,
+    ConfigurationBusy,
     CredentialStateUnavailable,
     ProjectInstructionsUnavailable,
     ProjectPathInvalid,
@@ -142,6 +143,9 @@ impl RunFailureKind {
     pub(crate) fn from_diagnostic(
         metrics: &vega_store::run_diagnostics::DiagnosticMetrics,
     ) -> Self {
+        if metrics.configuration_lock.is_some() {
+            return Self::ConfigurationBusy;
+        }
         if metrics.failure_kind.as_deref() == Some("credential_check") {
             return match metrics.credential_reason.as_deref() {
                 Some(
@@ -388,7 +392,9 @@ impl RunFailureKind {
             vega_runtime::VegaError::CredentialExposureBlocked => Self::CredentialExposureBlocked,
             vega_runtime::VegaError::CredentialCheckUnavailable => Self::CredentialCheckUnavailable,
             vega_runtime::VegaError::CredentialRead(error) => {
-                if error.reason == vega_runtime::CredentialReadReason::ConfigurationPoisoned {
+                if error.configuration_lock.is_some() {
+                    Self::ConfigurationBusy
+                } else if error.reason == vega_runtime::CredentialReadReason::ConfigurationPoisoned {
                     Self::ConfigurationRestartRequired
                 } else if matches!(
                     error.reason,
@@ -528,6 +534,7 @@ impl RunFailureKind {
             Self::ConfigurationAccessUnavailable => {
                 vega_i18n::t("domain.failure.configuration_access").into()
             }
+            Self::ConfigurationBusy => vega_i18n::t("domain.failure.configuration_busy").into(),
             Self::CredentialStateUnavailable => {
                 vega_i18n::t("domain.failure.credential_state").into()
             }

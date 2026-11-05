@@ -92,6 +92,9 @@ pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> io::Result<T> {
     serde_json::from_value(value).map_err(|_| invalid())
 }
 
+#[cfg(test)]
+mod configuration_lock_tests;
+
 fn value(bytes: &[u8]) -> io::Result<Value> {
     if bytes.len() as u64 > MAX_BYTES {
         return Err(invalid());
@@ -194,10 +197,59 @@ fn read_checked(path: &Path) -> io::Result<Option<Vec<u8>>> {
     Ok(Some(bytes))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ConfigurationLockBusy {
+    #[error("configuration file lock is busy")]
+    File,
+    #[error("configuration edit lock is busy")]
+    Edit,
+    #[error("configuration registry lock is busy")]
+    Registry,
+}
+
+impl ConfigurationLockBusy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Edit => "edit",
+            Self::Registry => "registry",
+        }
+    }
+
+    pub fn into_io(self) -> io::Error {
+        io::Error::new(io::ErrorKind::WouldBlock, self)
+    }
+}
+
+pub fn lock_busy(error: &io::Error) -> Option<ConfigurationLockBusy> {
+    error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<ConfigurationLockBusy>())
+        .copied()
+}
+
 pub fn begin(path: &Path) -> io::Result<Edit> {
     let guard = EDIT_LOCK.lock().map_err(|_| {
         ConfigurationFailureStage::Poisoned.wrap(io::Error::other("configuration unavailable"))
     })?;
+    begin_with_guard(path, guard)
+}
+
+pub fn try_begin(path: &Path) -> io::Result<Edit> {
+    let guard = match EDIT_LOCK.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::WouldBlock) => {
+            return Err(ConfigurationLockBusy::Edit.into_io());
+        }
+        Err(std::sync::TryLockError::Poisoned(_)) => {
+            return Err(ConfigurationFailureStage::Poisoned
+                .wrap(io::Error::other("configuration unavailable")));
+        }
+    };
+    begin_with_guard(path, guard)
+}
+
+fn begin_with_guard(path: &Path, guard: MutexGuard<'static, ()>) -> io::Result<Edit> {
     let parent = path
         .parent()
         .ok_or_else(|| ConfigurationFailureStage::Directory.wrap(invalid()))?;
@@ -234,7 +286,7 @@ pub fn begin(path: &Path) -> io::Result<Edit> {
             return Err(ConfigurationFailureStage::LockValidation.wrap(invalid()));
         }
     }
-    file.try_lock().map_err(|_| conflict())?;
+    file.try_lock().map_err(lock_error)?;
     let bytes = read(path)?;
     if let Some(bytes) = bytes.as_deref() {
         value(bytes).map_err(|error| ConfigurationFailureStage::Parse.wrap(error))?;
@@ -245,6 +297,13 @@ pub fn begin(path: &Path) -> io::Result<Edit> {
         _file: file,
         _guard: guard,
     })
+}
+
+fn lock_error(error: std::fs::TryLockError) -> io::Error {
+    match error {
+        std::fs::TryLockError::WouldBlock => ConfigurationLockBusy::File.into_io(),
+        std::fs::TryLockError::Error(error) => error,
+    }
 }
 
 fn validate_parents(path: &Path) -> io::Result<()> {

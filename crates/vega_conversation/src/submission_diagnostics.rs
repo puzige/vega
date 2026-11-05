@@ -55,6 +55,9 @@ pub fn runtime_failure(
         io_kind: metrics.io_kind,
         credential_stage: metrics.credential_stage,
         credential_reason: metrics.credential_reason,
+        configuration_lock: metrics.configuration_lock,
+        configuration_lock_attempts: metrics.configuration_lock_attempts,
+        configuration_lock_wait_ms: metrics.configuration_lock_wait_ms,
     }
 }
 
