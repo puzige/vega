@@ -1025,6 +1025,11 @@ impl ConversationStream {
                         || accessible_label.clone(),
                         |reason| format!("{accessible_label}: {}", vega_i18n::t(reason)),
                     ))
+                    .when(candidate.is_some(), |row| {
+                        row.tooltip(move |_, cx| {
+                            crate::icons::tooltip(accessible_label.clone(), cx)
+                        })
+                    })
                     .min_h(px(Typography::SIDEBAR_LINE_HEIGHT))
                     .px_2()
                     .flex()
@@ -1078,7 +1083,7 @@ impl ConversationStream {
                                     .min_w_0()
                                     .max_w_full()
                                     .flex_shrink(1.)
-                                    .text_ellipsis()
+                                    .truncate()
                                     .child(label),
                             )
                             .when_some(candidate, |item, candidate| {
@@ -1086,7 +1091,7 @@ impl ConversationStream {
                                     div()
                                         .min_w_0()
                                         .flex_1()
-                                        .text_ellipsis()
+                                        .truncate()
                                         .text_color(colors.text_secondary)
                                         .child(candidate.description.clone()),
                                 )
@@ -1105,6 +1110,7 @@ impl ConversationStream {
                                 .flex_shrink_0()
                                 .text_size(px(Typography::METADATA))
                                 .text_color(colors.text_secondary)
+                                .truncate()
                                 .child(source),
                         )
                     })
