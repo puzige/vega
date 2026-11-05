@@ -696,7 +696,6 @@ impl ConversationStream {
                             ),
                     ),
             )
-            .child(self.render_active_skills(cx))
             .into_any_element()
     }
 

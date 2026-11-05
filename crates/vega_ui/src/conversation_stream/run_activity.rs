@@ -1122,6 +1122,14 @@ impl RunActivityGroup {
                 })
     }
 
+    pub(crate) fn reads_skill(&self, name: &str, cx: &App) -> bool {
+        self.segments.iter().enumerate().any(|(index, _)| {
+            self.stage_tool_calls(index, cx)
+                .iter()
+                .any(|card| card.read(cx).reads_skill(name))
+        })
+    }
+
     pub(crate) fn contains_tool_group(&self, group: &Entity<ToolActivityGroup>) -> bool {
         self.segments
             .iter()

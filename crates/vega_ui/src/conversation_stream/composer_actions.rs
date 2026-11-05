@@ -585,11 +585,6 @@ impl ConversationStream {
         }
         controls.push(self.action_focus[1].clone());
         controls.extend(self.automation_focuses());
-        controls.extend(
-            self.active_skill_focuses
-                .iter()
-                .flat_map(|focuses| focuses.iter().cloned()),
-        );
         let next = controls
             .iter()
             .position(|focus| focus.is_focused(window))
@@ -964,6 +959,9 @@ impl ConversationStream {
         let menu = self.actions.menu;
         let revision = self.input.read(cx).content_revision();
         let projection_generation = self.skill_projection_generation;
+        let has_skills = rows
+            .iter()
+            .any(|row| matches!(row, ComposerActionRow::Skill(_)));
         let mut children = Vec::with_capacity(rows.len() + 1);
         for (index, row) in rows.iter().enumerate() {
             let highlighted = self.actions.highlight.min(rows.len().saturating_sub(1)) == index;
@@ -977,33 +975,66 @@ impl ConversationStream {
             };
             let enabled = reason.is_none();
             let selected = row.is_selected(&self.thread);
-            let label = match row {
+            let candidate = match row {
                 ComposerActionRow::Skill(index) => self
                     .skill_projection
                     .as_ref()
-                    .and_then(|projection| projection.candidates.get(*index))
-                    .map(|candidate| format!("{} · {}", candidate.name, candidate.source_label))
-                    .unwrap_or_default(),
-                _ => row.label().to_owned(),
+                    .and_then(|projection| projection.candidates.get(*index)),
+                _ => None,
             };
+            let label = candidate.map_or_else(|| row.label().to_owned(), |item| item.name.clone());
+            let source = candidate.map(|item| {
+                let label = vega_i18n::t(match item.scope {
+                    vega_conversation::types::SkillUiScope::Project => "ui.skill_source_project",
+                    vega_conversation::types::SkillUiScope::VegaGlobal => "ui.skill_source_local",
+                    vega_conversation::types::SkillUiScope::Imported => "ui.skill_source_imported",
+                });
+                let peers: Vec<_> = self
+                    .skill_projection
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|projection| &projection.candidates)
+                    .filter(|peer| peer.name == item.name && peer.scope == item.scope)
+                    .collect();
+                if peers.len() > 1 {
+                    let ordinal = peers
+                        .iter()
+                        .position(|peer| peer.source_id == item.source_id)
+                        .map_or(1, |index| index + 1);
+                    format!("{label} {ordinal}")
+                } else {
+                    label.to_owned()
+                }
+            });
+            let accessible_label = candidate.map_or_else(
+                || label.clone(),
+                |item| {
+                    format!(
+                        "{}: {} ({})",
+                        item.name,
+                        item.description,
+                        source.as_deref().unwrap_or_default()
+                    )
+                },
+            );
             let row = *row;
             children.push(
                 div()
                     .id(format!("composer-action-{generation}-{index}"))
                     .aria_label(reason.map_or_else(
-                        || label.clone(),
-                        |reason| format!("{label}: {}", vega_i18n::t(reason)),
+                        || accessible_label.clone(),
+                        |reason| format!("{accessible_label}: {}", vega_i18n::t(reason)),
                     ))
                     .min_h(px(Typography::SIDEBAR_LINE_HEIGHT))
                     .px_2()
                     .flex()
                     .items_center()
-                    .gap_1()
-                    .rounded_md()
+                    .gap_2()
+                    .rounded(px(Layout::MENU_RADIUS))
                     .text_size(px(Typography::SIDEBAR))
                     .text_color(if !enabled {
                         colors.text_tertiary
-                    } else if selected || highlighted {
+                    } else if selected && candidate.is_none() {
                         colors.brand_primary
                     } else {
                         colors.text_primary
@@ -1025,20 +1056,58 @@ impl ConversationStream {
                     }))
                     .child(
                         div()
-                            .when(selected, |marker| marker.child("✓"))
+                            .when(candidate.is_some(), |marker| {
+                                marker.child(crate::icons::icon(
+                                    crate::icons::Icon::Blocks,
+                                    colors.text_secondary,
+                                ))
+                            })
+                            .when(candidate.is_none() && selected, |marker| marker.child("✓"))
                             .w(px(Typography::SIDEBAR))
                             .flex_shrink_0(),
                     )
-                    .child(div().flex().flex_col().child(label).when_some(
-                        reason,
-                        |item, reason| {
-                            item.child(
+                    .child(
+                        div()
+                            .min_w_0()
+                            .when(candidate.is_some(), |item| {
+                                item.flex().flex_1().items_center().gap_2()
+                            })
+                            .when(candidate.is_none(), |item| item.flex().flex_col())
+                            .child(
                                 div()
-                                    .text_color(colors.text_secondary)
-                                    .child(vega_i18n::t(reason)),
+                                    .min_w_0()
+                                    .max_w_full()
+                                    .flex_shrink(1.)
+                                    .text_ellipsis()
+                                    .child(label),
                             )
-                        },
-                    ))
+                            .when_some(candidate, |item, candidate| {
+                                item.child(
+                                    div()
+                                        .min_w_0()
+                                        .flex_1()
+                                        .text_ellipsis()
+                                        .text_color(colors.text_secondary)
+                                        .child(candidate.description.clone()),
+                                )
+                            })
+                            .when_some(reason, |item, reason| {
+                                item.child(
+                                    div()
+                                        .text_color(colors.text_secondary)
+                                        .child(vega_i18n::t(reason)),
+                                )
+                            }),
+                    )
+                    .when_some(source, |item, source| {
+                        item.child(
+                            div()
+                                .flex_shrink_0()
+                                .text_size(px(Typography::METADATA))
+                                .text_color(colors.text_secondary)
+                                .child(source),
+                        )
+                    })
                     .when_some(
                         match row {
                             ComposerActionRow::Command(id) => Some(id.command().token),
@@ -1063,7 +1132,8 @@ impl ConversationStream {
                 .bottom(gpui_kit::relative(1.0))
                 .mb_2()
                 .left_0()
-                .w(px(Layout::MENU_MAX_WIDTH))
+                .when(has_skills, |menu| menu.w_full())
+                .when(!has_skills, |menu| menu.w(px(Layout::MENU_MAX_WIDTH)))
                 .max_w_full()
                 .occlude()
                 .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
