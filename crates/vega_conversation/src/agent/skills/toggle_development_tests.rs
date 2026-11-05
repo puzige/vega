@@ -193,6 +193,7 @@ fn valid_linked_skill_is_available_and_activates_without_item_review() -> Result
 fn disabling_default_skill_persists_revokes_and_reopening_restores_candidates() -> Result {
     let fixture = Fixture::new()?;
     let mention = fixture.mention()?;
+    let selection = fixture.validate(&mention, &[])?;
     let before = fixture.service.projection()?;
     fixture.toggle(false)?;
     let after = fixture.service.projection()?;
@@ -212,7 +213,24 @@ fn disabling_default_skill_persists_revokes_and_reopening_restores_candidates() 
         None,
     );
     assert!(!reloaded.projection()?.sources[0].candidates[0].enabled);
-    assert!(fixture.prepare(&[])?.run.model_catalog().is_empty());
+    let mut disabled = fixture.prepare(&[])?;
+    assert!(disabled.run.model_catalog().is_empty());
+    assert_eq!(
+        disabled
+            .run
+            .load_explicit(&selection[0], |_| true)
+            .audit
+            .status,
+        "unavailable"
+    );
+    assert!(disabled.run.active_selections().is_empty());
+    assert!(
+        !disabled
+            .run
+            .render_skill_envelope()
+            .map_err(|error| format!("{error:?}"))?
+            .contains("Original body")
+    );
     assert!(
         fixture
             .service

@@ -1,5 +1,4 @@
 use crate::interaction::InteractionExt;
-use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
 use std::path::PathBuf;
 
 use gpui_kit::prelude::*;
@@ -435,18 +434,18 @@ impl SettingsView {
             }
             let mut matched = 0;
             for source in &projection.sources {
-                if source.candidates.is_empty() {
-                    if let Some(diagnostic) = &source.diagnostic {
-                        column = column.child(settings_status(
-                            format!(
-                                "{} · {}",
-                                scope_label(source.scope),
-                                skill_diagnostic_label(diagnostic)
-                            ),
-                            colors.warning,
-                            colors,
-                        ));
-                    }
+                if source.candidates.is_empty()
+                    && let Some(diagnostic) = &source.diagnostic
+                {
+                    column = column.child(settings_status(
+                        format!(
+                            "{} · {}",
+                            scope_label(source.scope),
+                            skill_diagnostic_label(diagnostic)
+                        ),
+                        colors.warning,
+                        colors,
+                    ));
                 }
                 for candidate in &source.candidates {
                     let searchable = format!(
@@ -589,6 +588,8 @@ impl SettingsView {
         cx: &mut gpui_kit::Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
+        let source_name = skill_source_name(source, projection);
+        let toggle_label = format!("{} · {}", candidate.name, source.configured_root.display());
         let mut text = div()
             .flex_1()
             .min_w_0()
@@ -664,11 +665,13 @@ impl SettingsView {
                     .flex_shrink_0()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_secondary)
-                    .child(scope_label(source.scope)),
+                    .max_w(px(Layout::SETTINGS_LABEL_WIDTH))
+                    .text_ellipsis()
+                    .child(source_name),
             );
         if candidate.content_sha256.is_some() {
             row = row.child(skill_switch(
-                &candidate.name,
+                &toggle_label,
                 candidate.enabled,
                 &format!("skills-enabled-{}-{}", source.id, candidate.name),
                 SkillSettingsMutation::SetSkill {
@@ -880,6 +883,26 @@ fn skill_diagnostic_label(diagnostic: &str) -> &str {
     }
 }
 
+fn skill_source_name(source: &SkillSourceView, projection: &SkillSettingsProjection) -> String {
+    if source.scope != SkillUiScope::Imported {
+        return scope_label(source.scope).into();
+    }
+    let components = source.configured_root.components().collect::<Vec<_>>();
+    for count in 1..=components.len() {
+        let suffix = components[components.len() - count..]
+            .iter()
+            .collect::<PathBuf>();
+        let unique = projection
+            .sources
+            .iter()
+            .all(|other| other.id == source.id || !other.configured_root.ends_with(&suffix));
+        if unique || count == components.len() {
+            return suffix.display().to_string();
+        }
+    }
+    source.source_label.clone()
+}
+
 fn skill_shadow_label(
     projection: &SkillSettingsProjection,
     candidate: &vega_conversation::types::SkillCandidateView,
@@ -891,10 +914,7 @@ fn skill_shadow_label(
         source.candidates.iter().any(|other| {
             other.name == candidate.name
                 && other.model_winner
-                && other
-                    .content_sha256
-                    .as_ref()
-                    .is_some_and(|sha| other.approved_sha256.as_ref() == Some(sha))
+                && other.content_sha256.is_some()
                 && other.diagnostic.is_none()
         })
     })?;
@@ -919,3 +939,6 @@ fn skill_error_label(error: SkillSettingsError) -> SettingsText {
         SkillSettingsError::SelectionLimit => SettingsText::key("settings.skills.error.selection"),
     }
 }
+
+#[cfg(test)]
+mod list_development_tests;
