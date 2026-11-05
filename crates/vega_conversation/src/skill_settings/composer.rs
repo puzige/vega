@@ -42,17 +42,10 @@ impl SkillSettingsService {
             } else {
                 settings.global_enabled
             };
-            let approval = approvals
-                .iter()
-                .find(|approval| {
-                    approval.source_id == intent.source_id && approval.name == intent.name
-                })
-                .ok_or(SkillSettingsError::Stale)?;
-            if !enabled
-                || !row.enabled
-                || !approval.enabled
-                || approval.approved_sha256 != intent.content_sha256
-            {
+            let preference = approvals.iter().find(|approval| {
+                approval.source_id == intent.source_id && approval.name == intent.name
+            });
+            if !enabled || !row.enabled || preference.is_some_and(|item| !item.enabled) {
                 return Err(SkillSettingsError::Stale);
             }
             let source = self.rebind(&store, &row)?;
@@ -71,8 +64,8 @@ impl SkillSettingsService {
                         .map_err(|_| SkillSettingsError::Invalid)?,
                     name: &intent.name,
                     approved_sha256: &intent.content_sha256,
-                    target_binding: approval.target_binding.as_deref(),
-                    source_label: &approval.source_label,
+                    target_binding: intent.target_binding.as_deref(),
+                    source_label: &source_label(&intent.source_id),
                     enabled: true,
                     automatic: false,
                 },
@@ -137,6 +130,16 @@ impl SkillSettingsService {
         crate::thread_access::verify(&store, thread_id, admission)
             .map_err(|_| SkillSettingsError::Stale)?;
         let projection = self.composer_projection(thread_id)?;
+        if projection.consent_generation != intent.expected_consent_generation
+            || !projection.candidates.iter().any(|candidate| {
+                candidate.source_id == intent.source_id
+                    && candidate.name == intent.name
+                    && candidate.content_sha256 == intent.content_sha256
+                    && candidate.target_binding == intent.target_binding
+            })
+        {
+            return Err(SkillSettingsError::Stale);
+        }
         if projection.candidates.iter().any(|candidate| {
             candidate.selected
                 && candidate.source_id == intent.source_id
@@ -152,6 +155,7 @@ impl SkillSettingsService {
                 source_id: intent.source_id.clone(),
                 name: intent.name.clone(),
                 content_sha256: intent.content_sha256.clone(),
+                target_binding: intent.target_binding.clone(),
             },
             admission,
         )
@@ -231,11 +235,13 @@ impl SkillSettingsService {
                     description: description.clone(),
                     source_label: source.source_label.clone(),
                     content_sha256: sha.clone(),
+                    target_binding: candidate.target_binding.clone(),
                     scope: source.scope,
                     selected: pins.iter().any(|pin| {
                         pin.name == candidate.name
                             && pin.source_label == source.source_label
                             && pin.approved_sha256 == *sha
+                            && pin.target_binding == candidate.target_binding
                             && pin.canonical_root == source.canonical_root.to_string_lossy()
                     }),
                 });
@@ -299,6 +305,7 @@ impl SkillSettingsService {
                 source_id,
                 name,
                 content_sha256,
+                target_binding: expected_target,
             } => {
                 let row = self.find_scoped_source(&store, &source_id)?;
                 let settings = skills::read_settings(store.conn())?;
@@ -314,11 +321,10 @@ impl SkillSettingsService {
                 if !enabled || !row.enabled {
                     return Err(SkillSettingsError::Stale);
                 }
-                let approval = skills::list_approved_skills(store.conn())?
+                let preference = skills::list_approved_skills(store.conn())?
                     .into_iter()
-                    .find(|item| item.source_id == source_id && item.name == name)
-                    .ok_or(SkillSettingsError::Stale)?;
-                if !approval.enabled || approval.approved_sha256 != content_sha256 {
+                    .find(|item| item.source_id == source_id && item.name == name);
+                if preference.is_some_and(|item| !item.enabled) {
                     return Err(SkillSettingsError::Stale);
                 }
                 let source = self.rebind(&store, &row)?;
@@ -332,19 +338,18 @@ impl SkillSettingsService {
                 source
                     .load_candidate(&candidate)
                     .map_err(|_| SkillSettingsError::Stale)?;
-                if candidate
-                    .source
-                    .target_binding()
-                    .map_err(|_| SkillSettingsError::Stale)?
-                    != approval.target_binding
-                {
-                    return Err(SkillSettingsError::Stale);
-                }
                 let pins = skills::list_thread_pins(store.conn(), thread_id)?;
                 if pins.len() >= vega_runtime::skills::MAX_RUN_ACTIVATIONS
                     && !pins.iter().any(|pin| pin.name == name)
                 {
                     return Err(SkillSettingsError::SelectionLimit);
+                }
+                let target_binding = candidate
+                    .source
+                    .target_binding()
+                    .map_err(|_| SkillSettingsError::Stale)?;
+                if target_binding != expected_target {
+                    return Err(SkillSettingsError::Stale);
                 }
                 skills::save_thread_pin(
                     store.conn(),
@@ -356,9 +361,10 @@ impl SkillSettingsService {
                         root_dev: &row.root_dev,
                         root_ino: &row.root_ino,
                         name: &name,
-                        approved_sha256: &approval.approved_sha256,
-                        source_label: &approval.source_label,
+                        approved_sha256: &candidate.sha256,
+                        source_label: &source_label(&source_id),
                         pinned_at: now_ms(),
+                        target_binding: target_binding.as_deref(),
                     },
                 )?;
             }
@@ -374,24 +380,22 @@ impl SkillSettingsService {
                     store.conn(),
                     self.selected_project_id.as_deref(),
                 )?;
-                let approvals = skills::list_approved_skills(store.conn())?;
-                let mut matching = approvals.into_iter().filter(|approval| {
-                    approval.name == name
-                        && approval.source_label == source_label
-                        && approval.approved_sha256 == content_sha256
-                        && sources.iter().any(|source| source.id == approval.source_id)
-                });
-                let approval = matching.next().ok_or(SkillSettingsError::Stale)?;
+                let _ = content_sha256;
+                let mut matching = sources
+                    .into_iter()
+                    .filter(|source| super::source_label(&source.id) == source_label);
+                let source = matching.next().ok_or(SkillSettingsError::Stale)?;
                 if matching.next().is_some() {
                     return Err(SkillSettingsError::Invalid);
                 }
-                skills::set_approval_preferences(
-                    store.conn(),
+                self.apply(
                     expected_generation,
-                    &approval.source_id,
-                    &name,
-                    false,
-                    false,
+                    SkillSettingsMutation::SetSkill {
+                        source_id: source.id,
+                        name,
+                        enabled: false,
+                        automatic: false,
+                    },
                 )?;
             }
         }

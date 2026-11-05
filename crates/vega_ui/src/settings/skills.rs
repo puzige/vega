@@ -1,5 +1,4 @@
 use crate::interaction::InteractionExt;
-use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
 use std::path::PathBuf;
 
 use gpui_kit::prelude::*;
@@ -7,15 +6,14 @@ use gpui_kit::{
     AnyElement, Div, KeyDownEvent, MouseButton, MouseUpEvent, PathPromptOptions, div, px,
 };
 use vega_conversation::types::{
-    SkillBodyPreview, SkillRootPreview, SkillSettingsMutation, SkillSettingsProjection,
-    SkillSourceView, SkillUiScope,
+    SkillRootPreview, SkillSettingsMutation, SkillSettingsProjection, SkillSourceView, SkillUiScope,
 };
 use vega_conversation::{SkillSettingsError, SkillSettingsService};
 use vega_i18n::{t, t_args};
 use vega_theme::{Layout, Typography, theme};
 
 use super::{
-    SettingsText, SettingsView, section_title, settings_action_chrome, settings_actions,
+    SettingsText, SettingsView, TextInput, section_title, settings_action_chrome, settings_actions,
     settings_field, settings_group, settings_section, settings_status, settings_switch,
 };
 
@@ -24,20 +22,23 @@ pub(crate) struct SkillsSettingsState {
     service: Option<SkillSettingsService>,
     projection: Option<SkillSettingsProjection>,
     root_preview: Option<SkillRootPreview>,
-    body_preview: Option<SkillBodyPreview>,
     busy: bool,
     message: Option<SettingsText>,
     request_generation: u64,
+    search: Option<gpui_kit::Entity<TextInput>>,
+    show_sources: bool,
+    show_add: bool,
 }
 
 #[derive(Clone)]
 enum SkillAction {
+    ToggleSources,
+    ToggleAdd,
     Reload,
     PreviewProject,
     PreviewGlobal,
     PreviewSource { source_id: String },
     ImportFolder,
-    PreviewSkill { source_id: String, name: String },
     Mutate(SkillSettingsMutation),
     DismissPreview,
 }
@@ -50,10 +51,6 @@ enum SkillOperation {
         source_id: String,
     },
     PreviewImported(PathBuf),
-    PreviewSkill {
-        source_id: String,
-        name: String,
-    },
     Mutate {
         generation: u64,
         mutation: SkillSettingsMutation,
@@ -63,7 +60,6 @@ enum SkillOperation {
 enum SkillOperationResult {
     Projection(SkillSettingsProjection),
     Root(SkillRootPreview),
-    Body(SkillBodyPreview),
 }
 
 impl SettingsView {
@@ -93,7 +89,6 @@ impl SettingsView {
         self.skills.request_generation = self.skills.request_generation.wrapping_add(1);
         self.skills.busy = false;
         self.skills.root_preview = None;
-        self.skills.body_preview = None;
         self.skills.projection = None;
         if let Some(service) = self.skills.service.take() {
             service.close_session();
@@ -109,7 +104,6 @@ impl SettingsView {
             self.skills.request_generation = self.skills.request_generation.wrapping_add(1);
             self.skills.busy = false;
             self.skills.root_preview = None;
-            self.skills.body_preview = None;
             if let Some(service) = &self.skills.service {
                 service.clear_previews();
             }
@@ -149,9 +143,6 @@ impl SettingsView {
                 SkillOperation::PreviewImported(path) => service
                     .preview_imported_root(&path)
                     .map(SkillOperationResult::Root),
-                SkillOperation::PreviewSkill { source_id, name } => service
-                    .preview_skill(&source_id, &name)
-                    .map(SkillOperationResult::Body),
                 SkillOperation::Mutate {
                     generation,
                     mutation,
@@ -172,14 +163,9 @@ impl SettingsView {
                     Ok(SkillOperationResult::Projection(projection)) => {
                         this.skills.projection = Some(projection);
                         this.skills.root_preview = None;
-                        this.skills.body_preview = None;
                     }
                     Ok(SkillOperationResult::Root(preview)) => {
                         this.skills.root_preview = Some(preview);
-                        this.skills.body_preview = None;
-                    }
-                    Ok(SkillOperationResult::Body(preview)) => {
-                        this.skills.body_preview = Some(preview);
                     }
                     Err(error) => {
                         this.skills.message = Some(skill_error_label(error));
@@ -230,6 +216,14 @@ impl SettingsView {
 
     fn handle_skills_action(&mut self, action: SkillAction, cx: &mut gpui_kit::Context<Self>) {
         match action {
+            SkillAction::ToggleSources => {
+                self.skills.show_sources = !self.skills.show_sources;
+                cx.notify();
+            }
+            SkillAction::ToggleAdd => {
+                self.skills.show_add = !self.skills.show_add;
+                cx.notify();
+            }
             SkillAction::Reload => self.skills_operation(SkillOperation::Reload, cx),
             SkillAction::PreviewProject => {
                 self.skills_operation(SkillOperation::PreviewProject, cx)
@@ -241,9 +235,6 @@ impl SettingsView {
                 }
             }
             SkillAction::ImportFolder => self.pick_skills_root(cx),
-            SkillAction::PreviewSkill { source_id, name } => {
-                self.skills_operation(SkillOperation::PreviewSkill { source_id, name }, cx)
-            }
             SkillAction::Mutate(mutation) => {
                 if let Some(projection) = &self.skills.projection {
                     self.skills_operation(
@@ -257,7 +248,6 @@ impl SettingsView {
             }
             SkillAction::DismissPreview => {
                 self.skills.root_preview = None;
-                self.skills.body_preview = None;
                 if let Some(service) = &self.skills.service {
                     service.clear_previews();
                 }
@@ -268,25 +258,67 @@ impl SettingsView {
 
     pub(crate) fn render_skills(&mut self, cx: &mut gpui_kit::Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        let mut column = settings_section()
-            .id("settings-skills")
-            .child(section_title(
-                t("settings.skills.title"),
-                colors.text_primary,
-            ))
-            .child(
-                div()
-                    .id("skills-intro")
-                    .text_color(colors.text_secondary)
-                    .child(t("settings.skills.intro")),
-            )
-            .child(skill_button(
-                t("settings.action.refresh").into(),
-                "skills-reload".into(),
-                SkillAction::Reload,
-                colors,
-                cx,
-            ));
+        if self.skills.search.is_none() {
+            let search = cx.new(|cx| {
+                TextInput::new(cx, "", false)
+                    .with_placeholder_key("settings.skills.search")
+                    .with_tab_stop(true)
+            });
+            cx.observe(&search, |_, _, cx| cx.notify()).detach();
+            self.skills.search = Some(search);
+        }
+        let query = self
+            .skills
+            .search
+            .as_ref()
+            .map(|input| input.read(cx).text().trim().to_lowercase())
+            .unwrap_or_default();
+        let mut column = settings_section().id("settings-skills").child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .flex_wrap()
+                .gap_2()
+                .child(section_title(
+                    t("settings.skills.title"),
+                    colors.text_primary,
+                ))
+                .child(
+                    settings_actions()
+                        .child(skill_button(
+                            t("settings.action.refresh").into(),
+                            "skills-reload".into(),
+                            SkillAction::Reload,
+                            colors,
+                            cx,
+                        ))
+                        .child(skill_button(
+                            t("settings.skills.sources").into(),
+                            "skills-source-settings".into(),
+                            SkillAction::ToggleSources,
+                            colors,
+                            cx,
+                        ))
+                        .child(skill_button(
+                            t("settings.skills.add").into(),
+                            "skills-add".into(),
+                            SkillAction::ToggleAdd,
+                            colors,
+                            cx,
+                        )),
+                ),
+        );
+        if let Some(search) = &self.skills.search {
+            column = column.child(
+                div().flex().justify_end().child(
+                    div()
+                        .w(px(Layout::SETTINGS_LABEL_WIDTH))
+                        .max_w_full()
+                        .child(search.clone()),
+                ),
+            );
+        }
         if self.skills.busy {
             column = column.child(settings_status(
                 t("settings.skills.checking"),
@@ -358,34 +390,41 @@ impl SettingsView {
                         cx,
                     ));
             }
-            preferences = preferences.child(
-                settings_actions()
-                    .mt_3()
-                    .when(projection.selected_project_id.is_some(), |actions| {
-                        actions.child(skill_button(
-                            t("settings.skills.inspect_project").into(),
-                            "skills-preview-project".into(),
-                            SkillAction::PreviewProject,
+            if self.skills.show_add {
+                column = column.child(
+                    settings_actions()
+                        .mt_3()
+                        .when(projection.selected_project_id.is_some(), |actions| {
+                            actions.child(skill_button(
+                                t("settings.skills.inspect_project").into(),
+                                "skills-preview-project".into(),
+                                SkillAction::PreviewProject,
+                                colors,
+                                cx,
+                            ))
+                        })
+                        .child(skill_button(
+                            t("settings.skills.inspect_global").into(),
+                            "skills-preview-global".into(),
+                            SkillAction::PreviewGlobal,
                             colors,
                             cx,
                         ))
-                    })
-                    .child(skill_button(
-                        t("settings.skills.inspect_global").into(),
-                        "skills-preview-global".into(),
-                        SkillAction::PreviewGlobal,
-                        colors,
-                        cx,
-                    ))
-                    .child(skill_button(
-                        t("settings.skills.import").into(),
-                        "skills-import-folder".into(),
-                        SkillAction::ImportFolder,
-                        colors,
-                        cx,
-                    )),
-            );
-            column = column.child(preferences);
+                        .child(skill_button(
+                            t("settings.skills.import").into(),
+                            "skills-import-folder".into(),
+                            SkillAction::ImportFolder,
+                            colors,
+                            cx,
+                        )),
+                );
+            }
+            if self.skills.show_sources {
+                column = column.child(preferences);
+                for source in &projection.sources {
+                    column = column.child(self.render_skill_source(source, &projection, cx));
+                }
+            }
             if projection.sources.is_empty() {
                 column = column.child(settings_status(
                     t("settings.skills.no_sources"),
@@ -393,15 +432,48 @@ impl SettingsView {
                     colors,
                 ));
             }
+            let mut matched = 0;
             for source in &projection.sources {
-                column = column.child(self.render_skill_source(source, &projection, cx));
+                if source.candidates.is_empty()
+                    && let Some(diagnostic) = &source.diagnostic
+                {
+                    column = column.child(settings_status(
+                        format!(
+                            "{} · {}",
+                            scope_label(source.scope),
+                            skill_diagnostic_label(diagnostic)
+                        ),
+                        colors.warning,
+                        colors,
+                    ));
+                }
+                for candidate in &source.candidates {
+                    let searchable = format!(
+                        "{} {} {} {}",
+                        candidate.name,
+                        candidate.description.as_deref().unwrap_or_default(),
+                        scope_label(source.scope),
+                        source.configured_root.display()
+                    )
+                    .to_lowercase();
+                    if !query.is_empty() && !searchable.contains(&query) {
+                        continue;
+                    }
+                    matched += 1;
+                    column =
+                        column.child(self.render_skill_row(source, candidate, &projection, cx));
+                }
+            }
+            if matched == 0 && !query.is_empty() {
+                column = column.child(settings_status(
+                    t("settings.skills.no_matches"),
+                    colors.text_secondary,
+                    colors,
+                ));
             }
         }
         if let Some(preview) = self.skills.root_preview.clone() {
             column = column.child(self.render_root_preview(&preview, cx));
-        }
-        if let Some(preview) = self.skills.body_preview.clone() {
-            column = column.child(self.render_body_preview(&preview, cx));
         }
         column.into_any_element()
     }
@@ -409,7 +481,7 @@ impl SettingsView {
     fn render_skill_source(
         &self,
         source: &SkillSourceView,
-        projection: &SkillSettingsProjection,
+        _projection: &SkillSettingsProjection,
         cx: &mut gpui_kit::Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
@@ -505,85 +577,115 @@ impl SettingsView {
                         &[("path", &(source.canonical_root.display()).to_string())],
                     )),
             );
-        for candidate in &source.candidates {
-            let status = match candidate.diagnostic.as_deref() {
-                Some(diagnostic) => skill_diagnostic_label(diagnostic),
-                None if candidate.model_winner => t("settings.skills.priority"),
-                None => t("settings.skills.reviewed"),
-            };
-            let mut row = div()
-                .id(format!("skills-candidate-{}-{}", source.id, candidate.name))
-                .flex()
-                .flex_col()
-                .gap_2()
-                .pt_2()
-                .border_t_1()
-                .border_color(colors.border_subtle)
-                .child(div().child(format!("{} · {status}", candidate.name)));
-            if let Some(label) = skill_shadow_label(projection, candidate) {
-                let id = format!("skills-shadow-{}-{}", source.id, candidate.name);
-                row = row.child(
-                    div()
-                        .id(id)
-                        .text_size(px(Typography::METADATA))
-                        .text_color(colors.text_secondary)
-                        .child(label),
-                );
-            }
-            if let Some(description) = &candidate.description {
-                row = row.child(
-                    div()
-                        .text_size(px(Typography::METADATA))
-                        .text_color(colors.text_secondary)
-                        .child(description.clone()),
-                );
-            }
-            if candidate.content_sha256.is_some() {
-                row = row.child(skill_button(
-                    t("settings.skills.review_sha").into(),
-                    format!("skills-review-{}-{}", source.id, candidate.name),
-                    SkillAction::PreviewSkill {
-                        source_id: source.id.clone(),
-                        name: candidate.name.clone(),
-                    },
-                    colors,
-                    cx,
-                ));
-            }
-            if candidate.approved_sha256.is_some() {
-                row = row
-                    .child(skill_toggle_row(
-                        t("settings.skills.enable"),
-                        candidate.enabled,
-                        &format!("skills-enabled-{}-{}", source.id, candidate.name),
-                        SkillSettingsMutation::SetSkill {
-                            source_id: source.id.clone(),
-                            name: candidate.name.clone(),
-                            enabled: !candidate.enabled,
-                            automatic: candidate.automatic,
-                        },
-                        !self.skills.busy,
-                        colors,
-                        cx,
-                    ))
-                    .child(skill_toggle_row(
-                        t("settings.skills.auto"),
-                        candidate.automatic,
-                        &format!("skills-auto-{}-{}", source.id, candidate.name),
-                        SkillSettingsMutation::SetSkill {
-                            source_id: source.id.clone(),
-                            name: candidate.name.clone(),
-                            enabled: candidate.enabled,
-                            automatic: !candidate.automatic,
-                        },
-                        !self.skills.busy,
-                        colors,
-                        cx,
-                    ));
-            }
-            card = card.child(row);
-        }
         card.into_any_element()
+    }
+
+    fn render_skill_row(
+        &self,
+        source: &SkillSourceView,
+        candidate: &vega_conversation::types::SkillCandidateView,
+        projection: &SkillSettingsProjection,
+        cx: &mut gpui_kit::Context<Self>,
+    ) -> AnyElement {
+        let colors = theme(cx).colors;
+        let source_name = skill_source_name(source, projection);
+        let toggle_label = format!("{} · {}", candidate.name, source.configured_root.display());
+        let mut text = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(div().text_ellipsis().child(candidate.name.clone()));
+        if let Some(description) = &candidate.description {
+            text = text.child(
+                div()
+                    .text_size(px(Typography::METADATA))
+                    .text_color(colors.text_secondary)
+                    .text_ellipsis()
+                    .child(description.clone()),
+            );
+        }
+        let source_enabled = source.enabled
+            && match source.scope {
+                SkillUiScope::Project => projection.project_enabled,
+                _ => projection.global_enabled,
+            };
+        if let Some(diagnostic) = candidate
+            .diagnostic
+            .as_deref()
+            .or(source.diagnostic.as_deref())
+        {
+            text = text.child(
+                div()
+                    .text_size(px(Typography::METADATA))
+                    .text_color(colors.warning)
+                    .child(skill_diagnostic_label(diagnostic).to_owned()),
+            );
+        } else if !source_enabled {
+            text = text.child(
+                div()
+                    .text_size(px(Typography::METADATA))
+                    .text_color(colors.text_secondary)
+                    .child(t("settings.skills.source_disabled")),
+            );
+        } else if let Some(label) = skill_shadow_label(projection, candidate) {
+            text = text.child(
+                div()
+                    .text_size(px(Typography::METADATA))
+                    .text_color(colors.text_secondary)
+                    .child(label),
+            );
+        }
+        let mut row = div()
+            .id(format!("skills-candidate-{}-{}", source.id, candidate.name))
+            .flex()
+            .items_center()
+            .gap(px(Layout::SETTINGS_CONTENT_GAP))
+            .min_w_0()
+            .py(px(Layout::SETTINGS_CONTENT_GAP))
+            .child(
+                div()
+                    .size(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+                    .flex_shrink_0()
+                    .rounded_full()
+                    .border_1()
+                    .border_color(colors.border_subtle)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(crate::icons::icon(
+                        crate::icons::Icon::Blocks,
+                        colors.text_secondary,
+                    )),
+            )
+            .child(text)
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(Typography::METADATA))
+                    .text_color(colors.text_secondary)
+                    .max_w(px(Layout::SETTINGS_LABEL_WIDTH))
+                    .text_ellipsis()
+                    .child(source_name),
+            );
+        if candidate.content_sha256.is_some() {
+            row = row.child(skill_switch(
+                &toggle_label,
+                candidate.enabled,
+                &format!("skills-enabled-{}-{}", source.id, candidate.name),
+                SkillSettingsMutation::SetSkill {
+                    source_id: source.id.clone(),
+                    name: candidate.name.clone(),
+                    enabled: !candidate.enabled,
+                    automatic: !candidate.enabled,
+                },
+                !self.skills.busy,
+                colors,
+                cx,
+            ));
+        }
+        row.into_any_element()
     }
 
     fn render_root_preview(
@@ -624,14 +726,17 @@ impl SettingsView {
                 &[("count", &(preview.candidates.len()).to_string())],
             ))
             .children(preview.candidates.iter().map(|candidate| {
-                div().text_color(colors.text_secondary).child(format!(
-                    "{} · {}",
-                    candidate.name,
-                    candidate
-                        .diagnostic
-                        .as_deref()
-                        .unwrap_or(t("settings.skills.awaiting_review"))
-                ))
+                let label = candidate.diagnostic.as_deref().map_or_else(
+                    || candidate.name.clone(),
+                    |diagnostic| {
+                        format!(
+                            "{} · {}",
+                            candidate.name,
+                            skill_diagnostic_label(diagnostic)
+                        )
+                    },
+                );
+                div().text_color(colors.text_secondary).child(label)
             }))
             .child(t("settings.skills.link_warning"))
             .child(skill_button(
@@ -646,75 +751,6 @@ impl SettingsView {
             .child(skill_button(
                 t("settings.action.cancel").into(),
                 "skills-cancel-root-preview".into(),
-                SkillAction::DismissPreview,
-                colors,
-                cx,
-            ))
-            .into_any_element()
-    }
-
-    fn render_body_preview(
-        &self,
-        preview: &SkillBodyPreview,
-        cx: &mut gpui_kit::Context<Self>,
-    ) -> AnyElement {
-        let colors = theme(cx).colors;
-        div()
-            .id("skills-body-preview")
-            .flex()
-            .flex_col()
-            .min_w_0()
-            .flex_shrink_0()
-            .gap(px(Layout::SETTINGS_CONTENT_GAP))
-            .p(px(Layout::SETTINGS_CONTENT_GAP))
-            .rounded(px(Layout::PANEL_RADIUS))
-            .border_1()
-            .border_color(colors.warning)
-            .child(section_title(
-                t("settings.skills.review_title"),
-                colors.text_primary,
-            ))
-            .child(format!("{} · {}", preview.name, preview.description))
-            .when_some(preview.linked_paths.as_ref(), |panel, (entry, target)| {
-                panel
-                    .child(t_args(
-                        "settings.skills.directory",
-                        &[("path", &entry.to_string_lossy())],
-                    ))
-                    .child(t_args(
-                        "settings.skills.actual_target",
-                        &[("path", &target.to_string_lossy())],
-                    ))
-            })
-            .child(t_args(
-                "settings.skills.sha256",
-                &[("sha", &preview.content_sha256)],
-            ))
-            .child(t("settings.skills.review_warning"))
-            .child(
-                div()
-                    .id("skills-body-text")
-                    .max_h(px(280.))
-                    .overflow_y_scroll()
-                    .p_2()
-                    .rounded_md()
-                    .bg(colors.code_bg)
-                    .text_size(px(Typography::CODE))
-                    .child(preview.body.clone())
-                    .scroll_edge_fade(colors.code_bg, ScrollFade::compact()),
-            )
-            .child(skill_button(
-                t("settings.skills.approve_sha").into(),
-                "skills-approve-body".into(),
-                SkillAction::Mutate(SkillSettingsMutation::ApproveSkill {
-                    preview_token: preview.token.clone(),
-                }),
-                colors,
-                cx,
-            ))
-            .child(skill_button(
-                t("settings.action.cancel").into(),
-                "skills-cancel-body-preview".into(),
                 SkillAction::DismissPreview,
                 colors,
                 cx,
@@ -754,17 +790,17 @@ fn skill_button(
         .into_any_element()
 }
 
-fn skill_toggle_row(
-    label: &'static str,
+fn skill_switch(
+    label: &str,
     value: bool,
     id: &str,
     mutation: SkillSettingsMutation,
     enabled: bool,
     colors: vega_theme::ThemeColors,
     cx: &mut gpui_kit::Context<SettingsView>,
-) -> Div {
+) -> crate::interaction::Interaction {
     let key_mutation = mutation.clone();
-    let switch = settings_switch(
+    settings_switch(
         id,
         t_args(
             "settings.skills.toggle_label",
@@ -798,8 +834,24 @@ fn skill_toggle_row(
                     cx.stop_propagation();
                 }
             }))
-    });
-    settings_field(label, None, switch, colors)
+    })
+}
+
+fn skill_toggle_row(
+    label: &'static str,
+    value: bool,
+    id: &str,
+    mutation: SkillSettingsMutation,
+    enabled: bool,
+    colors: vega_theme::ThemeColors,
+    cx: &mut gpui_kit::Context<SettingsView>,
+) -> Div {
+    settings_field(
+        label,
+        None,
+        skill_switch(label, value, id, mutation, enabled, colors, cx),
+        colors,
+    )
 }
 
 fn scope_label(scope: SkillUiScope) -> &'static str {
@@ -831,6 +883,26 @@ fn skill_diagnostic_label(diagnostic: &str) -> &str {
     }
 }
 
+fn skill_source_name(source: &SkillSourceView, projection: &SkillSettingsProjection) -> String {
+    if source.scope != SkillUiScope::Imported {
+        return scope_label(source.scope).into();
+    }
+    let components = source.configured_root.components().collect::<Vec<_>>();
+    for count in 1..=components.len() {
+        let suffix = components[components.len() - count..]
+            .iter()
+            .collect::<PathBuf>();
+        let unique = projection
+            .sources
+            .iter()
+            .all(|other| other.id == source.id || !other.configured_root.ends_with(&suffix));
+        if unique || count == components.len() {
+            return suffix.display().to_string();
+        }
+    }
+    source.source_label.clone()
+}
+
 fn skill_shadow_label(
     projection: &SkillSettingsProjection,
     candidate: &vega_conversation::types::SkillCandidateView,
@@ -842,10 +914,7 @@ fn skill_shadow_label(
         source.candidates.iter().any(|other| {
             other.name == candidate.name
                 && other.model_winner
-                && other
-                    .content_sha256
-                    .as_ref()
-                    .is_some_and(|sha| other.approved_sha256.as_ref() == Some(sha))
+                && other.content_sha256.is_some()
                 && other.diagnostic.is_none()
         })
     })?;
