@@ -459,10 +459,6 @@ pub fn source_message_id(
 }
 
 pub fn refresh_epoch(conn: &Connection, digest: &str) -> rusqlite::Result<()> {
-    let _permit = crate::write_coordination::acquire(
-        conn,
-        crate::write_coordination::WriteCategory::Credentials,
-    )?;
     fn current(conn: &Connection) -> rusqlite::Result<Option<String>> {
         conn.query_row(
             "SELECT digest FROM credential_privacy_epoch WHERE singleton=1",
@@ -527,3 +523,6 @@ pub fn source_label_key(
 pub fn source_label(conn: &Connection, field: &str, id: &str) -> rusqlite::Result<String> {
     source_label_key(conn, field, id).map(|key| vega_i18n::t(key).into())
 }
+
+#[cfg(test)]
+mod write_lock_development_tests;

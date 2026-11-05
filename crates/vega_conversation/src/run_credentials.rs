@@ -182,6 +182,53 @@ impl RunCredentialReader {
         Ok(values)
     }
 
+    pub(crate) fn prepare_redaction(
+        &self,
+        store: &vega_store::Store,
+        fence: &PermissionFence,
+        message: &str,
+    ) -> Result<
+        (
+            Vec<String>,
+            Option<crate::privacy::PreparedRedactionAuthority>,
+        ),
+        CredentialReadError,
+    > {
+        let storage = self
+            .inner
+            .root
+            .as_deref()
+            .map(crate::privacy::prepare_redaction_storage)
+            .transpose()?;
+        let revision = self
+            .inner
+            .root
+            .as_deref()
+            .map(vega_store::keystore::revision);
+        let mut values = self.prepare(fence, message)?;
+        let authority = self
+            .inner
+            .root
+            .as_deref()
+            .zip(revision)
+            .zip(storage)
+            .map(|((root, revision), storage)| {
+                let owner = crate::privacy::refresh_authority_values(&self.inner.database, root)?;
+                values.extend(owner.iter().cloned());
+                crate::privacy::PreparedRedactionAuthority::capture(
+                    store,
+                    &self.inner.thread,
+                    root,
+                    revision,
+                    &owner,
+                    storage,
+                    fence.delegation.is_none(),
+                )
+            })
+            .transpose()?;
+        Ok((values, authority))
+    }
+
     pub(crate) fn activate(
         &self,
         fence: &PermissionFence,

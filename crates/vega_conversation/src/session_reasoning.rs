@@ -1,5 +1,24 @@
 use crate::types::{ConversationError, ReasoningProfileProjection, SessionReasoningPreference};
+use std::sync::{Mutex, MutexGuard};
 use vega_store::Store;
+
+static PREFERENCE_COORDINATION: Mutex<()> = Mutex::new(());
+
+fn coordinate_preferences() -> Result<MutexGuard<'static, ()>, ConversationError> {
+    PREFERENCE_COORDINATION
+        .lock()
+        .map_err(|_| failure("session reasoning coordination unavailable"))
+}
+
+pub fn with_current_preferences<T>(
+    store: &Store,
+    thread_id: &str,
+    operation: impl FnOnce(Option<Vec<SessionReasoningPreference>>) -> T,
+) -> Result<T, ConversationError> {
+    let _coordination = coordinate_preferences()?;
+    let preferences = crate::threads::get_thread(store, thread_id)?.reasoning_preferences;
+    Ok(operation(preferences))
+}
 
 fn failure(error: impl std::fmt::Display) -> ConversationError {
     ConversationError::CorruptRow(error.to_string())
@@ -10,6 +29,7 @@ pub fn initialize(
     thread_id: &str,
     defaults: &[SessionReasoningPreference],
 ) -> Result<Vec<SessionReasoningPreference>, ConversationError> {
+    let _coordination = coordinate_preferences()?;
     for preference in defaults {
         preference.validate().map_err(failure)?;
     }
@@ -26,6 +46,7 @@ pub fn save(
     thread_id: &str,
     candidate: &ReasoningProfileProjection,
 ) -> Result<Vec<SessionReasoningPreference>, ConversationError> {
+    let _coordination = coordinate_preferences()?;
     let transaction = store.immediate_transaction().map_err(failure)?;
     let mut preferences = crate::threads::get_thread(store, thread_id)?
         .reasoning_preferences
@@ -89,3 +110,6 @@ pub fn project(
     };
     Ok(profile)
 }
+
+#[cfg(test)]
+mod write_lock_development_tests;

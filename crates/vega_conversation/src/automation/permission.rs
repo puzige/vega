@@ -33,6 +33,7 @@ impl AutomationPermissionService {
         let _coordination = crate::permission_contracts::coordinate().map_err(unavailable)?;
         let store = Store::open_read_only(&self.database_path).map_err(unavailable)?;
         require_open(&store)?;
+        crate::threads::task_workspace_root(&store, &source.id).map_err(unavailable)?;
         let tx = store.conn().unchecked_transaction().map_err(unavailable)?;
         let row = vega_store::threads::find(&tx, &source.id)
             .map_err(unavailable)?

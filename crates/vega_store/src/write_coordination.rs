@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::marker::PhantomData;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use std::os::unix::fs::MetadataExt;
 use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 use std::thread::ThreadId;
@@ -519,6 +519,12 @@ impl<'a> Deref for WriteTransaction<'a> {
 
     fn deref(&self) -> &Self::Target {
         &self.transaction
+    }
+}
+
+impl DerefMut for WriteTransaction<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.transaction
     }
 }
 

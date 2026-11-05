@@ -335,6 +335,11 @@ pub fn prepare_submission_permission(
         ),
         _ => (None, Some(coordination)),
     };
+    let prepared_workspace = if creation.is_some() {
+        crate::threads::prepare_draft_workspace(store, expected)?
+    } else {
+        Some(crate::threads::task_workspace_root(store, &expected.id)?)
+    };
     let transaction = store.immediate_transaction().map_err(storage_error)?;
     let exists = vega_store::threads::find(&transaction, &expected.id)
         .map_err(storage_error)?
@@ -354,7 +359,10 @@ pub fn prepare_submission_permission(
     let mut thread = crate::threads::thread_from_row(&row)?;
     let fence = capture_fence(store, &row)?;
     let expected_permission = created.as_ref().unwrap_or(expected);
-    if thread.model != submission.raw().model()
+    if prepared_workspace
+        .as_ref()
+        .is_some_and(|workspace| workspace.to_str() != Some(fence.workspace.as_str()))
+        || thread.model != submission.raw().model()
         || thread.backend != TaskBackend::Native
         || thread.status != ThreadStatus::Active
         || thread.project_id != expected.project_id
@@ -415,7 +423,7 @@ pub(crate) fn capture_fence(
     if state.reset_pending {
         return Err(ConversationError::InvalidTaskIdentity);
     }
-    let workspace = crate::threads::task_workspace_root(store, &thread.id)?;
+    let workspace = crate::threads::existing_task_workspace_root(store, &thread.id)?;
     let fence = crate::types::PermissionFence {
         schema_version: 1,
         execution_policy_version: 2,
@@ -520,7 +528,7 @@ pub(crate) fn capture_delegated_fence(
         || accepted.database_identity != store.database_identity().permission_fence_key()
         || thread.parent_thread_id.as_deref() != Some(parent_thread)
         || thread.project_id != accepted.project_id
-        || crate::threads::task_workspace_root(store, &thread.id)?.to_str()
+        || crate::threads::existing_task_workspace_root(store, &thread.id)?.to_str()
             != Some(accepted.workspace.as_str())
     {
         return Err(ConversationError::InvalidTaskIdentity);

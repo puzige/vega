@@ -183,6 +183,7 @@ pub fn review_plan(
     let permission = instruction_id
         .as_ref()
         .map(|_| {
+            crate::threads::task_workspace_root(store, thread_id)?;
             let row = vega_store::threads::find(store.conn(), thread_id)
                 .map_err(store_error)?
                 .ok_or(ConversationError::InvalidTaskIdentity)?;

@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "thread_permissions_development_tests.rs"]
+mod development_tests;
+
 use std::path::PathBuf;
 
 use vega_store::{Store, threads};
@@ -95,32 +99,14 @@ impl ThreadPermissionService {
         } else {
             None
         };
-        let tx = store.immediate_transaction().map_err(unavailable)?;
-        let state = vega_store::permission_contracts::load_state(&tx).map_err(unavailable)?;
-        if state.reset_pending {
-            return Err(ThreadPermissionError::ResetPending);
-        }
-        if state.authority_epoch != change.authority_epoch {
-            return Err(ThreadPermissionError::Conflict);
-        }
-        let current = threads::find(&tx, &change.source.id).map_err(unavailable)?;
-        match current {
-            None if change.draft => {}
-            Some(row) if !change.draft => {
-                let current = crate::threads::thread_from_row(&row).map_err(unavailable)?;
-                if !same_source(&current, &change.source) {
-                    return Err(ThreadPermissionError::Conflict);
-                }
-            }
-            _ => return Err(ThreadPermissionError::Conflict),
-        }
-        let issued_at = crate::threads::now_ms();
-        let revision = change
-            .source
-            .permission_revision
-            .checked_add(1)
-            .ok_or(ThreadPermissionError::Unavailable)?;
         if change.draft {
+            let tx = store.conn().unchecked_transaction().map_err(unavailable)?;
+            let state = validate_change(&tx, change)?;
+            let revision = change
+                .source
+                .permission_revision
+                .checked_add(1)
+                .ok_or(ThreadPermissionError::Unavailable)?;
             let next = Thread {
                 permission_mode: change.mode,
                 permission_revision: revision,
@@ -132,6 +118,14 @@ impl ThreadPermissionService {
             tx.commit().map_err(unavailable)?;
             return Ok(next);
         }
+        let tx = store.immediate_transaction().map_err(unavailable)?;
+        let state = validate_change(&tx, change)?;
+        let issued_at = crate::threads::now_ms();
+        let revision = change
+            .source
+            .permission_revision
+            .checked_add(1)
+            .ok_or(ThreadPermissionError::Unavailable)?;
         if !vega_store::permission_contracts::compare_exchange_thread(
             &tx,
             &change.source.id,
@@ -157,6 +151,30 @@ impl ThreadPermissionService {
         }
         Ok(saved)
     }
+}
+
+fn validate_change(
+    conn: &vega_store::Connection,
+    change: &ThreadPermissionChange,
+) -> Result<vega_store::permission_contracts::ContractState, ThreadPermissionError> {
+    let state = vega_store::permission_contracts::load_state(conn).map_err(unavailable)?;
+    if state.reset_pending {
+        return Err(ThreadPermissionError::ResetPending);
+    }
+    if state.authority_epoch != change.authority_epoch {
+        return Err(ThreadPermissionError::Conflict);
+    }
+    match threads::find(conn, &change.source.id).map_err(unavailable)? {
+        None if change.draft => {}
+        Some(row) if !change.draft => {
+            let current = crate::threads::thread_from_row(&row).map_err(unavailable)?;
+            if !same_source(&current, &change.source) {
+                return Err(ThreadPermissionError::Conflict);
+            }
+        }
+        _ => return Err(ThreadPermissionError::Conflict),
+    }
+    Ok(state)
 }
 
 fn require_open(store: &Store) -> Result<(), ThreadPermissionError> {

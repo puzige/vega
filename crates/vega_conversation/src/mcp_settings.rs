@@ -94,6 +94,15 @@ impl From<CredentialReadError> for McpSettingsError {
     }
 }
 
+fn cleanup_pending(store: &Store, path: &std::path::Path) -> Result<bool, McpStoreError> {
+    let snapshot = store.conn().unchecked_transaction()?;
+    vega_store::mcp_config::projection_current(&snapshot, path)?;
+    let pending = !mcp_servers::pending_cleanup(&snapshot)?.is_empty()
+        || mcp_servers::list(&snapshot)?.iter().any(|row| row.deleting);
+    snapshot.commit()?;
+    Ok(pending)
+}
+
 fn mcp_read_error(error: McpStoreError) -> CredentialReadError {
     match error {
         McpStoreError::Sql(error) => CredentialReadError::database(CredentialReadStage::Mcp, error),
@@ -1261,6 +1270,9 @@ impl McpServerSettingsService {
         let path = self.config_root.join("config.yaml");
         let _document =
             vega_store::yaml_config::begin(&path).map_err(|_| McpSettingsError::Conflict)?;
+        if !cleanup_pending(&store, &path)? {
+            return Ok(());
+        }
         let _permit = vega_store::write_coordination::acquire(
             store.conn(),
             vega_store::write_coordination::WriteCategory::McpServers,
@@ -1297,6 +1309,9 @@ impl McpServerSettingsService {
         let _document = vega_store::yaml_config::begin(&path).map_err(|error| {
             CredentialReadError::configuration_io(CredentialReadStage::Mcp, error.kind())
         })?;
+        if !cleanup_pending(&store, &path).map_err(mcp_read_error)? {
+            return Ok(());
+        }
         let _permit = vega_store::write_coordination::acquire(
             store.conn(),
             vega_store::write_coordination::WriteCategory::McpServers,

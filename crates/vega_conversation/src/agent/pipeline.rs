@@ -3,9 +3,22 @@ use sha2::{Digest, Sha256};
 
 mod authority;
 mod context_projection;
+
+#[cfg(test)]
+mod preparation_development_tests;
 pub(crate) use context_projection::{
     interpret_projection, interpret_projection_with_live, match_live_ranges,
 };
+
+fn skill_preparation_error(error: vega_runtime::skills::SkillError) -> ConversationError {
+    ConversationError::Runtime(Arc::new(VegaError::Tool {
+        tool: "skill".into(),
+        message: format!(
+            "Skill activation rejected ({}). Review the skill in Settings, then retry or remove the message.",
+            error.code()
+        ),
+    }))
+}
 
 pub(crate) fn valid_automation_call_projection(tool: &str, input_json: &str) -> bool {
     matches!(tool, "get_goal" | "update_goal" | "schedule_wakeup")
@@ -1033,6 +1046,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         .map_err(runtime_store_error)?;
         tx.commit().map_err(runtime_store_error)?;
     }
+    crate::threads::task_workspace_root(&store, &thread_id)?;
     let credential_authority = {
         let transaction = store.immediate_transaction().map_err(runtime_store_error)?;
         let authority = match authority::verified(
@@ -1110,19 +1124,47 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             && config.interrupted_assistant.is_none(),
         &selections,
     )?;
-    let credential_values = if let Some(reader) = &config.run_credential_reader {
-        reader
-            .prepare(&credential_authority.fence, &assistant_message_id)
-            .map_err(|error| ConversationError::Runtime(Arc::new(error.into())))?
-    } else {
-        match &config.owner_credential_reader {
-            Some(reader) => {
-                reader().map_err(|error| ConversationError::Runtime(Arc::new(error.into())))?
-            }
-            None => Vec::new(),
-        }
-    };
-    let transaction = store.immediate_transaction().map_err(runtime_store_error)?;
+    if let Some(launch) = &mut skill_launch {
+        launch
+            .run
+            .prepare_explicit_sources(&launch.explicit)
+            .map_err(skill_preparation_error)?;
+    }
+    let (credential_values, redaction_authority) =
+        if let Some(reader) = &config.run_credential_reader {
+            reader
+                .prepare_redaction(&store, &credential_authority.fence, &assistant_message_id)
+                .map_err(|error| ConversationError::Runtime(Arc::new(error.into())))?
+        } else {
+            let values = match &config.owner_credential_reader {
+                Some(reader) => {
+                    reader().map_err(|error| ConversationError::Runtime(Arc::new(error.into())))?
+                }
+                None => Vec::new(),
+            };
+            (values, None)
+        };
+    if redaction_authority.is_none()
+        && (!credential_values.is_empty() || config.credential_exceptions.is_some())
+    {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
+    let prepared_redaction = vega_store::context_compaction::prepare_legacy_thread_redaction(
+        store.conn(),
+        &thread_id,
+        |text, offsets| {
+            vega_runtime::redact_sensitive_credential_text_with_offsets_and_policy(
+                text,
+                &credential_values,
+                offsets,
+                redaction_authority
+                    .as_ref()
+                    .map(|authority| authority.policy()),
+            )
+        },
+    )
+    .map_err(runtime_store_error)?;
+    let mut transaction = store.immediate_transaction().map_err(runtime_store_error)?;
     let preparation = (|| -> Result<_, ConversationError> {
         let current = authority::verified(
             &store,
@@ -1142,6 +1184,17 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                     .submission
                     .invalidate_recovery(ordinary.worker.attempt_id());
             }
+            return Err(ConversationError::InvalidTaskIdentity);
+        }
+        if let Some(authority) = &redaction_authority {
+            authority
+                .validate(&store)
+                .map_err(|error| ConversationError::Runtime(Arc::new(error.into())))?;
+        }
+        if !prepared_redaction
+            .validate(&transaction)
+            .map_err(runtime_store_error)?
+        {
             return Err(ConversationError::InvalidTaskIdentity);
         }
         let authority::RunAuthority {
@@ -1326,6 +1379,9 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                 Ok::<_, ConversationError>(receipt)
             })
             .transpose()?;
+        let legacy_credential_cleanup_detected = prepared_redaction
+            .install(&mut transaction)
+            .map_err(runtime_store_error)?;
         let now = now_ms();
         let title_eligible_payload = !user_content.trim().is_empty() || !images.is_empty();
         if let (Some(ordinary), Some(receipt)) = (ordinary, &recovery) {
@@ -1531,28 +1587,6 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             .map_err(runtime_store_error)?;
         }
 
-        let mut redact_legacy = |text: &str, offsets: &[usize]| {
-            vega_runtime::redact_sensitive_credential_text_with_offsets_and_policy(
-                text,
-                &credential_values,
-                offsets,
-                config.credential_exceptions.as_ref(),
-            )
-        };
-        messages::remap_generated_notices_in_transaction(
-            &transaction,
-            &thread_id,
-            &mut redact_legacy,
-        )
-        .map_err(runtime_store_error)?;
-        let legacy_credential_cleanup_detected =
-            vega_store::context_compaction::redact_legacy_thread_content(
-                &transaction,
-                &thread_id,
-                &mut redact_legacy,
-            )
-            .map_err(runtime_store_error)?;
-
         let source =
             vega_store::context_compaction::load_source_in_transaction(&transaction, &thread_id)
                 .map_err(runtime_store_error)?;
@@ -1707,6 +1741,17 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             .is_some_and(CancellationToken::is_cancelled)
         {
             return Err(ConversationError::Runtime(Arc::new(VegaError::Cancelled)));
+        }
+        if let Some(authority) = &redaction_authority {
+            authority
+                .validate(&store)
+                .map_err(|error| ConversationError::Runtime(Arc::new(error.into())))?;
+        }
+        if let Some(launch) = &skill_launch {
+            launch
+                .run
+                .validate_prepared_sources()
+                .map_err(skill_preparation_error)?;
         }
         Ok((
             permission_fence,

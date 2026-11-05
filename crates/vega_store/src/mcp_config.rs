@@ -278,24 +278,74 @@ fn remember(
     Ok(())
 }
 
+fn projection_unchanged(
+    conn: &Connection,
+    bytes: Option<&[u8]>,
+    declarations: &[Declaration],
+    validate: &impl Fn(&McpServerRow) -> Result<(), McpStoreError>,
+) -> Result<bool, McpStoreError> {
+    let snapshot = conn.unchecked_transaction()?;
+    let (accepted, pending): (Option<Vec<u8>>, bool) = snapshot.query_row(
+        "SELECT accepted_digest, pending_declarations IS NOT NULL FROM mcp_config_state WHERE singleton = 1",
+        [], |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if pending || accepted.as_deref() != Some(digest(bytes).as_slice()) {
+        return Ok(false);
+    }
+    let current = mcp_servers::list(&snapshot)?;
+    if current.len() != declarations.len() {
+        return Ok(false);
+    }
+    for declaration in declarations {
+        let Some(row) = current.iter().find(|row| row.id == declaration.id) else {
+            return Ok(false);
+        };
+        let mut projected = Declaration::from_row(row)?;
+        projected.enabled = declaration.enabled;
+        if row.deleting || (row.enabled && !declaration.enabled) || projected != *declaration {
+            return Ok(false);
+        }
+        let historical: Option<(String, bool, i64)> = snapshot.query_row(
+            "SELECT declaration, tombstoned, projected_revision FROM mcp_config_identities WHERE id = ?1",
+            [&declaration.id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).optional()?;
+        let encoded = json(declaration)?;
+        if !historical.is_some_and(|(previous, tombstoned, revision)| {
+            !tombstoned
+                && previous == encoded
+                && u64::try_from(revision).ok() == Some(row.config_revision)
+        }) {
+            return Ok(false);
+        }
+        validate(row)?;
+    }
+    snapshot.commit()?;
+    Ok(true)
+}
+
 pub fn reconcile(
     conn: &Connection,
     path: &Path,
     validate: impl Fn(&McpServerRow) -> Result<(), McpStoreError>,
 ) -> Result<Vec<String>, McpStoreError> {
     let edit = crate::yaml_config::begin(path).map_err(io_error)?;
-    let tx = WriteTransaction::new(conn, WriteCategory::McpServers)?;
     let mut bytes = edit.bytes();
     let mut declarations = parse(bytes.as_deref())?;
-    let pending: Option<(Vec<u8>, String)> = tx.query_row(
+    if projection_unchanged(conn, bytes.as_deref(), &declarations, &validate)? {
+        if crate::yaml_config::read(path).map_err(io_error)? != bytes {
+            return Err(McpStoreError::Conflict);
+        }
+        return Ok(Vec::new());
+    }
+    let pending_before: Option<(Vec<u8>, String)> = conn.query_row(
         "SELECT pending_base_digest, pending_declarations FROM mcp_config_state WHERE singleton = 1 AND pending_declarations IS NOT NULL",
         [], |row| Ok((row.get(0)?, row.get(1)?)),
     ).optional()?;
-    if let Some((base, target)) = pending {
+    if let Some((base, target)) = &pending_before {
         let target: Vec<Declaration> =
-            serde_json::from_str(&target).map_err(|_| McpStoreError::Invalid)?;
+            serde_json::from_str(target).map_err(|_| McpStoreError::Invalid)?;
         if declarations != target {
-            if digest(bytes.as_deref()) != base {
+            if digest(bytes.as_deref()) != *base {
                 return Err(McpStoreError::Conflict);
             }
             bytes = Some(
@@ -308,11 +358,15 @@ pub fn reconcile(
             }
         }
     }
-    let pending: bool = tx.query_row(
-        "SELECT pending_declarations IS NOT NULL FROM mcp_config_state WHERE singleton = 1",
-        [],
-        |row| row.get(0),
-    )?;
+    let tx = WriteTransaction::new(conn, WriteCategory::McpServers)?;
+    let pending_current: Option<(Vec<u8>, String)> = tx.query_row(
+        "SELECT pending_base_digest, pending_declarations FROM mcp_config_state WHERE singleton = 1 AND pending_declarations IS NOT NULL",
+        [], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional()?;
+    if pending_current != pending_before {
+        return Err(McpStoreError::Conflict);
+    }
+    let pending = pending_current.is_some();
     let current = mcp_servers::list(&tx)?;
     let current_by_id: HashMap<_, _> = current.iter().map(|row| (row.id.as_str(), row)).collect();
     let mut changed = Vec::new();
@@ -443,3 +497,6 @@ pub fn projection_current(
     }
     Ok(declarations)
 }
+
+#[cfg(test)]
+mod write_lock_development_tests;

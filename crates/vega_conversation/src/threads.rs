@@ -71,36 +71,127 @@ fn fork_thread_at(
     source_thread_id: &str,
     through_message_id: Option<&str>,
 ) -> Result<Thread, ForkThreadError> {
+    let prepared = prepare_fork(store, source_thread_id, through_message_id)?;
+    commit_fork(
+        store,
+        source_thread_id,
+        through_message_id.is_none(),
+        prepared,
+    )
+}
+
+struct PreparedFork {
+    cutoff: String,
+    images: Vec<vega_store::image_attachments::ImageRow>,
+    thread: store::ThreadRow,
+    source: context_compaction::ContextSourceVersion,
+}
+
+fn prepare_fork(
+    store: &Store,
+    source_thread_id: &str,
+    through_message_id: Option<&str>,
+) -> Result<PreparedFork, ForkThreadError> {
     use vega_store::thread_fork::ForkError;
-    let tx = store.immediate_transaction().map_err(ForkError::from)?;
-    let cutoff = match through_message_id {
-        Some(message_id) => message_id.to_owned(),
-        None => vega_store::thread_fork::latest_fork_cutoff(&tx, source_thread_id)
+    let (cutoff, images, thread, source) = {
+        let tx = store
+            .conn()
+            .unchecked_transaction()
+            .map_err(ForkError::from)?;
+        let cutoff = match through_message_id {
+            Some(message_id) => message_id.to_owned(),
+            None => vega_store::thread_fork::latest_fork_cutoff(&tx, source_thread_id)
+                .map_err(ForkError::from)?
+                .ok_or(ForkError::InvalidCutoff)?,
+        };
+        let images = vega_store::thread_fork::prefix_images(&tx, source_thread_id, &cutoff)?;
+        let thread = store::find(&tx, source_thread_id)
             .map_err(ForkError::from)?
-            .ok_or(ForkError::InvalidCutoff)?,
+            .ok_or(ForkError::MissingSource)?;
+        let source = context_compaction::load_source_version_in_transaction(&tx, source_thread_id)
+            .map_err(ForkError::from)?;
+        tx.commit().map_err(ForkError::from)?;
+        (cutoff, images, thread, source)
     };
+    validate_fork_images(&images)?;
+    Ok(PreparedFork {
+        cutoff,
+        images,
+        thread,
+        source,
+    })
+}
+
+fn commit_fork(
+    store: &Store,
+    source_thread_id: &str,
+    latest: bool,
+    prepared: PreparedFork,
+) -> Result<Thread, ForkThreadError> {
+    use vega_store::thread_fork::ForkError;
+    let PreparedFork {
+        cutoff,
+        images,
+        thread: prepared_thread,
+        source: prepared_source,
+    } = prepared;
+    let tx = store.immediate_transaction().map_err(ForkError::from)?;
+    if latest
+        && vega_store::thread_fork::latest_fork_cutoff(&tx, source_thread_id)
+            .map_err(ForkError::from)?
+            .as_deref()
+            != Some(cutoff.as_str())
+    {
+        return Err(ForkError::InvalidCutoff.into());
+    }
+    let current_source =
+        context_compaction::load_source_version_in_transaction(&tx, source_thread_id)
+            .map_err(ForkError::from)?;
+    if store::find(&tx, source_thread_id)
+        .map_err(ForkError::from)?
+        .as_ref()
+        != Some(&prepared_thread)
+        || current_source.source_version != prepared_source.source_version
+        || current_source.fingerprint != prepared_source.fingerprint
+        || vega_store::thread_fork::prefix_images(&tx, source_thread_id, &cutoff)? != images
+    {
+        return Err(
+            ForkError::CorruptHistory("fork source changed during preparation".into()).into(),
+        );
+    }
     let row = vega_store::thread_fork::clone_prefix(&tx, source_thread_id, &cutoff, now_ms())?;
-    let source =
+    let mut source =
         context_compaction::load_source_in_transaction(&tx, &row.id).map_err(ForkError::from)?;
+    source.images.clear();
     crate::agent::history_from_context_source(&source, "", None)
         .map_err(|error| ForkError::CorruptHistory(error.to_string()))?;
-    let images = vega_store::image_attachments::for_messages(&tx, &row.id, &source.messages)
-        .map_err(ForkError::from)?;
-    for message in &source.messages {
-        let attachments = images
-            .iter()
-            .filter(|image| image.message_id == message.id)
-            .map(|image| crate::types::ImageAttachment::from_bytes(image.encoded.clone()))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| ForkError::CorruptHistory(error.to_string()))?;
-        crate::attachments::validate_images(&attachments)
-            .map_err(|error| ForkError::CorruptHistory(error.to_string()))?;
-    }
     crate::agent::recover_terminal_tools(&tx, &row.project_id, &row.id)
         .map_err(ForkThreadError::History)?;
     let thread = thread_from_row(&row).map_err(ForkThreadError::History)?;
     tx.commit().map_err(ForkError::from)?;
     Ok(thread)
+}
+
+fn validate_fork_images(
+    images: &[vega_store::image_attachments::ImageRow],
+) -> Result<(), vega_store::thread_fork::ForkError> {
+    use vega_store::thread_fork::ForkError;
+    let mut offset = 0;
+    while offset < images.len() {
+        let count = images[offset..]
+            .iter()
+            .take_while(|image| image.message_id == images[offset].message_id)
+            .count();
+        let attachments = images[offset..offset + count]
+            .iter()
+            .map(|image| crate::types::ImageAttachment::from_bytes(image.encoded.clone()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| ForkError::CorruptHistory(error.to_string()))?;
+        crate::attachments::validate_images(&attachments)
+            .map_err(|error| ForkError::CorruptHistory(error.to_string()))?;
+        offset += count;
+    }
+    Ok(())
 }
 
 pub fn new_thread_id() -> String {
@@ -323,8 +414,14 @@ pub fn draft_thread_from_defaults(
 
 pub fn materialize_draft(store: &Store, thread: &Thread) -> Result<Thread, ConversationError> {
     let creation = crate::permission_contracts::DraftCreationGuard::begin(store, thread)?;
+    let workspace = prepare_draft_workspace(store, thread)?;
     let transaction = store.immediate_transaction().map_err(store_error)?;
     let thread = creation.materialize(&transaction)?;
+    if let Some(workspace) = workspace
+        && existing_task_workspace_root(store, &thread.id)? != workspace
+    {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
     transaction.commit().map_err(store_error)?;
     Ok(thread)
 }
@@ -732,13 +829,56 @@ pub fn task_workspace_root(
     // it prevents a temp database test from ever writing the user's real data
     // directory. In-memory stores retain the platform fallback for callers
     // that cannot provide a durable database root.
-    let data_root = store
+    if !store.conn().is_autocommit() {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
+    let data_root = workspace_data_root(store)?;
+    task_workspace_root_at(store, thread_id, &data_root, true)
+}
+
+pub(crate) fn existing_task_workspace_root(
+    store: &Store,
+    thread_id: &str,
+) -> Result<std::path::PathBuf, ConversationError> {
+    let data_root = workspace_data_root(store)?;
+    let root = task_workspace_root_at(store, thread_id, &data_root, false)?;
+    if !root.is_dir() {
+        return Err(ConversationError::NoProject);
+    }
+    Ok(root)
+}
+
+fn workspace_data_root(store: &Store) -> Result<std::path::PathBuf, ConversationError> {
+    store
         .database_path()
         .and_then(std::path::Path::parent)
         .map(std::path::Path::to_path_buf)
         .or_else(vega_store::paths::data_dir)
-        .ok_or(ConversationError::NoProject)?;
-    task_workspace_root_at(store, thread_id, &data_root)
+        .ok_or(ConversationError::NoProject)
+}
+
+pub(crate) fn prepare_draft_workspace(
+    store: &Store,
+    thread: &Thread,
+) -> Result<Option<std::path::PathBuf>, ConversationError> {
+    if store::find(store.conn(), &thread.id)
+        .map_err(store_error)?
+        .is_some()
+    {
+        return task_workspace_root(store, &thread.id).map(Some);
+    }
+    if !thread.project_id.is_empty() {
+        return Ok(None);
+    }
+    if !store.conn().is_autocommit()
+        || thread.parent_thread_id.is_some()
+        || ulid::Ulid::from_string(&thread.id).is_err()
+    {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
+    let root = workspace_data_root(store)?.join("scratch").join(&thread.id);
+    std::fs::create_dir_all(&root).map_err(crate::agent::runtime_store_error)?;
+    Ok(Some(root))
 }
 
 /// Resolves a task workspace against an explicit app-data root. Production
@@ -748,6 +888,7 @@ fn task_workspace_root_at(
     store: &Store,
     thread_id: &str,
     data_root: &std::path::Path,
+    prepare_scratch: bool,
 ) -> Result<std::path::PathBuf, ConversationError> {
     let thread = get_thread(store, thread_id)?;
     if let Some(parent) = &thread.parent_thread_id {
@@ -755,7 +896,7 @@ fn task_workspace_root_at(
         if parent.parent_thread_id.is_some() {
             return Err(ConversationError::InvalidTaskIdentity);
         }
-        return task_workspace_root_at(store, &parent.id, data_root);
+        return task_workspace_root_at(store, &parent.id, data_root, prepare_scratch);
     }
     if thread.project_id.is_empty() {
         let row = store::find(store.conn(), thread_id)
@@ -772,7 +913,9 @@ fn task_workspace_root_at(
             return Err(ConversationError::InvalidTaskIdentity);
         }
         let root = data_root.join("scratch").join(owner);
-        std::fs::create_dir_all(&root).map_err(crate::agent::runtime_store_error)?;
+        if prepare_scratch {
+            std::fs::create_dir_all(&root).map_err(crate::agent::runtime_store_error)?;
+        }
         return Ok(root);
     }
     task_project_path(store, thread_id)
@@ -818,3 +961,7 @@ pub(crate) fn thread_from_row(row: &store::ThreadRow) -> Result<Thread, Conversa
         updated_at: row.updated_at,
     })
 }
+
+#[cfg(test)]
+#[path = "threads_preparation_development_tests.rs"]
+mod preparation_development_tests;

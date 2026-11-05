@@ -2,6 +2,8 @@ mod parser;
 mod permission;
 mod reset;
 mod runtime;
+#[cfg(test)]
+mod write_lock_development_tests;
 pub use parser::parse_command;
 pub use permission::AutomationPermissionService;
 pub(crate) use reset::pause_for_reset_in_transaction;
@@ -98,7 +100,7 @@ pub fn timing_snapshot(
     store: &Store,
     thread: &str,
 ) -> Result<(Vec<AutomationTask>, Option<AutomationRunClaim>), String> {
-    let tx = store.immediate_transaction().map_err(storage)?;
+    let tx = store.conn().unchecked_transaction().map_err(storage)?;
     let tasks = load_from(&tx, thread)?;
     let run = db::active_run(&tx, thread)
         .map_err(storage)?
@@ -384,6 +386,22 @@ pub fn due_kind(tasks: &[AutomationTask], now: i64) -> Option<AutomationKind> {
 }
 
 pub fn refresh(store: &Store, thread: &str, now: i64) -> Result<Vec<AutomationTask>, String> {
+    let read = store.conn().unchecked_transaction().map_err(storage)?;
+    if vega_store::threads::find(&read, thread)
+        .map_err(storage)?
+        .is_none()
+    {
+        return Ok(Vec::new());
+    }
+    let tasks = load_from(&read, thread)?;
+    let has_expired = tasks.iter().any(|task| {
+        task.status == AutomationStatus::Active
+            && task.expires_at_ms.is_some_and(|expiry| expiry <= now)
+    });
+    read.commit().map_err(storage)?;
+    if !has_expired {
+        return Ok(tasks);
+    }
     let tx = store.immediate_transaction().map_err(storage)?;
     if vega_store::threads::find(&tx, thread)
         .map_err(storage)?
@@ -417,6 +435,7 @@ pub fn claim(
 ) -> Result<Option<AutomationRunClaim>, String> {
     let _coordination = crate::permission_contracts::coordinate().map_err(storage)?;
     crate::permission_contracts::require_admission_open(store).map_err(storage)?;
+    crate::threads::task_workspace_root(store, thread).map_err(storage)?;
     let tx = store.immediate_transaction().map_err(storage)?;
     let owner = vega_store::threads::find(&tx, thread)
         .map_err(storage)?

@@ -10,6 +10,9 @@ use std::path::Path;
 mod snapshot;
 pub use snapshot::{MAX_RUN_SNAPSHOT_BYTES, RunBinding, SkillRunSnapshot};
 
+#[cfg(test)]
+mod preparation_development_tests;
+
 /// Maximum serialized model-facing directory, including labels and framing.
 pub const MAX_CATALOG_BYTES: usize = 128 * 1024;
 /// Bound on distinct Skill activations in one direct-user run.
@@ -186,6 +189,11 @@ impl SkillSelection {
 struct ApprovedEntry {
     candidate: SkillCandidate,
     label: String,
+    #[serde(skip)]
+    prepared: Option<(
+        super::source::PreparedSkillSource,
+        super::frontmatter::SkillDocument,
+    )>,
 }
 
 /// UI-only, bounded failure projection; never add this source identity to a
@@ -318,6 +326,7 @@ impl SkillCatalog {
             entries.push(ApprovedEntry {
                 candidate,
                 label: approval.source_label.clone(),
+                prepared: None,
             });
         }
         let model_catalog = render_model_catalog(&entries, &model_winners)?;
@@ -610,6 +619,41 @@ impl SkillRun {
 
     /// UI-selected source may be shadowed in the model catalog, but must still
     /// be individually enabled and hash-approved. Failure requests a pause.
+    pub fn prepare_explicit_sources(
+        &mut self,
+        selections: &[SkillSelection],
+    ) -> Result<(), SkillError> {
+        for selection in selections {
+            let entry = self
+                .catalog
+                .entries
+                .iter_mut()
+                .find(|entry| {
+                    entry.candidate.name == selection.name
+                        && entry.candidate.source.identity() == selection.source
+                        && entry.candidate.sha256 == selection.sha256
+                        && entry.candidate.source.linked_target() == selection.target.as_ref()
+                })
+                .ok_or(SkillError::Stale)?;
+            let (bytes, prepared) = entry.candidate.source.prepare_candidate(&entry.candidate)?;
+            let document = super::frontmatter::parse_skill_md(&bytes, &entry.candidate.name)?;
+            entry.prepared = Some((prepared, document));
+        }
+        Ok(())
+    }
+
+    pub fn validate_prepared_sources(&self) -> Result<(), SkillError> {
+        for entry in &self.catalog.entries {
+            if let Some((prepared, _)) = &entry.prepared {
+                entry
+                    .candidate
+                    .source
+                    .validate_prepared_candidate(&entry.candidate.name, prepared)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn load_explicit(
         &mut self,
         selection: &SkillSelection,
@@ -673,13 +717,27 @@ impl SkillRun {
         if self.active.len() >= MAX_RUN_ACTIVATIONS {
             return outcome(&candidate.name, origin, "activation_limit", Some(candidate));
         }
-        let bytes = match candidate.source.load_candidate(candidate) {
-            Ok(bytes) => bytes,
-            Err(error) => return outcome(&candidate.name, origin, error.code(), Some(candidate)),
-        };
-        let document = match super::frontmatter::parse_skill_md(&bytes, &candidate.name) {
-            Ok(document) => document,
-            Err(error) => return outcome(&candidate.name, origin, error.code(), Some(candidate)),
+        let document = if let Some((prepared, document)) = &entry.prepared {
+            if let Err(error) = candidate
+                .source
+                .validate_prepared_candidate(&candidate.name, prepared)
+            {
+                return outcome(&candidate.name, origin, error.code(), Some(candidate));
+            }
+            document.clone()
+        } else {
+            let bytes = match candidate.source.load_candidate(candidate) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    return outcome(&candidate.name, origin, error.code(), Some(candidate));
+                }
+            };
+            match super::frontmatter::parse_skill_md(&bytes, &candidate.name) {
+                Ok(document) => document,
+                Err(error) => {
+                    return outcome(&candidate.name, origin, error.code(), Some(candidate));
+                }
+            }
         };
         let proposed = ActiveSkill {
             candidate: candidate.clone(),
