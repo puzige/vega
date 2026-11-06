@@ -33,6 +33,14 @@
 4. 主题复用 Vega token，语言复用现有 i18n；输入长度限制，只有明确的回显命令。任务随 view/engine 生命周期释放，不连接 Agent/PTY 所有权。
 5. 按云端原始证据修必要兼容问题；required CI 与独立实现审查结束后合并，保持 Issue 开放并等待用户手测。本轮不造机械回显或源码字符串开发测试；主要风险是宿主 API/绘制输入兼容，按云端编译、独立静态审查及真实用户手测验证。性能比较和 Agent 自产 E2E 均不作为门禁。
 
+## 开发验证记录
+
+- 基线 `d36ce592c26450a0d243f77bec9bbaa11dc2e546`，PR [#909](https://github.com/puzige/vega/pull/909)。
+- 首版 `0e429f760dc445ce7cd09e4db92a8370f754c18d` 的 [Actions 42188789221](https://github.com/puzige/vega/actions/runs/42188789221) 中 Clippy job 127795395228 发现两个实现接线错误：ButtonElement 不支持 label、Signal<String> 不能直接作 SharedString 绑定；新提交替代后 run cancelled，不记通过。
+- `ad827295b2f936befbf21cb9d97816a715429cf8` 修复上述错误，使用 Kit Root、共用 load 后设置焦点、菜单按语言去重同步，独立静态增量审查通过；真实焦点/IME/菜单仍待用户手测。
+- 该版 [Actions 42190132486](https://github.com/puzige/vega/actions/runs/42190132486) 的 Nextest job 127800049178 成功：三组 Python 检查分别 5/15/40 项通过；Rust `no Rust tests`（0 发现、0 执行）。Clippy job 127800048886 仅失败于 collapsible_if，按建议合并条件，不加 allow、不修改 CI/断言。最终 head 仍须完整重跑门禁，前版结果不冒充最终验证。
+- 本地仅依赖解析、rustfmt、diff/TOML/翻译 key 静态检查，无 Vega 运行、编译、测试、截图或打包。未新增 Rust 测试及独占支持。
+
 ## 非目标与恢复
 
 不做性能对照、TSX/QuickJS、下载包、模型生成 UI、文件系统/网络授权、新数据表、配置持久化、会话流替换或终端重写。预览关闭即可回到原业务 UI；宿主后端升级回滚按本 PR 整体回退，不修改用户数据。若统一依赖解析失败或需要长期 fork，报告具体证据，不用绕过安全门禁的方式推进。

@@ -106,13 +106,12 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("cmd-w", CloseNshPreview, Some("NshPreview")),
     ]);
     cx.on_action(|_: &OpenNshPreview, cx| {
-        if let Some(handle) = cx.global::<PreviewWindow>().0 {
-            if handle
+        if let Some(handle) = cx.global::<PreviewWindow>().0
+            && handle
                 .update(cx, |_, window, _| window.activate_window())
                 .is_ok()
-            {
-                return;
-            }
+        {
+            return;
         }
         let bounds = Bounds::centered(
             None,
