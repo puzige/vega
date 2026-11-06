@@ -1570,6 +1570,7 @@ impl ThreadsBlock {
                                 .min_w_0()
                                 .h_full()
                                 .overflow_hidden()
+                                .role(gpui_kit::Role::Label)
                                 .aria_label(thread_title(thread))
                                 .text_color(colors.text_primary)
                                 .when(thread.unread, |title| {
