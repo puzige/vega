@@ -777,7 +777,3 @@ pub(crate) fn runtime_event_requires_ack(event: &RuntimeEvent) -> bool {
             | RuntimeEvent::DiagnosticAttempt(_)
     )
 }
-
-#[cfg(test)]
-#[path = "diagnostic_availability_development_tests.rs"]
-mod diagnostic_availability_development_tests;

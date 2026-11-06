@@ -32,3 +32,12 @@
 ## 非目标与安全边界
 
 不从缺记录反推历史持锁者；不声称修复 database busy，不修改 final source 锁内策略；不放宽文件安全、重置/清除锁、修改权限或用户配置。MCP 可操作恢复/细分诊断沿用 #903，不从 other 推断 poison。所有历史缺记录原因仍未知；进程未加载诊断、入口未覆盖或 sidecar 自身失败是待区分假设，不是已证实事实。
+
+## 开发验证与合并前清理
+
+- 开发版本：`c88650fcbc947aa03963a0284e12cae4a609f887`；可恢复源码：[远端证据 tag](https://github.com/puzige/vega/tree/evidence/891-diagnostic-availability-tests-c88650fc)，已读回指向该完整 SHA。Store / conversation 测试 blob 分别为 `7deff073893008d43adea3529958d00570f2abda` / `d266abd14cbee20119a68f93f23d1946b69c07a0`。
+- [Actions run 42179566500](https://github.com/puzige/vega/actions/runs/42179566500)：Rust 8 发现 / 8 执行 / 8 通过 / 0 跳过；Python 三组 5 / 15 / 40 通过；fmt、全目标 Clippy、required check 成功。未本地运行 Vega、编译或测试。
+- 非实现者独立只读审查对上述精确 head 给出 PASS，无阻断发现或必要回归缺口；前两次中断不计通过。主要核对文件安全、三态导出、进程回执隔离与容量、actor 原错误及锁退栈边界。
+- 证据限制：写入/发布/目录同步等部分步骤为 fault 转换回归，不冒充实际文件操作失败注入；同进程重开 Store 不等于进程重启；成功事件未创建 sidecar 加静态控制流核对，不冒充 syscall 级零 I/O 观测。历史缺记录原因与具体持锁者仍未知。
+- 清理仅删除两份本卡开发测试（Store 300 行、conversation 155 行、共 8 入口）及两处各 4 行的独占模块接线；没有测试专用依赖、feature 或 fixture 需要另清。生产行为、文件协议、Python 测试和工作流保持不变。
+- 清理版本仍须独立 delta 审查及完整最新 head required CI；最终 Rust 0 发现 / 0 执行记为 `no Rust tests`，不是 Rust 测试通过。合并后 Issue 保持 OPEN / In review，等待用户手测；合并不等于安装或验收。

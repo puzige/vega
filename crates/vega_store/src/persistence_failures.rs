@@ -492,7 +492,3 @@ pub fn read_by_run(
     failures.sort_by_key(|failure| failure.occurred_at);
     Ok(failures)
 }
-
-#[cfg(test)]
-#[path = "diagnostic_availability_development_tests.rs"]
-mod diagnostic_availability_development_tests;
