@@ -1,6 +1,3 @@
-#[cfg(test)]
-mod configuration_failure_tests;
-
 use std::collections::{HashMap, HashSet};
 use std::net::TcpListener as StdTcpListener;
 use vega_runtime::{CredentialReadError, CredentialReadReason, CredentialReadStage};

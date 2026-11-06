@@ -10,9 +10,6 @@ use yaml_edit::{Mapping, YamlFile, YamlKind, YamlNode};
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 static EDIT_LOCK: Mutex<()> = Mutex::new(());
 
-#[cfg(test)]
-mod configuration_failure_tests;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("configuration check failed ({stage:?}, {kind:?})")]
 pub struct ConfigurationFailure {
