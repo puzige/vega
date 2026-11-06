@@ -108,6 +108,7 @@ fn apply_appearance(config: Option<&vega_store::config::AppConfig>, cx: &mut App
             .map(|config| config.ui.language.as_str())
             .unwrap_or("en"),
     );
+    nsh_preview::sync_menus(cx);
     let theme = match config.map(|config| config.ui.theme.as_str()) {
         Some("light") => Theme::light(),
         Some("dark") => Theme::dark(),

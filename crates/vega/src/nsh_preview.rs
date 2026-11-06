@@ -10,9 +10,29 @@ const MAX_TEXT: usize = 256;
 actions!(vega_nsh, [OpenNshPreview, CloseNshPreview]);
 
 #[derive(Default)]
-struct PreviewWindow(Option<WindowHandle<Preview>>);
+struct PreviewWindow(Option<WindowHandle<gpui_kit::base::Root>>);
 
 impl Global for PreviewWindow {}
+
+struct MenuLanguage(&'static str);
+
+impl Global for MenuLanguage {}
+
+pub(crate) fn sync_menus(cx: &mut App) {
+    if !cx.has_global::<MenuLanguage>() || cx.global::<MenuLanguage>().0 == vega_i18n::language() {
+        return;
+    }
+    cx.global_mut::<MenuLanguage>().0 = vega_i18n::language();
+    cx.set_menus([Menu {
+        name: "Vega".into(),
+        items: vec![
+            MenuItem::action(vega_i18n::t("app.nsh.title"), OpenNshPreview),
+            MenuItem::separator(),
+            MenuItem::action(vega_i18n::t("app.startup.quit"), crate::Quit),
+        ],
+        disabled: false,
+    }]);
+}
 
 #[derive(Clone, PartialEq)]
 struct Snapshot {
@@ -79,15 +99,8 @@ struct Preview {
 
 pub(crate) fn init(cx: &mut App) {
     cx.set_global(PreviewWindow::default());
-    cx.set_menus([Menu {
-        name: "Vega".into(),
-        items: vec![
-            MenuItem::action(vega_i18n::t("app.nsh.title"), OpenNshPreview),
-            MenuItem::separator(),
-            MenuItem::action(vega_i18n::t("app.startup.quit"), crate::Quit),
-        ],
-        disabled: false,
-    }]);
+    cx.set_global(MenuLanguage(""));
+    sync_menus(cx);
     cx.bind_keys([
         KeyBinding::new("cmd-alt-n", OpenNshPreview, None),
         KeyBinding::new("cmd-w", CloseNshPreview, Some("NshPreview")),
@@ -118,7 +131,10 @@ pub(crate) fn init(cx: &mut App) {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..Default::default()
             },
-            |window, cx| cx.new(|cx| Preview::new(window, cx)),
+            |window, cx| {
+                let preview = cx.new(|cx| Preview::new(window, cx));
+                cx.new(|cx| gpui_kit::base::Root::new(preview, window, cx))
+            },
         ) {
             Ok(handle) => cx.global_mut::<PreviewWindow>().0 = Some(handle),
             Err(error) => tracing::error!(%error, "could not open NSH preview"),
@@ -169,6 +185,7 @@ impl Preview {
             view.load(NshApp::Rust(Root::of::<page::PreviewPage>()));
             view
         });
+        window.focus(&view.read(cx).focus_handle(cx), cx);
         let worker = cx.spawn(async move |this, cx| {
             while let Some(request) = requests.recv().await {
                 let failed = matches!(request, Command::Failed);
@@ -206,6 +223,7 @@ impl Preview {
 
 impl Render for Preview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        sync_menus(cx);
         let snapshot = Snapshot::current(cx);
         if *self.state.borrow() != snapshot {
             self.state.send_replace(snapshot);

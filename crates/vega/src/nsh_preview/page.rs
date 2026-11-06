@@ -54,7 +54,6 @@ pub fn PreviewPage() -> impl IntoElement {
         .child(
             button()
                 .disabled(move || pending.get() || draft.with(String::is_empty))
-                .label(label(|s| &s.send))
                 .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
                 .py(px(Layout::STATUS_PADDING))
                 .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
@@ -90,7 +89,7 @@ pub fn PreviewPage() -> impl IntoElement {
                 view()
                     .gap(px(Layout::STATUS_PADDING))
                     .child(text(label(|s| &s.result)))
-                    .child(text(reply).selectable(true))
+                    .child(text(move || reply.get()).selectable(true))
             },
         ))
         .into_element()
