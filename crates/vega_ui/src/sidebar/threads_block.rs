@@ -6,6 +6,7 @@ use vega_conversation::types::ThreadUpdate;
 mod organization;
 mod pin;
 mod reload;
+mod title;
 use organization::{Organization, OrganizationSection};
 
 /// Events emitted by the session block.
@@ -1567,12 +1568,14 @@ impl ThreadsBlock {
                                 ))
                                 .flex_1()
                                 .min_w_0()
-                                .truncate()
+                                .h_full()
+                                .overflow_hidden()
+                                .aria_label(thread_title(thread))
                                 .text_color(colors.text_primary)
                                 .when(thread.unread, |title| {
                                     title.font_weight(Typography::HEADING_CARD_WEIGHT)
                                 })
-                                .child(thread_title(thread)),
+                                .child(title::render(thread_title(thread))),
                         ),
                 );
             row = if actions_enabled {
