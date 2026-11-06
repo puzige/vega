@@ -1167,6 +1167,29 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         },
     )
     .map_err(runtime_store_error)?;
+    let prepared_payloads =
+        vega_store::delegated_stages::prepare_payload_redaction(store.conn(), &thread_id, |text| {
+            vega_runtime::redact_sensitive_credential_text_with_policy(
+                text,
+                &credential_values,
+                redaction_authority
+                    .as_ref()
+                    .map(|authority| authority.policy()),
+            )
+        })
+        .map_err(runtime_store_error)?;
+    let checkpoint_root = database_path
+        .parent()
+        .ok_or_else(|| ConversationError::CorruptRow("database path has no parent".to_string()))?
+        .join("checkpoints");
+    if checkpoint_root.as_os_str().is_empty() {
+        return Err(ConversationError::CorruptRow(
+            "database path has no parent".to_string(),
+        ));
+    }
+    if credential_authority.run_mode == ThreadMode::Execute {
+        fs::create_dir_all(&checkpoint_root).map_err(runtime_store_error)?;
+    }
     let mut transaction = store.immediate_transaction().map_err(runtime_store_error)?;
     let preparation = (|| -> Result<_, ConversationError> {
         let current = authority::verified(
@@ -1212,48 +1235,47 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         }
         let permission_fence_json = serde_json::to_string(&permission_fence)
             .map_err(|error| ConversationError::Store(error.to_string()))?;
-        vega_store::delegated_stages::redact_payloads(&transaction, &thread_id, |text| {
-            vega_runtime::redact_sensitive_credential_text_with_policy(
-                text,
-                &credential_values,
-                config.credential_exceptions.as_ref(),
-            )
-        })
-        .map_err(runtime_store_error)?;
-        let preinsert_source =
-            vega_store::context_compaction::load_source_in_transaction(&transaction, &thread_id)
-                .map_err(runtime_store_error)?;
-        let preinsert_checkpoint =
-            vega_store::context_compaction::latest_checkpoint_in_transaction(
+        prepared_payloads
+            .install(&mut transaction)
+            .map_err(runtime_store_error)?;
+        let (cold_prefix_len, replay_lease) = if config.delegated {
+            (1, None)
+        } else {
+            let preinsert_source = vega_store::context_compaction::load_source_in_transaction(
                 &transaction,
                 &thread_id,
-                &thread.model,
             )
             .map_err(runtime_store_error)?;
-        let preinsert_history = if config.delegated {
-            delegated_history(&transaction, &preinsert_source, &assistant_message_id)?
-        } else {
-            primary_history_from_context_source_with_checkpoint(
+            let preinsert_checkpoint =
+                vega_store::context_compaction::latest_checkpoint_in_transaction(
+                    &transaction,
+                    &thread_id,
+                    &thread.model,
+                )
+                .map_err(runtime_store_error)?;
+            let preinsert_history = primary_history_from_context_source_with_checkpoint(
                 &preinsert_source,
                 preinsert_checkpoint.as_ref(),
                 &assistant_message_id,
-            )?
-        };
-        let cold_prefix_len = preinsert_history
-            .len()
-            .checked_add(1)
-            .ok_or_else(|| ConversationError::CorruptRow("history length overflow".into()))?;
-        let replay_lease = if !uses_existing_user && config.credential_continuation_id.is_none() {
-            config.replay_registry.as_ref().map(|registry| {
-                registry.begin(
-                    &thread_id,
-                    preinsert_source.source_version,
-                    &preinsert_source.fingerprint,
-                    ReplayCheckpointFence::from_checkpoint(preinsert_checkpoint.as_ref()),
-                )
-            })
-        } else {
-            None
+            )?;
+            let cold_prefix_len = preinsert_history
+                .len()
+                .checked_add(1)
+                .ok_or_else(|| ConversationError::CorruptRow("history length overflow".into()))?;
+            let replay_lease = if !uses_existing_user && config.credential_continuation_id.is_none()
+            {
+                config.replay_registry.as_ref().map(|registry| {
+                    registry.begin(
+                        &thread_id,
+                        preinsert_source.source_version,
+                        &preinsert_source.fingerprint,
+                        ReplayCheckpointFence::from_checkpoint(preinsert_checkpoint.as_ref()),
+                    )
+                })
+            } else {
+                None
+            };
+            (cold_prefix_len, replay_lease)
         };
         if reasoning
             .as_ref()
@@ -1280,20 +1302,6 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             .map(super::compaction::model_context_budget)
             .transpose()?
             .flatten();
-        let checkpoint_root = database_path
-            .parent()
-            .ok_or_else(|| {
-                ConversationError::CorruptRow("database path has no parent".to_string())
-            })?
-            .join("checkpoints");
-        if checkpoint_root.as_os_str().is_empty() {
-            return Err(ConversationError::CorruptRow(
-                "database path has no parent".to_string(),
-            ));
-        }
-        if run_mode == ThreadMode::Execute {
-            fs::create_dir_all(&checkpoint_root).map_err(runtime_store_error)?;
-        }
         let exact_rules = if let Some(authority) = &config.delegated_authority {
             authority.exact_rules.clone()
         } else if thread.project_id.is_empty() {

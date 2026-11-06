@@ -283,14 +283,70 @@ pub fn recovery_projection(
     )))
 }
 
-pub fn redact_payloads<F>(conn: &Connection, child: &str, mut redact: F) -> rusqlite::Result<bool>
+#[derive(PartialEq, Eq)]
+struct PayloadRows {
+    checkpoints: Vec<(String, String)>,
+    recoveries: Vec<(String, String)>,
+}
+
+impl PayloadRows {
+    fn load(conn: &Connection, child: &str) -> rusqlite::Result<Self> {
+        let checkpoints = conn
+            .prepare("SELECT id,payload FROM delegated_stage_checkpoints WHERE child_thread_id=?1 ORDER BY id")?
+            .query_map([child], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let recoveries = conn
+            .prepare("SELECT child_message_id,reconciliations FROM delegated_execution_recovery WHERE child_thread_id=?1 ORDER BY child_message_id")?
+            .query_map([child], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(Self {
+            checkpoints,
+            recoveries,
+        })
+    }
+}
+
+pub struct PreparedPayloadRedaction {
+    child: String,
+    source: PayloadRows,
+    updates: PayloadRows,
+}
+
+impl PreparedPayloadRedaction {
+    pub fn install(&self, transaction: &mut crate::Transaction<'_>) -> rusqlite::Result<bool> {
+        if PayloadRows::load(transaction, &self.child)? != self.source {
+            return Err(invalid());
+        }
+        let savepoint = transaction.savepoint()?;
+        for (id, projected) in &self.updates.checkpoints {
+            if savepoint.execute(
+                "UPDATE delegated_stage_checkpoints SET payload=?1 WHERE id=?2 AND child_thread_id=?3",
+                params![projected, id, self.child],
+            )? != 1 {
+                return Err(invalid());
+            }
+        }
+        for (id, projected) in &self.updates.recoveries {
+            if savepoint.execute(
+                "UPDATE delegated_execution_recovery SET reconciliations=?1 WHERE child_message_id=?2 AND child_thread_id=?3",
+                params![projected, id, self.child],
+            )? != 1 {
+                return Err(invalid());
+            }
+        }
+        savepoint.commit()?;
+        Ok(!self.updates.checkpoints.is_empty() || !self.updates.recoveries.is_empty())
+    }
+}
+
+pub fn prepare_payload_redaction<F>(
+    conn: &Connection,
+    child: &str,
+    mut redact: F,
+) -> rusqlite::Result<PreparedPayloadRedaction>
 where
     F: FnMut(&str) -> String,
 {
-    let _permit = crate::write_coordination::acquire(
-        conn,
-        crate::write_coordination::WriteCategory::Delegation,
-    )?;
     fn visit<F: FnMut(&str) -> String>(value: &mut Value, redact: &mut F) {
         match value {
             Value::String(text) => *text = redact(text),
@@ -307,34 +363,31 @@ where
             _ => {}
         }
     }
-    let rows = conn
-        .prepare("SELECT id,payload FROM delegated_stage_checkpoints WHERE child_thread_id=?1")?
-        .query_map([child], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut changed = false;
-    for (id, raw) in rows {
-        let mut value: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
-        visit(&mut value, &mut redact);
-        let projected = value.to_string();
-        if projected != raw {
-            conn.execute(
-                "UPDATE delegated_stage_checkpoints SET payload=?1 WHERE id=?2",
-                params![projected, id],
-            )?;
-            changed = true;
+    fn project<F: FnMut(&str) -> String>(
+        rows: &[(String, String)],
+        redact: &mut F,
+    ) -> rusqlite::Result<Vec<(String, String)>> {
+        let mut updates = Vec::new();
+        for (id, raw) in rows {
+            let mut value: Value = serde_json::from_str(raw).map_err(|_| invalid())?;
+            visit(&mut value, redact);
+            let projected = value.to_string();
+            if projected != *raw {
+                updates.push((id.clone(), projected));
+            }
         }
+        Ok(updates)
     }
-    let rows = conn.prepare("SELECT child_message_id,reconciliations FROM delegated_execution_recovery WHERE child_thread_id=?1")?.query_map([child],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    for (id, raw) in rows {
-        let mut value: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
-        visit(&mut value, &mut redact);
-        let projected = value.to_string();
-        if projected != raw {
-            conn.execute("UPDATE delegated_execution_recovery SET reconciliations=?1 WHERE child_message_id=?2",params![projected,id])?;
-            changed = true;
-        }
-    }
-    Ok(changed)
+    let snapshot = conn.unchecked_transaction()?;
+    let source = PayloadRows::load(&snapshot, child)?;
+    snapshot.commit()?;
+    let updates = PayloadRows {
+        checkpoints: project(&source.checkpoints, &mut redact)?,
+        recoveries: project(&source.recoveries, &mut redact)?,
+    };
+    Ok(PreparedPayloadRedaction {
+        child: child.to_owned(),
+        source,
+        updates,
+    })
 }
