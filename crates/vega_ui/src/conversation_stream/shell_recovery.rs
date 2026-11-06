@@ -35,7 +35,7 @@ pub(crate) struct ShellRecoveryUi {
     projection: Option<ShellRecoveryProjection>,
     confirmation: Option<ShellRecoveryConfirmation>,
     error: Option<ShellRecoveryError>,
-    refresh: Option<Task<()>>,
+    refresh: Option<gpui_kit::Task<()>>,
     review_focus: FocusHandle,
     safe_focus: FocusHandle,
 }

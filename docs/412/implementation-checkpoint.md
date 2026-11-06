@@ -14,7 +14,8 @@
 - 第二轮 head `d2fcd6e98e22b1fc4e090e33b7713a1b52522a56` 的 [Actions run 42184044882](https://github.com/puzige/vega/actions/runs/42184044882) 仍在编译/Clippy 阶段失败：Nextest job `127780047120` 的应用退出调用缺少 `shutdown_shell_sessions` 导出与实现；Clippy job `127780046832` 的 `collapsible_if`、`SessionInput` 可见性。首轮导入/依赖错误未重现；仍无测试执行计数。已补应用级弱 owner 登记、先冻结准入后有界收束及导出，修正 lint，待新轮验证。
 - 第三轮 head `52cc03af4e8397ec42cca6d67b755d755e93f052` 的 [Actions run 42186233940](https://github.com/puzige/vega/actions/runs/42186233940) 失败：Clippy job `127787128780` 为存储恢复函数多余借用；Nextest job `127787128416` 在编译阶段报告投影 fixture 缺 description 与四处 API 入参错误。未进入测试发现/执行，计数未取得。按真实 API 修接线、去掉多余借用，未改断言。另补清理重试 future 被取消时归还 tracker/child/temp/reader 的 guard 与开发回归；静态检查通过，行为待下一轮 Actions。
 - 第四轮 head `511909d16f55c42b09c5723ad50c80359a8f4b51` 的 [Actions run 42188897854](https://github.com/puzige/vega/actions/runs/42188897854)：Nextest job `127795753656`、Clippy job `127795754229` 均因活动 owner 查询对 String 错用 as_deref 编译失败，测试发现/执行计数未取得。已按真实字段修正，不修改断言。本轮增量另修活 child/reader/资源未收束时继续保留执行槽，以及按 operation 身份同步/解除持久化内存隔离，补相应容量与独立 blocker 回归；待新轮 Actions。
-- 实现独立审查未取得；旧文档独审不代表实现通过。最终交付前必须保留可恢复开发测试证据、清理 Rust 测试及独占支持，再取得最终 head 的 required CI。
+- 第五轮 head `6f601401f23a24e2fa8e2fbd54e34cd1dcb72477` 的 [Actions run 42190284466](https://github.com/puzige/vega/actions/runs/42190284466) 仍未执行行为测试：Nextest 编译因 UI 刷新字段缺 GPUI Task 类型，Clippy 报活动 owner 返回类型复杂。已改完整类型和命名别名，不添加 lint 豁免、不改断言，待新轮 Actions。
+- 对第五轮精确版本的独审代理在无产物/无结论时中断并释放，恢复请求被工具以代理状态拒绝；不计作独审通过。实现独立审查未取得；旧文档独审不代表实现通过。最终交付前必须保留可恢复开发测试证据、清理 Rust 测试及独占支持，再取得最终 head 的 required CI。
 - 当前未合并、未发布应用、未修改用户运行时数据库；本卡保持 In progress。
 
 ## 历史状态（已被上文授权与合同取代）

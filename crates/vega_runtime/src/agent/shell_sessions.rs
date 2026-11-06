@@ -403,10 +403,9 @@ pub struct RuntimeActiveShell {
     pub state: String,
 }
 
-fn active_shell_owners(
-    thread: &str,
-    workspace: &Path,
-) -> Result<Vec<(Arc<ShellRun>, Arc<Operation>)>, VegaError> {
+type ActiveShellOwner = (Arc<ShellRun>, Arc<Operation>);
+
+fn active_shell_owners(thread: &str, workspace: &Path) -> Result<Vec<ActiveShellOwner>, VegaError> {
     let workspace = workspace_identity(workspace)?;
     let runs: Vec<_> = application_shell_runs()
         .lock()
