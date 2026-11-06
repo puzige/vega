@@ -55,6 +55,21 @@ async fn readiness_recovers_only_after_current_configuration_is_repaired() {
         RunFailureKind::from_runtime(&error.into()),
         RunFailureKind::ConfigurationRepairRequired
     );
+    for invalid in [
+        "schema_version: 1\nmcp_servers: invalid\n",
+        "schema_version: 1\nmcp_servers:\n  - id: invalid\n    display_name: synthetic\n    enabled: false\n    transport:\n      type: local\n      executable: /synthetic\n      args: []\n      environment: []\n",
+    ] {
+        std::fs::write(&path, invalid).unwrap();
+        let error = match fixture.service.ready_for_run().await {
+            Err(McpSettingsError::CredentialRead(error)) => error,
+            _ => panic!("invalid declaration accepted or misclassified"),
+        };
+        assert_eq!(error.reason, CredentialReadReason::ConfigurationParse);
+        assert_eq!(
+            RunFailureKind::from_runtime(&error.into()),
+            RunFailureKind::ConfigurationRepairRequired
+        );
+    }
     std::fs::write(&path, "schema_version: 1\nui:\n  theme: light\n").unwrap();
     assert!(
         fixture
@@ -178,10 +193,44 @@ fn classified_failures_roundtrip_without_content_and_project_consistently() {
         insert(store.conn(), &event).unwrap();
         let rows = read_by_run(store.conn(), &thread, &run).unwrap();
         assert_eq!(rows[1].event.metrics, event.metrics);
+        let restored = if stage == ConfigurationFailureStage::Poisoned {
+            assert!(!vega_store::yaml_config::edit_lock_poisoned());
+            RunFailureKind::CredentialCheckUnavailable
+        } else {
+            expected
+        };
         assert_eq!(
             RunFailureKind::from_diagnostic(&rows[1].event.metrics),
-            expected
+            restored
         );
+        if stage == ConfigurationFailureStage::Poisoned {
+            use vega_store::messages::{self, MessageRow};
+            let user = ulid::Ulid::generate().to_string();
+            for (id, seq, role, status) in
+                [(&user, 1, "user", "done"), (&run, 2, "assistant", "failed")]
+            {
+                messages::insert(
+                    store.conn(),
+                    &MessageRow {
+                        id: id.clone(),
+                        thread_id: thread.clone(),
+                        seq,
+                        role: role.into(),
+                        kind: "text".into(),
+                        content: "synthetic".into(),
+                        status: status.into(),
+                        created_at: 1,
+                        plan_status: None,
+                        plan_review_note: None,
+                        plan_reviewed_at: None,
+                    },
+                )
+                .unwrap();
+            }
+            store.conn().execute("INSERT INTO credential_continuations (id, thread_id, user_message_id, source_version, source_fingerprint, raw_user_fingerprint, state, reason, created_at) VALUES (?1, ?2, ?3, 1, 'synthetic', 'synthetic', 'ready', 'unavailable', 1)", [&run, &thread, &user]).unwrap();
+            let page = crate::history::latest_history_page(&store, &thread, 20).unwrap();
+            assert!(page.entries.iter().any(|entry| matches!(entry, crate::history::HistoryEntry::CredentialContinuation { message_id, failure: RunFailureKind::CredentialCheckUnavailable, .. } if message_id == &run)));
+        }
         let payload = export_run(store.conn(), &thread, &run).unwrap();
         assert!(payload.contains(error.reason.as_str()));
         assert!(!payload.contains(fixture.root.to_str().unwrap()));

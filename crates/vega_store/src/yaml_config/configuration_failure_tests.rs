@@ -120,6 +120,7 @@ fn panic_while_holding_edit_lock_stays_fail_closed() {
     let fixture = Fixture::new();
     let path = fixture.path();
     let panic_path = path.clone();
+    assert!(!edit_lock_poisoned());
     assert!(
         std::thread::spawn(move || {
             let _edit = begin(&panic_path).unwrap();
@@ -129,6 +130,7 @@ fn panic_while_holding_edit_lock_stays_fail_closed() {
         .is_err()
     );
     for _ in 0..2 {
+        assert!(edit_lock_poisoned());
         let error = rejected(&path);
         assert_eq!(
             failure(&error).unwrap().stage,
@@ -138,4 +140,81 @@ fn panic_while_holding_edit_lock_stays_fail_closed() {
         assert!(!error.to_string().contains(path.to_str().unwrap()));
     }
     assert_eq!(std::fs::read(&path).unwrap(), b"schema_version: 1\n");
+}
+
+#[test]
+fn diagnostic_upgrade_preserves_old_rows_and_rejects_unknown_reasons() {
+    let fixture = Fixture::new();
+    let store = crate::Store::open(fixture.0.join("migration.db")).unwrap();
+    store
+        .conn()
+        .pragma_update(None, "foreign_keys", false)
+        .unwrap();
+    for sql in &crate::MIGRATIONS[..58] {
+        store.conn().execute_batch(sql).unwrap();
+    }
+    store
+        .conn()
+        .pragma_update(None, "foreign_keys", true)
+        .unwrap();
+    let transaction = store.conn().unchecked_transaction().unwrap();
+    crate::permission_contracts::initialize(&transaction).unwrap();
+    transaction.commit().unwrap();
+    store
+        .conn()
+        .pragma_update(None, "user_version", 58)
+        .unwrap();
+    store.conn().execute("INSERT INTO threads (id, project_id, title, model, created_at, updated_at) VALUES ('synthetic', NULL, 'synthetic', 'synthetic', 1, 1)", []).unwrap();
+    store.conn().execute("INSERT INTO run_diagnostic_events (thread_id, run_id, attempt_id, phase, state, failure_code, occurred_at, duration_ms, failure_kind, credential_stage, credential_reason) VALUES ('synthetic', 'synthetic', 'synthetic', 'run', 'failed', 'unknown_safe_failure', 1, 1, 'credential_check', 'mcp', 'configuration')", []).unwrap();
+    let before: (i64, String) = store
+        .conn()
+        .query_row(
+            "SELECT id, credential_reason FROM run_diagnostic_events",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    store.migrate().unwrap();
+    store.migrate().unwrap();
+    let after: (i64, String) = store
+        .conn()
+        .query_row(
+            "SELECT id, credential_reason FROM run_diagnostic_events",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(before, after);
+    assert_eq!(
+        store
+            .conn()
+            .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
+    assert!(
+        store
+            .conn()
+            .execute(
+                "UPDATE run_diagnostic_events SET credential_reason = 'unknown-secret-content'",
+                []
+            )
+            .is_err()
+    );
+    store
+        .conn()
+        .execute(
+            "UPDATE run_diagnostic_events SET credential_reason = 'configuration_poisoned'",
+            [],
+        )
+        .unwrap();
+    assert!(
+        store
+            .conn()
+            .execute(
+                "UPDATE run_diagnostic_events SET credential_stage = NULL",
+                []
+            )
+            .is_err()
+    );
 }
