@@ -329,6 +329,7 @@ fn followup_and_resume_project_users_images_completed_stage_and_reconciliation()
         )
         .unwrap();
         let mut current = old.clone();
+        current.spawn_call_id = "followup".into();
         current.child_message_id = "partial".into();
         current.state = "interrupted".into();
         current.task = "instruction".into();
@@ -408,8 +409,8 @@ fn final_credential_revalidation_rolls_back_installed_payloads_and_run() {
         let root = fixture.root.join("config");
         let secret = "synthetic-development-credential-value-12345";
         vega_store::keystore::set_key(&root, "provider", secret).unwrap();
-        fixture.store.conn().execute("INSERT INTO delegated_stage_checkpoints(id,child_thread_id,child_message_id,payload,authority,created_at) VALUES('stage',?1,'previous',?2,'authority',1)", rusqlite::params![thread, format!("[\"{secret}\"]")]).unwrap();
-        fixture.store.conn().execute("INSERT INTO delegated_execution_recovery(child_thread_id,child_message_id,release_state,authority,reconciliations) VALUES(?1,'previous','released','authority',?2)", rusqlite::params![thread, format!("[\"{secret}\"]")]).unwrap();
+        fixture.store.conn().execute("INSERT INTO delegated_stage_checkpoints(id,child_thread_id,child_message_id,payload,authority,created_at) VALUES('stage',?1,'previous',?2,'authority',1)", [thread.as_str(), &format!("[\"{secret}\"]")]).unwrap();
+        fixture.store.conn().execute("INSERT INTO delegated_execution_recovery(child_thread_id,child_message_id,release_state,authority,reconciliations) VALUES(?1,'previous','released','authority',?2)", [thread.as_str(), &format!("[\"{secret}\"]")]).unwrap();
         fixture.store.conn().execute_batch("CREATE TABLE install_observation(payload TEXT NOT NULL,reconciliations TEXT NOT NULL);").unwrap();
         let invalidation = if invalidate {
             "UPDATE credential_privacy_epoch SET digest='invalidated';"
