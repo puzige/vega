@@ -62,6 +62,9 @@ pub use ordinary::{
     OrdinaryHistoryObservation, OrdinaryRun, finish_ordinary_worker, observe_ordinary_history,
 };
 pub use scope_permission::{CommandScopeLease, PendingScopePermission};
+pub(crate) use shell_operations::{
+    valid_control_input as valid_shell_control_input, valid_receipt as valid_shell_receipt,
+};
 mod stage_activity;
 mod terminal_history;
 pub(crate) use terminal_history::recover_terminal_tools;

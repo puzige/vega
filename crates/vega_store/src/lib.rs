@@ -30,8 +30,8 @@ pub mod projects;
 pub mod reasoning;
 pub mod recovery;
 pub mod run_diagnostics;
-pub mod sidebar_organization;
 pub mod shell_operations;
+pub mod sidebar_organization;
 pub mod skills;
 pub mod submission_diagnostics;
 

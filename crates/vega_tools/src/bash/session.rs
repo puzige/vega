@@ -19,14 +19,49 @@ const RING_BYTES: usize = 1024 * 1024;
 const SNAPSHOT_BYTES: usize = 16 * 1024;
 const MAX_PENDING_BYTES: usize = 64 * 1024;
 
+#[cfg(test)]
+#[path = "session_tests.rs"]
+mod tests;
+
 type Redact = Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
 type SafeEnd = Arc<dyn Fn(&str) -> Result<usize, String> + Send + Sync>;
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BashSessionResource {
+    pub path: String,
+    pub device: u64,
+    pub inode: u64,
+}
+
+impl BashSessionResource {
+    pub fn recover(&self) -> Result<(), BashError> {
+        TempRoot::recover(self)
+    }
+
+    pub fn is_closed(&self) -> Result<bool, BashError> {
+        match std::fs::symlink_metadata(&self.path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+            Err(_) => Err(BashError::new(BashErrorCode::CleanupFailed)),
+            Ok(_) => Ok(false),
+        }
+    }
+}
+
+pub type BashSessionResourceHook = Arc<
+    dyn Fn(
+            BashSessionResource,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), BashError>> + Send>>
+        + Send
+        + Sync,
+>;
 
 #[derive(Clone)]
 pub struct BashSessionRedactor {
     redact: Redact,
     safe_end: SafeEnd,
     max_pending_bytes: usize,
+    resource_hook: Option<BashSessionResourceHook>,
 }
 
 impl BashSessionRedactor {
@@ -42,14 +77,21 @@ impl BashSessionRedactor {
             redact,
             safe_end,
             max_pending_bytes,
+            resource_hook: None,
         })
     }
 
-    fn buffered(redact: Redact) -> Self {
+    pub fn with_resource_hook(mut self, hook: BashSessionResourceHook) -> Self {
+        self.resource_hook = Some(hook);
+        self
+    }
+
+    pub fn buffered(redact: Redact) -> Self {
         Self {
             redact,
             safe_end: Arc::new(|_| Ok(0)),
             max_pending_bytes: MAX_PENDING_BYTES,
+            resource_hook: None,
         }
     }
 }
@@ -75,6 +117,13 @@ pub struct BashSessionSnapshot {
     pub duration_ms: u64,
     pub error: Option<String>,
     pub cleanup_safe: bool,
+    pub command_result: Option<String>,
+    pub exit_signal: Option<i32>,
+    pub output_incomplete: bool,
+    pub resources_closed: bool,
+    pub process_resolved: bool,
+    pub cleanup_reasons: Vec<String>,
+    pub cleanup_remaining_ms: u64,
 }
 
 impl fmt::Debug for BashSessionSnapshot {
@@ -135,9 +184,43 @@ struct SessionData {
     exit_code: Option<i32>,
     error: Option<BashError>,
     cleanup_safe: bool,
+    command_result: Option<String>,
+    exit_signal: Option<i32>,
+    output_incomplete: bool,
+    resources_closed: bool,
+    process_resolved: bool,
+    cleanup_reasons: Vec<String>,
+    cleanup_deadline: Option<tokio::time::Instant>,
     output: OutputRing,
     _retained_temp: Option<TempRoot>,
     _retained_child: Option<Child>,
+    retained_reader: Option<tokio::task::JoinHandle<Result<CollectedBashOutput, BashError>>>,
+    retained_tracker: Option<super::session_process::ProcessTracker>,
+    recovery_busy: bool,
+}
+
+struct CleanupRetryResources {
+    inner: Arc<SessionInner>,
+    armed: bool,
+    tracker: Option<super::session_process::ProcessTracker>,
+    child: Option<Child>,
+    temp: Option<TempRoot>,
+    reader: Option<tokio::task::JoinHandle<Result<CollectedBashOutput, BashError>>>,
+}
+
+impl Drop for CleanupRetryResources {
+    fn drop(&mut self) {
+        let mut data = self.inner.data();
+        if self.armed {
+            data.retained_tracker = self.tracker.take();
+            data._retained_child = self.child.take();
+            data._retained_temp = self.temp.take();
+            data.retained_reader = self.reader.take();
+            data.recovery_busy = false;
+            data.resources_closed = false;
+            data.cleanup_safe = false;
+        }
+    }
 }
 
 impl SessionInner {
@@ -163,11 +246,29 @@ impl SessionInner {
             },
             error: data.error.map(|error| error.code().as_str().into()),
             cleanup_safe: data.terminal && data.cleanup_safe,
+            command_result: data.command_result.clone(),
+            exit_signal: data.exit_signal,
+            output_incomplete: data.output_incomplete,
+            resources_closed: data.resources_closed,
+            process_resolved: data.process_resolved,
+            cleanup_reasons: data.cleanup_reasons.clone(),
+            cleanup_remaining_ms: data.cleanup_deadline.map_or(0, |deadline| {
+                u64::try_from(
+                    deadline
+                        .saturating_duration_since(tokio::time::Instant::now())
+                        .as_millis(),
+                )
+                .unwrap_or(0)
+            }),
         })
     }
 }
 
 impl BashSession {
+    pub fn snapshot(&self, cursor: Option<u64>) -> Result<BashSessionSnapshot, BashError> {
+        self.owner.inner.snapshot(cursor)
+    }
+
     pub async fn observe(
         &self,
         cursor: Option<u64>,
@@ -207,8 +308,104 @@ impl BashSession {
                 duration_ms: 0,
                 error: Some(BashErrorCode::OutputFailed.as_str().into()),
                 cleanup_safe: false,
+                command_result: None,
+                exit_signal: None,
+                output_incomplete: true,
+                resources_closed: false,
+                process_resolved: false,
+                cleanup_reasons: vec!["snapshot_unavailable".into()],
+                cleanup_remaining_ms: 0,
             },
         }
+    }
+
+    pub async fn retry_cleanup(&self) -> Result<BashSessionSnapshot, BashError> {
+        let mut resources = {
+            let mut data = self.owner.inner.data();
+            if !data.terminal || data.recovery_busy {
+                return Err(BashError::new(BashErrorCode::ProcessControlFailed));
+            }
+            data.recovery_busy = true;
+            CleanupRetryResources {
+                inner: self.owner.inner.clone(),
+                armed: true,
+                tracker: data.retained_tracker.take(),
+                child: data._retained_child.take(),
+                temp: data._retained_temp.take(),
+                reader: data.retained_reader.take(),
+            }
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        if let Some(tracker) = &mut resources.tracker {
+            tracker.signal(libc::SIGTERM);
+            let grace = std::cmp::min(
+                deadline,
+                tokio::time::Instant::now() + super::TERMINATION_GRACE,
+            );
+            while !tracker.settled() && tokio::time::Instant::now() < grace {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            if !tracker.settled() {
+                tracker.signal(libc::SIGKILL);
+            }
+        }
+        let status = if let Some(child) = &mut resources.child {
+            tokio::time::timeout_at(deadline, child.wait())
+                .await
+                .ok()
+                .and_then(Result::ok)
+        } else {
+            None
+        };
+        let reader_closed = if let Some(reader) = &mut resources.reader {
+            tokio::time::timeout_at(deadline, reader).await.is_ok()
+        } else {
+            true
+        };
+        let resolved = resources
+            .tracker
+            .as_mut()
+            .is_none_or(|tracker| tracker.settled());
+        let temp_closed = if resolved && reader_closed {
+            resources
+                .temp
+                .as_ref()
+                .is_none_or(|temp| temp.cleanup().is_ok())
+        } else {
+            false
+        };
+        let mut data = self.owner.inner.data();
+        data.recovery_busy = false;
+        if let Some(status) = status {
+            use std::os::unix::process::ExitStatusExt;
+            data.exit_code = status.code();
+            data.exit_signal = status.signal();
+        }
+        data.process_resolved |= resolved && (resources.child.is_none() || status.is_some());
+        if !data.process_resolved {
+            data.retained_tracker = resources.tracker.take();
+            data._retained_child = resources.child.take();
+        }
+        if !temp_closed {
+            data._retained_temp = resources.temp.take();
+        }
+        if !reader_closed {
+            data.retained_reader = resources.reader.take();
+        }
+        data.resources_closed = temp_closed
+            && reader_closed
+            && data._retained_child.is_none()
+            && !data
+                .cleanup_reasons
+                .iter()
+                .any(|reason| reason == "credential_cleanup_failed");
+        if data.process_resolved && data.resources_closed && !data.output_incomplete {
+            data.cleanup_safe = true;
+        }
+        data.cleanup_deadline = Some(deadline);
+        resources.armed = false;
+        drop(data);
+        self.owner.inner.snapshot(None)
     }
 
     pub fn is_terminal(&self) -> bool {
@@ -235,11 +432,62 @@ impl SessionWriter {
     }
 
     pub(super) fn exited(&self, status: ExitStatus) {
-        self.inner.data().exit_code = Some(status.code().unwrap_or(-1));
+        use std::os::unix::process::ExitStatusExt;
+        let mut data = self.inner.data();
+        data.exit_code = status.code();
+        data.exit_signal = status.signal();
+    }
+
+    pub(super) fn begin_cleanup(&self, result: &str) -> tokio::time::Instant {
+        let mut data = self.inner.data();
+        let deadline = *data
+            .cleanup_deadline
+            .get_or_insert_with(|| tokio::time::Instant::now() + Duration::from_secs(5));
+        data.command_result.get_or_insert_with(|| result.into());
+        data.state = if result == "exited" {
+            "finishing"
+        } else {
+            "stopping"
+        };
+        deadline
+    }
+
+    pub(super) fn process_cleanup(&self, resolved: bool, reasons: Vec<String>) {
+        let mut data = self.inner.data();
+        data.process_resolved = resolved;
+        data.cleanup_reasons.extend(reasons);
+    }
+
+    pub(super) fn reader_closed(&self, incomplete: bool) {
+        self.inner.data().output_incomplete |= incomplete;
+    }
+
+    pub(super) fn cleanup_deadline(&self) -> tokio::time::Instant {
+        let mut data = self.inner.data();
+        *data
+            .cleanup_deadline
+            .get_or_insert_with(|| tokio::time::Instant::now() + Duration::from_secs(5))
+    }
+
+    pub(super) fn resource_failure(&self, reason: &str) {
+        let mut data = self.inner.data();
+        data.resources_closed = false;
+        data.cleanup_reasons.push(reason.into());
     }
 
     pub(super) fn retain_child(&self, child: Child) {
         self.inner.data()._retained_child = Some(child);
+    }
+
+    pub(super) fn retain_reader(
+        &self,
+        reader: tokio::task::JoinHandle<Result<CollectedBashOutput, BashError>>,
+    ) {
+        self.inner.data().retained_reader = Some(reader);
+    }
+
+    pub(super) fn retain_tracker(&self, tracker: super::session_process::ProcessTracker) {
+        self.inner.data().retained_tracker = Some(tracker);
     }
 
     fn append(&self, text: &str) -> Result<(), BashError> {
@@ -256,6 +504,15 @@ impl SessionWriter {
             return;
         }
         data.cleanup_safe = attempt.cleanup_safe;
+        if retained_temp.is_none()
+            && !data
+                .cleanup_reasons
+                .iter()
+                .any(|reason| reason == "credential_cleanup_failed")
+        {
+            data.resources_closed =
+                data._retained_child.is_none() && data.retained_reader.is_none();
+        }
         data._retained_temp = retained_temp;
         data.duration_ms = elapsed_ms(data.started_at);
         data.error = attempt.result.as_ref().err().copied();
@@ -264,7 +521,9 @@ impl SessionWriter {
         } else {
             match attempt.result {
                 Ok(output) => {
-                    data.exit_code = Some(output.exit_code);
+                    if data.exit_signal.is_none() {
+                        data.exit_code = Some(output.exit_code);
+                    }
                     if output.exit_code == 0 {
                         "succeeded"
                     } else {
@@ -367,9 +626,19 @@ impl Tools {
                 exit_code: None,
                 error: None,
                 cleanup_safe: false,
+                command_result: None,
+                exit_signal: None,
+                output_incomplete: false,
+                resources_closed: false,
+                process_resolved: false,
+                cleanup_reasons: Vec::new(),
+                cleanup_deadline: None,
                 output: OutputRing::new(),
                 _retained_temp: None,
                 _retained_child: None,
+                retained_reader: None,
+                retained_tracker: None,
+                recovery_busy: false,
             }),
             cancel: cancel.clone(),
             launched: CancellationToken::new(),
@@ -393,6 +662,19 @@ impl Tools {
                     return;
                 }
             };
+            if let Some(hook) = &writer.inner.redactor.resource_hook
+                && hook(temp_root.recovery_identity()).await.is_err()
+            {
+                let closed = temp_root.cleanup().is_ok();
+                writer.finish(
+                    BashAttempt {
+                        result: Err(BashError::new(BashErrorCode::CleanupFailed)),
+                        cleanup_safe: closed,
+                    },
+                    (!closed).then_some(temp_root),
+                );
+                return;
+            }
             let mut attempt = tools
                 .execute_bash_with_temp(
                     prepared,
@@ -406,10 +688,15 @@ impl Tools {
                     },
                 )
                 .await;
-            if attempt.cleanup_safe {
+            let resources_settled = {
+                let data = writer.inner.data();
+                data.process_resolved && data.retained_reader.is_none()
+            };
+            if resources_settled || attempt.cleanup_safe {
                 if let Err(error) = temp_root.cleanup() {
                     attempt.result = Err(error);
                     attempt.cleanup_safe = false;
+                    writer.resource_failure("temp_cleanup_failed");
                     writer.finish(attempt, Some(temp_root));
                 } else {
                     writer.finish(attempt, None);

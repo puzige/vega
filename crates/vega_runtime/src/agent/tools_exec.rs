@@ -340,28 +340,43 @@ pub(crate) fn prepare_runtime_call(
     capabilities: &RunCapabilitySnapshot,
     raw_call: RuntimeToolCall,
 ) -> Result<PreparedRuntimeCall, VegaError> {
-    if config.shell_run.as_ref().is_some_and(|owner| owner.active().unwrap_or(true))
-        && !matches!(raw_call.name.as_str(), "read" | "Read" | "glob" | "grep" | "bash_wait" | "bash_cancel")
+    if config
+        .shell_run
+        .as_ref()
+        .is_some_and(|owner| owner.active().unwrap_or(true))
+        && !matches!(
+            raw_call.name.as_str(),
+            "read" | "Read" | "glob" | "grep" | "bash_wait" | "bash_cancel"
+        )
     {
         return Ok(PreparedRuntimeCall::ShellBlocked {
-            call: RuntimeToolCall { input_json: "{}".into(), ..raw_call },
+            call: RuntimeToolCall {
+                input_json: "{}".into(),
+                ..raw_call
+            },
         });
     }
     if matches!(raw_call.name.as_str(), "bash_wait" | "bash_cancel") {
         let cancel = raw_call.name == "bash_cancel";
-        return Ok(match shell_sessions::SessionInput::parse(&raw_call.input_json, cancel) {
-            Some(input) => PreparedRuntimeCall::ShellControl {
-                call: RuntimeToolCall {
-                    input_json: serde_json::to_string(&input).map_err(|_| safe_prepare_error("bash_wait"))?,
-                    ..raw_call
+        return Ok(
+            match shell_sessions::SessionInput::parse(&raw_call.input_json, cancel) {
+                Some(input) => PreparedRuntimeCall::ShellControl {
+                    call: RuntimeToolCall {
+                        input_json: serde_json::to_string(&input)
+                            .map_err(|_| safe_prepare_error("bash_wait"))?,
+                        ..raw_call
+                    },
+                    input,
+                    cancel,
                 },
-                input,
-                cancel,
+                None => PreparedRuntimeCall::ShellRejected {
+                    call: RuntimeToolCall {
+                        input_json: "{}".into(),
+                        ..raw_call
+                    },
+                },
             },
-            None => PreparedRuntimeCall::ShellRejected {
-                call: RuntimeToolCall { input_json: "{}".into(), ..raw_call },
-            },
-        });
+        );
     }
     if raw_call.name == USER_QUESTION_TOOL {
         let parsed = UserQuestionInput::from_json(&raw_call.input_json).and_then(|input| {
@@ -923,23 +938,53 @@ pub(crate) async fn authorize_call(
     hook: &dyn RuntimePermissionHook,
     cancel: &CancellationToken,
 ) -> Result<Authorization, VegaError> {
-    if let PreparedRuntimeCall::Bash { prepared: bash, policy, .. } = prepared
+    if let PreparedRuntimeCall::Bash {
+        prepared: bash,
+        policy,
+        ..
+    } = prepared
         && bash.wait_ms().is_some()
     {
-        let validation = config.shell_run.as_ref()
+        let validation = config
+            .shell_run
+            .as_ref()
             .ok_or_else(safe_permission_error)
             .and_then(|owner| owner.validate_launch(bash, *policy));
         if let Err(error) = validation {
-            return Ok(Authorization::Terminal(terminal_result(prepared.call(), format!("Tool error: {error}"), RuntimeToolStatus::Rejected, Some(validation_audit()))));
+            return Ok(Authorization::Terminal(terminal_result(
+                prepared.call(),
+                format!("Tool error: {error}"),
+                RuntimeToolStatus::Rejected,
+                Some(validation_audit()),
+            )));
         }
     }
     let _admission = match shell_sessions::admit_prepared(prepared, config) {
         Ok(guard) => guard,
-        Err(error) => return Ok(Authorization::Terminal(terminal_result(prepared.call(), format!("Tool error: {error}"), RuntimeToolStatus::Rejected, Some(validation_audit())))),
+        Err(error) => {
+            return Ok(Authorization::Terminal(terminal_result(
+                prepared.call(),
+                format!("Tool error: {error}"),
+                RuntimeToolStatus::Rejected,
+                Some(validation_audit()),
+            )));
+        }
     };
     match prepared {
-        PreparedRuntimeCall::ShellBlocked { call } => Ok(Authorization::Terminal(terminal_result(call, "Tool error: wait or cancel the active shell session before other work".into(), RuntimeToolStatus::Rejected, Some(validation_audit())))),
-        PreparedRuntimeCall::ShellRejected { call } => Ok(Authorization::Terminal(terminal_result(call, "Tool error: invalid shell session input".into(), RuntimeToolStatus::Rejected, Some(validation_audit())))),
+        PreparedRuntimeCall::ShellBlocked { call } => Ok(Authorization::Terminal(terminal_result(
+            call,
+            "Tool error: wait or cancel the active shell session before other work".into(),
+            RuntimeToolStatus::Rejected,
+            Some(validation_audit()),
+        ))),
+        PreparedRuntimeCall::ShellRejected { call } => {
+            Ok(Authorization::Terminal(terminal_result(
+                call,
+                "Tool error: invalid shell session input".into(),
+                RuntimeToolStatus::Rejected,
+                Some(validation_audit()),
+            )))
+        }
         PreparedRuntimeCall::InvalidRead(call) => {
             Ok(Authorization::Terminal(invalid_read_result(call)))
         }
@@ -1665,19 +1710,49 @@ pub(crate) async fn execute_prepared_waiting(
     } else {
         match shell_sessions::admit(&prepared, config, base_tools) {
             Ok(guard) => guard,
-            Err(error) => return (terminal_result(prepared.call(), format!("Tool error: {error}"), RuntimeToolStatus::Rejected, None), false),
+            Err(error) => {
+                return (
+                    terminal_result(
+                        prepared.call(),
+                        format!("Tool error: {error}"),
+                        RuntimeToolStatus::Rejected,
+                        None,
+                    ),
+                    false,
+                );
+            }
         }
     };
     match prepared {
-        PreparedRuntimeCall::ShellControl { call, input, cancel: cancel_session } => {
+        PreparedRuntimeCall::ShellControl {
+            call,
+            input,
+            cancel: cancel_session,
+        } => {
             let output = match config.shell_run.as_ref() {
                 Some(owner) => owner.observe(&input, cancel_session, base_tools).await,
                 None => Err(safe_permission_error()),
             };
             (shell_result(&call, output), false)
         }
-        PreparedRuntimeCall::ShellBlocked { call } => (terminal_result(&call, "Tool error: wait or cancel the active shell session before other work".into(), RuntimeToolStatus::Rejected, Some(validation_audit())), false),
-        PreparedRuntimeCall::ShellRejected { call } => (terminal_result(&call, "Tool error: invalid shell session input".into(), RuntimeToolStatus::Rejected, Some(validation_audit())), false),
+        PreparedRuntimeCall::ShellBlocked { call } => (
+            terminal_result(
+                &call,
+                "Tool error: wait or cancel the active shell session before other work".into(),
+                RuntimeToolStatus::Rejected,
+                Some(validation_audit()),
+            ),
+            false,
+        ),
+        PreparedRuntimeCall::ShellRejected { call } => (
+            terminal_result(
+                &call,
+                "Tool error: invalid shell session input".into(),
+                RuntimeToolStatus::Rejected,
+                Some(validation_audit()),
+            ),
+            false,
+        ),
         PreparedRuntimeCall::InvalidUserQuestion { call, code } => (
             terminal_result(
                 &call,
@@ -2091,7 +2166,11 @@ pub(crate) async fn execute_prepared_waiting(
         } => {
             if prepared.wait_ms().is_some() {
                 let output = match config.shell_run.as_ref() {
-                    Some(owner) => owner.launch(&call, tools, prepared, policy, permission_hook, config).await,
+                    Some(owner) => {
+                        owner
+                            .launch(&call, tools, prepared, policy, permission_hook, config)
+                            .await
+                    }
                     None => Err(safe_permission_error()),
                 };
                 return (shell_result(&call, output), false);
@@ -2202,19 +2281,28 @@ fn shell_result(call: &RuntimeToolCall, output: Result<String, VegaError>) -> Ru
             let value = serde_json::from_str::<Value>(&output).ok();
             let state = value.as_ref().and_then(|value| value["state"].as_str());
             let status = match state {
-                Some("failed" | "timed_out" | "outcome_unknown") | None => RuntimeToolStatus::Failed,
+                Some("failed" | "timed_out" | "outcome_unknown") | None => {
+                    RuntimeToolStatus::Failed
+                }
                 Some("cancelled") => RuntimeToolStatus::Cancelled,
                 _ => RuntimeToolStatus::Success,
             };
             let mut result = terminal_result(call, output, status, None);
             if let Some(value) = value {
-                result.exit_code = value["exit_code"].as_i64().and_then(|code| i32::try_from(code).ok());
+                result.exit_code = value["exit_code"]
+                    .as_i64()
+                    .and_then(|code| i32::try_from(code).ok());
                 result.duration_ms = value["duration_ms"].as_u64();
                 result.truncated = value["truncated"].as_bool();
             }
             result
         }
-        Err(error) => terminal_result(call, format!("Tool error: {error}"), RuntimeToolStatus::Failed, None),
+        Err(error) => terminal_result(
+            call,
+            format!("Tool error: {error}"),
+            RuntimeToolStatus::Failed,
+            None,
+        ),
     }
 }
 

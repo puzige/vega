@@ -25,8 +25,12 @@ impl ScopedBashAuthority {
         execution: ScopedBashExecution,
     ) -> Result<BashOutput, BashError> {
         let ScopedBashExecution { cancel, started_at } = execution;
-        let (tools, prepared, scope) = self.authorize(hook, call_id, tools, prepared, policy, cancel.clone()).await?;
-        tools.execute_bash_scoped_with_start(prepared, policy, Some(scope), cancel, started_at).await
+        let (tools, prepared, scope) = self
+            .authorize(hook, call_id, tools, prepared, policy, cancel.clone())
+            .await?;
+        tools
+            .execute_bash_scoped_with_start(prepared, policy, Some(scope), cancel, started_at)
+            .await
     }
 
     pub(super) async fn start_session(
@@ -37,10 +41,14 @@ impl ScopedBashAuthority {
         prepared: PreparedBash,
         policy: BashLaunchPolicy,
         cancel: CancellationToken,
-        redact: Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>,
+        redactor: vega_tools::BashSessionRedactor,
     ) -> Result<vega_tools::BashSession, BashError> {
-        let (tools, prepared, scope) = self.authorize(hook, call_id, tools, prepared, policy, cancel.clone()).await?;
-        tools.start_bash_session(prepared, policy, Some(scope), cancel, redact).await
+        let (tools, prepared, scope) = self
+            .authorize(hook, call_id, tools, prepared, policy, cancel.clone())
+            .await?;
+        tools
+            .start_bash_session_with_redactor(prepared, policy, Some(scope), cancel, redactor)
+            .await
     }
 
     async fn authorize(

@@ -3700,8 +3700,12 @@ where
                 result.reused = true;
                 result.truncated = None;
                 if matches!(call.name.as_str(), "bash" | "bash_wait" | "bash_cancel")
-                    && serde_json::from_str::<Value>(&result.output).is_ok_and(|value| value.get("operation_id").is_some())
-                    && !tool_config.shell_run.as_ref().is_some_and(|owner| owner.live_receipt(&result.output))
+                    && serde_json::from_str::<Value>(&result.output)
+                        .is_ok_and(|value| value.get("operation_id").is_some())
+                    && !tool_config
+                        .shell_run
+                        .as_ref()
+                        .is_some_and(|owner| owner.live_receipt(&result.output))
                 {
                     result.output = "Tool error: historical shell session receipt has no live authority; handle expired".into();
                     result.status = RuntimeToolStatus::Failed;
@@ -3789,9 +3793,15 @@ where
                     false,
                 ));
             }
-            let call_admission = shell_sessions::execution_admission(&prepared, &tool_config, tools);
+            let call_admission =
+                shell_sessions::execution_admission(&prepared, &tool_config, tools);
             let admission_failure = call_admission.as_ref().err().map(|error| {
-                terminal_result(&call, format!("Tool error: {error}"), RuntimeToolStatus::Rejected, Some(validation_audit()))
+                terminal_result(
+                    &call,
+                    format!("Tool error: {error}"),
+                    RuntimeToolStatus::Rejected,
+                    Some(validation_audit()),
+                )
             });
             let _call_admission = call_admission.ok().flatten();
             let cua_authorization = if matches!(&prepared, PreparedRuntimeCall::ComputerUse { .. })

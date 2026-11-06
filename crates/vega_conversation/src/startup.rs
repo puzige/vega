@@ -27,6 +27,53 @@ pub fn prepare_workspace(
     store
         .migrate()
         .map_err(|_| StartupError::StorageUnavailable)?;
+    vega_store::shell_operations::recover_generation(
+        store.conn(),
+        vega_runtime::shell_generation(),
+        0,
+    )
+    .map_err(|_| StartupError::StorageUnavailable)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |value| value.as_millis().min(i64::MAX as u128) as i64);
+    for item in vega_store::shell_operations::list_blockers(store.conn())
+        .map_err(|_| StartupError::StorageUnavailable)?
+    {
+        if item.facts.resources_closed
+            || !item
+                .facts
+                .cleanup_reasons
+                .iter()
+                .any(|reason| reason == "control_continuity_lost")
+        {
+            continue;
+        }
+        let closed = match vega_store::shell_operations::resource(store.conn(), &item.operation_id)
+            .map_err(|_| StartupError::StorageUnavailable)?
+        {
+            Some(identity) => serde_json::from_str::<vega_tools::BashSessionResource>(&identity)
+                .is_ok_and(|resource| resource.recover().is_ok()),
+            None => true,
+        };
+        if closed {
+            let mut facts = item.facts;
+            facts.resources_closed = true;
+            facts.cleanup_state = "unresolved".into();
+            let observation = format!(
+                "reopen-resources:{}:{}",
+                vega_runtime::shell_generation(),
+                item.operation_id
+            );
+            vega_store::shell_operations::append_cleanup_observation(
+                store.conn(),
+                &item.operation_id,
+                &observation,
+                &facts,
+                now,
+            )
+            .map_err(|_| StartupError::StorageUnavailable)?;
+        }
+    }
     crate::permission_reset::recover_pending(&store, config_path)
         .map_err(StartupError::PermissionReset)?;
     let (config, selected_project) = {

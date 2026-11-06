@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::checkpoint::MutationContext;
 use crate::codec::CheckpointIds;
@@ -13,23 +13,69 @@ use crate::fence::discover_git_dir;
 
 /// Conversation-owned read versions. Clones share state; defaults isolate conversations.
 #[derive(Clone, Default)]
-pub struct ReadState(Arc<Mutex<BTreeMap<PathBuf, [u8; 32]>>>);
+pub struct ReadState(Arc<Mutex<ReadObservations>>);
+
+type ReadObservations = BTreeMap<PathBuf, ([u8; 32], u64)>;
+
+fn observation_epochs() -> &'static Mutex<BTreeMap<PathBuf, u64>> {
+    static EPOCHS: OnceLock<Mutex<BTreeMap<PathBuf, u64>>> = OnceLock::new();
+    EPOCHS.get_or_init(Mutex::default)
+}
 
 impl ReadState {
+    pub fn invalidate_workspace(workspace: &Path) -> Result<(), ToolError> {
+        let workspace = workspace.canonicalize()?;
+        let mut epochs = observation_epochs()
+            .lock()
+            .map_err(|_| MutationError::new(crate::MutationErrorCode::FilesystemError))?;
+        let next = epochs
+            .values()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| MutationError::new(crate::MutationErrorCode::FilesystemError))?;
+        epochs.insert(workspace, next);
+        Ok(())
+    }
+
+    pub(crate) fn observation_epoch(path: &Path) -> Result<u64, ToolError> {
+        Ok(observation_epochs()
+            .lock()
+            .map_err(|_| MutationError::new(crate::MutationErrorCode::FilesystemError))?
+            .iter()
+            .filter(|(root, _)| path.starts_with(root))
+            .map(|(_, epoch)| *epoch)
+            .max()
+            .unwrap_or(0))
+    }
+
     pub(crate) fn record(&self, path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
+        self.record_observation(path, bytes, Self::observation_epoch(path)?)
+    }
+
+    pub(crate) fn record_observation(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        epoch: u64,
+    ) -> Result<(), ToolError> {
         self.0
             .lock()
             .map_err(|_| MutationError::new(crate::MutationErrorCode::FilesystemError))?
-            .insert(path.to_path_buf(), read_hash(bytes));
+            .insert(path.to_path_buf(), (read_hash(bytes), epoch));
         Ok(())
     }
     pub(crate) fn validate(&self, path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
+        let epoch = Self::observation_epoch(path)?;
         let state = self
             .0
             .lock()
             .map_err(|_| MutationError::new(crate::MutationErrorCode::FilesystemError))?;
         match state.get(path) {
-            Some(previous) if *previous == read_hash(bytes) => Ok(()),
+            Some((previous, observed)) if *previous == read_hash(bytes) && *observed == epoch => {
+                Ok(())
+            }
             Some(_) => Err(MutationError::new(crate::MutationErrorCode::TargetChanged).into()),
             None => Err(MutationError::new(crate::MutationErrorCode::FileNotRead).into()),
         }

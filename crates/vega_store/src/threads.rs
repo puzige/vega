@@ -344,7 +344,10 @@ pub fn delete_thread(conn: &Connection, id: &str) -> Result<usize, rusqlite::Err
         conn,
         crate::write_coordination::WriteCategory::Threads,
     )?;
-    tx.execute("DELETE FROM shell_operations WHERE thread_id = ?1 AND state != 'outcome_unknown'", [id])?;
+    tx.execute(
+        "DELETE FROM shell_operations WHERE thread_id = ?1 AND state != 'outcome_unknown'",
+        [id],
+    )?;
     tx.execute("DELETE FROM messages WHERE thread_id = ?1", [id])?;
     tx.execute("DELETE FROM tool_calls WHERE thread_id = ?1", [id])?;
     let deleted = tx.execute("DELETE FROM threads WHERE id = ?1", [id])?;

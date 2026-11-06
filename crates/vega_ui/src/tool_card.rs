@@ -545,7 +545,13 @@ impl ToolCard {
                 ReadOnlyToolKind::Glob => ToolActivityCategory::Find,
                 ReadOnlyToolKind::Grep => ToolActivityCategory::Search,
             },
-            (Some(ToolCardInputProjection::Bash { .. }), _) => ToolActivityCategory::Shell,
+            (
+                Some(
+                    ToolCardInputProjection::Bash { .. }
+                    | ToolCardInputProjection::ShellControl { .. },
+                ),
+                _,
+            ) => ToolActivityCategory::Shell,
             (Some(ToolCardInputProjection::Write { .. }), _) => ToolActivityCategory::Write,
             (Some(ToolCardInputProjection::Edit { .. }), _) => ToolActivityCategory::Edit,
             (Some(ToolCardInputProjection::Mcp { .. }), _) => ToolActivityCategory::Mcp,
@@ -573,7 +579,9 @@ impl ToolCard {
                 ReadOnlyToolKind::Glob => ToolActivityCategory::Find,
                 ReadOnlyToolKind::Grep => ToolActivityCategory::Search,
             },
-            Some(ToolCardInputProjection::Bash { .. }) => ToolActivityCategory::Shell,
+            Some(
+                ToolCardInputProjection::Bash { .. } | ToolCardInputProjection::ShellControl { .. },
+            ) => ToolActivityCategory::Shell,
             Some(ToolCardInputProjection::Write { .. }) => ToolActivityCategory::Write,
             Some(ToolCardInputProjection::Edit { .. }) => ToolActivityCategory::Edit,
             Some(ToolCardInputProjection::Mcp { .. }) => ToolActivityCategory::Mcp,
@@ -595,6 +603,14 @@ impl ToolCard {
     }
 
     pub(crate) fn activity_state(&self) -> ToolActivityState {
+        if let Some(state) = self.shell_session_state() {
+            return match state {
+                "running" | "finishing" | "stopping" => ToolActivityState::Active,
+                "succeeded" => ToolActivityState::Success,
+                "cancelled" => ToolActivityState::Cancelled,
+                _ => ToolActivityState::Failed,
+            };
+        }
         if self.status == ToolCallStatus::Cancelled
             && matches!(
                 &self.input,
@@ -703,6 +719,9 @@ impl ToolCard {
     }
 
     pub(crate) fn compact_title(&self) -> String {
+        if self.shell_session_state().is_some() {
+            return self.build_bash_summary();
+        }
         if !self.expanded
             || !self.is_bash()
             || matches!(
@@ -1206,7 +1225,13 @@ impl ToolCard {
                     &[("action", invalid_action(*tool)), ("code", code.as_str())],
                 )
             }
-            (Some(ToolCardInputProjection::Bash { .. }), _) => self.build_bash_summary(),
+            (
+                Some(
+                    ToolCardInputProjection::Bash { .. }
+                    | ToolCardInputProjection::ShellControl { .. },
+                ),
+                _,
+            ) => self.build_bash_summary(),
             (
                 Some(ToolCardInputProjection::ReadOnly {
                     tool,
@@ -1447,10 +1472,35 @@ impl ToolCard {
     }
 
     fn is_bash(&self) -> bool {
-        matches!(self.input, Some(ToolCardInputProjection::Bash { .. }))
+        matches!(
+            self.input,
+            Some(
+                ToolCardInputProjection::Bash { .. } | ToolCardInputProjection::ShellControl { .. }
+            )
+        )
+    }
+
+    fn shell_session_state(&self) -> Option<&str> {
+        match &self.result {
+            Some(ToolCardResultProjection::Bash { session_state, .. }) => session_state.as_deref(),
+            _ => None,
+        }
     }
 
     fn build_bash_summary(&self) -> String {
+        if let Some(state) = self.shell_session_state() {
+            return vega_i18n::t(match state {
+                "running" => "ui.shell_session.running",
+                "finishing" => "ui.shell_session.finishing",
+                "stopping" => "ui.shell_session.stopping",
+                "succeeded" => "ui.shell_session.succeeded",
+                "failed" => "ui.shell_session.failed",
+                "cancelled" => "ui.shell_session.cancelled",
+                "timed_out" => "ui.shell_session.timed_out",
+                _ => "ui.shell_recovery.unknown",
+            })
+            .into();
+        }
         if self.status == ToolCallStatus::Running && self.live_elapsed_seconds().is_none() {
             let Some(ToolCardInputProjection::Bash { command }) = &self.input else {
                 return vega_i18n::t("ui.shell").into();
@@ -1507,7 +1557,10 @@ impl ToolCard {
     fn bash_detail_title(&self) -> String {
         let mut title = vega_i18n::t("ui.shell").to_string();
         if let Some(ToolCardResultProjection::Bash {
-            truncated, reused, ..
+            truncated,
+            reused,
+            output_incomplete,
+            ..
         }) = &self.result
         {
             if *truncated == Some(true) {
@@ -1515,6 +1568,10 @@ impl ToolCard {
             }
             if *reused {
                 title.push_str(vega_i18n::t("ui.reused"));
+            }
+            if *output_incomplete {
+                title.push_str(" · ");
+                title.push_str(vega_i18n::t("ui.shell_session.output_incomplete"));
             }
         }
         title
@@ -1548,7 +1605,9 @@ impl ToolCard {
             return true;
         }
         match &self.input {
-            Some(ToolCardInputProjection::Bash { .. }) => true,
+            Some(
+                ToolCardInputProjection::Bash { .. } | ToolCardInputProjection::ShellControl { .. },
+            ) => true,
             Some(ToolCardInputProjection::Subagent { .. })
             | Some(ToolCardInputProjection::UserQuestion { .. })
             | Some(ToolCardInputProjection::ReadOnly { .. })
@@ -1567,7 +1626,9 @@ impl ToolCard {
             return detail.logical_rows();
         }
         match &self.input {
-            Some(ToolCardInputProjection::Bash { .. }) => 3 + self.output_rows.len(),
+            Some(
+                ToolCardInputProjection::Bash { .. } | ToolCardInputProjection::ShellControl { .. },
+            ) => 3 + self.output_rows.len(),
             Some(ToolCardInputProjection::Subagent { .. })
             | Some(ToolCardInputProjection::UserQuestion { .. })
             | Some(ToolCardInputProjection::ReadOnly { .. })
@@ -1626,6 +1687,18 @@ impl ToolCard {
             return Some(detail);
         }
         match &self.input {
+            Some(ToolCardInputProjection::ShellControl { .. }) => Some(ToolDetail {
+                title: Some(self.bash_detail_title()),
+                command: None,
+                output: self.output_rows.clone(),
+                output_copy: match &self.result {
+                    Some(ToolCardResultProjection::Bash { output, .. }) if !output.is_empty() => {
+                        Some(output.clone())
+                    }
+                    _ => None,
+                },
+                footer: Some((self.build_bash_summary(), self.activity_state())),
+            }),
             Some(ToolCardInputProjection::Bash { command, .. }) => Some(ToolDetail {
                 title: Some(self.bash_detail_title()),
                 command: Some(command.clone()),

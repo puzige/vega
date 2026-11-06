@@ -46,12 +46,17 @@ pub(crate) fn install_context_precompute_shutdown(cx: &mut App) {
             tracing::error!("context precompute shutdown could not confirm settlement");
         }
         let shell_cleanup = std::thread::spawn(|| {
-            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build();
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build();
             match runtime {
-                Ok(runtime) => runtime.block_on(vega_runtime::shutdown_shell_sessions()).map_err(|_| ()),
+                Ok(runtime) => runtime
+                    .block_on(vega_runtime::shutdown_shell_sessions())
+                    .map_err(|_| ()),
                 Err(_) => Err(()),
             }
-        }).join();
+        })
+        .join();
         if !matches!(shell_cleanup, Ok(Ok(()))) {
             tracing::error!("shell session shutdown could not confirm settlement");
         }

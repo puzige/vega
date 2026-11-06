@@ -640,9 +640,19 @@ impl RuntimePermissionHook for RuntimePermissionAdapter<'_> {
         prepared: vega_tools::PreparedBash,
         policy: vega_tools::BashLaunchPolicy,
         cancel: CancellationToken,
-        redact: Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>,
+        redactor: vega_tools::BashSessionRedactor,
     ) -> BoxFuture<'a, Result<vega_tools::BashSession, vega_tools::BashError>> {
-        self.scope.start_session(self.shared, call_id, tools, prepared, policy, cancel, redact).boxed()
+        self.scope
+            .start_session(
+                self.shared,
+                call_id,
+                tools,
+                prepared,
+                policy,
+                cancel,
+                redactor,
+            )
+            .boxed()
     }
 
     fn execute_scoped_bash<'a>(

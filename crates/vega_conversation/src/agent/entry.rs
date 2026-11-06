@@ -669,13 +669,24 @@ pub(super) async fn run_thread_task_with_automation_inner<F>(
 where
     F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
 {
-    let workspace = std::fs::canonicalize(tools.root()).map_err(|error| ConversationError::Store(error.to_string()))?;
-    let unknown_shell = vega_store::shell_operations::has_unknown_workspace(store.conn(), &workspace.to_string_lossy()).map_err(|error| ConversationError::Store(error.to_string()))?;
-    if unknown_shell {
-        return Err(ConversationError::Runtime(Arc::new(VegaError::Tool {
-            tool: "bash".into(),
-            message: "A previous command could not be confirmed stopped. Verify its process and workspace before retrying; it will not be restarted automatically.".into(),
-        })));
+    let workspace = std::fs::canonicalize(tools.root())
+        .map_err(|error| ConversationError::Store(error.to_string()))?;
+    vega_store::shell_operations::recover_generation(
+        store.conn(),
+        vega_runtime::shell_generation(),
+        now_ms(),
+    )
+    .map_err(|error| ConversationError::Store(error.to_string()))?;
+    let shell_recovery =
+        vega_store::shell_operations::recovery(store.conn(), &workspace.to_string_lossy())
+            .map_err(|error| ConversationError::Store(error.to_string()))?;
+    for item in shell_recovery.items {
+        vega_runtime::RuntimeWorkspaceMutationGuard::set_persisted_block(
+            &workspace,
+            &item.operation_id,
+            true,
+        )
+        .map_err(|error| ConversationError::Runtime(Arc::new(error)))?;
     }
     let _live_thread = store
         .database_path()

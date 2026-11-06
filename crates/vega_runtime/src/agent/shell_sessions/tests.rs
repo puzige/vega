@@ -11,7 +11,8 @@ struct Workspace(PathBuf);
 
 impl Workspace {
     fn new() -> Result<Self, std::io::Error> {
-        let path = std::env::temp_dir().join(format!("vega-shell-runtime-{}", ulid::Ulid::generate()));
+        let path =
+            std::env::temp_dir().join(format!("vega-shell-runtime-{}", ulid::Ulid::generate()));
         std::fs::create_dir(&path)?;
         Ok(Self(path.canonicalize()?))
     }
@@ -24,7 +25,8 @@ impl Drop for Workspace {
 }
 
 #[tokio::test]
-async fn workspace_mutations_exclude_sessions_through_aliases_and_nested_roots() -> Result<(), Box<dyn Error>> {
+async fn workspace_mutations_exclude_sessions_through_aliases_and_nested_roots()
+-> Result<(), Box<dyn Error>> {
     let _serial = serial().lock().await;
     let workspace = Workspace::new()?;
     let nested = workspace.0.join("nested");
@@ -47,7 +49,8 @@ async fn workspace_mutations_exclude_sessions_through_aliases_and_nested_roots()
 }
 
 #[tokio::test]
-async fn application_capacity_rejects_before_launch_and_retains_completed_operations() -> Result<(), Box<dyn Error>> {
+async fn application_capacity_rejects_before_launch_and_retains_completed_operations()
+-> Result<(), Box<dyn Error>> {
     let _serial = serial().lock().await;
     let workspace = Workspace::new()?;
     let mut active = Vec::new();
@@ -80,7 +83,8 @@ async fn application_capacity_rejects_before_launch_and_retains_completed_operat
 }
 
 #[tokio::test]
-async fn unknown_cleanup_keeps_workspace_quarantined_after_owner_release() -> Result<(), Box<dyn Error>> {
+async fn unknown_cleanup_keeps_workspace_quarantined_after_owner_release()
+-> Result<(), Box<dyn Error>> {
     let _serial = serial().lock().await;
     let workspace = Workspace::new()?;
     let reservation = Reservation::acquire(&workspace.0)?;
@@ -92,8 +96,114 @@ async fn unknown_cleanup_keeps_workspace_quarantined_after_owner_release() -> Re
     {
         let mut registry = registry().lock().map_err(|_| "registry unavailable")?;
         registry.workspaces.remove(&workspace.0);
-        registry.active = registry.active.saturating_sub(1);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn all_write_ranges_are_reserved_together_in_both_overlap_orders()
+-> Result<(), Box<dyn Error>> {
+    let _serial = serial().lock().await;
+    let workspace = Workspace::new()?;
+    let a = workspace.0.join("a");
+    let b = workspace.0.join("b");
+    std::fs::create_dir(&a)?;
+    std::fs::create_dir(&b)?;
+    let session = Reservation::acquire(&a)?;
+    assert!(RuntimeWorkspaceMutationGuard::acquire_all(&[b.clone(), a.clone()]).is_err());
+    let independent = Reservation::acquire(&b)?;
+    independent.finish(true);
+    drop(independent);
+    assert!(RuntimeWorkspaceMutationGuard::acquire_all(&[PathBuf::from("/")]).is_err());
+    session.finish(true);
+    drop(session);
+    let legacy = RuntimeWorkspaceMutationGuard::acquire_all(&[b.clone(), a.clone()])?;
+    assert!(Reservation::acquire(&a).is_err());
+    drop(legacy);
+    let full_access = RuntimeWorkspaceMutationGuard::acquire_all(&[PathBuf::from("/")])?;
+    assert!(Reservation::acquire(&a).is_err());
+    drop(full_access);
+    let session = Reservation::acquire(&a)?;
+    let independent = RuntimeWorkspaceMutationGuard::acquire(&b)?;
+    drop(independent);
+    session.finish(true);
+    Ok(())
+}
+
+#[tokio::test]
+async fn unresolved_ended_operation_releases_runtime_capacity_but_not_its_write_gate()
+-> Result<(), Box<dyn Error>> {
+    let _serial = serial().lock().await;
+    let workspace = Workspace::new()?;
+    let unresolved = Reservation::acquire(&workspace.0)?;
+    unresolved.finish(false);
+    let mut running = Vec::new();
+    for index in 0..4 {
+        let path = workspace.0.with_extension(format!("independent-{index}"));
+        std::fs::create_dir(&path)?;
+        running.push((Reservation::acquire(&path)?, path));
+    }
+    assert!(RuntimeWorkspaceMutationGuard::is_blocked(&workspace.0)?);
+    assert!(RuntimeWorkspaceMutationGuard::acquire(&workspace.0).is_err());
+    for (reservation, path) in running {
+        reservation.finish(true);
+        drop(reservation);
+        std::fs::remove_dir(path)?;
+    }
+    unresolved.release_blocker()?;
+    drop(unresolved);
+    Ok(())
+}
+
+#[tokio::test]
+async fn unsettled_resources_keep_execution_capacity_until_cleanup_observation()
+-> Result<(), Box<dyn Error>> {
+    let _serial = serial().lock().await;
+    let workspace = Workspace::new()?;
+    let retained = Reservation::acquire(&workspace.0)?;
+    retained.settle(false, false);
+    assert!(Reservation::acquire(&workspace.0).is_err());
+    let mut independent = Vec::new();
+    for _ in 0..3 {
+        let other = Workspace::new()?;
+        independent.push((Reservation::acquire(&other.0)?, other));
+    }
+    let extra = Workspace::new()?;
+    assert!(Reservation::acquire(&extra.0).is_err());
+    assert!(RuntimeWorkspaceMutationGuard::is_blocked(&workspace.0)?);
+    retained.settle(true, false);
+    let next = Reservation::acquire(&extra.0)?;
+    next.finish(true);
+    assert!(RuntimeWorkspaceMutationGuard::acquire(&workspace.0).is_err());
+    for (reservation, _) in &independent {
+        reservation.finish(true);
+    }
+    retained.release_blocker()?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn releasing_one_operation_never_erases_an_independent_or_newer_blocker()
+-> Result<(), Box<dyn Error>> {
+    let _serial = serial().lock().await;
+    let workspace = Workspace::new()?;
+    let operation = Reservation::acquire(&workspace.0)?;
+    operation.finish(false);
+    RuntimeWorkspaceMutationGuard::set_persisted_block(&workspace.0, "persisted", true)?;
+    operation.release_blocker()?;
+    assert!(RuntimeWorkspaceMutationGuard::is_blocked(&workspace.0)?);
+    RuntimeWorkspaceMutationGuard::set_persisted_block(&workspace.0, "second", true)?;
+    RuntimeWorkspaceMutationGuard::set_persisted_block(&workspace.0, "persisted", false)?;
+    assert!(RuntimeWorkspaceMutationGuard::acquire(&workspace.0).is_err());
+    RuntimeWorkspaceMutationGuard::set_persisted_block(&workspace.0, "second", false)?;
+    let newer = Reservation::acquire(&workspace.0)?;
+    operation.release_blocker()?;
+    assert!(RuntimeWorkspaceMutationGuard::is_blocked(&workspace.0)?);
+    newer.finish(false);
+    RuntimeWorkspaceMutationGuard::set_persisted_block(&workspace.0, "persisted", false)?;
+    assert!(RuntimeWorkspaceMutationGuard::is_blocked(&workspace.0)?);
+    newer.release_blocker()?;
+    assert!(!RuntimeWorkspaceMutationGuard::is_blocked(&workspace.0)?);
     Ok(())
 }
 
@@ -104,17 +214,25 @@ struct PersistenceFailure {
 
 #[cfg(target_os = "macos")]
 impl RuntimeShellOperationHook for PersistenceFailure {
-    fn record(&self, record: RuntimeShellOperationRecord) -> BoxFuture<'static, Result<(), VegaError>> {
+    fn record(
+        &self,
+        record: RuntimeShellOperationRecord,
+    ) -> BoxFuture<'static, Result<(), VegaError>> {
         let records = self.records.clone();
         async move {
-            records.lock().map_err(|_| failure("test_record_unavailable"))?.push(record);
+            records
+                .lock()
+                .map_err(|_| failure("test_record_unavailable"))?
+                .push(record);
             Err(failure("injected_persistence_failure"))
-        }.boxed()
+        }
+        .boxed()
     }
 }
 
 #[tokio::test]
-async fn absent_persistence_or_cancelled_run_rejects_session_authority() -> Result<(), Box<dyn Error>> {
+async fn absent_persistence_or_cancelled_run_rejects_session_authority()
+-> Result<(), Box<dyn Error>> {
     let _serial = serial().lock().await;
     let workspace = Workspace::new()?;
     let tools = Tools::new(&workspace.0)?;
@@ -123,9 +241,17 @@ async fn absent_persistence_or_cancelled_run_rejects_session_authority() -> Resu
     let cancel = CancellationToken::new();
     let owner = ShellRun::new(&tools, &config, Some("run".into()), cancel.clone());
     let prepared = tools.prepare_bash_json("{\"cmd\":\"true\",\"wait_ms\":0}")?;
-    assert!(owner.validate_launch(&prepared, BashLaunchPolicy::WorkspaceWrite).is_err());
+    assert!(
+        owner
+            .validate_launch(&prepared, BashLaunchPolicy::WorkspaceWrite)
+            .is_err()
+    );
     assert!(!owner.live_receipt("{\"handle\":\"historical\",\"operation_id\":\"historical\"}"));
-    let input = SessionInput::parse(&serde_json::json!({"handle":ulid::Ulid::generate().to_string()}).to_string(), false).ok_or("session input rejected")?;
+    let input = SessionInput::parse(
+        &serde_json::json!({"handle":ulid::Ulid::generate().to_string()}).to_string(),
+        false,
+    )
+    .ok_or("session input rejected")?;
     assert!(owner.observe(&input, false, &tools).await.is_err());
     cancel.cancel();
     assert!(owner.open().is_err());
@@ -137,17 +263,40 @@ async fn absent_persistence_or_cancelled_run_rejects_session_authority() -> Resu
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
-async fn failed_intent_persistence_never_spawns_or_leaves_a_live_handle() -> Result<(), Box<dyn Error>> {
+async fn failed_intent_persistence_never_spawns_or_leaves_a_live_handle()
+-> Result<(), Box<dyn Error>> {
     let _serial = serial().lock().await;
     let workspace = Workspace::new()?;
     let tools = Tools::new(&workspace.0)?;
     let records = Arc::new(Mutex::new(Vec::new()));
-    let mut config = RuntimeToolConfig::default().with_shell_operations(Arc::new(PersistenceFailure { records: records.clone() }));
+    let mut config =
+        RuntimeToolConfig::default().with_shell_operations(Arc::new(PersistenceFailure {
+            records: records.clone(),
+        }));
     config.thread_id = "thread".into();
-    let owner = ShellRun::new(&tools, &config, Some("run".into()), CancellationToken::new());
+    let owner = ShellRun::new(
+        &tools,
+        &config,
+        Some("run".into()),
+        CancellationToken::new(),
+    );
     let prepared = tools.prepare_bash_json("{\"cmd\":\"touch must-not-exist\",\"wait_ms\":0}")?;
-    let call = RuntimeToolCall { id: "call".into(), name: "bash".into(), input_json: prepared.input_json(), description: None };
-    let result = owner.launch(&call, tools, prepared, BashLaunchPolicy::WorkspaceWrite, &RejectPermissionHook, &config).await;
+    let call = RuntimeToolCall {
+        id: "call".into(),
+        name: "bash".into(),
+        input_json: prepared.input_json(),
+        description: None,
+    };
+    let result = owner
+        .launch(
+            &call,
+            tools,
+            prepared,
+            BashLaunchPolicy::WorkspaceWrite,
+            &RejectPermissionHook,
+            &config,
+        )
+        .await;
     assert!(result.is_err_and(|error| error.to_string().contains("operation_persistence_failed")));
     {
         let records = records.lock().map_err(|_| "record lock poisoned")?;
@@ -162,7 +311,8 @@ async fn failed_intent_persistence_never_spawns_or_leaves_a_live_handle() -> Res
 }
 
 #[tokio::test]
-async fn legacy_bash_without_wait_keeps_original_readonly_authorization() -> Result<(), Box<dyn Error>> {
+async fn legacy_bash_without_wait_keeps_original_readonly_authorization()
+-> Result<(), Box<dyn Error>> {
     use super::super::tools_exec::{Authorization, PreparedRuntimeCall, authorize_call};
     let _serial = serial().lock().await;
     let workspace = Workspace::new()?;
@@ -171,9 +321,26 @@ async fn legacy_bash_without_wait_keeps_original_readonly_authorization() -> Res
     for raw in ["{\"cmd\":\"pwd\"}", "{\"cmd\":\"pwd\",\"wait_ms\":null}"] {
         let prepared = tools.prepare_bash_json(raw)?;
         assert_eq!(prepared.wait_ms(), None);
-        let call = RuntimeToolCall { id: ulid::Ulid::generate().to_string(), name: "bash".into(), input_json: raw.into(), description: None };
-        let prepared = PreparedRuntimeCall::Bash { call, tools: tools.clone(), prepared, policy: BashLaunchPolicy::ReadOnly };
-        let authorization = authorize_call(&prepared, &config, &HashSet::new(), &RejectPermissionHook, &CancellationToken::new()).await?;
+        let call = RuntimeToolCall {
+            id: ulid::Ulid::generate().to_string(),
+            name: "bash".into(),
+            input_json: raw.into(),
+            description: None,
+        };
+        let prepared = PreparedRuntimeCall::Bash {
+            call,
+            tools: tools.clone(),
+            prepared,
+            policy: BashLaunchPolicy::ReadOnly,
+        };
+        let authorization = authorize_call(
+            &prepared,
+            &config,
+            &HashSet::new(),
+            &RejectPermissionHook,
+            &CancellationToken::new(),
+        )
+        .await?;
         assert!(matches!(authorization, Authorization::Approved { .. }));
     }
     Ok(())
@@ -182,7 +349,13 @@ async fn legacy_bash_without_wait_keeps_original_readonly_authorization() -> Res
 #[test]
 fn session_observation_parameters_reject_scope_expansion_and_out_of_range_waits() {
     let handle = ulid::Ulid::generate().to_string();
-    assert!(SessionInput::parse(&serde_json::json!({"handle":handle,"wait_ms":300000}).to_string(), false).is_some());
+    assert!(
+        SessionInput::parse(
+            &serde_json::json!({"handle":handle,"wait_ms":300000}).to_string(),
+            false
+        )
+        .is_some()
+    );
     for input in [
         serde_json::json!({"handle":handle,"wait_ms":300001}),
         serde_json::json!({"handle":handle,"cursor":-1}),
@@ -191,6 +364,12 @@ fn session_observation_parameters_reject_scope_expansion_and_out_of_range_waits(
     ] {
         assert!(SessionInput::parse(&input.to_string(), false).is_none());
     }
-    assert!(SessionInput::parse(&serde_json::json!({"handle":handle,"wait_ms":0}).to_string(), true).is_none());
+    assert!(
+        SessionInput::parse(
+            &serde_json::json!({"handle":handle,"wait_ms":0}).to_string(),
+            true
+        )
+        .is_none()
+    );
     assert!(SessionInput::parse(&serde_json::json!({"handle":handle}).to_string(), true).is_some());
 }

@@ -41,7 +41,10 @@ mod progress;
 mod progress_recovery;
 mod shell_sessions;
 pub use shell_sessions::{
-    RuntimeShellOperationHook, RuntimeShellOperationRecord, RuntimeWorkspaceMutationGuard,
+    RuntimeActiveShell, RuntimeShellOperationHook, RuntimeShellOperationRecord,
+    RuntimeWorkspaceMutationGuard, active_shell_sessions, cancel_shell_session,
+    confirm_shell_commit, pending_shell_commits, release_shell_recovery, retry_shell_cleanup,
+    shell_generation, shutdown_shell_sessions,
 };
 
 mod mcp_registry;
@@ -729,7 +732,7 @@ pub trait RuntimePermissionHook: Send + Sync {
         _prepared: vega_tools::PreparedBash,
         _policy: vega_tools::BashLaunchPolicy,
         _cancel: CancellationToken,
-        _redact: Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>,
+        _redactor: vega_tools::BashSessionRedactor,
     ) -> BoxFuture<'a, Result<vega_tools::BashSession, vega_tools::BashError>> {
         async {
             Err(vega_tools::BashError::new(

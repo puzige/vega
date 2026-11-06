@@ -48,6 +48,7 @@ pub(crate) struct SubmittedDraft {
 /// the virtualized message stream, and the fixed-bottom Composer. One entity
 /// per open thread; rebuilt by the window root when another thread opens.
 pub struct ConversationStream {
+    pub(crate) shell_recovery: super::shell_recovery::ShellRecoveryUi,
     pub(crate) permission_editor: super::thread_permissions::PermissionEditor,
     pub(crate) automation_permission: super::automation_permission::AutomationPermissionUi,
     pub(crate) permissions_revoked: bool,
@@ -515,6 +516,7 @@ impl ConversationStream {
         .detach();
         let computer_use_task = TaskContext::new(&thread.id);
         Self {
+            shell_recovery: super::shell_recovery::ShellRecoveryUi::new(cx),
             permission_editor: super::thread_permissions::PermissionEditor::new(cx),
             automation_permission: super::automation_permission::AutomationPermissionUi::new(cx),
             permissions_revoked: false,

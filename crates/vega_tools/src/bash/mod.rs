@@ -20,9 +20,13 @@ use crate::sandbox::{SandboxConfig, SandboxNetwork, TempRoot, full_access_shell_
 
 mod scope;
 mod session;
+mod session_process;
 pub use scope::{BashScopeDirectory, BashScopeRequest, PreparedBashScope};
 use session::SessionWriter;
-pub use session::{BashSession, BashSessionRedactor, BashSessionSnapshot};
+pub use session::{
+    BashSession, BashSessionRedactor, BashSessionResource, BashSessionResourceHook,
+    BashSessionSnapshot,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BashLaunchPolicy {
@@ -440,14 +444,26 @@ impl Tools {
                 };
             }
         };
+        let session = observation.session.clone();
         let mut attempt = self
             .execute_bash_command(prepared, launch.command, cancel, temp_root, observation)
             .await;
-        if let Some(lease) = launch.credential_lease
-            && lease.shutdown().await.is_err()
-        {
-            attempt.result = Err(BashError::new(BashErrorCode::CleanupFailed));
-            attempt.cleanup_safe = false;
+        if let Some(lease) = launch.credential_lease {
+            let shutdown = lease.shutdown();
+            let closed = if let Some(session) = &session {
+                tokio::time::timeout_at(session.cleanup_deadline(), shutdown)
+                    .await
+                    .is_ok_and(|result| result.is_ok())
+            } else {
+                shutdown.await.is_ok()
+            };
+            if !closed {
+                attempt.result = Err(BashError::new(BashErrorCode::CleanupFailed));
+                attempt.cleanup_safe = false;
+                if let Some(session) = &session {
+                    session.resource_failure("credential_cleanup_failed");
+                }
+            }
         }
         attempt
     }
@@ -464,6 +480,10 @@ impl Tools {
             started_at,
             session,
         } = observation;
+        if let Some(session) = session {
+            return session_process::execute(prepared, command, cancel, temp_root, session).await;
+        }
+        let session: Option<SessionWriter> = None;
         if cancel.is_cancelled() {
             return BashAttempt::safe(Err(BashError::new(BashErrorCode::Cancelled)));
         }

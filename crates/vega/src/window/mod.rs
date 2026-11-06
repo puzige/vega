@@ -47,6 +47,7 @@ mod reasoning;
 mod render;
 mod scroll_state;
 mod session;
+mod shell_recovery;
 mod skills;
 mod subagent_panel;
 mod thread_permissions;
