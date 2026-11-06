@@ -283,10 +283,6 @@ pub fn recovery_projection(
     )))
 }
 
-#[cfg(test)]
-#[path = "delegated_payload_development_tests.rs"]
-mod development_tests;
-
 #[derive(PartialEq, Eq)]
 struct PayloadRows {
     checkpoints: Vec<(String, String)>,

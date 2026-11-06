@@ -36,4 +36,12 @@
 
 首轮开发候选 `07758e1d10b11ca5a1b14150935dd4021092dcb3`，PR #901，Actions [42151313567](https://github.com/puzige/vega/actions/runs/42151313567)：Clippy 成功，Nextest 8 发现/8 执行/7 通过/1 失败/0 跳过。失败发生在测试夹具 `capture_delegated_fence`：父/子 message 使用非 ULID，真实身份校验拒绝；修正合法 ID，不改生产校验。独立静态审查无生产缺陷，要求补验安全末检回滚和 followup/恢复投影；增量加入真实 credential reader + epoch 失效正反对照（安装后触发器）、准备期间权限变化、图片/旧工具/合法与未完成阶段/恢复声明投影。投影复杂样例直接调用生产 `delegated_history`，完整准备的 prefix/lease/fence 仍由独立整链测试覆盖，不冒充真实 App 或模型集成。同步远端 `dc4c077d405b0047a434c3df5fcd9bea510ec2ec`（#900 侧栏/文档，无交叠）。
 
-生产改动已按上述边界实现。开发回归包含 store 的真实 WAL writer 占用、完整原行集合失效、保存点/外层回滚、跨 child 隔离，以及整链路 Ask/Plan/Execute、委派成功/指令替换拒绝、目录失败不提交；云端执行结果和独立审查待取得。本地仅执行 `cargo fmt --all`、`cargo fmt --all -- --check` 与 `git diff --check`，不运行 Vega/编译/测试。准备范围、拒绝状态、安装原子性优先用稳定 store 边界验证；不以源码字符串测试代替行为，不恢复旧测试集合。最终仍保留一次全量 source 工作，不宣称“全部历史计算已移出 writer”或 wall-clock 保证。
+生产改动已按上述边界实现。开发回归包含 store 的真实 WAL writer 占用、完整原行集合失效、保存点/外层回滚、跨 child 隔离，以及整链路 Ask/Plan/Execute、委派成功/指令替换拒绝、目录失败不提交；并补齐凭据末检失效与成功对照、准备期间 authority 改变、followup/恢复历史投影。准备范围、拒绝状态、安装原子性优先用稳定 store 边界验证；不以源码字符串测试代替行为，不恢复旧测试集合。
+
+开发验证版本 `265eb5ec532ea4b44a854e0843f80e1238705d02` 的 [Actions 42153950723](https://github.com/puzige/vega/actions/runs/42153950723) 全部成功：Nextest job `127683518031` 使用 `cargo nextest list --workspace --message-format json` 与 `cargo nextest run --workspace`，11 发现/11 执行/11 通过/0 跳过；三组 Python 5/15/40 全部 OK。Clippy job `127683517766` 的 fmt 与全目标 Clippy 成功；required job `127684858430` 成功。前轮 `4d0d3443b651e33253b4ca9ddcf080825d87c8b8` 的编译失败来自测试误用未直接依赖的参数宏；最终仅修正两处字符串参数数组和 followup 请求 ID，未新增依赖、改变生产约束或放宽断言。
+
+原始源码保留于远端 tag [`evidence/891-child-preparation-tests-265eb5ec`](https://github.com/puzige/vega/tree/evidence/891-child-preparation-tests-265eb5ec)，已读回完整 SHA。pipeline 测试 blob `3fa4a3beec1885a4f8a0887d18dfcaa7acc5fa74`，store 测试 blob `2ee74324b31d88cf1629f48d6af2968f7399c746`。生产初审与补验增量审查已完成；两次异常审查未产生结论，不计通过。用户恢复后，`4d0d3443…` → `265eb5ec…` 三行增量由非实现者独审通过，未发现阻塞。
+
+留痕和增量独审通过后，仅删除两份开发测试文件（6 pipeline + 5 store）及各自模块接线；没有新增独占依赖/feature 需要清理，不改生产逻辑、安全断言、Python 测试或 CI。清理差异独审与最终无 Rust 测试 head 的完整 required CI 待取得，开发版本绿色不替代最终门禁。本地只做格式、差异和静态清点，不运行 Vega/编译/测试。
+
+最终仍保留一次全量 source 工作，不宣称“全部历史计算已移出 writer”或 wall-clock 保证。最终门禁全满足后 squash merge；Issue 保持开放、In review 等用户手测，不把 CI/合并当作用户验收。
