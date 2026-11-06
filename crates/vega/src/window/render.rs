@@ -228,6 +228,7 @@ impl VegaWindow {
 impl Render for VegaWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_language(cx);
+        crate::nsh_preview::sync_menus(cx);
         self.sync_navigation(cx);
         self.sync_preparation(cx);
         self.sync_completion_attention(window, cx);
