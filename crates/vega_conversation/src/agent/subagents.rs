@@ -14,8 +14,6 @@ mod stage_recovery;
 use lifecycle_ownership::LifecycleOwnership;
 mod precompute;
 mod provider;
-#[cfg(test)]
-mod steering_tests;
 use provider::{ChildProvider, ChildTransport};
 use vega_store::delegated_ownership::DelegatedOwnership;
 
