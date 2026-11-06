@@ -14,7 +14,7 @@ const CANCEL_INTERVAL: Duration = Duration::from_millis(25);
 
 type WriterQueues = HashMap<DatabaseIdentity, Weak<WriterQueue>>;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WriteCategory {
     Initialization,
@@ -49,6 +49,7 @@ enum DatabaseIdentity {
 #[derive(Default)]
 struct WriterState {
     owner: Option<(ThreadId, usize, usize)>,
+    owner_started: Option<(WriteCategory, Instant, Option<ExecutionContext>)>,
     waiters: VecDeque<u64>,
     next_ticket: u64,
 }
@@ -69,7 +70,7 @@ pub struct WritePermit<'a> {
     _connection: PhantomData<&'a Connection>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StorageOperation {
     PermitAcquired,
@@ -84,7 +85,7 @@ pub enum StorageOperation {
     Persistence,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PersistenceCategory {
     Snapshot,
@@ -140,12 +141,14 @@ pub fn record_persistence(
                 sqlite_primary_code: sqlite_extended_code.map(|code| code & 255),
                 sqlite_extended_code,
                 persistence: Some(category),
+                blocking_owner: None,
             },
         );
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StorageObservation {
     persistence: Option<PersistenceCategory>,
     category: WriteCategory,
@@ -155,6 +158,113 @@ pub struct StorageObservation {
     succeeded: bool,
     sqlite_primary_code: Option<i32>,
     sqlite_extended_code: Option<i32>,
+    blocking_owner: Option<BlockingWriter>,
+}
+
+impl StorageObservation {
+    pub(crate) fn valid(&self) -> bool {
+        self.blocking_owner.as_ref().is_none_or(|owner| {
+            owner.waiters <= MAX_WAITERS
+                && owner.execution.as_ref().is_none_or(|execution| {
+                    [&execution.thread_id, &execution.run_id]
+                        .iter()
+                        .all(|id| valid_diagnostic_id(id))
+                })
+        })
+    }
+}
+
+pub(crate) fn valid_diagnostic_id(id: &str) -> bool {
+    id.len() == 26 && id.parse::<ulid::Ulid>().is_ok()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlockingWriter {
+    category: WriteCategory,
+    held_ms: u64,
+    execution: Option<ExecutionContext>,
+    waiters: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionContext {
+    thread_id: String,
+    run_id: String,
+    activity: WriteActivity,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WriteActivity {
+    Preparation,
+    Persistence,
+}
+
+pub struct ExecutionScope {
+    previous: Option<ExecutionContext>,
+    _thread: PhantomData<std::rc::Rc<()>>,
+}
+
+impl ExecutionScope {
+    pub fn begin(thread_id: &str, run_id: &str, activity: WriteActivity) -> Self {
+        let valid = [thread_id, run_id].iter().all(|id| valid_diagnostic_id(id));
+        let context = valid.then(|| ExecutionContext {
+            thread_id: thread_id.to_owned(),
+            run_id: run_id.to_owned(),
+            activity,
+        });
+        Self {
+            previous: EXECUTION_CONTEXT.with(|current| current.replace(context)),
+            _thread: PhantomData,
+        }
+    }
+}
+
+impl Drop for ExecutionScope {
+    fn drop(&mut self) {
+        EXECUTION_CONTEXT.with(|current| current.replace(self.previous.take()));
+    }
+}
+
+thread_local! {
+    static EXECUTION_CONTEXT: std::cell::RefCell<Option<ExecutionContext>> = const { std::cell::RefCell::new(None) };
+    static COMMAND_OBSERVATIONS: std::cell::RefCell<Option<(DatabaseIdentity, VecDeque<StorageObservation>)>> = const { std::cell::RefCell::new(None) };
+}
+
+pub struct ObservationScope {
+    previous: Option<(DatabaseIdentity, VecDeque<StorageObservation>)>,
+    _thread: PhantomData<std::rc::Rc<()>>,
+}
+
+impl ObservationScope {
+    pub fn begin(conn: &Connection) -> Self {
+        let current = identity(conn)
+            .ok()
+            .map(|database| (database, VecDeque::new()));
+        let previous = COMMAND_OBSERVATIONS.with(|observations| observations.replace(current));
+        Self {
+            previous,
+            _thread: PhantomData,
+        }
+    }
+
+    pub fn observations(&self) -> Vec<StorageObservation> {
+        COMMAND_OBSERVATIONS.with(|observations| {
+            observations
+                .borrow()
+                .as_ref()
+                .map(|(_, items)| items.iter().cloned().collect())
+                .unwrap_or_default()
+        })
+    }
+}
+
+impl Drop for ObservationScope {
+    fn drop(&mut self) {
+        COMMAND_OBSERVATIONS.with(|observations| observations.replace(self.previous.take()));
+    }
 }
 
 fn observations() -> &'static Mutex<VecDeque<(DatabaseIdentity, StorageObservation)>> {
@@ -164,6 +274,16 @@ fn observations() -> &'static Mutex<VecDeque<(DatabaseIdentity, StorageObservati
 }
 
 fn record(database: DatabaseIdentity, observation: StorageObservation) {
+    COMMAND_OBSERVATIONS.with(|observations| {
+        if let Some((target, items)) = observations.borrow_mut().as_mut()
+            && *target == database
+        {
+            if items.len() == 64 {
+                items.pop_front();
+            }
+            items.push_back(observation.clone());
+        }
+    });
     if let Ok(mut observations) = observations().lock() {
         while observations.len() >= 256 {
             observations.pop_front();
@@ -194,6 +314,7 @@ fn record_queue_failure(
     operation: StorageOperation,
     started: Instant,
     code: i32,
+    state: &WriterState,
 ) {
     record(
         database,
@@ -206,6 +327,15 @@ fn record_queue_failure(
             succeeded: false,
             sqlite_primary_code: Some(code & 255),
             sqlite_extended_code: Some(code),
+            blocking_owner: state
+                .owner_started
+                .as_ref()
+                .map(|(category, started, execution)| BlockingWriter {
+                    category: *category,
+                    held_ms: started.elapsed().as_millis() as u64,
+                    execution: execution.clone(),
+                    waiters: state.waiters.len(),
+                }),
         },
     );
 }
@@ -289,6 +419,7 @@ where
                 StorageOperation::CrossConnectionReentry,
                 started,
                 rusqlite::ffi::SQLITE_LOCKED,
+                &state,
             );
             tracing::warn!(
                 ?category,
@@ -307,6 +438,7 @@ where
                 StorageOperation::QueueFull,
                 started,
                 rusqlite::ffi::SQLITE_BUSY,
+                &state,
             );
             tracing::warn!(
                 ?category,
@@ -340,6 +472,7 @@ where
                     },
                     started,
                     code,
+                    &state,
                 );
                 tracing::warn!(
                     ?category,
@@ -357,6 +490,11 @@ where
             if state.owner.is_none() && state.waiters.front() == Some(&ticket) {
                 state.waiters.pop_front();
                 state.owner = Some((thread, connection, 1));
+                state.owner_started = Some((
+                    category,
+                    Instant::now(),
+                    EXECUTION_CONTEXT.with(|current| current.borrow().clone()),
+                ));
                 break;
             }
             let remaining = timeout.saturating_sub(elapsed).min(CANCEL_INTERVAL);
@@ -374,6 +512,7 @@ where
             persistence: None,
             category,
             operation: StorageOperation::PermitAcquired,
+            blocking_owner: None,
             elapsed_ms: queue_wait.as_millis() as u64,
             queue_wait_ms: Some(queue_wait.as_millis() as u64),
             succeeded: true,
@@ -404,6 +543,7 @@ impl Drop for WritePermit<'_> {
             *depth -= 1;
             if *depth == 0 {
                 state.owner = None;
+                state.owner_started = None;
                 self.queue.changed.notify_all();
             }
         }
@@ -414,6 +554,7 @@ impl Drop for WritePermit<'_> {
                 persistence: None,
                 category: self.category,
                 operation: StorageOperation::PermitReleased,
+                blocking_owner: None,
                 elapsed_ms: self.acquired.elapsed().as_millis() as u64,
                 queue_wait_ms: Some(self.queue_wait.as_millis() as u64),
                 succeeded: true,
@@ -546,6 +687,7 @@ fn log_transaction<T>(
             persistence: None,
             category: permit.category,
             operation: action,
+            blocking_owner: None,
             elapsed_ms: started.elapsed().as_millis() as u64,
             queue_wait_ms: None,
             succeeded: result.is_ok(),
@@ -566,3 +708,7 @@ fn log_transaction<T>(
         sqlite_extended_code = extended
     );
 }
+
+#[cfg(test)]
+#[path = "write_coordination_development_tests.rs"]
+mod development_tests;

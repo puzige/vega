@@ -311,12 +311,20 @@ impl PersistenceActor {
             }
             let _ = ready.send(Ok(()));
             let mut next_tool_seq = next_tool_seq;
+            let run_id = message_id.clone();
+            let _execution = vega_store::write_coordination::ExecutionScope::begin(
+                &thread_id,
+                &run_id,
+                vega_store::write_coordination::WriteActivity::Persistence,
+            );
             let mut message_id = message_id;
             let mut active_response_id: Option<String> = None;
             while let Some(command) = receiver.blocking_recv() {
                 match command {
                     PersistenceCommand::Snapshot { content, ack } => {
                         config.delay_command();
+                        let scope =
+                            vega_store::write_coordination::ObservationScope::begin(store.conn());
                         let started = std::time::Instant::now();
                         let result =
                             messages::update_streaming_content(store.conn(), &message_id, &content)
@@ -333,6 +341,7 @@ impl PersistenceActor {
                         log_persistence_result(
                             &store,
                             PersistenceCategory::Snapshot,
+                            (&thread_id, &run_id, &message_id, &scope),
                             started,
                             &result,
                         );
@@ -345,6 +354,8 @@ impl PersistenceActor {
                         ack,
                     } => {
                         config.delay_command();
+                        let scope =
+                            vega_store::write_coordination::ObservationScope::begin(store.conn());
                         let started = std::time::Instant::now();
                         let result = config
                             .check_event(&event)
@@ -491,6 +502,7 @@ impl PersistenceActor {
                         log_persistence_result(
                             &store,
                             runtime_event_category(&event),
+                            (&thread_id, &run_id, &message_id, &scope),
                             started,
                             &result,
                         );
@@ -509,6 +521,8 @@ impl PersistenceActor {
                         let _ = ack.send(result);
                     }
                     PersistenceCommand::Diagnostic(event) => {
+                        let scope =
+                            vega_store::write_coordination::ObservationScope::begin(store.conn());
                         let started = std::time::Instant::now();
                         let result = vega_store::run_diagnostics::insert(store.conn(), &event)
                             .map_err(|error| match error {
@@ -522,6 +536,7 @@ impl PersistenceActor {
                         log_persistence_result(
                             &store,
                             PersistenceCategory::Diagnostic,
+                            (&event.thread_id, &event.run_id, &message_id, &scope),
                             started,
                             &result,
                         );
@@ -641,6 +656,12 @@ pub(crate) fn persistence_actor_error(_message: impl Into<String>) -> VegaError 
 fn log_persistence_result<T>(
     store: &Store,
     category: PersistenceCategory,
+    context: (
+        &str,
+        &str,
+        &str,
+        &vega_store::write_coordination::ObservationScope,
+    ),
     started: std::time::Instant,
     result: &Result<T, VegaError>,
 ) {
@@ -654,6 +675,22 @@ fn log_persistence_result<T>(
             .as_ref()
             .and_then(|metrics| metrics.sqlite_extended_code),
     );
+    if let Some(metrics) = &metrics {
+        let (thread_id, run_id, message_id, scope) = context;
+        let failure = vega_store::persistence_failures::PersistenceFailure {
+            thread_id: thread_id.to_owned(),
+            run_id: run_id.to_owned(),
+            message_id: message_id.to_owned(),
+            occurred_at: u64::try_from(now_ms()).unwrap_or_default(),
+            category,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            sqlite_extended_code: metrics.sqlite_extended_code,
+            observations: scope.observations(),
+        };
+        if vega_store::persistence_failures::record(store.conn(), failure).is_err() {
+            tracing::warn!(?category, outcome = "failure_diagnostic_unavailable");
+        }
+    }
     tracing::debug!(
         ?category,
         outcome = if result.is_ok() {
@@ -734,3 +771,7 @@ pub(crate) fn runtime_event_requires_ack(event: &RuntimeEvent) -> bool {
             | RuntimeEvent::DiagnosticAttempt(_)
     )
 }
+
+#[cfg(test)]
+#[path = "persistence_diagnostics_development_tests.rs"]
+mod diagnostics_development_tests;
