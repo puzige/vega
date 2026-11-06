@@ -34,4 +34,6 @@
 
 ## 验证与交付记录
 
+首轮开发候选 `07758e1d10b11ca5a1b14150935dd4021092dcb3`，PR #901，Actions [42151313567](https://github.com/puzige/vega/actions/runs/42151313567)：Clippy 成功，Nextest 8 发现/8 执行/7 通过/1 失败/0 跳过。失败发生在测试夹具 `capture_delegated_fence`：父/子 message 使用非 ULID，真实身份校验拒绝；修正合法 ID，不改生产校验。独立静态审查无生产缺陷，要求补验安全末检回滚和 followup/恢复投影；增量加入真实 credential reader + epoch 失效正反对照（安装后触发器）、准备期间权限变化、图片/旧工具/合法与未完成阶段/恢复声明投影。投影复杂样例直接调用生产 `delegated_history`，完整准备的 prefix/lease/fence 仍由独立整链测试覆盖，不冒充真实 App 或模型集成。同步远端 `dc4c077d405b0047a434c3df5fcd9bea510ec2ec`（#900 侧栏/文档，无交叠）。
+
 生产改动已按上述边界实现。开发回归包含 store 的真实 WAL writer 占用、完整原行集合失效、保存点/外层回滚、跨 child 隔离，以及整链路 Ask/Plan/Execute、委派成功/指令替换拒绝、目录失败不提交；云端执行结果和独立审查待取得。本地仅执行 `cargo fmt --all`、`cargo fmt --all -- --check` 与 `git diff --check`，不运行 Vega/编译/测试。准备范围、拒绝状态、安装原子性优先用稳定 store 边界验证；不以源码字符串测试代替行为，不恢复旧测试集合。最终仍保留一次全量 source 工作，不宣称“全部历史计算已移出 writer”或 wall-clock 保证。
