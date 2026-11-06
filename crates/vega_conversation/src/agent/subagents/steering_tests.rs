@@ -5,6 +5,8 @@ use vega_runtime::{
     RuntimeSteeringSource, StopReason,
 };
 
+const PARENT: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+
 struct ObservedQueue {
     inner: crate::pending_messages::QueueSteeringSource,
     empty: mpsc::UnboundedSender<()>,
@@ -66,7 +68,7 @@ impl Fixture {
         vega_store::threads::create(
             store.conn(),
             vega_store::threads::NewThread {
-                id: "parent",
+                id: PARENT,
                 project_id: &project,
                 title: "wait regression",
                 mode: "execute",
@@ -83,14 +85,14 @@ impl Fixture {
             },
         )
         .unwrap();
-        let row = vega_store::threads::find(store.conn(), "parent")
+        let row = vega_store::threads::find(store.conn(), PARENT)
             .unwrap()
             .unwrap();
         let fence = crate::permission_contracts::capture_fence(&store, &row).unwrap();
         let queue = crate::pending_messages::QueueSteeringSource::new(
             database.clone(),
             root.clone(),
-            "parent".into(),
+            PARENT.into(),
             "generation".into(),
             Arc::new(|| Ok(Vec::new())),
             CancellationToken::new(),
@@ -106,7 +108,7 @@ impl Fixture {
         let snapshot = SubagentSnapshot {
             agent_id: "child".into(),
             message_id: "execution".into(),
-            parent_thread_id: "parent".into(),
+            parent_thread_id: PARENT.into(),
             parent_message_id: "assistant".into(),
             name: "held child".into(),
             state: SubagentState::Running,
@@ -162,7 +164,7 @@ impl Fixture {
 
     fn enqueue(&self, id: &str, behavior: crate::types::PendingMessageBehavior, generation: &str) {
         let store = Store::open(&self.database).unwrap();
-        let row = vega_store::threads::find(store.conn(), "parent")
+        let row = vega_store::threads::find(store.conn(), PARENT)
             .unwrap()
             .unwrap();
         let fence = crate::permission_contracts::capture_fence(&store, &row).unwrap();
@@ -170,7 +172,7 @@ impl Fixture {
             &store,
             &crate::types::PendingMessage {
                 id: id.into(),
-                thread_id: "parent".into(),
+                thread_id: PARENT.into(),
                 generation: generation.into(),
                 behavior,
                 content: format!("instruction {id}"),
@@ -268,7 +270,7 @@ async fn batch_accepts_steering(waits: usize) {
         RuntimeRunMode::Execute,
         RuntimePermissionMode::ReadOnly,
         fixture.project.clone(),
-        "parent".into(),
+        PARENT.into(),
         fixture.root.join("checkpoints"),
         Vec::new(),
     )
