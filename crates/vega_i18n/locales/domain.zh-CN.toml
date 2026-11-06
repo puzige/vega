@@ -314,4 +314,7 @@
 "domain.failure.context_arithmetic" = "上下文计量超出安全算术范围。请新建对话；若持续出现，请报告此问题。"
 "domain.failure.credential_storage" = "本地凭据缺失或无法安全读取。请检查凭据设置后继续，已完成的操作已保留。"
 "domain.failure.credential_internal" = "安全检查无法访问本地存储或配置，请稍后继续。已完成的操作已保留。"
+"domain.failure.configuration_restart" = "内部故障后配置访问已停止，请重启 Vega 后继续。已完成的操作已保留。"
+"domain.failure.configuration_repair" = "无法安全验证配置，请修复配置内容或锁文件权限后重试。已完成的操作已保留。"
+"domain.failure.configuration_access" = "无法安全读取配置，请检查配置目录及文件的访问权限后重试。已完成的操作已保留。"
 "domain.failure.credential_state" = "安全检查无法验证当前运行状态，请尝试继续；若仍失败，请重新打开会话。已完成的操作已保留。"

@@ -61,7 +61,10 @@ fn json<T: Serialize>(value: &T) -> Result<String, McpStoreError> {
 }
 
 fn io_error(error: io::Error) -> McpStoreError {
-    McpStoreError::ConfigurationIo(error.kind())
+    match crate::yaml_config::failure(&error) {
+        Some(failure) => McpStoreError::ConfigurationFailure(failure),
+        None => McpStoreError::ConfigurationIo(error.kind()),
+    }
 }
 
 fn digest(bytes: Option<&[u8]>) -> Vec<u8> {
