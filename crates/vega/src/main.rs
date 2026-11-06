@@ -28,6 +28,7 @@ mod diff_controller;
 mod loading_logo;
 mod model_catalog;
 mod native_subagents;
+mod nsh_preview;
 mod ordinary_submission;
 mod pricing_controller;
 mod reasoning_capabilities;
@@ -56,6 +57,7 @@ fn main() {
         app_notifications::init(cx);
         gpui_kit::init(cx);
         apply_appearance(None, cx);
+        nsh_preview::init(cx);
         vega_ui::interaction::install_system_motion(cx);
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
         cx.on_action(|_: &Quit, cx| cx.quit());

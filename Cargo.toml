@@ -92,7 +92,12 @@ tempfile = "=3.27.0"
 # UI 依赖：GPUI Kit 是唯一入口；它 re-export 了匹配版本的 GPUI、平台层
 # 以及可选的组件层。源码使用 facade crate 的 `gpui_kit::…` 命名空间，
 # 避免 GPUI Kit re-export 的 `gpui` 模块与外层 crate 名发生 glob 冲突。
-gpui_kit = { package = "gpui-kit", version = "=0.6.1", default-features = false, features = ["component", "assets"] }
+gpui_kit = { package = "gpui-kit", version = "=0.7.3", default-features = false, features = ["component", "assets", "gpui-fast"] }
+gpui-fast = "=0.1.9"
+gpui-fast-platform = "=0.1.9"
+nsh-platform-gpui = { version = "=0.4.0", default-features = false }
+nsh-core = { version = "=0.4.0", default-features = false }
+nsh-base = { version = "=0.4.0", default-features = false }
 
 [patch.crates-io]
 block = { path = "vendor/block" }

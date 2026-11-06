@@ -7,6 +7,11 @@ edition.workspace = true
 vega_i18n.workspace = true
 vega_credentials = { workspace = true }
 gpui_kit.workspace = true
+gpui-fast.workspace = true
+gpui-fast-platform.workspace = true
+nsh-platform-gpui.workspace = true
+nsh-core.workspace = true
+nsh-base.workspace = true
 pulldown-cmark.workspace = true
 tracing.workspace = true
 serde = { workspace = true, features = ["derive"] }
