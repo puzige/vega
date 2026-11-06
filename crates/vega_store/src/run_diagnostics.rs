@@ -204,6 +204,9 @@ pub struct DiagnosticExport {
     pub recent_process_storage: Vec<crate::write_coordination::StorageObservation>,
     pub persistence_failures: Vec<crate::persistence_failures::PersistenceFailure>,
     pub persistence_failures_unavailable: bool,
+    pub persistence_failures_state: crate::persistence_failures::ReadState,
+    pub persistence_failures_fault: Option<crate::persistence_failures::DiagnosticFault>,
+    pub current_process_save_failures: Vec<crate::persistence_failures::SaveFailure>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -399,28 +402,33 @@ pub fn context_over_limit_run_ids(
 }
 
 pub fn export_run(
-    conn: &Connection,
+    store: &crate::Store,
     thread_id: &str,
     run_id: &str,
 ) -> Result<String, DiagnosticError> {
+    let conn = store.conn();
     if thread_id.is_empty() || run_id.is_empty() {
         return Err(DiagnosticError::InvalidField { field: "identity" });
     }
     let events = read_by_run(conn, thread_id, run_id)?;
-    let failures = crate::persistence_failures::read_by_run(conn, thread_id, run_id);
-    let persistence_failures_unavailable = failures.is_err();
-    let persistence_failures = failures.unwrap_or_default();
-    if events.is_empty() && persistence_failures.is_empty() {
+    let report = crate::persistence_failures::read_report(conn, thread_id, run_id);
+    let current_process_save_failures =
+        crate::persistence_failures::process_save_failures(store, thread_id, run_id);
+    if events.is_empty() && report.failures.is_empty() && current_process_save_failures.is_empty() {
         return Err(DiagnosticError::NotFound);
     }
     let incomplete_attempt_ids = incomplete_attempt_ids(&events);
     Ok(serde_json::to_string(&DiagnosticExport {
-        schema_version: 3,
+        schema_version: 4,
         events,
         incomplete_attempt_ids,
         recent_process_storage: crate::write_coordination::recent_observations(conn),
-        persistence_failures,
-        persistence_failures_unavailable,
+        persistence_failures: report.failures,
+        persistence_failures_unavailable: report.state
+            != crate::persistence_failures::ReadState::Readable,
+        persistence_failures_state: report.state,
+        persistence_failures_fault: report.fault,
+        current_process_save_failures,
     })?)
 }
 
