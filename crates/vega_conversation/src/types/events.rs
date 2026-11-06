@@ -85,6 +85,9 @@ pub enum RunFailureKind {
     CredentialCheckUnavailable,
     CredentialStorageUnavailable,
     CredentialInternalUnavailable,
+    ConfigurationRestartRequired,
+    ConfigurationRepairRequired,
+    ConfigurationAccessUnavailable,
     CredentialStateUnavailable,
     ProjectInstructionsUnavailable,
     ProjectPathInvalid,
@@ -144,6 +147,13 @@ impl RunFailureKind {
                 Some(
                     "missing" | "unsafe" | "malformed" | "limit" | "credential_io" | "unsupported",
                 ) => Self::CredentialStorageUnavailable,
+                Some("configuration_poisoned") => Self::ConfigurationRestartRequired,
+                Some("configuration_lock_validation" | "configuration_parse") => {
+                    Self::ConfigurationRepairRequired
+                }
+                Some(
+                    "configuration_directory" | "configuration_lock_open" | "configuration_read",
+                ) => Self::ConfigurationAccessUnavailable,
                 Some("database" | "configuration") => Self::CredentialInternalUnavailable,
                 Some("state" | "worker") => Self::CredentialStateUnavailable,
                 _ => Self::CredentialCheckUnavailable,
@@ -372,7 +382,22 @@ impl RunFailureKind {
             vega_runtime::VegaError::CredentialExposureBlocked => Self::CredentialExposureBlocked,
             vega_runtime::VegaError::CredentialCheckUnavailable => Self::CredentialCheckUnavailable,
             vega_runtime::VegaError::CredentialRead(error) => {
-                if error.reason.needs_credential_settings() {
+                if error.reason == vega_runtime::CredentialReadReason::ConfigurationPoisoned {
+                    Self::ConfigurationRestartRequired
+                } else if matches!(
+                    error.reason,
+                    vega_runtime::CredentialReadReason::ConfigurationLockValidation
+                        | vega_runtime::CredentialReadReason::ConfigurationParse
+                ) {
+                    Self::ConfigurationRepairRequired
+                } else if matches!(
+                    error.reason,
+                    vega_runtime::CredentialReadReason::ConfigurationDirectory
+                        | vega_runtime::CredentialReadReason::ConfigurationLockOpen
+                        | vega_runtime::CredentialReadReason::ConfigurationRead
+                ) {
+                    Self::ConfigurationAccessUnavailable
+                } else if error.reason.needs_credential_settings() {
                     Self::CredentialStorageUnavailable
                 } else if matches!(
                     error.reason,
@@ -487,6 +512,15 @@ impl RunFailureKind {
             }
             Self::CredentialInternalUnavailable => {
                 vega_i18n::t("domain.failure.credential_internal").into()
+            }
+            Self::ConfigurationRestartRequired => {
+                vega_i18n::t("domain.failure.configuration_restart").into()
+            }
+            Self::ConfigurationRepairRequired => {
+                vega_i18n::t("domain.failure.configuration_repair").into()
+            }
+            Self::ConfigurationAccessUnavailable => {
+                vega_i18n::t("domain.failure.configuration_access").into()
             }
             Self::CredentialStateUnavailable => {
                 vega_i18n::t("domain.failure.credential_state").into()

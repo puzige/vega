@@ -314,4 +314,7 @@
 "domain.failure.context_arithmetic" = "Context accounting exceeded safe arithmetic bounds. Start a new conversation; if this persists, report the issue."
 "domain.failure.credential_storage" = "Local credentials are missing or cannot be read safely. Check credential settings before continuing. Completed actions are preserved."
 "domain.failure.credential_internal" = "The safety check could not access local storage or configuration. Try continuing shortly. Completed actions are preserved."
+"domain.failure.configuration_restart" = "Configuration access stopped after an internal failure. Restart Vega before continuing. Completed actions are preserved."
+"domain.failure.configuration_repair" = "Configuration could not be validated safely. Repair the configuration or its lock file permissions before retrying. Completed actions are preserved."
+"domain.failure.configuration_access" = "Configuration could not be read safely. Check the configuration directory and file access before retrying. Completed actions are preserved."
 "domain.failure.credential_state" = "The safety check could not validate the current run. Try continuing; if it persists, reopen the conversation. Completed actions are preserved."

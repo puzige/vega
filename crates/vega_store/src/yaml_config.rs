@@ -10,6 +10,45 @@ use yaml_edit::{Mapping, YamlFile, YamlKind, YamlNode};
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 static EDIT_LOCK: Mutex<()> = Mutex::new(());
 
+#[cfg(test)]
+mod configuration_failure_tests;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("configuration check failed ({stage:?}, {kind:?})")]
+pub struct ConfigurationFailure {
+    pub stage: ConfigurationFailureStage,
+    pub kind: io::ErrorKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigurationFailureStage {
+    Poisoned,
+    Directory,
+    LockOpen,
+    LockValidation,
+    Read,
+    Parse,
+}
+
+impl ConfigurationFailureStage {
+    fn wrap(self, error: io::Error) -> io::Error {
+        io::Error::new(
+            error.kind(),
+            ConfigurationFailure {
+                stage: self,
+                kind: error.kind(),
+            },
+        )
+    }
+}
+
+pub fn failure(error: &io::Error) -> Option<ConfigurationFailure> {
+    error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<ConfigurationFailure>())
+        .copied()
+}
+
 pub struct Edit {
     path: PathBuf,
     bytes: std::cell::RefCell<Option<Vec<u8>>>,
@@ -125,6 +164,10 @@ pub fn section<T: DeserializeOwned + Default>(bytes: &[u8], name: &str) -> io::R
 }
 
 pub fn read(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    read_checked(path).map_err(|error| ConfigurationFailureStage::Read.wrap(error))
+}
+
+fn read_checked(path: &Path) -> io::Result<Option<Vec<u8>>> {
     validate_parents(path)?;
     let mut options = OpenOptions::new();
     options.read(true);
@@ -151,11 +194,13 @@ pub fn read(path: &Path) -> io::Result<Option<Vec<u8>>> {
 }
 
 pub fn begin(path: &Path) -> io::Result<Edit> {
-    let guard = EDIT_LOCK
-        .lock()
-        .map_err(|_| io::Error::other("configuration unavailable"))?;
-    let parent = path.parent().ok_or_else(invalid)?;
-    private_directory(parent)?;
+    let guard = EDIT_LOCK.lock().map_err(|_| {
+        ConfigurationFailureStage::Poisoned.wrap(io::Error::other("configuration unavailable"))
+    })?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| ConfigurationFailureStage::Directory.wrap(invalid()))?;
+    private_directory(parent).map_err(|error| ConfigurationFailureStage::Directory.wrap(error))?;
     let lock_path = parent.join(".config.lock");
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
@@ -166,24 +211,32 @@ pub fn begin(path: &Path) -> io::Result<Edit> {
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
     }
-    let file = options.open(lock_path)?;
-    if !file.metadata()?.is_file() {
-        return Err(invalid());
+    let file = options
+        .open(lock_path)
+        .map_err(|error| ConfigurationFailureStage::LockOpen.wrap(error))?;
+    if !file
+        .metadata()
+        .map_err(|error| ConfigurationFailureStage::LockValidation.wrap(error))?
+        .is_file()
+    {
+        return Err(ConfigurationFailureStage::LockValidation.wrap(invalid()));
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let metadata = file.metadata()?;
+        let metadata = file
+            .metadata()
+            .map_err(|error| ConfigurationFailureStage::LockValidation.wrap(error))?;
         // SAFETY: geteuid has no arguments or memory preconditions.
         let uid = unsafe { libc::geteuid() };
         if metadata.uid() != uid || metadata.mode() & 0o077 != 0 || metadata.nlink() != 1 {
-            return Err(invalid());
+            return Err(ConfigurationFailureStage::LockValidation.wrap(invalid()));
         }
     }
     file.try_lock().map_err(|_| conflict())?;
     let bytes = read(path)?;
     if let Some(bytes) = bytes.as_deref() {
-        value(bytes)?;
+        value(bytes).map_err(|error| ConfigurationFailureStage::Parse.wrap(error))?;
     }
     Ok(Edit {
         path: path.to_path_buf(),
