@@ -995,14 +995,13 @@ fn execute_skill_call(
     reasoning: Option<&FrozenReasoning>,
     max_tokens: Option<u32>,
     revision: u64,
-    direct_user_round: bool,
 ) -> Result<SkillExecution, VegaError> {
     let mut run = config.run.lock().map_err(|_| skill_runtime_error())?;
     let catalog = run.model_catalog().to_string();
     match action {
         SkillToolAction::Load { name } => {
             let mut over_budget_envelope = None;
-            let outcome = run.load_model_for_round(&name, direct_user_round, |prospective| {
+            let outcome = run.load_model(&name, |prospective| {
                 let mut projected = messages.to_vec();
                 projected.push(ChatMessage::tool_result(
                     &call.id,
@@ -1453,7 +1452,6 @@ where
     // `--max-turns` default); a positive value soft-stops before issuing the
     // (limit + 1)th request.
     let mut turn_index = 0usize;
-    let mut direct_user_skill_round = true;
     let mut input_anchor: Option<InputAnchor> = None;
     let mut primary_revision = 0_u64;
     let mut progress = progress::ProgressReporter::new();
@@ -3310,7 +3308,6 @@ where
                     &mut sink,
                 )
                 .await?;
-                direct_user_skill_round = true;
                 progress = progress::ProgressReporter::new();
                 recovery = progress_recovery::ProgressRecovery::default();
                 context_operation_id = input.assistant_message_id.clone();
@@ -3903,7 +3900,6 @@ where
                                     request.reasoning.as_ref(),
                                     request_output_cap(request.max_tokens, context_budget),
                                     primary_revision,
-                                    direct_user_skill_round,
                                 )?;
                                 if let Some(prospective) = executed.over_budget_envelope.as_deref()
                                 {
@@ -3963,7 +3959,6 @@ where
                                             request.reasoning.as_ref(),
                                             request_output_cap(request.max_tokens, context_budget),
                                             primary_revision,
-                                            direct_user_skill_round,
                                         )?;
                                     }
                                 }
@@ -4238,7 +4233,6 @@ where
                 &mut sink,
             )
             .await?;
-            direct_user_skill_round = true;
             progress = progress::ProgressReporter::new();
             recovery = progress_recovery::ProgressRecovery::default();
             steered = true;
@@ -4298,9 +4292,6 @@ where
             {
                 last.attach_recovery_guidance(guidance);
             }
-        }
-        if !steered && batch_policy != BatchPolicy::SkillOnly {
-            direct_user_skill_round = false;
         }
         live_projection_revision = live_projection_revision.saturating_add(1);
     }
