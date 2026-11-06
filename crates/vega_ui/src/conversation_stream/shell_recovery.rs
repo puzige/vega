@@ -11,7 +11,7 @@ pub enum ShellRecoveryAction {
     Check(ShellRecoveryProjection),
     Retry(ShellRecoveryProjection),
     Prepare(ShellRecoveryProjection),
-    Resume(ShellRecoveryConfirmation),
+    Resume(Box<ShellRecoveryConfirmation>),
 }
 
 #[derive(Clone)]
@@ -23,7 +23,7 @@ pub struct ShellRecoveryRequested {
 
 pub enum ShellRecoveryOutcome {
     Projection(ShellRecoveryProjection),
-    Confirmation(ShellRecoveryConfirmation),
+    Confirmation(Box<ShellRecoveryConfirmation>),
 }
 
 impl EventEmitter<ShellRecoveryRequested> for ConversationStream {}
@@ -33,7 +33,7 @@ pub(crate) struct ShellRecoveryUi {
     pending: Option<&'static str>,
     pub(super) opened: bool,
     projection: Option<ShellRecoveryProjection>,
-    confirmation: Option<ShellRecoveryConfirmation>,
+    confirmation: Option<Box<ShellRecoveryConfirmation>>,
     error: Option<ShellRecoveryError>,
     refresh: Option<gpui_kit::Task<()>>,
     review_focus: FocusHandle,

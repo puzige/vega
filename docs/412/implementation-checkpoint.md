@@ -4,7 +4,7 @@
 
 用户已冻结 v1.1，以 `6c0cb43e3db3cd7d0e4368acb8915a1af73fa9f2` 的[合同与用户流程](best-effort-shell-contract-review.md)授权恢复代码实现。下文旧平台强保证阻塞只作历史，不再作为本轮启用前提；本轮不声称消除了已接受的 best-effort 残余风险。
 
-- 当前 master 基线：`61fbac402132e5e445d2d32e23eaf4ace684a838`；Shell 迁移已顺延为 `0060_shell_operations.sql`，保留 master 的 0059。任务分支 `feat/412-shell-design`。早期实现与文档已重放，冻结合同内容未改。
+- 当前 master 基线：`d4beacac2f01d4c09af7545163393e9d43753fe9`；Shell 迁移已顺延为 `0060_shell_operations.sql`，保留 master 的 0059。任务分支 `feat/412-shell-design`。早期实现与文档已重放，冻结合同内容未改。
 - 已写入、部分开发回归已执行，完整合同尚未验证：有界进程身份跟踪与清理 owner；输出/reader 未收束所有权；独立持久化 blocker、精确终态提交读回、用户处置幂等；重启只读资源复查；双向写范围准入；恢复前使旧文件读取失效。
 - 本轮静态修正：启动 blocker 查询缺失、旧 fixture 字段/API 不匹配、未解决终态占用运行槽、共享内存 blocker 误解除风险，以及 reader 超时使用 abort 的路径。保留原断言，不将这些静态修正称为行为通过。
 - 四个相关开发测试文件保留本卡开发回归（含 macOS 条件入口）；源码入口数量不是 Actions 发现或执行计数。覆盖存储身份/回执/历史输出缺口、写范围/容量/独立 blocker、输出游标/脱敏/reader 与读取世代；尚不足以证明 BE01–BE26 与 legacy A–N 全部通过。
@@ -16,6 +16,7 @@
 - 第四轮 head `511909d16f55c42b09c5723ad50c80359a8f4b51` 的 [Actions run 42188897854](https://github.com/puzige/vega/actions/runs/42188897854)：Nextest job `127795753656`、Clippy job `127795754229` 均因活动 owner 查询对 String 错用 as_deref 编译失败，测试发现/执行计数未取得。已按真实字段修正，不修改断言。本轮增量另修活 child/reader/资源未收束时继续保留执行槽，以及按 operation 身份同步/解除持久化内存隔离，补相应容量与独立 blocker 回归；待新轮 Actions。
 - 第五轮 head `6f601401f23a24e2fa8e2fbd54e34cd1dcb72477` 的 [Actions run 42190284466](https://github.com/puzige/vega/actions/runs/42190284466) 仍未执行行为测试：Nextest 编译因 UI 刷新字段缺 GPUI Task 类型，Clippy 报活动 owner 返回类型复杂。已改完整类型和命名别名，不添加 lint 豁免、不改断言，待新轮 Actions。
 - 第六轮 head `78b7f49aa2beb5f867c3bd42ada393f851615530` 的 [Actions run 42191340187](https://github.com/puzige/vega/actions/runs/42191340187)：Nextest job `127803834191` 首次真实运行 28 条（16 binaries），26 通过 / 2 失败 / 0 跳过。严格投影回归揭示输出字节数可超过游标跨度的产品缺口，已加跨度验证；恢复幂等回归实际保留正确 blocker 集合，仅因无关顺序失败，改为排序后精确比较完整集合。Clippy job `127803834450` 的启动参数过多与 fixture 默认值后赋值已用执行上下文/结构体初始化修正，无 lint 豁免。修正版重放到新 master，无冲突且 range-diff 八提交均等价；需新轮验证。
+- 第七轮 head `aca915f9f5f80224f235bbc35dc0e5b9df63001f` 的 [Actions run 42192666817](https://github.com/puzige/vega/actions/runs/42192666817)：Nextest job `127808226258` 真实运行 28 条（16 binaries），28 通过 / 0 失败 / 0 跳过。Clippy job `127808225893` 仍因恢复 Action/Outcome 中确认值大枚举失败，required check 未通过；用 Box 间接保存同一确认值，未改恢复语义。再次同步 master 的 NSH 预览更新，无冲突；新 head 须重新验证，旧行为成功不替代新版本完整门禁。
 - 两次只读独审代理均在无产物/无结论时中断并释放；首次恢复请求被工具以代理状态拒绝。不继续循环重建代理，需可用的非实现者审查环境，不能自审替代。实现独立审查未取得；旧文档独审不代表实现通过。最终交付前必须保留可恢复开发测试证据、清理 Rust 测试及独占支持，再取得最终 head 的 required CI。
 - 当前未合并、未发布应用、未修改用户运行时数据库；本卡保持 In progress。
 

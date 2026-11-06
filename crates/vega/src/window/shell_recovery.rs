@@ -52,6 +52,7 @@ impl VegaWindow {
                     .map(ShellRecoveryOutcome::Projection),
                 ShellRecoveryAction::Prepare(projection) => service
                     .prepare(source, projection)
+                    .map(Box::new)
                     .map(ShellRecoveryOutcome::Confirmation),
                 ShellRecoveryAction::Resume(confirmation) => service
                     .resume(confirmation)
