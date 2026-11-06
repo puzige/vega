@@ -24,6 +24,7 @@ pub mod pending_messages;
 pub mod permission_contracts;
 pub mod permission_reset;
 pub mod permissions;
+pub mod persistence_failures;
 pub mod projects;
 pub mod reasoning;
 pub mod recovery;
