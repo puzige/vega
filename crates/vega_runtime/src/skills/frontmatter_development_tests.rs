@@ -113,6 +113,44 @@ fn tagged_and_aliased_types_keep_field_context() {
 }
 
 #[test]
+fn signed_nonfinite_values_and_alias_keys_keep_string_boundaries() {
+    for value in [".NaN", "+.NaN", "-.NaN", ".Inf", "+.Inf", "-.Inf"] {
+        for fields in [
+            format!("allowed-tools: [Read, {value}]\n"),
+            format!("extra: &value {value}\nallowed-tools: [*value]\n"),
+            format!("extra: &field allowed-tools\n? *field\n: [{value}]\n"),
+        ] {
+            assert_eq!(parse(&fields), Err(SkillError::InvalidAllowedTools));
+        }
+        let fields =
+            format!("extra: &field allowed-tools\n? *field\n: [Read, '{value}', !!str {value}]\n");
+        assert_eq!(
+            parse(&fields).unwrap().metadata.allowed_tools,
+            Some(format!("Read {value} {value}"))
+        );
+    }
+    for (field, expected) in [
+        ("license", SkillError::InvalidLicense),
+        ("compatibility", SkillError::InvalidCompatibility),
+        ("metadata", SkillError::InvalidMetadata),
+        ("allowed-tools", SkillError::InvalidAllowedTools),
+    ] {
+        assert_eq!(
+            parse(&format!("extra: &field {field}\n? *field\n: !!int 7\n")),
+            Err(expected)
+        );
+    }
+    assert_eq!(
+        parse("extra: &field allowed-tools\n? *field\n: [Read, Grep]\n")
+            .unwrap()
+            .metadata
+            .allowed_tools
+            .as_deref(),
+        Some("Read Grep")
+    );
+}
+
+#[test]
 fn known_field_errors_identify_the_responsible_field() {
     for (yaml, expected) in [
         ("description: ok\n", SkillError::InvalidNameField),

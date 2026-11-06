@@ -235,6 +235,7 @@ struct FieldTypes {
     field: Option<SkillError>,
     error: Option<SkillError>,
     hazardous_anchors: BTreeMap<usize, bool>,
+    anchored_fields: BTreeMap<usize, Option<SkillError>>,
     containers: Vec<usize>,
 }
 
@@ -257,6 +258,9 @@ impl FieldTypes {
                 self.finish_value();
             }
             Event::Scalar(value, style, anchor, tag) => {
+                if *anchor != 0 {
+                    self.anchored_fields.insert(*anchor, field_error(value));
+                }
                 if self.depth == 1 && self.expecting_key {
                     self.field = field_error(value);
                     self.expecting_key = false;
@@ -269,7 +273,7 @@ impl FieldTypes {
                         *style == ScalarStyle::Plain
                             && matches!(
                                 value.to_ascii_lowercase().as_str(),
-                                ".nan" | ".inf" | "+.inf" | "-.inf"
+                                ".nan" | "+.nan" | "-.nan" | ".inf" | "+.inf" | "-.inf"
                             )
                     }
                 };
@@ -280,6 +284,11 @@ impl FieldTypes {
                 self.finish_value();
             }
             Event::Alias(anchor) => {
+                if self.depth == 1 && self.expecting_key {
+                    self.field = self.anchored_fields.get(anchor).copied().flatten();
+                    self.expecting_key = false;
+                    return;
+                }
                 let hazardous = self.hazardous_anchors.get(anchor).copied().unwrap_or(false);
                 self.record_hazard(hazardous);
                 self.finish_value();

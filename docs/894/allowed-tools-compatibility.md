@@ -10,8 +10,8 @@ Baseline: `16df62bdb939543fe144c32c0bfdea5fa84807a4`. Scope approved by the user
 | String list | Join entries with one space in original order, preserving each entry's bytes | Actions parser regression |
 | Empty list / empty or whitespace-only list entries | Empty list becomes `Some("")`; empty entries are retained by joining, consistent with existing empty strings; no permission interpretation | Actions parser regression |
 | Missing or null `allowed-tools` | `None`, preserving optional-field behavior | Actions parser regression |
-| Map, nested list, boolean, number (including non-finite numbers), null list item | Reject with `invalid_allowed_tools`; no scalar coercion; quoted numeric-looking strings remain strings | Actions parser regression |
-| Explicit core-tagged non-string values and aliases to them | Actual recognized field diagnostic, including aliases whose definition is in an unknown extension field | Actions parser regression |
+| Map, nested list, boolean, number (including signed NaN and infinity in every case-insensitive spelling accepted by the locked parser), null list item | Reject with `invalid_allowed_tools`; no scalar coercion; quoted numeric-looking strings remain strings | Actions parser regression |
+| Explicit core-tagged non-string values and aliases to them | Actual recognized field diagnostic, including aliases whose definition is in an unknown extension field; top-level alias keys resolve the same recognized field as scalar keys | Actions parser regression |
 | Missing / non-string / invalid `name` | Name-field diagnostic; valid names still must match directory | Actions parser regression |
 | Missing / invalid / empty / overlong `description` | Description-field diagnostic | Actions parser regression |
 | Invalid `license` / `compatibility` types or invalid compatibility length | Respective field diagnostic | Actions parser regression |
