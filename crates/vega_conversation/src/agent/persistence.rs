@@ -687,8 +687,14 @@ fn log_persistence_result<T>(
             sqlite_extended_code: metrics.sqlite_extended_code,
             observations: scope.observations(),
         };
-        if vega_store::persistence_failures::record(store.conn(), failure).is_err() {
-            tracing::warn!(?category, outcome = "failure_diagnostic_unavailable");
+        if let Err(fault) = vega_store::persistence_failures::record(store, failure) {
+            tracing::warn!(
+                ?category,
+                stage = ?fault.stage,
+                io_kind = fault.io_kind,
+                os_code = fault.os_code,
+                outcome = "failure_diagnostic_unavailable"
+            );
         }
     }
     tracing::debug!(
@@ -771,3 +777,7 @@ pub(crate) fn runtime_event_requires_ack(event: &RuntimeEvent) -> bool {
             | RuntimeEvent::DiagnosticAttempt(_)
     )
 }
+
+#[cfg(test)]
+#[path = "diagnostic_availability_development_tests.rs"]
+mod diagnostic_availability_development_tests;
