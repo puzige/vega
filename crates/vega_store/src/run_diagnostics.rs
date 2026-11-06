@@ -730,8 +730,22 @@ fn validate_credential_details(metrics: &DiagnosticMetrics) -> Result<(), Diagno
         (
             Some("provider" | "bindings" | "mcp" | "privacy" | "authority" | "worker"),
             Some(
-                "missing" | "unsafe" | "malformed" | "limit" | "credential_io" | "unsupported"
-                | "database" | "configuration" | "state" | "worker",
+                "missing"
+                | "unsafe"
+                | "malformed"
+                | "limit"
+                | "credential_io"
+                | "unsupported"
+                | "database"
+                | "configuration"
+                | "configuration_poisoned"
+                | "configuration_directory"
+                | "configuration_lock_open"
+                | "configuration_lock_validation"
+                | "configuration_read"
+                | "configuration_parse"
+                | "state"
+                | "worker",
             ),
         ) if metrics.failure_kind.as_deref() == Some("credential_check") => Ok(()),
         _ => Err(DiagnosticError::InvalidField {

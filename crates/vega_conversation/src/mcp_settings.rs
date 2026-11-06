@@ -75,6 +75,9 @@ impl From<McpStoreError> for McpSettingsError {
         match error {
             McpStoreError::Invalid => Self::Invalid,
             McpStoreError::Configuration => Self::Store,
+            McpStoreError::ConfigurationFailure(failure) => {
+                Self::CredentialRead(configuration_failure(failure))
+            }
             McpStoreError::ConfigurationIo(kind) => match kind {
                 std::io::ErrorKind::WouldBlock => Self::Conflict,
                 std::io::ErrorKind::InvalidData => Self::Invalid,
@@ -103,9 +106,33 @@ fn cleanup_pending(store: &Store, path: &std::path::Path) -> Result<bool, McpSto
     Ok(pending)
 }
 
+fn configuration_failure(
+    failure: vega_store::yaml_config::ConfigurationFailure,
+) -> CredentialReadError {
+    use vega_store::yaml_config::ConfigurationFailureStage as Stage;
+    let mut error = CredentialReadError::configuration_io(CredentialReadStage::Mcp, failure.kind);
+    error.reason = match failure.stage {
+        Stage::Poisoned => CredentialReadReason::ConfigurationPoisoned,
+        Stage::Directory => CredentialReadReason::ConfigurationDirectory,
+        Stage::LockOpen => CredentialReadReason::ConfigurationLockOpen,
+        Stage::LockValidation => CredentialReadReason::ConfigurationLockValidation,
+        Stage::Read => CredentialReadReason::ConfigurationRead,
+        Stage::Parse => CredentialReadReason::ConfigurationParse,
+    };
+    error
+}
+
+fn configuration_io(error: std::io::Error) -> CredentialReadError {
+    match vega_store::yaml_config::failure(&error) {
+        Some(failure) => configuration_failure(failure),
+        None => CredentialReadError::configuration_io(CredentialReadStage::Mcp, error.kind()),
+    }
+}
+
 fn mcp_read_error(error: McpStoreError) -> CredentialReadError {
     match error {
         McpStoreError::Sql(error) => CredentialReadError::database(CredentialReadStage::Mcp, error),
+        McpStoreError::ConfigurationFailure(failure) => configuration_failure(failure),
         McpStoreError::ConfigurationIo(kind) => {
             CredentialReadError::configuration_io(CredentialReadStage::Mcp, kind)
         }
@@ -1306,9 +1333,7 @@ impl McpServerSettingsService {
             .lock()
             .map_err(|_| crate::credential_errors::state_error(CredentialReadStage::Mcp))?;
         let path = self.config_root.join("config.yaml");
-        let _document = vega_store::yaml_config::begin(&path).map_err(|error| {
-            CredentialReadError::configuration_io(CredentialReadStage::Mcp, error.kind())
-        })?;
+        let _document = vega_store::yaml_config::begin(&path).map_err(configuration_io)?;
         if !cleanup_pending(&store, &path).map_err(mcp_read_error)? {
             return Ok(());
         }

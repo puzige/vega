@@ -61,7 +61,10 @@ fn json<T: Serialize>(value: &T) -> Result<String, McpStoreError> {
 }
 
 fn io_error(error: io::Error) -> McpStoreError {
-    McpStoreError::ConfigurationIo(error.kind())
+    match crate::yaml_config::failure(&error) {
+        Some(failure) => McpStoreError::ConfigurationFailure(failure),
+        None => McpStoreError::ConfigurationIo(error.kind()),
+    }
 }
 
 fn digest(bytes: Option<&[u8]>) -> Vec<u8> {
@@ -208,22 +211,38 @@ fn canonical(mut declarations: Vec<Declaration>) -> Result<Vec<Declaration>, Mcp
     Ok(declarations)
 }
 
+fn parse_error(kind: io::ErrorKind) -> McpStoreError {
+    McpStoreError::ConfigurationFailure(crate::yaml_config::ConfigurationFailure {
+        stage: crate::yaml_config::ConfigurationFailureStage::Parse,
+        kind,
+    })
+}
+
 fn parse(bytes: Option<&[u8]>) -> Result<Vec<Declaration>, McpStoreError> {
-    canonical(match bytes {
+    let declarations = match bytes {
         Some(bytes) => {
             let _: crate::config::AppConfig =
-                crate::yaml_config::decode(bytes).map_err(io_error)?;
+                crate::yaml_config::decode(bytes).map_err(|error| parse_error(error.kind()))?;
             let reasoning: crate::reasoning::ReasoningConfig =
-                crate::yaml_config::section(bytes, "reasoning").map_err(io_error)?;
-            reasoning.validate().map_err(|_| McpStoreError::Invalid)?;
+                crate::yaml_config::section(bytes, "reasoning")
+                    .map_err(|error| parse_error(error.kind()))?;
+            reasoning
+                .validate()
+                .map_err(|_| parse_error(io::ErrorKind::InvalidData))?;
             let capabilities: crate::model_capabilities::ModelCapabilityConfig =
-                crate::yaml_config::section(bytes, "model_capabilities").map_err(io_error)?;
+                crate::yaml_config::section(bytes, "model_capabilities")
+                    .map_err(|error| parse_error(error.kind()))?;
             capabilities
                 .validate()
-                .map_err(|_| McpStoreError::Invalid)?;
-            crate::yaml_config::section(bytes, "mcp_servers").map_err(io_error)?
+                .map_err(|_| parse_error(io::ErrorKind::InvalidData))?;
+            crate::yaml_config::section(bytes, "mcp_servers")
+                .map_err(|error| parse_error(error.kind()))?
         }
         None => Vec::new(),
+    };
+    canonical(declarations).map_err(|error| match error {
+        McpStoreError::Invalid | McpStoreError::Capacity => parse_error(io::ErrorKind::InvalidData),
+        error => error,
     })
 }
 

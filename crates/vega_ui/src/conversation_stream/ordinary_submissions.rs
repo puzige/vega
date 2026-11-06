@@ -1,5 +1,6 @@
 use super::*;
 use gpui_kit::Role;
+
 use vega_conversation::types::{
     AttemptId, CommitFact, OrdinarySubmission, PrimaryFact, RetryBlocker, RetryEligibility,
     SubmissionFailure, SubmissionId,
@@ -65,6 +66,15 @@ impl OrdinaryStatus {
                     .then_some(("ui.ordinary_send.check_status", OrdinaryAction::CheckStatus)),
             });
         }
+        if let Self::Failed(SubmissionFailure::Preparation(detail), _) = self
+            && detail.credential_reason == Some("configuration_poisoned")
+        {
+            return Some(OrdinaryControls {
+                message: "domain.failure.configuration_restart",
+                detail: None,
+                action: None,
+            });
+        }
         let (message, label, action) = match self {
             Self::Pending | Self::Committed => return None,
             Self::Unknown => (
@@ -125,6 +135,13 @@ fn preparation_message(
         return match reason {
             "missing" | "unsafe" | "malformed" | "limit" | "credential_io" | "unsupported" => {
                 "ui.ordinary_send.credential_failed"
+            }
+            "configuration_poisoned" => "domain.failure.configuration_restart",
+            "configuration_lock_validation" | "configuration_parse" => {
+                "domain.failure.configuration_repair"
+            }
+            "configuration_directory" | "configuration_lock_open" | "configuration_read" => {
+                "domain.failure.configuration_access"
             }
             "database" | "configuration" => "ui.ordinary_send.safety_storage_failed",
             _ => "ui.ordinary_send.safety_state_failed",

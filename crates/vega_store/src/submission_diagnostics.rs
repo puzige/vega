@@ -119,6 +119,12 @@ pub fn append(conn: &Connection, event: &PreparationEvent) -> rusqlite::Result<(
                                 | "unsupported"
                                 | "database"
                                 | "configuration"
+                                | "configuration_poisoned"
+                                | "configuration_directory"
+                                | "configuration_lock_open"
+                                | "configuration_lock_validation"
+                                | "configuration_read"
+                                | "configuration_parse"
                                 | "state"
                                 | "worker"
                         )
