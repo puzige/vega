@@ -147,7 +147,13 @@ impl RunFailureKind {
                 Some(
                     "missing" | "unsafe" | "malformed" | "limit" | "credential_io" | "unsupported",
                 ) => Self::CredentialStorageUnavailable,
-                Some("configuration_poisoned") => Self::ConfigurationRestartRequired,
+                Some("configuration_poisoned") => {
+                    if vega_store::yaml_config::edit_lock_poisoned() {
+                        Self::ConfigurationRestartRequired
+                    } else {
+                        Self::CredentialCheckUnavailable
+                    }
+                }
                 Some("configuration_lock_validation" | "configuration_parse") => {
                     Self::ConfigurationRepairRequired
                 }

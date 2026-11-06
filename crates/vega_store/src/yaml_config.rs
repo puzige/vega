@@ -42,6 +42,10 @@ impl ConfigurationFailureStage {
     }
 }
 
+pub fn edit_lock_poisoned() -> bool {
+    EDIT_LOCK.is_poisoned()
+}
+
 pub fn failure(error: &io::Error) -> Option<ConfigurationFailure> {
     error
         .get_ref()
