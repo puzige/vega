@@ -708,7 +708,3 @@ fn log_transaction<T>(
         sqlite_extended_code = extended
     );
 }
-
-#[cfg(test)]
-#[path = "write_coordination_development_tests.rs"]
-mod development_tests;

@@ -771,7 +771,3 @@ pub(crate) fn runtime_event_requires_ack(event: &RuntimeEvent) -> bool {
             | RuntimeEvent::DiagnosticAttempt(_)
     )
 }
-
-#[cfg(test)]
-#[path = "persistence_diagnostics_development_tests.rs"]
-mod diagnostics_development_tests;

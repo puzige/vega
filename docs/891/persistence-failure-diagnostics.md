@@ -34,11 +34,17 @@
 
 ## 当前验证状态
 
-实现草稿：三个actor命令失败在释放业务事务后保存独立快照；导出schema3同时包含持久化失败和旧进程内记录；安全文件descriptor锚定、0700/0600、无链接、原子替换、64个slot/单条64KiB上限。成功不触发诊断文件读写。7个开发回归入口含actor真实事件失败、queue超时owner、engine begin、重开/导出、拒绝路径、并发上限及成功事务。尚未执行，不能称通过；本地只做fmt/diff静态检查。
+三个actor命令失败在释放业务事务后保存独立快照；导出schema3同时包含持久化失败和旧进程内记录；安全文件descriptor锚定、0700/0600、无链接、原子替换、64个slot/单条64KiB上限，另有1个锁文件和至多1个临时文件。成功不触发诊断文件读写。
+
+开发通过HEAD `7dac4eb363b18610000177fbd392e53ec972f1b2`，[Actions 42144127326](https://github.com/puzige/vega/actions/runs/42144127326)，Clippy `127651379510` / Nextest `127651380083` / required `127652855187`均success。实际 **11发现/11执行/11通过/0跳过**（含1个子进程入口），Python三组5/15/40均OK。回归涵盖actor真实事件busy与原错误不变、queue owner、engine begin、重开/导出、安全拒绝、独立进程重启与并发写后保留、rename前退出的有界staging恢复。并发导出、任意掉电点和真实历史持锁者不在该结果证明范围内；queue回归直接保存快照，不冒充actor队列失败覆盖。
+
+可恢复源码：已push并读回远端标签 [`evidence/891-persistence-tests-7dac4eb3`](https://github.com/puzige/vega/tree/evidence/891-persistence-tests-7dac4eb3)，指向上述完整SHA；[原始patch](https://github.com/puzige/vega/commit/7dac4eb363b18610000177fbd392e53ec972f1b2.patch)。内容API读回存储回归blob `cb87360dbdb1eabf7b47e871d1e1b4f840928d1e`。独立实现/修正审查均结束，无剩余阻塞发现。
+
+最终候选删除3份开发Rust测试及3处独占模块声明，不改生产逻辑、安全断言、manifest/lock/workflow/Python。清理后的静态检查与最终head完整required CI另验；必须确认 `no Rust tests`（0发现/0执行），不称Rust测试通过。本地仅fmt/diff静态检查，无本地执行/编译/测试。
 
 ## 暂停恢复与审查修正
 
-首轮开发HEAD `4fa8b45b6657a0c70dec69fe1a22392fe6b668b7` / Actions `42141534796` 在编译时因测试误用 `WriteCategory::Permission`（应为 `Permissions`）失败，Rust发现/执行数量未取得。独审另确认进程重启后slot计数归零会过早覆盖、唯一临时名在崩溃后可能无界遗留；按上述文件协议修正，并补真实子进程重启、独立并发写入、原子替换前退出及不安全遗留临时文件回归。不是原事件busy根因修复；原历史持锁者仍未知。
+首轮开发HEAD `4fa8b45b6657a0c70dec69fe1a22392fe6b668b7` / Actions `42141534796` 在编译时因测试误用 `WriteCategory::Permission`（应为 `Permissions`）失败，Rust发现/执行数量未取得。独审另确认进程重启后slot计数归零会过早覆盖、唯一临时名在崩溃后可能无界遗留；按上述文件协议修正，并补真实子进程重启、独立并发写入、原子替换前退出及不安全遗留临时文件回归。随后Actions `42143149099` 的11项回归通过，Clippy仅因actor测试多余 `as_deref()`失败，按原日志删除冗余转换、未改断言含义或生产代码；新head完整门禁结果见上节。不是原事件busy根因修复；原历史持锁者仍未知。
 
 ## 非目标与限制
 
