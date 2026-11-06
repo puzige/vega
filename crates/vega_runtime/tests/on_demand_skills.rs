@@ -18,18 +18,22 @@ use vega_runtime::{
 
 struct Fixture {
     root: PathBuf,
+    checkpoints: PathBuf,
 }
 
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("vega-skills-{}", ulid::Ulid::generate()));
+        let id = ulid::Ulid::generate();
+        let root = std::env::temp_dir().join(format!("vega-skills-{id}"));
+        let checkpoints = std::env::temp_dir().join(format!("vega-skill-checkpoints-{id}"));
+        fs::create_dir_all(&checkpoints).unwrap();
         fs::create_dir_all(root.join("skills")).unwrap();
         fs::write(
             root.join("investigation.txt"),
             "Investigate layout; do not grant new permissions.",
         )
         .unwrap();
-        let fixture = Self { root };
+        let fixture = Self { root, checkpoints };
         for name in ["layout", "workflow", "format", "extra"] {
             fixture.write_skill(
                 name,
@@ -100,7 +104,7 @@ impl Fixture {
                 RuntimePermissionMode::ReadOnly,
                 "project".into(),
                 "thread".into(),
-                self.root.join("checkpoints"),
+                self.checkpoints.clone(),
                 vec![],
             )
             .with_turn_limit(10)
@@ -121,6 +125,7 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
+        let _ = fs::remove_dir_all(&self.checkpoints);
     }
 }
 
@@ -148,10 +153,9 @@ impl Provider for ScriptedProvider {
     ) -> BoxFuture<'static, Result<EventStream, VegaError>> {
         if req.messages.iter().any(|message| {
             message.role == ChatRole::Tool && message.content.contains("Investigate layout")
-        }) {
-            if let Some(authority) = &self.revoke_after_read {
-                authority.store(false, Ordering::SeqCst);
-            }
+        }) && let Some(authority) = &self.revoke_after_read
+        {
+            authority.store(false, Ordering::SeqCst);
         }
         self.requests.lock().unwrap().push(req);
         let events = self
