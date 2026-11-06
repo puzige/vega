@@ -54,6 +54,7 @@ impl Fixture {
         fs::create_dir_all(&root).unwrap();
         let database = root.join("queue.sqlite");
         let store = Store::open(&database).unwrap();
+        store.migrate().unwrap();
         let project = vega_store::projects::create(
             store.conn(),
             root.to_str().unwrap(),

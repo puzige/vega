@@ -972,6 +972,11 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         ));
     }
 
+    let _execution = vega_store::write_coordination::ExecutionScope::begin(
+        &thread_id,
+        &assistant_message_id,
+        vega_store::write_coordination::WriteActivity::Preparation,
+    );
     let store = Store::open(&database_path).map_err(runtime_store_error)?;
     let admission =
         super::ordinary::verified_admission(&store, &thread_id, config.admission.as_ref())?;

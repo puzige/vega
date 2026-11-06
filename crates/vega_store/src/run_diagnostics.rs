@@ -202,6 +202,8 @@ pub struct DiagnosticExport {
     pub events: Vec<DiagnosticEvent>,
     pub incomplete_attempt_ids: Vec<String>,
     pub recent_process_storage: Vec<crate::write_coordination::StorageObservation>,
+    pub persistence_failures: Vec<crate::persistence_failures::PersistenceFailure>,
+    pub persistence_failures_unavailable: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -405,15 +407,20 @@ pub fn export_run(
         return Err(DiagnosticError::InvalidField { field: "identity" });
     }
     let events = read_by_run(conn, thread_id, run_id)?;
-    if events.is_empty() {
+    let failures = crate::persistence_failures::read_by_run(conn, thread_id, run_id);
+    let persistence_failures_unavailable = failures.is_err();
+    let persistence_failures = failures.unwrap_or_default();
+    if events.is_empty() && persistence_failures.is_empty() {
         return Err(DiagnosticError::NotFound);
     }
     let incomplete_attempt_ids = incomplete_attempt_ids(&events);
     Ok(serde_json::to_string(&DiagnosticExport {
-        schema_version: 2,
+        schema_version: 3,
         events,
         incomplete_attempt_ids,
         recent_process_storage: crate::write_coordination::recent_observations(conn),
+        persistence_failures,
+        persistence_failures_unavailable,
     })?)
 }
 
