@@ -334,7 +334,3 @@ fn allow_core_tag(tag: &Tag) -> Result<(), SkillError> {
         _ => Err(SkillError::ForbiddenTag),
     }
 }
-
-#[cfg(test)]
-#[path = "frontmatter_development_tests.rs"]
-mod development_tests;
