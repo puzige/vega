@@ -14,6 +14,11 @@ pub(super) struct ScopedBashExecution {
     pub started_at: Option<Arc<std::sync::OnceLock<std::time::Instant>>>,
 }
 
+pub(super) struct ScopedBashSessionExecution {
+    pub cancel: CancellationToken,
+    pub redactor: vega_tools::BashSessionRedactor,
+}
+
 impl ScopedBashAuthority {
     pub(super) async fn execute(
         &self,
@@ -40,9 +45,9 @@ impl ScopedBashAuthority {
         tools: Tools,
         prepared: PreparedBash,
         policy: BashLaunchPolicy,
-        cancel: CancellationToken,
-        redactor: vega_tools::BashSessionRedactor,
+        execution: ScopedBashSessionExecution,
     ) -> Result<vega_tools::BashSession, BashError> {
+        let ScopedBashSessionExecution { cancel, redactor } = execution;
         let (tools, prepared, scope) = self
             .authorize(hook, call_id, tools, prepared, policy, cancel.clone())
             .await?;

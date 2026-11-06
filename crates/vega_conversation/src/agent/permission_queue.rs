@@ -649,8 +649,7 @@ impl RuntimePermissionHook for RuntimePermissionAdapter<'_> {
                 tools,
                 prepared,
                 policy,
-                cancel,
-                redactor,
+                super::scoped_bash::ScopedBashSessionExecution { cancel, redactor },
             )
             .boxed()
     }

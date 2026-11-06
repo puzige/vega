@@ -236,8 +236,10 @@ async fn absent_persistence_or_cancelled_run_rejects_session_authority()
     let _serial = serial().lock().await;
     let workspace = Workspace::new()?;
     let tools = Tools::new(&workspace.0)?;
-    let mut config = RuntimeToolConfig::default();
-    config.thread_id = "thread".into();
+    let config = RuntimeToolConfig {
+        thread_id: "thread".into(),
+        ..RuntimeToolConfig::default()
+    };
     let cancel = CancellationToken::new();
     let owner = ShellRun::new(&tools, &config, Some("run".into()), cancel.clone());
     let prepared = tools.prepare_bash_json("{\"cmd\":\"true\",\"wait_ms\":0}")?;

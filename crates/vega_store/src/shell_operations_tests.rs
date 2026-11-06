@@ -247,11 +247,12 @@ fn accepted_decision_replay_does_not_clear_new_or_unselected_blockers() -> rusql
         6,
     )?;
     let remaining = recovery(store.conn(), "/workspace")?;
-    let ids: Vec<_> = remaining
+    let mut ids: Vec<_> = remaining
         .items
         .iter()
         .map(|item| item.operation_id.as_str())
         .collect();
+    ids.sort_unstable();
     assert_eq!(ids, vec!["new-operation", "other-operation"]);
     assert!(has_unknown_workspace(store.conn(), "/workspace/nested")?);
     assert!(has_unknown_workspace(store.conn(), "/")?);

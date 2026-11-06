@@ -4,18 +4,19 @@
 
 用户已冻结 v1.1，以 `6c0cb43e3db3cd7d0e4368acb8915a1af73fa9f2` 的[合同与用户流程](best-effort-shell-contract-review.md)授权恢复代码实现。下文旧平台强保证阻塞只作历史，不再作为本轮启用前提；本轮不声称消除了已接受的 best-effort 残余风险。
 
-- 当前 master 基线：`d36ce592c26450a0d243f77bec9bbaa11dc2e546`；Shell 迁移已顺延为 `0060_shell_operations.sql`，保留 master 的 0059。任务分支 `feat/412-shell-design`。早期实现与文档已重放，冻结合同内容未改。
-- 已写入、尚未行为验证：有界进程身份跟踪与清理 owner；输出/reader 未收束所有权；独立持久化 blocker、精确终态提交读回、用户处置幂等；重启只读资源复查；双向写范围准入；恢复前使旧文件读取失效。
+- 当前 master 基线：`61fbac402132e5e445d2d32e23eaf4ace684a838`；Shell 迁移已顺延为 `0060_shell_operations.sql`，保留 master 的 0059。任务分支 `feat/412-shell-design`。早期实现与文档已重放，冻结合同内容未改。
+- 已写入、部分开发回归已执行，完整合同尚未验证：有界进程身份跟踪与清理 owner；输出/reader 未收束所有权；独立持久化 blocker、精确终态提交读回、用户处置幂等；重启只读资源复查；双向写范围准入；恢复前使旧文件读取失效。
 - 本轮静态修正：启动 blocker 查询缺失、旧 fixture 字段/API 不匹配、未解决终态占用运行槽、共享内存 blocker 误解除风险，以及 reader 超时使用 abort 的路径。保留原断言，不将这些静态修正称为行为通过。
 - 四个相关开发测试文件保留本卡开发回归（含 macOS 条件入口）；源码入口数量不是 Actions 发现或执行计数。覆盖存储身份/回执/历史输出缺口、写范围/容量/独立 blocker、输出游标/脱敏/reader 与读取世代；尚不足以证明 BE01–BE26 与 legacy A–N 全部通过。
 - 本轮 `cargo fmt --all -- --check`、`git diff --check` 退出 0。未本地编译、Clippy、运行 Vega、执行 Rust/Python 测试、进程实验或打包。
-- UI 委派中断且无交付，已释放写入权，主 Agent 接回。第一版可信恢复面板已写入：会话外显暂停入口、后台事件路由、三种恢复运行状态、绑定稳定确认的风险接受、中英文案与键盘按钮；尚未完成编译/原生验证。已增加严格会话回执投影及 running/finishing/stopping/终态工具卡展示；本轮补齐当前 owner 的可信单命令取消、活动刷新、Escape 返回、稳定返回焦点与保守确认焦点。完整恢复详情、剩余生命周期与故障验证仍待完成；键盘/像素未做原生验收。
+- UI 委派中断且无交付，已释放写入权，主 Agent 接回。第一版可信恢复面板已写入：会话外显暂停入口、后台事件路由、三种恢复运行状态、绑定稳定确认的风险接受、中英文案与键盘按钮；第六轮已完成编译，尚未完成原生验证。已增加严格会话回执投影及 running/finishing/stopping/终态工具卡展示；本轮补齐当前 owner 的可信单命令取消、活动刷新、Escape 返回、稳定返回焦点与保守确认焦点。完整恢复详情、剩余生命周期与故障验证仍待完成；键盘/像素未做原生验收。
 - **未完成、禁止合并** 的 draft 实现 [PR #906](https://github.com/puzige/vega/pull/906) 已创建。首轮开发 head `7c1d3cfd133ed543ff68001dcd6679f9c6206a87` 的 [Actions run 42182204652](https://github.com/puzige/vega/actions/runs/42182204652) 失败：Clippy job `127774165953` 的死代码/type-complexity；Nextest job `127774166356` 在编译阶段因缺少 `Value` 导入、越层引用未声明 `rusqlite` 失败。未进入测试发现/执行，计数未取得；不是行为测试失败。已按原始日志修导入、复用现有 SQL 参数/错误类型、删除无用 setter、提取类型别名；断言与门禁未放宽，修正版待新轮 Actions。
 - 第二轮 head `d2fcd6e98e22b1fc4e090e33b7713a1b52522a56` 的 [Actions run 42184044882](https://github.com/puzige/vega/actions/runs/42184044882) 仍在编译/Clippy 阶段失败：Nextest job `127780047120` 的应用退出调用缺少 `shutdown_shell_sessions` 导出与实现；Clippy job `127780046832` 的 `collapsible_if`、`SessionInput` 可见性。首轮导入/依赖错误未重现；仍无测试执行计数。已补应用级弱 owner 登记、先冻结准入后有界收束及导出，修正 lint，待新轮验证。
 - 第三轮 head `52cc03af4e8397ec42cca6d67b755d755e93f052` 的 [Actions run 42186233940](https://github.com/puzige/vega/actions/runs/42186233940) 失败：Clippy job `127787128780` 为存储恢复函数多余借用；Nextest job `127787128416` 在编译阶段报告投影 fixture 缺 description 与四处 API 入参错误。未进入测试发现/执行，计数未取得。按真实 API 修接线、去掉多余借用，未改断言。另补清理重试 future 被取消时归还 tracker/child/temp/reader 的 guard 与开发回归；静态检查通过，行为待下一轮 Actions。
 - 第四轮 head `511909d16f55c42b09c5723ad50c80359a8f4b51` 的 [Actions run 42188897854](https://github.com/puzige/vega/actions/runs/42188897854)：Nextest job `127795753656`、Clippy job `127795754229` 均因活动 owner 查询对 String 错用 as_deref 编译失败，测试发现/执行计数未取得。已按真实字段修正，不修改断言。本轮增量另修活 child/reader/资源未收束时继续保留执行槽，以及按 operation 身份同步/解除持久化内存隔离，补相应容量与独立 blocker 回归；待新轮 Actions。
 - 第五轮 head `6f601401f23a24e2fa8e2fbd54e34cd1dcb72477` 的 [Actions run 42190284466](https://github.com/puzige/vega/actions/runs/42190284466) 仍未执行行为测试：Nextest 编译因 UI 刷新字段缺 GPUI Task 类型，Clippy 报活动 owner 返回类型复杂。已改完整类型和命名别名，不添加 lint 豁免、不改断言，待新轮 Actions。
-- 对第五轮精确版本的独审代理在无产物/无结论时中断并释放，恢复请求被工具以代理状态拒绝；不计作独审通过。实现独立审查未取得；旧文档独审不代表实现通过。最终交付前必须保留可恢复开发测试证据、清理 Rust 测试及独占支持，再取得最终 head 的 required CI。
+- 第六轮 head `78b7f49aa2beb5f867c3bd42ada393f851615530` 的 [Actions run 42191340187](https://github.com/puzige/vega/actions/runs/42191340187)：Nextest job `127803834191` 首次真实运行 28 条（16 binaries），26 通过 / 2 失败 / 0 跳过。严格投影回归揭示输出字节数可超过游标跨度的产品缺口，已加跨度验证；恢复幂等回归实际保留正确 blocker 集合，仅因无关顺序失败，改为排序后精确比较完整集合。Clippy job `127803834450` 的启动参数过多与 fixture 默认值后赋值已用执行上下文/结构体初始化修正，无 lint 豁免。修正版重放到新 master，无冲突且 range-diff 八提交均等价；需新轮验证。
+- 两次只读独审代理均在无产物/无结论时中断并释放；首次恢复请求被工具以代理状态拒绝。不继续循环重建代理，需可用的非实现者审查环境，不能自审替代。实现独立审查未取得；旧文档独审不代表实现通过。最终交付前必须保留可恢复开发测试证据、清理 Rust 测试及独占支持，再取得最终 head 的 required CI。
 - 当前未合并、未发布应用、未修改用户运行时数据库；本卡保持 In progress。
 
 ## 历史状态（已被上文授权与合同取代）

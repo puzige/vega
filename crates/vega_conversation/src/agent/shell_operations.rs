@@ -226,6 +226,7 @@ pub(crate) fn valid_receipt(
     };
     if text.len() > 16 * 1024
         || retained > next
+        || u64::try_from(text.len()).map_or(true, |bytes| bytes > next - retained)
         || value["output_gap"].as_bool().is_none()
         || value["truncated"].as_bool().is_none()
         || value["duration_ms"].as_u64() != duration_ms
