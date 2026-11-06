@@ -14,6 +14,8 @@ mod stage_recovery;
 use lifecycle_ownership::LifecycleOwnership;
 mod precompute;
 mod provider;
+#[cfg(test)]
+mod steering_tests;
 use provider::{ChildProvider, ChildTransport};
 use vega_store::delegated_ownership::DelegatedOwnership;
 
@@ -124,7 +126,6 @@ struct RegistryState {
     ended: bool,
     admission_failure: Option<String>,
     steering: Option<Arc<dyn vega_runtime::RuntimeSteeringSource>>,
-    delivered_steering: Option<String>,
 }
 
 #[derive(Clone)]
@@ -398,18 +399,6 @@ impl Registry {
         Ok(all || fresh)
     }
 
-    fn steering_ready(&self, id: String) -> Result<bool, VegaError> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| failure("state unavailable"))?;
-        if state.delivered_steering.as_ref() == Some(&id) {
-            return Ok(false);
-        }
-        state.delivered_steering = Some(id);
-        Ok(true)
-    }
-
     fn update(&self, snapshot: SubagentSnapshot) -> Result<(), VegaError> {
         if let Some(record) = self
             .state
@@ -542,7 +531,7 @@ impl vega_runtime::RuntimeSubagentHook for Hook {
                         let steering = registry.state.lock().map_err(|_| failure("state unavailable"))?.steering.clone();
                         if let Some(source) = &steering {
                             let ready = tokio::select! { biased; _ = cancel.cancelled() => return Err(VegaError::Cancelled), ready = source.ready() => ready? };
-                            if let Some(id) = ready && registry.steering_ready(id)? { return answer("steering"); }
+                            if ready.is_some() { return answer("steering"); }
                         }
                         if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) { return answer("timeout"); }
                         let timeout = async { match deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => futures::future::pending().await } };
