@@ -567,8 +567,8 @@ fn field(actions: Actions, editor: Editor, index: usize) -> AnyElement {
                 .element_ref(&target)
                 .label(move || actions.state.with(|_| vega_i18n::t(FIELD_KEYS[index])))
                 .value(move || value.get())
-                .max_length(super::PRICING_INPUT_BYTES_LIMIT as u32)
-                .read_only(move || {
+                .max_length(super::state::PRICING_INPUT_BYTES_LIMIT as u32)
+                .readonly(move || {
                     actions.pending.get() || !editing(&actions.state.get()) || {
                         actions.edits.get();
                         editor.draft.read().frozen
@@ -696,7 +696,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                 .collect(),
         })
     });
-    let session = signal(None::<ProjectionId>);
+    let session = signal_with(None::<ProjectionId>, SignalEquals::Never);
     let form_revision = signal(0u64);
     let forms = signal(Vec::<(u64, Editor)>::new());
     effect(move || {

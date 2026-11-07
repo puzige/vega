@@ -299,6 +299,7 @@ impl Render for SettingsView {
         self.sync_default_model(cx);
         self.sync_usage_presentation(cx);
         self.sync_pricing_presentation(cx);
+        self.sync_agents_presentation(cx);
         self.sync_capability_presentations(cx);
         self.sync_permission_presentation(cx);
         self.prepare_default_permission_focus(window, cx);
@@ -581,7 +582,7 @@ impl Render for SettingsView {
                                         body.child(self.render_skills(cx))
                                     })
                                     .when(self.section == 7, |body| {
-                                        body.child(self.render_agents(cx))
+                                        body.child(self.render_agents(window, cx))
                                     })
                                     .tracked_scroll_edge_fade(
                                         self.section_scrolls[self.section].clone(),

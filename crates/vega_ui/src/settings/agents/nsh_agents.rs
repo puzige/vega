@@ -1,0 +1,818 @@
+use std::sync::{Arc, Mutex};
+
+use gpui_kit::{App, Context, Window};
+use nsh_core::prelude::*;
+use tokio::sync::{mpsc, oneshot};
+use vega_store::config::CodexAcpProfileConfig;
+use vega_theme::{Layout, ThemeColors, Typography};
+
+use super::{NativeAgentAction, SettingsView};
+use crate::nsh::{ProjectionId, Surface};
+
+#[derive(Clone, PartialEq, Eq)]
+struct Values {
+    text: [String; 3],
+    composing: [bool; 3],
+    revision: u64,
+    frozen: bool,
+}
+
+#[derive(Clone)]
+pub(in crate::settings) struct Draft(Arc<Mutex<Values>>);
+
+impl Draft {
+    fn new(text: [String; 3]) -> Self {
+        Self(Arc::new(Mutex::new(Values {
+            text,
+            composing: [false; 3],
+            revision: 0,
+            frozen: false,
+        })))
+    }
+
+    fn read(&self) -> Values {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    fn edit(&self, index: usize, text: Option<&str>, composing: Option<bool>) -> bool {
+        let mut values = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if values.frozen || index >= values.text.len() {
+            return false;
+        }
+        if let Some(text) = text {
+            values.text[index] = text.into();
+        }
+        if let Some(composing) = composing {
+            values.composing[index] = composing;
+        }
+        values.revision = values.revision.wrapping_add(1);
+        true
+    }
+
+    fn claim(&self, observed: &Values) -> Option<[String; 3]> {
+        let mut values = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if *values != *observed || values.frozen || values.composing.contains(&true) {
+            return None;
+        }
+        values.frozen = true;
+        Some(values.text.clone())
+    }
+
+    fn release(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .frozen = false;
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct Authority {
+    desktop: bool,
+    browser: bool,
+    profile: Option<CodexAcpProfileConfig>,
+    saving: bool,
+    profile_saving: bool,
+    component: &'static str,
+    accessibility: &'static str,
+    screen_recording: &'static str,
+    can_recheck: bool,
+    check_state: crate::cua_onboarding::controller::CheckState,
+    retained: bool,
+    feedback: Vec<(String, bool)>,
+}
+
+#[derive(Clone)]
+struct Snapshot {
+    id: ProjectionId,
+    visible: bool,
+    authority: Authority,
+    draft: Draft,
+    observed: Values,
+    colors: ThemeColors,
+}
+
+#[derive(Clone, Copy)]
+enum Action {
+    Native(NativeAgentAction),
+    Save,
+}
+struct Decision {
+    observed: Snapshot,
+    action: Action,
+    reply: oneshot::Sender<bool>,
+}
+enum Request {
+    Decide(Box<Decision>),
+    Layout(f32),
+}
+
+pub(in crate::settings) struct Presentation {
+    surface: Surface<Snapshot, Request>,
+    id: ProjectionId,
+    height: f32,
+}
+
+fn allowed(snapshot: &Snapshot, action: Action) -> bool {
+    match action {
+        Action::Save => {
+            !snapshot.authority.saving
+                && !snapshot.authority.profile_saving
+                && !snapshot.observed.frozen
+                && !snapshot.observed.composing.contains(&true)
+        }
+        Action::Native(NativeAgentAction::Desktop | NativeAgentAction::Browser) => {
+            !snapshot.authority.saving && !snapshot.authority.profile_saving
+        }
+        Action::Native(NativeAgentAction::Check) => snapshot.authority.can_recheck,
+        Action::Native(_) => true,
+    }
+}
+
+fn accepts(current: &Snapshot, observed: &Snapshot, action: Action) -> bool {
+    current.id.matches(&observed.id)
+        && current.visible
+        && current.authority == observed.authority
+        && Arc::ptr_eq(&current.draft.0, &observed.draft.0)
+        && current.observed == observed.observed
+        && allowed(current, action)
+}
+
+impl SettingsView {
+    pub(in crate::settings) fn release_agent_draft(&self) {
+        if let Some(draft) = &self.agents_nsh_draft {
+            draft.release();
+        }
+    }
+
+    fn agents_snapshot(&self, id: ProjectionId, cx: &App) -> Snapshot {
+        let preparation = self.preparation.read(cx).snapshot();
+        let view = &preparation.view;
+        let permission = |state| match state {
+            vega_conversation::types::PermissionState::Granted => "settings.state.on",
+            vega_conversation::types::PermissionState::Denied => "settings.state.denied",
+            vega_conversation::types::PermissionState::Unknown
+                if view.check_state == crate::cua_onboarding::controller::CheckState::Idle
+                    && !preparation.retained =>
+            {
+                "settings.state.unchecked"
+            }
+            _ => "settings.state.unknown",
+        };
+        let component = match view.component {
+            Some(vega_conversation::types::ComponentState::Available) => "settings.state.available",
+            Some(vega_conversation::types::ComponentState::Missing) => {
+                "settings.state.not_installed"
+            }
+            Some(vega_conversation::types::ComponentState::Incompatible) => {
+                "settings.state.incompatible"
+            }
+            Some(vega_conversation::types::ComponentState::UnsupportedPlatform) => {
+                "settings.state.unsupported_platform"
+            }
+            None if view.check_state == crate::cua_onboarding::controller::CheckState::Idle
+                && !preparation.retained =>
+            {
+                "settings.state.unchecked"
+            }
+            None => "settings.state.unknown",
+        };
+        let draft = self.agents_nsh_draft.clone().unwrap_or_else(|| {
+            Draft::new([
+                self.codex_name_input.read(cx).text().into(),
+                self.codex_executable_input.read(cx).text().into(),
+                self.codex_args_input.read(cx).text().into(),
+            ])
+        });
+        Snapshot {
+            id,
+            visible: self.section == 7
+                && cx
+                    .try_global::<crate::settings::SettingsOpen>()
+                    .is_some_and(|open| open.0),
+            authority: Authority {
+                desktop: self.config.agent.desktop_use_enabled,
+                browser: self.config.agent.browser_use_enabled,
+                profile: self.config.agent.codex_acp_profile.clone(),
+                saving: self.provider_is_saving() || self.default_permission.io_pending(),
+                profile_saving: self.codex_profile_saving,
+                component,
+                accessibility: permission(view.accessibility),
+                screen_recording: permission(view.screen_recording),
+                can_recheck: view.can_recheck,
+                check_state: view.check_state,
+                retained: preparation.retained,
+                feedback: preparation
+                    .feedback
+                    .into_iter()
+                    .map(|feedback| (feedback.message, feedback.warning))
+                    .collect(),
+            },
+            observed: draft.read(),
+            draft,
+            colors: vega_theme::theme(cx).colors,
+        }
+    }
+
+    pub(in crate::settings) fn sync_agents_presentation(&self, cx: &App) {
+        if let Some(page) = &self.agents_presentation {
+            page.surface
+                .publish(self.agents_snapshot(page.id.clone(), cx));
+        }
+    }
+
+    pub(crate) fn render_agents(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        use gpui_kit::{IntoElement, ParentElement, Styled};
+        if self.agents_nsh_draft.is_none() {
+            self.agents_nsh_draft = Some(Draft::new([
+                self.codex_name_input.read(cx).text().into(),
+                self.codex_executable_input.read(cx).text().into(),
+                self.codex_args_input.read(cx).text().into(),
+            ]));
+        }
+        if self.agents_presentation.is_none() {
+            let id = ProjectionId::new();
+            let (surface, mut requests) =
+                Surface::new(self.agents_snapshot(id.clone(), cx), render, window, cx);
+            self.agents_presentation = Some(Presentation {
+                surface,
+                id,
+                height: Layout::SETTINGS_NOTES_MAX_HEIGHT,
+            });
+            cx.spawn_in(window, async move |this, cx| {
+                while let Some(request) = requests.recv().await {
+                    if this
+                        .update_in(cx, |this, _, cx| {
+                            match request {
+                                Request::Decide(command) => {
+                                    let mut accepted =
+                                        this.agents_presentation.as_ref().is_some_and(|page| {
+                                            accepts(
+                                                &this.agents_snapshot(page.id.clone(), cx),
+                                                &command.observed,
+                                                command.action,
+                                            )
+                                        });
+                                    if accepted {
+                                        match command.action {
+                                            Action::Native(action) => {
+                                                this.native_agent_action(action, cx)
+                                            }
+                                            Action::Save => {
+                                                if let Some(values) = command
+                                                    .observed
+                                                    .draft
+                                                    .claim(&command.observed.observed)
+                                                {
+                                                    this.codex_name_input
+                                                        .update(cx, |input, cx| {
+                                                            input.set_text(&values[0], cx)
+                                                        });
+                                                    this.codex_executable_input
+                                                        .update(cx, |input, cx| {
+                                                            input.set_text(&values[1], cx)
+                                                        });
+                                                    this.codex_args_input
+                                                        .update(cx, |input, cx| {
+                                                            input.set_text(&values[2], cx)
+                                                        });
+                                                    this.save_codex_profile(cx);
+                                                    if !this.codex_profile_saving {
+                                                        this.release_agent_draft();
+                                                    }
+                                                } else {
+                                                    accepted = false;
+                                                }
+                                            }
+                                        }
+                                        cx.notify();
+                                    }
+                                    let _ = command.reply.send(accepted);
+                                }
+                                Request::Layout(height) if height.is_finite() && height > 0. => {
+                                    if let Some(page) = &mut this.agents_presentation
+                                        && (height - page.height).abs() > 0.5
+                                    {
+                                        page.height = height;
+                                        cx.notify();
+                                    }
+                                }
+                                Request::Layout(_) => {}
+                            }
+                            this.sync_agents_presentation(cx);
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
+        let Some(page) = &self.agents_presentation else {
+            return gpui_kit::div().into_any_element();
+        };
+        let snapshot = self.agents_snapshot(page.id.clone(), cx);
+        let Some(page) = &mut self.agents_presentation else {
+            return gpui_kit::div().into_any_element();
+        };
+        page.surface.sync_environment(cx);
+        page.surface.publish(snapshot);
+        gpui_kit::div()
+            .w_full()
+            .flex_shrink_0()
+            .h(gpui_kit::px(page.height))
+            .child(page.surface.entity())
+            .into_any_element()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Actions {
+    state: Signal<Snapshot>,
+    pending: Signal<bool>,
+    failed: Signal<bool>,
+    edits: Signal<u64>,
+}
+impl Actions {
+    fn snapshot(self) -> Snapshot {
+        self.edits.get();
+        let mut snapshot = self.state.get();
+        snapshot.observed = snapshot.draft.read();
+        snapshot
+    }
+
+    fn send(self, commands: mpsc::Sender<Request>, action: Action) {
+        let observed = self.snapshot();
+        if self.pending.get_untracked() || !observed.visible || !allowed(&observed, action) {
+            return;
+        }
+        self.pending.set(true);
+        self.failed.set(false);
+        spawn(async move {
+            let (reply, response) = oneshot::channel();
+            let accepted = commands
+                .send(Request::Decide(Box::new(Decision {
+                    observed,
+                    action,
+                    reply,
+                })))
+                .await
+                .is_ok()
+                && matches!(response.await, Ok(true));
+            self.failed.set(!accepted);
+            self.pending.set(false);
+        });
+    }
+}
+
+fn translated(state: Signal<Snapshot>, key: &'static str) -> AnyElement {
+    text(move || state.with(|_| vega_i18n::t(key))).into_element()
+}
+
+fn button(
+    actions: Actions,
+    commands: mpsc::Sender<Request>,
+    action: Action,
+    key: &'static str,
+) -> AnyElement {
+    let target = element_ref();
+    let focused = signal(false);
+    target.on_focus_in(move || focused.set(true));
+    target.on_focus_out(move || focused.set(false));
+    view()
+        .element_ref(&target)
+        .role(AccessibilityRole::Button)
+        .focusable(true)
+        .label(move || actions.state.with(|_| vega_i18n::t(key)))
+        .disabled(move || actions.pending.get() || !allowed(&actions.snapshot(), action))
+        .flex_row()
+        .items_center()
+        .border(px(1.))
+        .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+        .px_3()
+        .py_2()
+        .border_color(move || {
+            crate::nsh::color(if focused.get() {
+                actions.state.get().colors.accent
+            } else {
+                actions.state.get().colors.border_subtle
+            })
+        })
+        .bg(move || crate::nsh::color(actions.state.get().colors.bg_elevated))
+        .on_press(move |_: &PressEvent| actions.send(commands.clone(), action))
+        .child(text(move || {
+            actions.state.with(|snapshot| {
+                vega_i18n::t(
+                    if matches!(action, Action::Save) && snapshot.authority.profile_saving {
+                        "settings.saving"
+                    } else if matches!(action, Action::Native(NativeAgentAction::Check))
+                        && !snapshot.authority.can_recheck
+                    {
+                        "settings.state.checking"
+                    } else {
+                        key
+                    },
+                )
+            })
+        }))
+        .into_element()
+}
+
+fn group(state: Signal<Snapshot>) -> nsh_core::element::View {
+    view()
+        .w_full()
+        .gap_3()
+        .p(px(Layout::SETTINGS_GROUP_PADDING))
+        .border(px(1.))
+        .rounded(px(Layout::PANEL_RADIUS))
+        .border_color(move || crate::nsh::color(state.get().colors.border_subtle))
+        .bg(move || crate::nsh::color(state.get().colors.bg_subtle))
+}
+
+fn field(actions: Actions, draft: Draft, index: usize, key: &'static str) -> AnyElement {
+    let value = signal(draft.read().text[index].clone());
+    let edits = draft.clone();
+    let composition = draft.clone();
+    let target = element_ref();
+    let focused = signal(false);
+    target.on_focus_in(move || focused.set(true));
+    target.on_focus_out(move || focused.set(false));
+    view()
+        .w_full()
+        .gap_1()
+        .child(translated(actions.state, key))
+        .child(
+            nsh_base::input()
+                .element_ref(&target)
+                .label(move || actions.state.with(|_| vega_i18n::t(key)))
+                .value(move || value.get())
+                .multiline(index == 2)
+                .readonly(move || {
+                    actions.pending.get() || actions.state.get().authority.profile_saving || {
+                        actions.edits.get();
+                        draft.read().frozen
+                    }
+                })
+                .border(px(1.))
+                .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+                .px_3()
+                .py_2()
+                .w_full()
+                .border_color(move || {
+                    crate::nsh::color(if focused.get() {
+                        actions.state.get().colors.accent
+                    } else {
+                        actions.state.get().colors.border_subtle
+                    })
+                })
+                .bg(move || crate::nsh::color(actions.state.get().colors.bg_elevated))
+                .on_change(move |text: &str| {
+                    if edits.edit(index, Some(text), None) {
+                        value.set(text.to_owned());
+                        actions
+                            .edits
+                            .update(|revision| *revision = revision.wrapping_add(1));
+                    }
+                })
+                .on_composition_change(move |event: &Composition| {
+                    if composition.edit(index, None, Some(event.composing)) {
+                        actions
+                            .edits
+                            .update(|revision| *revision = revision.wrapping_add(1));
+                    }
+                }),
+        )
+        .into_element()
+}
+
+fn toggle(actions: Actions, commands: mpsc::Sender<Request>, desktop: bool) -> AnyElement {
+    let key = if desktop {
+        "settings.agents.desktop.title"
+    } else {
+        "settings.agents.browser.title"
+    };
+    let action = Action::Native(if desktop {
+        NativeAgentAction::Desktop
+    } else {
+        NativeAgentAction::Browser
+    });
+    let enabled = move || {
+        let authority = actions.state.get().authority;
+        if desktop {
+            authority.desktop
+        } else {
+            authority.browser
+        }
+    };
+    let target = element_ref();
+    let focused = signal(false);
+    target.on_focus_in(move || focused.set(true));
+    target.on_focus_out(move || focused.set(false));
+    view()
+        .flex_row()
+        .flex_wrap()
+        .items_center()
+        .justify_between()
+        .gap_3()
+        .child(translated(actions.state, key))
+        .child(
+            view()
+                .element_ref(&target)
+                .role(AccessibilityRole::Switch)
+                .focusable(true)
+                .label(move || actions.state.with(|_| vega_i18n::t(key)))
+                .accessibility_state(move || AccessibilityState {
+                    checked: if enabled() {
+                        Checked::True
+                    } else {
+                        Checked::False
+                    },
+                    ..Default::default()
+                })
+                .disabled(move || actions.pending.get() || !allowed(&actions.snapshot(), action))
+                .border(px(1.))
+                .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+                .px_3()
+                .py_2()
+                .border_color(move || {
+                    crate::nsh::color(if focused.get() {
+                        actions.state.get().colors.accent
+                    } else {
+                        actions.state.get().colors.border_subtle
+                    })
+                })
+                .bg(move || {
+                    crate::nsh::color(if enabled() {
+                        actions.state.get().colors.bg_active
+                    } else {
+                        actions.state.get().colors.bg_elevated
+                    })
+                })
+                .on_press(move |_: &PressEvent| actions.send(commands.clone(), action))
+                .child(text(move || {
+                    actions.state.with(|_| {
+                        vega_i18n::t(if enabled() {
+                            "settings.state.on"
+                        } else {
+                            "settings.state.off"
+                        })
+                    })
+                })),
+        )
+        .into_element()
+}
+
+fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
+    let actions = Actions {
+        state,
+        pending: signal(false),
+        failed: signal(false),
+        edits: signal(0),
+    };
+    let draft = state.get_untracked().draft;
+    let layout = commands.clone();
+    let measured = signal(0.0f32);
+    view()
+        .w_full()
+        .flex_shrink_0()
+        .gap(px(Layout::SETTINGS_SECTION_GAP))
+        .text_size(px(Typography::BODY))
+        .text_color(move || crate::nsh::color(state.get().colors.text_primary))
+        .on_layout(move |bounds: &Bounds<Points>| {
+            let height = bounds.size.height.0;
+            if height.is_finite() && height > 0. && (height - measured.get_untracked()).abs() > 0.5
+            {
+                measured.set(height);
+                let commands = layout.clone();
+                spawn(async move {
+                    if commands.send(Request::Layout(height)).await.is_err() {
+                        actions.failed.set(true);
+                    }
+                });
+            }
+        })
+        .child(
+            group(state)
+                .child(translated(state, "settings.agents.native.title"))
+                .child(toggle(actions, commands.clone(), true))
+                .child(toggle(actions, commands.clone(), false))
+                .child(
+                    view()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap_2()
+                        .child(button(
+                            actions,
+                            commands.clone(),
+                            Action::Native(NativeAgentAction::Prepare),
+                            "settings.agents.desktop.prepare",
+                        ))
+                        .child(button(
+                            actions,
+                            commands.clone(),
+                            Action::Native(NativeAgentAction::Check),
+                            "settings.action.recheck",
+                        )),
+                )
+                .child(each(
+                    move || state.get().authority.feedback,
+                    |item| item.clone(),
+                    move |item, _| {
+                        text(move || item.get().0).text_color(move || {
+                            crate::nsh::color(if item.get().1 {
+                                state.get().colors.warning
+                            } else {
+                                state.get().colors.text_secondary
+                            })
+                        })
+                    },
+                ))
+                .child(
+                    view()
+                        .flex_row()
+                        .flex_wrap()
+                        .justify_between()
+                        .gap_2()
+                        .child(translated(state, "settings.agents.desktop.component"))
+                        .child(text(move || {
+                            state.with(|snapshot| vega_i18n::t(snapshot.authority.component))
+                        })),
+                )
+                .child(
+                    view()
+                        .flex_row()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .child(translated(state, "settings.agents.accessibility"))
+                        .child(text(move || {
+                            state.with(|snapshot| vega_i18n::t(snapshot.authority.accessibility))
+                        }))
+                        .child(button(
+                            actions,
+                            commands.clone(),
+                            Action::Native(NativeAgentAction::Accessibility),
+                            "settings.agents.accessibility.settings",
+                        )),
+                )
+                .child(
+                    view()
+                        .flex_row()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .child(translated(state, "settings.agents.screen_recording"))
+                        .child(text(move || {
+                            state.with(|snapshot| vega_i18n::t(snapshot.authority.screen_recording))
+                        }))
+                        .child(button(
+                            actions,
+                            commands.clone(),
+                            Action::Native(NativeAgentAction::ScreenRecording),
+                            "settings.agents.screen_recording.settings",
+                        )),
+                )
+                .child(translated(
+                    state,
+                    "settings.agents.screen_recording.restart",
+                ))
+                .child(
+                    view()
+                        .flex_row()
+                        .flex_wrap()
+                        .justify_between()
+                        .gap_2()
+                        .child(translated(state, "settings.agents.capture"))
+                        .child(translated(state, "settings.state.unverified")),
+                )
+                .child(button(
+                    actions,
+                    commands.clone(),
+                    Action::Native(NativeAgentAction::Extension),
+                    "settings.agents.browser.install_extension",
+                )),
+        )
+        .child(
+            group(state)
+                .child(text("Codex"))
+                .child(text(move || {
+                    state.with(|snapshot| {
+                        vega_i18n::t(if snapshot.authority.profile.is_some() {
+                            "settings.agents.codex.configured"
+                        } else {
+                            "settings.agents.codex.setup"
+                        })
+                    })
+                }))
+                .child(field(actions, draft.clone(), 0, "settings.field.name"))
+                .child(field(
+                    actions,
+                    draft.clone(),
+                    1,
+                    "settings.field.executable",
+                ))
+                .child(field(actions, draft, 2, "settings.field.arguments"))
+                .child(translated(state, "settings.agents.codex.arguments_hint"))
+                .child(button(
+                    actions,
+                    commands,
+                    Action::Save,
+                    "settings.agents.codex.save",
+                )),
+        )
+        .child(when(
+            move || actions.failed.get(),
+            move || translated(state, "ui.command_failed"),
+        ))
+        .into_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_profile_claim_preserves_arguments_and_blocks_composition_stale_or_double_save() {
+        let draft = Draft::new([
+            "Name".into(),
+            "/path with spaces/agent".into(),
+            "--first\n\n two words \n--last".into(),
+        ]);
+        let stale = draft.read();
+        assert!(draft.edit(0, Some("新名称"), Some(true)));
+        assert!(draft.claim(&stale).is_none());
+        assert!(draft.claim(&draft.read()).is_none());
+        assert!(draft.edit(0, None, Some(false)));
+        let values = draft.claim(&draft.read()).unwrap();
+        assert_eq!(values[0], "新名称");
+        assert_eq!(values[2], "--first\n\n two words \n--last");
+        assert!(!draft.edit(2, Some("late"), None));
+        assert!(draft.claim(&draft.read()).is_none());
+        draft.release();
+        assert!(draft.edit(2, Some("retry"), None));
+        assert_eq!(draft.read().text[2], "retry");
+    }
+
+    #[test]
+    fn agent_actions_reject_hidden_changed_busy_and_foreign_drafts() {
+        let draft = Draft::new(std::array::from_fn(|_| String::new()));
+        let observed = Snapshot {
+            id: ProjectionId::new(),
+            visible: true,
+            authority: Authority {
+                desktop: false,
+                browser: false,
+                profile: None,
+                saving: false,
+                profile_saving: false,
+                component: "settings.state.unknown",
+                accessibility: "settings.state.unknown",
+                screen_recording: "settings.state.unknown",
+                can_recheck: true,
+                check_state: crate::cua_onboarding::controller::CheckState::Idle,
+                retained: false,
+                feedback: vec![],
+            },
+            observed: draft.read(),
+            draft,
+            colors: vega_theme::Theme::light().colors,
+        };
+        assert!(accepts(&observed, &observed, Action::Save));
+        let mut current = observed.clone();
+        current.visible = false;
+        assert!(!accepts(&current, &observed, Action::Save));
+        current = observed.clone();
+        current.authority.desktop = true;
+        assert!(!accepts(
+            &current,
+            &observed,
+            Action::Native(NativeAgentAction::Desktop)
+        ));
+        current = observed.clone();
+        current.authority.saving = true;
+        assert!(!allowed(&current, Action::Save));
+        assert!(!allowed(
+            &current,
+            Action::Native(NativeAgentAction::Browser)
+        ));
+        current = observed.clone();
+        current.authority.check_state = crate::cua_onboarding::controller::CheckState::Checking;
+        current.authority.can_recheck = false;
+        assert!(!accepts(
+            &current,
+            &observed,
+            Action::Native(NativeAgentAction::Check)
+        ));
+        current = observed.clone();
+        current.draft = Draft::new(std::array::from_fn(|_| String::new()));
+        assert!(!accepts(&current, &observed, Action::Save));
+    }
+}
