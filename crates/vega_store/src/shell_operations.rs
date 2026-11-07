@@ -55,7 +55,13 @@ fn terminal(state: &str) -> bool {
 }
 
 fn overlap(a: &str, b: &str) -> bool {
-    Path::new(a).starts_with(b) || Path::new(b).starts_with(a)
+    if Path::new(a).starts_with(b) || Path::new(b).starts_with(a) {
+        return true;
+    }
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a.starts_with(&b) || b.starts_with(&a),
+        _ => false,
+    }
 }
 
 fn epoch(conn: &Connection, workspace: &str) -> rusqlite::Result<i64> {
@@ -325,13 +331,30 @@ pub fn command_presentations(
     Ok(commands)
 }
 
+fn recovery_epoch(conn: &Connection, workspace: &str) -> rusqlite::Result<i64> {
+    let mut statement = conn.prepare("SELECT workspace,epoch FROM shell_workspace_epochs")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let mut total = 0i64;
+    for row in rows {
+        let (path, value) = row?;
+        if overlap(&path, workspace) {
+            total = total
+                .checked_add(value)
+                .ok_or(rusqlite::Error::InvalidQuery)?;
+        }
+    }
+    Ok(total)
+}
+
 pub fn recovery(conn: &Connection, workspace: &str) -> rusqlite::Result<ShellWorkspaceRecovery> {
     let items = list_blockers(conn)?
         .into_iter()
         .filter(|item| overlap(&item.workspace, workspace))
         .collect();
     Ok(ShellWorkspaceRecovery {
-        epoch: epoch(conn, workspace)?,
+        epoch: recovery_epoch(conn, workspace)?,
         items,
     })
 }
@@ -522,7 +545,7 @@ pub fn resume_writes(
             Err(rusqlite::Error::InvalidQuery)
         };
     }
-    if epoch(&tx, workspace)? != expected_epoch {
+    if recovery_epoch(&tx, workspace)? != expected_epoch {
         return Err(rusqlite::Error::InvalidQuery);
     }
     let current = recovery(&tx, workspace)?;
@@ -530,7 +553,7 @@ pub fn resume_writes(
         let item = current
             .items
             .iter()
-            .find(|item| &item.operation_id == operation && item.workspace == workspace)
+            .find(|item| &item.operation_id == operation && overlap(&item.workspace, workspace))
             .ok_or(rusqlite::Error::InvalidQuery)?;
         if !item.facts.resources_closed
             || (!item.facts.process_resolved
@@ -543,13 +566,28 @@ pub fn resume_writes(
             return Err(rusqlite::Error::InvalidQuery);
         }
     }
-    let next = advance(&tx, workspace)?;
+    let mut affected = vec![workspace.to_owned()];
     for operation in &selected {
-        tx.execute(
+        let item = current
+            .items
+            .iter()
+            .find(|item| &item.operation_id == operation)
+            .ok_or(rusqlite::Error::InvalidQuery)?;
+        if !affected.contains(&item.workspace) {
+            affected.push(item.workspace.clone());
+        }
+        let removed = tx.execute(
             "DELETE FROM shell_blockers WHERE operation_id=?1 AND workspace=?2",
-            params![operation, workspace],
+            params![operation, item.workspace],
         )?;
+        if removed != 1 {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
     }
+    for path in affected {
+        advance(&tx, &path)?;
+    }
+    let next = recovery_epoch(&tx, workspace)?;
     tx.execute("INSERT INTO shell_dispositions(disposition_id,workspace,operation_ids,expected_epoch,committed_epoch,kind,content,created_at) VALUES(?1,?2,?3,?4,?5,'user_risk',?6,?7)",params![decision,workspace,json(&selected)?,expected_epoch,next,content,now])?;
     tx.commit()
 }

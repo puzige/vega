@@ -282,6 +282,35 @@ fn observation_consumes_shared_budget_and_prevents_late_signals() {
 }
 
 #[test]
+fn initial_cleanup_scan_stops_observations_at_the_shared_deadline() {
+    let api = FakeProcesses::root();
+    api.0
+        .borrow_mut()
+        .identities
+        .insert(11, identity(11, 10, 10));
+    let mut tracker = ProcessTracker::with_api(10, api);
+    let start = tokio::time::Instant::now();
+    {
+        let mut state = tracker.api.0.borrow_mut();
+        state.now = Some(start);
+        state.inspect_cost = Duration::from_secs(3);
+    }
+    let deadline = start + Duration::from_secs(5);
+    tracker.discover_until(Some(deadline));
+    let observations = {
+        let state = tracker.api.0.borrow();
+        (state.inspections, state.lists)
+    };
+    assert_eq!(observations, (3, 1));
+    assert!(!tracker.settled(deadline));
+    tracker.signal(libc::SIGTERM, deadline);
+    tracker.signal(libc::SIGKILL, deadline);
+    let state = tracker.api.0.borrow();
+    assert_eq!((state.inspections, state.lists), observations);
+    assert!(state.signals.is_empty());
+}
+
+#[test]
 fn expired_cleanup_budget_performs_no_process_observation_or_signal() {
     let mut tracker = ProcessTracker::with_api(10, FakeProcesses::root());
     let before = tracker.api.0.borrow().inspections;

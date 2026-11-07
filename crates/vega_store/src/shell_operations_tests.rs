@@ -259,6 +259,89 @@ fn resource_registration_is_stable_and_never_replaces_prior_identity() -> rusqli
 }
 
 #[test]
+fn reappearing_alias_exposes_original_blocker_and_rejects_stale_recovery()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = std::env::temp_dir().join(format!("vega-shell-recovery-{}", ulid::Ulid::generate()));
+    std::fs::create_dir(&root)?;
+    let root = root.canonicalize()?;
+    let historical = root.join("historical");
+    let target = root.join("target");
+    let store = fixture();
+    let historical_text = historical.to_string_lossy();
+    let target_text = target.to_string_lossy();
+    let mut operation = record_for("prepared");
+    operation.workspace = &historical_text;
+    record(store.conn(), &operation, 1)?;
+    operation.state = "outcome_unknown";
+    record_with_facts(store.conn(), &operation, &settled_facts(true), 2)?;
+    assert!(recovery(store.conn(), &target_text)?.items.is_empty());
+    std::fs::create_dir(&target)?;
+    std::os::unix::fs::symlink(&target, &historical)?;
+    let initial = recovery(store.conn(), &target_text)?;
+    assert_eq!(initial.items.len(), 1);
+    assert_eq!(initial.items[0].operation_id, "op");
+    assert_eq!(command_presentations(store.conn(), &target_text)?.len(), 1);
+    append_cleanup_observation(
+        store.conn(),
+        "op",
+        "fresh-observation",
+        &settled_facts(true),
+        3,
+    )?;
+    assert!(
+        resume_writes(
+            store.conn(),
+            &target_text,
+            initial.epoch,
+            &["op".into()],
+            "stale-alias",
+            4
+        )
+        .is_err()
+    );
+    let current = recovery(store.conn(), &target_text)?;
+    assert!(current.epoch > initial.epoch);
+    resume_writes(
+        store.conn(),
+        &target_text,
+        current.epoch,
+        &["op".into()],
+        "accept-alias",
+        5,
+    )?;
+    assert!(verify_resume_decision(
+        store.conn(),
+        &target_text,
+        current.epoch,
+        &["op".into()],
+        "accept-alias"
+    )?);
+    assert!(recovery(store.conn(), &target_text)?.items.is_empty());
+    assert!(recovery(store.conn(), &historical_text)?.items.is_empty());
+    let mut newer = record_for("prepared");
+    newer.operation_id = "new-alias-operation";
+    newer.workspace = &historical_text;
+    record(store.conn(), &newer, 6)?;
+    newer.state = "outcome_unknown";
+    record_with_facts(store.conn(), &newer, &settled_facts(true), 7)?;
+    resume_writes(
+        store.conn(),
+        &target_text,
+        current.epoch,
+        &["op".into()],
+        "accept-alias",
+        8,
+    )?;
+    let remaining = recovery(store.conn(), &target_text)?;
+    assert_eq!(remaining.items.len(), 1);
+    assert_eq!(remaining.items[0].operation_id, "new-alias-operation");
+    std::fs::remove_file(&historical)?;
+    std::fs::remove_dir(&target)?;
+    std::fs::remove_dir(root)?;
+    Ok(())
+}
+
+#[test]
 fn accepted_decision_replay_does_not_clear_new_or_unselected_blockers() -> rusqlite::Result<()> {
     let store = fixture();
     for id in ["op", "other-operation"] {

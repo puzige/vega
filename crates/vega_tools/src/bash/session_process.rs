@@ -357,7 +357,7 @@ pub(super) async fn execute(
         }
     };
     let deadline = writer.begin_cleanup(reason);
-    tracker.discover();
+    tracker.discover_until(Some(deadline));
     if status.is_none() || !tracker.settled(deadline) {
         tracker.signal(libc::SIGTERM, deadline);
         let grace = std::cmp::min(deadline, tokio::time::Instant::now() + TERMINATION_GRACE);
