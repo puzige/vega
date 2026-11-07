@@ -224,6 +224,7 @@ impl SettingsView {
         for (input, value) in self.pricing_rate_inputs[..4].iter().zip(rates) {
             input.update(cx, |input, cx| input.set_text(&value, cx));
         }
+        self.reset_pricing_draft(cx);
         self.section = 3;
         cx.notify();
     }

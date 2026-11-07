@@ -5,10 +5,9 @@ use gpui_kit::{
 };
 use vega_conversation::types::{
     ModelCapabilityOverride, ModelCapabilityPatch, ModelCapabilityProjection,
-    ModelCapabilitySettingsProjection, PricingDraftReason, PricingEntryKind,
-    PricingEntryProjection, PricingMutation, PricingNotice, PricingRateInputs,
-    PricingSettingsErrorCode, PricingSettingsProjection, REASONING_EFFORTS, ReasoningChoice,
-    ReasoningProfileProjection, ReasoningSupport,
+    ModelCapabilitySettingsProjection, PricingEntryKind, PricingEntryProjection, PricingMutation,
+    PricingNotice, PricingRateInputs, PricingSettingsErrorCode, PricingSettingsProjection,
+    REASONING_EFFORTS, ReasoningChoice, ReasoningProfileProjection, ReasoningSupport,
 };
 use vega_i18n::{t, t_args};
 use vega_store::config::{self, AppConfig, ProviderConfig};
@@ -151,22 +150,10 @@ pub(crate) enum PricingEditorKind {
     UpdateDeepSeek,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct PricingEditor {
     kind: PricingEditorKind,
     model: Option<String>,
-}
-
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) enum PricingFocusTarget {
-    Reload,
-    Add,
-    Edit(usize),
-    Secondary(usize),
-    Retry,
-    Discard,
-    Save,
-    Cancel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,6 +203,7 @@ mod motion;
 mod nsh_appearance;
 mod nsh_default_model;
 mod nsh_input_preferences;
+mod nsh_pricing;
 use model_configuration::SettingsDestination;
 mod permission_reset;
 mod permissions;

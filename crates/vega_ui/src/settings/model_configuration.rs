@@ -197,6 +197,7 @@ impl SettingsView {
                                 cx.emit(PricingDiscardRequested { generation });
                             }
                             this.pricing_editor = None;
+                            this.pricing_nsh_draft = None;
                             this.reasoning_draft = None;
                             this.model_capability_draft = None;
                             if let Some(destination) = this.pending_section {

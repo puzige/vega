@@ -54,7 +54,8 @@ pub struct SettingsView {
     pub(crate) pricing_editor: Option<PricingEditor>,
     pub(crate) pricing_model_input: Entity<TextInput>,
     pub(crate) pricing_rate_inputs: [Entity<TextInput>; 8],
-    pub(crate) pricing_focuses: Vec<(PricingFocusTarget, FocusHandle)>,
+    pub(super) pricing_presentation: Option<super::nsh_pricing::Presentation>,
+    pub(super) pricing_nsh_draft: Option<super::nsh_pricing::Draft>,
     /// Worker-owned independent reasoning capability/preferences projection.
     pub(crate) reasoning: ReasoningSettingsProjection,
     /// Focus handles for the explicit reasoning capability editor. These are
@@ -328,7 +329,8 @@ impl SettingsView {
             pricing_editor: None,
             pricing_model_input,
             pricing_rate_inputs,
-            pricing_focuses: Vec::new(),
+            pricing_presentation: None,
+            pricing_nsh_draft: None,
             reasoning: ReasoningSettingsProjection::Loading,
             reasoning_focuses: Vec::new(),
             reasoning_draft: None,
@@ -567,8 +569,10 @@ impl SettingsView {
         self.pricing = projection;
         if matches!(self.pricing, PricingSettingsProjection::Saving { .. }) {
             self.pricing_editor = None;
+            self.pricing_nsh_draft = None;
+        } else {
+            self.release_pricing_draft();
         }
-        self.rebuild_pricing_focuses(cx);
         cx.notify();
     }
 
@@ -642,48 +646,6 @@ impl SettingsView {
         cx.notify();
     }
 
-    pub(crate) fn rebuild_pricing_focuses(&mut self, cx: &mut Context<Self>) {
-        let mut targets = Vec::new();
-        match &self.pricing {
-            PricingSettingsProjection::Invalid(_) => targets.push(PricingFocusTarget::Reload),
-            PricingSettingsProjection::Ready {
-                entries,
-                draft_reason,
-                ..
-            } => {
-                targets.push(PricingFocusTarget::Reload);
-                if draft_reason.is_some() {
-                    targets.push(PricingFocusTarget::Retry);
-                    targets.push(PricingFocusTarget::Discard);
-                } else {
-                    targets.push(PricingFocusTarget::Add);
-                    for index in 0..entries.len() {
-                        targets.push(PricingFocusTarget::Edit(index));
-                        targets.push(PricingFocusTarget::Secondary(index));
-                    }
-                    if self.pricing_editor.is_some() {
-                        targets.push(PricingFocusTarget::Save);
-                        targets.push(PricingFocusTarget::Cancel);
-                    }
-                }
-            }
-            PricingSettingsProjection::Loading
-            | PricingSettingsProjection::Saving { .. }
-            | PricingSettingsProjection::Reloading => {}
-        }
-        self.pricing_focuses = targets
-            .into_iter()
-            .map(|target| (target, cx.focus_handle().tab_stop(true)))
-            .collect();
-    }
-
-    pub(crate) fn pricing_focus(&self, target: &PricingFocusTarget) -> Option<FocusHandle> {
-        self.pricing_focuses
-            .iter()
-            .find(|(candidate, _)| candidate == target)
-            .map(|(_, focus)| focus.clone())
-    }
-
     pub(crate) fn pricing_generation(&self) -> Option<u64> {
         match &self.pricing {
             PricingSettingsProjection::Ready { generation, .. } => Some(*generation),
@@ -717,7 +679,7 @@ impl SettingsView {
             kind: PricingEditorKind::AddCustom,
             model: None,
         });
-        self.rebuild_pricing_focuses(cx);
+        self.reset_pricing_draft(cx);
         cx.notify();
     }
 
@@ -760,7 +722,7 @@ impl SettingsView {
             kind,
             model: Some(entry.model),
         });
-        self.rebuild_pricing_focuses(cx);
+        self.reset_pricing_draft(cx);
         cx.notify();
     }
 
@@ -786,6 +748,12 @@ impl SettingsView {
     }
 
     pub(crate) fn submit_pricing_editor(&mut self, cx: &mut Context<Self>) {
+        if self.sync_pricing_draft_for_save(cx) {
+            self.submit_pricing_editor_values(cx);
+        }
+    }
+
+    pub(crate) fn submit_pricing_editor_values(&mut self, cx: &mut Context<Self>) {
         let Some(editor) = self.pricing_editor.clone() else {
             return;
         };
@@ -838,70 +806,7 @@ impl SettingsView {
             }
             return;
         }
-        let target = self
-            .pricing_focuses
-            .iter()
-            .find(|(_, focus)| focus.is_focused(window))
-            .map(|(target, _)| target.clone());
-        if self.section != 3 {
-            cx.propagate();
-            return;
-        }
-        let Some(target) = target else {
-            cx.propagate();
-            return;
-        };
-        match target {
-            PricingFocusTarget::Reload => cx.emit(PricingReloadRequested),
-            PricingFocusTarget::Add => self.begin_add_custom(cx),
-            PricingFocusTarget::Edit(index) => {
-                if let PricingSettingsProjection::Ready {
-                    entries,
-                    draft_reason: None,
-                    ..
-                } = &self.pricing
-                    && let Some(entry) = entries.get(index).cloned()
-                {
-                    self.begin_edit_pricing(entry, cx);
-                }
-            }
-            PricingFocusTarget::Secondary(index) => {
-                if let PricingSettingsProjection::Ready {
-                    entries,
-                    draft_reason: None,
-                    ..
-                } = &self.pricing
-                    && let Some(entry) = entries.get(index)
-                {
-                    let mutation = if entry.kind == PricingEntryKind::CustomStatic {
-                        PricingMutation::DeleteCustom {
-                            model: entry.model.clone(),
-                        }
-                    } else {
-                        PricingMutation::ResetBuiltin {
-                            model: entry.model.clone(),
-                        }
-                    };
-                    self.emit_pricing_mutation(mutation, cx);
-                }
-            }
-            PricingFocusTarget::Retry => {
-                if let Some(generation) = self.pricing_generation() {
-                    cx.emit(PricingRetryRequested { generation });
-                }
-            }
-            PricingFocusTarget::Discard => {
-                if let Some(generation) = self.pricing_generation() {
-                    cx.emit(PricingDiscardRequested { generation });
-                }
-            }
-            PricingFocusTarget::Save => self.submit_pricing_editor(cx),
-            PricingFocusTarget::Cancel => {
-                self.pricing_editor = None;
-                self.rebuild_pricing_focuses(cx);
-                cx.notify();
-            }
-        }
+        cx.propagate();
     }
 
     pub(crate) fn move_pricing_focus(
@@ -910,7 +815,7 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !matches!(self.section, 2 | 3) {
+        if self.section != 2 {
             cx.propagate();
             return;
         }

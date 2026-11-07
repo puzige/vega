@@ -473,7 +473,6 @@ impl SettingsView {
             self.model_settings = Some((provider.into(), model.into()));
         }
         self.section = section;
-        self.rebuild_pricing_focuses(cx);
         self.rebuild_reasoning_focuses(cx);
         cx.notify();
     }
