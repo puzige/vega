@@ -301,17 +301,6 @@ fn render_entry_internal(
     }
 }
 
-/// One assistant markdown turn as one natural-height item: each materialized
-/// block renders at its own natural height (text wraps, C4 禁截断).
-pub(crate) fn markdown_item(
-    model: &StreamModel,
-    failure: Option<RunFailureKind>,
-    colors: &ThemeColors,
-    id_prefix: &str,
-) -> AnyElement {
-    markdown_message_item(model, failure, colors, id_prefix, None)
-}
-
 fn markdown_message_item(
     model: &StreamModel,
     failure: Option<RunFailureKind>,

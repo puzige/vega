@@ -189,10 +189,13 @@ impl SettingsView {
                                         cx.notify();
                                     }
                                 }
-                                Request::OpenLink(target) if this.section == 1 => {
-                                    if crate::conversation_stream::links::allowed_link(&target) {
-                                        crate::link_preview::open_target(&target, cx);
-                                    }
+                                Request::OpenLink(target)
+                                    if this.section == 1
+                                        && crate::conversation_stream::links::allowed_link(
+                                            &target,
+                                        ) =>
+                                {
+                                    crate::link_preview::open_target(&target, cx);
                                 }
                                 _ => {}
                             }

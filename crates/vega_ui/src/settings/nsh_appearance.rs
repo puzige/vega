@@ -215,7 +215,7 @@ fn control(
         .role(AccessibilityRole::Button)
         .label(move || actions.state.with(|_| vega_i18n::t(key)))
         .accessibility_state(move || nsh_core::AccessibilityState {
-            selected: Some(selected(&actions.state.get(), action)),
+            selected: selected(&actions.state.get(), action),
             ..Default::default()
         })
         .disabled(move || actions.pending.get() || !actions.state.get().enabled)
