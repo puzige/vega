@@ -272,7 +272,9 @@ fn migration_initializes_existing_threads_and_missing_schema_fails_closed() -> T
             store.conn().pragma_update(None, "foreign_keys", true)?;
         }
         if index == 42 {
-            crate::permission_contracts::initialize(store.conn())?;
+            let tx = store.conn().unchecked_transaction()?;
+            crate::permission_contracts::initialize(&tx)?;
+            tx.commit()?;
         }
     }
     store.conn().execute_batch("INSERT INTO threads(id,model,created_at,updated_at) VALUES('existing','model',1,1); PRAGMA user_version=59;")?;
