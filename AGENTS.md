@@ -1,12 +1,13 @@
 # AGENTS.md — Vega 仓库协作准则
 
-## Vega 本地验证限制（2026-10-16 用户更新）
+## Vega 本地验证与云端门禁（当前用户裁决）
 
-**仅适用于 Vega 项目，包括它的所有 worktree、主 agent 和子 agent；不限制 Loom 自身或其他项目。**
+**适用于所有 worktree、主 Agent 和子 Agent，取代 2026-10-13/16 的本地执行禁令。**
 
-- **主 Agent 与子 Agent 本地不运行 Vega 代码，不编译、构建、打包或执行测试。** 包括定向 `cargo check`、Clippy、test / nextest，不因缓存、范围小或预计耗时短而豁免。
-- 本地只做低 CPU、能快速完成的差异、格式和静态检查；skill frontmatter 静态校验可执行。自动测试只由 GitHub Actions 运行，打包使用云端发布流程。
-- 本规则优先于旧文档、技能、任务规格中要求本地运行、编译或定向测试的条款。有行为变化时按下文快速交付规则选择必要验证；报告区分本地静态检查和待 CI 验证，不把未运行项标为通过。此前仅针对上一轮编号清理的本地执行授权不延续到本轮或全局。
+- **允许本地编译、构建和测试**，包括 `cargo check`、Clippy、`cargo test` / nextest；按任务风险选择必要验证，不再只依赖线上 PR Check。冷编译或耗时本身不是禁令，不要求每次全量检查。
+- 本地按机器负载协调编译并发，避免多个 Agent 同时耗尽 CPU/内存；共享缓存不等于无限算力。先静态检查和任务相关验证，按风险扩大；不恢复本地强制 commit/push hooks 或仓库锁调度器。
+- 本地通过不替代最新 head required CI、非实现者独立审查或用户手测；正式发布/打包仍走云端。Rust 开发测试合并前清理及其他安全、交付边界不变。
+- 记录实际 Cargo/rustc（含 fork 版本）、源码版本、命令、结果、耗时和未执行项；空集与未运行不是通过。`huacnlee/cargo` 仅用于本地，固定已验证版本、关闭自动更新并保留官方 Cargo 回退，不改 CI 工具链。缓存迁移与验证方法见 [本地 Rust 验证指南](docs/vega-local-rust-validation.md)。
 
 Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
@@ -18,7 +19,7 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 - **验证服务交付**：纯文档/格式变更只做必要静态检查；行为变化按风险选择必要回归。测试应验证稳定边界的可观察行为及业务/安全不变量，mock 只隔离外部依赖，不替代被测决策；不以源码字符串、机械转发或覆盖率数字充数。测试用行为命名，issue/task 编号只留文档。
 - **结果必须真实**：不为过关放宽断言、删除失败测试、ignore 或盲目重试换绿。测试/接线错误修责任层，验收变化先明确并更新 spec；允许实现后补测，但不得按实现输出反推预期或伪造验证结果。交接记录实际改动、精确版本、已执行静态检查、云端结果和未决项；未运行写待 CI，未知写未取得。
 - **Rust 测试不得进入 master**：是否编写开发测试按风险决定，可先实现后补测；但开发分支/draft PR 中的 Rust 测试、可执行 doctest 及独占模块、fixture/mock/helper、feature/dev dependency/接线必须在合并前移除，不以 `#[cfg(test)]`、ignore、改名或挪目录规避。固定可访问的原始测试源码/patch、完整 SHA 与实际验证结果，供开发留痕；最终 head 静态清点无残留，并经完整 required CI 确认 Rust 0 发现/0 执行。不从旧 ref 恢复已清除的集合，不为无测试任务强造测试。不改生产行为、安全断言、benchmark、现存 Python 测试及 fixture 或通用 CI；取消 TDD 不取消删测交付边界。
-- **独立限制继续有效**：本地不运行 Vega 代码、编译、构建、打包或测试，只做静态检查；自动测试仅交 Actions，最新 head 的 required CI 必须通过才能合并。空集写 `no Rust tests`（0 发现/0 执行），不是测试通过；发现数不等于执行数。真实系统集成仍由用户手测，CI/合并不代表用户验收。
+- **独立门禁继续有效**：本地按风险编译和测试以缩短反馈循环，最新 head 的 required CI 仍必须通过才能合并。空集写 `no Rust tests`（0 发现/0 执行），不是测试通过；发现数不等于执行数。真实系统集成仍由用户手测，CI/合并不代表用户验收。
 
 **历史决策（2026-09-25）**：[移除真实 E2E 规格](docs/149/vega-issue-149-remove-real-e2e.md) 当时要求保留进程内测试。本次 Rust 清零取代其保留旧测试要求；外部依赖隔离、真实系统集成由用户手测的边界仍适用于后续测试，不恢复真实 E2E 自动门禁。
 
@@ -87,7 +88,7 @@ Ticket 规格、交接与交付记录统一放在 `docs/<ticket>/`，同一编�
 3. **自动单卡**：用户指定或明确继续的卡优先；否则完整分页读取候选队列，取可分析的未占用 Backlog/Ready，或最新记录已释放写入权、当前待领取且无活跃执行者的 In progress。先排除关闭、占用、未交接 PR 及下一阶段真实前提未满足的卡，再按 Issue `createdAt` 降序、同时间编号降序取最新一张；实现依赖不足不得直接实现，但可接回分析解决方案/依赖缺口。领取前重读，立即 `In progress` 并读回（不是原子锁），冲突让出；接回卡保留原列。Issue 用阶段及当前/下一执行者 Agent / 待领取 / 用户记录状态，附会话/worktree 上下文；沿用五列，不新增列或重复卡。解释、审阅或维护 skill 不启动其他卡；默认一张，仅连续授权才取下一张。
 4. **分析与委派**：主 Agent 在授权内查重建卡、审查需求与 spec；Bug 定位根因，明确验收与风险，再写具体到文件/符号/修改动作的最小实现计划。**主 Agent 默认直接分析并实现，按具体收益决定是否委派**；由非该实现写入者的 Agent 独立审查（范围与结束条件见「独立审查的范围与结束条件」），不能自审替代。委派范围、基线、方案版本和回报约定明确，跨会话交接提供可访问链接；无法满足明确委派要求或独立审查时报告真实限制。卡外发现单独记录，不扩大范围。
 5. **同卡连续推进**：明确验收与风险 → 最小实现/直接修复 → 必要验证与实现独立审查 → 最新 head required CI → 合并。可先实现后补必要测试，不要求前置 RED 或测试冻结；有开发 Rust 测试时，留痕后清理测试及独占支持，验证最终无 Rust 测试的 head 再合并。主 Agent 组织各阶段，无验收缺口时不停在 Ready 或实现回报处等旧角色。同一实现范围只有一个写入者，主会话不并行改受委派范围，前任交接后停止写入；独立审查默认只读。验收变化先更新 spec/基线，再按风险选择验证，不重开强制 TDD 周期。
-6. **合并与验收**：本地仅静态检查，测试只交 GitHub Actions；独立审查按「独立审查的范围与结束条件」结束且最新 head 的 required check 通过后，主 Agent 主动 squash merge master，才改 `In review` 并停下等用户纯手动验收。用户明确通过后回写，按 [分支与 worktree 清理规则](docs/vega-issue-workflow.md#分支与-worktree-清理规则)完成本卡剩余安全清理，再关闭 Issue 并读回，最后置 Done 并读回；清理或关闭受阻时保持 `In review`、标待收尾，不先 Done 再补清理。未通过由主 Agent 分析、修订 spec/验收并组织最小修复与必要验证。**手测前不得关闭或 Done；最新 head 的 required check 通过并合并后，允许自动删除已合并远端任务分支，证据、完整 SHA 和补丁须可恢复。本地分支/worktree 仅在确认属于本卡、无运行 Agent/构建、无未提交（含未跟踪）或未合入改动后安全清理；squash 核对等价内容。未知文件/用户数据保留报告，不 reset、强删或覆盖；允许删分支不等于授权删除用户数据。Done 仅表示验收和全部收尾均已完成。**
+6. **合并与验收**：本地按风险验证，GitHub Actions 保留最终 required CI；独立审查按「独立审查的范围与结束条件」结束且最新 head 的 required check 通过后，主 Agent 主动 squash merge master，才改 `In review` 并停下等用户纯手动验收。用户明确通过后回写，按 [分支与 worktree 清理规则](docs/vega-issue-workflow.md#分支与-worktree-清理规则)完成本卡剩余安全清理，再关闭 Issue 并读回，最后置 Done 并读回；清理或关闭受阻时保持 `In review`、标待收尾，不先 Done 再补清理。未通过由主 Agent 分析、修订 spec/验收并组织最小修复与必要验证。**手测前不得关闭或 Done；最新 head 的 required check 通过并合并后，允许自动删除已合并远端任务分支，证据、完整 SHA 和补丁须可恢复。本地分支/worktree 仅在确认属于本卡、无运行 Agent/构建、无未提交（含未跟踪）或未合入改动后安全清理；squash 核对等价内容。未知文件/用户数据保留报告，不 reset、强删或覆盖；允许删分支不等于授权删除用户数据。Done 仅表示验收和全部收尾均已完成。**
 7. **遇阻与证据**：方案缺口由主 Agent 在授权内分析并先更新 spec，不绕过门禁；只有需用户裁决、缺权限或无法解决的技术阻碍才按 exec-guide §6 用 `[BLOCKED]` 上报，记录真实执行者、阻碍和恢复条件，不为旧角色交接人为停工。必要测试按风险覆盖进程内业务/安全/存储/UI；真实模型、服务和 UI 系统集成由用户在合并后的 master 上手测，不以 Agent 自产 E2E/截图替代；证据分级见 [exec-guide §7](docs/vega-exec-guide.md#7-验收协议每个任务卡通用)。
 
 ## 问题与需求收集
@@ -100,7 +101,7 @@ Ticket 规格、交接与交付记录统一放在 `docs/<ticket>/`，同一编�
 
 - 提交格式：`feat(scope): <一句话>` / `fix(scope): <一句话>`（功能点 ID 见 [features](docs/vega-features.md)）
 - 小步提交，一个任务卡 ≤3 个 commit
-- PR 必须附：实际改动、精确版本、已执行静态检查、实际云端命令/run/job/结果、未决项与风险，以及 spec 偏离说明（必须为无）。未运行标待 CI 验证，未知计数写未取得；不要求 RED/GREEN 或测试冻结时序；有开发 Rust 测试时附可恢复源码/patch、完整 SHA、实际验证结果及最终清理清点，不附本地全量测试。文档/格式等无行为变化项说明不适用，不伪造验证结果。
+- PR 必须附：实际改动、精确版本、已执行静态检查、实际云端命令/run/job/结果、未决项与风险，以及 spec 偏离说明（必须为无）。未运行标待 CI 验证，未知计数写未取得；不要求 RED/GREEN 或测试冻结时序；有开发 Rust 测试时附可恢复源码/patch、完整 SHA、实际验证结果及最终清理清点，本地测试记录实际命令、工具链、内容版本与结果，不要求每次全量。文档/格式等无行为变化项说明不适用，不伪造验证结果。
 - 合并方式：由主 Agent squash merge。**最新 head 的 required check 通过且已合并后，允许自动删除已合并远端任务分支**，须先固定并读回可恢复的完整 SHA/源码/原始 patch 与证据；本地分支/worktree 仅按安全清理规则另行核实后处理，不自动随远端删除。此规则取代旧的手测前必须保留分支要求，不授权删除用户数据。
 - **合并由主 Agent 主动完成**：独立审查按「独立审查的范围与结束条件」结束且待合并最新 head 的 required check 绿后合入 master，完成后才把卡片改为 `In review` 等待用户手测；PR 不使用自动关闭 Issue 的关键字，用户明确通过前不关闭或 Done。
 
@@ -113,9 +114,9 @@ Ticket 规格、交接与交付记录统一放在 `docs/<ticket>/`，同一编�
 - `.github/workflows/cicd.yml`（GitHub Actions 名称 `master`）：push 到 master（PR merge 后）直接调用 `release.yml` 共用发布流程，固定事件 SHA 自动分配 patch 版本、打包并发布 Release；与 PR check 使用相同 `shared-key: vega-master-build`，仅自动 master 发布写缓存。rust-cache 的实际缓存还依赖 runner 平台、工具链和 Cargo 输入，因此只有兼容的缓存条目会命中。
 - 自动 master 发布按 [#741 当前规格](docs/741/master-concurrency.md) 只保留最新运行：入口使用固定 `vega-master-pipeline` 组、`cancel-in-progress: true`，不设置 `queue: max`；新运行取消旧 master 运行及其调用的发布流程，不承诺每次合并都发布。PR Check 保持 PR ref 分组不变。人工 stable tag、手动重跑及自动发布仍共用内部发布串行队列 `queue: max`、`cancel-in-progress: false`，与入口组不同；取消不撤回已完成的发布，保留 tag/draft 按原恢复规则处理。先 draft，资产完整才 publish；同 SHA 幂等、正式资产不可覆盖，拒绝逆序发布。见 [发版指南](docs/vega-release.md)。
 - 历史 [相关规格](docs/123/vega-issue-123-pr-check-pipeline.md) 与 [相关规格](docs/140/vega-issue-140-ci-test-throughput.md) 的 PR gate 拓扑已由 [相关规格](docs/175/vega-issue-175-single-pr-check.md) 取代；旧的运行数据与测试证据保留为历史记录。
-- 本地不再安装 git hooks：`.githooks/`、`scripts/verify.py`、`cargo-lock.sh` / `cargo-coordinate.py` / `cargo-share-target.sh` 已删除；现存 `scripts/tests/` 是保留的 Python 脚本回归，不属于 Rust 清零。调度器的移除不代表允许本地编译；本地验证遵守顶部的快速 check 限制。
+- 本地不再安装 git hooks：`.githooks/`、`scripts/verify.py`、`cargo-lock.sh` / `cargo-coordinate.py` / `cargo-share-target.sh` 已删除；现存 `scripts/tests/` 是保留的 Python 脚本回归，不属于 Rust 清零。本地验证按顶部当前规则执行，不因开放编译测试而恢复 hooks 或锁调度器。
 - `.config/nextest.toml` 用于云端 PR gate：`retries=0`、`fail-fast=false`、600 秒挂起保护；不覆盖默认并发。
-- **本地仅做快速静态 check，功能点测试与全量门禁只交云端 `pr-check`**（2026-10-16 用户更新，取代本地定向测试要求）。按风险选择必要验证，可直接修复或先实现后补测，不强制 RED/GREEN，但开发 Rust 测试必须在合并前留痕并清理。最新 head 必须无 Rust 测试及独占接线并通过 required CI；不得删除失败测试、加 ignore、放宽断言或盲目重试伪造通过。空集放行不吞编译、发现或执行失败，`no Rust tests` 不代表测试通过。
+- **本地按风险编译测试，云端 `pr-check` 保留合并门禁**（当前用户裁决取代 2026-10-16 的本地禁令）。按风险选择必要验证，可直接修复或先实现后补测，不强制 RED/GREEN，但开发 Rust 测试必须在合并前留痕并清理。最新 head 必须无 Rust 测试及独占接线并通过 required CI；不得删除失败测试、加 ignore、放宽断言或盲目重试伪造通过。空集放行不吞编译、发现或执行失败，`no Rust tests` 不代表测试通过。
 
 ## PR 检查轮询节奏（2026-10-15 用户裁决）
 
@@ -136,7 +137,7 @@ Ticket 规格、交接与交付记录统一放在 `docs/<ticket>/`，同一编�
 
 ## 原生 UI 验收：合成输入事件无效（工具限制）
 
-以下原生验收/GPUI 实测段落保留为历史参考；其中测试名、路径、数量和命令不证明清零后的测试仍存在，也不授权本地执行。后续验证按当前快速交付规则按风险选择，不强制重建测试，自动执行仅交 Actions，原生手测交用户。
+以下原生验收/GPUI 实测段落保留为历史参考；其中测试名、路径、数量和命令不证明清零后的测试仍存在，也不授权本地执行。后续验证按当前快速交付规则选择必要本地/云端验证，不强制重建测试，原生手测交用户。
 
 **不要用合成键盘/鼠标事件验证本应用的焦点行为——它们驱动不了 GPUI 的焦点链。** 这是工具限制，不是产品缺陷；写成规则以免每轮重复踩坑。
 

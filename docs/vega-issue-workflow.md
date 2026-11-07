@@ -2,7 +2,7 @@
 
 当前用户裁决：统一使用 Agent，不按厂商、宿主或模型区分队列与权限。当前主 Agent 可分析需求/根因、修订 spec、组织实现、开 PR、跟进 CI、合并和收尾；代码实现默认由主 Agent 直接完成，按需委派，且经非该实现写入者的 Agent 独立审查（范围与结束条件见 [AGENTS](../AGENTS.md#独立审查的范围与结束条件)）。同卡无验收缺口时连续推进，不等待旧角色交接；此裁决取代旧的厂商角色分工及人工交接停止点，历史记录保留但不作为开工前提。
 
-当前快速交付政策以 [验证与交付政策](vega-rust-test-delivery-lifecycle.md) 和 [执行总纲 §7.2](vega-exec-guide.md#72-快速交付与按风险验证当前规则) 为准：**明确验收与风险 → 最小实现/直接修复 → 必要验证与实现独立审查 → 开发 Rust 测试留痕并清理 → 最终无 Rust 测试的 head required CI → 合并 → 用户手测**。可先实现后补必要测试，不强制 TDD、独立测试前置审查、有效 RED 或测试冻结；不为流程造临时测试或先红后绿。**取消 TDD 不取消 Rust 测试禁入 master**，现存 Python 发布/CI 测试保留；本地执行禁令、required CI 和用户手测独立限制不变。
+当前快速交付政策以 [验证与交付政策](vega-rust-test-delivery-lifecycle.md) 和 [执行总纲 §7.2](vega-exec-guide.md#72-快速交付与按风险验证当前规则) 为准：**明确验收与风险 → 最小实现/直接修复 → 必要验证与实现独立审查 → 开发 Rust 测试留痕并清理 → 最终无 Rust 测试的 head required CI → 合并 → 用户手测**。可先实现后补必要测试，不强制 TDD、独立测试前置审查、有效 RED 或测试冻结；不为流程造临时测试或先红后绿。**取消 TDD 不取消 Rust 测试禁入 master**，现存 Python 发布/CI 测试保留；本地编译测试按风险开放，required CI 和用户手测仍为独立门禁。
 
 ## 信息各放哪里
 
@@ -77,10 +77,10 @@ Feature 与 Bug：Backlog → In progress（分析/spec/最小实现/按风险�
 
 ## 本地、CI 与手动验收
 
-- 主 Agent 与子 Agent **本地不运行 Vega 代码、不编译、构建、打包或执行测试**，包括定向 cargo check、Clippy、test/nextest；只做低 CPU、快速结束的差异、格式和静态检查。技能 frontmatter 等静态校验不属于运行 Vega。
+- 主 Agent 与子 Agent **可本地编译、构建和测试**，包括 cargo check、Clippy、test/nextest，不再只依赖线上 PR Check。按风险选择必要验证并协调机器负载；记录源码版本、实际 Cargo/rustc、命令、结果与耗时，不要求每次全量。固定版本 fork、缓存迁移与官方回退见 [本地 Rust 验证指南](vega-local-rust-validation.md)。本地通过不替代最新 head required CI，不恢复强制 hooks；正式发布/打包仍走云端。
 - 有行为变化时按执行总纲 §7.2 以最小改动快速交付，按风险选择验证，可直接修复或先实现后补必要测试。纯文档/格式不强加测试。不按实现输出反推预期，不放宽断言、删除失败测试、ignore 或盲目重试伪造通过；测试/观测故障先读证据、修责任层，验收变化先更新 spec，不重开强制 TDD 周期。不新增真实外部进程/网络 E2E 门禁。
 - 集成旧任务分支前先同步最新 master，不从旧 ref 批量恢复已清除的历史 Rust 测试及独占支持。必要 Rust 测试按风险选择，只在开发分支/draft PR 辅助验证并留痕；合并前移除 Rust 测试、可执行 doctest 及独占模块/fixture/mock/helper/feature/dev dependency/接线，不以条件编译、ignore 或挪目录规避。最终 head 静态无残留，完整 required CI 确认 Rust 0 发现/0 执行；保留现存 Python 测试及 fixture、生产/安全断言/benchmark/打包和通用 CI 能力。
-- 主 Agent 组织实现独立审查并核实待合并最新 head 的完整 required CI，不设置独立测试前置审查或 RED 等待站。审查范围与结束条件见 [AGENTS](../AGENTS.md#独立审查的范围与结束条件)：证据充分即结束，无发现属正常结果，不重启无变化审查。PR 记录实际修改、精确版本、静态检查、实际云端命令/run/job/结果及未决项，不要求 RED/GREEN 时序链；有开发 Rust 测试时附可恢复来源、实际验证和最终清理证据。未运行写“待 CI 验证”，未知计数写“未取得”；空集 0 发现/0 执行写 `no Rust tests`，不称 Rust 测试通过，真实编译/发现/执行失败仍阻断。审查和 CI 期间仍 In progress，PR 不用自动关闭 Issue 的关键字。
+- 主 Agent 组织实现独立审查并核实待合并最新 head 的完整 required CI，不设置独立测试前置审查或 RED 等待站。审查范围与结束条件见 [AGENTS](../AGENTS.md#独立审查的范围与结束条件)：证据充分即结束，无发现属正常结果，不重启无变化审查。PR 记录实际修改、精确版本、本地命令/工具链/结果、实际云端命令/run/job/结果及未决项，不要求 RED/GREEN 时序链；有开发 Rust 测试时附可恢复来源、实际验证和最终清理证据。未运行写“待 CI 验证”，未知计数写“未取得”；空集 0 发现/0 执行写 `no Rust tests`，不称 Rust 测试通过，真实编译/发现/执行失败仍阻断。审查和 CI 期间仍 In progress，PR 不用自动关闭 Issue 的关键字。
 - CI 启动后 **每 5 分钟查询一次**；收到完成/失败通知或用户要求即时查看时可立即查询，不使用更短轮询或 watch。仅确认独立审查按 [AGENTS](../AGENTS.md#独立审查的范围与结束条件) 结束且最新 head 的 required check `check (fmt, clippy, test)` 成功后，由主 Agent 主动 squash merge master。
 - 合并后进入 In review，等待用户纯手动验收。发布/打包仍走云端，合并不代表应用已安装；允许自动删除已合并远端任务分支；证据恢复与本地资源清理须遵守下文规则。
 - 用户明确手测通过后由主 Agent 回写，按下文规则完成本卡剩余安全清理，再关闭 Issue 并读回确认，最后更新 Done 并读回。失败则走反馈路径；未收到明确结论不得关闭或 Done；分支/worktree 清理不代表用户已验收。清理或关闭受阻时保留 In review 并记录待收尾，不宣称完整交付，不能先 Done 再补清理。
