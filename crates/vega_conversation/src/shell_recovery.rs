@@ -30,7 +30,7 @@ pub struct ShellCommandProjection {
 #[derive(Clone, Debug)]
 pub struct ShellRecoveryProjection {
     pub workspace: String,
-    pub epoch: i64,
+    pub epoch: vega_store::shell_operations::ShellRecoveryVersion,
     pub rows: Vec<ShellRecoveryRow>,
     pub active: Vec<vega_runtime::RuntimeActiveShell>,
     pub commands: Vec<ShellCommandProjection>,
@@ -270,7 +270,7 @@ impl ShellRecoveryService {
             vega_store::shell_operations::verify_resume_decision(
                 store.conn(),
                 &confirmation.projection.workspace,
-                confirmation.projection.epoch,
+                &confirmation.projection.epoch,
                 &operations,
                 &confirmation.decision_id,
             )
@@ -280,7 +280,7 @@ impl ShellRecoveryService {
             let result = vega_store::shell_operations::resume_writes(
                 store.conn(),
                 &confirmation.projection.workspace,
-                confirmation.projection.epoch,
+                &confirmation.projection.epoch,
                 &operations,
                 &confirmation.decision_id,
                 now(),

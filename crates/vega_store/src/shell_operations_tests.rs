@@ -187,7 +187,7 @@ fn irreversible_output_loss_can_be_accepted_without_rewriting_history_after_rest
         resume_writes(
             store.conn(),
             "/workspace",
-            before.epoch,
+            &before.epoch,
             &["op".into()],
             "too-early",
             3
@@ -203,7 +203,7 @@ fn irreversible_output_loss_can_be_accepted_without_rewriting_history_after_rest
         resume_writes(
             store.conn(),
             "/workspace",
-            before.epoch,
+            &before.epoch,
             &["op".into()],
             "stale",
             5
@@ -213,7 +213,7 @@ fn irreversible_output_loss_can_be_accepted_without_rewriting_history_after_rest
     resume_writes(
         store.conn(),
         "/workspace",
-        closed.epoch,
+        &closed.epoch,
         &["op".into()],
         "accepted-loss",
         6,
@@ -221,7 +221,7 @@ fn irreversible_output_loss_can_be_accepted_without_rewriting_history_after_rest
     resume_writes(
         store.conn(),
         "/workspace",
-        closed.epoch,
+        &closed.epoch,
         &["op".into()],
         "accepted-loss",
         7,
@@ -292,7 +292,7 @@ fn reappearing_alias_exposes_original_blocker_and_rejects_stale_recovery()
         resume_writes(
             store.conn(),
             &target_text,
-            initial.epoch,
+            &initial.epoch,
             &["op".into()],
             "stale-alias",
             4
@@ -300,11 +300,11 @@ fn reappearing_alias_exposes_original_blocker_and_rejects_stale_recovery()
         .is_err()
     );
     let current = recovery(store.conn(), &target_text)?;
-    assert!(current.epoch > initial.epoch);
+    assert_ne!(current.epoch, initial.epoch);
     resume_writes(
         store.conn(),
         &target_text,
-        current.epoch,
+        &current.epoch,
         &["op".into()],
         "accept-alias",
         5,
@@ -312,7 +312,7 @@ fn reappearing_alias_exposes_original_blocker_and_rejects_stale_recovery()
     assert!(verify_resume_decision(
         store.conn(),
         &target_text,
-        current.epoch,
+        &current.epoch,
         &["op".into()],
         "accept-alias"
     )?);
@@ -327,7 +327,7 @@ fn reappearing_alias_exposes_original_blocker_and_rejects_stale_recovery()
     resume_writes(
         store.conn(),
         &target_text,
-        current.epoch,
+        &current.epoch,
         &["op".into()],
         "accept-alias",
         8,
@@ -336,6 +336,102 @@ fn reappearing_alias_exposes_original_blocker_and_rejects_stale_recovery()
     assert_eq!(remaining.items.len(), 1);
     assert_eq!(remaining.items[0].operation_id, "new-alias-operation");
     std::fs::remove_file(&historical)?;
+    std::fs::remove_dir(&target)?;
+    std::fs::remove_dir(root)?;
+    Ok(())
+}
+
+#[test]
+fn alias_leaving_scope_cannot_cancel_a_new_observation_generation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = std::env::temp_dir().join(format!("vega-shell-version-{}", ulid::Ulid::generate()));
+    std::fs::create_dir(&root)?;
+    let root = root.canonicalize()?;
+    let historical = root.join("historical");
+    let target = root.join("target");
+    std::fs::create_dir(&target)?;
+    std::os::unix::fs::symlink(&target, &historical)?;
+    let store = fixture();
+    let historical_text = historical.to_string_lossy();
+    let target_text = target.to_string_lossy();
+    let mut old = record_for("prepared");
+    old.operation_id = "completed-history";
+    old.workspace = &historical_text;
+    record(store.conn(), &old, 1)?;
+    old.state = "running";
+    record(store.conn(), &old, 1)?;
+    old.state = "succeeded";
+    old.exit_code = Some(0);
+    let mut complete = settled_facts(false);
+    complete.cleanup_state = "best_effort_completed".into();
+    record_with_facts(store.conn(), &old, &complete, 2)?;
+    let mut operation = record_for("prepared");
+    operation.workspace = &target_text;
+    record(store.conn(), &operation, 3)?;
+    operation.state = "outcome_unknown";
+    let mut unresolved = settled_facts(false);
+    unresolved.cleanup_state = "unresolved".into();
+    unresolved.cleanup_reasons = vec!["cleanup_budget_exhausted".into()];
+    record_with_facts(store.conn(), &operation, &unresolved, 4)?;
+    let initial = recovery(store.conn(), &target_text)?;
+    assert_eq!(initial.items.len(), 1);
+    let prior_sum: i64 = initial.epoch.scopes.iter().map(|(_, value)| value).sum();
+    assert_eq!(prior_sum, 2);
+    std::fs::remove_file(&historical)?;
+    append_cleanup_observation(
+        store.conn(),
+        "op",
+        "new-output-loss",
+        &settled_facts(true),
+        5,
+    )?;
+    let current = recovery(store.conn(), &target_text)?;
+    assert_eq!(
+        current
+            .epoch
+            .scopes
+            .iter()
+            .map(|(_, value)| value)
+            .sum::<i64>(),
+        prior_sum
+    );
+    assert_ne!(current.epoch, initial.epoch);
+    assert!(current.items[0].facts.output_incomplete);
+    assert!(
+        resume_writes(
+            store.conn(),
+            &target_text,
+            &initial.epoch,
+            &["op".into()],
+            "stale-scope",
+            6
+        )
+        .is_err()
+    );
+    assert!(!verify_resume_decision(
+        store.conn(),
+        &target_text,
+        &initial.epoch,
+        &["op".into()],
+        "stale-scope"
+    )?);
+    assert_eq!(recovery(store.conn(), &target_text)?.items.len(), 1);
+    resume_writes(
+        store.conn(),
+        &target_text,
+        &current.epoch,
+        &["op".into()],
+        "fresh-scope",
+        7,
+    )?;
+    assert!(verify_resume_decision(
+        store.conn(),
+        &target_text,
+        &current.epoch,
+        &["op".into()],
+        "fresh-scope"
+    )?);
+    assert!(recovery(store.conn(), &target_text)?.items.is_empty());
     std::fs::remove_dir(&target)?;
     std::fs::remove_dir(root)?;
     Ok(())
@@ -355,7 +451,7 @@ fn accepted_decision_replay_does_not_clear_new_or_unselected_blockers() -> rusql
     resume_writes(
         store.conn(),
         "/workspace",
-        initial.epoch,
+        &initial.epoch,
         &["op".into()],
         "accept-one",
         3,
@@ -363,28 +459,31 @@ fn accepted_decision_replay_does_not_clear_new_or_unselected_blockers() -> rusql
     assert!(verify_resume_decision(
         store.conn(),
         "/workspace",
-        initial.epoch,
+        &initial.epoch,
         &["op".into()],
         "accept-one"
     )?);
     assert!(!verify_resume_decision(
         store.conn(),
         "/workspace",
-        initial.epoch + 1,
+        &ShellRecoveryVersion {
+            epoch: initial.epoch.epoch + 1,
+            scopes: initial.epoch.scopes.clone()
+        },
         &["op".into()],
         "accept-one"
     )?);
     assert!(!verify_resume_decision(
         store.conn(),
         "/workspace",
-        initial.epoch,
+        &initial.epoch,
         &["other-operation".into()],
         "accept-one"
     )?);
     assert!(!verify_resume_decision(
         store.conn(),
         "/workspace",
-        initial.epoch,
+        &initial.epoch,
         &["op".into()],
         "uncommitted"
     )?);
@@ -396,7 +495,7 @@ fn accepted_decision_replay_does_not_clear_new_or_unselected_blockers() -> rusql
     resume_writes(
         store.conn(),
         "/workspace",
-        initial.epoch,
+        &initial.epoch,
         &["op".into()],
         "accept-one",
         6,

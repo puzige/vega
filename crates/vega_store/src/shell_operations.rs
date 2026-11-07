@@ -41,9 +41,15 @@ pub struct ShellRecoveryItem {
     pub facts: ShellFacts,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct ShellRecoveryVersion {
+    pub epoch: i64,
+    pub scopes: Vec<(String, i64)>,
+}
+
 #[derive(Clone, Debug)]
 pub struct ShellWorkspaceRecovery {
-    pub epoch: i64,
+    pub epoch: ShellRecoveryVersion,
     pub items: Vec<ShellRecoveryItem>,
 }
 
@@ -331,21 +337,23 @@ pub fn command_presentations(
     Ok(commands)
 }
 
-fn recovery_epoch(conn: &Connection, workspace: &str) -> rusqlite::Result<i64> {
-    let mut statement = conn.prepare("SELECT workspace,epoch FROM shell_workspace_epochs")?;
+fn recovery_epoch(conn: &Connection, workspace: &str) -> rusqlite::Result<ShellRecoveryVersion> {
+    let mut statement =
+        conn.prepare("SELECT workspace,epoch FROM shell_workspace_epochs ORDER BY workspace")?;
     let rows = statement.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
     })?;
-    let mut total = 0i64;
+    let mut scopes = Vec::new();
     for row in rows {
         let (path, value) = row?;
         if overlap(&path, workspace) {
-            total = total
-                .checked_add(value)
-                .ok_or(rusqlite::Error::InvalidQuery)?;
+            scopes.push((path, value));
         }
     }
-    Ok(total)
+    Ok(ShellRecoveryVersion {
+        epoch: epoch(conn, workspace)?,
+        scopes,
+    })
 }
 
 pub fn recovery(conn: &Connection, workspace: &str) -> rusqlite::Result<ShellWorkspaceRecovery> {
@@ -487,7 +495,7 @@ pub fn append_cleanup_observation(
 pub fn verify_resume_decision(
     conn: &Connection,
     workspace: &str,
-    expected_epoch: i64,
+    expected_epoch: &ShellRecoveryVersion,
     operations: &[String],
     decision: &str,
 ) -> rusqlite::Result<bool> {
@@ -513,7 +521,7 @@ pub fn verify_resume_decision(
 pub fn resume_writes(
     conn: &Connection,
     workspace: &str,
-    expected_epoch: i64,
+    expected_epoch: &ShellRecoveryVersion,
     operations: &[String],
     decision: &str,
     now: i64,
@@ -545,7 +553,7 @@ pub fn resume_writes(
             Err(rusqlite::Error::InvalidQuery)
         };
     }
-    if recovery_epoch(&tx, workspace)? != expected_epoch {
+    if &recovery_epoch(&tx, workspace)? != expected_epoch {
         return Err(rusqlite::Error::InvalidQuery);
     }
     let current = recovery(&tx, workspace)?;
@@ -588,6 +596,6 @@ pub fn resume_writes(
         advance(&tx, &path)?;
     }
     let next = recovery_epoch(&tx, workspace)?;
-    tx.execute("INSERT INTO shell_dispositions(disposition_id,workspace,operation_ids,expected_epoch,committed_epoch,kind,content,created_at) VALUES(?1,?2,?3,?4,?5,'user_risk',?6,?7)",params![decision,workspace,json(&selected)?,expected_epoch,next,content,now])?;
+    tx.execute("INSERT INTO shell_dispositions(disposition_id,workspace,operation_ids,expected_epoch,committed_epoch,kind,content,created_at) VALUES(?1,?2,?3,?4,?5,'user_risk',?6,?7)",params![decision,workspace,json(&selected)?,expected_epoch.epoch,next.epoch,content,now])?;
     tx.commit()
 }

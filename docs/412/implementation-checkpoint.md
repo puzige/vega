@@ -1,6 +1,13 @@
 # 会话式 Shell 实施检查点（未完成，禁止合并）
 
-## 第二轮安全增量（当前待复核）
+## 第三轮安全增量：精确范围世代（当前待复核）
+
+- 安全非写入者对 `db9156f7da928d780931320c37f2cb45968bb68e` 关闭首次收尾预算和别名恢复原问题，新增 P2：可变重叠成员的 epoch 算术求和会抵消事实变化。本轮改为 `ShellRecoveryVersion { epoch, scopes: [(原路径, 该路径世代)] }`，按原路径排序；确认、事务 CAS、决定内容、精确读回绑定同一完整向量，SQLite 既有整数审计字段保留本工作区 epoch，不新增迁移、不变更合同。
+- 新回归构造 A 历史已完成世代 1、B 未解决世代 1；A 别名退出范围且 B 新增输出缺失观察后，旧算术和仍为 2，而完整向量变化。旧确认拒绝、blocker 保留，新确认成功并精确读回。开发中 fixture 两次错误（跳过 running；错误使用 cleanup completed facts）已按生产生命周期/facts 定义修正，未改产品校验或弱化旧确认断言。
+- 同一官方 1.98.0 工具链、五包 `cargo test --locked -j 2`：3+14+9+19+3=48 运行/48 通过/0 失败/0 忽略，doctest 0。workspace all-target strict Clippy、fmt、diff 退出 0。对应本节所在提交的实现与测试内容。
+- 前版云端 run [42361624694](https://github.com/puzige/vega/actions/runs/42361624694) required `check (fmt, clippy, test)`、Clippy、Nextest 成功；不覆盖本节新差异。当前待增量独审及最新 head CI；开发测试仍保留，未合并。
+
+## 第二轮安全增量（历史版本，结论见上）
 
 - UI 非写入者对 `a353ab927dfc8f211a52c3f41cf1c26e54f83614` 关闭原 1 P1/3 P2，无新增发现；原生验收限制不变。安全复核仍发现首次自动收尾调用一次无预算 discover、重新出现别名的准入/恢复范围不一致，未批准。
 - 本轮将首次自动收尾也接入共同截止时间；新增首次扫描→耗尽预算→settled/TERM/KILL 全序列观察计数回归。store 的恢复/命令投影范围与 runtime 一致，词法或当前可解析别名重叠均可见；恢复 epoch 汇总重叠范围的持久世代，解除仍逐项校验原 operation 与资源状态，并精确按原 operation/workspace 删除和推进受影响世代，不批量清除。
