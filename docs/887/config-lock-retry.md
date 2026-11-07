@@ -12,7 +12,7 @@ Two private diagnostic observations concern MCP/configuration/I/O other: a runni
 |---|---|---|
 | Uncontended | First attempt succeeds, no added sleep | Cloud synthetic regression |
 | Real external file lock released in budget | Current configuration reread; one operation completes | Cloud cross-process fixture |
-| Lock never released | Bounded attempts and elapsed wait, explicit busy diagnostics; no downstream execution | Cloud regression |
+| Lock never released | At most 6 attempts and at most 310ms scheduled delay; the 500ms wall-clock window may stop earlier. Preserve actual attempt/wait diagnostics, no downstream execution | Cloud cross-process regression plus deterministic complete-sequence and deadline tests |
 | Cancellation during wait | Stop within one polling interval plus scheduling; no late retry or side effect | Cloud regression |
 | Other lock syscall error / malformed YAML / permissions / CAS conflict | Original classification, no busy retry | Cloud regression + static audit |
 | Configuration changes while waiting | Reconcile latest bytes and revision; existing revoke/disable rules remain | Cloud real store fixture |

@@ -85,6 +85,9 @@ fn configuration_diagnostics_upgrade_preserves_prior_reasons_and_rejects_unknown
     for migration in &crate::MIGRATIONS[..59] {
         store.conn().execute_batch(migration).unwrap();
     }
+    let transaction = store.conn().unchecked_transaction().unwrap();
+    crate::permission_contracts::initialize(&transaction).unwrap();
+    transaction.commit().unwrap();
     store
         .conn()
         .pragma_update(None, "user_version", 59)
