@@ -77,11 +77,11 @@ Feature 与 Bug：Backlog → In progress（分析/spec/最小实现/按风险�
 
 ## 本地、CI 与手动验收
 
-- 主 Agent 与子 Agent **可本地编译、构建和测试**，包括 cargo check、Clippy、test/nextest，不再只依赖线上 PR Check。按风险选择必要验证并协调机器负载；记录源码版本、实际 Cargo/rustc、命令、结果与耗时，不要求每次全量。固定版本 fork、缓存迁移与官方回退见 [本地 Rust 验证指南](vega-local-rust-validation.md)。本地通过不替代最新 head required CI，不恢复强制 hooks；正式发布/打包仍走云端。
+- 主 Agent 与子 Agent **可本地编译、构建和测试**，包括 cargo check、Clippy、test/nextest，**优先本地测试与必要回归，修复本地失败后，最后核对最终 head CI**，不把 CI 当日常调试循环。本地无法执行须记录具体阻碍和缺口，再由 CI 补足，不默认推给 CI。按风险选择必要验证并协调机器负载；记录源码版本、实际 Cargo/rustc、命令、结果与耗时，不要求每次全量。固定版本 fork、缓存迁移与官方回退见 [本地 Rust 验证指南](vega-local-rust-validation.md)。本地通过不替代最新 head required CI，不恢复强制 hooks；正式发布/打包仍走云端。
 - 有行为变化时按执行总纲 §7.2 以最小改动快速交付，按风险选择验证，可直接修复或先实现后补必要测试。纯文档/格式不强加测试。不按实现输出反推预期，不放宽断言、删除失败测试、ignore 或盲目重试伪造通过；测试/观测故障先读证据、修责任层，验收变化先更新 spec，不重开强制 TDD 周期。不新增真实外部进程/网络 E2E 门禁。
 - 集成旧任务分支前先同步最新 master，不从旧 ref 批量恢复已清除的历史 Rust 测试及独占支持。必要 Rust 测试按风险选择，只在开发分支/draft PR 辅助验证并留痕；合并前移除 Rust 测试、可执行 doctest 及独占模块/fixture/mock/helper/feature/dev dependency/接线，不以条件编译、ignore 或挪目录规避。最终 head 静态无残留，完整 required CI 确认 Rust 0 发现/0 执行；保留现存 Python 测试及 fixture、生产/安全断言/benchmark/打包和通用 CI 能力。
 - 主 Agent 组织实现独立审查并核实待合并最新 head 的完整 required CI，不设置独立测试前置审查或 RED 等待站。审查范围与结束条件见 [AGENTS](../AGENTS.md#独立审查的范围与结束条件)：证据充分即结束，无发现属正常结果，不重启无变化审查。PR 记录实际修改、精确版本、本地命令/工具链/结果、实际云端命令/run/job/结果及未决项，不要求 RED/GREEN 时序链；有开发 Rust 测试时附可恢复来源、实际验证和最终清理证据。未运行写“待 CI 验证”，未知计数写“未取得”；空集 0 发现/0 执行写 `no Rust tests`，不称 Rust 测试通过，真实编译/发现/执行失败仍阻断。审查和 CI 期间仍 In progress，PR 不用自动关闭 Issue 的关键字。
-- CI 启动后 **每 5 分钟查询一次**；收到完成/失败通知或用户要求即时查看时可立即查询，不使用更短轮询或 watch。仅确认独立审查按 [AGENTS](../AGENTS.md#独立审查的范围与结束条件) 结束且最新 head 的 required check `check (fmt, clippy, test)` 成功后，由主 Agent 主动 squash merge master。
+- CI 启动后 **每 2 分钟查询一次**；收到完成/失败通知或用户要求即时查看时可立即查询，不使用更短轮询或 watch。仅确认独立审查按 [AGENTS](../AGENTS.md#独立审查的范围与结束条件) 结束且最新 head 的 required check `check (fmt, clippy, test)` 成功后，由主 Agent 主动 squash merge master。
 - 合并后进入 In review，等待用户纯手动验收。发布/打包仍走云端，合并不代表应用已安装；允许自动删除已合并远端任务分支；证据恢复与本地资源清理须遵守下文规则。
 - 用户明确手测通过后由主 Agent 回写，按下文规则完成本卡剩余安全清理，再关闭 Issue 并读回确认，最后更新 Done 并读回。失败则走反馈路径；未收到明确结论不得关闭或 Done；分支/worktree 清理不代表用户已验收。清理或关闭受阻时保留 In review 并记录待收尾，不宣称完整交付，不能先 Done 再补清理。
 

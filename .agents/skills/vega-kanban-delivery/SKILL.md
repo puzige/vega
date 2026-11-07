@@ -78,14 +78,14 @@ FOLLOWUP：前版 → 当前版本 | 具体未决问题 | 新差异、原始失�
 
 ## 快速交付、本地与云端门禁
 
-- 当前用户裁决解除旧本地执行禁令：主 Agent 与子 Agent 可本地编译、构建、运行 cargo check、Clippy、test/nextest，不再只依赖线上 PR Check。按任务风险选择必要验证，协调机器负载，不要求每次全量或恢复强制 hooks；记录源码版本、实际 Cargo/rustc（含 fork 版本）、命令、结果与耗时。本地通过不替代 required CI、非实现者独立审查或用户手测；正式发布/打包仍走云端。固定版本 fork、关闭自动更新、缓存迁移及官方回退见 [本地 Rust 验证指南](../../../docs/vega-local-rust-validation.md)。
+- 当前用户裁决解除旧本地执行禁令：主 Agent 与子 Agent 可本地编译、构建、运行 cargo check、Clippy、test/nextest，**优先本地测试与必要回归，修复本地失败后，最后核对最终 head CI**，不把 CI 当日常调试循环。本地无法执行须记录具体阻碍和验证缺口，再由 CI 补足，不默认推给 CI。按任务风险选择验证范围，协调机器负载，不要求每次全量或恢复强制 hooks；记录源码版本、实际 Cargo/rustc（含 fork 版本）、命令、结果与耗时。本地通过不替代 required CI、非实现者独立审查或用户手测；正式发布/打包仍走云端。固定版本 fork、关闭自动更新、缓存迁移及官方回退见 [本地 Rust 验证指南](../../../docs/vega-local-rust-validation.md)。
 - 以 [验证与交付政策](../../../docs/vega-rust-test-delivery-lifecycle.md) 和 [执行指南 §7.2](../../../docs/vega-exec-guide.md#72-快速交付与按风险验证当前规则) 为准：**明确验收与风险 → 最小实现/直接修复 → 必要验证与实现独立审查（范围与结束条件见 [AGENTS](../../../AGENTS.md#独立审查的范围与结束条件)） → 开发 Rust 测试留痕并清理 → 最终无 Rust 测试的 head required CI → 合并 → In review 等用户手测**。可先实现后补必要测试，不强制先写测试、独立测试前置审查、有效 RED、测试冻结或 TDD 时序链；不为流程造临时测试或先红后绿。取消 TDD 不取消 Rust 测试禁入 master。同卡连续推进，同阶段相关小修/文档尽量批次 push。
 - 按影响范围、安全边界、回归风险及已有覆盖选择验证，纯文档/格式不强加测试。验收变化先更新 spec，不要求重开 TDD 周期。不得按实现输出反推断言、放宽断言、删除失败测试、ignore 或盲目重试换绿；测试错误/接线修正说明依据，只修责任层。
 - 必要测试验证稳定边界的结果、必要副作用和业务/安全不变量；mock 只隔离外部依赖，不替代被测决策。不以源码字符串、机械转发、镜像算法、重复断言或覆盖率充数。测试用行为命名，issue/task 编号只放文档。代码注释仅允许 `unsafe` 邻接 `// SAFETY:`。
 - 同步最新 master，不从旧 ref 批量恢复已清除的 Rust 测试及独占支持。必要 Rust 测试只在开发分支/draft PR 辅助验证并留痕，合并前移除 Rust 测试、可执行 doctest 及独占模块/fixture/mock/helper/feature/dev dependency/接线，不以条件编译、ignore 或挪目录规避；最终 head 静态清点与完整 required CI 确认 Rust 0 发现/0 执行。保留现存 Python 测试及 fixture、生产/安全断言/benchmark/打包和通用 CI，不恢复真实外部 E2E 门禁。
 - 保留 required check `check (fmt, clippy, test)`、fmt、全目标 Clippy、三组 Python 检查、Nextest 0.9.146 与默认并发。云端 JSON 清点为 0 时使用既有 `cargo nextest run --workspace --no-tests=pass`，非空正常执行；空集标 `no Rust tests`（0 发现/0 执行），不是 Rust 测试通过。发现数不等于执行数，未知计数写未取得；真实失败仍阻断。
 - PR/交接记录实际修改、精确版本、本地命令/工具链/结果、实际云端命令/run/job/结果及未决项，不要求 RED/GREEN 时序；有开发 Rust 测试时附可恢复原始源码/patch、完整 SHA、实际结果和最终清理清点。未运行标待 CI，无行为变化注明不适用；保留实际变更与门禁的可恢复证据。审查/CI 期间仍 In progress，**不使用自动关闭 Issue 的关键字**。
-- CI 启动后 **每 5 分钟查询一次**，不短轮询/watch；完成/失败通知或用户即时请求除外。失败先读原始日志、分类并修责任层，新轮恢复 5 分钟间隔。最新 head 的 required check 通过且实现独立审查按 [AGENTS](../../../AGENTS.md#独立审查的范围与结束条件) 结束，才主动 squash merge master，不绕过权限/分支保护；合并后置 **In review** 并读回，Issue 开放，停等用户纯手测。CI 拓扑见 AGENTS.md 与 [相关规格](../../../docs/188/vega-issue-188-parallel-ci-checks.md)。
+- CI 启动后 **每 2 分钟查询一次**，不短轮询/watch；完成/失败通知或用户即时请求除外。失败先读原始日志、分类并修责任层，新轮恢复 2 分钟间隔。最新 head 的 required check 通过且实现独立审查按 [AGENTS](../../../AGENTS.md#独立审查的范围与结束条件) 结束，才主动 squash merge master，不绕过权限/分支保护；合并后置 **In review** 并读回，Issue 开放，停等用户纯手测。CI 拓扑见 AGENTS.md 与 [相关规格](../../../docs/188/vega-issue-188-parallel-ci-checks.md)。
 
 ## 用户手测、恢复与安全收尾
 
