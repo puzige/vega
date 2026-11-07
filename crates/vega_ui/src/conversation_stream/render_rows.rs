@@ -301,27 +301,6 @@ fn render_entry_internal(
     }
 }
 
-/// One card entry as one natural-height item: the card's compact subrows
-/// (24px, C4 rule 1) stacked vertically inside a single list item.
-pub(crate) fn card_rows_item(
-    row_count: usize,
-    mut render_row: impl FnMut(usize) -> AnyElement,
-) -> AnyElement {
-    let mut rows = Vec::with_capacity(row_count);
-    for row in 0..row_count {
-        rows.push(render_row(row));
-    }
-    div()
-        .w_full()
-        .flex_shrink_0()
-        .pt(px(4.0))
-        .pb(px(8.0))
-        .flex()
-        .flex_col()
-        .children(rows)
-        .into_any_element()
-}
-
 /// One assistant markdown turn as one natural-height item: each materialized
 /// block renders at its own natural height (text wraps, C4 禁截断).
 pub(crate) fn markdown_item(

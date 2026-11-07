@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use gpui_kit::{
     Context, Entity, InteractiveElement as _, IntoElement as _, ParentElement as _, Styled as _,
@@ -10,7 +10,6 @@ use gpui_kit::{
 use nsh_core::prelude::*;
 use tokio::sync::{mpsc, oneshot, watch};
 use vega_conversation::attachments::{MAX_IMAGE_BYTES, MAX_IMAGES, MAX_TURN_IMAGE_BYTES};
-use vega_conversation::types::{FileReferenceMention, SkillMention};
 use vega_theme::Typography;
 
 use super::{AcceptPrediction, DismissPrediction, Redo, TextInput, Undo};
@@ -27,8 +26,6 @@ pub(crate) struct EditorSnapshot {
     pub min_rows: usize,
     pub max_rows: usize,
     pub prediction: Option<String>,
-    pub references: Vec<FileReferenceMention>,
-    pub skills: Vec<SkillMention>,
     pub selection_revision: u64,
 }
 
@@ -179,6 +176,122 @@ struct ShortcutRequest {
 }
 
 #[derive(Clone)]
+struct DraftRecovery(Arc<Mutex<RecoveryState>>);
+
+struct RecoveryState {
+    local: String,
+    saved: Option<String>,
+}
+
+impl DraftRecovery {
+    fn new(text: String) -> Self {
+        Self(Arc::new(Mutex::new(RecoveryState {
+            local: text,
+            saved: None,
+        })))
+    }
+
+    fn local(&self, text: &str) {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .local = text.to_owned();
+    }
+
+    fn saved(&self) -> Option<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .saved
+            .clone()
+    }
+
+    fn save(&self, text: String) {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .saved = Some(text);
+    }
+
+    fn preserve(&self) {
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        state.saved = Some(state.local.clone());
+    }
+
+    fn restarted(&self, text: String) -> Self {
+        Self(Arc::new(Mutex::new(RecoveryState {
+            local: text,
+            saved: self.saved(),
+        })))
+    }
+}
+
+#[derive(Clone)]
+struct RecoveryProjection {
+    id: crate::nsh::ProjectionId,
+    draft: DraftRecovery,
+}
+
+struct ReloadEditor {
+    id: crate::nsh::ProjectionId,
+    reply: oneshot::Sender<bool>,
+}
+
+fn render_host_recovery(
+    state: Signal<RecoveryProjection>,
+    commands: mpsc::Sender<ReloadEditor>,
+) -> AnyElement {
+    let pending = signal(false);
+    let failed = signal(false);
+    view()
+        .w_full()
+        .gap_2()
+        .child(text(move || {
+            state.with(|_| vega_i18n::t("ui.editor_sync_failed"))
+        }))
+        .child(
+            nsh_base::button()
+                .on_press(move || {
+                    if let Some(text) = state.get_untracked().draft.saved() {
+                        set_clipboard(text);
+                    }
+                })
+                .child(text(move || {
+                    state.with(|_| vega_i18n::t("ui.copy_local_draft"))
+                })),
+        )
+        .child(
+            nsh_base::button()
+                .disabled(pending)
+                .on_press(move || {
+                    if pending.get_untracked() {
+                        return;
+                    }
+                    pending.set(true);
+                    let commands = commands.clone();
+                    let id = state.get_untracked().id;
+                    spawn(async move {
+                        let (reply, response) = oneshot::channel();
+                        if commands.send(ReloadEditor { id, reply }).await.is_err()
+                            || !matches!(response.await, Ok(true))
+                        {
+                            failed.set(true);
+                            pending.set(false);
+                        }
+                    });
+                })
+                .child(text(move || {
+                    state.with(|_| vega_i18n::t("settings.action.reload"))
+                })),
+        )
+        .child(when(
+            move || failed.get(),
+            move || text(vega_i18n::t("ui.command_failed")),
+        ))
+        .into_element()
+}
+
+#[derive(Clone)]
 struct ComposerProjection {
     snapshot: EditorSnapshot,
     gate: EditorGate,
@@ -187,9 +300,14 @@ struct ComposerProjection {
     shortcuts: mpsc::Sender<ShortcutRequest>,
     route: ComposerRoute,
     host_failed: bool,
+    draft: DraftRecovery,
 }
 
 pub(super) struct ComposerEditor {
+    id: crate::nsh::ProjectionId,
+    draft: DraftRecovery,
+    recovery_page: Option<crate::nsh::Surface<RecoveryProjection, ReloadEditor>>,
+    restarting: bool,
     surface: crate::nsh::Surface<ComposerProjection, EditorRequest>,
     gate: EditorGate,
     focus_revision: u64,
@@ -205,7 +323,7 @@ fn render_composer_editor(
     commands: mpsc::Sender<EditorRequest>,
 ) -> AnyElement {
     let initial = state.get_untracked();
-    let snapshot = signal_with(initial.snapshot, SignalEquals::Never);
+    let snapshot = signal_with(initial.snapshot.clone(), SignalEquals::Never);
     let focus_revision = signal(initial.focus_revision);
     let route = signal(initial.route);
     let host_failed = signal(initial.host_failed);
@@ -219,11 +337,10 @@ fn render_composer_editor(
     let editor = editor(
         snapshot,
         commands,
-        initial.gate.clone(),
         focus_revision,
         route,
-        initial.shortcuts,
         host_failed,
+        &initial,
     );
     let height = initial.height;
     let measured = Cell::new(0.0f32);
@@ -248,9 +365,19 @@ fn render_composer_editor(
 }
 
 impl TextInput {
+    pub fn render_nsh_preview(
+        input: Entity<Self>,
+        window: &mut Window,
+        cx: &mut gpui_kit::App,
+    ) -> gpui_kit::AnyElement {
+        Self::render_nsh_composer(input, ComposerRoute::default(), window, cx)
+    }
+
     pub(crate) fn composer_editor_ready(&self) -> bool {
         self.nsh_composer.as_ref().is_none_or(|editor| {
-            editor.surface.errors().borrow().is_none() && editor.gate.matches(self)
+            !editor.restarting
+                && editor.surface.errors().borrow().is_none()
+                && editor.gate.matches(self)
         })
     }
 
@@ -271,7 +398,25 @@ impl TextInput {
             else {
                 return gpui_kit::div().into_any_element();
             };
+            let restarting = this
+                .nsh_composer
+                .as_ref()
+                .is_some_and(|editor| editor.restarting);
+            let retained = restarting
+                .then(|| this.nsh_composer.take())
+                .flatten()
+                .map(|editor| {
+                    editor.gate.close();
+                    editor.surface.entity().read(cx).stop();
+                    if let Some(page) = &editor.recovery_page {
+                        page.entity().read(cx).stop();
+                    }
+                    editor.draft.restarted(snapshot.text.to_string())
+                });
             if this.nsh_composer.is_none() {
+                let id = crate::nsh::ProjectionId::new();
+                let draft =
+                    retained.unwrap_or_else(|| DraftRecovery::new(snapshot.text.to_string()));
                 let gate = EditorGate::new();
                 let mut updates = gate.0.subscribe();
                 let (height_tx, height) = watch::channel(
@@ -280,7 +425,7 @@ impl TextInput {
                 let mut sizes = height.clone();
                 let (shortcuts, mut shortcut_requests) =
                     mpsc::channel::<ShortcutRequest>(crate::nsh::COMMAND_CAPACITY);
-                let initial_focus = u64::from(this.focus_handle.is_focused(window));
+                let initial_focus = u64::from(restarting || this.focus_handle.is_focused(window));
                 let initial = ComposerProjection {
                     snapshot: snapshot.clone(),
                     gate: gate.clone(),
@@ -289,15 +434,18 @@ impl TextInput {
                     shortcuts: shortcuts.clone(),
                     route,
                     host_failed: false,
+                    draft: draft.clone(),
                 };
                 let (surface, mut requests) =
                     crate::nsh::Surface::new(initial, render_composer_editor, window, cx);
                 let mut errors = surface.errors();
                 let error_gate = gate.clone();
+                let error_draft = draft.clone();
                 cx.spawn(async move |this, cx| {
                     loop {
                         if errors.borrow_and_update().is_some() {
                             error_gate.close();
+                            error_draft.preserve();
                             if this.update(cx, |_, cx| cx.notify()).is_err() {
                                 break;
                             }
@@ -323,11 +471,20 @@ impl TextInput {
                                 shortcuts: editor.shortcuts.clone(),
                                 route: editor.route,
                                 host_failed: editor.surface.errors().borrow().is_some(),
+                                draft: editor.draft.clone(),
                             });
-                            editor.surface.focus(window, cx);
+                            if let Some(page) = &editor.recovery_page {
+                                page.focus(window, cx);
+                            } else if editor.surface.errors().borrow().is_none() {
+                                editor.surface.focus(window, cx);
+                            }
                         }
                     });
                 this.nsh_composer = Some(ComposerEditor {
+                    id: id.clone(),
+                    draft,
+                    recovery_page: None,
+                    restarting: false,
                     surface,
                     gate,
                     focus_revision: initial_focus,
@@ -337,6 +494,7 @@ impl TextInput {
                     shortcuts,
                     route,
                 });
+                let shortcut_id = id.clone();
                 cx.spawn(async move |this, cx| {
                     while let Some(request) = shortcut_requests.recv().await {
                         if this
@@ -345,7 +503,12 @@ impl TextInput {
                                     .nsh_composer
                                     .as_ref()
                                     .map_or(ComposerRoute::default(), |editor| editor.route);
-                                if request.event.matches(this, route) {
+                                if this
+                                    .nsh_composer
+                                    .as_ref()
+                                    .is_some_and(|editor| editor.id.matches(&shortcut_id))
+                                    && request.event.matches(this, route)
+                                {
                                     cx.emit(request.event);
                                 }
                                 let _ = request.reply.send(());
@@ -369,7 +532,19 @@ impl TextInput {
                     while let Some(request) = requests.recv().await {
                         if this
                             .update_in(cx, |this, window, cx| {
-                                this.apply_nsh_request(request, window, cx);
+                                if this.nsh_composer.as_ref().is_some_and(|editor| {
+                                    editor.id.matches(&id)
+                                        && !editor.restarting
+                                        && editor.surface.errors().borrow().is_none()
+                                }) {
+                                    this.apply_nsh_request(request, window, cx);
+                                } else {
+                                    let _ = request.reply.send(EditorOutcome {
+                                        accepted: false,
+                                        snapshot: this.nsh_snapshot(),
+                                        selection_revision: this.nsh_selection_revision,
+                                    });
+                                }
                                 cx.notify();
                             })
                             .is_err()
@@ -402,7 +577,63 @@ impl TextInput {
                 shortcuts: editor.shortcuts.clone(),
                 route: editor.route,
                 host_failed: editor.surface.errors().borrow().is_some(),
+                draft: editor.draft.clone(),
             });
+            if editor.surface.errors().borrow().is_some() {
+                editor.gate.close();
+                if editor.recovery_page.is_none() {
+                    editor.draft.preserve();
+                    let (page, mut reloads) = crate::nsh::Surface::new(
+                        RecoveryProjection {
+                            id: editor.id.clone(),
+                            draft: editor.draft.clone(),
+                        },
+                        render_host_recovery,
+                        window,
+                        cx,
+                    );
+                    page.focus(window, cx);
+                    editor.recovery_page = Some(page);
+                    cx.spawn(async move |this, cx| {
+                        while let Some(request) = reloads.recv().await {
+                            if this
+                                .update(cx, |this, cx| {
+                                    let accepted =
+                                        this.nsh_composer.as_mut().is_some_and(|editor| {
+                                            if !editor.id.matches(&request.id) || editor.restarting
+                                            {
+                                                return false;
+                                            }
+                                            editor.gate.close();
+                                            editor.restarting = true;
+                                            true
+                                        });
+                                    let _ = request.reply.send(accepted);
+                                    if accepted {
+                                        this.marked_range = None;
+                                        this.composition_history_active = false;
+                                        this.nsh_selection_revision =
+                                            this.nsh_selection_revision.wrapping_add(1);
+                                        cx.notify();
+                                    }
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    })
+                    .detach();
+                }
+                if let Some(page) = &mut editor.recovery_page {
+                    page.sync_environment(cx);
+                    return gpui_kit::div()
+                        .w_full()
+                        .track_focus(&focus)
+                        .child(page.entity())
+                        .into_any_element();
+                }
+            }
             gpui_kit::div()
                 .w_full()
                 .track_focus(&focus)
@@ -432,8 +663,6 @@ impl TextInput {
             min_rows: self.min_rows,
             max_rows: self.max_rows,
             prediction: self.prediction_text().map(str::to_owned),
-            references: self.reference_mentions(),
-            skills: self.skill_mentions(),
             selection_revision: self.nsh_selection_revision,
         })
     }
@@ -666,6 +895,7 @@ struct Dispatch {
     pending_bytes: Signal<usize>,
     pending_attachment_bytes: Signal<usize>,
     recovery: Signal<Option<String>>,
+    draft: DraftRecovery,
     value: Signal<String>,
     composing: Signal<bool>,
     selection: Signal<(u32, u32)>,
@@ -675,9 +905,16 @@ struct Dispatch {
 }
 
 impl Dispatch {
+    fn set_value(&self, text: String) {
+        self.draft.local(&text);
+        self.value.set(text);
+    }
+
     fn fail(&self) {
         self.gate.close();
-        self.recovery.set(Some(self.value.get_untracked()));
+        let text = self.value.get_untracked();
+        self.draft.save(text.clone());
+        self.recovery.set(Some(text));
         self.failed.set(true);
         self.generation
             .update(|generation| *generation = generation.wrapping_add(1));
@@ -753,7 +990,7 @@ impl Dispatch {
                                 dispatch.revision.set(snapshot.revision);
                                 dispatch.selection_revision.set(selection_revision);
                                 if dispatch.pending.get_untracked() == 1 {
-                                    dispatch.value.set(snapshot.text.to_string());
+                                    dispatch.set_value(snapshot.text.to_string());
                                     dispatch.selection.set(snapshot.selection);
                                     dispatch.composing.set(snapshot.composing);
                                 }
@@ -786,12 +1023,14 @@ pub(crate) struct EditorView {
 fn editor(
     state: Signal<EditorSnapshot>,
     commands: mpsc::Sender<EditorRequest>,
-    gate: EditorGate,
     focus_revision: Signal<u64>,
     route: Signal<ComposerRoute>,
-    shortcuts: mpsc::Sender<ShortcutRequest>,
     host_failed: Signal<bool>,
+    host: &ComposerProjection,
 ) -> EditorView {
+    let gate = host.gate.clone();
+    let shortcuts = host.shortcuts.clone();
+    let draft = host.draft.clone();
     let first = state.get();
     let dispatch = Dispatch {
         commands,
@@ -801,7 +1040,8 @@ fn editor(
         pending: signal(0),
         pending_bytes: signal(0),
         pending_attachment_bytes: signal(0),
-        recovery: signal(None),
+        recovery: signal(draft.saved()),
+        draft,
         value: signal(first.text.to_string()),
         composing: signal(first.composing),
         selection: signal(first.selection),
@@ -825,7 +1065,7 @@ fn editor(
         {
             sync.revision.set(snapshot.revision);
             sync.selection_revision.set(snapshot.selection_revision);
-            sync.value.set(snapshot.text.to_string());
+            sync.set_value(snapshot.text.to_string());
             sync.selection.set(snapshot.selection);
             sync.composing.set(snapshot.composing);
         }
@@ -1000,7 +1240,7 @@ fn editor(
                 let caret = utf16_index(after[..start + inserted.len()].encode_utf16().count());
                 (caret, caret)
             };
-            value.set(after.clone());
+            paste.set_value(after.clone());
             selection.set(next_selection);
             if payload.files.len().saturating_add(payload.uris.len()) > MAX_IMAGES
                 || payload.uris.iter().any(|uri| uri.len() > 32 * 1024)
@@ -1038,8 +1278,9 @@ fn editor(
         .on_change(move |after: &str| {
             change.gate.close();
             let before = Arc::from(value.get());
-            value.set(after.to_owned());
+            change.set_value(after.to_owned());
             if change.failed.get_untracked() {
+                change.draft.save(after.to_owned());
                 change.recovery.set(Some(after.to_owned()));
                 return;
             }
@@ -1220,7 +1461,7 @@ fn editor(
                                     .update(|generation| *generation = generation.wrapping_add(1));
                                 reload.revision.set(snapshot.revision);
                                 reload.selection_revision.set(snapshot.selection_revision);
-                                reload.value.set(snapshot.text.to_string());
+                                reload.set_value(snapshot.text.to_string());
                                 reload.selection.set(snapshot.selection);
                                 reload.composing.set(snapshot.composing);
                                 reload.failed.set(false);
@@ -1266,7 +1507,7 @@ fn editor(
                                 if let Some(after) = restore.recovery.get_untracked() {
                                     restore.gate.close();
                                     let before = Arc::from(value.get_untracked());
-                                    value.set(after.clone());
+                                    restore.set_value(after.clone());
                                     restore.send(EditorOperation::Replace { before, after });
                                 }
                             })
@@ -1281,5 +1522,38 @@ fn editor(
         element,
         failed: dispatch.failed,
         synchronized,
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::DraftRecovery;
+
+    #[test]
+    fn reload_preserves_unsynchronized_text_without_replacing_authoritative_draft() {
+        let failed = DraftRecovery::new("accepted".into());
+        failed.local("unsent 中文 draft");
+        failed.preserve();
+        let restarted = failed.restarted("accepted after in-flight edit".into());
+        assert_eq!(restarted.saved().as_deref(), Some("unsent 中文 draft"));
+        restarted.preserve();
+        assert_eq!(
+            restarted.saved().as_deref(),
+            Some("accepted after in-flight edit")
+        );
+    }
+
+    #[test]
+    fn late_failure_from_old_host_cannot_overwrite_restarted_recovery() {
+        let failed = DraftRecovery::new("original".into());
+        failed.save("local recovery".into());
+        let restarted = failed.restarted("authoritative".into());
+        failed.local("late old host state");
+        failed.preserve();
+        assert_eq!(restarted.saved().as_deref(), Some("local recovery"));
+        restarted.local("new host draft");
+        restarted.preserve();
+        assert_eq!(restarted.saved().as_deref(), Some("new host draft"));
+        assert_eq!(failed.saved().as_deref(), Some("late old host state"));
     }
 }

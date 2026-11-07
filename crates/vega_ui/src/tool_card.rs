@@ -98,14 +98,6 @@ impl ToolActivityState {
         }
     }
 
-    pub(crate) const fn terminal_icon(self) -> Option<Icon> {
-        match self {
-            Self::Success => Some(Icon::Check),
-            Self::Failed => Some(Icon::Close),
-            _ => None,
-        }
-    }
-
     pub(crate) fn terminal_color(self, colors: &ThemeColors) -> gpui_kit::Rgba {
         match self {
             Self::Success => colors.success,
