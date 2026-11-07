@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use gpui_kit::PathPromptOptions;
-use gpui_kit::prelude::*;
 use vega_conversation::types::{
     SkillRootPreview, SkillSettingsMutation, SkillSettingsProjection, SkillSourceView, SkillUiScope,
 };

@@ -76,12 +76,7 @@ fn toggle(
 ) -> Row {
     let mut row = row(key, label);
     row.action = Some((
-        vega_i18n::t(if value {
-            "settings.state.on"
-        } else {
-            "settings.state.off"
-        })
-        .into(),
+        row.label.clone(),
         SkillAction::Mutate(mutation),
         Some(value),
     ));
@@ -198,7 +193,11 @@ fn rows(snapshot: &Snapshot, query: &str) -> Vec<Row> {
                 } else {
                     rows.push(toggle(
                         format!("enable-{}", source.id),
-                        t("settings.skills.enable_directory"),
+                        format!(
+                            "{}: {}",
+                            t("settings.skills.enable_directory"),
+                            source.source_label
+                        ),
                         source.enabled,
                         SkillSettingsMutation::SetSource {
                             source_id: source.id.clone(),
@@ -209,7 +208,11 @@ fn rows(snapshot: &Snapshot, query: &str) -> Vec<Row> {
                 }
                 rows.push(toggle(
                     format!("auto-{}", source.id),
-                    t("settings.skills.auto_directory"),
+                    format!(
+                        "{}: {}",
+                        t("settings.skills.auto_directory"),
+                        source.source_label
+                    ),
                     source.automatic,
                     SkillSettingsMutation::SetSource {
                         source_id: source.id.clone(),

@@ -27,9 +27,7 @@ actions!(
         PreviousProviderAction,
         ActivatePricingAction,
         NextPricingAction,
-        PreviousPricingAction,
-        NextMcpAction,
-        PreviousMcpAction
+        PreviousPricingAction
     ]
 );
 

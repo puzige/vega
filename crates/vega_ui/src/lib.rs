@@ -249,13 +249,6 @@ pub fn init(cx: &mut App) {
             settings::PreviousPricingAction,
             Some("PricingSettings"),
         ),
-        KeyBinding::new("enter", text_input::InsertNewline, Some("McpSettings")),
-        KeyBinding::new("tab", settings::NextMcpAction, Some("McpSettings")),
-        KeyBinding::new(
-            "shift-tab",
-            settings::PreviousMcpAction,
-            Some("McpSettings"),
-        ),
         // Provider form: multiline models use Enter for a new line; the
         // focused Save/Edit controls accept Enter/Space, and Cmd+Enter saves
         // from any provider input without changing the current thread model.

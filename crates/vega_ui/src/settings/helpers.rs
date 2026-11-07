@@ -1,5 +1,4 @@
 use super::*;
-use crate::interaction::InteractionExt;
 
 pub(crate) fn read_rate_inputs(inputs: &[Entity<TextInput>], cx: &App) -> PricingRateInputs {
     PricingRateInputs {
