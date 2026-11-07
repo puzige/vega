@@ -8,8 +8,7 @@ use vega_conversation::types::{PermissionResetError, StartupError};
 use vega_theme::{Motion, theme};
 use vega_ui::nsh::ProjectionId;
 
-#[path = "startup_controller/logo.rs"]
-mod logo;
+use crate::loading_logo as logo;
 #[path = "startup_controller/model.rs"]
 mod model;
 #[path = "startup_controller/presentation.rs"]

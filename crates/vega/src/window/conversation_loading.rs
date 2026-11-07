@@ -1,6 +1,15 @@
 use super::*;
 use std::time::{Duration, Instant};
 
+mod host;
+mod model;
+mod view;
+
+#[cfg(test)]
+mod tests;
+
+use crate::loading_logo as logo;
+
 type ApplyConversation =
     Box<dyn FnOnce(&mut ConversationStream, &mut Context<ConversationStream>) + Send>;
 
@@ -16,6 +25,7 @@ pub(super) struct ConversationLoading {
     started: Option<Instant>,
     worker_started: bool,
     result: Option<Result<PreparedConversation, ()>>,
+    presentation: Option<Entity<host::NativeHost>>,
 }
 
 impl ConversationLoading {
@@ -145,40 +155,80 @@ impl VegaWindow {
         .detach();
     }
 
+    fn loading_observation(&self, visit_started: Option<Instant>, cx: &App) -> model::Observation {
+        model::Observation {
+            thread_id: self.conversation_loading.thread_id.clone(),
+            generation: self.conversation_loading.generation,
+            started: self.conversation_loading.started,
+            worker_started: self.conversation_loading.worker_started,
+            result: match &self.conversation_loading.result {
+                None => model::ResultPhase::Pending,
+                Some(Ok(_)) => model::ResultPhase::Ready,
+                Some(Err(())) => model::ResultPhase::Failed,
+            },
+            visit_started,
+            opening: self.sidebar.read(cx).opening_thread(cx),
+        }
+    }
+
+    fn loading_view_matches(&self, observed: &model::Observation, cx: &App) -> bool {
+        if cx.global::<SettingsOpen>().0
+            || self.loading_observation(observed.visit_started, cx) != *observed
+        {
+            return false;
+        }
+        if let Some((_, started)) = &observed.opening {
+            return observed.visit_started == Some(*started);
+        }
+        let Some(thread_id) = observed.thread_id.as_deref() else {
+            return false;
+        };
+        observed.visit_started.is_none()
+            && cx
+                .global::<OpenedThread>()
+                .0
+                .as_ref()
+                .is_some_and(|thread| thread.id == thread_id)
+            && !self.is_draft_route(thread_id)
+            && self
+                .agent_controller
+                .active_stream_for_thread(thread_id)
+                .is_none()
+            && !self
+                .agent_controller
+                .preparation_stream
+                .as_ref()
+                .is_some_and(|stream| {
+                    self.agent_controller
+                        .ordinary_preparing
+                        .contains_key(thread_id)
+                        && stream.read(cx).thread_snapshot().id == thread_id
+                })
+            && self.composer_prediction_stream(thread_id).is_none()
+            && !self.automation_controller.streams.contains_key(thread_id)
+            && !self
+                .stream_view
+                .as_ref()
+                .is_some_and(|(id, _)| id == thread_id)
+            && observed.result != model::ResultPhase::Ready
+    }
+
     pub(super) fn render_conversation_loading(
         &mut self,
         visit_started: Option<Instant>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let colors = theme(cx).colors;
-        let mut content = div()
-            .id("conversation-loading")
-            .size_full()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap_3()
-            .text_size(px(Typography::BODY))
-            .text_color(colors.text_secondary)
-            .aria_label(vega_i18n::t("ui.loading"));
-        if visit_started.is_none() && matches!(self.conversation_loading.result, Some(Err(()))) {
-            content = content
-                .child(vega_i18n::t("app.conversation.load_failed"))
-                .child(
-                    gpui_kit::component::button::Button::new("retry-conversation")
-                        .label(vega_i18n::t("ui.retry"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some(thread_id) = this.conversation_loading.thread_id.clone() {
-                                this.start_conversation_load(thread_id, None, cx);
-                            }
-                        })),
-                );
-        } else if let Some(epoch) = visit_started.or(self.conversation_loading.started)
-            && epoch.elapsed() >= Duration::from_millis(Motion::CONVERSATION_LOADING_DELAY_MS)
-        {
-            content = content.child(crate::loading_logo::loading_logo(epoch, colors));
-        }
-        content.into_any_element()
+        let observed = self.loading_observation(visit_started, cx);
+        let host = match &self.conversation_loading.presentation {
+            Some(host) => host.clone(),
+            None => {
+                let owner = cx.weak_entity();
+                let observed = observed.clone();
+                let host = cx.new(|cx| host::NativeHost::new(owner, observed, cx));
+                self.conversation_loading.presentation = Some(host.clone());
+                host
+            }
+        };
+        host::Deferred { host, observed }.into_any_element()
     }
 }

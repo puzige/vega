@@ -78,7 +78,10 @@ pub(super) fn render(incoming: Signal<Snapshot>, sender: mpsc::Sender<Request>) 
             if snapshot.authority.error.is_none() && !snapshot.authority.recovery {
                 return body
                     .label(vega_i18n::t("app.startup.loading"))
-                    .child(logo::logo(incoming))
+                    .child(logo::logo(move || {
+                        let snapshot = incoming.get();
+                        (snapshot.colors, snapshot.phase)
+                    }))
                     .into_element();
             }
             let mut column = view()

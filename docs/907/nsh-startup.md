@@ -72,7 +72,11 @@ Current-cycle read-only Python inspection also established: removing the sole `f
 - Recovery-engine failure is an explicit architecture limitation: an NSH engine that also fails cannot paint NSH recovery. It is logged once and Retry/Quit remain blocked even if a frame was previously acknowledged. UI-only Reload has a separate failed-recovery exception to the displayed-ack requirement: current root, published/observed/current frame, recovery mount, selected Reload for native activation and one-shot claim still apply. The paint-free host can traverse to Reload; this does not establish rendered/visible recovery and never replays startup. No visible fallback can be promised under the NSH-only requirement. App launch/E2E were not performed.
 - Parent should compile and run the delayed-ack production-fence regressions after all writers stop, then independently verify real NSH callback delivery (including unchanged geometry/selection-only frames), native host B installation while engine B is delayed, all three activation routes, replaced mounts and total-failure reload. Compositor/native paint timing remains unverified and is not established by the acknowledgement.
 
-## Owned Rust SHA-256 at stop
+## Shared-logo integration after the initial handoff
+
+The later conversation-loading integration moved the unchanged NSH logo into `crates/vega/src/loading_logo.rs` (SHA256 `fcfde1dcd2341807fec6e39cae213086d3dbe11660b00be9959e41edd819f24d`). Startup now aliases that single module and passes colors/phase through a closure. The old `startup_controller/logo.rs` path below is a historical source identity, not the current file. A non-implementer compared paths, strokes, scale, tint and64-slice shimmer with the committed startup implementation and found no blocking difference. Current startup controller/view hashes are `6bd299865d25ddf10a6ecab93ef37c9f53dca556c954aff3e81555b084454902` and `2e73f44dbd56fa0c53dc47d8d7a86f65e5aa25c63ab7c3d27917b860380bd2a3`. Workspace Clippy and integrated166regressions passed after extraction; native pixels remain unverified.
+
+## Owned Rust SHA-256 at initial stop
 
 ```text
 2d62756b882b1038793be07800ff8374ed03a77002c5f160e36744400880f81f  crates/vega/src/startup_controller.rs
