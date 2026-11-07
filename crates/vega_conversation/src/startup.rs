@@ -39,6 +39,12 @@ pub fn prepare_workspace(
     for item in vega_store::shell_operations::list_blockers(store.conn())
         .map_err(|_| StartupError::StorageUnavailable)?
     {
+        vega_runtime::RuntimeWorkspaceMutationGuard::set_persisted_block(
+            Path::new(&item.workspace),
+            &item.operation_id,
+            true,
+        )
+        .map_err(|_| StartupError::StorageUnavailable)?;
         if item.facts.resources_closed
             || !item
                 .facts

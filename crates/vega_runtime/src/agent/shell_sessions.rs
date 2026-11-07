@@ -610,6 +610,34 @@ impl ShellRun {
             .map_err(|_| failure("operation_persistence_failed"))
     }
 
+    async fn finish_unstarted(
+        &self,
+        mut record: RuntimeShellOperationRecord,
+        reservation: &Reservation,
+        resources_closed: bool,
+    ) -> Result<(), VegaError> {
+        record.process_resolved = true;
+        record.resources_closed = resources_closed;
+        record.cleanup_state = if resources_closed {
+            "best_effort_completed"
+        } else {
+            "unresolved"
+        }
+        .into();
+        RuntimeWorkspaceMutationGuard::set_persisted_block(
+            &self.workspace,
+            &record.operation_id,
+            true,
+        )?;
+        let operation = record.operation_id.clone();
+        let result = self.record(record).await;
+        reservation.finish(true);
+        if result.is_ok() && resources_closed {
+            RuntimeWorkspaceMutationGuard::set_persisted_block(&self.workspace, &operation, false)?;
+        }
+        result
+    }
+
     async fn finish(
         &self,
         operation: &Arc<Operation>,
@@ -733,16 +761,12 @@ impl ShellRun {
         if let Err(error) = process_prerequisite().await {
             record.state = "failed".into();
             record.error = Some("session_process_control_unavailable".into());
-            let persisted = self.record(record).await;
-            reservation.finish(true);
-            persisted?;
+            self.finish_unstarted(record, &reservation, true).await?;
             return Err(error);
         }
         if self.open().is_err() {
             record.state = "cancelled".into();
-            let result = self.record(record).await;
-            reservation.finish(true);
-            result?;
+            self.finish_unstarted(record, &reservation, true).await?;
             return Err(failure("run_closed"));
         }
         let wait_ms = prepared
@@ -809,9 +833,7 @@ impl ShellRun {
             Err(error) => {
                 record.state = "failed".into();
                 record.error = Some(error.code().tool_output());
-                let result = self.record(record).await;
-                reservation.finish(true);
-                result?;
+                self.finish_unstarted(record, &reservation, false).await?;
                 return Err(failure("session_launch_failed"));
             }
         };

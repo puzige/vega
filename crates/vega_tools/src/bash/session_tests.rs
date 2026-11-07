@@ -44,6 +44,26 @@ fn passthrough() -> BashSessionRedactor {
 }
 
 #[test]
+fn never_started_failure_retains_terminal_owner_with_truthful_cleanup_facts() {
+    let writer = writer(passthrough());
+    writer.inner.data().started_at = None;
+    writer.finish(
+        BashAttempt {
+            result: Err(BashError::new(BashErrorCode::SpawnFailed)),
+            cleanup_safe: true,
+        },
+        None,
+    );
+    let snapshot = writer.inner.snapshot(None).unwrap();
+    assert_eq!(snapshot.state, "failed");
+    assert!(snapshot.cleanup_safe);
+    assert!(snapshot.process_resolved);
+    assert!(snapshot.resources_closed);
+    assert_eq!(snapshot.exit_code, None);
+    assert_eq!(snapshot.command_result, None);
+}
+
+#[test]
 fn output_cursor_rejects_partial_characters_and_reports_eviction_without_corruption() {
     let mut ring = OutputRing::new();
     ring.append("汉字").unwrap();

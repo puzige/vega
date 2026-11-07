@@ -233,6 +233,34 @@ fn accepted_decision_replay_does_not_clear_new_or_unselected_blockers() -> rusql
         "accept-one",
         3,
     )?;
+    assert!(verify_resume_decision(
+        store.conn(),
+        "/workspace",
+        initial.epoch,
+        &["op".into()],
+        "accept-one"
+    )?);
+    assert!(!verify_resume_decision(
+        store.conn(),
+        "/workspace",
+        initial.epoch + 1,
+        &["op".into()],
+        "accept-one"
+    )?);
+    assert!(!verify_resume_decision(
+        store.conn(),
+        "/workspace",
+        initial.epoch,
+        &["other-operation".into()],
+        "accept-one"
+    )?);
+    assert!(!verify_resume_decision(
+        store.conn(),
+        "/workspace",
+        initial.epoch,
+        &["op".into()],
+        "uncommitted"
+    )?);
     let mut third = record_for("prepared");
     third.operation_id = "new-operation";
     record(store.conn(), &third, 4)?;

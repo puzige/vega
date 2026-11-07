@@ -512,6 +512,9 @@ impl SessionWriter {
             return;
         }
         data.cleanup_safe = attempt.cleanup_safe;
+        if data.started_at.is_none() && data._retained_child.is_none() {
+            data.process_resolved = true;
+        }
         if retained_temp.is_none()
             && !data
                 .cleanup_reasons
@@ -716,15 +719,6 @@ impl Tools {
         tokio::select! {
             _ = inner.launched.cancelled() => {},
             _ = inner.settled.cancelled() => {},
-        }
-        if inner.data().started_at.is_none() {
-            let data = inner.data();
-            return Err(if data.cleanup_safe {
-                data.error
-                    .unwrap_or_else(|| BashError::new(BashErrorCode::SpawnFailed))
-            } else {
-                BashError::new(BashErrorCode::CleanupFailed)
-            });
         }
         launch_guard.armed = false;
         Ok(BashSession {

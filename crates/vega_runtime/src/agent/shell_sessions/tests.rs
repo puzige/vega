@@ -348,6 +348,123 @@ async fn legacy_bash_without_wait_keeps_original_readonly_authorization()
     Ok(())
 }
 
+struct TerminalPersistence {
+    fail: bool,
+    records: Arc<Mutex<Vec<RuntimeShellOperationRecord>>>,
+}
+
+impl RuntimeShellOperationHook for TerminalPersistence {
+    fn record(
+        &self,
+        record: RuntimeShellOperationRecord,
+    ) -> BoxFuture<'static, Result<(), VegaError>> {
+        let records = self.records.clone();
+        let fail = self.fail;
+        async move {
+            records
+                .lock()
+                .map_err(|_| failure("test_record_unavailable"))?
+                .push(record);
+            if fail {
+                Err(failure("injected_terminal_ack_loss"))
+            } else {
+                Ok(())
+            }
+        }
+        .boxed()
+    }
+}
+
+#[tokio::test]
+async fn unstarted_terminal_requires_confirmed_resource_and_commit_before_opening()
+-> Result<(), Box<dyn Error>> {
+    let _serial = serial().lock().await;
+    for (resources_closed, fail) in [(true, false), (false, false), (true, true)] {
+        let workspace = Workspace::new()?;
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let mut config =
+            RuntimeToolConfig::default().with_shell_operations(Arc::new(TerminalPersistence {
+                fail,
+                records: records.clone(),
+            }));
+        config.thread_id = "thread".into();
+        let tools = Tools::new(&workspace.0)?;
+        let owner = ShellRun::new(
+            &tools,
+            &config,
+            Some("run".into()),
+            CancellationToken::new(),
+        );
+        let reservation = Reservation::acquire(&workspace.0)?;
+        let operation_id = ulid::Ulid::generate().to_string();
+        let record = RuntimeShellOperationRecord {
+            operation_id: operation_id.clone(),
+            thread_id: "thread".into(),
+            run_id: "run".into(),
+            call_id: "call".into(),
+            generation: shell_generation().into(),
+            workspace: workspace.0.to_string_lossy().into_owned(),
+            state: "failed".into(),
+            exit_code: None,
+            error: Some("launch_failed".into()),
+            duration_ms: None,
+            command_result: None,
+            exit_signal: None,
+            cleanup_state: "pending".into(),
+            output_incomplete: false,
+            resources_closed: false,
+            process_resolved: false,
+            cleanup_reasons: Vec::new(),
+        };
+        let result = owner
+            .finish_unstarted(record, &reservation, resources_closed)
+            .await;
+        assert_eq!(result.is_err(), fail);
+        let blocked = !resources_closed || fail;
+        assert_eq!(
+            RuntimeWorkspaceMutationGuard::is_blocked(&workspace.0)?,
+            blocked
+        );
+        assert_eq!(
+            RuntimeWorkspaceMutationGuard::acquire(&workspace.0).is_err(),
+            blocked
+        );
+        let recorded = records.lock().map_err(|_| "record lock poisoned")?;
+        assert_eq!(recorded.len(), 1);
+        assert!(recorded[0].process_resolved);
+        assert_eq!(recorded[0].resources_closed, resources_closed);
+        assert_eq!(
+            recorded[0].cleanup_state,
+            if resources_closed {
+                "best_effort_completed"
+            } else {
+                "unresolved"
+            }
+        );
+        drop(recorded);
+        RuntimeWorkspaceMutationGuard::set_persisted_block(&workspace.0, &operation_id, false)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn persisted_blocker_excludes_external_root_and_full_access_without_entering_its_project()
+-> Result<(), Box<dyn Error>> {
+    let _serial = serial().lock().await;
+    let a = Workspace::new()?;
+    let b = Workspace::new()?;
+    RuntimeWorkspaceMutationGuard::set_persisted_block(&a.0, "restored-operation", true)?;
+    drop(RuntimeWorkspaceMutationGuard::acquire(&b.0)?);
+    assert!(RuntimeWorkspaceMutationGuard::acquire_all(&[b.0.clone(), a.0.clone()]).is_err());
+    assert!(RuntimeWorkspaceMutationGuard::acquire_all(&[PathBuf::from("/")]).is_err());
+    RuntimeWorkspaceMutationGuard::set_persisted_block(&a.0, "restored-operation", false)?;
+    drop(RuntimeWorkspaceMutationGuard::acquire_all(&[
+        b.0.clone(),
+        a.0.clone(),
+    ])?);
+    Ok(())
+}
+
 #[test]
 fn session_observation_parameters_reject_scope_expansion_and_out_of_range_waits() {
     let handle = ulid::Ulid::generate().to_string();

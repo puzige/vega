@@ -1,14 +1,24 @@
 # 会话式 Shell 实施检查点（未完成，禁止合并）
 
+## 独审 P1 修复增量（待复核）
+
+非写入者对 `f9b5375d4bac2cbffd841fe44725e003ca480c4b` 返回 3 项 P1，不予通过。本轮逐项修复：
+
+1. 启动恢复先把全部持久化 blocker 注册到 runtime 协调域，未进入 A 项目也不能从 B 的外部根或 Full Access 绕过 A。
+2. 用户风险决定按原 `decision_id`、workspace、epoch 和选中 operation 集合精确读回；提交回执未知保留确认，不一律映射为 Changed。只解除原选中理由，新的 blocker 保留。
+3. 未启动失败先建立内存持久化阻塞，仅在终态可靠保存且资源确认收束后解除；tools 返回未启动失败 session 而不是丢弃 owner。未启动失败保留无退出码/无 command_result 的事实，同时标明进程从未启动已收束。
+
+当前增量验证：官方工具链同下，`cargo test --locked -j 2 -p vega_runtime -p vega_store -p vega_conversation -p vega_tools` 实际 3+13+6+18=40 运行/40 通过/0 失败/0 忽略；doctest 0 执行。四包 `cargo clippy --locked -j 2 --all-targets -- -D warnings` 退出 0，fmt/diff 检查通过。新增未启动失败资源/丢失确认门禁回归、全局 blocker 跨根准入回归、未启动终态事实回归；既有决定重放回归增加精确读回与错误内容拒绝断言。此处是开发验证，不代表全部合同已验收或独审通过。
+
 ## 继续交付：身份与预算增量
 
 基于 `f9b5375d4bac2cbffd841fe44725e003ca480c4b`（Actions `42193732645` required CI 全通过、28 条开发测试通过）继续。修改前 fetch 并 fast-forward 核对任务分支，未覆盖用户改动。最新项目政策解除旧本地验证禁令；下文“未本地编译/测试”仅描述历史轮次。
 
 - 本轮范围：tools 进程观察/信号适配层、共同清理预算、对应 9 条新开发回归。二次信号验证或组观察中的已知身份失配永久撤销该 PID 的权限；不会在同次清理或重试中重新采用。每个信号前核对共同截止时间，观察耗时用尽预算后不再发信号；重试宽限等待不超剩余预算。
 - 实际工具链：官方 `rustc 1.98.0 (88d9e12ae 2026-08-18)`、`cargo 1.98.0 (797e8a9bc 2026-08-05)`，使用 `rustup run 1.98.0 cargo`；不安装、不升级、不改机器配置，构建并发 `-j 2`。
-- 当前未提交增量实际验证：`cargo test -p vega_tools --locked -j 2`，17 运行/17 通过/0 失败/0 忽略；`cargo clippy -p vega_tools --all-targets --locked -j 2 -- -D warnings` 退出 0；`cargo test --locked -j 2 -p vega_store -p vega_runtime -p vega_conversation`，6+11+3=20 运行/20 通过/0 失败/0 忽略。合计 37 条。doctest 均 0 执行，不称行为测试通过。`cargo fmt --all`、`git diff --check` 退出 0。
+- 身份预算提交 `ee163bb9e21109ecdb968f83511c9470d2a1d147` 的实际验证：`cargo test -p vega_tools --locked -j 2`，17 运行/17 通过/0 失败/0 忽略；`cargo clippy -p vega_tools --all-targets --locked -j 2 -- -D warnings` 退出 0；`cargo test --locked -j 2 -p vega_store -p vega_runtime -p vega_conversation`，6+11+3=20 运行/20 通过/0 失败/0 忽略。合计 37 条。doctest 均 0 执行，不称行为测试通过。`cargo fmt --all`、`git diff --check` 退出 0。
 - 新回归覆盖二次身份变化、组观察变化、复用后恢复旧 birth、已知后代重挂、未知组成员、观察故障、128 身份上限、耗尽预算及已过期预算。注入测试不证明消除了 OS TOCTOU 或隐藏逃逸后代；未运行 Vega、打包或用户数据库操作。
-- 持久化/恢复的非写入者只读审查正在进行，绑定旧停写版本；tools 增量另需审查。完整合同验收矩阵、开发测试留痕清理、最终无 Rust 测试 head CI、合并和用户手测仍未完成。禁止以本轮 37 条绿色代替剩余交付门禁。
+- 持久化/恢复首轮独审发现 3 项 P1，修复见上；tools 增量和 P1 修复仍需复核。完整合同验收矩阵、开发测试留痕清理、最终无 Rust 测试 head CI、合并和用户手测仍未完成。禁止以本轮 37 条绿色代替剩余交付门禁。
 
 ## 当前实施状态（冻结 v1.1 后）
 

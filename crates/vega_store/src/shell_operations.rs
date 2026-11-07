@@ -415,6 +415,32 @@ pub fn append_cleanup_observation(
     tx.commit()
 }
 
+pub fn verify_resume_decision(
+    conn: &Connection,
+    workspace: &str,
+    expected_epoch: i64,
+    operations: &[String],
+    decision: &str,
+) -> rusqlite::Result<bool> {
+    let mut selected = operations.to_vec();
+    selected.sort();
+    selected.dedup();
+    if selected.is_empty() || selected.len() != operations.len() || decision.is_empty() {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let expected = json(
+        &serde_json::json!({"workspace":workspace,"epoch":expected_epoch,"operations":selected,"kind":"user_risk"}),
+    )?;
+    let prior: Option<String> = conn
+        .query_row(
+            "SELECT content FROM shell_dispositions WHERE disposition_id=?1 AND kind='user_risk'",
+            [decision],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(prior.as_deref() == Some(expected.as_str()))
+}
+
 pub fn resume_writes(
     conn: &Connection,
     workspace: &str,

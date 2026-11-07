@@ -211,15 +211,33 @@ impl ShellRecoveryService {
             .iter()
             .map(|row| row.operation_id.clone())
             .collect();
-        vega_store::shell_operations::resume_writes(
-            store.conn(),
-            &confirmation.projection.workspace,
-            confirmation.projection.epoch,
-            &operations,
-            &confirmation.decision_id,
-            now(),
-        )
-        .map_err(|_| ShellRecoveryError::Changed)?;
+        let committed = || {
+            vega_store::shell_operations::verify_resume_decision(
+                store.conn(),
+                &confirmation.projection.workspace,
+                confirmation.projection.epoch,
+                &operations,
+                &confirmation.decision_id,
+            )
+            .map_err(unavailable)
+        };
+        if !committed()? {
+            let result = vega_store::shell_operations::resume_writes(
+                store.conn(),
+                &confirmation.projection.workspace,
+                confirmation.projection.epoch,
+                &operations,
+                &confirmation.decision_id,
+                now(),
+            );
+            if !committed()? {
+                if result.is_err() {
+                    let current = self.read(&confirmation.source)?;
+                    require_same(&current, &confirmation.projection)?;
+                }
+                return Err(ShellRecoveryError::Unavailable);
+            }
+        }
         vega_tools::ReadState::invalidate_workspace(std::path::Path::new(
             &confirmation.projection.workspace,
         ))
