@@ -43,4 +43,11 @@ A11 迁移到 0060、触发器完整性、级联/REPLACE/异常 revision 均验�
 
 开发对照先提供存储投影的受控微基准（同 fixture、12 样本、p95 nearest-rank）。这不是完整 conversation preparation 实测，不包含 authority/history 转换/终态审批/文件末检/竞争等待；完整持锁、等待、总耗时尚待云端独立用例，不以微基准替代或宣称达成 70%。
 
+## 开发验证记录
+
+- 首个开发 head：`78c33cdfd01dee331fa4e3b38004af270f3140fc`，draft PR #912。
+- 现有 Actions run `42332217116`：Clippy/Nextest 编译均失败；`preparation.rs:163` E0277，当前 rusqlite 不支持 `Value::from(ValueRef)`。未执行 Rust 回归，性能未取得；修正使用 `row.get::<_, Value>(index)`，不改变断言/工作流/依赖，待新 head 验证。
+- 后续增量：完整 preparation 成功 source/fence、canonical 历史等价、最终取消回滚和过期权限拒绝用例；均仅临时 fixture，不执行模型/工具。待 CI。
+- 本地已执行 `cargo fmt --all -- --check` 与 `git diff --check`；不进行本地运行/编译/测试。
+
 独立审查仍是合并门禁；本轮禁止新建子任务，自审不能替代独审。没有非实现者精确版本结论时保留未合并候选，不绕过。
