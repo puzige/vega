@@ -3,8 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_IDENTITIES: usize = 128;
 
+#[cfg(test)]
+#[path = "session_process_tests.rs"]
+mod tests;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Identity {
+pub(super) struct Identity {
     pid: i32,
     parent: u32,
     group: u32,
@@ -12,7 +16,31 @@ struct Identity {
     zombie: bool,
 }
 
-pub(super) struct ProcessTracker {
+pub(super) trait ProcessApi {
+    fn now(&self) -> tokio::time::Instant {
+        tokio::time::Instant::now()
+    }
+    fn inspect(&self, pid: i32) -> Result<Option<Identity>, ()>;
+    fn list(&self, pid: i32, group: bool) -> Result<Vec<i32>, &'static str>;
+    fn signal(&self, target: i32, signal: i32) -> Result<(), ()>;
+}
+
+pub(super) struct NativeProcessApi;
+
+impl ProcessApi for NativeProcessApi {
+    fn inspect(&self, pid: i32) -> Result<Option<Identity>, ()> {
+        inspect(pid)
+    }
+    fn list(&self, pid: i32, group: bool) -> Result<Vec<i32>, &'static str> {
+        list(pid, group)
+    }
+    fn signal(&self, target: i32, signal: i32) -> Result<(), ()> {
+        send_signal(target, signal)
+    }
+}
+
+pub(super) struct ProcessTracker<A = NativeProcessApi> {
+    api: A,
     group: i32,
     known: BTreeMap<i32, Identity>,
     failures: BTreeSet<&'static str>,
@@ -22,14 +50,21 @@ pub(super) struct ProcessTracker {
 
 impl ProcessTracker {
     pub(super) fn new(pid: u32) -> Self {
+        Self::with_api(pid, NativeProcessApi)
+    }
+}
+
+impl<A: ProcessApi> ProcessTracker<A> {
+    fn with_api(pid: u32, api: A) -> Self {
         let mut tracker = Self {
+            api,
             group: i32::try_from(pid).unwrap_or(0),
             known: BTreeMap::new(),
             failures: BTreeSet::new(),
             invalid: BTreeSet::new(),
             group_invalid: false,
         };
-        match inspect(tracker.group) {
+        match tracker.api.inspect(tracker.group) {
             Ok(Some(identity)) if identity.group == pid => {
                 tracker.known.insert(identity.pid, identity);
             }
@@ -70,12 +105,12 @@ impl ProcessTracker {
             if self.invalid.contains(&parent.pid) {
                 continue;
             }
-            match inspect(parent.pid) {
+            match self.api.inspect(parent.pid) {
                 Ok(Some(current)) if current.birth == parent.birth => {
-                    match list(parent.pid, false) {
+                    match self.api.list(parent.pid, false) {
                         Ok(children) => {
                             for pid in children {
-                                match inspect(pid) {
+                                match self.api.inspect(pid) {
                                     Ok(Some(child)) if child.parent == parent.pid as u32 => {
                                         self.remember(child)
                                     }
@@ -99,10 +134,10 @@ impl ProcessTracker {
                 }
             }
         }
-        match list(self.group, true) {
+        match self.api.list(self.group, true) {
             Ok(members) => {
                 for pid in members {
-                    match inspect(pid) {
+                    match self.api.inspect(pid) {
                         Ok(Some(identity))
                             if self
                                 .known
@@ -112,6 +147,9 @@ impl ProcessTracker {
                         _ => {
                             self.failures.insert("group_continuity_lost");
                             self.group_invalid = true;
+                            if self.known.contains_key(&pid) {
+                                self.invalid.insert(pid);
+                            }
                         }
                     }
                 }
@@ -127,7 +165,7 @@ impl ProcessTracker {
         if self.invalid.contains(&identity.pid) {
             return None;
         }
-        match inspect(identity.pid) {
+        match self.api.inspect(identity.pid) {
             Ok(Some(current)) if current.birth == identity.birth => Some(current),
             Ok(None) => None,
             _ => {
@@ -139,25 +177,29 @@ impl ProcessTracker {
         }
     }
 
-    pub(super) fn signal(&mut self, signal: i32) {
+    pub(super) fn signal(&mut self, signal: i32, deadline: tokio::time::Instant) {
+        if !self.within_budget(deadline) {
+            return;
+        }
         self.discover();
-        let members = list(self.group, true);
-        let group_verified = !self.group_invalid
-            && members.as_ref().is_ok_and(|members| {
-                !members.is_empty()
-                    && members.iter().all(|pid| {
-                        self.known.get(pid).is_some_and(|known| {
-                            inspect(*pid).is_ok_and(|current| {
-                                current.is_some_and(|current| {
-                                    current.birth == known.birth
-                                        && current.group == self.group as u32
-                                })
-                            })
-                        })
-                    })
-            });
+        let members = self.api.list(self.group, true);
+        let mut group_verified =
+            !self.group_invalid && members.as_ref().is_ok_and(|members| !members.is_empty());
+        if let Ok(members) = &members {
+            for pid in members {
+                let current = self
+                    .known
+                    .get(pid)
+                    .copied()
+                    .and_then(|known| self.matching(known));
+                group_verified &= current.is_some_and(|current| current.group == self.group as u32);
+            }
+        }
+        if !self.within_budget(deadline) {
+            return;
+        }
         if group_verified {
-            if send_signal(-self.group, signal).is_err() {
+            if self.api.signal(-self.group, signal).is_err() {
                 self.failures.insert("group_signal_failed");
             }
         } else if !members.as_ref().is_ok_and(Vec::is_empty) {
@@ -166,13 +208,26 @@ impl ProcessTracker {
         }
         let known: Vec<_> = self.known.values().copied().collect();
         for identity in known {
+            if !self.within_budget(deadline) {
+                return;
+            }
             if let Some(current) = self.matching(identity)
+                && self.within_budget(deadline)
                 && !current.zombie
                 && (!group_verified || current.group != self.group as u32)
-                && send_signal(current.pid, signal).is_err()
+                && self.api.signal(current.pid, signal).is_err()
             {
                 self.failures.insert("descendant_signal_failed");
             }
+        }
+    }
+
+    fn within_budget(&mut self, deadline: tokio::time::Instant) -> bool {
+        if self.api.now() < deadline {
+            true
+        } else {
+            self.failures.insert("cleanup_budget_exhausted");
+            false
         }
     }
 
@@ -188,7 +243,7 @@ impl ProcessTracker {
                 gone = false;
             }
         }
-        match list(self.group, true) {
+        match self.api.list(self.group, true) {
             Ok(members) if members.is_empty() => {}
             Ok(_) => gone = false,
             Err(reason) => {
@@ -227,8 +282,8 @@ pub(super) async fn execute(
     let mut tracker = ProcessTracker::new(child.id().unwrap_or(0));
     writer.started(started);
     let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
-        writer.begin_cleanup("outcome_unknown");
-        tracker.signal(libc::SIGKILL);
+        let deadline = writer.begin_cleanup("outcome_unknown");
+        tracker.signal(libc::SIGKILL, deadline);
         writer.retain_child(child);
         writer.process_cleanup(false, vec!["output_pipes_unavailable".into()]);
         return BashAttempt {
@@ -269,7 +324,7 @@ pub(super) async fn execute(
     let deadline = writer.begin_cleanup(reason);
     tracker.discover();
     if status.is_none() || !tracker.settled() {
-        tracker.signal(libc::SIGTERM);
+        tracker.signal(libc::SIGTERM, deadline);
         let grace = std::cmp::min(deadline, tokio::time::Instant::now() + TERMINATION_GRACE);
         loop {
             if status.is_none() {
@@ -297,7 +352,7 @@ pub(super) async fn execute(
             .await;
         }
         if status.is_none() || !tracker.settled() {
-            tracker.signal(libc::SIGKILL);
+            tracker.signal(libc::SIGKILL, deadline);
         }
     }
     let process_deadline = std::cmp::min(deadline, tokio::time::Instant::now() + REAP_GRACE);

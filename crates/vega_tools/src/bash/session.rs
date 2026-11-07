@@ -337,16 +337,20 @@ impl BashSession {
         };
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         if let Some(tracker) = &mut resources.tracker {
-            tracker.signal(libc::SIGTERM);
+            tracker.signal(libc::SIGTERM, deadline);
             let grace = std::cmp::min(
                 deadline,
                 tokio::time::Instant::now() + super::TERMINATION_GRACE,
             );
             while !tracker.settled() && tokio::time::Instant::now() < grace {
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                tokio::time::sleep_until(std::cmp::min(
+                    grace,
+                    tokio::time::Instant::now() + Duration::from_millis(10),
+                ))
+                .await;
             }
             if !tracker.settled() {
-                tracker.signal(libc::SIGKILL);
+                tracker.signal(libc::SIGKILL, deadline);
             }
         }
         let status = if let Some(child) = &mut resources.child {
@@ -399,7 +403,11 @@ impl BashSession {
                 .cleanup_reasons
                 .iter()
                 .any(|reason| reason == "credential_cleanup_failed");
-        if data.process_resolved && data.resources_closed && !data.output_incomplete {
+        if data.process_resolved
+            && data.resources_closed
+            && !data.output_incomplete
+            && tokio::time::Instant::now() < deadline
+        {
             data.cleanup_safe = true;
         }
         data.cleanup_deadline = Some(deadline);
