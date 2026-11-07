@@ -316,7 +316,7 @@ impl SettingsView {
             provider_test_help_focuses: Vec::new(),
             mode_open: false,
             default_permission: super::permissions::DefaultPermissionState::new(cx),
-            permission_reset: super::permission_reset::ResetState::new(cx),
+            permission_reset: super::permission_reset::ResetState::new(),
             model_open: false,
             error: error
                 .map(|error| SettingsText::from_known(error, &["settings.config.load_failed"])),

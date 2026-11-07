@@ -557,7 +557,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                                 .max_h(px(Layout::SETTINGS_NOTES_MAX_HEIGHT))
                                 .child(
                                     nsh_base::text_view()
-                                        .markdown(move || state.get().notes)
+                                        .markdown(move || Some(state.get().notes.into()))
                                         .selectable(true)
                                         .render_image(|image: &nsh_base::text_view::Image| {
                                             text(image.alt.clone())

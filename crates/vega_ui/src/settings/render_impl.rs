@@ -750,7 +750,7 @@ impl SettingsView {
                     .child(settings_field(
                         t("settings.defaults.permission_mode"),
                         None,
-                        self.render_mode_selector(cx),
+                        self.render_mode_selector(window, cx),
                         colors,
                     ))
                     .child(settings_field(
@@ -882,7 +882,11 @@ impl SettingsView {
 
     /// In-place expandable picker for the permission mode (minimal equivalent
     /// of a dropdown: click to expand, click an option to choose and collapse).
-    pub(crate) fn render_mode_selector(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_mode_selector(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = theme(cx).colors;
         let current = self.config.defaults.permission_mode.clone();
         let enabled = self.permission_picker_enabled();
@@ -1020,7 +1024,7 @@ impl SettingsView {
                     vega_conversation::types::PermissionResetProjection::Idle
                         | vega_conversation::types::PermissionResetProjection::Completed
                 ),
-                |section| section.child(self.render_permission_reset(cx)),
+                |section| section.child(self.render_permission_reset(window, cx)),
             )
             .into_any_element()
     }

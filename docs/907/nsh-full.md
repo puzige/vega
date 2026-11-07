@@ -91,6 +91,12 @@ GPUI Fast 宿主/窗口/可信控制器（原有业务与后台任务所有者�
 - Loading/Checking/Downloading/Installing 时禁用检查与自动更新；Ready 时只提供原有安装/稍后入口，不自动安装。动作携带展示身份、观察到的 phase 与 automatic 值，主线程重查最新状态；过期或重复动作拒绝，失败保留可恢复反馈。原更新控制器继续负责授权与实际服务。
 - NSH 高度变化回传宿主，不裁切说明和错误；发行说明链接仍通过既有安全链接分类，不能由 Markdown 自动读取文件 URI 或远程图片。浅深色、中英文、键盘按压/Tab 与帮助/说明展开按原规范验证。
 
+### 设置授权清理确认区验收
+
+- 仅替换既有确认区的绘制与交互，不添加新的清理入口、不改变清理服务。Preparing/Confirming/Pausing/Stopping/Refreshing/Blocked 各状态及原提示完整保留；阻塞态的 Cancel/Inspect 仅在原投影允许时出现。
+- Confirming 默认聚焦 Cancel；Tab/Shift+Tab 在 Cancel/Confirm 间循环，Escape 仅在 Preparing/Confirming 取消。Blocked 默认聚焦 Retry；Completed 恢复原默认权限选择器焦点。状态变更不得将 Enter 自动变为确认。
+- 命令携带展示身份、投影 revision 和观察状态，可信控制器拒绝过期/重复/越阶段动作，再走原 PermissionResetRequested。未知结果不自动重放；原 window 控制器仍负责检查设置会话、权限权威和真实清理。
+
 ### 会话卡片协议
 
 - 权限快照包含完整命令、安全提示、范围请求详情和实际可选决策，不能携带租约或未脱敏 Debug 输出。每次请求由原卡片实例持有不可复用的展示标识；动作回到同一卡片，核对标识、未决状态与允许选项，再走原租约 first-wins 响应。ACP 只接受请求列出的 option id；范围审批不能变成持久授权。
@@ -104,7 +110,7 @@ GPUI Fast 宿主/窗口/可信控制器（原有业务与后台任务所有者�
 
 - 已接入生产：计划、权限、用户问答、工具卡片、终端和文件预览的 NSH 实现；保留原业务控制器。开发提交 `16e26859a5c644ef2ba511e18bfceb3ba854ee12` 的 macOS required CI 已通过；不表示这些页面的功能等价或三大桌面运行验收完成。
 - Composer：专用宿主、同步屏障、当次粘贴载荷、版本戳快捷键、原控制器事件接线和高度回传已写入；现有 NSH Preview 挂载同一输入桥供开发检查，生产渲染仍使用原输入框。独立 NSH 宿主恢复页、共享恢复副本、重建身份围栏与旧宿主停止已实现，第三轮 CI 编译及两项恢复回归通过；提及范围显示与跨平台实际行为尚未齐备，不能宣称切换完成。尚未消费的提及快照字段已移除，原控制器中的提及语义保留，范围装饰仍为切换前必需项。
-- 设置更新面板已替换为生产 NSH Surface，版本、检查、自动更新、安装/稍后、进度、错误、说明和按需帮助保留原控制器；当前增量待 CI。其余设置仍只有未接入生产的部分投影；主窗口、侧栏、会话流其余区域和工作区辅助页面仍待迁移。全量迁移仍在实现中，不合并本开发快照。
+- 设置更新面板已替换为生产 NSH Surface，版本、检查、自动更新、安装/稍后、进度、错误、说明和按需帮助保留原控制器；`284465ec0c2d981e601ea8c5b461c4d26cf1e440` 的第四轮 Clippy 因发行说明 Markdown 属性返回类型错误失败，已按固定版契约改为 `Option<SharedString>`，后续 CI 待验。授权清理确认区也已改为 NSH，保留原状态/提示/命令、挂载后的安全默认焦点与 Tab/Escape，新增两项阶段权限回归待 CI。其余设置仍只有未接入生产的部分投影；主窗口、侧栏、会话流其余区域和工作区辅助页面仍待迁移。全量迁移仍在实现中，不合并本开发快照。
 - 本地仅执行格式与差异静态检查；未运行本地编译、应用或测试。开发 draft PR 为 https://github.com/puzige/vega/pull/913 。首轮 `98f66ecb9b301eccbed39477fdeabca84bca9329` 的 Clippy/Nextest 均编译失败；接口修复提交 `9f5daecee8278e097596efc71de5a40cadc2c72a` 的 [第二轮 Actions](https://github.com/puzige/vega/actions/runs/42339247870) 中 Nextest job 成功，实际 Rust 0 发现/0 执行，Python 三组分别 5/15/40 项通过；Clippy 因 22 项死代码诊断失败，汇总门禁失败。当前增量将输入桥接入现有开发预览并清除已失效旧辅助函数，不通过禁用 lint 或提前切换生产输入求绿。
 - [第三轮 Actions](https://github.com/puzige/vega/actions/runs/42340330432) 对 `16e26859a5c644ef2ba511e18bfceb3ba854ee12` 的 Clippy、Nextest、汇总 required check 全部 SUCCESS；Python 三组 5/15/40 项通过；Rust 实际 2 发现/2 执行/2 通过/0 跳过。两项开发回归覆盖恢复副本跨重建保全和旧宿主后到失败隔离，源码固定在该提交的 `crates/vega_ui/src/text_input/nsh.rs`；并非完整输入/IME/附件行为覆盖。当前更新面板新增两项开发回归验证安装/稍后仅 Ready 可用、忙碌阶段拒绝检查/偏好更改且发行页面仍可用，待 Actions。合并前按政策留存实际源码/完整 SHA/结果并清理测试及独占支持，重新验证最终 head。
 - 本地化静态检查仍报告 3 条过期分类、14 条未分类字符串；尚未完整归因，不记为通过，不扩大本卡修复范围。
