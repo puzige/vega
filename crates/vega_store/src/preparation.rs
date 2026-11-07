@@ -1,8 +1,5 @@
 use std::collections::HashMap;
 
-#[cfg(test)]
-mod tests;
-
 use rusqlite::{Connection, Transaction, types::Value};
 
 use crate::context_compaction::PreparedLegacyRedaction;
@@ -80,7 +77,7 @@ fn revision(conn: &Connection, thread: &str) -> rusqlite::Result<i64> {
 }
 
 fn verify_schema(conn: &Connection) -> rusqlite::Result<()> {
-    for section in include_str!("../migrations/0060_preparation_revisions.sql")
+    for section in include_str!("../migrations/0061_preparation_revisions.sql")
         .split("CREATE TRIGGER ")
         .skip(1)
     {

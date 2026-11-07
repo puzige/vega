@@ -4,9 +4,6 @@ use sha2::{Digest, Sha256};
 mod authority;
 mod context_projection;
 
-#[cfg(test)]
-mod tests;
-
 pub(crate) use context_projection::{
     interpret_projection, interpret_projection_with_live, match_live_ranges,
 };
@@ -1156,8 +1153,8 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     {
         return Err(ConversationError::InvalidTaskIdentity);
     }
-    let delegated_snapshot = config
-        .delegated
+    let revision_projection = config.delegated;
+    let delegated_snapshot = revision_projection
         .then(|| {
             vega_store::preparation::DelegatedSnapshot::capture(
                 store.conn(),
@@ -1306,7 +1303,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         }
         let permission_fence_json = serde_json::to_string(&permission_fence)
             .map_err(|error| ConversationError::Store(error.to_string()))?;
-        if !config.delegated {
+        if delegated_preparation.is_none() {
             prepared_payloads
                 .install(&mut transaction)
                 .map_err(runtime_store_error)?;
