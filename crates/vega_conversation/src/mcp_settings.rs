@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod budget_boundary_tests;
+
 use std::collections::{HashMap, HashSet};
 use std::net::TcpListener as StdTcpListener;
 use vega_runtime::{CredentialReadError, CredentialReadReason, CredentialReadStage};
@@ -313,16 +316,31 @@ struct ConfigurationRetryBudget {
     started: Option<Instant>,
     attempts: u64,
     wait_ms: u64,
+    last_failure: Option<CredentialReadError>,
+    exhausted: bool,
 }
 
 impl ConfigurationRetryBudget {
+    fn check_acquisition(&mut self, now: Instant) -> Result<(), CredentialReadError> {
+        if let Some(error) = self.last_failure
+            && (self.exhausted
+                || self.started.is_some_and(|started| {
+                    now.saturating_duration_since(started) >= Duration::from_millis(500)
+                }))
+        {
+            self.exhausted = true;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     fn next_delay(
         &mut self,
         busy: vega_store::yaml_config::ConfigurationLockBusy,
         now: Instant,
     ) -> Result<Duration, CredentialReadError> {
         let elapsed = now.saturating_duration_since(*self.started.get_or_insert(now));
-        self.attempts = self.attempts.saturating_add(1).min(6);
+        self.attempts += 1;
         let attempts = self.attempts;
         let previous_wait_ms = self.wait_ms;
         let error = |wait_ms| {
@@ -337,14 +355,18 @@ impl ConfigurationRetryBudget {
             configuration_lock_wait_ms = previous_wait_ms,
             "configuration lock acquisition busy"
         );
+        self.last_failure = Some(error(previous_wait_ms));
         if self.attempts >= 6 || elapsed >= Duration::from_millis(500) {
+            self.exhausted = true;
             return Err(error(previous_wait_ms));
         }
         let delay = Duration::from_millis(10 << (self.attempts - 1));
         if elapsed + delay > Duration::from_millis(500) {
+            self.exhausted = true;
             return Err(error(previous_wait_ms));
         }
         self.wait_ms += delay.as_millis() as u64;
+        self.last_failure = Some(error(self.wait_ms));
         Ok(delay)
     }
 }
@@ -436,6 +458,13 @@ impl McpServerSettingsService {
                     CredentialReadStage::Mcp,
                 ));
             }
+            let mut retry = budget
+                .lock()
+                .map_err(|_| crate::credential_errors::state_error(CredentialReadStage::Mcp))?;
+            if let Err(error) = retry.check_acquisition(Instant::now()) {
+                drop(retry);
+                return Err(self.configuration_exhausted(error));
+            }
             let busy = match self.registry.try_lock() {
                 Ok(mut state) => {
                     if self
@@ -447,9 +476,6 @@ impl McpServerSettingsService {
                     match vega_store::yaml_config::try_begin(&self.config_root.join("config.yaml"))
                     {
                         Ok(document) => {
-                            let retry = budget.lock().map_err(|_| {
-                                crate::credential_errors::state_error(CredentialReadStage::Mcp)
-                            })?;
                             if retry.attempts > 0 {
                                 tracing::debug!(
                                     configuration_lock_attempts = retry.attempts,
@@ -483,27 +509,11 @@ impl McpServerSettingsService {
                     ));
                 }
             };
-            let result = budget
-                .lock()
-                .map_err(|_| crate::credential_errors::state_error(CredentialReadStage::Mcp))?
-                .next_delay(busy, Instant::now());
+            let result = retry.next_delay(busy, Instant::now());
+            drop(retry);
             let delay = match result {
                 Ok(delay) => delay,
-                Err(error) => {
-                    if self.configuration_cancel.is_cancelled() {
-                        return Err(crate::credential_errors::state_error(
-                            CredentialReadStage::Mcp,
-                        ));
-                    }
-                    self.configuration_invalidation
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
-                    if let Ok(mut state) = self.registry.try_lock() {
-                        Self::invalidate_configuration(&mut state);
-                        self.configuration_invalidation
-                            .store(false, std::sync::atomic::Ordering::SeqCst);
-                    }
-                    return Err(error);
-                }
+                Err(error) => return Err(self.configuration_exhausted(error)),
             };
             let until = Instant::now() + delay;
             while Instant::now() < until {
@@ -519,6 +529,20 @@ impl McpServerSettingsService {
                 );
             }
         }
+    }
+
+    fn configuration_exhausted(&self, error: CredentialReadError) -> CredentialReadError {
+        if self.configuration_cancel.is_cancelled() {
+            return crate::credential_errors::state_error(CredentialReadStage::Mcp);
+        }
+        self.configuration_invalidation
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Ok(mut state) = self.registry.try_lock() {
+            Self::invalidate_configuration(&mut state);
+            self.configuration_invalidation
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+        error
     }
 
     fn invalidate_configuration(state: &mut RegistryState) {
