@@ -8,7 +8,7 @@
 
 真实 immediate 事务在任何安装前核对 revision；新 assistant ID、created_at、seq 冻结并核对。实际脱敏 SQL、assistant、fence、技能审计与原一次性操作仍同事务提交。内部安装接口仅由已验 revision 的组合准备对象使用，不向 conversation 暴露跳过验新入口。相关依赖变化即拒绝，不重试、不慢扫描兜底。事务自身写入引起 revision 变化不算外部冲突。
 
-新增迁移 0060：thread preparation revision，整数且拒绝溢出；保留删除后的 tombstone 防止删除重建 ABA。相关表所有 INSERT/UPDATE/DELETE 均推进受影响归属；关联表通过 message/call 取归属，UPDATE 同时覆盖 OLD/NEW。BEFORE INSERT/UPDATE 还覆盖所有唯一键冲突的旧行归属，以处理 recursive_triggers 默认关闭时 REPLACE 隐式删除不触发 delete trigger 的情况。实际删除父 message/thread 由父表触发失效，不能依赖级联之后还能查到父行。revision 缺失/异常拒绝。
+新增迁移 0061：thread preparation revision，整数且拒绝溢出；保留删除后的 tombstone 防止删除重建 ABA。相关表所有 INSERT/UPDATE/DELETE 均推进受影响归属；关联表通过 message/call 取归属，UPDATE 同时覆盖 OLD/NEW。BEFORE INSERT/UPDATE 还覆盖所有唯一键冲突的旧行归属，以处理 recursive_triggers 默认关闭时 REPLACE 隐式删除不触发 delete trigger 的情况。实际删除父 message/thread 由父表触发失效，不能依赖级联之后还能查到父行。revision 缺失/异常拒绝。
 
 ## 依赖闭包与保留边界
 
@@ -37,7 +37,7 @@ A7 安装中途 SQL/行数异常整体回滚。
 A8 成功后 canonical source 与准备的 source（含原 fingerprint）完全相同。
 A9 准备计算暂停时，另一连接可获得真实 writer 并提交。
 A10 普通会话既有 source/preinsert/replay 路径不变。
-A11 迁移到 0060、触发器完整性、级联/REPLACE/异常 revision 均验证。
+A11 迁移到 0061、触发器完整性、级联/REPLACE/异常 revision 均验证。
 
 性能分开记录真实写许可持有时长、等待时长和 preparation 总耗时；同 fixture、同执行环境的旧/新路径对照，70% 持锁 p95 下降仅目标，未测不称实现收益。大量真实脱敏更新、foreign ID 查询、origin 复核、文件末检和 commit 的残余成本单列。不得把内存投影计算时间当作真实 writer 持锁时间。
 
@@ -47,7 +47,12 @@ A11 迁移到 0060、触发器完整性、级联/REPLACE/异常 revision 均验�
 
 - 首个开发 head：`78c33cdfd01dee331fa4e3b38004af270f3140fc`，draft PR #912。
 - 现有 Actions run `42332217116`：Clippy/Nextest 编译均失败；`preparation.rs:163` E0277，当前 rusqlite 不支持 `Value::from(ValueRef)`。未执行 Rust 回归，性能未取得；修正使用 `row.get::<_, Value>(index)`，不改变断言/工作流/依赖，待新 head 验证。
-- 后续增量：完整 preparation 成功 source/fence、canonical 历史等价、最终取消回滚和过期权限拒绝用例；均仅临时 fixture，不执行模型/工具。待 CI。
+- 第二个开发 head `e1b7ed8b376a8ed0d961d8f3157aba1bf17165d0`，Actions `42333155591`：Clippy/Nextest 均在迁移 fixture 编译 E0308 失败，`permission_contracts::initialize` 需要 Transaction 而不是 Connection。测试接线已按生产迁移契约修正；未执行行为回归，不重试旧 head。
+- 后续增量：完整 preparation 成功 source/fence、canonical 历史等价、最终取消回滚和过期权限拒绝用例；均仅临时 fixture，不执行模型/工具。新增 cfg(test) 的旧/新准备位置对照、现有 ObservationScope 的 runtime_event permit 持有时间和总耗时；另以锁外暂停时竞争连接提交作并发边界证明，不将人为暂停作为自然延迟收益。所有新增回归仍待 CI。
+- 第三个开发 head `c5a25dba0557188977d2e0c3850d34c62780f411`，Actions [42334495313](https://github.com/puzige/vega/actions/runs/42334495313)：Clippy、Nextest、required check 全部成功；Nextest 实际 17 发现/17 执行/17 passed/0 skipped。覆盖首次 source/fence、历史等价、最终取消回滚、过期权限拒绝、锁外并发提交，以及 revision/迁移/REPLACE/安装回滚等存储用例。日志中 workflow 的空集提示是 shell 源码回显，不是本轮测试数。
+- 第三轮性能报告仅写 job summary，当前 API/原始日志未取得数值，不据此宣称收益。增量将完整 preparation、竞争连接提交耗时、存储微基准同时输出 stderr；仅开发期 Nextest `success-output=immediate` 公开成功用例输出，最终与测试接线一起恢复，不改工作流/重试/超时/并发。
+- 待验证增量：恢复 checkpoint/partial output/禁止重放声明、捕获后同 seq 修改的完整路径拒绝、终态合法审批结果复用与损坏审批拒绝。没有模型或工具执行；均使用临时 fixture。
+- 集成基线更新至 `eec9984bab2a1cd530bef8cb21e4383aca3e05b8` 后，保留 #907 的 `0060_configuration_lock_diagnostics.sql`，本任务迁移顺延到 0061，注册/完整性检查/60→61 升级 fixture 同步更新。前述 17/17 是旧基线证据；新基线及安全增量均需重新取得完整 CI。
 - 本地已执行 `cargo fmt --all -- --check` 与 `git diff --check`；不进行本地运行/编译/测试。
 
 独立审查仍是合并门禁；本轮禁止新建子任务，自审不能替代独审。没有非实现者精确版本结论时保留未合并候选，不绕过。

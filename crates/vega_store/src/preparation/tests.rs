@@ -263,7 +263,7 @@ fn missing_revision_cannot_silently_reset_an_existing_scope() -> TestResult {
 #[test]
 fn migration_initializes_existing_threads_and_missing_schema_fails_closed() -> TestResult {
     let store = Store::open(":memory:")?;
-    for (index, sql) in crate::MIGRATIONS.iter().take(59).enumerate() {
+    for (index, sql) in crate::MIGRATIONS.iter().take(60).enumerate() {
         if index == 4 {
             store.conn().pragma_update(None, "foreign_keys", false)?;
         }
@@ -272,10 +272,12 @@ fn migration_initializes_existing_threads_and_missing_schema_fails_closed() -> T
             store.conn().pragma_update(None, "foreign_keys", true)?;
         }
         if index == 42 {
-            crate::permission_contracts::initialize(store.conn())?;
+            let tx = store.conn().unchecked_transaction()?;
+            crate::permission_contracts::initialize(&tx)?;
+            tx.commit()?;
         }
     }
-    store.conn().execute_batch("INSERT INTO threads(id,model,created_at,updated_at) VALUES('existing','model',1,1); PRAGMA user_version=59;")?;
+    store.conn().execute_batch("INSERT INTO threads(id,model,created_at,updated_at) VALUES('existing','model',1,1); PRAGMA user_version=60;")?;
     store.migrate()?;
     assert_eq!(revision(store.conn(), "existing")?, 0);
     assert!(DelegatedSnapshot::capture(store.conn(), "existing", "next").is_ok());
@@ -413,8 +415,9 @@ fn controlled_projection_writer_comparison() -> TestResult {
         new_totals[11],
         100.0 * (1.0 - new_holds[11].as_secs_f64() / old_holds[11].as_secs_f64())
     );
+    use std::io::Write;
+    std::io::stderr().write_all(report.as_bytes())?;
     if let Some(summary) = std::env::var_os("GITHUB_STEP_SUMMARY") {
-        use std::io::Write;
         std::fs::OpenOptions::new()
             .append(true)
             .open(summary)?

@@ -1156,8 +1156,10 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     {
         return Err(ConversationError::InvalidTaskIdentity);
     }
-    let delegated_snapshot = config
-        .delegated
+    let revision_projection = config.delegated;
+    #[cfg(test)]
+    let revision_projection = revision_projection && !tests::use_legacy_projection();
+    let delegated_snapshot = revision_projection
         .then(|| {
             vega_store::preparation::DelegatedSnapshot::capture(
                 store.conn(),
@@ -1167,6 +1169,10 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         })
         .transpose()
         .map_err(runtime_store_error)?;
+    #[cfg(test)]
+    if delegated_snapshot.is_some() {
+        tests::projection_boundary();
+    }
     let preparation_connection = delegated_snapshot
         .as_ref()
         .map_or(store.conn(), |snapshot| snapshot.connection());
@@ -1286,6 +1292,10 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                     .map_err(runtime_store_error)?,
             )
         } else {
+            #[cfg(test)]
+            if config.delegated {
+                tests::projection_boundary();
+            }
             if !prepared_redaction
                 .validate(&transaction)
                 .map_err(runtime_store_error)?
@@ -1306,7 +1316,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         }
         let permission_fence_json = serde_json::to_string(&permission_fence)
             .map_err(|error| ConversationError::Store(error.to_string()))?;
-        if !config.delegated {
+        if delegated_preparation.is_none() {
             prepared_payloads
                 .install(&mut transaction)
                 .map_err(runtime_store_error)?;
