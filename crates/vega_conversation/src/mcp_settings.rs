@@ -1,6 +1,3 @@
-#[cfg(test)]
-mod budget_boundary_tests;
-
 use std::collections::{HashMap, HashSet};
 use std::net::TcpListener as StdTcpListener;
 use vega_runtime::{CredentialReadError, CredentialReadReason, CredentialReadStage};

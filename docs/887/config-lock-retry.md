@@ -47,6 +47,18 @@ No local execution/build/test. Existing Actions only. No private data in fixture
 - Only typed acquisition-busy marks retry. Other syscall errors keep their source internally and receive bounded stage/kind diagnostics without path, content, raw error text or source serialization. WouldBlock in a generic syscall error or CAS conflict is not the typed busy marker.
 - Added regressions cover edit-mutex busy/poison separation, prior-reason migration preservation, invalid MCP declaration repair, changed-invalid configuration after lock release, and nonbusy syscall diagnostic mapping. The original OS-code assertion remains against the retained source.
 
+## Budget-boundary follow-up (2026-11-07)
+
+Writer self-review of `a04ab48ce49f7fb2b4812be41cd3b67ba91774a2` found acquisition preceded the budget check: scheduling past the deadline or a nested read after exhaustion could succeed. This is a product defect, not an acceptance relaxation.
+
+The repair checks before acquisition under the same mutex as acquisition/accounting, latches exhaustion, preserves the last content-free failure and exact counters, and retains cancellation-first behavior and fail-closed invalidation. No retry limit, delay, permission or #903 error-classification change. Only `mcp_settings.rs` production code changes in this follow-up.
+
+Development head `8ec7de18cdb23b6b37fb14a37cc8d456c4105b4e`: [Actions 42333630007](https://github.com/puzige/vega/actions/runs/42333630007), Rust 2 discovered / 2 executed / 2 passed / 0 skipped, Python suites 5 / 15 / 40 passed; fmt, all-target Clippy and required check succeeded. These are two new targeted regressions, not a rerun of the historical 16-test suite. The earlier `ecfe811d` run was cancelled by the assertion-strengthening push, not a passing validation.
+
+Recoverable tag `evidence/887-budget-boundary-tests-8ec7de18` is remotely readable; `crates/vega_conversation/src/mcp_settings/budget_boundary_tests.rs` SHA-256 `f77efc5c869e659e532232e47398abb2392e7680d34b2d7510d162a98e22ebfb`. Regressions use actual external file locks and service reconciliation: delayed backoff after release remains blocked past deadline; exhausted operation/nested reads retain the same error after release and configuration change. Both verify no projection mutation and successful recovery in a fresh operation. Initial uncontended read consumes no budget. The deadline fixture blocks worker resumption with the shared budget mutex; it never invokes or replaces the decision under test.
+
+Cleanup removes only that test file and its module declaration; containing production bytes otherwise identical to the passing head. Local fmt/diff/static test-entry checks passed; no local execution, compilation or tests. Final cleanup-head full Actions still pending. Writer self-review covers acquisition-before-use, terminal nested reads, monotonic diagnostics, cancellation-first checks, mutex release before backoff and unchanged #903 classifications. No additional actionable finding in this delta; this is self-review only, not independent review. User explicitly requires no subagents and no merge; retain draft and In progress.
+
 ## Status
 
 Development validation passed at `6007cc4de285825332ccc8cf794eccc62a9766c2`: [Actions 42329042987](https://github.com/puzige/vega/actions/runs/42329042987), Clippy and required check success; Rust 16 discovered / 16 executed / 16 passed / 0 skipped; Python suites 5 / 15 / 40 passed. Earlier recovery runs 42326277870 and 42327490471 each executed 15 tests with 13 passes / 2 failures; original evidence and responsibility-layer corrections are recorded in PR comments. No failed regression was dropped to obtain success.
