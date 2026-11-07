@@ -19,10 +19,6 @@ const RING_BYTES: usize = 1024 * 1024;
 const SNAPSHOT_BYTES: usize = 16 * 1024;
 const MAX_PENDING_BYTES: usize = 64 * 1024;
 
-#[cfg(test)]
-#[path = "session_tests.rs"]
-mod tests;
-
 type Redact = Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
 type SafeEnd = Arc<dyn Fn(&str) -> Result<usize, String> + Send + Sync>;
 

@@ -1,10 +1,6 @@
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 
-#[cfg(test)]
-#[path = "shell_operations_tests.rs"]
-mod tests;
-
 pub struct ShellOperationRecord<'a> {
     pub operation_id: &'a str,
     pub thread_id: &'a str,

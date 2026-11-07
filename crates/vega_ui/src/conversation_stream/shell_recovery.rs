@@ -501,38 +501,3 @@ fn focused_button(
         .child(vega_i18n::t(key))
         .into_any_element()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::RecoveryDecision;
-
-    #[test]
-    fn dismiss_after_unknown_submit_preserves_exact_decision_for_reentry() {
-        let mut decision = RecoveryDecision {
-            confirmation: Some(Box::new(String::from("exact-decision"))),
-            submitted: true,
-        };
-        let identity = decision.confirmation.as_deref().map(|value| value.as_ptr());
-        decision.dismiss();
-        decision.dismiss();
-        assert_eq!(
-            decision.confirmation.as_deref().map(String::as_str),
-            Some("exact-decision")
-        );
-        assert_eq!(
-            decision.confirmation.as_deref().map(|value| value.as_ptr()),
-            identity
-        );
-        assert!(decision.submitted);
-    }
-
-    #[test]
-    fn dismiss_before_submit_discards_only_unsubmitted_confirmation() {
-        let mut decision = RecoveryDecision {
-            confirmation: Some(Box::new("not-submitted")),
-            submitted: false,
-        };
-        decision.dismiss();
-        assert!(decision.confirmation.is_none());
-    }
-}

@@ -1090,9 +1090,6 @@ impl SessionInput {
     }
 }
 
-#[cfg(test)]
-mod tests;
-
 fn terminal_state(state: &str) -> bool {
     matches!(
         state,

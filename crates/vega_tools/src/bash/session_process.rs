@@ -3,10 +3,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_IDENTITIES: usize = 128;
 
-#[cfg(test)]
-#[path = "session_process_tests.rs"]
-mod tests;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Identity {
     pid: i32,

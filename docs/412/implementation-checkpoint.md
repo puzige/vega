@@ -1,4 +1,12 @@
-# 会话式 Shell 实施检查点（未完成，禁止合并）
+# 会话式 Shell 实施检查点（历史与当前门禁）
+
+## 最终测试清理（待清理 head 云端门禁）
+
+- 开发提交 `b2b90ea2fb8c5fdeefe5071e0c0e5225b6db697f` 的安全增量复核已关闭最后一项 P2，无新增发现；UI 原四项已在未改部分关闭。开发云端 run `42362587642`：48 发现/48 执行/48 通过/0 跳过，三组 Python 5/15/40，Clippy 与 required 成功。
+- 已固定并远端读回标签 `shell-412-dev-b2b90ea2`，GitHub tree API 核实原始测试源码 blob；详见 [交付证据与手测清单](delivery-evidence.md)。
+- 仅删除六个 Rust 测试专用文件和七个混合文件的测试接线/内联测试；逐文件生产等价校验通过。生产逻辑、断言、Cargo manifests/lock、Python、CI、迁移/资源保持不变。
+- 清理后本地 workspace/all-target strict Clippy、fmt、diff 成功；现有本机 Nextest 0.9.151 实际 list 0 / run 0（16 binaries）。首次命令错误用了 `-j`，未执行；查帮助后用 `--build-jobs 2` 正确运行。云端仍固定 0.9.146。空集标 no Rust tests，不称行为通过。
+- 清理 head 尚待完整 required CI 与清理差异独立核对；未合并，Issue 保持 In progress。系统/原生手测未执行，合并后按规则交用户；不得据测试数量声称全合同逐项验收。下文各轮待办/禁令/旧基线均为历史，以上文最新状态为准。
 
 ## 第三轮安全增量：精确范围世代（当前待复核）
 

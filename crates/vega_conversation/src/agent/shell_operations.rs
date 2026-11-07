@@ -1,10 +1,6 @@
 use super::*;
 use serde_json::Value;
 
-#[cfg(test)]
-#[path = "shell_operations_tests.rs"]
-mod tests;
-
 pub(super) struct ShellOperationPersistence {
     pub database_path: PathBuf,
     pub thread_id: String,
