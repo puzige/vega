@@ -141,7 +141,7 @@ impl ConversationStream {
         let Some(requirements) = compact_requirements(&original) else {
             return false;
         };
-        if self.input.read(cx).is_composing() {
+        if !self.input.read(cx).composer_editor_ready() || self.input.read(cx).is_composing() {
             return true;
         }
         let error = if requirements.len() > 8192 {

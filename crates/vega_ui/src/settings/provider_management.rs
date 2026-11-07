@@ -1,7 +1,4 @@
-//! Provider selection and explicit, cancellable background operations.
 use super::*;
-use crate::interaction::InteractionExt;
-use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade, ScrollableFadeExt};
 use std::collections::{BTreeMap, BTreeSet};
 use tokio_util::sync::CancellationToken;
 use vega_conversation::ProviderSettingsService;
@@ -10,6 +7,12 @@ use vega_conversation::types::{
     ProviderPatchRequest,
 };
 use vega_store::context_compaction::{DEFAULT_MODEL_INPUT_LIMIT, DEFAULT_MODEL_OUTPUT_RESERVE};
+
+mod draft;
+pub(in crate::settings) use draft::DraftStamp as ProviderDraftStamp;
+#[path = "model_configuration/provider_bridge.rs"]
+pub(super) mod navigation_bridge;
+mod nsh_providers;
 
 fn provider_test_help_copy() -> &'static str {
     t("settings.provider.test_help")
@@ -29,23 +32,21 @@ pub(crate) struct ProviderManagement {
     checked: BTreeSet<String>,
     statuses: BTreeMap<String, SettingsText>,
     message: Option<SettingsText>,
-    test_help_hovered: Option<usize>,
-    test_help_pinned: Option<usize>,
-    test_help_dismissed: Option<usize>,
-    menu: Option<String>,
-    menu_focuses: BTreeMap<String, FocusHandle>,
-    menu_return_focus: Option<FocusHandle>,
     delete_model: Option<(String, String)>,
     detail_open: bool,
-    list_scroll: gpui_kit::ScrollHandle,
-    detail_scroll: gpui_kit::ScrollHandle,
     model_editor: Option<ModelEditor>,
     next_model_context_request: u64,
     pending_model_reopen: Option<(String, Option<String>)>,
     pending_command: Option<Command>,
     return_focus: Option<super::motion::ReturnFocus>,
-    model_focuses: BTreeMap<(String, String), FocusHandle>,
-    action_focuses: BTreeMap<String, FocusHandle>,
+    presentation: Option<nsh_providers::Presentation>,
+    nsh_draft: Option<draft::Draft>,
+    save_intent: u64,
+    consumed_secret_revision: Option<u64>,
+    draft_inputs: Vec<gpui_kit::EntityId>,
+    pending_capacity: Option<[String; 2]>,
+    submission_claimed: bool,
+    intent_stamp: Option<ProviderDraftStamp>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +72,20 @@ struct ModelEditor {
     message: Option<SettingsText>,
     renamed_from: Option<String>,
 }
+impl ProviderManagement {
+    fn return_to_list(&mut self) {
+        self.detail_open = false;
+        self.form = false;
+        if let Some(draft) = self.nsh_draft.take() {
+            draft.retire();
+        }
+        self.draft_inputs.clear();
+        self.intent_stamp = None;
+        self.pending_capacity = None;
+        self.consumed_secret_revision = None;
+    }
+}
+
 impl Drop for ProviderManagement {
     fn drop(&mut self) {
         if let Some(cancel) = self.cancel.take() {
@@ -78,17 +93,7 @@ impl Drop for ProviderManagement {
         }
     }
 }
-#[derive(Clone)]
-struct ProviderDrag(String);
-impl Render for ProviderDrag {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .p_2()
-            .bg(theme(cx).colors.bg_elevated)
-            .child(self.0.clone())
-    }
-}
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 enum Command {
     Select(String),
     Add,
@@ -108,7 +113,6 @@ enum Command {
     ToggleModelAutomatic,
     ToggleModelUnknown,
     Reload,
-    Menu(String),
     ConfirmDelete(String),
     BackToList,
     PriceLibrary,
@@ -136,6 +140,10 @@ impl SettingsView {
                 input.update(cx, |_, cx| cx.notify());
             }
         }
+    }
+
+    pub(super) fn model_editor_visible(&self) -> bool {
+        self.section == 0 && self.provider_management.model_editor.is_some()
     }
 
     pub(super) fn prepare_provider_presentation(&mut self, window: &Window) {
@@ -204,240 +212,6 @@ impl SettingsView {
         }
     }
 
-    fn restore_provider_return_focus(
-        &mut self,
-        show_detail: bool,
-        narrow: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(target) = self.provider_management.return_focus.take() else {
-            return;
-        };
-        let list_visible = !narrow || !show_detail;
-        let provider_visible =
-            show_detail && !self.provider_management.form && self.selected_provider().is_some();
-        let fallback = if provider_visible {
-            self.provider_management
-                .action_focuses
-                .get("provider-edit")
-                .cloned()
-        } else if list_visible {
-            self.provider_management
-                .action_focuses
-                .get("provider-add")
-                .cloned()
-        } else if self.provider_management.form {
-            Some(self.name_input.read(cx).focus_handle(cx))
-        } else {
-            Some(self.section_focuses[0].clone())
-        };
-        let focus = match target {
-            super::motion::ReturnFocus::ProviderList { provider, index } if list_visible => self
-                .provider_edit_focuses
-                .iter()
-                .find(|(name, _)| Some(name) == provider.as_ref())
-                .or_else(|| {
-                    self.provider_edit_focuses
-                        .get(index.min(self.provider_edit_focuses.len().saturating_sub(1)))
-                })
-                .map(|(_, focus)| focus.clone())
-                .or_else(|| {
-                    self.provider_management
-                        .action_focuses
-                        .get("provider-add")
-                        .cloned()
-                }),
-            super::motion::ReturnFocus::Model { provider, model }
-                if provider_visible
-                    && self.provider_management.selected.as_ref() == Some(&provider) =>
-            {
-                self.provider_management
-                    .model_focuses
-                    .get(&(provider, model))
-                    .cloned()
-            }
-            _ => None,
-        }
-        .or(fallback);
-        if let Some(focus) = focus {
-            window.focus(&focus, cx);
-        }
-    }
-
-    fn provider_test_help_control(
-        &self,
-        index: usize,
-        focus: FocusHandle,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = theme(cx).colors;
-        let selector = if index == 0 {
-            "provider-test-help-discover".to_string()
-        } else {
-            format!("provider-test-help-model-{}", index - 1)
-        };
-        let pointer_focus = focus.clone();
-        let keyboard_focus = focus.clone();
-        div()
-            .id(selector.clone())
-            .interactive(colors, true, false)
-            .role(gpui_kit::Role::Button)
-            .aria_label(t("settings.provider.test_help_label"))
-            .aria_description(provider_test_help_copy())
-            .focusable()
-            .track_focus(&focus)
-            .tab_stop(true)
-            .size(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
-            .flex_shrink_0()
-            .relative()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-            .border_1()
-            .border_color(gpui_kit::transparent_black())
-            .focus_visible(move |style| style.border_color(colors.accent))
-            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                if *hovered {
-                    this.provider_management.test_help_hovered = Some(index);
-                    this.provider_management.test_help_dismissed = None;
-                } else if this.provider_management.test_help_hovered == Some(index) {
-                    this.provider_management.test_help_hovered = None;
-                }
-                cx.notify();
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _, window, cx| {
-                    let closing = this.provider_management.test_help_pinned == Some(index);
-                    this.provider_management.test_help_pinned = (!closing).then_some(index);
-                    this.provider_management.test_help_dismissed = closing.then_some(index);
-                    window.focus(&pointer_focus, cx);
-                    cx.stop_propagation();
-                    cx.notify();
-                }),
-            )
-            .on_key_down(
-                cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space" | "escape") {
-                        let closing = event.keystroke.key == "escape"
-                            || this.provider_management.test_help_pinned == Some(index);
-                        this.provider_management.test_help_pinned = (!closing).then_some(index);
-                        this.provider_management.test_help_dismissed = closing.then_some(index);
-                        window.focus(&keyboard_focus, cx);
-                        cx.stop_propagation();
-                        cx.notify();
-                    }
-                }),
-            )
-            .child(crate::icons::icon(
-                crate::icons::Icon::Help,
-                colors.text_secondary,
-            ))
-            .into_any_element()
-    }
-
-    fn provider_test_help_tooltip(
-        &self,
-        index: usize,
-        colors: vega_theme::ThemeColors,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let selector = if index == 0 {
-            "provider-test-help-discover-tooltip".to_string()
-        } else {
-            format!("provider-test-help-model-{}-tooltip", index - 1)
-        };
-        let body_selector = format!("{selector}-body");
-        let body = div()
-            .id(body_selector.clone())
-            .w_full()
-            .max_w_full()
-            .min_w_0()
-            .whitespace_normal()
-            .flex()
-            .items_center()
-            .gap_1()
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .border_1()
-            .border_color(colors.border_subtle)
-            .bg(colors.bg_elevated)
-            .text_size(px(Typography::METADATA))
-            .text_color(colors.text_primary)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .whitespace_normal()
-                    .child(provider_test_help_copy()),
-            );
-        let popup = div()
-            .absolute()
-            .bottom(relative(1.0))
-            .w(px(224.))
-            .max_w_full()
-            .when(index == 0, |popup| popup.left_0())
-            .when(index > 0, |popup| popup.right_0())
-            .on_mouse_down_out(
-                cx.listener(move |this, _: &gpui_kit::MouseDownEvent, _, cx| {
-                    if this.provider_management.test_help_pinned == Some(index) {
-                        this.provider_management.test_help_pinned = None;
-                        this.provider_management.test_help_dismissed = Some(index);
-                        cx.notify();
-                    }
-                }),
-            )
-            .child(body);
-        gpui_kit::deferred(popup)
-            .with_priority(2)
-            .into_any_element()
-    }
-
-    pub(crate) fn provider_escape(
-        &mut self,
-        _: &CloseSettings,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(index) = self.provider_management.test_help_pinned.take() {
-            self.provider_management.test_help_dismissed = Some(index);
-            if let Some(focus) = self.provider_test_help_focuses.get(index) {
-                window.focus(focus, cx);
-            }
-            cx.stop_propagation();
-            cx.notify();
-            return;
-        }
-        if self.provider_management.menu.take().is_some() {
-            if let Some(focus) = &self.provider_management.menu_return_focus {
-                window.focus(focus, cx);
-            }
-            cx.stop_propagation();
-            cx.notify();
-            return;
-        }
-        if self.section == 0
-            && (self.provider_management.form
-                || self.provider_management.model_editor.is_some()
-                || self.provider_management.candidates.is_some()
-                || self.provider_management.cancel.is_some())
-        {
-            if self.provider_has_draft(cx) {
-                self.provider_management.pending_command = Some(Command::Cancel);
-                self.pending_section = Some(SettingsDestination::ProviderCommand);
-                cx.notify();
-            } else {
-                self.provider_command(Command::Cancel, cx);
-            }
-            cx.stop_propagation();
-        } else {
-            self.cancel_provider_operation(cx);
-            cx.propagate();
-        }
-    }
     pub(crate) fn cancel_provider_operation(&mut self, cx: &mut Context<Self>) {
         let state = &mut self.provider_management;
         if let Some(cancel) = state.cancel.take() {
@@ -469,9 +243,7 @@ impl SettingsView {
             self.model_settings = Some((provider.into(), model.into()));
         }
         self.section = section;
-        self.rebuild_pricing_focuses(cx);
         self.rebuild_reasoning_focuses(cx);
-        self.rebuild_model_capability_focuses(cx);
         cx.notify();
     }
 
@@ -486,6 +258,7 @@ impl SettingsView {
 
     pub(crate) fn provider_has_draft(&self, cx: &App) -> bool {
         self.provider_is_saving()
+            || self.provider_nsh_dirty(cx)
             || (self.provider_management.form && self.provider_form_changed(cx))
             || self
                 .provider_management
@@ -518,22 +291,16 @@ impl SettingsView {
         if let Some(command) = self.provider_management.pending_command.take() {
             self.provider_management.form = false;
             self.provider_management.model_editor = None;
+            self.reset_provider_nsh_draft(cx);
             self.provider_command(command, cx);
         }
     }
 
-    pub(crate) fn save_provider_draft(&mut self, cx: &mut Context<Self>) {
-        if self.provider_management.form {
-            self.submit_provider(cx);
-        } else {
-            self.provider_command(Command::SaveModel, cx);
-        }
-    }
-
     pub(crate) fn discard_provider_draft(&mut self, cx: &mut Context<Self>) {
-        if let Some((_, model)) = self.model_settings.clone() {
-            self.provider_command(Command::EditModel(model), cx);
+        if let Some(stamp) = self.provider_nsh_stamp() {
+            self.discard_provider_nsh_observed(&stamp, cx);
         } else {
+            self.key_input.update(cx, TextInput::clear);
             self.provider_management.form = false;
         }
     }
@@ -543,6 +310,8 @@ impl SettingsView {
         self.model_settings = None;
         self.provider_management.model_editor = None;
         self.provider_management.form = false;
+        self.reset_provider_nsh_draft(cx);
+        self.key_input.update(cx, TextInput::clear);
         cx.notify();
     }
 
@@ -565,6 +334,8 @@ impl SettingsView {
                 | Command::Reload
                 | Command::PriceLibrary
                 | Command::BackToList
+                | Command::AddModel
+                | Command::EditModel(_)
         ) && self.provider_has_draft(cx)
         {
             self.provider_management.pending_command = Some(command);
@@ -588,16 +359,7 @@ impl SettingsView {
         let before = self.settings_motion_destination();
         self.provider_management.return_focus = None;
         match command {
-            Command::Menu(id) => {
-                self.provider_management.menu =
-                    if self.provider_management.menu.as_ref() == Some(&id) {
-                        None
-                    } else {
-                        Some(id)
-                    };
-            }
             Command::ConfirmDelete(model) => {
-                self.provider_management.menu = None;
                 self.provider_management.delete_model = self
                     .selected_provider()
                     .filter(|provider| provider.models.contains(&model))
@@ -605,7 +367,8 @@ impl SettingsView {
             }
             Command::BackToList => {
                 self.remember_provider_list_return_focus();
-                self.provider_management.detail_open = false;
+                self.provider_management.return_to_list();
+                self.key_input.update(cx, TextInput::clear);
             }
             Command::PriceLibrary => {
                 self.model_settings = None;
@@ -623,6 +386,10 @@ impl SettingsView {
                 self.provider_management.message = None;
             }
             Command::Add => {
+                if let Some(draft) = self.provider_management.nsh_draft.take() {
+                    draft.retire();
+                }
+                self.provider_management.draft_inputs.clear();
                 self.cancel_provider_operation(cx);
                 self.provider_management.form = true;
                 self.provider_management.detail_open = true;
@@ -639,6 +406,7 @@ impl SettingsView {
                 if let Some(p) = self.selected_provider() {
                     self.begin_edit_provider(&p.name, cx);
                     self.provider_management.form = true;
+                    self.reset_provider_nsh_draft(cx);
                 }
             }
             Command::Enable => {
@@ -670,6 +438,7 @@ impl SettingsView {
                 self.provider_network(ProviderNetworkAction::TestModel { model }, cx)
             }
             Command::Cancel => {
+                self.key_input.update(cx, TextInput::clear);
                 self.remember_model_return_focus();
                 if self.provider_management.return_focus.is_none() {
                     self.remember_provider_list_return_focus();
@@ -697,6 +466,7 @@ impl SettingsView {
                 self.provider_patch(ProviderPatchAction::ImportModels(models), cx);
             }
             Command::AddModel | Command::EditModel(_) => {
+                self.provider_management.form = false;
                 let original = if let Command::EditModel(model) = command {
                     Some(model)
                 } else {
@@ -759,7 +529,6 @@ impl SettingsView {
                     return;
                 }
                 self.provider_management.delete_model = None;
-                self.provider_management.menu = None;
                 if let Some(p) = self
                     .selected_provider()
                     .filter(|p| p.models.contains(&model))
@@ -793,9 +562,6 @@ impl SettingsView {
                         } else if original.as_deref() == Some(value.trim()) {
                             self.save_model_context(cx);
                         } else {
-                            // A config rename and a SQLite policy mutation
-                            // have different authorities. Never silently
-                            // apply edited limits to the old model identity.
                             if original.is_some() && self.model_context_values_changed(cx) {
                                 self.error =
                                     Some(SettingsText::key("settings.provider.save_id_first"));
@@ -831,6 +597,7 @@ impl SettingsView {
             }
             Command::Reload => self.reload_providers(cx),
         }
+        self.sync_provider_editor_lifecycle(cx);
         self.commit_settings_motion(before);
         cx.notify();
     }
@@ -917,7 +684,6 @@ impl SettingsView {
         });
     }
 
-    /// Only an exact currently open editor accepts this background load.
     pub fn apply_model_context_loaded(
         &mut self,
         request: &ModelContextLoadRequested,
@@ -981,10 +747,21 @@ impl SettingsView {
                 editor.message = Some(Self::model_context_error(error));
             }
         }
+        self.provider_management.pending_capacity = self
+            .provider_management
+            .model_editor
+            .as_ref()
+            .filter(|editor| editor.source != PolicySource::Loading)
+            .map(|editor| {
+                [
+                    editor.input_limit.read(cx).text().to_string(),
+                    editor.output_limit.read(cx).text().to_string(),
+                ]
+            });
+        self.sync_loaded_provider_capacity(cx);
         cx.notify();
     }
 
-    /// Save ACK is fenced by request id and exact provider/model identity.
     pub fn apply_model_context_saved(
         &mut self,
         request: &ModelContextSaveRequested,
@@ -1067,9 +844,9 @@ impl SettingsView {
             self.name_input.clone(),
             self.base_url_input.clone(),
             self.models_input.clone(),
-            self.key_input.clone(),
         ]
         .map(|input| input.read(cx).text().to_string());
+        let key_revision = self.key_input.read(cx).content_revision();
         let config_before_save = self.config.clone();
         let worker = cx.background_executor().spawn(async move {
             let credential_changed = key.as_ref().is_some_and(|new_key| {
@@ -1113,18 +890,20 @@ impl SettingsView {
                             this.name_input.clone(),
                             this.base_url_input.clone(),
                             this.models_input.clone(),
-                            this.key_input.clone(),
                         ];
-                        if inputs
-                            .iter()
-                            .zip(&draft)
-                            .all(|(input, text)| input.read(cx).text() == text)
+                        if this.key_input.read(cx).content_revision() == key_revision
+                            && inputs
+                                .iter()
+                                .zip(&draft)
+                                .all(|(input, text)| input.read(cx).text() == text)
                         {
                             this.provider_management.form = false;
                             this.provider_management.form_base = None;
+                            this.reset_provider_nsh_draft(cx);
                             for input in inputs {
                                 input.update(cx, TextInput::clear);
                             }
+                            this.key_input.update(cx, TextInput::clear);
                         }
                         this.provider_management.statuses.clear();
                         this.provider_management.message = None;
@@ -1328,166 +1107,6 @@ impl SettingsView {
         })
         .detach();
     }
-    fn provider_button(
-        &self,
-        id: String,
-        label: &'static str,
-        command: Command,
-        enabled: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = theme(cx).colors;
-        let key_command = command.clone();
-        let focus = match &command {
-            Command::EditModel(model) => {
-                self.provider_management
-                    .selected
-                    .as_ref()
-                    .and_then(|provider| {
-                        self.provider_management
-                            .model_focuses
-                            .get(&(provider.clone(), model.clone()))
-                    })
-            }
-            _ => self.provider_management.action_focuses.get(&id),
-        }
-        .cloned();
-        let destructive = matches!(
-            command,
-            Command::DeleteModel(_, _) | Command::ConfirmDelete(_)
-        );
-        let primary = matches!(command, Command::SaveModel);
-        settings_action_chrome(colors)
-            .id(id)
-            .interaction_surface(
-                if enabled && primary {
-                    colors.brand_primary
-                } else {
-                    gpui_kit::transparent_black().into()
-                },
-                if primary {
-                    colors.brand_primary_strong
-                } else {
-                    colors.bg_hover
-                },
-                if primary {
-                    colors.brand_primary_strong
-                } else {
-                    colors.bg_active
-                },
-                enabled,
-            )
-            .border_color(if destructive || primary {
-                colors.border_subtle
-            } else {
-                gpui_kit::transparent_black().into()
-            })
-            .key_context("ProviderControl")
-            .focusable()
-            .tab_stop(enabled)
-            .when_some(focus.as_ref(), |button, focus| button.track_focus(focus))
-            .text_color(if enabled {
-                if destructive {
-                    colors.danger
-                } else if primary {
-                    colors.brand_on_accent
-                } else {
-                    colors.text_primary
-                }
-            } else {
-                colors.text_tertiary
-            })
-            .when(enabled && primary, |button| button.bg(colors.brand_primary))
-            .focus_visible(move |style| style.border_color(colors.accent))
-            .when(enabled, |button| {
-                button
-                    .cursor_pointer()
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
-                            this.provider_command(command.clone(), cx)
-                        }),
-                    )
-                    .on_key_down(
-                        cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                this.provider_command(key_command.clone(), cx);
-                                cx.stop_propagation();
-                            }
-                        }),
-                    )
-            })
-            .child(label)
-            .into_any_element()
-    }
-    fn provider_icon_button(
-        &mut self,
-        id: String,
-        label: &'static str,
-        icon: crate::icons::Icon,
-        command: Command,
-        enabled: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = theme(cx).colors;
-        let keyboard = command.clone();
-        let focus = self
-            .provider_management
-            .menu_focuses
-            .entry(id.clone())
-            .or_insert_with(|| cx.focus_handle().tab_stop(true))
-            .clone();
-        let pointer_focus = focus.clone();
-        let keyboard_focus = focus.clone();
-        div()
-            .id(id.clone())
-            .aria_label(label)
-            .track_focus(&focus)
-            .size(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-            .interactive(colors, enabled, false)
-            .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
-            .when(enabled, |button| {
-                button
-                    .focusable()
-                    .tab_stop(true)
-                    .cursor_pointer()
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            this.provider_management.menu_return_focus =
-                                Some(pointer_focus.clone());
-                            window.focus(&pointer_focus, cx);
-                            this.provider_command(command.clone(), cx)
-                        }),
-                    )
-                    .on_key_down(
-                        cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                this.provider_management.menu_return_focus =
-                                    Some(keyboard_focus.clone());
-                                this.provider_command(keyboard.clone(), cx);
-                                cx.stop_propagation();
-                            }
-                        }),
-                    )
-            })
-            .focus_visible(move |style| style.bg(colors.bg_active))
-            .child(crate::icons::icon(
-                icon,
-                if enabled {
-                    colors.text_secondary
-                } else {
-                    colors.text_tertiary
-                },
-            ))
-            .into_any_element()
-    }
-
     fn model_capability_summary(&self, provider: &str, model: &str) -> String {
         let profile = match &self.reasoning {
             ReasoningSettingsProjection::Ready { profiles, .. } => profiles
@@ -1505,59 +1124,16 @@ impl SettingsView {
         }
     }
 
-    fn provider_connection_row(
-        &self,
-        label: &'static str,
-        value: impl IntoElement,
-        colors: vega_theme::ThemeColors,
-    ) -> Div {
-        div()
-            .min_w_0()
-            .flex()
-            .gap_3()
-            .child(
-                div()
-                    .w(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT * 2.))
-                    .flex_shrink_0()
-                    .text_color(colors.text_secondary)
-                    .child(label),
-            )
-            .child(div().min_w_0().flex_1().child(value))
-    }
-
-    fn provider_object_menu(&self, id: &str, cx: &mut Context<Self>) -> gpui_kit::Stateful<Div> {
-        let colors = theme(cx).colors;
-        let id = id.to_string();
-        div()
-            .id(id.clone())
-            .absolute()
-            .top(relative(1.))
-            .right_0()
-            .min_w(px(Layout::SETTINGS_PROVIDER_LIST_WIDTH))
-            .p_1()
-            .flex()
-            .flex_col()
-            .rounded(px(Layout::MENU_RADIUS))
-            .border_1()
-            .border_color(colors.border_subtle)
-            .bg(colors.bg_elevated)
-            .shadow_sm()
-            .occlude()
-            .on_mouse_down_out(cx.listener(|this, _: &gpui_kit::MouseDownEvent, _, cx| {
-                this.provider_management.menu = None;
-                cx.notify();
-            }))
-            .on_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" {
-                    this.provider_management.menu = None;
-                    cx.stop_propagation();
-                    cx.notify();
-                }
-            }))
-    }
-
     pub(crate) fn catalog_capacity_editable(&self) -> bool {
         !self.provider_is_saving()
+            && self
+                .provider_management
+                .nsh_draft
+                .as_ref()
+                .is_none_or(|draft| {
+                    let values = draft.read();
+                    values.valid && !values.frozen && !values.composing.contains(&true)
+                })
             && self
                 .provider_management
                 .model_editor
@@ -1567,14 +1143,59 @@ impl SettingsView {
                 })
     }
 
-    pub(crate) fn apply_catalog_capacity_candidate(
+    pub(super) fn catalog_capacity_fence(
+        &self,
+        cx: &App,
+    ) -> Option<(u64, String, String, String, bool, bool)> {
+        if !self.catalog_capacity_editable() {
+            return None;
+        }
+        self.provider_management
+            .model_editor
+            .as_ref()
+            .map(|editor| {
+                let values = self
+                    .provider_management
+                    .nsh_draft
+                    .as_ref()
+                    .map(|draft| draft.read());
+                (
+                    editor.request_id,
+                    values
+                        .as_ref()
+                        .map(|v| v.text[0].clone())
+                        .unwrap_or_else(|| editor.model_input.read(cx).text().to_string()),
+                    values
+                        .as_ref()
+                        .map(|v| v.text[1].clone())
+                        .unwrap_or_else(|| editor.input_limit.read(cx).text().to_string()),
+                    values
+                        .as_ref()
+                        .map(|v| v.text[2].clone())
+                        .unwrap_or_else(|| editor.output_limit.read(cx).text().to_string()),
+                    editor.automatic,
+                    editor.unknown,
+                )
+            })
+    }
+
+    pub(in crate::settings) fn apply_catalog_capacity_observed(
         &mut self,
+        stamp: &ProviderDraftStamp,
         input: bool,
         value: u64,
         cx: &mut Context<Self>,
-    ) {
-        if !self.catalog_capacity_editable() {
-            return;
+    ) -> bool {
+        if !self.catalog_capacity_editable()
+            || self
+                .provider_management
+                .nsh_draft
+                .as_ref()
+                .is_none_or(|draft| {
+                    !draft.replace_observed(stamp, if input { 1 } else { 2 }, value.to_string())
+                })
+        {
+            return false;
         }
         if let Some(editor) = self.provider_management.model_editor.as_mut() {
             editor.unknown = false;
@@ -1585,139 +1206,32 @@ impl SettingsView {
             };
             target.update(cx, |input, cx| input.set_text(&value.to_string(), cx));
             cx.notify();
+            true
+        } else {
+            false
         }
     }
 
-    pub(crate) fn render_model_basics(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        let busy = self.provider_management.saving;
-        let mut detail = settings_section();
-        if let Some(editor) = &self.provider_management.model_editor {
-            let can_edit = !busy && !editor.saving;
-            detail = detail
-                .child(settings_field(
-                    t("settings.field.model_id"),
-                    None,
-                    editor.model_input.clone(),
-                    colors,
-                ))
-                .when(editor.original.is_some(), |detail| {
-                    let source = match editor.source {
-                        PolicySource::Loading => t("settings.provider.context_loading").to_string(),
-                        PolicySource::AssumedDefault => t_args(
-                            "settings.provider.context_assumed",
-                            &[
-                                ("input", &DEFAULT_MODEL_INPUT_LIMIT.to_string()),
-                                ("output", &DEFAULT_MODEL_OUTPUT_RESERVE.to_string()),
-                            ],
-                        ),
-                        PolicySource::Saved => {
-                            t("settings.provider.context_saved_hint").to_string()
-                        }
-                        PolicySource::Unknown => {
-                            t("settings.provider.context_unknown_hint").to_string()
-                        }
-                    };
-                    detail
-                        .child(
-                            div()
-                                .text_size(px(Typography::METADATA))
-                                .text_color(colors.text_secondary)
-                                .child(
-                                    div()
-                                        .when(editor.source != PolicySource::Loading, |row| row)
-                                        .child(source),
-                                ),
-                        )
-                        .when(editor.legacy_present, |detail| {
-                            detail.child(
-                                div()
-                                    .text_size(px(Typography::METADATA))
-                                    .text_color(colors.warning)
-                                    .child(t("settings.provider.context_legacy")),
-                            )
-                        })
-                        .children(editor.renamed_from.as_ref().map(|previous| {
-                            div()
-                                .text_size(px(Typography::METADATA))
-                                .text_color(colors.warning)
-                                .child(t_args(
-                                    "settings.provider.context_renamed",
-                                    &[("previous", previous)],
-                                ))
-                        }))
-                        .when(!editor.unknown, |detail| {
-                            detail.child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_2()
-                                    .child(settings_field(
-                                        t("settings.provider.input_limit"),
-                                        Some(t("settings.provider.tokens_unit").into()),
-                                        div().child(editor.input_limit.clone()),
-                                        colors,
-                                    ))
-                                    .child(settings_field(
-                                        t("settings.provider.output_limit"),
-                                        Some(t("settings.provider.tokens_unit").into()),
-                                        div().child(editor.output_limit.clone()),
-                                        colors,
-                                    )),
-                            )
-                        })
-                        .child(self.provider_button(
-                            "model-context-auto".into(),
-                            if editor.automatic {
-                                t("settings.provider.compaction_on")
-                            } else {
-                                t("settings.provider.compaction_off")
-                            },
-                            Command::ToggleModelAutomatic,
-                            can_edit,
-                            cx,
-                        ))
-                        .child(self.provider_button(
-                            "model-context-unknown".into(),
-                            if editor.unknown {
-                                t("settings.provider.unknown_selected")
-                            } else {
-                                t("settings.provider.unknown_unselected")
-                            },
-                            Command::ToggleModelUnknown,
-                            can_edit,
-                            cx,
-                        ))
-                })
-                .children(editor.message.as_ref().map(|message| {
-                    div()
-                        .text_size(px(Typography::METADATA))
-                        .text_color(colors.text_secondary)
-                        .child(message.render())
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child(self.provider_button(
-                            "model-save".into(),
-                            t("settings.provider.save_model"),
-                            Command::SaveModel,
-                            can_edit,
-                            cx,
-                        ))
-                        .child(self.provider_button(
-                            "model-cancel".into(),
-                            t("settings.action.cancel"),
-                            Command::Cancel,
-                            can_edit,
-                            cx,
-                        )),
-                );
-        }
-        detail
-            .child(self.render_model_capability_image(cx))
-            .child(self.render_model_catalog(cx))
+    pub(crate) fn render_model_basics(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let basics = self.render_provider_surface(window, cx);
+        let capabilities = self.render_model_capability_image(window, cx);
+        let catalog = self.render_model_catalog(window, cx);
+        div()
+            .id("provider-model-native-host")
+            .w_full()
+            .h_full()
+            .min_h_0()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(Layout::SETTINGS_CONTENT_GAP))
+            .child(basics)
+            .child(capabilities)
+            .child(catalog)
             .into_any_element()
     }
 
@@ -1726,594 +1240,10 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        self.sync_provider_edit_focuses(cx);
-        self.provider_management
-            .model_focuses
-            .retain(|(provider, model), _| {
-                self.config.providers.iter().any(|candidate| {
-                    candidate.name == *provider && candidate.models.contains(model)
-                })
-            });
-        for provider in &self.config.providers {
-            for model in &provider.models {
-                self.provider_management
-                    .model_focuses
-                    .entry((provider.name.clone(), model.clone()))
-                    .or_insert_with(|| cx.focus_handle().tab_stop(true));
-            }
-        }
-        for id in ["provider-add", "provider-edit"] {
-            self.provider_management
-                .action_focuses
-                .entry(id.into())
-                .or_insert_with(|| cx.focus_handle().tab_stop(true));
-        }
-        let colors = theme(cx).colors;
         if self.provider_management.model_editor.is_some() {
-            return div()
-                .id("provider-model-configuration")
-                .on_action(cx.listener(Self::provider_escape))
-                .size_full()
-                .overflow_y_scroll()
-                .child(self.render_model_basics(cx))
-                .scroll_edge_fade(colors.bg_base, ScrollFade::reading())
-                .into_any_element();
+            self.render_model_basics(window, cx)
+        } else {
+            self.render_provider_surface(window, cx)
         }
-        let busy = self.provider_management.saving;
-        let narrow = super::motion::narrow(window);
-        let show_detail =
-            !narrow || self.provider_management.detail_open || self.provider_management.form;
-        let network_busy = self.provider_management.cancel.is_some();
-        let mut list = div()
-            .id("provider-list")
-            .role(gpui_kit::Role::ListBox)
-            .h_full()
-            .track_scroll(&self.provider_management.list_scroll)
-            .w(px(Layout::SETTINGS_PROVIDER_LIST_WIDTH))
-            .when(narrow, |list| list.w_full())
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .overflow_y_scroll()
-            .child(
-                settings_actions()
-                    .child(self.provider_button(
-                        "provider-add".into(),
-                        t("settings.provider.add"),
-                        Command::Add,
-                        !busy,
-                        cx,
-                    ))
-                    .child(self.provider_icon_button(
-                        "provider-reload".into(),
-                        t("settings.provider.reload"),
-                        crate::icons::Icon::Refresh,
-                        Command::Reload,
-                        !busy,
-                        cx,
-                    )),
-            )
-            .tracked_scroll_edge_fade(
-                self.provider_management.list_scroll.clone(),
-                colors.bg_base,
-                ScrollFade::compact(),
-            );
-        for (index, p) in self.config.providers.clone().into_iter().enumerate() {
-            let selected = self.provider_management.selected.as_ref() == Some(&p.name);
-            let name = p.name.clone();
-            let key_name = name.clone();
-            list = list.child(
-                self.motion_provider_row(
-                    div()
-                        .id(format!("provider-select:{:?}", p.name))
-                        .role(gpui_kit::Role::ListBoxOption)
-                        .aria_selected(selected)
-                        .interaction_surface(
-                            gpui_kit::transparent_black().into(),
-                            if selected {
-                                gpui_kit::transparent_black().into()
-                            } else {
-                                colors.bg_hover
-                            },
-                            colors.bg_active,
-                            true,
-                        )
-                        .track_focus(&self.provider_edit_focuses[index].1)
-                        .tab_stop(true)
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .p_2()
-                        .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-                        .border_1()
-                        .border_color(gpui_kit::transparent_black())
-                        .min_h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                        .cursor_pointer()
-                        .focus_visible(move |style| style.border_color(colors.accent))
-                        .on_drag(ProviderDrag(name.clone()), |drag, _, _, cx| {
-                            cx.new(|_| drag.clone())
-                        })
-                        .on_drop(cx.listener(move |this, drag: &ProviderDrag, _, cx| {
-                            if !this.provider_management.saving
-                                && !this.provider_has_draft(cx)
-                                && let Some(from) =
-                                    this.config.providers.iter().position(|p| p.name == drag.0)
-                            {
-                                this.provider_management.selected = Some(drag.0.clone());
-                                this.move_provider(from, index, cx);
-                            }
-                        }))
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
-                                this.provider_command(Command::Select(name.clone()), cx)
-                            }),
-                        )
-                        .on_key_down(cx.listener(
-                            move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                    this.provider_command(Command::Select(key_name.clone()), cx);
-                                    cx.stop_propagation();
-                                }
-                            },
-                        ))
-                        .child(
-                            div()
-                                .size(px(Layout::ICON_SIZE))
-                                .flex_shrink_0()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_color(if p.enabled {
-                                    colors.success
-                                } else {
-                                    colors.text_tertiary
-                                })
-                                .child("●"),
-                        )
-                        .child(div().min_w_0().truncate().child(p.name.clone())),
-                    &p.name,
-                    selected,
-                    colors.bg_active,
-                    cx.entity_id(),
-                ),
-            );
-        }
-        list = list.child(self.provider_button(
-            "provider-pricing-library".into(),
-            t("settings.provider.price_library"),
-            Command::PriceLibrary,
-            !busy,
-            cx,
-        ));
-        // Keep the flow intrinsically sized; the outer viewport owns scrolling.
-        // A height-constrained flex column can shrink truncated text rows to zero.
-        let mut detail = div()
-            .w_full()
-            .min_w_0()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .gap(px(Layout::SETTINGS_CONTENT_GAP));
-        if self.provider_management.form {
-            detail = detail
-                .child(self.render_add_form(cx))
-                .child(self.provider_button(
-                    "provider-form-cancel".into(),
-                    t("settings.action.cancel"),
-                    Command::Cancel,
-                    !busy,
-                    cx,
-                ));
-        } else if let Some(p) = self.selected_provider() {
-            let help_focus_count = p.models.len() + 1;
-            self.provider_test_help_focuses.truncate(help_focus_count);
-            while self.provider_test_help_focuses.len() < help_focus_count {
-                self.provider_test_help_focuses
-                    .push(cx.focus_handle().tab_stop(true));
-            }
-            let help_focuses = self.provider_test_help_focuses.clone();
-            let discover_help_open = self.provider_management.test_help_dismissed != Some(0)
-                && (help_focuses[0].is_focused(window)
-                    || self.provider_management.test_help_hovered == Some(0)
-                    || self.provider_management.test_help_pinned == Some(0));
-            let api_label = match p.api {
-                vega_conversation::types::ProviderApi::ChatCompletions => {
-                    t("settings.provider.api.chat_completions")
-                }
-                vega_conversation::types::ProviderApi::Responses => {
-                    t("settings.provider.api.responses")
-                }
-            };
-            let index = self
-                .config
-                .providers
-                .iter()
-                .position(|candidate| candidate.name == p.name)
-                .unwrap_or(0);
-            let mut provider_menu = self
-                .provider_object_menu("provider-menu", cx)
-                .child(self.provider_button(
-                    "provider-up".into(),
-                    t("settings.provider.move_up"),
-                    Command::Up,
-                    !busy && index > 0,
-                    cx,
-                ))
-                .child(self.provider_button(
-                    "provider-down".into(),
-                    t("settings.provider.move_down"),
-                    Command::Down,
-                    !busy && index + 1 < self.config.providers.len(),
-                    cx,
-                ));
-            provider_menu = provider_menu.child(self.provider_button(
-                "provider-menu-close".into(),
-                t("settings.provider.close_menu"),
-                Command::Menu("provider".into()),
-                true,
-                cx,
-            ));
-            detail = detail
-                .when(narrow, |detail| {
-                    detail.child(self.provider_button(
-                        "provider-list-back".into(),
-                        t("settings.provider.back_list"),
-                        Command::BackToList,
-                        !busy,
-                        cx,
-                    ))
-                })
-                .child(
-                    settings_actions()
-                        .child(
-                            self.motion_title(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_size(px(Typography::HEADING_CARD))
-                                    .font_weight(Typography::HEADING_CARD_WEIGHT)
-                                    .child(p.name.clone()),
-                                cx.entity_id(),
-                            ),
-                        )
-                        .child(self.provider_button(
-                            "provider-enabled".into(),
-                            if p.enabled {
-                                t("settings.state.enabled")
-                            } else {
-                                t("settings.state.disabled")
-                            },
-                            Command::Enable,
-                            !busy,
-                            cx,
-                        ))
-                        .child(self.provider_button(
-                            "provider-edit".into(),
-                            t("settings.action.edit"),
-                            Command::Edit,
-                            !busy,
-                            cx,
-                        ))
-                        .child(
-                            div()
-                                .relative()
-                                .child(self.provider_icon_button(
-                                    "provider-more".into(),
-                                    t("settings.provider.actions"),
-                                    crate::icons::Icon::More,
-                                    Command::Menu("provider".into()),
-                                    !busy,
-                                    cx,
-                                ))
-                                .when(
-                                    self.provider_management.menu.as_deref() == Some("provider"),
-                                    |host| {
-                                        host.child(
-                                            gpui_kit::deferred(provider_menu).with_priority(2),
-                                        )
-                                    },
-                                ),
-                        ),
-                )
-                .child(
-                    settings_section()
-                        .gap_2()
-                        .child(self.provider_connection_row(
-                            t("settings.provider.address"),
-                            div().min_w_0().child(p.base_url.clone()),
-                            colors,
-                        ))
-                        .child(self.provider_connection_row(
-                            t("settings.provider.protocol"),
-                            div().child(api_label),
-                            colors,
-                        ))
-                        .child(self.provider_connection_row(
-                            t("settings.provider.credentials"),
-                            div().child(if self.available_key_refs.contains(&p.key_ref) {
-                                key_stored_placeholder()
-                            } else {
-                                t("settings.provider.key_required")
-                            }),
-                            colors,
-                        )),
-                )
-                .child(
-                    settings_actions()
-                        .mt_4()
-                        .relative()
-                        .child(div().flex_1().child(section_title(
-                            t("settings.field.model"),
-                            colors.text_primary,
-                        )))
-                        .child(self.provider_button(
-                            "provider-discover".into(),
-                            t("settings.provider.discover"),
-                            Command::Discover,
-                            !busy && !network_busy && p.enabled,
-                            cx,
-                        ))
-                        .child(self.provider_test_help_control(0, help_focuses[0].clone(), cx))
-                        .child(self.provider_button(
-                            "provider-add-model".into(),
-                            t("settings.provider.add_model"),
-                            Command::AddModel,
-                            !busy,
-                            cx,
-                        ))
-                        .when(network_busy, |row| {
-                            row.child(self.provider_button(
-                                "provider-cancel".into(),
-                                t("settings.action.stop"),
-                                Command::Cancel,
-                                true,
-                                cx,
-                            ))
-                        })
-                        .when(discover_help_open, |row| {
-                            row.child(self.provider_test_help_tooltip(0, colors, cx))
-                        }),
-                );
-            for (index, model) in p.models.iter().enumerate() {
-                let help_index = index + 1;
-                let help_open = self.provider_management.test_help_dismissed != Some(help_index)
-                    && (help_focuses[help_index].is_focused(window)
-                        || self.provider_management.test_help_hovered == Some(help_index)
-                        || self.provider_management.test_help_pinned == Some(help_index));
-                let menu_key = format!("model-{index}");
-                let menu = self
-                    .provider_object_menu(&format!("model-menu-{index}"), cx)
-                    .child(
-                        settings_actions()
-                            .relative()
-                            .child(self.provider_button(
-                                format!("model-test-{index}"),
-                                t("settings.provider.test"),
-                                Command::Test(model.clone()),
-                                !busy && !network_busy && p.enabled,
-                                cx,
-                            ))
-                            .child(self.provider_test_help_control(
-                                help_index,
-                                help_focuses[help_index].clone(),
-                                cx,
-                            ))
-                            .when(help_open, |row| {
-                                row.child(self.provider_test_help_tooltip(help_index, colors, cx))
-                            }),
-                    )
-                    .child(self.provider_button(
-                        format!("model-delete-{index}"),
-                        t("settings.action.delete"),
-                        Command::ConfirmDelete(model.clone()),
-                        !busy,
-                        cx,
-                    ));
-                detail = detail.child(
-                    settings_section()
-                        .gap_1()
-                        .border_b_1()
-                        .border_color(colors.border_subtle)
-                        .py_2()
-                        .child(
-                            settings_actions()
-                                .items_start()
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .flex_1()
-                                        .child(div().min_w_0().child(model.clone()))
-                                        .child(
-                                            div()
-                                                .text_size(px(Typography::METADATA))
-                                                .text_color(colors.text_secondary)
-                                                .child(
-                                                    self.model_capability_summary(&p.name, model),
-                                                ),
-                                        ),
-                                )
-                                .child(self.provider_button(
-                                    format!("model-edit-{index}"),
-                                    t("settings.provider.configure"),
-                                    Command::EditModel(model.clone()),
-                                    !busy,
-                                    cx,
-                                ))
-                                .child(
-                                    div()
-                                        .relative()
-                                        .child(self.provider_icon_button(
-                                            format!("model-more-{index}"),
-                                            t("settings.provider.model_actions"),
-                                            crate::icons::Icon::More,
-                                            Command::Menu(menu_key.clone()),
-                                            !busy,
-                                            cx,
-                                        ))
-                                        .when(
-                                            self.provider_management.menu.as_ref()
-                                                == Some(&menu_key),
-                                            |host| {
-                                                host.child(
-                                                    gpui_kit::deferred(menu).with_priority(2),
-                                                )
-                                            },
-                                        ),
-                                ),
-                        )
-                        .children(self.provider_management.statuses.get(model).map(|status| {
-                            div()
-                                .text_color(colors.text_secondary)
-                                .child(status.render())
-                        })),
-                );
-            }
-            if let Some((provider, model)) = &self.provider_management.delete_model {
-                detail = detail.child(
-                    settings_section()
-                        .child(settings_status(
-                            t_args(
-                                "settings.provider.confirm_delete_model",
-                                &[("provider", provider), ("model", model)],
-                            ),
-                            colors.warning,
-                            colors,
-                        ))
-                        .child(
-                            settings_actions()
-                                .child(self.provider_button(
-                                    "model-delete-confirm".into(),
-                                    t("settings.provider.delete_model"),
-                                    Command::DeleteModel(provider.clone(), model.clone()),
-                                    !busy,
-                                    cx,
-                                ))
-                                .child(self.provider_button(
-                                    "model-delete-cancel".into(),
-                                    t("settings.action.cancel"),
-                                    Command::Cancel,
-                                    !busy,
-                                    cx,
-                                )),
-                        ),
-                );
-            }
-            if let Some(models) = self.provider_management.candidates.clone() {
-                for (index, model) in models.into_iter().enumerate() {
-                    let existing = p.models.contains(&model);
-                    let checked = self.provider_management.checked.contains(&model);
-                    detail = detail.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(self.provider_button(
-                                format!("candidate-{index}"),
-                                if existing {
-                                    t("settings.provider.already_added")
-                                } else if checked {
-                                    "☑"
-                                } else {
-                                    "☐"
-                                },
-                                Command::Candidate(model.clone()),
-                                !existing && !busy,
-                                cx,
-                            ))
-                            .child(div().min_w_0().flex_1().child(model)),
-                    );
-                }
-                detail = detail.child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_2()
-                        .child(self.provider_button(
-                            "provider-import".into(),
-                            t("settings.provider.add_selected"),
-                            Command::Import,
-                            !busy && !self.provider_management.checked.is_empty(),
-                            cx,
-                        ))
-                        .child(self.provider_button(
-                            "discovery-cancel".into(),
-                            t("settings.action.cancel"),
-                            Command::Cancel,
-                            !busy,
-                            cx,
-                        )),
-                );
-            }
-        }
-        if let Some(message) = &self.provider_management.message {
-            detail = detail.child(settings_status(
-                message.render(),
-                colors.text_secondary,
-                colors,
-            ));
-        }
-        self.restore_provider_return_focus(show_detail, narrow, window, cx);
-        div()
-            .id("provider-management")
-            .size_full()
-            .min_h_0()
-            .on_action(cx.listener(Self::provider_escape))
-            .flex()
-            .items_start()
-            .min_w_0()
-            .gap(px(Layout::SETTINGS_PROVIDER_COLUMN_GAP))
-            .on_key_down(
-                cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "enter"
-                        && this
-                            .provider_management
-                            .model_editor
-                            .as_ref()
-                            .is_some_and(|editor| {
-                                editor
-                                    .model_input
-                                    .read(cx)
-                                    .focus_handle(cx)
-                                    .is_focused(window)
-                            })
-                    {
-                        this.provider_command(Command::SaveModel, cx);
-                        cx.stop_propagation();
-                        return;
-                    }
-                    if event.keystroke.key == "escape"
-                        && (this.provider_management.menu.is_some()
-                            || this.provider_management.form
-                            || this.provider_management.model_editor.is_some()
-                            || this.provider_management.candidates.is_some()
-                            || this.provider_management.cancel.is_some())
-                    {
-                        this.provider_escape(&CloseSettings, window, cx);
-                    }
-                }),
-            )
-            .when(!narrow || !show_detail, |root| root.child(list))
-            .when(show_detail, |root| {
-                root.child(
-                    div()
-                        .id("provider-detail")
-                        .track_scroll(&self.provider_management.detail_scroll)
-                        .h_full()
-                        .min_h_0()
-                        .min_w_0()
-                        .flex_1()
-                        .overflow_y_scroll()
-                        .child(detail)
-                        .tracked_scroll_edge_fade(
-                            self.provider_management.detail_scroll.clone(),
-                            colors.bg_base,
-                            ScrollFade::reading(),
-                        ),
-                )
-            })
-            .into_any_element()
     }
 }

@@ -6,9 +6,18 @@ pub struct SettingsView {
     pub(crate) updater: vega_conversation::types::UpdateProjection,
     pub(super) updater_message: Option<SettingsText>,
     pub(super) updater_version: Option<SettingsText>,
-    pub(crate) updater_notes: Option<crate::conversation_stream::StreamModel>,
-    pub(crate) updater_notes_open: bool,
-    pub(crate) updater_notes_scroll: gpui_kit::ScrollHandle,
+    pub(super) updater_identity: crate::nsh::ProjectionId,
+    pub(super) updater_revision: u64,
+    pub(super) updater_presentation: Option<super::updater::Presentation>,
+    pub(super) shell_navigation: Option<super::nsh_shell::Presentation>,
+    pub(super) shell_heading: Option<super::nsh_shell::Presentation>,
+    pub(super) settings_navigation_presentation:
+        Option<super::model_configuration::nsh_navigation::Presentation>,
+    pub(super) model_navigation_presentation:
+        Option<super::model_configuration::nsh_navigation::Presentation>,
+    pub(super) appearance_presentation: Option<super::nsh_appearance::Presentation>,
+    pub(super) default_model_presentation: Option<super::nsh_default_model::Presentation>,
+    pub(super) input_preferences_presentation: Option<super::nsh_input_preferences::Presentation>,
     pub(crate) provider_management: super::provider_management::ProviderManagement,
     pub(super) settings_motion: super::motion::SettingsMotion,
     pub(crate) section: usize,
@@ -20,7 +29,6 @@ pub struct SettingsView {
     pub(crate) pending_settings_close: bool,
     pub(crate) section_scrolls: [gpui_kit::ScrollHandle; 8],
     pub(crate) usage: super::usage::UsageState,
-    pub(crate) usage_focuses: [FocusHandle; 6],
     pub(crate) section_focuses: [FocusHandle; 8],
     pub(crate) mcp: super::mcp::McpSettingsState,
     pub(crate) skills: super::skills::SkillsSettingsState,
@@ -35,12 +43,10 @@ pub struct SettingsView {
     pub(crate) codex_executable_input: Entity<TextInput>,
     pub(crate) codex_args_input: Entity<TextInput>,
     pub(crate) codex_profile_saving: bool,
+    pub(super) agents_presentation: Option<super::agents::nsh_agents::Presentation>,
+    pub(super) agents_nsh_draft: Option<super::agents::nsh_agents::Draft>,
     pub(crate) preparation: Entity<crate::cua_onboarding::model::PreparationModel>,
     pub(crate) preparation_owner: Option<crate::cua_onboarding::CallbackIdentity>,
-    pub(crate) provider_api_focuses: [FocusHandle; 2],
-    pub(crate) provider_save_focus: FocusHandle,
-    pub(crate) provider_edit_focuses: Vec<(String, FocusHandle)>,
-    pub(crate) provider_test_help_focuses: Vec<FocusHandle>,
     pub(crate) mode_open: bool,
     pub(crate) default_permission: super::permissions::DefaultPermissionState,
     pub(crate) permission_reset: super::permission_reset::ResetState,
@@ -52,7 +58,8 @@ pub struct SettingsView {
     pub(crate) pricing_editor: Option<PricingEditor>,
     pub(crate) pricing_model_input: Entity<TextInput>,
     pub(crate) pricing_rate_inputs: [Entity<TextInput>; 8],
-    pub(crate) pricing_focuses: Vec<(PricingFocusTarget, FocusHandle)>,
+    pub(super) pricing_presentation: Option<super::nsh_pricing::Presentation>,
+    pub(super) pricing_nsh_draft: Option<super::nsh_pricing::Draft>,
     /// Worker-owned independent reasoning capability/preferences projection.
     pub(crate) reasoning: ReasoningSettingsProjection,
     /// Focus handles for the explicit reasoning capability editor. These are
@@ -65,12 +72,17 @@ pub struct SettingsView {
     pub(crate) model_capabilities: ModelCapabilitySettingsProjection,
     pub(crate) model_capability_models: Vec<ModelCapabilityProjection>,
     pub(crate) model_capability_draft: Option<ModelCapabilityOverride>,
-    pub(crate) model_capability_focuses: Vec<(ModelCapabilityFocusTarget, FocusHandle)>,
+    pub(super) capability_presentations: super::model_capabilities::Presentations,
     pub(crate) next_model_capability_operation: u64,
 }
 
 impl Focusable for SettingsView {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        if self.section == 0
+            && let Some(focus) = self.provider_surface_focus_handle(cx)
+        {
+            return focus;
+        }
         self.section_focuses[self.section].clone()
     }
 }
@@ -92,20 +104,6 @@ impl EventEmitter<ModelCapabilityReloadRequested> for SettingsView {}
 pub(crate) const PRICING_INPUT_BYTES_LIMIT: usize = 1024 * 1024;
 pub(crate) const PROVIDER_MODELS_MIN_ROWS: usize = 2;
 pub(crate) const PROVIDER_MODELS_MAX_ROWS: usize = 4;
-/// Two `p_2` edges plus two 1px borders around the body-text viewport.
-pub(crate) const PROVIDER_MODELS_FRAME_INSET: f32 = 18.0;
-
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) enum ProviderFocusTarget {
-    Api(usize),
-    Edit(String),
-    Name,
-    BaseUrl,
-    Models,
-    Key,
-    Save,
-}
-
 impl SettingsView {
     /// Loads the current config and creates empty form inputs.
     pub fn new(cx: &mut Context<Self>) -> Self {
@@ -266,9 +264,16 @@ impl SettingsView {
             updater: Default::default(),
             updater_message: None,
             updater_version: None,
-            updater_notes: None,
-            updater_notes_open: false,
-            updater_notes_scroll: gpui_kit::ScrollHandle::new(),
+            updater_identity: crate::nsh::ProjectionId::new(),
+            updater_revision: 0,
+            updater_presentation: None,
+            shell_navigation: None,
+            shell_heading: None,
+            settings_navigation_presentation: None,
+            model_navigation_presentation: None,
+            appearance_presentation: None,
+            default_model_presentation: None,
+            input_preferences_presentation: None,
             provider_management: Default::default(),
             settings_motion: Default::default(),
             section_scrolls: std::array::from_fn(|_| gpui_kit::ScrollHandle::new()),
@@ -293,7 +298,6 @@ impl SettingsView {
                 1
             },
             usage: Default::default(),
-            usage_focuses: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             section_focuses: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             mcp: super::mcp::McpSettingsState::new(cx),
             skills: Default::default(),
@@ -308,15 +312,13 @@ impl SettingsView {
             codex_executable_input,
             codex_args_input,
             codex_profile_saving: false,
+            agents_presentation: None,
+            agents_nsh_draft: None,
             preparation,
             preparation_owner,
-            provider_api_focuses: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
-            provider_save_focus: cx.focus_handle().tab_stop(true),
-            provider_edit_focuses: Vec::new(),
-            provider_test_help_focuses: Vec::new(),
             mode_open: false,
             default_permission: super::permissions::DefaultPermissionState::new(cx),
-            permission_reset: super::permission_reset::ResetState::new(cx),
+            permission_reset: super::permission_reset::ResetState::new(),
             model_open: false,
             error: error
                 .map(|error| SettingsText::from_known(error, &["settings.config.load_failed"])),
@@ -324,7 +326,8 @@ impl SettingsView {
             pricing_editor: None,
             pricing_model_input,
             pricing_rate_inputs,
-            pricing_focuses: Vec::new(),
+            pricing_presentation: None,
+            pricing_nsh_draft: None,
             reasoning: ReasoningSettingsProjection::Loading,
             reasoning_focuses: Vec::new(),
             reasoning_draft: None,
@@ -332,64 +335,9 @@ impl SettingsView {
             model_capabilities: ModelCapabilitySettingsProjection::Loading,
             model_capability_models: Vec::new(),
             model_capability_draft: None,
-            model_capability_focuses: Vec::new(),
+            capability_presentations: Default::default(),
             next_model_capability_operation: 0,
         }
-    }
-
-    /// Keeps edit-row focus handles stable while the provider list changes.
-    pub(crate) fn sync_provider_edit_focuses(&mut self, cx: &mut Context<Self>) {
-        let previous = std::mem::take(&mut self.provider_edit_focuses);
-        self.provider_edit_focuses = self
-            .config
-            .providers
-            .iter()
-            .map(|provider| {
-                let focus = previous
-                    .iter()
-                    .find(|(name, _)| name == &provider.name)
-                    .map(|(_, focus)| focus.clone())
-                    .unwrap_or_else(|| cx.focus_handle().tab_stop(true));
-                (provider.name.clone(), focus)
-            })
-            .collect();
-    }
-
-    /// Returns the visible Provider controls in their DOM order.
-    pub(crate) fn provider_focuses(&self, cx: &App) -> Vec<(ProviderFocusTarget, FocusHandle)> {
-        let mut focuses = self
-            .provider_edit_focuses
-            .iter()
-            .map(|(name, focus)| (ProviderFocusTarget::Edit(name.clone()), focus.clone()))
-            .collect::<Vec<_>>();
-        focuses.extend([
-            (
-                ProviderFocusTarget::Api(0),
-                self.provider_api_focuses[0].clone(),
-            ),
-            (
-                ProviderFocusTarget::Api(1),
-                self.provider_api_focuses[1].clone(),
-            ),
-            (
-                ProviderFocusTarget::Name,
-                self.name_input.read(cx).focus_handle(cx),
-            ),
-            (
-                ProviderFocusTarget::BaseUrl,
-                self.base_url_input.read(cx).focus_handle(cx),
-            ),
-            (
-                ProviderFocusTarget::Models,
-                self.models_input.read(cx).focus_handle(cx),
-            ),
-            (
-                ProviderFocusTarget::Key,
-                self.key_input.read(cx).focus_handle(cx),
-            ),
-            (ProviderFocusTarget::Save, self.provider_save_focus.clone()),
-        ]);
-        focuses
     }
 
     /// Loads a provider's editable fields without ever loading its key.
@@ -416,105 +364,18 @@ impl SettingsView {
             input.set_text(&provider.models.join("\n"), cx)
         });
         self.key_input.update(cx, TextInput::clear);
+        self.reset_provider_nsh_draft(cx);
         self.error = None;
         cx.notify();
-    }
-
-    /// Handles Enter/Space on Provider actions and Cmd+Enter from the form.
-    pub(crate) fn activate_provider_action(
-        &mut self,
-        _: &ActivateProviderAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.section != 0 {
-            cx.propagate();
-            return;
-        }
-        let target = self
-            .provider_focuses(cx)
-            .into_iter()
-            .find(|(_, focus)| focus.is_focused(window))
-            .map(|(target, _)| target);
-        let Some(target) = target else {
-            cx.propagate();
-            return;
-        };
-        match target {
-            ProviderFocusTarget::Api(index) => {
-                if self.provider_management.saving {
-                    return;
-                }
-                self.provider_management.form_api = if index == 0 {
-                    vega_conversation::types::ProviderApi::ChatCompletions
-                } else {
-                    vega_conversation::types::ProviderApi::Responses
-                };
-                cx.notify();
-            }
-            ProviderFocusTarget::Edit(name) => {
-                self.begin_edit_provider(&name, cx);
-                self.name_input.read(cx).focus_handle(cx).focus(window, cx);
-            }
-            ProviderFocusTarget::Name
-            | ProviderFocusTarget::BaseUrl
-            | ProviderFocusTarget::Models
-            | ProviderFocusTarget::Key
-            | ProviderFocusTarget::Save => self.submit_provider(cx),
-        }
-    }
-
-    pub(crate) fn move_provider_focus(
-        &mut self,
-        reverse: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.section != 0 {
-            cx.propagate();
-            return;
-        }
-        let focuses = self.provider_focuses(cx);
-        let Some(current) = focuses
-            .iter()
-            .position(|(_, focus)| focus.is_focused(window))
-        else {
-            cx.propagate();
-            return;
-        };
-        let next = if reverse {
-            current.checked_sub(1)
-        } else {
-            current.checked_add(1).filter(|next| *next < focuses.len())
-        };
-        let Some(next) = next else {
-            cx.propagate();
-            return;
-        };
-        focuses[next].1.focus(window, cx);
-    }
-
-    pub(crate) fn next_provider_action(
-        &mut self,
-        _: &NextProviderAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.move_provider_focus(false, window, cx);
-    }
-
-    pub(crate) fn previous_provider_action(
-        &mut self,
-        _: &PreviousProviderAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.move_provider_focus(true, window, cx);
     }
 
     /// Validates and persists the Provider form. The candidate config is
     /// cloned so a failed config write cannot replace the in-memory authority.
     pub(crate) fn submit_provider(&mut self, cx: &mut Context<Self>) {
+        if !self.provider_nsh_submission_claimed() {
+            self.request_provider_nsh_save(cx);
+            return;
+        }
         let name = self.name_input.read(cx).text().trim().to_string();
         let base_url = self.base_url_input.read(cx).text().trim().to_string();
         let models_text = self.models_input.read(cx).text().to_string();
@@ -563,8 +424,10 @@ impl SettingsView {
         self.pricing = projection;
         if matches!(self.pricing, PricingSettingsProjection::Saving { .. }) {
             self.pricing_editor = None;
+            self.pricing_nsh_draft = None;
+        } else {
+            self.release_pricing_draft();
         }
-        self.rebuild_pricing_focuses(cx);
         cx.notify();
     }
 
@@ -638,48 +501,6 @@ impl SettingsView {
         cx.notify();
     }
 
-    pub(crate) fn rebuild_pricing_focuses(&mut self, cx: &mut Context<Self>) {
-        let mut targets = Vec::new();
-        match &self.pricing {
-            PricingSettingsProjection::Invalid(_) => targets.push(PricingFocusTarget::Reload),
-            PricingSettingsProjection::Ready {
-                entries,
-                draft_reason,
-                ..
-            } => {
-                targets.push(PricingFocusTarget::Reload);
-                if draft_reason.is_some() {
-                    targets.push(PricingFocusTarget::Retry);
-                    targets.push(PricingFocusTarget::Discard);
-                } else {
-                    targets.push(PricingFocusTarget::Add);
-                    for index in 0..entries.len() {
-                        targets.push(PricingFocusTarget::Edit(index));
-                        targets.push(PricingFocusTarget::Secondary(index));
-                    }
-                    if self.pricing_editor.is_some() {
-                        targets.push(PricingFocusTarget::Save);
-                        targets.push(PricingFocusTarget::Cancel);
-                    }
-                }
-            }
-            PricingSettingsProjection::Loading
-            | PricingSettingsProjection::Saving { .. }
-            | PricingSettingsProjection::Reloading => {}
-        }
-        self.pricing_focuses = targets
-            .into_iter()
-            .map(|target| (target, cx.focus_handle().tab_stop(true)))
-            .collect();
-    }
-
-    pub(crate) fn pricing_focus(&self, target: &PricingFocusTarget) -> Option<FocusHandle> {
-        self.pricing_focuses
-            .iter()
-            .find(|(candidate, _)| candidate == target)
-            .map(|(_, focus)| focus.clone())
-    }
-
     pub(crate) fn pricing_generation(&self) -> Option<u64> {
         match &self.pricing {
             PricingSettingsProjection::Ready { generation, .. } => Some(*generation),
@@ -713,7 +534,7 @@ impl SettingsView {
             kind: PricingEditorKind::AddCustom,
             model: None,
         });
-        self.rebuild_pricing_focuses(cx);
+        self.reset_pricing_draft(cx);
         cx.notify();
     }
 
@@ -756,7 +577,7 @@ impl SettingsView {
             kind,
             model: Some(entry.model),
         });
-        self.rebuild_pricing_focuses(cx);
+        self.reset_pricing_draft(cx);
         cx.notify();
     }
 
@@ -781,7 +602,7 @@ impl SettingsView {
         });
     }
 
-    pub(crate) fn submit_pricing_editor(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn submit_pricing_editor_values(&mut self, cx: &mut Context<Self>) {
         let Some(editor) = self.pricing_editor.clone() else {
             return;
         };
@@ -834,70 +655,7 @@ impl SettingsView {
             }
             return;
         }
-        let target = self
-            .pricing_focuses
-            .iter()
-            .find(|(_, focus)| focus.is_focused(window))
-            .map(|(target, _)| target.clone());
-        if self.section != 3 {
-            cx.propagate();
-            return;
-        }
-        let Some(target) = target else {
-            cx.propagate();
-            return;
-        };
-        match target {
-            PricingFocusTarget::Reload => cx.emit(PricingReloadRequested),
-            PricingFocusTarget::Add => self.begin_add_custom(cx),
-            PricingFocusTarget::Edit(index) => {
-                if let PricingSettingsProjection::Ready {
-                    entries,
-                    draft_reason: None,
-                    ..
-                } = &self.pricing
-                    && let Some(entry) = entries.get(index).cloned()
-                {
-                    self.begin_edit_pricing(entry, cx);
-                }
-            }
-            PricingFocusTarget::Secondary(index) => {
-                if let PricingSettingsProjection::Ready {
-                    entries,
-                    draft_reason: None,
-                    ..
-                } = &self.pricing
-                    && let Some(entry) = entries.get(index)
-                {
-                    let mutation = if entry.kind == PricingEntryKind::CustomStatic {
-                        PricingMutation::DeleteCustom {
-                            model: entry.model.clone(),
-                        }
-                    } else {
-                        PricingMutation::ResetBuiltin {
-                            model: entry.model.clone(),
-                        }
-                    };
-                    self.emit_pricing_mutation(mutation, cx);
-                }
-            }
-            PricingFocusTarget::Retry => {
-                if let Some(generation) = self.pricing_generation() {
-                    cx.emit(PricingRetryRequested { generation });
-                }
-            }
-            PricingFocusTarget::Discard => {
-                if let Some(generation) = self.pricing_generation() {
-                    cx.emit(PricingDiscardRequested { generation });
-                }
-            }
-            PricingFocusTarget::Save => self.submit_pricing_editor(cx),
-            PricingFocusTarget::Cancel => {
-                self.pricing_editor = None;
-                self.rebuild_pricing_focuses(cx);
-                cx.notify();
-            }
-        }
+        cx.propagate();
     }
 
     pub(crate) fn move_pricing_focus(
@@ -906,7 +664,7 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !matches!(self.section, 2 | 3) {
+        if self.section != 2 {
             cx.propagate();
             return;
         }
@@ -934,32 +692,6 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) {
         self.move_pricing_focus(true, window, cx);
-    }
-
-    pub(crate) fn next_skills_action(
-        &mut self,
-        _: &NextSkillsAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.section == 6 {
-            window.focus_next(cx);
-        } else {
-            cx.propagate();
-        }
-    }
-
-    pub(crate) fn previous_skills_action(
-        &mut self,
-        _: &PreviousSkillsAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.section == 6 {
-            window.focus_prev(cx);
-        } else {
-            cx.propagate();
-        }
     }
 }
 

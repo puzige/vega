@@ -1,147 +1,239 @@
-//! Bounded read-only file pane. Filesystem access remains in conversation/app.
-use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
-use gpui_kit::prelude::*;
-use gpui_kit::*;
+use std::sync::Arc;
+
+use gpui_kit::{App, Context, EventEmitter, FocusHandle, Focusable, Render, Task, Window};
+use tokio::sync::{mpsc, oneshot};
 use vega_conversation::types::PaletteFilePreview;
-use vega_theme::{Typography, theme};
-/// Requests a revalidated Finder reveal of this relative path.
+use vega_theme::{Theme, ThemeColors, theme};
+
+use crate::nsh::Surface;
+
 pub struct RevealFileRequested {
     pub relative_path: String,
 }
-/// Read-only project file contents, displayed in the workspace pane.
+
 pub struct FilePreview {
-    preview: PaletteFilePreview,
+    preview: Arc<PaletteFilePreview>,
     focus: FocusHandle,
-    markdown: Option<crate::conversation_stream::StreamModel>,
-    scroll: ScrollHandle,
+    surface: Option<Surface<Snapshot, Command>>,
+    worker: Option<Task<()>>,
 }
+
+#[derive(Clone)]
+struct Snapshot {
+    preview: Arc<PaletteFilePreview>,
+    colors: ThemeColors,
+    read_only: String,
+    reveal: String,
+    failed: String,
+}
+
+enum Command {
+    Reveal(oneshot::Sender<()>),
+    OpenLink(String, oneshot::Sender<()>),
+}
+
 impl EventEmitter<RevealFileRequested> for FilePreview {}
+
 impl FilePreview {
-    /// Construct from a validated bounded worker projection.
     pub fn new(preview: PaletteFilePreview, cx: &mut Context<Self>) -> Self {
-        let markdown = if preview.relative_path.ends_with(".md")
-            || preview.relative_path.ends_with(".markdown")
-        {
-            let mut stream = vega_markdown::MarkdownStream::new();
-            stream.append(&preview.content);
-            stream.finish();
-            let mut model = crate::conversation_stream::StreamModel::default();
-            model.sync(
-                &stream.snapshot(),
-                &crate::conversation_stream::StreamCounters::default(),
-            );
-            Some(model)
-        } else {
-            None
-        };
+        cx.observe_global::<Theme>(|_, cx| cx.notify()).detach();
         Self {
-            scroll: ScrollHandle::new(),
-            markdown,
-            preview,
+            preview: Arc::new(preview),
             focus: cx.focus_handle(),
+            surface: None,
+            worker: None,
         }
     }
-    /// Workspace tab label.
+
     pub fn title(&self) -> &str {
         &self.preview.relative_path
     }
-}
-impl Focusable for FilePreview {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus.clone()
+
+    fn snapshot(&self, cx: &App) -> Snapshot {
+        Snapshot {
+            preview: self.preview.clone(),
+            colors: theme(cx).colors,
+            read_only: vega_i18n::t("ui.read_only").into(),
+            reveal: vega_i18n::t("ui.show_in_finder").into(),
+            failed: vega_i18n::t("ui.command_failed").into(),
+        }
+    }
+
+    fn mount(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (surface, mut requests) = Surface::new(self.snapshot(cx), render_page, window, cx);
+        if self.focus.contains_focused(window, cx) {
+            surface.focus(window, cx);
+        }
+        self.worker = Some(cx.spawn(async move |this, cx| {
+            while let Some(command) = requests.recv().await {
+                if this
+                    .update(cx, |this, cx| match command {
+                        Command::Reveal(reply) => {
+                            cx.emit(RevealFileRequested {
+                                relative_path: this.preview.relative_path.clone(),
+                            });
+                            let _ = reply.send(());
+                        }
+                        Command::OpenLink(target, reply) => {
+                            if crate::conversation_stream::links::allowed_link(&target) {
+                                crate::link_preview::open_target(&target, cx);
+                                let _ = reply.send(());
+                            }
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+        self.surface = Some(surface);
     }
 }
+
+impl Focusable for FilePreview {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.surface
+            .as_ref()
+            .map(|surface| surface.entity().read(cx).focus_handle(cx))
+            .unwrap_or_else(|| self.focus.clone())
+    }
+}
+
 impl Render for FilePreview {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = theme(cx).colors;
-        let body = if let Some(model) = &self.markdown {
-            crate::conversation_stream::markdown_item(
-                model,
-                None,
-                &colors,
-                &format!("file-preview-{}", cx.entity_id()),
-            )
-        } else {
-            div()
-                .font_family("Menlo")
-                .children(
-                    self.preview
-                        .content
-                        .lines()
-                        .enumerate()
-                        .map(|(index, line)| {
-                            div()
-                                .flex()
-                                .gap_3()
-                                .child(
-                                    div()
-                                        .w(px(40.))
-                                        .flex_shrink_0()
-                                        .text_color(colors.text_tertiary)
-                                        .child((index + 1).to_string()),
-                                )
-                                .child(line.to_string())
+    fn render(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl gpui_kit::IntoElement {
+        use gpui_kit::{ParentElement, Styled};
+
+        if self.surface.is_none() {
+            self.mount(window, cx);
+        }
+        let snapshot = self.snapshot(cx);
+        gpui_kit::div()
+            .size_full()
+            .children(self.surface.as_mut().map(|surface| {
+                surface.sync_environment(cx);
+                surface.publish(snapshot);
+                surface.entity()
+            }))
+    }
+}
+
+fn render_page(
+    state: nsh_core::prelude::Signal<Snapshot>,
+    commands: mpsc::Sender<Command>,
+) -> nsh_core::prelude::AnyElement {
+    use nsh_base::{TextViewLinkPressEvent, button, text_view};
+    use nsh_core::prelude::*;
+    use vega_theme::Typography;
+
+    let failed = signal(false);
+    let reveal_commands = commands.clone();
+    let preview = state.get().preview;
+    let markdown =
+        preview.relative_path.ends_with(".md") || preview.relative_path.ends_with(".markdown");
+    let body = if markdown {
+        text_view()
+            .markdown(preview.content.clone())
+            .selectable(true)
+            .render_image(|image: &nsh_base::text_view::Image| text(image.alt.clone()))
+            .on_link_press(move |event: &TextViewLinkPressEvent| {
+                let target = event.url.to_string();
+                if target.starts_with('#') {
+                    return;
+                }
+                let commands = commands.clone();
+                failed.set(false);
+                spawn(async move {
+                    let (reply, received) = oneshot::channel();
+                    if commands
+                        .send(Command::OpenLink(target, reply))
+                        .await
+                        .is_err()
+                        || received.await.is_err()
+                    {
+                        failed.set(true);
+                    }
+                });
+            })
+            .into_element()
+    } else {
+        let lines = Arc::new(
+            preview
+                .content
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+        );
+        virtual_list(lines.len(), move |at| {
+            let lines = lines.clone();
+            view()
+                .flex_row()
+                .gap_3()
+                .child(
+                    text(move || (at.index() + 1).to_string())
+                        .w(px(40.0))
+                        .text_color(move || {
+                            Hsla::from(crate::nsh::color(state.get().colors.text_tertiary))
                         }),
                 )
-                .into_any_element()
-        };
-        div()
-            .id("file-preview")
-            .track_focus(&self.focus)
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(colors.bg_base)
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .p_3()
-                    .border_b_1()
-                    .border_color(colors.border_subtle)
-                    .text_size(px(Typography::METADATA))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .child(self.preview.relative_path.replace(['\n', '\r'], " ")),
-                    )
-                    .child(vega_i18n::t("ui.read_only"))
-                    .child(
-                        div()
-                            .id("file-reveal")
-                            .cursor_pointer()
-                            .text_color(colors.text_secondary)
-                            .child(vega_i18n::t("ui.show_in_finder"))
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    cx.emit(RevealFileRequested {
-                                        relative_path: this.preview.relative_path.clone(),
-                                    })
-                                }),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .id("file-preview-scroll")
-                    .overflow_scroll()
-                    .track_scroll(&self.scroll)
-                    .flex_1()
-                    .min_h_0()
-                    .p_3()
-                    .text_size(px(Typography::CODE))
-                    .child(
-                        crate::link_preview::MarkdownReadingScope::new(
-                            format!("file-preview-{}", cx.entity_id()),
-                            self.focus.clone(),
-                        )
-                        .track_scroll(self.scroll.clone())
-                        .child(body),
-                    )
-                    .scroll_edge_fade(colors.bg_base, ScrollFade::reading()),
-            )
-    }
+                .child(
+                    text(move || lines.get(at.index()).cloned().unwrap_or_default())
+                        .selectable(true),
+                )
+        })
+        .estimated_item_size(px(Typography::CODE * Typography::BODY_LINE_HEIGHT))
+        .font_family("Menlo")
+        .flex_1()
+        .into_element()
+    };
+    view()
+        .flex_1()
+        .bg(move || Hsla::from(crate::nsh::color(state.get().colors.bg_base)))
+        .text_color(move || Hsla::from(crate::nsh::color(state.get().colors.text_primary)))
+        .text_size(px(Typography::CODE))
+        .line_height(px(Typography::CODE * Typography::BODY_LINE_HEIGHT))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .p_3()
+                .border_b(px(1.0))
+                .border_color(move || {
+                    Hsla::from(crate::nsh::color(state.get().colors.border_subtle))
+                })
+                .text_size(px(Typography::METADATA))
+                .child(text(preview.relative_path.replace(['\n', '\r'], " ")).flex_1())
+                .child(text(move || state.get().read_only))
+                .child(
+                    button()
+                        .on_press(move || {
+                            let commands = reveal_commands.clone();
+                            failed.set(false);
+                            spawn(async move {
+                                let (reply, received) = oneshot::channel();
+                                if commands.send(Command::Reveal(reply)).await.is_err()
+                                    || received.await.is_err()
+                                {
+                                    failed.set(true);
+                                }
+                            });
+                        })
+                        .child(text(move || state.get().reveal)),
+                ),
+        )
+        .child(when(
+            move || failed.get(),
+            move || text(move || state.get().failed),
+        ))
+        .child(if markdown {
+            scroll().flex_1().p_3().child(body).into_element()
+        } else {
+            view().flex_1().p_3().child(body).into_element()
+        })
+        .into_element()
 }

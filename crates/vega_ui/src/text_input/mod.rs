@@ -87,6 +87,8 @@ pub struct TextInput {
     focus_handle: FocusHandle,
     content: SharedString,
     content_revision: u64,
+    nsh_selection_revision: u64,
+    nsh_composer: Option<nsh::ComposerEditor>,
     prediction: Option<SharedString>,
     prediction_suppressed: bool,
     placeholder: SharedString,
@@ -131,6 +133,7 @@ mod element;
 mod history;
 mod input_handler;
 mod mouse_selection;
+pub(crate) mod nsh;
 mod skill_query;
 mod state;
 

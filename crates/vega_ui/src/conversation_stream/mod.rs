@@ -307,6 +307,7 @@ mod composer_predictions;
 pub(crate) use composer_predictions::ComposerPredictionsEnabled;
 pub use composer_predictions::set_composer_predictions_enabled;
 mod composer_actions;
+mod nsh_composer;
 use composer_actions::ComposerActions;
 mod code_drag;
 mod code_viewport;
@@ -315,7 +316,6 @@ mod context_control;
 mod copy_receipt;
 mod history_preparation;
 pub use context_control::ContextUsageProjection;
-pub(crate) use copy_receipt::tool_text_copy_button;
 mod context_usage;
 pub use vega_conversation::types::{
     ContextCompactionCancelRequested, ContextCompactionRequested, ContextSettingsRequested,

@@ -13,23 +13,19 @@ use gpui_kit::{
 use vega_theme::{Layout, Motion, ThemeColors};
 
 use super::model::MessageCopy;
-use crate::{
-    icons::Icon,
-    interaction::{Interaction, InteractionExt},
-};
+use crate::{icons::Icon, interaction::Interaction};
 
 #[derive(Clone)]
 pub(super) enum CopySource {
     Message(MessageCopy),
     Code(Arc<str>),
-    Text(Arc<str>),
 }
 
 impl CopySource {
     fn generation(&self) -> u64 {
         match self {
             Self::Message(copy) => copy.content_generation(),
-            Self::Code(_) | Self::Text(_) => 0,
+            Self::Code(_) => 0,
         }
     }
 
@@ -37,7 +33,6 @@ impl CopySource {
         match (self, other) {
             (Self::Message(left), Self::Message(right)) => left.id == right.id,
             (Self::Code(left), Self::Code(right)) => Arc::ptr_eq(left, right),
-            (Self::Text(left), Self::Text(right)) => left == right,
             _ => false,
         }
     }
@@ -50,7 +45,7 @@ impl CopySource {
                 }
                 copy.copy(cx);
             }
-            Self::Code(source) | Self::Text(source) => {
+            Self::Code(source) => {
                 if source.is_empty() {
                     return false;
                 }
@@ -59,33 +54,6 @@ impl CopySource {
         }
         true
     }
-}
-
-pub(crate) fn tool_text_copy_button(
-    id: SharedString,
-    group: SharedString,
-    text: String,
-    label: &'static str,
-    colors: ThemeColors,
-) -> AnyElement {
-    CopyReceiptButton::new(
-        id.clone(),
-        CopySource::Text(text.into()),
-        label,
-        colors,
-        |button| {
-            button
-                .id(id)
-                .size(px(Layout::COPY_ACTION_SIZE))
-                .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
-                    cx.stop_propagation()
-                })
-                .opacity(0.)
-                .group_hover(group, |style| style.opacity(1.))
-                .focus_visible(|style| style.opacity(1.).bg(colors.bg_active))
-        },
-    )
-    .into_any_element()
 }
 
 struct Receipt {
@@ -205,34 +173,15 @@ impl CopyReceiptButton {
             .child(GlyphLayer::new(Icon::Check, colors, blend.clone(), true));
         let clicked = binding.clone();
         let accessible = binding.clone();
-        let button = if matches!(&source, CopySource::Text(_)) {
-            div()
-                .id(id.clone())
-                .aria_label(label)
-                .focusable()
-                .tab_stop(true)
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_md()
-                .cursor_pointer()
-                .interactive(colors, true, false)
-                .focus(move |style| style.bg(colors.bg_active))
-                .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
-                .on_click(move |_, window, cx| activate(&clicked.borrow(), window, cx))
-                .child(content)
-        } else {
-            crate::icons::icon_button_with_id(
-                content,
-                id.clone(),
-                label,
-                colors,
-                move |_, window, cx| {
-                    activate(&clicked.borrow(), window, cx);
-                },
-            )
-        };
+        let button = crate::icons::icon_button_with_id(
+            content,
+            id.clone(),
+            label,
+            colors,
+            move |_, window, cx| {
+                activate(&clicked.borrow(), window, cx);
+            },
+        );
         Self {
             id: id.into(),
             source,

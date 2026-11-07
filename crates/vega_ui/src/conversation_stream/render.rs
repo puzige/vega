@@ -126,8 +126,8 @@ impl ConversationStream {
     }
 
     fn render_conversation_foreground(
-        &self,
-        window: &Window,
+        &mut self,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
@@ -272,8 +272,9 @@ impl ConversationStream {
             .into_any_element()
     }
 
-    fn render_composer(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if self.automation_permission.busy() {
+            self.hide_shell_recovery_surface();
             return self.render_automation_permission(window, cx);
         }
         let colors = theme(cx).colors;
@@ -453,7 +454,7 @@ impl ConversationStream {
             .children(self.active_user_question.clone())
             .child(self.render_automation(cx))
             .child(self.render_thread_permission_feedback(cx))
-            .child(self.render_shell_recovery(cx))
+            .child(self.render_shell_recovery(window, cx))
             .child(
                 div()
                     .on_drop(cx.listener(Self::drop_images))
@@ -1657,7 +1658,11 @@ impl ConversationStream {
 
 impl Render for ConversationStream {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.reading_preview {
+            self.hide_shell_recovery_surface();
+        }
         if !self.reading_preview {
+            self.prepare_nsh_composer(window, cx);
             self.reconcile_pending_focus(window, cx);
             self.prepare_thread_permission_focus(window, cx);
             self.prepare_automation_permission_focus(window, cx);

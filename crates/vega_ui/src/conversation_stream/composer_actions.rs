@@ -258,7 +258,9 @@ impl ConversationStream {
     }
 
     fn composer_resume_available(&self, cx: &App) -> bool {
-        self.thread.backend == TaskBackend::Native
+        self.input.read(cx).composer_editor_ready()
+            && !self.input.read(cx).is_composing()
+            && self.thread.backend == TaskBackend::Native
             && !self.permission_change_pending()
             && self.interrupted_tail.is_some()
             && !self.reading_preview
@@ -542,6 +544,31 @@ impl ConversationStream {
             && (!self.input.read(cx).text().is_empty() || !self.attachments.is_empty())
     }
 
+    pub(super) fn nsh_highlight(&self) -> usize {
+        self.actions.highlight
+    }
+
+    pub(super) fn nsh_previous_composer_control(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.input.read(cx).is_composing()
+            && let Some(focus) = self
+                .reasoning_default_failures
+                .iter()
+                .rev()
+                .find_map(|failure| {
+                    self.reasoning_default_retry_focuses
+                        .get(&failure.request.defaults.model)
+                })
+        {
+            window.focus(focus, cx);
+            return;
+        }
+        self.previous_composer_control(&PreviousComposerControl, window, cx);
+    }
+
     fn move_composer_focus(&self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.input.read(cx).is_composing() {
             return;
@@ -587,7 +614,7 @@ impl ConversationStream {
         controls.extend(self.automation_focuses());
         let next = controls
             .iter()
-            .position(|focus| focus.is_focused(window))
+            .position(|focus| focus.contains_focused(window, cx))
             .and_then(|index| {
                 if backwards {
                     index.checked_sub(1)

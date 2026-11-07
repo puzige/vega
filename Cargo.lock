@@ -8585,6 +8585,9 @@ version = "0.1.0"
 dependencies = [
  "gpui-kit",
  "libc",
+ "nsh-base",
+ "nsh-core",
+ "nsh-platform-gpui",
  "serde_json",
  "tokio",
  "tokio-util",

@@ -279,7 +279,9 @@ impl ConversationStream {
     }
 
     pub(crate) fn can_submit_message(&self, cx: &App) -> bool {
-        !self.reading_preview
+        self.input.read(cx).composer_editor_ready()
+            && !self.input.read(cx).is_composing()
+            && !self.reading_preview
             && !self.permission_change_pending()
             && (!self.actions.running || self.thread.backend == TaskBackend::Native)
             && !self.pending_queue.busy
@@ -297,6 +299,9 @@ impl ConversationStream {
     }
 
     pub(crate) fn submit_message(&mut self, cx: &mut Context<Self>) {
+        if !self.input.read(cx).composer_editor_ready() || self.input.read(cx).is_composing() {
+            return;
+        }
         if self.submit_compact_command(cx) {
             return;
         }
@@ -478,6 +483,17 @@ impl ConversationStream {
                 .update(cx, |input, cx| input.up(&crate::text_input::Up, window, cx));
             return;
         }
+        self.recall_previous_draft(cx);
+    }
+
+    pub(super) fn recall_previous_draft(&mut self, cx: &mut Context<Self>) {
+        if self.input.read(cx).is_composing()
+            || !self.input.read(cx).composer_editor_ready()
+            || self.composer_history.is_empty()
+        {
+            return;
+        }
+        let current = self.input.read(cx).text().to_owned();
         if let Some(index) = self.history_cursor
             && self.composer_history.get(index) != Some(&current)
         {

@@ -293,6 +293,11 @@ impl Render for VegaWindow {
         self.sync_palette(window, cx);
         self.sync_navigation(cx);
         let settings_open = cx.global::<SettingsOpen>().0;
+        if (settings_open || self.sidebar.read(cx).opening_thread(cx).is_some())
+            && let Some((_, stream)) = &self.stream_view
+        {
+            stream.update(cx, |stream, _| stream.suspend_shell_recovery_presentation());
+        }
         let content: AnyElement = if settings_open {
             self.conversation_loading.clear();
             if self.settings_view.is_none()
@@ -506,6 +511,9 @@ impl Render for VegaWindow {
                                     thread_id != &thread.id || cached != &view
                                 }) {
                                     if let Some((previous_id, previous)) = self.stream_view.take() {
+                                        previous.update(cx, |stream, _| {
+                                            stream.suspend_shell_recovery_presentation()
+                                        });
                                         if previous_id != thread.id {
                                             let anchor = previous.read(cx).scroll_anchor_snapshot();
                                             self.thread_scroll_states
@@ -576,6 +584,9 @@ impl Render for VegaWindow {
                             }
                             None => {
                                 if let Some((previous_id, previous)) = self.stream_view.take() {
+                                    previous.update(cx, |stream, _| {
+                                        stream.suspend_shell_recovery_presentation()
+                                    });
                                     if previous_id != thread.id {
                                         let anchor = previous.read(cx).scroll_anchor_snapshot();
                                         self.thread_scroll_states
@@ -708,7 +719,7 @@ impl Render for VegaWindow {
                 .min_h_0()
                 .flex()
                 .flex_col()
-                .child(self.render_main_header(sidebar_visible, cx))
+                .child(self.render_main_header(sidebar_visible, window, cx))
                 .children(self.render_permission_reset_notice(cx))
                 .children(navigation_error.map(|error| {
                     div()
@@ -915,7 +926,12 @@ impl VegaWindow {
         }
     }
 
-    fn render_main_header(&mut self, sidebar_visible: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn render_main_header(
+        &mut self,
+        sidebar_visible: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = theme(cx).colors;
         let title = self.main_header_title(cx);
         div()
@@ -931,7 +947,7 @@ impl VegaWindow {
             .when(!sidebar_visible, |header| {
                 header
                     .pl(px(Layout::TITLEBAR_LEADING_INSET))
-                    .child(vega_ui::navigation::controls(cx, false))
+                    .child(vega_ui::navigation::controls(window, cx, false))
             })
             .when(sidebar_visible, |header| header.pl_3())
             .child(

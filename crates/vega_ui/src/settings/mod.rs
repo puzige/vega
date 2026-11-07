@@ -1,14 +1,13 @@
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Div, Entity, EventEmitter, FocusHandle, Focusable, Global, MouseButton,
-    MouseUpEvent, Window, actions, div, px, relative,
+    AnyElement, App, Div, Entity, EventEmitter, FocusHandle, Focusable, Global, MouseUpEvent,
+    Window, actions, div, px, relative,
 };
 use vega_conversation::types::{
     ModelCapabilityOverride, ModelCapabilityPatch, ModelCapabilityProjection,
-    ModelCapabilitySettingsErrorCode, ModelCapabilitySettingsProjection, PricingDraftReason,
-    PricingEntryKind, PricingEntryProjection, PricingMutation, PricingNotice, PricingRateInputs,
-    PricingSettingsErrorCode, PricingSettingsProjection, REASONING_EFFORTS, ReasoningChoice,
-    ReasoningProfileProjection, ReasoningSupport,
+    ModelCapabilitySettingsProjection, PricingEntryKind, PricingEntryProjection, PricingMutation,
+    PricingNotice, PricingRateInputs, PricingSettingsErrorCode, PricingSettingsProjection,
+    REASONING_EFFORTS, ReasoningChoice, ReasoningProfileProjection, ReasoningSupport,
 };
 use vega_i18n::{t, t_args};
 use vega_store::config::{self, AppConfig, ProviderConfig};
@@ -23,16 +22,9 @@ actions!(
     [
         OpenSettings,
         CloseSettings,
-        ActivateProviderAction,
-        NextProviderAction,
-        PreviousProviderAction,
         ActivatePricingAction,
         NextPricingAction,
-        PreviousPricingAction,
-        NextSkillsAction,
-        PreviousSkillsAction,
-        NextMcpAction,
-        PreviousMcpAction
+        PreviousPricingAction
     ]
 );
 
@@ -151,22 +143,10 @@ pub(crate) enum PricingEditorKind {
     UpdateDeepSeek,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct PricingEditor {
     kind: PricingEditorKind,
     model: Option<String>,
-}
-
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) enum PricingFocusTarget {
-    Reload,
-    Add,
-    Edit(usize),
-    Secondary(usize),
-    Retry,
-    Discard,
-    Save,
-    Cancel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,9 +191,13 @@ use localization::{SettingsText, permission_mode_label};
 mod mcp;
 mod model_capabilities;
 mod model_catalog;
-pub use model_capabilities::ModelCapabilityFocusTarget;
 mod model_configuration;
 mod motion;
+mod nsh_appearance;
+mod nsh_default_model;
+mod nsh_input_preferences;
+mod nsh_pricing;
+mod nsh_shell;
 use model_configuration::SettingsDestination;
 mod permission_reset;
 mod permissions;

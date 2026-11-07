@@ -1072,6 +1072,14 @@ impl ConversationStream {
         };
         let card =
             cx.new(|cx| PermissionCard::new(&request, lease, allow_persistent, codex_identity, cx));
+        cx.observe(&card, |this, card, cx| {
+            let index = this.entry_index_where(
+                |entry| matches!(entry, StreamEntry::Permission { card: owned } if owned == &card),
+            );
+            this.invalidate_item(index);
+            cx.notify();
+        })
+        .detach();
         cx.subscribe(&card, |this, card, _: &PermissionCardResolved, cx| {
             if this
                 .active_permission
@@ -1134,6 +1142,14 @@ impl ConversationStream {
         self.remove_active_permission(cx);
         let (request, lease) = pending.into_parts();
         let card = cx.new(|cx| PermissionCard::new_scope(&request, lease, cx));
+        cx.observe(&card, |this, card, cx| {
+            let index = this.entry_index_where(
+                |entry| matches!(entry, StreamEntry::Permission { card: owned } if owned == &card),
+            );
+            this.invalidate_item(index);
+            cx.notify();
+        })
+        .detach();
         cx.subscribe(&card, |this, card, _: &PermissionCardResolved, cx| {
             if this
                 .active_permission

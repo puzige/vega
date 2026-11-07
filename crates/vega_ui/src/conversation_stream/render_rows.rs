@@ -269,38 +269,8 @@ fn render_entry_internal(
                 .into_any_element()
         }
         StreamEntry::ArtifactGroup { group } => ArtifactGroup::render(group.clone(), window, cx),
-        StreamEntry::Permission { card } => {
-            let card = card.clone();
-            let row_count = card.read(cx).row_count();
-            let rows = (0..row_count)
-                .map(|row| PermissionCard::render_row(card.clone(), row, window, cx))
-                .collect::<Vec<_>>();
-            div()
-                .w_full()
-                .flex_shrink_0()
-                .pt_1()
-                .pb_2()
-                .child(
-                    div()
-                        .w_full()
-                        .rounded(px(Layout::STATUS_RADIUS))
-                        .border_1()
-                        .border_color(colors.border_subtle)
-                        .p(px(Layout::STATUS_PADDING))
-                        .flex()
-                        .flex_col()
-                        .gap(px(Layout::STATUS_GAP))
-                        .children(rows),
-                )
-                .into_any_element()
-        }
-        StreamEntry::Plan { card } => {
-            let card = card.clone();
-            let row_count = card.read(cx).row_count();
-            card_rows_item(row_count, move |row| {
-                PlanCard::render_row(card.clone(), row, window, cx)
-            })
-        }
+        StreamEntry::Permission { card } => PermissionCard::render_card(card.clone(), window, cx),
+        StreamEntry::Plan { card } => PlanCard::render_card(card.clone(), false, window, cx),
         StreamEntry::Summary { card }
             if suppress_run_notices
                 && card.read(cx).summary().outcome
@@ -329,38 +299,6 @@ fn render_entry_internal(
                 .into_any_element(),
         },
     }
-}
-
-/// One card entry as one natural-height item: the card's compact subrows
-/// (24px, C4 rule 1) stacked vertically inside a single list item.
-pub(crate) fn card_rows_item(
-    row_count: usize,
-    mut render_row: impl FnMut(usize) -> AnyElement,
-) -> AnyElement {
-    let mut rows = Vec::with_capacity(row_count);
-    for row in 0..row_count {
-        rows.push(render_row(row));
-    }
-    div()
-        .w_full()
-        .flex_shrink_0()
-        .pt(px(4.0))
-        .pb(px(8.0))
-        .flex()
-        .flex_col()
-        .children(rows)
-        .into_any_element()
-}
-
-/// One assistant markdown turn as one natural-height item: each materialized
-/// block renders at its own natural height (text wraps, C4 禁截断).
-pub(crate) fn markdown_item(
-    model: &StreamModel,
-    failure: Option<RunFailureKind>,
-    colors: &ThemeColors,
-    id_prefix: &str,
-) -> AnyElement {
-    markdown_message_item(model, failure, colors, id_prefix, None)
 }
 
 fn markdown_message_item(

@@ -578,7 +578,7 @@ impl Sidebar {
     }
 
     /// Compact functional sidebar toolbar, aligned with the native titlebar.
-    fn render_brand(&self, colors: &ThemeColors, cx: &App) -> AnyElement {
+    fn render_brand(&self, colors: &ThemeColors, window: &mut Window, cx: &mut App) -> AnyElement {
         div()
             .h(px(Layout::MAIN_HEADER_HEIGHT))
             .flex_shrink_0()
@@ -593,7 +593,7 @@ impl Sidebar {
             .px_2()
             .text_size(px(Typography::SIDEBAR))
             .text_color(colors.text_secondary)
-            .child(crate::navigation::controls(cx, true))
+            .child(crate::navigation::controls(window, cx, true))
             .into_any_element()
     }
 
@@ -699,7 +699,7 @@ impl Sidebar {
 }
 
 impl Render for Sidebar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(cx).colors;
         let projects_error = self.projects_block.read(cx).error.clone();
         div()
@@ -719,7 +719,7 @@ impl Render for Sidebar {
                     .min_h_0()
                     .px(px(Layout::SIDEBAR_PADDING))
                     .gap_3()
-                    .child(self.render_brand(&colors, cx))
+                    .child(self.render_brand(&colors, window, cx))
                     .child(self.render_new_task(cx, &colors))
                     .children(
                         projects_error.map(|message| {
