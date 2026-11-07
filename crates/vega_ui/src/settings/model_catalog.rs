@@ -1,10 +1,14 @@
 use super::*;
 use vega_conversation::types::{
-    CatalogAction, CatalogIdentity, CatalogModel, CatalogReasoningOption, ModelCatalogProjection,
-    ModelCatalogRequested,
+    CatalogAction, CatalogIdentity, CatalogModel, ModelCatalogProjection, ModelCatalogRequested,
 };
 
+mod nsh_catalog;
+
 pub(crate) struct CatalogUi {
+    presentation: Option<nsh_catalog::Presentation>,
+    version: crate::nsh::ProjectionId,
+    help: bool,
     owner: Option<CatalogIdentity>,
     generation: u64,
     projection: ModelCatalogProjection,
@@ -12,19 +16,15 @@ pub(crate) struct CatalogUi {
     mapping: bool,
     selected_provider: Option<String>,
     candidate: Option<CatalogIdentity>,
-    search: Entity<TextInput>,
     message: Option<SettingsText>,
     error: Option<SettingsText>,
 }
 impl CatalogUi {
-    pub(crate) fn new(cx: &mut Context<SettingsView>) -> Self {
-        let search = cx.new(|cx| {
-            TextInput::new(cx, "", false)
-                .with_placeholder_key("settings.catalog.search_placeholder")
-                .with_tab_stop(true)
-        });
-        cx.observe(&search, |_, _, cx| cx.notify()).detach();
+    pub(crate) fn new(_: &mut Context<SettingsView>) -> Self {
         Self {
+            presentation: None,
+            version: crate::nsh::ProjectionId::new(),
+            help: false,
             owner: None,
             generation: 0,
             projection: Default::default(),
@@ -32,7 +32,6 @@ impl CatalogUi {
             mapping: false,
             selected_provider: None,
             candidate: None,
-            search,
             message: None,
             error: None,
         }
@@ -75,7 +74,7 @@ fn simple_prices(model: &CatalogModel) -> Option<[String; 4]> {
 
 impl SettingsView {
     pub(super) fn refresh_catalog_localization(&self, cx: &mut Context<Self>) {
-        self.catalog.search.update(cx, |_, cx| cx.notify());
+        self.sync_catalog_presentation(cx);
     }
 
     pub(crate) fn ensure_model_catalog(&mut self, cx: &mut Context<Self>) {
@@ -93,6 +92,8 @@ impl SettingsView {
             return;
         }
         self.catalog.owner = owner;
+        self.catalog.version = crate::nsh::ProjectionId::new();
+        self.catalog.help = false;
         self.catalog.projection = Default::default();
         self.catalog.error = None;
         self.catalog.open = false;
@@ -171,11 +172,20 @@ impl SettingsView {
             )
         });
         self.catalog.projection = projection;
+        self.catalog.version = crate::nsh::ProjectionId::new();
         cx.notify();
         true
     }
 
-    fn catalog_apply_capacity(&mut self, input: bool, cx: &mut Context<Self>) {
+    fn catalog_apply_capacity(
+        &mut self,
+        stamp: Option<&super::provider_management::ProviderDraftStamp>,
+        input: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(stamp) = stamp else {
+            return;
+        };
         let Some(model) = self.catalog.projection.matched_model().cloned() else {
             return;
         };
@@ -187,7 +197,9 @@ impl SettingsView {
         .filter(|value| *value > 0) else {
             return;
         };
-        self.apply_catalog_capacity_candidate(input, value, cx);
+        if !self.apply_catalog_capacity_observed(stamp, input, value, cx) {
+            return;
+        }
         self.catalog.message = Some(SettingsText::key("settings.catalog.filled"));
         cx.notify();
     }
@@ -227,453 +239,5 @@ impl SettingsView {
         self.reset_pricing_draft(cx);
         self.section = 3;
         cx.notify();
-    }
-
-    pub(crate) fn render_model_catalog(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        if self.model_settings.is_none() {
-            return div().into_any_element();
-        }
-        let open = self.catalog.open;
-        let busy = self.catalog.projection.refreshing;
-        let mut section = settings_section().child(
-            settings_actions()
-                .child(self.settings_route_button(
-                    "model-catalog-toggle",
-                    if open {
-                        t("settings.catalog.collapse")
-                    } else {
-                        t("settings.catalog.title")
-                    },
-                    true,
-                    cx.listener(|this, _, _, cx| {
-                        this.catalog.open = !this.catalog.open;
-                        cx.notify();
-                    }),
-                    cx,
-                ))
-                .child(self.settings_route_button(
-                    "model-catalog-refresh",
-                    if busy {
-                        t("settings.catalog.reading")
-                    } else {
-                        t("settings.catalog.refresh")
-                    },
-                    !busy,
-                    cx.listener(|this, _, _, cx| {
-                        this.request_model_catalog(CatalogAction::Refresh, cx)
-                    }),
-                    cx,
-                ))
-                .child(
-                    self.settings_help(
-                        "model-catalog-help",
-                        t("settings.catalog.help"),
-                        t_args(
-                            "settings.catalog.help_detail",
-                            &[
-                                (
-                                    "version",
-                                    &self.catalog.projection.schema_version.to_string(),
-                                ),
-                                (
-                                    "digest",
-                                    &(self
-                                        .catalog
-                                        .projection
-                                        .digest
-                                        .as_deref()
-                                        .map(|value| value.chars().take(12).collect::<String>())
-                                        .unwrap_or_else(|| {
-                                            t("settings.catalog.not_fetched").into()
-                                        })),
-                                ),
-                            ],
-                        ),
-                        cx,
-                    ),
-                ),
-        );
-        if let Some(error) = &self.catalog.error {
-            section = section.child(settings_status(error.render(), colors.warning, colors));
-        }
-        if !open {
-            return section.into_any_element();
-        }
-        let status = if busy {
-            Some(t("settings.catalog.loading"))
-        } else if self.catalog.projection.stale {
-            Some(t("settings.catalog.stale"))
-        } else if self.catalog.projection.fetched_at_ms.is_none() {
-            Some(t("settings.catalog.empty"))
-        } else {
-            None
-        };
-        section = section
-            .children(status.map(|status| div().text_color(colors.text_secondary).child(status)));
-        if let Some(timestamp) = self.catalog.projection.fetched_at_ms {
-            section = section.child(
-                div()
-                    .text_size(px(Typography::METADATA))
-                    .text_color(colors.text_secondary)
-                    .child(t_args(
-                        "settings.catalog.fetched_ago",
-                        &[(
-                            "minutes",
-                            &(std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| (d.as_millis() as u64).saturating_sub(timestamp) / 60000)
-                                .unwrap_or_default())
-                            .to_string(),
-                        )],
-                    )),
-            );
-        }
-        section = section.child(
-            settings_actions()
-                .child(self.settings_route_button(
-                    "model-catalog-map",
-                    t("settings.catalog.map"),
-                    !busy,
-                    cx.listener(|this, _, _, cx| {
-                        this.catalog.mapping = !this.catalog.mapping;
-                        this.catalog.selected_provider = None;
-                        this.catalog.candidate = None;
-                        this.catalog.search.update(cx, TextInput::clear);
-                        cx.notify();
-                    }),
-                    cx,
-                ))
-                .when(self.catalog.projection.mapped.is_some(), |actions| {
-                    actions.child(self.settings_route_button(
-                        "model-catalog-unmap",
-                        t("settings.catalog.unmap"),
-                        !busy,
-                        cx.listener(|this, _, _, cx| {
-                            this.request_model_catalog(CatalogAction::Unmap, cx)
-                        }),
-                        cx,
-                    ))
-                }),
-        );
-        if self.catalog.mapping {
-            section = section.child(self.render_catalog_mapping(cx));
-        }
-        if let Some(target) = &self.catalog.projection.mapped {
-            section = section.child(div().min_w_0().whitespace_normal().child(t_args(
-                "settings.catalog.identity",
-                &[("provider", &target.provider), ("model", &target.model)],
-            )));
-        }
-        if let Some(model) = self.catalog.projection.matched_model().cloned() {
-            section = section.child(
-                div().text_color(colors.text_secondary).child(t_args(
-                    "settings.catalog.capacity",
-                    &[
-                        ("context", &model.context.to_string()),
-                        (
-                            "input",
-                            &(model
-                                .input
-                                .map(|v| v.to_string())
-                                .unwrap_or_else(|| t("settings.catalog.not_provided").into())),
-                        ),
-                        ("output", &model.output.to_string()),
-                    ],
-                )),
-            );
-            let support = |value: Option<bool>| match value {
-                Some(true) => t("settings.catalog.supported"),
-                Some(false) => t("settings.catalog.unsupported"),
-                None => t("settings.catalog.not_provided"),
-            };
-            section = section.child(div().text_color(colors.text_secondary).child(t_args(
-                "settings.catalog.capabilities",
-                &[
-                    ("tools", support(model.tool_call)),
-                    ("reasoning", support(model.reasoning)),
-                ],
-            )));
-            if let Some(canonical) = &model.canonical_id {
-                section = section.child(div().text_color(colors.text_secondary).child(t_args(
-                    "settings.catalog.canonical",
-                    &[("canonical", canonical)],
-                )));
-            }
-            if let Some(status) = &model.status {
-                section = section.child(
-                    div()
-                        .text_color(colors.warning)
-                        .child(t_args("settings.catalog.status", &[("status", status)])),
-                );
-            }
-            let capacity_ready = self.catalog_capacity_editable();
-            section = section.child(
-                settings_actions()
-                    .child(self.settings_route_button(
-                        "model-catalog-input",
-                        t("settings.catalog.apply_input"),
-                        capacity_ready && model.input.is_some_and(|v| v > 0),
-                        cx.listener(|this, _, _, cx| this.catalog_apply_capacity(true, cx)),
-                        cx,
-                    ))
-                    .child(self.settings_route_button(
-                        "model-catalog-output",
-                        t("settings.catalog.apply_output"),
-                        capacity_ready && model.output > 0,
-                        cx.listener(|this, _, _, cx| this.catalog_apply_capacity(false, cx)),
-                        cx,
-                    )),
-            );
-            if !model.reasoning_options.is_empty() {
-                let text = model
-                    .reasoning_options
-                    .iter()
-                    .map(|option| match option {
-                        CatalogReasoningOption::Toggle => t("settings.catalog.toggle").into(),
-                        CatalogReasoningOption::Effort(values) => values
-                            .iter()
-                            .map(|v| v.as_deref().unwrap_or("null"))
-                            .collect::<Vec<_>>()
-                            .join(" / "),
-                        CatalogReasoningOption::Budget { min, max } => t_args(
-                            "settings.catalog.budget",
-                            &[
-                                (
-                                    "min",
-                                    &(min.map(|v| v.to_string()).unwrap_or_else(|| {
-                                        t("settings.catalog.not_provided").into()
-                                    })),
-                                ),
-                                (
-                                    "max",
-                                    &(max.map(|v| v.to_string()).unwrap_or_else(|| {
-                                        t("settings.catalog.not_provided").into()
-                                    })),
-                                ),
-                            ],
-                        ),
-                        CatalogReasoningOption::Unknown(value) => value.clone(),
-                    })
-                    .collect::<Vec<_>>()
-                    .join(t("settings.detail_separator"));
-                section = section.child(
-                    div()
-                        .text_color(colors.text_secondary)
-                        .child(t_args("settings.catalog.reasoning", &[("text", &text)])),
-                );
-            }
-            if let Some(cost) = &model.cost {
-                section = section
-                    .child(
-                        div().text_color(colors.text_secondary).child(t_args(
-                            "settings.catalog.prices",
-                            &[
-                                (
-                                    "input",
-                                    cost.input
-                                        .as_deref()
-                                        .unwrap_or(t("settings.catalog.not_provided")),
-                                ),
-                                (
-                                    "output",
-                                    cost.output
-                                        .as_deref()
-                                        .unwrap_or(t("settings.catalog.not_provided")),
-                                ),
-                                (
-                                    "cache_read",
-                                    cost.cache_read
-                                        .as_deref()
-                                        .unwrap_or(t("settings.catalog.not_provided")),
-                                ),
-                                (
-                                    "cache_write",
-                                    cost.cache_write
-                                        .as_deref()
-                                        .unwrap_or(t("settings.catalog.not_provided")),
-                                ),
-                            ],
-                        )),
-                    )
-                    .when(cost.complex, |s| {
-                        s.child(
-                            div()
-                                .text_color(colors.text_secondary)
-                                .child(t("settings.catalog.complex_pricing")),
-                        )
-                    });
-            }
-            let price_target = match (&self.pricing, &self.model_settings) {
-                (PricingSettingsProjection::Ready { entries, .. }, Some((_, model))) => entries
-                    .iter()
-                    .find(|e| e.model == *model)
-                    .is_none_or(|e| e.kind == PricingEntryKind::CustomStatic),
-                _ => false,
-            };
-            section = section
-                .child(self.settings_route_button(
-                    "model-catalog-prices",
-                    t("settings.catalog.apply_prices"),
-                    simple_prices(&model).is_some()
-                        && price_target
-                        && self.pricing_allows_editing()
-                        && !self.settings_have_draft(cx),
-                    cx.listener(|this, _, _, cx| this.catalog_apply_prices(cx)),
-                    cx,
-                ))
-                .child(
-                    div()
-                        .text_size(px(Typography::METADATA))
-                        .text_color(colors.text_secondary)
-                        .child(t("settings.catalog.shared_prices_hint")),
-                );
-        } else if self.catalog.projection.mapped.is_some() {
-            section = section.child(settings_status(
-                t("settings.catalog.mapped_missing"),
-                colors.warning,
-                colors,
-            ));
-        }
-        if let Some(message) = &self.catalog.message {
-            section = section.child(
-                div()
-                    .text_color(colors.text_secondary)
-                    .child(message.render()),
-            );
-        }
-        section.into_any_element()
-    }
-
-    fn render_catalog_mapping(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        let query = self.catalog.search.read(cx).text().to_lowercase();
-        let mut body = settings_section().child(self.catalog.search.clone());
-        if let Some(provider) = self.catalog.selected_provider.clone() {
-            body = body.child(self.settings_route_button(
-                "catalog-provider-back",
-                t("settings.catalog.choose_provider"),
-                true,
-                cx.listener(|this, _, _, cx| {
-                    this.catalog.selected_provider = None;
-                    this.catalog.candidate = None;
-                    this.catalog.search.update(cx, TextInput::clear);
-                    cx.notify();
-                }),
-                cx,
-            ));
-            if let Some(provider) = self
-                .catalog
-                .projection
-                .providers
-                .iter()
-                .find(|p| p.id == provider)
-                .cloned()
-            {
-                let models = provider
-                    .models
-                    .iter()
-                    .filter(|m| {
-                        m.id.to_lowercase().contains(&query)
-                            || m.name.to_lowercase().contains(&query)
-                    })
-                    .take(20);
-                for model in models {
-                    let target = CatalogIdentity {
-                        provider: provider.id.clone(),
-                        model: model.id.clone(),
-                    };
-                    let selected = self.catalog.candidate.as_ref() == Some(&target);
-                    let keyboard_target = target.clone();
-                    body = body.child(
-                        settings_action_chrome(colors)
-                            .id(format!("catalog-model-{}", model.id))
-                            .focus_visible(move |style| style.border_color(colors.accent))
-                            .on_key_down(cx.listener(
-                                move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                        this.catalog.candidate = Some(keyboard_target.clone());
-                                        cx.stop_propagation();
-                                        cx.notify();
-                                    }
-                                },
-                            ))
-                            .focusable()
-                            .tab_stop(true)
-                            .cursor_pointer()
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    this.catalog.candidate = Some(target.clone());
-                                    cx.notify();
-                                }),
-                            )
-                            .child(format!("{}{}", if selected { "✓ " } else { "" }, model.id)),
-                    );
-                }
-            }
-            body = body.child(self.settings_route_button(
-                "catalog-map-confirm",
-                t("settings.catalog.confirm_map"),
-                self.catalog.candidate.is_some() && !self.catalog.projection.refreshing,
-                cx.listener(|this, _, _, cx| {
-                    if let Some(target) = this.catalog.candidate.clone() {
-                        this.request_model_catalog(CatalogAction::Map(target), cx);
-                    }
-                }),
-                cx,
-            ));
-        } else {
-            let providers = self
-                .catalog
-                .projection
-                .providers
-                .iter()
-                .filter(|p| {
-                    p.id.to_lowercase().contains(&query) || p.name.to_lowercase().contains(&query)
-                })
-                .take(20)
-                .cloned()
-                .collect::<Vec<_>>();
-            for provider in providers {
-                let keyboard_provider = provider.id.clone();
-                let pointer_provider = provider.id.clone();
-                body = body.child(
-                    settings_action_chrome(colors)
-                        .id(format!("catalog-provider-{}", provider.id))
-                        .focus_visible(move |style| style.border_color(colors.accent))
-                        .on_key_down(cx.listener(
-                            move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                    this.catalog.selected_provider =
-                                        Some(keyboard_provider.clone());
-                                    this.catalog.search.update(cx, TextInput::clear);
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                }
-                            },
-                        ))
-                        .focusable()
-                        .tab_stop(true)
-                        .cursor_pointer()
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
-                                this.catalog.selected_provider = Some(pointer_provider.clone());
-                                this.catalog.search.update(cx, TextInput::clear);
-                                cx.notify();
-                            }),
-                        )
-                        .child(format!("{} ({})", provider.name, provider.id)),
-                );
-            }
-        }
-        body.child(
-            div()
-                .text_size(px(Typography::METADATA))
-                .text_color(colors.text_secondary)
-                .child(t("settings.catalog.results_limit")),
-        )
-        .into_any_element()
     }
 }

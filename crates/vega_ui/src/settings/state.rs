@@ -9,6 +9,12 @@ pub struct SettingsView {
     pub(super) updater_identity: crate::nsh::ProjectionId,
     pub(super) updater_revision: u64,
     pub(super) updater_presentation: Option<super::updater::Presentation>,
+    pub(super) shell_navigation: Option<super::nsh_shell::Presentation>,
+    pub(super) shell_heading: Option<super::nsh_shell::Presentation>,
+    pub(super) settings_navigation_presentation:
+        Option<super::model_configuration::nsh_navigation::Presentation>,
+    pub(super) model_navigation_presentation:
+        Option<super::model_configuration::nsh_navigation::Presentation>,
     pub(super) appearance_presentation: Option<super::nsh_appearance::Presentation>,
     pub(super) default_model_presentation: Option<super::nsh_default_model::Presentation>,
     pub(super) input_preferences_presentation: Option<super::nsh_input_preferences::Presentation>,
@@ -41,10 +47,6 @@ pub struct SettingsView {
     pub(super) agents_nsh_draft: Option<super::agents::nsh_agents::Draft>,
     pub(crate) preparation: Entity<crate::cua_onboarding::model::PreparationModel>,
     pub(crate) preparation_owner: Option<crate::cua_onboarding::CallbackIdentity>,
-    pub(crate) provider_api_focuses: [FocusHandle; 2],
-    pub(crate) provider_save_focus: FocusHandle,
-    pub(crate) provider_edit_focuses: Vec<(String, FocusHandle)>,
-    pub(crate) provider_test_help_focuses: Vec<FocusHandle>,
     pub(crate) mode_open: bool,
     pub(crate) default_permission: super::permissions::DefaultPermissionState,
     pub(crate) permission_reset: super::permission_reset::ResetState,
@@ -75,7 +77,12 @@ pub struct SettingsView {
 }
 
 impl Focusable for SettingsView {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        if self.section == 0
+            && let Some(focus) = self.provider_surface_focus_handle(cx)
+        {
+            return focus;
+        }
         self.section_focuses[self.section].clone()
     }
 }
@@ -97,20 +104,6 @@ impl EventEmitter<ModelCapabilityReloadRequested> for SettingsView {}
 pub(crate) const PRICING_INPUT_BYTES_LIMIT: usize = 1024 * 1024;
 pub(crate) const PROVIDER_MODELS_MIN_ROWS: usize = 2;
 pub(crate) const PROVIDER_MODELS_MAX_ROWS: usize = 4;
-/// Two `p_2` edges plus two 1px borders around the body-text viewport.
-pub(crate) const PROVIDER_MODELS_FRAME_INSET: f32 = 18.0;
-
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) enum ProviderFocusTarget {
-    Api(usize),
-    Edit(String),
-    Name,
-    BaseUrl,
-    Models,
-    Key,
-    Save,
-}
-
 impl SettingsView {
     /// Loads the current config and creates empty form inputs.
     pub fn new(cx: &mut Context<Self>) -> Self {
@@ -274,6 +267,10 @@ impl SettingsView {
             updater_identity: crate::nsh::ProjectionId::new(),
             updater_revision: 0,
             updater_presentation: None,
+            shell_navigation: None,
+            shell_heading: None,
+            settings_navigation_presentation: None,
+            model_navigation_presentation: None,
             appearance_presentation: None,
             default_model_presentation: None,
             input_preferences_presentation: None,
@@ -319,10 +316,6 @@ impl SettingsView {
             agents_nsh_draft: None,
             preparation,
             preparation_owner,
-            provider_api_focuses: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
-            provider_save_focus: cx.focus_handle().tab_stop(true),
-            provider_edit_focuses: Vec::new(),
-            provider_test_help_focuses: Vec::new(),
             mode_open: false,
             default_permission: super::permissions::DefaultPermissionState::new(cx),
             permission_reset: super::permission_reset::ResetState::new(),
@@ -345,61 +338,6 @@ impl SettingsView {
             capability_presentations: Default::default(),
             next_model_capability_operation: 0,
         }
-    }
-
-    /// Keeps edit-row focus handles stable while the provider list changes.
-    pub(crate) fn sync_provider_edit_focuses(&mut self, cx: &mut Context<Self>) {
-        let previous = std::mem::take(&mut self.provider_edit_focuses);
-        self.provider_edit_focuses = self
-            .config
-            .providers
-            .iter()
-            .map(|provider| {
-                let focus = previous
-                    .iter()
-                    .find(|(name, _)| name == &provider.name)
-                    .map(|(_, focus)| focus.clone())
-                    .unwrap_or_else(|| cx.focus_handle().tab_stop(true));
-                (provider.name.clone(), focus)
-            })
-            .collect();
-    }
-
-    /// Returns the visible Provider controls in their DOM order.
-    pub(crate) fn provider_focuses(&self, cx: &App) -> Vec<(ProviderFocusTarget, FocusHandle)> {
-        let mut focuses = self
-            .provider_edit_focuses
-            .iter()
-            .map(|(name, focus)| (ProviderFocusTarget::Edit(name.clone()), focus.clone()))
-            .collect::<Vec<_>>();
-        focuses.extend([
-            (
-                ProviderFocusTarget::Api(0),
-                self.provider_api_focuses[0].clone(),
-            ),
-            (
-                ProviderFocusTarget::Api(1),
-                self.provider_api_focuses[1].clone(),
-            ),
-            (
-                ProviderFocusTarget::Name,
-                self.name_input.read(cx).focus_handle(cx),
-            ),
-            (
-                ProviderFocusTarget::BaseUrl,
-                self.base_url_input.read(cx).focus_handle(cx),
-            ),
-            (
-                ProviderFocusTarget::Models,
-                self.models_input.read(cx).focus_handle(cx),
-            ),
-            (
-                ProviderFocusTarget::Key,
-                self.key_input.read(cx).focus_handle(cx),
-            ),
-            (ProviderFocusTarget::Save, self.provider_save_focus.clone()),
-        ]);
-        focuses
     }
 
     /// Loads a provider's editable fields without ever loading its key.
@@ -426,105 +364,18 @@ impl SettingsView {
             input.set_text(&provider.models.join("\n"), cx)
         });
         self.key_input.update(cx, TextInput::clear);
+        self.reset_provider_nsh_draft(cx);
         self.error = None;
         cx.notify();
-    }
-
-    /// Handles Enter/Space on Provider actions and Cmd+Enter from the form.
-    pub(crate) fn activate_provider_action(
-        &mut self,
-        _: &ActivateProviderAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.section != 0 {
-            cx.propagate();
-            return;
-        }
-        let target = self
-            .provider_focuses(cx)
-            .into_iter()
-            .find(|(_, focus)| focus.is_focused(window))
-            .map(|(target, _)| target);
-        let Some(target) = target else {
-            cx.propagate();
-            return;
-        };
-        match target {
-            ProviderFocusTarget::Api(index) => {
-                if self.provider_management.saving {
-                    return;
-                }
-                self.provider_management.form_api = if index == 0 {
-                    vega_conversation::types::ProviderApi::ChatCompletions
-                } else {
-                    vega_conversation::types::ProviderApi::Responses
-                };
-                cx.notify();
-            }
-            ProviderFocusTarget::Edit(name) => {
-                self.begin_edit_provider(&name, cx);
-                self.name_input.read(cx).focus_handle(cx).focus(window, cx);
-            }
-            ProviderFocusTarget::Name
-            | ProviderFocusTarget::BaseUrl
-            | ProviderFocusTarget::Models
-            | ProviderFocusTarget::Key
-            | ProviderFocusTarget::Save => self.submit_provider(cx),
-        }
-    }
-
-    pub(crate) fn move_provider_focus(
-        &mut self,
-        reverse: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.section != 0 {
-            cx.propagate();
-            return;
-        }
-        let focuses = self.provider_focuses(cx);
-        let Some(current) = focuses
-            .iter()
-            .position(|(_, focus)| focus.is_focused(window))
-        else {
-            cx.propagate();
-            return;
-        };
-        let next = if reverse {
-            current.checked_sub(1)
-        } else {
-            current.checked_add(1).filter(|next| *next < focuses.len())
-        };
-        let Some(next) = next else {
-            cx.propagate();
-            return;
-        };
-        focuses[next].1.focus(window, cx);
-    }
-
-    pub(crate) fn next_provider_action(
-        &mut self,
-        _: &NextProviderAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.move_provider_focus(false, window, cx);
-    }
-
-    pub(crate) fn previous_provider_action(
-        &mut self,
-        _: &PreviousProviderAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.move_provider_focus(true, window, cx);
     }
 
     /// Validates and persists the Provider form. The candidate config is
     /// cloned so a failed config write cannot replace the in-memory authority.
     pub(crate) fn submit_provider(&mut self, cx: &mut Context<Self>) {
+        if !self.provider_nsh_submission_claimed() {
+            self.request_provider_nsh_save(cx);
+            return;
+        }
         let name = self.name_input.read(cx).text().trim().to_string();
         let base_url = self.base_url_input.read(cx).text().trim().to_string();
         let models_text = self.models_input.read(cx).text().to_string();
@@ -749,12 +600,6 @@ impl SettingsView {
             generation,
             mutation,
         });
-    }
-
-    pub(crate) fn submit_pricing_editor(&mut self, cx: &mut Context<Self>) {
-        if self.sync_pricing_draft_for_save(cx) {
-            self.submit_pricing_editor_values(cx);
-        }
     }
 
     pub(crate) fn submit_pricing_editor_values(&mut self, cx: &mut Context<Self>) {

@@ -249,35 +249,6 @@ pub fn init(cx: &mut App) {
             settings::PreviousPricingAction,
             Some("PricingSettings"),
         ),
-        // Provider form: multiline models use Enter for a new line; the
-        // focused Save/Edit controls accept Enter/Space, and Cmd+Enter saves
-        // from any provider input without changing the current thread model.
-        KeyBinding::new("enter", text_input::InsertNewline, Some("ProviderSettings")),
-        KeyBinding::new(
-            "cmd-enter",
-            settings::ActivateProviderAction,
-            Some("ProviderSettings"),
-        ),
-        KeyBinding::new(
-            "enter",
-            settings::ActivateProviderAction,
-            Some("ProviderAction"),
-        ),
-        KeyBinding::new(
-            "space",
-            settings::ActivateProviderAction,
-            Some("ProviderAction"),
-        ),
-        KeyBinding::new(
-            "tab",
-            settings::NextProviderAction,
-            Some("ProviderSettings"),
-        ),
-        KeyBinding::new(
-            "shift-tab",
-            settings::PreviousProviderAction,
-            Some("ProviderSettings"),
-        ),
         KeyBinding::new("enter", sidebar::ConfirmRename, Some("ThreadRename")),
         // Session rows expose low-frequency actions through one compact menu
         // trigger. The row keeps its own key context while the menu is open,

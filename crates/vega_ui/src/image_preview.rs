@@ -1,11 +1,12 @@
-use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
+mod nsh_preview;
+
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use std::sync::{Arc, OnceLock};
 use vega_conversation::types::ImageAttachment;
-use vega_theme::{Layout, Typography, theme};
+use vega_theme::Layout;
 
-use crate::icons::{Icon, icon};
+use crate::nsh::ProjectionId;
 
 #[derive(Clone, Copy)]
 pub enum ImagePreviewAction {
@@ -23,16 +24,18 @@ pub struct ImagePreview {
     name: String,
     focus: FocusHandle,
     thumbnail_focus: FocusHandle,
-    save_focus: FocusHandle,
-    open_focus: FocusHandle,
+    source: Arc<OnceLock<nsh_core::element::SharedString>>,
+    presentation: Option<nsh_preview::Presentation>,
+    thumbnail_presentation: Option<nsh_preview::Presentation>,
+    thumbnail_screenshot: bool,
+    revision: u64,
+    menu_revision: u64,
+    application_id: Option<ProjectionId>,
+    applications_requested: bool,
     busy: bool,
     thumbnail_visible: bool,
     status: Option<ImagePreviewStatus>,
     applications: Option<Vec<String>>,
-    application_focuses: Vec<FocusHandle>,
-    trigger_bounds: Option<Bounds<Pixels>>,
-    dismissed_on_trigger: bool,
-    focus_menu: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -78,22 +81,36 @@ impl ImagePreview {
     }
 
     pub(crate) fn pending(image: ImageAttachment, name: String, cx: &mut Context<Self>) -> Self {
+        let source = Arc::new(OnceLock::new());
+        let target = source.clone();
+        let attachment = image.clone();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .spawn(async move {
+                    let _ = target.set(nsh_preview::encoded_source(&attachment));
+                })
+                .await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
         Self {
             image,
             pixels: Arc::new(OnceLock::new()),
             name,
             focus: cx.focus_handle(),
             thumbnail_focus: cx.focus_handle().tab_stop(true),
-            save_focus: cx.focus_handle().tab_stop(true),
-            open_focus: cx.focus_handle().tab_stop(true),
+            source,
+            presentation: None,
+            thumbnail_presentation: None,
+            thumbnail_screenshot: false,
+            revision: 0,
+            menu_revision: 0,
+            application_id: None,
+            applications_requested: false,
             busy: false,
             thumbnail_visible: false,
             status: None,
             applications: None,
-            application_focuses: Vec::new(),
-            trigger_bounds: None,
-            dismissed_on_trigger: false,
-            focus_menu: false,
         }
     }
 
@@ -146,17 +163,24 @@ impl ImagePreview {
         self.busy = true;
         self.status = None;
         self.applications = None;
+        self.application_id = None;
+        self.menu_revision = self.menu_revision.wrapping_add(1);
+        self.revision = self.revision.wrapping_add(1);
         cx.notify();
         true
     }
     pub fn finish(&mut self, status: Option<&'static str>, cx: &mut Context<Self>) {
         self.busy = false;
         self.status = status.map(ImagePreviewStatus::Text);
+        self.applications_requested = false;
+        self.revision = self.revision.wrapping_add(1);
         cx.notify();
     }
     pub fn finish_localized(&mut self, status: Option<&'static str>, cx: &mut Context<Self>) {
         self.busy = false;
         self.status = status.map(ImagePreviewStatus::Key);
+        self.applications_requested = false;
+        self.revision = self.revision.wrapping_add(1);
         cx.notify();
     }
     pub fn set_applications(&mut self, names: Vec<String>, cx: &mut Context<Self>) {
@@ -164,12 +188,11 @@ impl ImagePreview {
         self.status = names.is_empty().then_some(ImagePreviewStatus::Key(
             "ui.no_apps_are_available_save_locally_then_open",
         ));
-        self.application_focuses = names
-            .iter()
-            .map(|_| cx.focus_handle().tab_stop(true))
-            .collect();
-        self.focus_menu = !names.is_empty();
+        self.menu_revision = self.menu_revision.wrapping_add(1);
+        self.application_id = (!names.is_empty()).then(ProjectionId::new);
         self.applications = (!names.is_empty()).then_some(names);
+        self.applications_requested = false;
+        self.revision = self.revision.wrapping_add(1);
         cx.notify();
     }
     pub fn refresh_application_labels(&mut self, names: Vec<String>, cx: &mut Context<Self>) {
@@ -183,77 +206,75 @@ impl ImagePreview {
         cx.notify();
     }
     pub fn dismiss_menu(&mut self, cx: &mut Context<Self>) {
+        self.menu_revision = self.menu_revision.wrapping_add(1);
         self.applications = None;
+        self.application_id = None;
+        self.applications_requested = false;
+        self.revision = self.revision.wrapping_add(1);
         cx.notify();
     }
     pub fn action(&mut self, action: ImagePreviewAction, cx: &mut Context<Self>) {
-        if matches!(action, ImagePreviewAction::Applications) {
-            if self.dismissed_on_trigger {
-                self.dismissed_on_trigger = false;
-                return;
-            }
-            if self.applications.take().is_some() {
-                cx.emit(ImagePreviewAction::DismissApplications);
-                cx.notify();
-                return;
-            }
-        }
-        if self.busy && !matches!(action, ImagePreviewAction::Open | ImagePreviewAction::Close) {
+        if matches!(action, ImagePreviewAction::Applications)
+            && (self.applications.is_some() || self.applications_requested)
+        {
+            self.dismiss_menu(cx);
+            cx.emit(ImagePreviewAction::DismissApplications);
             return;
+        }
+        if self.busy
+            && !matches!(
+                action,
+                ImagePreviewAction::Open
+                    | ImagePreviewAction::Close
+                    | ImagePreviewAction::DismissApplications
+            )
+        {
+            return;
+        }
+        if let ImagePreviewAction::ChooseApplication(index) = action
+            && self
+                .applications
+                .as_ref()
+                .is_none_or(|names| index >= names.len())
+        {
+            return;
+        }
+        if matches!(action, ImagePreviewAction::Applications) {
+            self.applications_requested = true;
         }
         if matches!(
             action,
-            ImagePreviewAction::ChooseApplication(_) | ImagePreviewAction::Close
+            ImagePreviewAction::ChooseApplication(_)
+                | ImagePreviewAction::DismissApplications
+                | ImagePreviewAction::Close
         ) {
-            self.applications = None;
+            self.dismiss_menu(cx);
         }
+        self.revision = self.revision.wrapping_add(1);
         cx.emit(action);
+        cx.notify();
     }
 
     pub fn thumbnail(view: &Entity<Self>, cx: &App) -> AnyElement {
         Self::thumbnail_sized(view, Layout::ATTACHMENT_THUMBNAIL, cx)
     }
 
-    pub(crate) fn thumbnail_sized(view: &Entity<Self>, size: f32, cx: &App) -> AnyElement {
-        let colors = theme(cx).colors;
-        let state = view.read(cx);
-        let key = view.clone();
-        div()
-            .id(("image-thumbnail", view.entity_id()))
-            .track_focus(&state.thumbnail_focus)
-            .tab_stop(true)
-            .aria_label(vega_i18n::t_args(
-                "ui.preview_name",
-                &[("name", &state.name)],
-            ))
-            .relative()
-            .size(px(size))
-            .flex_shrink_0()
-            .overflow_hidden()
-            .cursor_pointer()
-            .rounded_md()
-            .hover(move |s| s.border_1().border_color(colors.text_secondary))
-            .focus_visible(move |s| s.border_1().border_color(colors.brand_primary))
-            .on_click({
-                let view = view.clone();
-                move |_, _, cx| view.update(cx, |v, cx| v.action(ImagePreviewAction::Open, cx))
-            })
-            .on_key_down(move |event, _, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    key.update(cx, |v, cx| v.action(ImagePreviewAction::Open, cx));
-                    cx.stop_propagation();
-                }
-            })
-            .when_some(state.pixels.get().cloned(), |el, pixels| {
-                el.child(
-                    img(pixels)
-                        .size(px(size))
-                        .object_fit(ObjectFit::Contain)
-                        .rounded_md(),
-                )
-            })
-            .child(Self::thumbnail_tracker(view))
-            .into_any_element()
+    pub(crate) fn thumbnail_sized(view: &Entity<Self>, size: f32, _: &App) -> AnyElement {
+        nsh_preview::ThumbnailHost {
+            view: view.clone(),
+            size: (size, size),
+            screenshot: false,
+        }
+        .into_any_element()
+    }
+
+    pub(crate) fn screenshot_thumbnail(view: &Entity<Self>, size: (f32, f32)) -> AnyElement {
+        nsh_preview::ThumbnailHost {
+            view: view.clone(),
+            size,
+            screenshot: true,
+        }
+        .into_any_element()
     }
 }
 
@@ -265,197 +286,6 @@ impl Focusable for ImagePreview {
 
 impl Render for ImagePreview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if std::mem::take(&mut self.focus_menu)
-            && self.open_focus.is_focused(window)
-            && let Some(first) = self.application_focuses.first()
-        {
-            first.focus(window, cx);
-        }
-        let colors = theme(cx).colors;
-        let name = self.name.clone();
-        let save = crate::icons::localized_icon_button(
-            Icon::ArrowDown,
-            "ui.save_locally",
-            colors,
-            cx.listener(|this, _, _, cx| this.action(ImagePreviewAction::Save, cx)),
-        )
-        .size(px(Layout::IMAGE_PREVIEW_CONTROL))
-        .track_focus(&self.save_focus)
-        .focus_visible(move |s| s.border_1().border_color(colors.brand_primary))
-        .when(self.busy, |el| el.opacity(0.5));
-        let open = div()
-            .id("image-open-with")
-            .track_focus(&self.open_focus)
-            .tab_stop(true)
-            .relative()
-            .h(px(Layout::IMAGE_PREVIEW_CONTROL))
-            .px_2()
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .gap_1()
-            .rounded_md()
-            .text_size(px(Typography::METADATA))
-            .cursor_pointer()
-            .hover(move |s| s.bg(colors.bg_hover))
-            .focus_visible(move |s| s.border_1().border_color(colors.brand_primary))
-            .on_click(
-                cx.listener(|this, _, _, cx| this.action(ImagePreviewAction::Applications, cx)),
-            )
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    this.action(ImagePreviewAction::Applications, cx);
-                    cx.stop_propagation();
-                }
-            }))
-            .child(vega_i18n::t("ui.open_with"))
-            .child(icon(Icon::ChevronDown, colors.text_secondary))
-            .child({
-                let view = cx.entity().downgrade();
-                canvas(
-                    move |bounds, _, cx| {
-                        let _ = view.update(cx, |view, _| view.trigger_bounds = Some(bounds));
-                    },
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .size_full()
-            })
-            .when(self.busy, |el| el.opacity(0.5));
-        let menu = self.applications.as_ref().map(|names| {
-            div()
-                .id("image-applications")
-                .absolute()
-                .top(px(Layout::IMAGE_PREVIEW_HEADER))
-                .right(px(Layout::IMAGE_PREVIEW_HEADER_PADDING))
-                .w(px(Layout::SIDEBAR_WIDTH))
-                .max_h(px(Layout::TOOL_GROUP_MAX_HEIGHT))
-                .overflow_y_scroll()
-                .bg(colors.bg_elevated)
-                .border_1()
-                .border_color(colors.border_subtle)
-                .rounded_md()
-                .shadow_md()
-                .occlude()
-                .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                    this.dismissed_on_trigger = this
-                        .trigger_bounds
-                        .is_some_and(|bounds| bounds.contains(&event.position));
-                    this.applications = None;
-                    cx.emit(ImagePreviewAction::DismissApplications);
-                    cx.notify();
-                }))
-                .children(names.iter().enumerate().map(|(index, name)| {
-                    div()
-                        .id(("image-app", index))
-                        .track_focus(&self.application_focuses[index])
-                        .tab_stop(true)
-                        .h_8()
-                        .px_2()
-                        .flex()
-                        .items_center()
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(colors.bg_hover))
-                        .child(name.clone())
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_focus.focus(window, cx);
-                            this.action(ImagePreviewAction::ChooseApplication(index), cx);
-                        }))
-                        .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                this.open_focus.focus(window, cx);
-                                this.action(ImagePreviewAction::ChooseApplication(index), cx);
-                                cx.stop_propagation();
-                            }
-                        }))
-                }))
-                .scroll_edge_fade(colors.bg_elevated, ScrollFade::compact())
-                .into_any_element()
-        });
-        div()
-            .id("image-preview")
-            .track_focus(&self.focus)
-            .size_full()
-            .min_w_0()
-            .min_h_0()
-            .relative()
-            .flex()
-            .flex_col()
-            .bg(colors.bg_subtle)
-            .text_color(colors.text_primary)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if event.keystroke.key == "escape" && this.focus.contains_focused(window, cx) {
-                    if this.applications.take().is_some() {
-                        cx.emit(ImagePreviewAction::DismissApplications);
-                        this.open_focus.focus(window, cx);
-                        cx.notify();
-                    } else {
-                        this.action(ImagePreviewAction::Close, cx);
-                    }
-                    cx.stop_propagation();
-                }
-            }))
-            .child(
-                div()
-                    .h(px(Layout::IMAGE_PREVIEW_HEADER))
-                    .flex_shrink_0()
-                    .px(px(Layout::IMAGE_PREVIEW_HEADER_PADDING))
-                    .flex()
-                    .items_center()
-                    .gap(px(Layout::IMAGE_PREVIEW_GAP))
-                    .bg(colors.bg_base)
-                    .child(
-                        div()
-                            .id("image-preview-name")
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(Typography::BODY))
-                            .tooltip(move |_, cx| crate::icons::tooltip(name.clone(), cx))
-                            .child(self.name.clone()),
-                    )
-                    .child(open)
-                    .child(save),
-            )
-            .when_some(self.status(), |el, status| {
-                el.child(
-                    div()
-                        .px_3()
-                        .text_size(px(Typography::METADATA))
-                        .text_color(colors.text_secondary)
-                        .child(status),
-                )
-            })
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .p(px(Layout::IMAGE_PREVIEW_PADDING))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(match self.pixels.get() {
-                        Some(pixels) => img(pixels.clone())
-                            .id("image-preview-pixels")
-                            .size_full()
-                            .max_w(px(self.image.width() as f32))
-                            .max_h(px(self.image.height() as f32))
-                            .object_fit(ObjectFit::Contain)
-                            .with_loading(|| {
-                                div().child(vega_i18n::t("ui.loading")).into_any_element()
-                            })
-                            .with_fallback(|| {
-                                div()
-                                    .child(vega_i18n::t(
-                                        "ui.this_image_cannot_be_displayed_save_locally_then",
-                                    ))
-                                    .into_any_element()
-                            })
-                            .into_any_element(),
-                        None => div().child(vega_i18n::t("ui.loading")).into_any_element(),
-                    }),
-            )
-            .children(menu.map(|menu| deferred(menu).with_priority(2)))
+        self.render_nsh(false, window, cx)
     }
 }

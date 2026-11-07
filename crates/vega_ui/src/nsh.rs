@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui_kit::{App, AppContext, Context, Entity, Focusable, Window};
+use gpui_kit::{App, AppContext, Context, Entity, FocusHandle, Focusable, Window};
 use nsh_core::element::{Component, EngineContext, NoEvent, Root, Scope, engine_context};
 use nsh_core::prelude::{
     AnyElement, IntoElement, Signal, SignalEquals, signal, signal_with, spawn, view,
@@ -176,8 +176,12 @@ where
         self.view.clone()
     }
 
+    pub fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.view.read(cx).focus_handle(cx)
+    }
+
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
-        window.focus(&self.view.read(cx).focus_handle(cx), cx);
+        window.focus(&self.focus_handle(cx), cx);
     }
 
     pub fn sync_environment(&mut self, cx: &mut App) {

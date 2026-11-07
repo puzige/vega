@@ -1,9 +1,5 @@
 use super::*;
-use crate::interaction::InteractionExt;
 use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
-use crate::settings::state::{
-    PROVIDER_MODELS_FRAME_INSET, PROVIDER_MODELS_MAX_ROWS, PROVIDER_MODELS_MIN_ROWS,
-};
 
 impl SettingsView {
     pub(crate) fn on_back(
@@ -17,6 +13,7 @@ impl SettingsView {
             return;
         }
         if self.settings_have_draft(cx) {
+            self.invalidate_settings_navigation_intent();
             self.pending_settings_close = true;
             self.pending_section = Some(SettingsDestination::ModelSection(self.section));
             cx.notify();
@@ -28,198 +25,12 @@ impl SettingsView {
         window.dispatch_action(Box::new(CloseSettings), cx);
     }
 
-    pub(crate) fn on_submit(
-        &mut self,
-        _: &MouseUpEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.submit_provider(cx);
-    }
-
     pub(crate) fn select_model(&mut self, model: &str, cx: &mut Context<Self>) {
         self.model_open = false;
         let mut candidate = self.config.clone();
         set_default_model(&mut candidate, model);
         self.save_preferences(candidate, cx);
         cx.notify();
-    }
-
-    pub(crate) fn render_add_form(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        // 渲染期读取输入内容：既驱动提交按钮的有效态，也让每次键入
-        // 重新渲染本视图（GPUI 的渲染期读取即依赖注册）。
-        let name = self.name_input.read(cx).text().to_string();
-        let base_url = self.base_url_input.read(cx).text().to_string();
-        let models_rows = self
-            .models_input
-            .read(cx)
-            .visible_rows()
-            .clamp(PROVIDER_MODELS_MIN_ROWS, PROVIDER_MODELS_MAX_ROWS);
-        let models_height = px(models_rows as f32
-            * Typography::BODY
-            * Typography::BODY_LINE_HEIGHT
-            + PROVIDER_MODELS_FRAME_INSET);
-        let key = self.key_input.read(cx).text().to_string();
-        let existing = self.provider_management.form_base.is_some()
-            || (!self.provider_management.form
-                && self
-                    .config
-                    .providers
-                    .iter()
-                    .any(|provider| provider.name == name.trim()));
-        let submittable = !self.provider_management.saving
-            && provider_form_is_submittable(&name, &base_url, &key, existing);
-
-        let (button_bg, button_text) = if submittable {
-            (colors.brand_primary, colors.brand_on_accent)
-        } else {
-            (colors.bg_hover, colors.text_tertiary)
-        };
-
-        settings_group(colors)
-            .key_context("ProviderSettings")
-            .child(section_title(
-                t("settings.provider.add_update"),
-                colors.text_primary,
-            ))
-            .child(
-                settings_actions().children(
-                    [
-                        (
-                            vega_conversation::types::ProviderApi::ChatCompletions,
-                            t("settings.provider.api.chat_completions"),
-                            "provider-api-chat",
-                        ),
-                        (
-                            vega_conversation::types::ProviderApi::Responses,
-                            t("settings.provider.api.responses"),
-                            "provider-api-responses",
-                        ),
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, (api, label, id))| {
-                        settings_action_chrome(colors)
-                            .id(id)
-                            .interaction_surface(
-                                if self.provider_management.form_api == api {
-                                    colors.bg_active
-                                } else {
-                                    colors.bg_elevated
-                                },
-                                colors.bg_hover,
-                                colors.bg_active,
-                                !self.provider_management.saving,
-                            )
-                            .cursor_pointer()
-                            .track_focus(&self.provider_api_focuses[index])
-                            .tab_stop(true)
-                            .aria_label(label)
-                            .focus_visible(move |row| row.border_color(colors.accent))
-                            .on_key_down(cx.listener(
-                                move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                                    if !this.provider_management.saving
-                                        && matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                    {
-                                        this.provider_management.form_api = api;
-                                        cx.stop_propagation();
-                                        cx.notify();
-                                    }
-                                },
-                            ))
-                            .bg(if self.provider_management.form_api == api {
-                                colors.bg_hover
-                            } else {
-                                colors.bg_elevated
-                            })
-                            .text_color(colors.text_primary)
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    if !this.provider_management.saving {
-                                        this.provider_management.form_api = api;
-                                        cx.notify();
-                                    }
-                                }),
-                            )
-                            .child(label)
-                    }),
-                ),
-            )
-            .child(settings_field(
-                t("settings.field.name"),
-                None,
-                self.name_input.clone(),
-                colors,
-            ))
-            .child(settings_field(
-                t("settings.provider.service_url"),
-                None,
-                self.base_url_input.clone(),
-                colors,
-            ))
-            .child(settings_field(
-                t("settings.field.model_id"),
-                None,
-                div()
-                    .id("provider-models-input-frame")
-                    .w_full()
-                    .h(models_height)
-                    .flex_shrink_0()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(colors.border_subtle)
-                    .bg(colors.bg_elevated)
-                    .p_2()
-                    .child(self.models_input.clone()),
-                colors,
-            ))
-            .child(
-                div()
-                    .text_color(colors.text_tertiary)
-                    .text_size(px(Typography::BODY))
-                    .child(t_args(
-                        "settings.provider.models_hint",
-                        &[("limit", &PROVIDER_MODEL_COUNT_MAX.to_string())],
-                    )),
-            )
-            .child(
-                div()
-                    .text_color(colors.text_tertiary)
-                    .text_size(px(Typography::BODY))
-                    .child(t("settings.provider.responses_hint")),
-            )
-            .child(settings_field(
-                t("settings.field.api_key"),
-                Some(t("settings.provider.keep_key").into()),
-                self.key_input.clone(),
-                colors,
-            ))
-            .child(
-                settings_action_chrome(colors)
-                    .id("provider-save")
-                    .interaction_surface(
-                        button_bg,
-                        colors.brand_primary_strong,
-                        colors.brand_primary_strong,
-                        submittable,
-                    )
-                    .key_context("ProviderAction")
-                    .track_focus(&self.provider_save_focus)
-                    .tab_stop(true)
-                    .focus_visible(move |style| style.border_color(colors.accent))
-                    .bg(button_bg)
-                    .text_color(button_text)
-                    .text_size(px(Typography::SIDEBAR))
-                    .when(submittable, |button| {
-                        button
-                            .cursor_pointer()
-                            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_submit))
-                    })
-                    .child(t("settings.provider.save")),
-            )
-            .into_any_element()
     }
 
     pub(super) fn set_appearance(&mut self, value: &str, cx: &mut Context<Self>) {
@@ -296,6 +107,9 @@ impl Render for SettingsView {
             cx.set_global(NativePreparationSettingsRequested(false));
         }
         self.resume_settings_navigation(window, cx);
+        self.prepare_provider_presentation(window);
+        self.sync_provider_presentation(cx);
+        self.sync_settings_navigation_presentations(cx);
         self.sync_default_model(cx);
         self.sync_usage_presentation(cx);
         self.sync_pricing_presentation(cx);
@@ -306,9 +120,9 @@ impl Render for SettingsView {
         self.sync_permission_presentation(cx);
         self.prepare_default_permission_focus(window, cx);
         self.prepare_permission_reset_focus(window, cx);
-        self.prepare_provider_presentation(window);
         self.project_settings_motion(window, cx);
         self.ensure_model_catalog(cx);
+        self.sync_catalog_presentation(cx);
         let current_theme = theme(cx);
         self.config.ui.theme = if current_theme.follow_system {
             "system"
@@ -330,25 +144,7 @@ impl Render for SettingsView {
             self.config.ui.sessions_collapsed = sessions.0;
         }
         let colors = theme(cx).colors;
-        let page_title = match self.section {
-            0 => t("settings.nav.providers"),
-            1 => t("settings.nav.general"),
-            2 => t("settings.nav.providers"),
-            3 => t("settings.nav.providers"),
-            4 => t("settings.nav.usage"),
-            5 => t("settings.nav.mcp"),
-            6 => t("settings.nav.skills"),
-            7 => t("settings.nav.agents"),
-            _ => t("settings.nav.usage"),
-        };
-        let navigation = [
-            (1, t("settings.nav.general")),
-            (0, t("settings.nav.providers")),
-            (5, t("settings.nav.mcp")),
-            (7, t("settings.nav.agents")),
-            (6, t("settings.nav.skills")),
-            (4, t("settings.nav.usage")),
-        ];
+        self.sync_shell_presentations(cx);
         div()
             .id("settings-page")
             .on_action(cx.listener(Self::guard_settings_close))
@@ -371,9 +167,6 @@ impl Render for SettingsView {
             } else {
                 "PricingSettings"
             })
-            .on_action(cx.listener(Self::activate_provider_action))
-            .on_action(cx.listener(Self::next_provider_action))
-            .on_action(cx.listener(Self::previous_provider_action))
             .on_action(cx.listener(Self::activate_pricing_action))
             .on_action(cx.listener(Self::next_pricing_action))
             .on_action(cx.listener(Self::previous_pricing_action))
@@ -386,124 +179,10 @@ impl Render for SettingsView {
             .line_height(relative(Typography::BODY_LINE_HEIGHT))
             .child(
                 div()
-                    .id("settings-navigation")
                     .w(px(Layout::SETTINGS_NAV_WIDTH))
                     .h_full()
                     .flex_shrink_0()
-                    .flex()
-                    .flex_col()
-                    .pt(px(Layout::MAIN_HEADER_HEIGHT))
-                    .px(px(Layout::SIDEBAR_PADDING))
-                    .border_r_1()
-                    .border_color(colors.border_subtle)
-                    .bg(colors.bg_sidebar)
-                    .child(
-                        div()
-                            .id("settings-back")
-                            .interactive(colors, true, false)
-                            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .px_2()
-                            .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-                            .border_1()
-                            .border_color(gpui_kit::transparent_black())
-                            .focus_visible(move |style| style.border_color(colors.accent))
-                            .focusable()
-                            .tab_stop(true)
-                            .cursor_pointer()
-                            .on_key_down(cx.listener(
-                                |this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                        this.on_back(
-                                            &MouseUpEvent {
-                                                button: MouseButton::Left,
-                                                position: gpui_kit::point(px(0.), px(0.)),
-                                                modifiers: event.keystroke.modifiers,
-                                                click_count: 1,
-                                            },
-                                            window,
-                                            cx,
-                                        );
-                                        cx.stop_propagation();
-                                    }
-                                },
-                            ))
-                            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_back))
-                            .child(crate::icons::icon(
-                                crate::icons::Icon::ArrowLeft,
-                                colors.text_primary,
-                            ))
-                            .child(t("settings.navigation.back_app")),
-                    )
-                    .child(div().h(px(24.)).flex_shrink_0())
-                    .children(navigation.into_iter().map(|(index, label)| {
-                        div()
-                            .id(("settings-section", index))
-                            .interactive(colors, true, self.navigation_section() == index)
-                            .track_focus(&self.section_focuses[index])
-                            .tab_stop(true)
-                            .focus_visible(move |style| style.border_color(colors.accent))
-                            .on_key_down(cx.listener(
-                                move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                        this.cancel_provider_operation(cx);
-                                        if this.section == 5
-                                            && index != 5
-                                            && (this.mcp.oauth_discovery.is_some()
-                                                || this.mcp.oauth_flow_id.is_some())
-                                        {
-                                            this.cancel_mcp_oauth(cx);
-                                        }
-                                        this.request_settings_section(index, cx);
-                                        cx.stop_propagation();
-                                        cx.notify();
-                                    }
-                                },
-                            ))
-                            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                            .px_2()
-                            .flex()
-                            .items_center()
-                            .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-                            .border_1()
-                            .border_color(gpui_kit::transparent_black())
-                            .when(self.navigation_section() == index, |row| {
-                                row.bg(colors.bg_active)
-                            })
-                            .cursor_pointer()
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    this.cancel_provider_operation(cx);
-                                    if this.section == 5
-                                        && index != 5
-                                        && (this.mcp.oauth_discovery.is_some()
-                                            || this.mcp.oauth_flow_id.is_some())
-                                    {
-                                        this.cancel_mcp_oauth(cx);
-                                    }
-                                    this.request_settings_section(index, cx);
-                                    cx.notify();
-                                }),
-                            )
-                            .gap_2()
-                            .child(crate::icons::icon(
-                                match index {
-                                    0 => crate::icons::Icon::Connection,
-                                    1 => crate::icons::Icon::Settings,
-                                    2 => crate::icons::Icon::TextSelect,
-                                    3 => crate::icons::Icon::ArrowUpDown,
-                                    4 => crate::icons::Icon::Chart,
-                                    5 => crate::icons::Icon::Plug,
-                                    6 => crate::icons::Icon::Blocks,
-                                    _ => crate::icons::Icon::Bot,
-                                },
-                                colors.text_secondary,
-                            ))
-                            .child(label)
-                    })),
+                    .child(self.render_shell_navigation(window, cx)),
             )
             .child(
                 div()
@@ -526,24 +205,15 @@ impl Render for SettingsView {
                             .flex()
                             .flex_col()
                             .gap(px(Layout::SETTINGS_TITLE_GAP))
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .text_size(px(Typography::SETTINGS_TITLE))
-                                    .font_weight(Typography::HEADING_PAGE_WEIGHT)
-                                    .child(page_title),
-                            )
-                            .children(self.error.clone().map(|message| {
-                                settings_status(message.render(), colors.danger, colors)
-                            }))
+                            .child(self.render_shell_heading(window, cx))
                             .children(
                                 self.pending_section
-                                    .map(|_| self.render_settings_navigation_guard(cx)),
+                                    .map(|_| self.render_settings_navigation_guard(window, cx)),
                             )
                             .when(
                                 (self.section == 0 && self.model_settings.is_some())
                                     || matches!(self.section, 2 | 3),
-                                |column| column.child(self.render_model_navigation(cx)),
+                                |column| column.child(self.render_model_navigation(window, cx)),
                             )
                             .child(
                                 div()

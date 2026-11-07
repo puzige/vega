@@ -1,24 +1,18 @@
 use super::*;
-use gpui_kit::{ClipboardEntry, ClipboardItem, ExternalPaths, Image, PathPromptOptions};
+use gpui_kit::{ClipboardEntry, ClipboardItem, ExternalPaths, PathPromptOptions};
 use std::path::PathBuf;
 use vega_conversation::attachments::{MAX_IMAGE_BYTES, MAX_IMAGES, MAX_TURN_IMAGE_BYTES};
 
 #[derive(Clone)]
 pub(crate) struct ImagePreview {
     pub image: ImageAttachment,
-    pub(super) preview: Arc<std::sync::OnceLock<Arc<Image>>>,
     pub(super) view: Entity<crate::image_preview::ImagePreview>,
 }
 
 impl ImagePreview {
     pub(crate) fn new(image: ImageAttachment, name: String, cx: &mut App) -> Self {
         let view = cx.new(|cx| crate::image_preview::ImagePreview::new(image.clone(), name, cx));
-        let preview = view.read(cx).pixels();
-        Self {
-            image,
-            preview,
-            view,
-        }
+        Self { image, view }
     }
 }
 

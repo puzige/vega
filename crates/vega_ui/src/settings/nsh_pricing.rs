@@ -12,6 +12,9 @@ use vega_theme::{Layout, ThemeColors, Typography};
 use super::{PricingEditor, PricingEditorKind, SettingsView};
 use crate::nsh::{ProjectionId, Surface};
 
+#[path = "model_configuration/pricing_bridge.rs"]
+pub(super) mod navigation_bridge;
+
 #[derive(Clone, PartialEq, Eq)]
 struct Values {
     text: [String; 9],
@@ -236,10 +239,6 @@ impl SettingsView {
                 }
             }))
         });
-    }
-
-    pub(super) fn sync_pricing_draft_for_save(&mut self, cx: &mut Context<Self>) -> bool {
-        self.claim_pricing_draft(None, cx)
     }
 
     fn claim_pricing_draft(&mut self, expected: Option<&Values>, cx: &mut Context<Self>) -> bool {

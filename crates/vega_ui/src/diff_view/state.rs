@@ -14,12 +14,16 @@ impl DiffView {
             projection_error: None,
             refreshing: false,
             show_refresh_progress: false,
-            rows: Vec::new(),
+            rows: Arc::new(Vec::new()),
             hunk_indexes: Vec::new(),
             current_hunk: None,
             rendered_language: vega_i18n::language(),
             focus: cx.focus_handle(),
-            scroll: UniformListScrollHandle::new(),
+            presentation: None,
+            presentation_version: crate::nsh::ProjectionId::new(),
+            row_revision: 0,
+            scroll_revision: 0,
+            scroll_target: None,
         }
     }
 
@@ -43,7 +47,6 @@ impl DiffView {
         self.projection_error.map(|(_, code)| code)
     }
 
-    /// Reconciles a fresh safe snapshot and returns at most one lazy request.
     pub fn apply_snapshot(&mut self, snapshot: WorkspaceSnapshot, cx: &mut Context<Self>) {
         let old_generation = self.generation();
         let old_expanded = self.expanded_file;
@@ -68,7 +71,6 @@ impl DiffView {
         cx.notify();
     }
 
-    /// Applies only the exact current expanded file projection.
     pub fn apply_projection(
         &mut self,
         projection: DiffTextProjection,
@@ -97,8 +99,6 @@ impl DiffView {
         true
     }
 
-    /// Keeps the last usable snapshot visible while retaining a typed retryable
-    /// failure. A first-load failure still leaves the view without a snapshot.
     pub fn apply_refresh_error(&mut self, code: GitWorkspaceErrorCode, cx: &mut Context<Self>) {
         let invalidate_projection =
             self.pending_projection.is_some() || self.projection_error.is_some();
@@ -108,7 +108,8 @@ impl DiffView {
         if self.snapshot.is_none() {
             self.expanded_file = None;
             self.prepared_projection = None;
-            self.rows.clear();
+            self.invalidate_rows();
+            self.rows = Arc::new(Vec::new());
             self.hunk_indexes.clear();
             self.current_hunk = None;
         } else if invalidate_projection {
@@ -120,7 +121,6 @@ impl DiffView {
         cx.notify();
     }
 
-    /// Applies an inline error only to the exact current accordion body.
     pub fn apply_projection_error(
         &mut self,
         file_id: WorkspaceFileId,
@@ -152,7 +152,6 @@ impl DiffView {
         cx.notify();
     }
 
-    /// Enforces the single-open accordion invariant.
     pub(crate) fn toggle_file(&mut self, file_id: WorkspaceFileId, cx: &mut Context<Self>) {
         if self.refresh_error.is_some() {
             return;
@@ -189,7 +188,8 @@ impl DiffView {
     pub(crate) fn next_hunk(&mut self, cx: &mut Context<Self>) -> Option<usize> {
         let row = navigate_hunk(&self.hunk_indexes, &mut self.current_hunk, true);
         if let Some(row) = row {
-            self.scroll.scroll_to_item(row, ScrollStrategy::Nearest);
+            self.scroll_revision = self.scroll_revision.wrapping_add(1);
+            self.scroll_target = Some(row);
             cx.notify();
         }
         row
@@ -198,7 +198,8 @@ impl DiffView {
     pub(crate) fn previous_hunk(&mut self, cx: &mut Context<Self>) -> Option<usize> {
         let row = navigate_hunk(&self.hunk_indexes, &mut self.current_hunk, false);
         if let Some(row) = row {
-            self.scroll.scroll_to_item(row, ScrollStrategy::Nearest);
+            self.scroll_revision = self.scroll_revision.wrapping_add(1);
+            self.scroll_target = Some(row);
             cx.notify();
         }
         row
@@ -225,15 +226,23 @@ impl DiffView {
         })
     }
 
+    fn invalidate_rows(&mut self) {
+        self.presentation_version = crate::nsh::ProjectionId::new();
+        self.row_revision = self.row_revision.wrapping_add(1);
+        self.scroll_target = None;
+    }
+
     pub(crate) fn rebuild_rows(&mut self) {
-        self.rows.clear();
+        self.invalidate_rows();
+        let mut rows = Vec::new();
         self.hunk_indexes.clear();
         let Some(snapshot) = self.snapshot.as_ref() else {
+            self.rows = Arc::new(rows);
             return;
         };
         for file in &snapshot.files {
             let expanded = self.expanded_file == Some(file.id);
-            self.rows.push(PreparedRow::File {
+            rows.push(PreparedRow::File {
                 id: file.id,
                 label: file.label.clone(),
                 summary: file_summary(file),
@@ -245,8 +254,7 @@ impl DiffView {
             if let Some((error_file, code)) = self.projection_error
                 && error_file == file.id
             {
-                self.rows
-                    .push(PreparedRow::ProjectionError { id: file.id, code });
+                rows.push(PreparedRow::ProjectionError { id: file.id, code });
                 continue;
             }
             let Some(projection) = self
@@ -254,27 +262,19 @@ impl DiffView {
                 .as_ref()
                 .filter(|item| item.file_id == file.id)
             else {
-                self.rows.push(PreparedRow::Message {
+                rows.push(PreparedRow::Message {
                     key: "ui.loading_diff",
                     danger: false,
                 });
                 continue;
             };
-            let base = self.rows.len();
+            let base = rows.len();
             let prepared = layout_projection_rows(projection, self.layout);
             self.hunk_indexes
                 .extend(prepared.hunk_indexes.into_iter().map(|index| base + index));
-            self.rows.extend(prepared.rows);
+            rows.extend(prepared.rows);
         }
-    }
-
-    pub(crate) fn retry_clicked(
-        &mut self,
-        _: &MouseUpEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.retry(cx);
+        self.rows = Arc::new(rows);
     }
 
     pub(crate) fn retry(&mut self, cx: &mut Context<Self>) {
@@ -285,10 +285,6 @@ impl DiffView {
             thread_id: self.thread_id.clone(),
             project_id: self.project_id.clone(),
         });
-    }
-
-    pub(crate) fn file_clicked(&mut self, file_id: WorkspaceFileId, cx: &mut Context<Self>) {
-        self.toggle_file(file_id, cx);
     }
 
     pub(crate) fn retry_projection(&mut self, file_id: WorkspaceFileId, cx: &mut Context<Self>) {
