@@ -8,10 +8,23 @@ pub struct ShellRecoveryRow {
     pub operation_id: String,
     pub thread_id: String,
     pub reason: String,
+    pub command: String,
     pub exit_code: Option<i32>,
     pub output_incomplete: bool,
     pub can_retry: bool,
     pub can_resume: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ShellCommandProjection {
+    pub operation_id: String,
+    pub call_id: String,
+    pub thread_id: String,
+    pub command: String,
+    pub state: String,
+    pub exit_code: Option<i32>,
+    pub duration_ms: Option<u64>,
+    pub output_incomplete: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -20,6 +33,7 @@ pub struct ShellRecoveryProjection {
     pub epoch: i64,
     pub rows: Vec<ShellRecoveryRow>,
     pub active: Vec<vega_runtime::RuntimeActiveShell>,
+    pub commands: Vec<ShellCommandProjection>,
 }
 
 #[derive(Clone, Debug)]
@@ -69,6 +83,34 @@ impl ShellRecoveryService {
         let active =
             vega_runtime::active_shell_sessions(&source.id, std::path::Path::new(&workspace))
                 .map_err(unavailable)?;
+        let commands =
+            vega_store::shell_operations::command_presentations(store.conn(), &workspace)
+                .map_err(unavailable)?
+                .into_iter()
+                .map(|command| {
+                    let input = crate::types::tool_card_input_projection(&crate::types::ToolCall {
+                        id: command.call_id.clone(),
+                        tool: "bash".into(),
+                        input_json: command.input_json,
+                        description: None,
+                        codex_display: None,
+                    });
+                    let text = match input {
+                        crate::types::ToolCardInputProjection::Bash { command } => command,
+                        _ => String::new(),
+                    };
+                    ShellCommandProjection {
+                        operation_id: command.operation_id,
+                        call_id: command.call_id,
+                        thread_id: command.thread_id,
+                        command: text,
+                        state: command.state,
+                        exit_code: command.exit_code,
+                        duration_ms: command.duration_ms,
+                        output_incomplete: command.output_incomplete,
+                    }
+                })
+                .collect::<Vec<_>>();
         Ok(ShellRecoveryProjection {
             active,
             workspace,
@@ -86,10 +128,22 @@ impl ShellRecoveryService {
                                     .cleanup_reasons
                                     .iter()
                                     .any(|reason| reason == "control_continuity_lost"));
+                    let command = commands
+                        .iter()
+                        .find(|command| command.operation_id == item.operation_id)
+                        .map(|command| command.command.clone())
+                        .unwrap_or_default();
+                    let mut reasons = item.facts.cleanup_reasons.clone();
+                    if let Some(error) = item.error {
+                        reasons.push(error);
+                    }
+                    reasons.sort();
+                    reasons.dedup();
                     ShellRecoveryRow {
                         operation_id: item.operation_id,
                         thread_id: item.thread_id,
-                        reason: item.error.unwrap_or_else(|| "cleanup_unresolved".into()),
+                        reason: reasons.join(", "),
+                        command,
                         exit_code: item.exit_code,
                         output_incomplete: item.facts.output_incomplete,
                         can_retry: !prior_generation,
@@ -97,6 +151,7 @@ impl ShellRecoveryService {
                     }
                 })
                 .collect(),
+            commands,
         })
     }
 

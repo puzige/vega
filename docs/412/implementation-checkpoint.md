@@ -1,6 +1,15 @@
 # 会话式 Shell 实施检查点（未完成，禁止合并）
 
-## 独审 P1 修复增量（待复核）
+## 安全与 UI 独审增量修复（当前待复核）
+
+- 安全独审对 `689b2abb7402ba0c4e1805e176956207549c8193` 确认下节 3 项 P1 已解决；新增 2 项 P2：历史工作区不可访问阻断全局启动、预算耗尽后仍发起进程观察。本轮保留历史绝对规范路径 blocker，不跳过隔离；路径重新出现为别名时也比较可解析身份。共同截止时间贯穿扫描、匹配与 settled，每个外部观察前检查；不承诺中断已在途 OS syscall。
+- UI 独审对同一旧 head 返回 1 项 P1、3 项 P2。本轮关闭面板保留已提交但未知的同一确认身份；首次读取失败提供就地重新检查；按 operation/call/thread 关联持久命令终态，原始工具回执和输出不改写；恢复行展示安全命令及具体原因/下一步，移除不存在的详情入口提示。
+- 已同步 master `4b604cb8c2a8c33ae8e5ed3a1ec9f941bbd19b01`，只解决迁移登记冲突，保留主线 0060/0061，Shell 迁移顺延 `0062_shell_operations.sql`。冻结合同 blob 仍为 `de5da7970c4686b392c4ef784d679b642abd83d9`，与用户冻结提交一致。
+- 本轮实际工具链：官方 Cargo `1.98.0 (797e8a9bc 2026-08-05)`、rustc `1.98.0 (88d9e12ae 2026-08-18)`。命令 `rustup run 1.98.0 cargo test --locked -j 2 -p vega_ui -p vega_conversation -p vega_store -p vega_tools -p vega_runtime`：3+14+7+18+3=45 运行/45 通过/0 失败/0 忽略，doctest 0 执行。`rustup run 1.98.0 cargo clippy --workspace --all-targets --locked -j 2 -- -D warnings`、`cargo fmt --all -- --check`、`git diff --check` 均退出 0。验证对应本节所在提交的实现及开发测试内容；文档更新不改行为。
+- 开发过程失败如实记录：预算计数回归预期错写 2 次枚举，实际调用链为 3 次；保留“到期后观察计数不再增加”断言后校正。新 UI 回归耗时预期错写 4s，既有 formatter 对 4200ms 为 4.2s，核对未改生产 formatter 后修正。SQLite u64 读取、身份字符串比较及测试模块位置的编译/lint 失败均修责任层，无 lint 豁免。一次 120s UI 编译命令超时、结果未取得；确认无残留进程后拆开以 600s 时限取得 Clippy 与真实测试结果。
+- 原生 UI/Tab/保守焦点、像素外观、真实系统集成未执行，不把纯状态测试当作这些验收。最终 exact-head 独审、云端开发验证、测试可恢复证据留存及清理、最终无 Rust 测试 head required CI 仍待完成；未合并，Issue 保持开放。
+
+## 独审原三项 P1 修复增量（已在旧 head 复核）
 
 非写入者对 `f9b5375d4bac2cbffd841fe44725e003ca480c4b` 返回 3 项 P1，不予通过。本轮逐项修复：
 

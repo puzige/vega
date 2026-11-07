@@ -32,12 +32,34 @@ pub(crate) struct ShellRecoveryUi {
     sequence: u64,
     pending: Option<&'static str>,
     pub(super) opened: bool,
-    projection: Option<ShellRecoveryProjection>,
-    confirmation: Option<Box<ShellRecoveryConfirmation>>,
+    pub(super) projection: Option<ShellRecoveryProjection>,
+    decision: RecoveryDecision<ShellRecoveryConfirmation>,
     error: Option<ShellRecoveryError>,
     refresh: Option<gpui_kit::Task<()>>,
     review_focus: FocusHandle,
     safe_focus: FocusHandle,
+}
+
+struct RecoveryDecision<T> {
+    confirmation: Option<Box<T>>,
+    submitted: bool,
+}
+
+impl<T> Default for RecoveryDecision<T> {
+    fn default() -> Self {
+        Self {
+            confirmation: None,
+            submitted: false,
+        }
+    }
+}
+
+impl<T> RecoveryDecision<T> {
+    fn dismiss(&mut self) {
+        if !self.submitted {
+            self.confirmation = None;
+        }
+    }
 }
 
 impl ShellRecoveryUi {
@@ -47,7 +69,7 @@ impl ShellRecoveryUi {
             pending: None,
             opened: false,
             projection: None,
-            confirmation: None,
+            decision: RecoveryDecision::default(),
             error: None,
             refresh: None,
             review_focus: cx.focus_handle(),
@@ -60,7 +82,7 @@ impl ConversationStream {
     pub(super) fn dismiss_shell_recovery(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.shell_recovery.opened = false;
         if self.shell_recovery.pending.is_none() {
-            self.shell_recovery.confirmation = None;
+            self.shell_recovery.decision.dismiss();
         }
         self.shell_recovery.review_focus.focus(window, cx);
         cx.notify();
@@ -70,7 +92,7 @@ impl ConversationStream {
         if self.thread.backend == TaskBackend::Native
             && !self.thread.project_id.is_empty()
             && self.shell_recovery.pending.is_none()
-            && self.shell_recovery.confirmation.is_none()
+            && self.shell_recovery.decision.confirmation.is_none()
         {
             self.request_shell_recovery(ShellRecoveryAction::Read, cx);
         }
@@ -89,6 +111,9 @@ impl ConversationStream {
             ShellRecoveryAction::Cancel(_) => "ui.shell_session.stopping",
             _ => "ui.shell_recovery.checking",
         };
+        if matches!(&action, ShellRecoveryAction::Resume(_)) {
+            self.shell_recovery.decision.submitted = true;
+        }
         self.shell_recovery.sequence = sequence;
         self.shell_recovery.pending = Some(label);
         self.shell_recovery.error = None;
@@ -115,18 +140,32 @@ impl ConversationStream {
         self.shell_recovery.pending = None;
         match result {
             Ok(ShellRecoveryOutcome::Projection(projection)) => {
-                self.shell_recovery.confirmation = None;
+                for command in &projection.commands {
+                    if command.thread_id == self.thread.id
+                        && let Some(card) = self.tool_cards.get(&command.call_id)
+                    {
+                        card.update(cx, |card, cx| {
+                            if card.apply_shell_command(command) {
+                                cx.notify();
+                            }
+                        });
+                    }
+                }
+                self.shell_recovery.decision = RecoveryDecision::default();
                 if projection.rows.is_empty() {
                     self.shell_recovery.opened = false;
                 }
                 self.shell_recovery.projection = Some(projection);
             }
             Ok(ShellRecoveryOutcome::Confirmation(confirmation)) => {
-                self.shell_recovery.confirmation = Some(confirmation);
+                self.shell_recovery.decision = RecoveryDecision {
+                    confirmation: Some(confirmation),
+                    submitted: false,
+                };
             }
             Err(error) => {
                 if error == ShellRecoveryError::Changed {
-                    self.shell_recovery.confirmation = None;
+                    self.shell_recovery.decision = RecoveryDecision::default();
                 }
                 self.shell_recovery.error = Some(error);
             }
@@ -135,7 +174,16 @@ impl ConversationStream {
             .shell_recovery
             .projection
             .as_ref()
-            .is_some_and(|projection| !projection.active.is_empty());
+            .is_some_and(|projection| {
+                !projection.active.is_empty()
+                    || projection.commands.iter().any(|command| {
+                        command.thread_id == self.thread.id
+                            && matches!(
+                                command.state.as_str(),
+                                "prepared" | "running" | "finishing" | "stopping"
+                            )
+                    })
+            });
         if refresh && self.shell_recovery.refresh.is_none() {
             self.shell_recovery.refresh = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor()
@@ -215,6 +263,17 @@ impl ConversationStream {
             }));
         }
         if rows.is_empty() {
+            if state.error.is_some() {
+                panel = panel.child(button(
+                    "shell-read-again",
+                    "ui.shell_recovery.check",
+                    !busy,
+                    colors,
+                    cx.listener(|this, _, _, cx| {
+                        this.request_shell_recovery(ShellRecoveryAction::Read, cx)
+                    }),
+                ));
+            }
             return panel.into_any_element();
         }
         if !state.opened {
@@ -242,29 +301,35 @@ impl ConversationStream {
                     }
                     None => vega_i18n::t("ui.shell_recovery.unknown").to_owned(),
                 };
-                panel =
-                    panel.child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(result)
-                            .when(row.output_incomplete && row.can_resume, |item| {
-                                item.child(vega_i18n::t("ui.shell_recovery.output_closed"))
-                            })
-                            .when(!row.can_resume, |item| {
-                                item.child(vega_i18n::t("ui.shell_recovery.unsettled"))
-                            })
-                            .child(div().text_color(colors.text_tertiary).child(
-                                vega_i18n::t_args(
-                                    "ui.shell_recovery.operation",
-                                    &[("number", &(index + 1).to_string())],
-                                ),
-                            )),
-                    );
+                panel = panel.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(if row.command.is_empty() {
+                            vega_i18n::t_args(
+                                "ui.shell_recovery.operation",
+                                &[("number", &(index + 1).to_string())],
+                            )
+                        } else {
+                            row.command.clone()
+                        })
+                        .child(result)
+                        .child(
+                            div()
+                                .text_color(colors.text_secondary)
+                                .child(recovery_reason(&row.reason)),
+                        )
+                        .when(row.output_incomplete && row.can_resume, |item| {
+                            item.child(vega_i18n::t("ui.shell_recovery.output_closed"))
+                        })
+                        .when(!row.can_resume, |item| {
+                            item.child(vega_i18n::t("ui.shell_recovery.unsettled"))
+                        }),
+                );
             }
         }
-        if let Some(confirmation) = &state.confirmation {
+        if let Some(confirmation) = &state.decision.confirmation {
             let confirmation = confirmation.clone();
             panel = panel
                 .child(vega_i18n::t("ui.shell_recovery.confirm_title"))
@@ -346,6 +411,41 @@ impl ConversationStream {
     }
 }
 
+fn recovery_reason(reason: &str) -> String {
+    let mut keys = Vec::new();
+    for reason in reason.split(", ") {
+        let key = match reason {
+            "control_continuity_lost" | "session_expired" => "ui.shell_recovery.reason_restart",
+            "process_identity_changed" | "group_continuity_lost" => {
+                "ui.shell_recovery.reason_identity"
+            }
+            "cleanup_budget_exhausted" => "ui.shell_recovery.reason_budget",
+            "initial_identity_unavailable"
+            | "descendant_observation_failed"
+            | "process_observation_failed"
+            | "process_identity_capacity" => "ui.shell_recovery.reason_observation",
+            "group_signal_failed"
+            | "descendant_signal_failed"
+            | "child_wait_failed"
+            | "process_cleanup_unresolved"
+            | "termination_failed" => "ui.shell_recovery.reason_process",
+            "credential_cleanup_failed" => "ui.shell_recovery.reason_credentials",
+            "cleanup_commit_unconfirmed" => "ui.shell_recovery.reason_storage",
+            "output_incomplete" | "output_failed" | "output_pipes_unavailable" => {
+                "ui.shell_recovery.reason_output"
+            }
+            _ => "ui.shell_recovery.reason_resource",
+        };
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    keys.into_iter()
+        .map(vega_i18n::t)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn button(
     id: &'static str,
     key: &'static str,
@@ -400,4 +500,39 @@ fn focused_button(
         })
         .child(vega_i18n::t(key))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RecoveryDecision;
+
+    #[test]
+    fn dismiss_after_unknown_submit_preserves_exact_decision_for_reentry() {
+        let mut decision = RecoveryDecision {
+            confirmation: Some(Box::new(String::from("exact-decision"))),
+            submitted: true,
+        };
+        let identity = decision.confirmation.as_deref().map(|value| value.as_ptr());
+        decision.dismiss();
+        decision.dismiss();
+        assert_eq!(
+            decision.confirmation.as_deref().map(String::as_str),
+            Some("exact-decision")
+        );
+        assert_eq!(
+            decision.confirmation.as_deref().map(|value| value.as_ptr()),
+            identity
+        );
+        assert!(decision.submitted);
+    }
+
+    #[test]
+    fn dismiss_before_submit_discards_only_unsubmitted_confirmation() {
+        let mut decision = RecoveryDecision {
+            confirmation: Some(Box::new("not-submitted")),
+            submitted: false,
+        };
+        decision.dismiss();
+        assert!(decision.confirmation.is_none());
+    }
 }

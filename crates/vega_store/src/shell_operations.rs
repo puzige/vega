@@ -279,6 +279,52 @@ pub fn list_blockers(conn: &Connection) -> rusqlite::Result<Vec<ShellRecoveryIte
     Ok(items)
 }
 
+pub struct ShellCommandPresentation {
+    pub operation_id: String,
+    pub call_id: String,
+    pub thread_id: String,
+    pub input_json: String,
+    pub state: String,
+    pub exit_code: Option<i32>,
+    pub duration_ms: Option<u64>,
+    pub output_incomplete: bool,
+}
+
+pub fn command_presentations(
+    conn: &Connection,
+    workspace: &str,
+) -> rusqlite::Result<Vec<ShellCommandPresentation>> {
+    let mut statement = conn.prepare("SELECT o.workspace,o.operation_id,o.call_id,o.thread_id,t.input_json,o.state,o.exit_code,o.duration_ms,o.output_incomplete FROM shell_operations o JOIN tool_calls t ON t.id=o.call_id AND t.thread_id=o.thread_id ORDER BY o.created_at,o.operation_id")?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            ShellCommandPresentation {
+                operation_id: row.get(1)?,
+                call_id: row.get(2)?,
+                thread_id: row.get(3)?,
+                input_json: row.get(4)?,
+                state: row.get(5)?,
+                exit_code: row.get(6)?,
+                duration_ms: row
+                    .get::<_, Option<i64>>(7)?
+                    .map(|duration| {
+                        u64::try_from(duration).map_err(|_| rusqlite::Error::InvalidQuery)
+                    })
+                    .transpose()?,
+                output_incomplete: row.get(8)?,
+            },
+        ))
+    })?;
+    let mut commands = Vec::new();
+    for row in rows {
+        let (path, command) = row?;
+        if overlap(&path, workspace) {
+            commands.push(command);
+        }
+    }
+    Ok(commands)
+}
+
 pub fn recovery(conn: &Connection, workspace: &str) -> rusqlite::Result<ShellWorkspaceRecovery> {
     let items = list_blockers(conn)?
         .into_iter()

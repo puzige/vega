@@ -461,6 +461,7 @@ pub enum ToolCardResultProjection {
         truncated: Option<bool>,
         reused: bool,
         session_state: Option<String>,
+        operation_id: Option<Box<str>>,
         output_incomplete: bool,
     },
     /// Bounded generic read/glob/grep output.
@@ -995,6 +996,7 @@ pub fn tool_card_result_projection(
                     truncated: value["truncated"].as_bool(),
                     reused: result.reused,
                     session_state: value["state"].as_str().map(str::to_owned),
+                    operation_id: value["operation_id"].as_str().map(Into::into),
                     output_incomplete: value["output_incomplete"].as_bool().unwrap_or(false),
                 };
             }
@@ -1024,6 +1026,7 @@ pub fn tool_card_result_projection(
                 truncated: result.truncated,
                 reused: result.reused,
                 session_state: None,
+                operation_id: None,
                 output_incomplete: false,
             }
         }

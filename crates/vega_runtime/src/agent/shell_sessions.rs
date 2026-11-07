@@ -151,6 +151,16 @@ fn workspace_identity(workspace: &Path) -> Result<PathBuf, VegaError> {
     std::fs::canonicalize(workspace).map_err(|_| failure("workspace_identity_unavailable"))
 }
 
+fn workspace_overlap(a: &Path, b: &Path) -> bool {
+    if a.starts_with(b) || b.starts_with(a) {
+        return true;
+    }
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a.starts_with(&b) || b.starts_with(&a),
+        _ => false,
+    }
+}
+
 async fn process_prerequisite() -> Result<(), VegaError> {
     use std::os::unix::fs::PermissionsExt;
     for path in ["/bin/kill", "/usr/bin/sandbox-exec"] {
@@ -201,7 +211,7 @@ impl RuntimeWorkspaceMutationGuard {
             .map_err(|_| failure("registry_unavailable"))?;
         for workspace in &workspaces {
             for (path, state) in &registry.workspaces {
-                if workspace.starts_with(path) || path.starts_with(workspace) {
+                if workspace_overlap(workspace, path) {
                     if state.blocked() {
                         return Err(failure("workspace_quarantined"));
                     }
@@ -268,8 +278,7 @@ impl RuntimeWorkspaceMutationGuard {
             .lock()
             .map_err(|_| failure("registry_unavailable"))?;
         Ok(registry.workspaces.iter().any(|(path, state)| {
-            (workspace.starts_with(path) || path.starts_with(&workspace))
-                && (state.session || state.blocked())
+            workspace_overlap(&workspace, path) && (state.session || state.blocked())
         }))
     }
 }
@@ -304,7 +313,7 @@ impl Reservation {
             return Err(failure("application_capacity_reached"));
         }
         if registry.workspaces.iter().any(|(path, state)| {
-            (workspace.starts_with(path) || path.starts_with(workspace))
+            workspace_overlap(workspace, path)
                 && (state.session || state.blocked() || state.mutations != 0)
         }) {
             return Err(failure("workspace_busy"));

@@ -482,6 +482,10 @@ async fn missing_historical_workspace_keeps_its_range_blocked_without_disabling_
     assert!(RuntimeWorkspaceMutationGuard::acquire_all(&[PathBuf::from("/")]).is_err());
     std::fs::create_dir(&missing)?;
     assert!(RuntimeWorkspaceMutationGuard::acquire(&missing).is_err());
+    std::fs::remove_dir(&missing)?;
+    std::os::unix::fs::symlink(&other.0, &missing)?;
+    assert!(RuntimeWorkspaceMutationGuard::acquire(&other.0).is_err());
+    assert!(Reservation::acquire(&other.0).is_err());
     RuntimeWorkspaceMutationGuard::set_persisted_block(
         &missing,
         "missing-project-operation",

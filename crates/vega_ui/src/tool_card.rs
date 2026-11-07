@@ -18,6 +18,10 @@ use crate::icons::Icon;
 
 const CORRUPT_LABEL: &str = "ui.tool_result_corrupted";
 
+#[cfg(test)]
+#[path = "tool_card_shell_tests.rs"]
+mod shell_tests;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ToolActivityCategory {
     Shell,
@@ -143,6 +147,7 @@ pub struct ToolCard {
     status: ToolCallStatus,
     approval: Option<Approval>,
     result: Option<ToolCardResultProjection>,
+    shell_command: Option<vega_conversation::types::ShellCommandProjection>,
     summary: String,
     summary_language: &'static str,
     output_rows: Vec<String>,
@@ -172,6 +177,7 @@ impl ToolCard {
             },
             approval: None,
             result: corrupt.then_some(ToolCardResultProjection::Corrupt),
+            shell_command: None,
             summary: String::new(),
             summary_language: vega_i18n::language(),
             output_rows: Vec::new(),
@@ -200,6 +206,7 @@ impl ToolCard {
             status,
             approval: None,
             result: Some(projection),
+            shell_command: None,
             summary: String::new(),
             summary_language: vega_i18n::language(),
             output_rows: Vec::new(),
@@ -223,6 +230,7 @@ impl ToolCard {
             status: ToolCallStatus::Failed,
             approval: None,
             result: Some(ToolCardResultProjection::Corrupt),
+            shell_command: None,
             summary: String::new(),
             summary_language: vega_i18n::language(),
             output_rows: Vec::new(),
@@ -256,6 +264,7 @@ impl ToolCard {
             status,
             approval,
             result,
+            shell_command: None,
             summary: String::new(),
             summary_language: vega_i18n::language(),
             expanded: false,
@@ -769,6 +778,9 @@ impl ToolCard {
         }
         if self.status == ToolCallStatus::Running {
             return self.live_elapsed_seconds().map(human_elapsed);
+        }
+        if let Some(command) = &self.shell_command {
+            return command.duration_ms.map(human_duration);
         }
         match &self.result {
             Some(ToolCardResultProjection::Bash {
@@ -1480,7 +1492,23 @@ impl ToolCard {
         )
     }
 
+    pub(crate) fn apply_shell_command(
+        &mut self,
+        command: &vega_conversation::types::ShellCommandProjection,
+    ) -> bool {
+        let matches = matches!(&self.result, Some(ToolCardResultProjection::Bash { operation_id: Some(operation), .. }) if operation.as_ref() == command.operation_id.as_str());
+        if !matches || !matches!(&self.input, Some(ToolCardInputProjection::Bash { .. })) {
+            return false;
+        }
+        self.shell_command = Some(command.clone());
+        self.refresh_summary();
+        true
+    }
+
     fn shell_session_state(&self) -> Option<&str> {
+        if let Some(command) = &self.shell_command {
+            return Some(&command.state);
+        }
         match &self.result {
             Some(ToolCardResultProjection::Bash { session_state, .. }) => session_state.as_deref(),
             _ => None,
@@ -1569,7 +1597,12 @@ impl ToolCard {
             if *reused {
                 title.push_str(vega_i18n::t("ui.reused"));
             }
-            if *output_incomplete {
+            if *output_incomplete
+                || self
+                    .shell_command
+                    .as_ref()
+                    .is_some_and(|command| command.output_incomplete)
+            {
                 title.push_str(" · ");
                 title.push_str(vega_i18n::t("ui.shell_session.output_incomplete"));
             }

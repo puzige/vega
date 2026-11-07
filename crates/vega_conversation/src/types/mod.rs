@@ -9,7 +9,8 @@ pub use crate::ordinary_submissions::{
 };
 pub use crate::run_credentials::RunCredentialReader;
 pub use crate::shell_recovery::{
-    ShellRecoveryConfirmation, ShellRecoveryError, ShellRecoveryProjection, ShellRecoveryRow,
+    ShellCommandProjection, ShellRecoveryConfirmation, ShellRecoveryError, ShellRecoveryProjection,
+    ShellRecoveryRow,
 };
 pub use prediction_diagnostics::{PredictionEvent, record_prediction_event};
 use std::sync::Arc;

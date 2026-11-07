@@ -49,6 +49,50 @@ fn records_require_starting_authority_and_keep_terminal_identity() {
 }
 
 #[test]
+fn command_presentation_tracks_terminal_identity_without_rewriting_original_receipt()
+-> rusqlite::Result<()> {
+    let store = fixture();
+    store.conn().execute(
+        "UPDATE tool_calls SET input_json=?1,output_text='original running receipt' WHERE id='c'",
+        [r#"{"command":"printf done","wait_ms":0}"#],
+    )?;
+    record(store.conn(), &record_for("prepared"), 1)?;
+    record(store.conn(), &record_for("running"), 2)?;
+    let mut done = record_for("succeeded");
+    done.exit_code = Some(0);
+    done.duration_ms = Some(23);
+    record_with_facts(store.conn(), &done, &settled_facts(false), 3)?;
+    let commands = command_presentations(store.conn(), "/workspace")?;
+    assert_eq!(commands.len(), 1);
+    let command = &commands[0];
+    assert_eq!(
+        (
+            &*command.operation_id,
+            &*command.call_id,
+            &*command.thread_id
+        ),
+        ("op", "c", "t")
+    );
+    assert_eq!(
+        (&*command.state, command.exit_code, command.duration_ms),
+        ("succeeded", Some(0), Some(23))
+    );
+    assert_eq!(
+        command.input_json,
+        r#"{"command":"printf done","wait_ms":0}"#
+    );
+    assert!(command_presentations(store.conn(), "/unrelated")?.is_empty());
+    let receipt: String = store.conn().query_row(
+        "SELECT output_text FROM tool_calls WHERE id='c'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(receipt, "original running receipt");
+    assert!(recovery(store.conn(), "/workspace")?.items.is_empty());
+    Ok(())
+}
+
+#[test]
 fn recovery_preserves_unknown_outcome_without_replaying_or_rebinding() {
     let store = fixture();
     record(store.conn(), &record_for("prepared"), 1).unwrap();
