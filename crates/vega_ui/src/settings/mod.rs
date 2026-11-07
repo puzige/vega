@@ -211,7 +211,6 @@ use localization::{SettingsText, permission_mode_label};
 mod mcp;
 mod model_capabilities;
 mod model_catalog;
-pub use model_capabilities::ModelCapabilityFocusTarget;
 mod model_configuration;
 mod motion;
 mod nsh_appearance;

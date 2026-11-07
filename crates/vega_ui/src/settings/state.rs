@@ -67,7 +67,7 @@ pub struct SettingsView {
     pub(crate) model_capabilities: ModelCapabilitySettingsProjection,
     pub(crate) model_capability_models: Vec<ModelCapabilityProjection>,
     pub(crate) model_capability_draft: Option<ModelCapabilityOverride>,
-    pub(crate) model_capability_focuses: Vec<(ModelCapabilityFocusTarget, FocusHandle)>,
+    pub(super) capability_presentations: super::model_capabilities::Presentations,
     pub(crate) next_model_capability_operation: u64,
 }
 
@@ -336,7 +336,7 @@ impl SettingsView {
             model_capabilities: ModelCapabilitySettingsProjection::Loading,
             model_capability_models: Vec::new(),
             model_capability_draft: None,
-            model_capability_focuses: Vec::new(),
+            capability_presentations: Default::default(),
             next_model_capability_operation: 0,
         }
     }

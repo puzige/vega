@@ -471,7 +471,6 @@ impl SettingsView {
         self.section = section;
         self.rebuild_pricing_focuses(cx);
         self.rebuild_reasoning_focuses(cx);
-        self.rebuild_model_capability_focuses(cx);
         cx.notify();
     }
 
@@ -1588,7 +1587,11 @@ impl SettingsView {
         }
     }
 
-    pub(crate) fn render_model_basics(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_model_basics(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = theme(cx).colors;
         let busy = self.provider_management.saving;
         let mut detail = settings_section();
@@ -1716,7 +1719,7 @@ impl SettingsView {
                 );
         }
         detail
-            .child(self.render_model_capability_image(cx))
+            .child(self.render_model_capability_image(window, cx))
             .child(self.render_model_catalog(cx))
             .into_any_element()
     }
@@ -1755,7 +1758,7 @@ impl SettingsView {
                 .on_action(cx.listener(Self::provider_escape))
                 .size_full()
                 .overflow_y_scroll()
-                .child(self.render_model_basics(cx))
+                .child(self.render_model_basics(window, cx))
                 .scroll_edge_fade(colors.bg_base, ScrollFade::reading())
                 .into_any_element();
         }

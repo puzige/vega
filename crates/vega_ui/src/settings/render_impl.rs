@@ -629,6 +629,7 @@ impl Render for SettingsView {
         self.resume_settings_navigation(window, cx);
         self.sync_default_model(cx);
         self.sync_usage_presentation(cx);
+        self.sync_capability_presentations(cx);
         self.sync_permission_presentation(cx);
         self.prepare_default_permission_focus(window, cx);
         self.prepare_permission_reset_focus(window, cx);
@@ -897,7 +898,7 @@ impl Render for SettingsView {
                                         body.child(self.render_defaults(window, cx))
                                     })
                                     .when(self.section == 2, |body| {
-                                        body.child(self.render_reasoning(cx))
+                                        body.child(self.render_reasoning(window, cx))
                                     })
                                     .when(self.section == 3, |body| {
                                         body.child(self.render_pricing(cx))
