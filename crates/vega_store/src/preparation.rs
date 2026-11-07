@@ -119,6 +119,7 @@ impl<'a> DelegatedSnapshot<'a> {
         }
         let connection = Connection::open_in_memory()?;
         connection.pragma_update(None, "temp_store", "MEMORY")?;
+        connection.pragma_update(None, "foreign_keys", false)?;
         let mut rows_copied = 0usize;
         let mut bytes_copied = 0usize;
         for &(table, predicate) in TABLES {
@@ -160,7 +161,7 @@ impl<'a> DelegatedSnapshot<'a> {
                     if rows_copied > MAX_ROWS || bytes_copied > MAX_BYTES {
                         return Err(rusqlite::Error::InvalidQuery);
                     }
-                    values.push(Value::from(value));
+                    values.push(row.get::<_, Value>(index)?);
                 }
                 insert.execute(rusqlite::params_from_iter(values))?;
             }
