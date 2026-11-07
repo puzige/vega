@@ -1,5 +1,7 @@
-//! Bounded, memory-only reasoning content, separate from answer Markdown.
 use super::*;
+
+#[path = "newthinking/presentation.rs"]
+mod presentation;
 
 #[path = "thinking_body.rs"]
 mod body;
@@ -192,6 +194,8 @@ pub(crate) struct ThinkingBlock {
     thinking_preview: Preview,
     summary_preview: Preview,
     body: body::ThinkingBody,
+    owner: Option<presentation::Owner>,
+    presentation: Option<presentation::Presentation>,
     pub(super) source_copy: MessageCopy,
     source_revision: u64,
     ancestor_visible: bool,
@@ -199,6 +203,7 @@ pub(crate) struct ThinkingBlock {
     pub(crate) truncated: bool,
     message_actions_enabled: bool,
     focus: FocusHandle,
+    disclosure_focus: FocusHandle,
     scroll: ScrollHandle,
 }
 
@@ -208,11 +213,12 @@ impl ThinkingBlock {
     }
 
     pub(crate) fn header_focused(&self, window: &Window) -> bool {
-        self.focus.is_focused(window)
+        self.disclosure_focus.is_focused(window) || self.focus.is_focused(window)
     }
 
     pub(super) fn contains_focus(&self, window: &Window, cx: &App) -> bool {
         self.focus.contains_focused(window, cx)
+            || self.disclosure_focus.contains_focused(window, cx)
     }
 
     pub(crate) fn title(&self) -> &str {
@@ -242,7 +248,10 @@ impl ThinkingBlock {
     }
 
     pub(crate) fn copy_selected_source(&mut self, cx: &mut Context<Self>) {
-        if self.source_copy.has_selected_text() {
+        if self.ancestor_visible
+            && self.owner.as_ref().is_some_and(|owner| owner.current(cx))
+            && self.source_copy.has_selected_text()
+        {
             self.source_copy.copy_selected_text(cx);
             cx.stop_propagation();
         }
@@ -295,13 +304,16 @@ impl ThinkingBlock {
             thinking_preview: Preview::default(),
             summary_preview: Preview::default(),
             body: body::ThinkingBody::default(),
+            owner: None,
+            presentation: None,
             source_copy: MessageCopy::default(),
             source_revision: 0,
             ancestor_visible: true,
             expanded: false,
             truncated: false,
             message_actions_enabled: true,
-            focus: cx.focus_handle().tab_stop(true),
+            focus: cx.focus_handle().tab_stop(false),
+            disclosure_focus: cx.focus_handle().tab_stop(true),
             scroll: ScrollHandle::new(),
         }
     }
@@ -309,13 +321,25 @@ impl ThinkingBlock {
     pub(crate) fn set_message_actions_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if self.message_actions_enabled != enabled {
             self.message_actions_enabled = enabled;
+            if let Some(page) = &mut self.presentation {
+                page.revoke();
+            }
             cx.notify();
         }
     }
     pub(crate) fn set_ancestor_visible(&mut self, visible: bool) {
-        if self.ancestor_visible != visible {
-            self.ancestor_visible = visible;
+        if presentation::transition_visibility(
+            &mut self.ancestor_visible,
+            visible,
+            &self.source_copy,
+        ) {
             self.body.visibility_changed();
+            if let Some(page) = &mut self.presentation {
+                page.revoke();
+            }
+            if !visible {
+                self.disclosure_focus = self.disclosure_focus.clone().tab_stop(false);
+            }
         }
     }
 
@@ -324,6 +348,9 @@ impl ThinkingBlock {
         if self.expanded != expanded {
             self.expanded = expanded;
             self.body.visibility_changed();
+            if let Some(page) = &mut self.presentation {
+                page.revoke();
+            }
             cx.emit(ThinkingChanged {
                 header: false,
                 stage: false,
@@ -459,6 +486,9 @@ impl ThinkingBlock {
         self.source_identity = self.source_identity.wrapping_add(1);
         self.source_revision = self.source_revision.wrapping_add(1);
         self.body.evict();
+        if let Some(page) = &mut self.presentation {
+            page.revoke();
+        }
         self.source_copy.clear_retained();
         self.scroll = ScrollHandle::new();
         self.expanded = false;
@@ -474,10 +504,7 @@ impl ThinkingBlock {
 
 impl Render for ThinkingBlock {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = theme(cx).colors;
-        let title = self.title().to_owned();
-        let can_expand = self.has_source_text();
-        self.focus = self.focus.clone().tab_stop(can_expand);
+        let header = self.render_thinking_header(window, cx);
         div()
             .w_full()
             .min_w_0()
@@ -485,77 +512,9 @@ impl Render for ThinkingBlock {
             .flex_col()
             .gap(px(Layout::PROCESS_ITEM_GAP))
             .on_action(cx.listener(|this, _: &CopySelectedText, _, cx| {
-                if this.source_copy.has_selected_text() {
-                    this.source_copy.copy_selected_text(cx);
-                    cx.stop_propagation();
-                }
+                this.copy_selected_source(cx);
             }))
-            .child(
-                div()
-                    .id("thinking-toggle")
-                    .group(gpui_kit::SharedString::from(format!(
-                        "thinking-disclosure-{}",
-                        cx.entity_id()
-                    )))
-                    .track_focus(&self.focus)
-                    .when(can_expand, |row| row.aria_expanded(self.expanded))
-                    .tab_stop(can_expand)
-                    .focus_visible(move |row| row.bg(colors.bg_hover))
-                    .aria_label(if can_expand {
-                        vega_i18n::t_args("ui.thinking_disclosure", &[("title", &title)])
-                    } else {
-                        title.clone()
-                    })
-                    .flex()
-                    .items_center()
-                    .gap(px(Layout::CONVERSATION_INLINE_GAP))
-                    .h(px(Layout::CONVERSATION_TOOL_HEIGHT))
-                    .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
-                    .rounded(px(Layout::DISCLOSURE_RADIUS))
-                    .when(can_expand, |row| row.cursor_pointer())
-                    .text_size(px(Typography::CONVERSATION))
-                    .text_color(colors.conversation_tool)
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            this.focus.focus(window, cx);
-                            this.set_expanded(!this.expanded, cx);
-                        }),
-                    )
-                    .on_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            this.set_expanded(!this.expanded, cx);
-                            cx.stop_propagation();
-                        }
-                    }))
-                    .child(
-                        div()
-                            .size(px(Layout::ICON_SIZE))
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(crate::icons::icon(
-                                crate::icons::Icon::Bot,
-                                colors.conversation_tool,
-                            )),
-                    )
-                    .child(div().min_w_0().flex_shrink(1.).truncate().child(
-                        if let Some(epoch) = self.shimmer_epoch {
-                            shimmer::text(title.clone(), epoch, window, cx)
-                        } else {
-                            div().child(title).into_any_element()
-                        },
-                    ))
-                    .child(crate::disclosure::chevron(
-                        format!("thinking-disclosure-{}", cx.entity_id()).into(),
-                        &self.focus,
-                        self.expanded,
-                        self.has_source_text(),
-                        colors,
-                        window,
-                    )),
-            )
+            .child(header)
             .when(self.expanded && self.source_copy.has_text(), |block| {
                 block.child(
                     div()
@@ -567,12 +526,7 @@ impl Render for ThinkingBlock {
                 )
             })
             .when(self.truncated, |block| {
-                block.child(
-                    div()
-                        .text_size(px(Typography::METADATA))
-                        .text_color(colors.text_tertiary)
-                        .child(vega_i18n::t("ui.earlier_thinking_omitted")),
-                )
+                block.child(self.render_thinking_omission())
             })
     }
 }
@@ -586,6 +540,54 @@ impl ConversationStream {
             .filter_map(|card| card.upgrade())
         {
             card.update(cx, |card, cx| card.set_message_actions_enabled(enabled, cx));
+        }
+    }
+
+    pub(crate) fn rebind_thinking_presentation(
+        &self,
+        group: &Entity<RunActivityGroup>,
+        cx: &mut Context<Self>,
+    ) {
+        let group_id = group.entity_id();
+        if self.permissions_revoked
+            || self.permission_change_pending()
+            || self.reading_preview
+            || !cx.try_global::<crate::settings::SettingsOpen>().is_some_and(|state| !state.0)
+            || !cx.try_global::<crate::sidebar::OpenedThread>().is_some_and(|route| {
+                route.0.as_ref().is_some_and(|thread| thread.id == self.thread.id)
+            })
+            || !self.entries.iter().any(|entry| {
+                matches!(entry, StreamEntry::RunActivity { group } | StreamEntry::RunActivitySegment { group, .. } if group.entity_id() == group_id)
+            })
+        {
+            return;
+        }
+        let stream_id = cx.entity().entity_id();
+        for child in group.read(cx).children() {
+            if let RunActivityChild::Thinking(card) = child {
+                card.update(cx, |card, cx| {
+                    let Some(owner) = card.owner.as_mut() else {
+                        return;
+                    };
+                    if owner.thread != self.thread.id
+                        || owner.group != group_id
+                        || !owner
+                            .stream
+                            .upgrade()
+                            .is_some_and(|stream| stream.entity_id() == stream_id)
+                        || !owner
+                            .binding
+                            .rebind(&self.run_notice_epoch, &card.source_copy)
+                    {
+                        return;
+                    }
+                    if let Some(page) = &mut card.presentation {
+                        page.revoke();
+                    }
+                    card.disclosure_focus = card.disclosure_focus.clone().tab_stop(false);
+                    cx.notify();
+                });
+            }
         }
     }
 
@@ -623,8 +625,15 @@ impl ConversationStream {
             };
             let card = cx.new(ThinkingBlock::new);
             let actions_enabled = self.message_actions_enabled();
+            let owner = presentation::Owner {
+                stream: cx.weak_entity(),
+                thread: self.thread.id.clone(),
+                binding: presentation::OwnerBinding::new(self.run_notice_epoch.clone()),
+                group: group.entity_id(),
+            };
             card.update(cx, |card, cx| {
-                card.set_message_actions_enabled(actions_enabled, cx)
+                card.owner = Some(owner);
+                card.set_message_actions_enabled(actions_enabled, cx);
             });
             group.update(cx, |group, cx| {
                 group.append_thinking(segment, card.clone(), cx)

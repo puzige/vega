@@ -1,4 +1,6 @@
 use super::*;
+
+mod presentation;
 use gpui_kit::{ClipboardEntry, ClipboardItem, ExternalPaths, PathPromptOptions};
 use std::path::PathBuf;
 use vega_conversation::attachments::{MAX_IMAGE_BYTES, MAX_IMAGES, MAX_TURN_IMAGE_BYTES};
@@ -273,69 +275,10 @@ impl ConversationStream {
     }
 
     pub(crate) fn render_attachments(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .children(self.attachments.iter().map(|(id, image)| {
-                        let id = *id;
-                        div().relative().child(thumbnail(image, cx)).child(
-                            crate::icons::icon_button_with_id(
-                                crate::icons::icon(
-                                    crate::icons::Icon::Close,
-                                    colors.text_secondary,
-                                ),
-                                format!("remove-image-{id}"),
-                                vega_i18n::t_args("ui.remove_image_id", &[("id", &id.to_string())]),
-                                colors,
-                                cx.listener(move |this, _, _, cx| this.remove_image(id, cx)),
-                            )
-                            .absolute()
-                            .top_0()
-                            .right_0()
-                            .bg(colors.bg_elevated)
-                            .rounded_full(),
-                        )
-                    })),
-            )
-            .when(self.attachment_import_pending, |el| {
-                el.child(vega_i18n::t("ui.adding_images"))
-            })
-            .when_some(self.attachment_error, |el, message| {
-                el.child(render_rows::status_notice(
-                    vega_i18n::t(message).to_string(),
-                    colors.danger,
-                    &colors,
-                ))
-            })
-            .into_any_element()
+        presentation::AttachmentGroup::composer(self, cx).into_any_element()
     }
 }
 
-fn thumbnail(image: &ImagePreview, cx: &App) -> AnyElement {
-    div()
-        .child(crate::image_preview::ImagePreview::thumbnail(
-            &image.view,
-            cx,
-        ))
-        .into_any_element()
-}
-
-pub(crate) fn render_user_images(images: &[ImagePreview], cx: &App) -> AnyElement {
-    div()
-        .w_full()
-        .pt(px(Layout::USER_MESSAGE_PADDING_TOP))
-        .flex_shrink_0()
-        .flex()
-        .justify_end()
-        .flex_wrap()
-        .gap_2()
-        .children(images.iter().map(|image| thumbnail(image, cx)))
-        .into_any_element()
+pub(crate) fn render_user_images(images: &[ImagePreview], _: &App) -> AnyElement {
+    presentation::AttachmentGroup::history(images).into_any_element()
 }

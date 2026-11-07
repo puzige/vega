@@ -47,6 +47,7 @@ mod reasoning;
 mod render;
 mod scroll_state;
 mod session;
+mod shell_chrome;
 mod shell_recovery;
 mod skills;
 mod subagent_panel;
@@ -108,6 +109,7 @@ pub(crate) struct VegaWindow {
         std::collections::HashMap<String, composer_predictions::ComposerPredictionOwner>,
     pub(crate) updater: crate::updater::Updater,
     update_notice_dismissed: bool,
+    shell_chrome: shell_chrome::Pages,
     language: &'static str,
     navigation: navigation::Navigation,
     completion_attention: notifications::CompletionAttention,
@@ -342,6 +344,7 @@ impl VegaWindow {
             composer_predictions: std::collections::HashMap::new(),
             updater: crate::updater::Updater::default(),
             update_notice_dismissed: false,
+            shell_chrome: shell_chrome::Pages::default(),
             language: vega_i18n::language(),
             navigation: navigation::Navigation::new(cx, None),
             completion_attention: notifications::CompletionAttention::default(),

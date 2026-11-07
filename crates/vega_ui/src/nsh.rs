@@ -130,6 +130,25 @@ where
         window: &mut Window,
         cx: &mut Context<T>,
     ) -> (Self, mpsc::Receiver<C>) {
+        Self::with_transparency(initial, renderer, false, window, cx)
+    }
+
+    pub fn new_transparent<T: 'static>(
+        initial: S,
+        renderer: Renderer<S, C>,
+        window: &mut Window,
+        cx: &mut Context<T>,
+    ) -> (Self, mpsc::Receiver<C>) {
+        Self::with_transparency(initial, renderer, true, window, cx)
+    }
+
+    fn with_transparency<T: 'static>(
+        initial: S,
+        renderer: Renderer<S, C>,
+        transparent: bool,
+        window: &mut Window,
+        cx: &mut Context<T>,
+    ) -> (Self, mpsc::Receiver<C>) {
         let (state, receiver) = watch::channel(initial);
         let (commands, requests) = mpsc::channel(COMMAND_CAPACITY);
         let (failures, errors) = watch::channel(None);
@@ -146,6 +165,7 @@ where
                     app_id: "ai.vega.desktop".into(),
                     cache: CacheOptions::off(),
                     context: EngineContext::default().with(bridge),
+                    transparent,
                     ..Default::default()
                 },
                 window,

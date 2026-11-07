@@ -249,6 +249,9 @@ impl ThinkingBlock {
 
     pub(crate) fn reset_body_visibility(&self) {
         self.body.painted.set(false);
+        if let Some(page) = &self.presentation {
+            page.unmount();
+        }
     }
 
     pub(super) fn render_body(

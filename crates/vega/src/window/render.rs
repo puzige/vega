@@ -1,5 +1,4 @@
 use super::*;
-use vega_ui::icons::{Icon, shell_icon_button};
 
 fn clear_confirmed_reasoning_default_ledger(
     failures: &mut std::collections::HashMap<(String, String), ReasoningDefaultFailure>,
@@ -253,6 +252,7 @@ impl Render for VegaWindow {
         let settings_open = cx.global::<SettingsOpen>().0;
         if settings_open {
             self.set_workspace_presentation_visible(false, cx);
+            self.hide_shell_chrome(cx);
         }
         if self.diff_controller.active.as_ref().is_some_and(|active| {
             settings_open || !Self::diff_route_is_current(&active.identity, cx)
@@ -727,14 +727,10 @@ impl Render for VegaWindow {
                 .flex_col()
                 .child(self.render_main_header(sidebar_visible, window, cx))
                 .children(self.render_permission_reset_notice(cx))
-                .children(navigation_error.map(|error| {
-                    div()
-                        .px_3()
-                        .py_1()
-                        .text_size(px(Typography::METADATA))
-                        .text_color(colors.text_secondary)
-                        .child(error)
-                }))
+                .children(
+                    navigation_error
+                        .map(|_| self.render_shell_chrome(shell_chrome::Kind::Error, window, cx)),
+                )
                 .child(div().flex_1().min_h_0().overflow_hidden().child(content))
                 .into_any_element();
             self.render_workspace(main, window, cx)
@@ -780,13 +776,12 @@ impl Render for VegaWindow {
                             .then(|| {
                                 cx.try_global::<vega_ui::navigation::NavigationState>()
                                     .and_then(|state| state.error_message())
-                                    .map(|error| {
-                                        div()
-                                            .px_3()
-                                            .py_1()
-                                            .text_size(px(Typography::METADATA))
-                                            .text_color(colors.text_secondary)
-                                            .child(error)
+                                    .map(|_| {
+                                        self.render_shell_chrome(
+                                            shell_chrome::Kind::Error,
+                                            window,
+                                            cx,
+                                        )
                                     })
                             })
                             .flatten(),
@@ -861,15 +856,6 @@ impl VegaWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let colors = theme(cx).colors;
-        let project_route = self.shell_project_id(cx).is_some();
-        let environment_available = self.environment_available(cx);
-        let right_visible = self.persistent_right_workspace_visible(window, cx);
-        let environment_visible = if self.environment_is_wide(window, cx) {
-            !self.environment_collapsed
-        } else {
-            self.environment_overlay_open
-        };
         div()
             .absolute()
             .top_0()
@@ -878,41 +864,14 @@ impl VegaWindow {
             .pr(px(Layout::TOOLBAR_TRAILING_INSET))
             .flex()
             .items_center()
-            .gap(px(6.))
             .occlude()
-            .child(shell_icon_button(
-                Icon::Summary,
-                vega_i18n::t("app.shell.toggle_environment"),
-                None,
-                environment_available
-                    && !right_visible
-                    && self.workspace_fullscreen_index().is_none()
-                    && environment_visible,
-                environment_available && !right_visible,
-                colors,
-                cx.listener(|this, _, window, cx| this.toggle_environment(window, cx)),
-            ))
-            .child(shell_icon_button(
-                Icon::DockBottom,
-                vega_i18n::t("app.shell.toggle_terminal"),
-                Some("⌘J".into()),
-                self.workspace_recent_terminal_is_rendered(window, cx),
-                project_route,
-                colors,
-                cx.listener(|this, _, window, cx| this.workspace_toggle_bottom(window, cx)),
-            ))
             .child(
                 div()
-                    .capture_any_mouse_down(|_, window, _| window.prevent_default())
-                    .child(shell_icon_button(
-                        Icon::DockRight,
-                        vega_i18n::t("app.shell.toggle_panel"),
-                        None,
-                        self.right_workspace_rendered_non_terminal(window, cx),
-                        self.right_workspace_slot_available(window, cx),
-                        colors,
-                        cx.listener(|this, _, window, cx| this.workspace_toggle_right(window, cx)),
-                    )),
+                    .w(px(
+                        3. * Layout::TITLEBAR_CONTROL_SIZE + 2. * Layout::TITLEBAR_CONTROL_GAP
+                    ))
+                    .h(px(Layout::TITLEBAR_CONTROL_SIZE))
+                    .child(self.render_shell_chrome(shell_chrome::Kind::Slots, window, cx)),
             )
             .into_any_element()
     }
@@ -938,8 +897,6 @@ impl VegaWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let colors = theme(cx).colors;
-        let title = self.main_header_title(cx);
         div()
             .id("main-header")
             .h(px(Layout::MAIN_HEADER_HEIGHT))
@@ -947,8 +904,6 @@ impl VegaWindow {
             .flex()
             .items_center()
             .gap_2()
-            .border_b_1()
-            .border_color(colors.border_subtle)
             .pr(px(Layout::SHELL_SLOT_CLUSTER_RESERVE))
             .when(!sidebar_visible, |header| {
                 header
@@ -958,70 +913,10 @@ impl VegaWindow {
             .when(sidebar_visible, |header| header.pl_3())
             .child(
                 div()
-                    .min_w_0()
                     .flex_1()
-                    .truncate()
-                    .text_size(px(Typography::HEADING_PAGE))
-                    .font_weight(Typography::HEADING_PAGE_WEIGHT)
-                    .text_color(colors.text_primary)
-                    .child(title),
-            )
-            .when(
-                !self.update_notice_dismissed
-                    && matches!(
-                        self.updater.state.phase,
-                        UpdatePhase::Ready | UpdatePhase::Available
-                    ),
-                |header| {
-                    header.child(
-                        div()
-                            .id("vega-update-notice")
-                            .mr_3()
-                            .focusable()
-                            .tab_stop(true)
-                            .h(px(Layout::TITLEBAR_CONTROL_SIZE))
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .px_3()
-                            .rounded_full()
-                            .cursor_pointer()
-                            .text_size(px(Typography::BODY))
-                            .bg(colors.brand_primary)
-                            .text_color(colors.brand_on_accent)
-                            .hover(move |style| style.bg(colors.brand_primary_strong))
-                            .active(move |style| style.bg(colors.brand_primary_strong))
-                            .focus_visible(move |style| style.bg(colors.brand_primary_strong))
-                            .child(if self.updater.state.phase == UpdatePhase::Ready {
-                                vega_i18n::t("app.shell.update_ready")
-                            } else {
-                                vega_i18n::t("app.shell.update_available")
-                            })
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    cx.set_global(SettingsOpen(true));
-                                    cx.set_global(PricingSettingsRequested(false));
-                                    if let Some(view) = &this.settings_view {
-                                        view.update(cx, |view, cx| view.show_general(cx));
-                                    }
-                                    cx.notify();
-                                }),
-                            )
-                            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                    cx.set_global(SettingsOpen(true));
-                                    cx.set_global(PricingSettingsRequested(false));
-                                    if let Some(view) = &this.settings_view {
-                                        view.update(cx, |view, cx| view.show_general(cx));
-                                    }
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                }
-                            })),
-                    )
-                },
+                    .min_w_0()
+                    .h_full()
+                    .child(self.render_shell_chrome(shell_chrome::Kind::Header, window, cx)),
             )
             .into_any_element()
     }

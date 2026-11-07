@@ -1856,6 +1856,7 @@ impl Render for ConversationStream {
                                                         Some(StreamEntry::RunActivity {
                                                             group,
                                                         }) => {
+                                                            this.rebind_thinking_presentation(group, cx);
                                                             pinned = group.read(cx).scroll_fade_pinned_indicator(None);
                                                             div()
                                                                 .w_full()
@@ -1866,6 +1867,7 @@ impl Render for ConversationStream {
                                                                 .into_any_element()
                                                         },
                                                         Some(StreamEntry::RunActivitySegment { group, segment }) => {
+                                                            this.rebind_thinking_presentation(group, cx);
                                                             pinned = group.read(cx).scroll_fade_pinned_indicator(Some(*segment));
                                                             RunActivityGroup::render_segment_with_top(group.clone(), *segment, stage_top_insets.get(&index).copied().unwrap_or(Layout::CONVERSATION_STAGE_TOP), window, cx)
                                                         },

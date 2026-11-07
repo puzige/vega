@@ -17,33 +17,6 @@ pub(crate) fn focus(id: SharedString, window: &mut Window, cx: &mut App) -> Focu
         .clone()
 }
 
-pub(crate) fn chevron(
-    group: SharedString,
-    focus: &FocusHandle,
-    expanded: bool,
-    enabled: bool,
-    colors: ThemeColors,
-    window: &Window,
-) -> AnyElement {
-    div()
-        .w(px(Layout::DISCLOSURE_TRAILING_SLOT))
-        .h(px(Layout::ICON_SIZE))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(Chevron::new(
-            group,
-            focus,
-            expanded,
-            enabled,
-            colors.text_tertiary,
-            Layout::ICON_SIZE,
-            window,
-        ))
-        .into_any_element()
-}
-
 pub(crate) fn inline_chevron(
     group: SharedString,
     focus: &FocusHandle,
