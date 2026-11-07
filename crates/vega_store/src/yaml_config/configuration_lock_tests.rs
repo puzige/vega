@@ -81,7 +81,7 @@ fn configuration_diagnostics_upgrade_preserves_prior_reasons_and_rejects_unknown
         .unwrap()
         .join(format!("configuration-upgrade-{}", ulid::Ulid::generate()));
     std::fs::create_dir(&root).unwrap();
-    let store = crate::Store::open(&root.join("synthetic.db")).unwrap();
+    let store = crate::Store::open(root.join("synthetic.db")).unwrap();
     for migration in &crate::MIGRATIONS[..59] {
         store.conn().execute_batch(migration).unwrap();
     }
@@ -100,7 +100,7 @@ fn configuration_diagnostics_upgrade_preserves_prior_reasons_and_rejects_unknown
         "configuration_parse",
     ];
     for (index, reason) in reasons.iter().enumerate() {
-        store.conn().execute("INSERT INTO run_diagnostic_events(thread_id,run_id,attempt_id,phase,state,failure_code,occurred_at,duration_ms,credential_stage,credential_reason) VALUES ('t','r',?1,'run','failed','unknown_safe_failure',1,1,'mcp',?2)", rusqlite::params![format!("a{index}"), reason]).unwrap();
+        store.conn().execute("INSERT INTO run_diagnostic_events(thread_id,run_id,attempt_id,phase,state,failure_code,occurred_at,duration_ms,failure_kind,credential_stage,credential_reason) VALUES ('t','r',?1,'run','failed','unknown_safe_failure',1,1,'credential_check','mcp',?2)", rusqlite::params![format!("a{index}"), reason]).unwrap();
     }
     store.migrate().unwrap();
     store.migrate().unwrap();
