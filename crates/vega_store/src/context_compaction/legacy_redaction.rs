@@ -4,12 +4,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 type RedactionCache = BTreeMap<String, (String, BTreeMap<usize, usize>)>;
 
+#[derive(Clone)]
 struct PreparedUpdate {
     sql: &'static str,
     values: Vec<Value>,
     expected: usize,
 }
 
+#[derive(Clone)]
 pub struct PreparedLegacyRedaction {
     thread_id: String,
     source: ContextSourceVersion,
@@ -19,6 +21,10 @@ pub struct PreparedLegacyRedaction {
 }
 
 impl PreparedLegacyRedaction {
+    pub(crate) fn belongs_to(&self, thread: &str) -> bool {
+        self.thread_id == thread
+    }
+
     pub fn validate(&self, transaction: &Transaction<'_>) -> rusqlite::Result<bool> {
         Ok(
             load_source_version_in_transaction(transaction, &self.thread_id)? == self.source
@@ -31,14 +37,22 @@ impl PreparedLegacyRedaction {
             return Err(rusqlite::Error::InvalidQuery);
         }
         let savepoint = transaction.savepoint()?;
-        for update in self.updates {
-            if savepoint.execute(update.sql, rusqlite::params_from_iter(update.values))?
+        let changed = self.install_preparation_updates(&savepoint)?;
+        savepoint.commit()?;
+        Ok(changed)
+    }
+
+    pub(crate) fn install_preparation_updates(
+        &self,
+        transaction: &Connection,
+    ) -> rusqlite::Result<bool> {
+        for update in &self.updates {
+            if transaction.execute(update.sql, rusqlite::params_from_iter(&update.values))?
                 != update.expected
             {
                 return Err(rusqlite::Error::InvalidQuery);
             }
         }
-        savepoint.commit()?;
         Ok(self.changed)
     }
 }
