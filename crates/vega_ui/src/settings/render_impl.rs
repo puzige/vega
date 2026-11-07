@@ -553,7 +553,7 @@ impl SettingsView {
             .into_any_element()
     }
 
-    fn set_appearance(&mut self, value: &str, cx: &mut Context<Self>) {
+    pub(super) fn set_appearance(&mut self, value: &str, cx: &mut Context<Self>) {
         let mut candidate = self.config.clone();
         candidate.ui.theme = value.to_string();
         if let Some(sidebar) = cx.try_global::<crate::sidebar::SidebarCollapsed>() {
@@ -563,7 +563,7 @@ impl SettingsView {
         self.save_preferences(candidate, cx);
     }
 
-    fn set_ui_language(&mut self, value: &str, cx: &mut Context<Self>) {
+    pub(super) fn set_ui_language(&mut self, value: &str, cx: &mut Context<Self>) {
         if self.provider_management.saving || !matches!(value, "en" | "zh-CN") {
             return;
         }
@@ -578,169 +578,9 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        let sidebar_visible = !cx
-            .try_global::<crate::sidebar::SidebarCollapsed>()
-            .is_some_and(|sidebar| sidebar.0);
-        let enabled = !self.provider_management.saving && !self.default_permission.io_pending();
-        let languages = settings_actions().children(
-            [
-                ("en", "settings-language-en", "settings.language.english"),
-                (
-                    "zh-CN",
-                    "settings-language-zh-cn",
-                    "settings.language.chinese",
-                ),
-            ]
-            .into_iter()
-            .map(|(value, id, key)| {
-                let selected = vega_i18n::language() == value;
-                settings_action_chrome(colors)
-                    .id(id)
-                    .role(gpui_kit::Role::Button)
-                    .aria_label(if selected {
-                        t_args("settings.selection.selected", &[("label", t(key))])
-                    } else {
-                        t(key).to_string()
-                    })
-                    .aria_toggled(selected.into())
-                    .interaction_surface(
-                        if selected {
-                            colors.bg_active
-                        } else {
-                            colors.bg_elevated
-                        },
-                        if selected {
-                            colors.bg_active
-                        } else {
-                            colors.bg_hover
-                        },
-                        colors.bg_active,
-                        enabled,
-                    )
-                    .focus_visible(move |style| style.border_color(colors.accent))
-                    .when(enabled, |button| {
-                        button
-                            .focusable()
-                            .tab_stop(true)
-                            .cursor_pointer()
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    this.set_ui_language(value, cx);
-                                }),
-                            )
-                            .on_key_down(cx.listener(
-                                move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                        this.set_ui_language(value, cx);
-                                        cx.stop_propagation();
-                                    }
-                                },
-                            ))
-                    })
-                    .child(t(key))
-            }),
-        );
-        let themes = settings_actions().children(
-            [
-                ("light", t("settings.appearance.light")),
-                ("dark", t("settings.appearance.dark")),
-                ("system", t("settings.appearance.system")),
-            ]
-            .into_iter()
-            .map(|(value, label)| {
-                settings_action_chrome(colors)
-                    .id(format!("settings-theme-{value}"))
-                    .role(gpui_kit::Role::Button)
-                    .aria_label(label)
-                    .interaction_surface(
-                        if self.config.ui.theme == value {
-                            colors.bg_active
-                        } else {
-                            colors.bg_elevated
-                        },
-                        if self.config.ui.theme == value {
-                            colors.bg_active
-                        } else {
-                            colors.bg_hover
-                        },
-                        colors.bg_active,
-                        !self.provider_management.saving,
-                    )
-                    .focus_visible(move |style| style.border_color(colors.accent))
-                    .child(label)
-                    .when(enabled, |button| {
-                        button
-                            .focusable()
-                            .tab_stop(true)
-                            .cursor_pointer()
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| this.set_appearance(value, cx)),
-                            )
-                            .on_key_down(cx.listener(
-                                move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                        this.set_appearance(value, cx);
-                                        cx.stop_propagation();
-                                    }
-                                },
-                            ))
-                    })
-            }),
-        );
-        let sidebar = settings_switch(
-            "settings-sidebar-switch",
-            if sidebar_visible {
-                t("settings.sidebar.hide")
-            } else {
-                t("settings.sidebar.show")
-            },
-            sidebar_visible,
-            true,
-            colors,
-        )
-        .on_mouse_up(
-            MouseButton::Left,
-            cx.listener(|_, _, window, cx| {
-                window.dispatch_action(Box::new(crate::sidebar::ToggleSidebar), cx)
-            }),
-        )
-        .on_key_down(
-            cx.listener(|_, event: &gpui_kit::KeyDownEvent, window, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    window.dispatch_action(Box::new(crate::sidebar::ToggleSidebar), cx);
-                    cx.stop_propagation();
-                }
-            }),
-        );
         settings_section()
             .gap(px(Layout::SETTINGS_SECTION_GAP))
-            .child(
-                settings_group(colors)
-                    .child(section_title(
-                        t("settings.appearance.title"),
-                        colors.text_primary,
-                    ))
-                    .child(settings_field(
-                        t("settings.appearance.theme"),
-                        None,
-                        themes,
-                        colors,
-                    ))
-                    .child(settings_field(
-                        t("settings.language"),
-                        None,
-                        languages,
-                        colors,
-                    ))
-                    .child(settings_field(
-                        t("settings.appearance.sidebar"),
-                        None,
-                        sidebar,
-                        colors,
-                    )),
-            )
+            .child(self.render_appearance(window, cx))
             .child(
                 settings_group(colors)
                     .child(section_title(

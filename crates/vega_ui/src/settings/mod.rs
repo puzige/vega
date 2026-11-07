@@ -214,6 +214,7 @@ mod model_catalog;
 pub use model_capabilities::ModelCapabilityFocusTarget;
 mod model_configuration;
 mod motion;
+mod nsh_appearance;
 use model_configuration::SettingsDestination;
 mod permission_reset;
 mod permissions;
