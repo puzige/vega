@@ -15,11 +15,18 @@ use tokio_util::sync::CancellationToken;
 
 use crate::Tools;
 use crate::error::{BashError, BashErrorCode};
-use crate::output::{BASH_READ_CHUNK_BYTES, BashOutput, BashOutputCollector, CollectedBashOutput};
+use crate::output::{BASH_READ_CHUNK_BYTES, BashOutput, CollectedBashOutput};
 use crate::sandbox::{SandboxConfig, SandboxNetwork, TempRoot, full_access_shell_command};
 
 mod scope;
+mod session;
+mod session_process;
 pub use scope::{BashScopeDirectory, BashScopeRequest, PreparedBashScope};
+use session::SessionWriter;
+pub use session::{
+    BashSession, BashSessionRedactor, BashSessionResource, BashSessionResourceHook,
+    BashSessionSnapshot,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BashLaunchPolicy {
@@ -35,12 +42,19 @@ const OUTPUT_DRAIN_GRACE: Duration = Duration::from_millis(500);
 const REAP_GRACE: Duration = Duration::from_secs(2);
 const TEMP_PATH_PLACEHOLDER: &str = "[VEGA_TEMP]";
 
+#[derive(Default)]
+struct BashObservation {
+    started_at: Option<Arc<OnceLock<Instant>>>,
+    session: Option<SessionWriter>,
+}
+
 /// Strict parsed bash input bound to one project tool instance.
 pub struct PreparedBash {
     instance_id: u64,
     project_root: PathBuf,
     command: String,
     timeout_ms: u64,
+    wait_ms: Option<u64>,
     requested_scope: Option<BashScopeRequest>,
     description: Option<String>,
 }
@@ -54,6 +68,10 @@ impl PreparedBash {
     /// Effective timeout in milliseconds.
     pub const fn timeout_ms(&self) -> u64 {
         self.timeout_ms
+    }
+
+    pub const fn wait_ms(&self) -> Option<u64> {
+        self.wait_ms
     }
 
     pub fn project_root(&self) -> &Path {
@@ -78,6 +96,9 @@ impl PreparedBash {
         } else {
             serde_json::json!({"cmd": self.command, "timeout_ms": self.timeout_ms})
         };
+        if let Some(wait_ms) = self.wait_ms {
+            input["wait_ms"] = serde_json::json!(wait_ms);
+        }
         if let Some(scope) = &self.requested_scope {
             input["requested_scope"] = serde_json::json!(scope);
         }
@@ -91,6 +112,7 @@ impl fmt::Debug for PreparedBash {
             .debug_struct("PreparedBash")
             .field("command", &"[REDACTED]")
             .field("timeout_ms", &self.timeout_ms)
+            .field("wait_ms", &self.wait_ms)
             .finish()
     }
 }
@@ -107,6 +129,7 @@ pub enum BashInputError {
     UnexpectedField,
     ConflictingFields,
     InvalidTimeout,
+    InvalidWait,
     InvalidScope,
 }
 
@@ -117,7 +140,7 @@ impl fmt::Display for BashInputError {
 }
 
 impl BashInputError {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::MalformedJson,
         Self::InputNotObject,
         Self::MissingCommand,
@@ -127,6 +150,7 @@ impl BashInputError {
         Self::UnexpectedField,
         Self::ConflictingFields,
         Self::InvalidTimeout,
+        Self::InvalidWait,
         Self::InvalidScope,
     ];
 
@@ -141,11 +165,15 @@ impl BashInputError {
             Self::UnexpectedField => "unexpected_field",
             Self::ConflictingFields => "conflicting_fields",
             Self::InvalidTimeout => "invalid_timeout",
+            Self::InvalidWait => "invalid_wait",
             Self::InvalidScope => "invalid_scope",
         }
     }
 
     pub fn feedback(self) -> String {
+        if self == Self::InvalidWait {
+            return "Tool error: invalid bash input (invalid_wait). wait_ms must be null or an integer from 0 through 30000.".into();
+        }
         format!(
             "Tool error: invalid bash input ({}). Expected bash({{\"command\":\"pwd\",\"timeout\":null}}). command must be non-empty; timeout is a positive integer in seconds or null. Do not mix legacy cmd/timeout_ms with command/timeout.",
             self.as_str()
@@ -162,6 +190,7 @@ impl Tools {
             project_root: self.root.clone(),
             command: input.command,
             timeout_ms: input.timeout_ms,
+            wait_ms: input.wait_ms,
             requested_scope: input.requested_scope,
             description: input.description,
         })
@@ -219,7 +248,17 @@ impl Tools {
         }
         let temp_root = TempRoot::create()?;
         let result = self
-            .execute_bash_with_temp(prepared, policy, scope, cancel, &temp_root, started_at)
+            .execute_bash_with_temp(
+                prepared,
+                policy,
+                scope,
+                cancel,
+                &temp_root,
+                BashObservation {
+                    started_at,
+                    session: None,
+                },
+            )
             .await;
         if result.cleanup_safe {
             match temp_root.cleanup() {
@@ -387,7 +426,7 @@ impl Tools {
         scope: Option<PreparedBashScope>,
         cancel: CancellationToken,
         temp_root: &TempRoot,
-        started_at: Option<Arc<OnceLock<Instant>>>,
+        observation: BashObservation,
     ) -> BashAttempt {
         let launch_result = if let Some(scope) = &scope {
             self.prepare_scoped_bash_launch(&prepared, policy, Some(scope), &cancel, temp_root)
@@ -405,14 +444,26 @@ impl Tools {
                 };
             }
         };
+        let session = observation.session.clone();
         let mut attempt = self
-            .execute_bash_command(prepared, launch.command, cancel, temp_root, started_at)
+            .execute_bash_command(prepared, launch.command, cancel, temp_root, observation)
             .await;
-        if let Some(lease) = launch.credential_lease
-            && lease.shutdown().await.is_err()
-        {
-            attempt.result = Err(BashError::new(BashErrorCode::CleanupFailed));
-            attempt.cleanup_safe = false;
+        if let Some(lease) = launch.credential_lease {
+            let shutdown = lease.shutdown();
+            let closed = if let Some(session) = &session {
+                tokio::time::timeout_at(session.cleanup_deadline(), shutdown)
+                    .await
+                    .is_ok_and(|result| result.is_ok())
+            } else {
+                shutdown.await.is_ok()
+            };
+            if !closed {
+                attempt.result = Err(BashError::new(BashErrorCode::CleanupFailed));
+                attempt.cleanup_safe = false;
+                if let Some(session) = &session {
+                    session.resource_failure("credential_cleanup_failed");
+                }
+            }
         }
         attempt
     }
@@ -423,8 +474,16 @@ impl Tools {
         command: StdCommand,
         cancel: CancellationToken,
         temp_root: &TempRoot,
-        started_at: Option<Arc<OnceLock<Instant>>>,
+        observation: BashObservation,
     ) -> BashAttempt {
+        let BashObservation {
+            started_at,
+            session,
+        } = observation;
+        if let Some(session) = session {
+            return session_process::execute(prepared, command, cancel, temp_root, session).await;
+        }
+        let session: Option<SessionWriter> = None;
         if cancel.is_cancelled() {
             return BashAttempt::safe(Err(BashError::new(BashErrorCode::Cancelled)));
         }
@@ -436,15 +495,28 @@ impl Tools {
             Err(_) => return BashAttempt::safe(Err(BashError::new(BashErrorCode::SpawnFailed))),
         };
         let process_started_at = Instant::now();
+        if let Some(session) = &session {
+            session.started(process_started_at);
+        }
         if child.id().is_none() {
             let _ = terminate_child_without_group(&mut child).await;
+            if let Some(session) = &session {
+                session.retain_child(child);
+            }
             return BashAttempt {
                 result: Err(BashError::new(BashErrorCode::ProcessControlFailed)),
                 cleanup_safe: false,
             };
         }
         let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
-            let termination = terminate_group(&mut child).await;
+            let pgid = child.id();
+            let mut termination = terminate_group(&mut child).await;
+            if let Some(session) = &session {
+                confirm_group_stopped(pgid, &mut termination).await;
+                if !termination.reaped || termination.error.is_some() {
+                    session.retain_child(child);
+                }
+            }
             return BashAttempt {
                 result: Err(termination
                     .error
@@ -452,8 +524,15 @@ impl Tools {
                 cleanup_safe: termination.reaped && termination.error.is_none(),
             };
         };
+        let pgid = child.id();
         let reader_stop = CancellationToken::new();
-        let mut reader = tokio::spawn(read_output(stdout, stderr, reader_stop.clone()));
+        let mut reader = tokio::spawn(read_output(
+            stdout,
+            stderr,
+            reader_stop.clone(),
+            session.clone(),
+            temp_root.param().to_owned(),
+        ));
         if let Some(started_at) = started_at {
             let _ = started_at.set(process_started_at);
         }
@@ -471,12 +550,21 @@ impl Tools {
             _ = &mut timeout => Completion::TimedOut,
         };
 
+        if let Some(session) = &session {
+            session.transition(match &completion {
+                Completion::Exited(_) => "finishing",
+                Completion::Cancelled | Completion::TimedOut => "stopping",
+            });
+        }
         match completion {
             Completion::Exited(status) => {
                 let status = match status {
                     Ok(status) => status,
                     Err(_) => {
                         let _ = terminate_child_without_group(&mut child).await;
+                        if let Some(session) = &session {
+                            session.retain_child(child);
+                        }
                         reader_stop.cancel();
                         let _ = finish_stopped_reader(reader).await;
                         return BashAttempt {
@@ -485,6 +573,22 @@ impl Tools {
                         };
                     }
                 };
+                if let Some(session) = &session {
+                    session.exited(status);
+                    let group_result = match pgid {
+                        Some(pgid) => settle_exited_group(&mut child, pgid).await,
+                        None => Err(BashError::new(BashErrorCode::ProcessControlFailed)),
+                    };
+                    if let Err(error) = group_result {
+                        session.retain_child(child);
+                        reader_stop.cancel();
+                        let _ = finish_stopped_reader(reader).await;
+                        return BashAttempt {
+                            result: Err(error),
+                            cleanup_safe: false,
+                        };
+                    }
+                }
                 match finish_reader(&mut reader, &reader_stop).await {
                     Ok(mut collected) => {
                         redact_temp_path(&mut collected.text, temp_root.param());
@@ -492,12 +596,22 @@ impl Tools {
                     }
                     Err(error) => BashAttempt {
                         result: Err(error),
-                        cleanup_safe: false,
+                        cleanup_safe: session.is_some()
+                            && matches!(
+                                error.code(),
+                                BashErrorCode::OutputFailed | BashErrorCode::OutputIncomplete
+                            ),
                     },
                 }
             }
             Completion::Cancelled => {
-                let termination = terminate_group(&mut child).await;
+                let mut termination = terminate_group(&mut child).await;
+                if let Some(session) = &session {
+                    confirm_group_stopped(pgid, &mut termination).await;
+                    if !termination.reaped || termination.error.is_some() {
+                        session.retain_child(child);
+                    }
+                }
                 reader_stop.cancel();
                 let reader_result = finish_stopped_reader(reader).await;
                 let reader_ok = reader_result.is_ok();
@@ -510,7 +624,13 @@ impl Tools {
                 }
             }
             Completion::TimedOut => {
-                let termination = terminate_group(&mut child).await;
+                let mut termination = terminate_group(&mut child).await;
+                if let Some(session) = &session {
+                    confirm_group_stopped(pgid, &mut termination).await;
+                    if !termination.reaped || termination.error.is_some() {
+                        session.retain_child(child);
+                    }
+                }
                 reader_stop.cancel();
                 let reader_result = finish_stopped_reader(reader).await;
                 let reader_ok = reader_result.is_ok();
@@ -556,6 +676,7 @@ pub fn bash_inputs_semantically_equal(left: &str, right: &str) -> bool {
         (Ok(left), Ok(right)) => {
             left.command == right.command
                 && left.timeout_ms == right.timeout_ms
+                && left.wait_ms == right.wait_ms
                 && left.requested_scope == right.requested_scope
         }
         _ => false,
@@ -565,6 +686,7 @@ pub fn bash_inputs_semantically_equal(left: &str, right: &str) -> bool {
 struct ParsedBashInput {
     command: String,
     timeout_ms: u64,
+    wait_ms: Option<u64>,
     requested_scope: Option<BashScopeRequest>,
     description: Option<String>,
 }
@@ -583,7 +705,13 @@ fn parse_bash_input(raw_input: &str) -> Result<ParsedBashInput, BashInputError> 
     if input.keys().any(|key| {
         !matches!(
             key.as_str(),
-            "command" | "cmd" | "timeout" | "timeout_ms" | "requested_scope" | "description"
+            "command"
+                | "cmd"
+                | "timeout"
+                | "timeout_ms"
+                | "wait_ms"
+                | "requested_scope"
+                | "description"
         )
     }) {
         return Err(BashInputError::UnexpectedField);
@@ -613,6 +741,15 @@ fn parse_bash_input(raw_input: &str) -> Result<ParsedBashInput, BashInputError> 
             }
         }
     };
+    let wait_ms = match input.get("wait_ms") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_u64()
+                .filter(|value| *value <= 30_000)
+                .ok_or(BashInputError::InvalidWait)?,
+        ),
+    };
     let requested_scope = input
         .get("requested_scope")
         .map(|value| {
@@ -631,6 +768,7 @@ fn parse_bash_input(raw_input: &str) -> Result<ParsedBashInput, BashInputError> 
     Ok(ParsedBashInput {
         command: command.to_owned(),
         timeout_ms,
+        wait_ms,
         requested_scope,
         description,
     })
@@ -674,8 +812,10 @@ async fn read_output(
     mut stdout: impl AsyncRead + Unpin,
     mut stderr: impl AsyncRead + Unpin,
     stop: CancellationToken,
+    session: Option<SessionWriter>,
+    temp_path: String,
 ) -> Result<CollectedBashOutput, BashError> {
-    let mut collector = BashOutputCollector::new();
+    let mut collector = session::OutputCollector::new(session, temp_path);
     let mut stdout_chunk = [0_u8; BASH_READ_CHUNK_BYTES];
     let mut stderr_chunk = [0_u8; BASH_READ_CHUNK_BYTES];
     let mut stdout_open = true;
@@ -689,16 +829,16 @@ async fn read_output(
             result = stdout.read(&mut stdout_chunk), if stdout_open => {
                 let read = result.map_err(|_| BashError::new(BashErrorCode::OutputFailed))?;
                 stdout_open = read != 0;
-                collector.push(&stdout_chunk[..read]);
+                collector.push(0, &stdout_chunk[..read], read == 0)?;
             }
             result = stderr.read(&mut stderr_chunk), if stderr_open => {
                 let read = result.map_err(|_| BashError::new(BashErrorCode::OutputFailed))?;
                 stderr_open = read != 0;
-                collector.push(&stderr_chunk[..read]);
+                collector.push(1, &stderr_chunk[..read], read == 0)?;
             }
         }
     }
-    Ok(collector.finish())
+    collector.finish()
 }
 
 async fn finish_reader(
@@ -739,6 +879,10 @@ async fn terminate_group(child: &mut Child) -> Termination {
             error: Some(BashError::new(BashErrorCode::ProcessControlFailed)),
         };
     };
+    terminate_group_id(child, pgid).await
+}
+
+async fn terminate_group_id(child: &mut Child, pgid: u32) -> Termination {
     let mut error = signal_group(pgid, "-TERM").await.err();
     tokio::time::sleep(TERMINATION_GRACE).await;
     if let Err(kill_error) = signal_group(pgid, "-KILL").await
@@ -756,6 +900,43 @@ async fn terminate_group(child: &mut Child) -> Termination {
     Termination { reaped, error }
 }
 
+async fn confirm_group_stopped(pgid: Option<u32>, termination: &mut Termination) {
+    let result = match pgid {
+        Some(pgid) => wait_group_gone(pgid).await,
+        None => Err(BashError::new(BashErrorCode::ProcessControlFailed)),
+    };
+    if let Err(error) = result {
+        termination.error = Some(error);
+    }
+}
+
+async fn settle_exited_group(child: &mut Child, pgid: u32) -> Result<(), BashError> {
+    if group_exists(&format!("-{pgid}")).await? {
+        let termination = terminate_group_id(child, pgid).await;
+        if let Some(error) = termination.error {
+            return Err(error);
+        }
+        if !termination.reaped {
+            return Err(BashError::new(BashErrorCode::ProcessControlFailed));
+        }
+    }
+    wait_group_gone(pgid).await
+}
+
+async fn wait_group_gone(pgid: u32) -> Result<(), BashError> {
+    let target = format!("-{pgid}");
+    let deadline = tokio::time::Instant::now() + REAP_GRACE;
+    loop {
+        if !group_exists(&target).await? {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(BashError::new(BashErrorCode::ProcessControlFailed));
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 async fn terminate_child_without_group(child: &mut Child) -> bool {
     let _ = child.start_kill();
     matches!(
@@ -766,14 +947,7 @@ async fn terminate_child_without_group(child: &mut Child) -> bool {
 
 async fn signal_group(pgid: u32, signal: &str) -> Result<(), BashError> {
     let target = format!("-{pgid}");
-    let status = Command::new("/bin/kill")
-        .args([signal, "--", &target])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .map_err(|_| BashError::new(BashErrorCode::ProcessControlFailed))?;
+    let status = run_group_signal(&[signal, "--", &target]).await?;
     if status.success() || !group_exists(&target).await? {
         Ok(())
     } else {
@@ -782,15 +956,22 @@ async fn signal_group(pgid: u32, signal: &str) -> Result<(), BashError> {
 }
 
 async fn group_exists(target: &str) -> Result<bool, BashError> {
-    let status = Command::new("/bin/kill")
-        .args(["-0", "--", target])
+    let status = run_group_signal(&["-0", "--", target]).await?;
+    Ok(status.success())
+}
+
+async fn run_group_signal(args: &[&str]) -> Result<ExitStatus, BashError> {
+    let mut command = Command::new("/bin/kill");
+    command
+        .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
+        .kill_on_drop(true);
+    tokio::time::timeout(REAP_GRACE, command.status())
         .await
-        .map_err(|_| BashError::new(BashErrorCode::ProcessControlFailed))?;
-    Ok(status.success())
+        .map_err(|_| BashError::new(BashErrorCode::ProcessControlFailed))?
+        .map_err(|_| BashError::new(BashErrorCode::ProcessControlFailed))
 }
 
 fn build_output(

@@ -1250,6 +1250,25 @@ where
     F: FnMut(RuntimeEvent) -> Fut,
     Fut: Future<Output = Result<(), VegaError>>,
 {
+    let mut request = request;
+    let shell_run = shell_sessions::ShellRun::new(
+        tools,
+        &request.tool_config,
+        request.context_operation_id.clone(),
+        cancel.clone(),
+    );
+    request.tool_config.shell_run = Some(shell_run.clone());
+    let shell_cancel = cancel.clone();
+    let shell_monitor_owner = shell_run.clone();
+    let shell_monitor_done = CancellationToken::new();
+    let shell_monitor_stop = shell_monitor_done.clone();
+    let shell_monitor = tokio::spawn(async move {
+        tokio::select! {
+            biased;
+            _ = shell_cancel.cancelled() => shell_monitor_owner.shutdown().await,
+            _ = shell_monitor_stop.cancelled() => Ok(()),
+        }
+    });
     let computer_use = request.tool_config.computer_use.clone();
     let lifetime = CancellationToken::new();
     let monitor = computer_use.clone().map(|run| {
@@ -1269,6 +1288,8 @@ where
         sink,
     )
     .await;
+    shell_run.stop_admission();
+    let shell_shutdown = shell_run.shutdown().await;
     lifetime.cancel();
     if let Some(monitor) = monitor {
         let _ = monitor.await;
@@ -1276,6 +1297,13 @@ where
     if let Some(run) = computer_use {
         run.shutdown().await;
     }
+    shell_monitor_done.cancel();
+    let shell_monitor_result = shell_monitor.await.map_err(|_| VegaError::Tool {
+        tool: "bash".into(),
+        message: "shell lifecycle monitor failed".into(),
+    })?;
+    shell_shutdown?;
+    shell_monitor_result?;
     result
 }
 
@@ -1397,7 +1425,7 @@ where
         ..Default::default()
     };
     let mut completed = request.completed_tool_results;
-    let tool_config = request.tool_config;
+    let mut tool_config = request.tool_config;
     let skill_config = tool_config.skills.clone();
     let skill_catalog = if let Some(config) = &skill_config {
         config
@@ -1642,6 +1670,9 @@ where
                         text_end_bytes: final_text.len(),
                     }
                 );
+            }
+            if let Some(owner) = &tool_config.shell_run {
+                owner.shutdown().await?;
             }
             messages.push(ChatMessage::new(ChatRole::Assistant, notice));
             emit!(
@@ -3281,6 +3312,9 @@ where
                         false,
                     ));
                 }
+                if let Some(owner) = tool_config.shell_run.take() {
+                    owner.shutdown().await?;
+                }
                 let staged = accept_steering(
                     source.as_ref(),
                     &input,
@@ -3319,6 +3353,9 @@ where
                 input_anchor = None;
                 live_projection_revision = live_projection_revision.saturating_add(1);
                 continue;
+            }
+            if let Some(owner) = &tool_config.shell_run {
+                owner.shutdown().await?;
             }
             emit!(events, sink, RuntimeEvent::Finished(finish));
             tool_definitions = capabilities.current_definitions();
@@ -3662,6 +3699,19 @@ where
                 let mut result = prior.result;
                 result.reused = true;
                 result.truncated = None;
+                if matches!(call.name.as_str(), "bash" | "bash_wait" | "bash_cancel")
+                    && serde_json::from_str::<Value>(&result.output)
+                        .is_ok_and(|value| value.get("operation_id").is_some())
+                    && !tool_config
+                        .shell_run
+                        .as_ref()
+                        .is_some_and(|owner| owner.live_receipt(&result.output))
+                {
+                    result.output = "Tool error: historical shell session receipt has no live authority; handle expired".into();
+                    result.status = RuntimeToolStatus::Failed;
+                    result.exit_code = None;
+                    result.duration_ms = None;
+                }
                 let original = (call.name == context_history::TOOL
                     && result.status != RuntimeToolStatus::Rejected)
                     .then(|| (result.status, result.output.clone()));
@@ -3743,7 +3793,19 @@ where
                     false,
                 ));
             }
+            let call_admission =
+                shell_sessions::execution_admission(&prepared, &tool_config, tools);
+            let admission_failure = call_admission.as_ref().err().map(|error| {
+                terminal_result(
+                    &call,
+                    format!("Tool error: {error}"),
+                    RuntimeToolStatus::Rejected,
+                    Some(validation_audit()),
+                )
+            });
+            let _call_admission = call_admission.ok().flatten();
             let cua_authorization = if matches!(&prepared, PreparedRuntimeCall::ComputerUse { .. })
+                && admission_failure.is_none()
             {
                 let authorization = authorize_call(
                     &prepared,
@@ -3774,7 +3836,9 @@ where
             };
             emit!(events, sink, RuntimeEvent::ToolCallProposed(call.clone()));
 
-            let authorization = if let Some(authorization) = cua_authorization {
+            let authorization = if let Some(result) = admission_failure {
+                Authorization::Terminal(result)
+            } else if let Some(authorization) = cua_authorization {
                 authorization
             } else {
                 authorize_call(
@@ -3986,6 +4050,7 @@ where
                                     permission_hook,
                                     &cancel,
                                     bash_started_at,
+                                    &tool_config,
                                 )
                                 .await
                             }
@@ -4205,6 +4270,9 @@ where
                     true,
                     false,
                 ));
+            }
+            if let Some(owner) = tool_config.shell_run.take() {
+                owner.shutdown().await?;
             }
             let staged = accept_steering(
                 source.as_ref(),

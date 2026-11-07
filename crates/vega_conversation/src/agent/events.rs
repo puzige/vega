@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::Value;
 
 pub(super) struct RuntimeEventContext<'a, F> {
     pub(super) message_id: &'a str,
@@ -1799,6 +1800,18 @@ pub(crate) fn validate_runtime_terminal(
     approval: &ApprovalAudit,
 ) -> Result<(), VegaError> {
     let result_approval = result.approval.as_ref().map(approval_audit_from_runtime);
+    let session_receipt = super::shell_operations::validate_projection(
+        &state.tool,
+        &state.input_json,
+        &result.output,
+        result.status,
+        approval,
+        result.exit_code,
+        result.duration_ms,
+    ) == Some(true)
+        && serde_json::from_str::<Value>(&result.output).is_ok_and(|value| {
+            value["truncated"].as_bool() == result.truncated && result.truncated.is_some()
+        });
     if result.call_id != call_id
         || (result.status == RuntimeToolStatus::Rejected && state.status != "pending_approval")
         || (result.status != RuntimeToolStatus::Rejected && state.status != "running")
@@ -1814,6 +1827,7 @@ pub(crate) fn validate_runtime_terminal(
             result.status,
             RuntimeToolStatus::Rejected | RuntimeToolStatus::Failed
         ) && result.truncated.is_some()
+            && !session_receipt
         || result.status == RuntimeToolStatus::Success && result.truncated.is_none()
         || state.tool == "read_conversation"
             && result.status == RuntimeToolStatus::Success
@@ -1824,6 +1838,7 @@ pub(crate) fn validate_runtime_terminal(
         || result.status == RuntimeToolStatus::Cancelled
             && state.tool == "bash"
             && result.truncated.is_some()
+            && !session_receipt
     {
         return Err(safe_audit_error(&state.tool));
     }

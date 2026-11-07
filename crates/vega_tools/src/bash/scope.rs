@@ -101,6 +101,7 @@ pub struct PreparedBashScope {
     project_root: PathBuf,
     command: String,
     timeout_ms: u64,
+    wait_ms: Option<u64>,
     request: BashScopeRequest,
     policy: BashLaunchPolicy,
     pub(crate) directories: Vec<BashScopeDirectory>,
@@ -129,6 +130,7 @@ impl PreparedBashScope {
             || self.project_root != prepared.project_root()
             || self.command != prepared.command()
             || self.timeout_ms != prepared.timeout_ms()
+            || self.wait_ms != prepared.wait_ms()
             || self.policy != policy
             || prepared.requested_scope() != Some(&self.request)
         {
@@ -209,6 +211,7 @@ impl Tools {
             project_root: self.root.clone(),
             command: prepared.command().into(),
             timeout_ms: prepared.timeout_ms(),
+            wait_ms: prepared.wait_ms(),
             request,
             policy,
             directories,

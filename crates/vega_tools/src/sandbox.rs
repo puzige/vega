@@ -423,6 +423,40 @@ impl TempRoot {
         result
     }
 
+    pub(crate) fn recovery_identity(&self) -> crate::bash::BashSessionResource {
+        crate::bash::BashSessionResource {
+            path: self.param.clone(),
+            device: self.dev,
+            inode: self.ino,
+        }
+    }
+
+    pub(crate) fn recover(resource: &crate::bash::BashSessionResource) -> Result<(), BashError> {
+        let base = fs::canonicalize(TEMP_BASE)
+            .map_err(|_| BashError::new(BashErrorCode::CleanupFailed))?;
+        let path = PathBuf::from(&resource.path);
+        if path.parent() != Some(base.as_path())
+            || !path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(".vega-bash-"))
+        {
+            return Err(BashError::new(BashErrorCode::CleanupFailed));
+        }
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(BashError::new(BashErrorCode::CleanupFailed)),
+            Ok(_) => Self {
+                path,
+                base,
+                param: resource.path.clone(),
+                dev: resource.device,
+                ino: resource.inode,
+            }
+            .cleanup(),
+        }
+    }
+
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }

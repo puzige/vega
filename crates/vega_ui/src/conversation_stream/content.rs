@@ -509,6 +509,23 @@ impl ConversationStream {
                         .new(|_| ToolCard::hydrated(input, status, approval, result, description));
                     self.observe_tool_card(&card, cx);
                     self.tool_cards.insert(call_id.clone(), card.clone());
+                    if let Some(command) =
+                        self.shell_recovery
+                            .projection
+                            .as_ref()
+                            .and_then(|projection| {
+                                projection.commands.iter().find(|command| {
+                                    command.thread_id == self.thread.id
+                                        && command.call_id == call_id
+                                })
+                            })
+                    {
+                        card.update(cx, |card, cx| {
+                            if card.apply_shell_command(command) {
+                                cx.notify();
+                            }
+                        });
+                    }
                     self.refresh_subagent_card(&card, cx);
                     let run_details =
                         self.run_activity_groups

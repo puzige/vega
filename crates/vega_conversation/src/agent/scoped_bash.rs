@@ -14,6 +14,11 @@ pub(super) struct ScopedBashExecution {
     pub started_at: Option<Arc<std::sync::OnceLock<std::time::Instant>>>,
 }
 
+pub(super) struct ScopedBashSessionExecution {
+    pub cancel: CancellationToken,
+    pub redactor: vega_tools::BashSessionRedactor,
+}
+
 impl ScopedBashAuthority {
     pub(super) async fn execute(
         &self,
@@ -25,6 +30,41 @@ impl ScopedBashAuthority {
         execution: ScopedBashExecution,
     ) -> Result<BashOutput, BashError> {
         let ScopedBashExecution { cancel, started_at } = execution;
+        let (tools, prepared, scope) = self
+            .authorize(hook, call_id, tools, prepared, policy, cancel.clone())
+            .await?;
+        tools
+            .execute_bash_scoped_with_start(prepared, policy, Some(scope), cancel, started_at)
+            .await
+    }
+
+    pub(super) async fn start_session(
+        &self,
+        hook: &dyn PermissionHook,
+        call_id: String,
+        tools: Tools,
+        prepared: PreparedBash,
+        policy: BashLaunchPolicy,
+        execution: ScopedBashSessionExecution,
+    ) -> Result<vega_tools::BashSession, BashError> {
+        let ScopedBashSessionExecution { cancel, redactor } = execution;
+        let (tools, prepared, scope) = self
+            .authorize(hook, call_id, tools, prepared, policy, cancel.clone())
+            .await?;
+        tools
+            .start_bash_session_with_redactor(prepared, policy, Some(scope), cancel, redactor)
+            .await
+    }
+
+    async fn authorize(
+        &self,
+        hook: &dyn PermissionHook,
+        call_id: String,
+        tools: Tools,
+        prepared: PreparedBash,
+        policy: BashLaunchPolicy,
+        cancel: CancellationToken,
+    ) -> Result<(Tools, PreparedBash, vega_tools::PreparedBashScope), BashError> {
         let path = self.database_path.clone();
         let fence = self.fence.clone();
         let run_id = self.run_id.clone();
@@ -92,9 +132,7 @@ impl ScopedBashAuthority {
         {
             return Err(scope_mismatch());
         }
-        tools
-            .execute_bash_scoped_with_start(prepared, policy, Some(scope), cancel, started_at)
-            .await
+        Ok((tools, prepared, scope))
     }
 }
 

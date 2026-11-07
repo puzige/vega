@@ -351,6 +351,9 @@ pub enum ToolCardInputProjection {
     Bash {
         command: String,
     },
+    ShellControl {
+        tool: String,
+    },
     /// Safe write audit summary; the body and fingerprint are discarded.
     Write {
         path: String,
@@ -395,6 +398,7 @@ impl ToolCardInputProjection {
             Self::ComputerUse { tool, .. } | Self::Automation { tool } => Some(tool),
             Self::ReadOnly { tool, .. } => Some(tool.as_str()),
             Self::Bash { .. } => Some("bash"),
+            Self::ShellControl { tool } => Some(tool),
             Self::Write { .. } => Some("write"),
             Self::Edit { .. } => Some("edit"),
             Self::Mcp { alias, .. } => Some(alias),
@@ -419,6 +423,7 @@ impl ToolCardInputProjection {
                 permission_path, ..
             } => permission_path.as_deref(),
             Self::Subagent { .. }
+            | Self::ShellControl { .. }
             | Self::UserQuestion { .. }
             | Self::ComputerUse { .. }
             | Self::Automation { .. }
@@ -455,6 +460,9 @@ pub enum ToolCardResultProjection {
         duration_ms: Option<u64>,
         truncated: Option<bool>,
         reused: bool,
+        session_state: Option<String>,
+        operation_id: Option<Box<str>>,
+        output_incomplete: bool,
     },
     /// Bounded generic read/glob/grep output.
     ReadOnly {
@@ -714,6 +722,15 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
                 ToolCardInputProjection::Corrupt
             }
         }
+        "bash_wait" | "bash_cancel" => {
+            if crate::agent::valid_shell_control_input(&call.tool, &call.input_json) {
+                ToolCardInputProjection::ShellControl {
+                    tool: call.tool.clone(),
+                }
+            } else {
+                ToolCardInputProjection::Corrupt
+            }
+        }
         "bash" => vega_tools::bash_permission_signature(&call.input_json)
             .map_or(ToolCardInputProjection::Corrupt, |command| {
                 ToolCardInputProjection::Bash { command }
@@ -952,7 +969,37 @@ pub fn tool_card_result_projection(
                 reused: result.reused,
             }
         }
-        ToolCardInputProjection::Bash { .. } => {
+        ToolCardInputProjection::Bash { .. } | ToolCardInputProjection::ShellControl { .. } => {
+            let session = serde_json::from_str::<serde_json::Value>(&result.output)
+                .ok()
+                .filter(|value| value.get("operation_id").is_some());
+            if let Some(value) = session {
+                let status = match result.status {
+                    ToolCallStatus::Success => vega_runtime::RuntimeToolStatus::Success,
+                    ToolCallStatus::Failed => vega_runtime::RuntimeToolStatus::Failed,
+                    ToolCallStatus::Cancelled => vega_runtime::RuntimeToolStatus::Cancelled,
+                    _ => return ToolCardResultProjection::Corrupt,
+                };
+                if !crate::agent::valid_shell_receipt(
+                    &result.output,
+                    status,
+                    result.exit_code,
+                    result.duration_ms,
+                ) {
+                    return ToolCardResultProjection::Corrupt;
+                }
+                return ToolCardResultProjection::Bash {
+                    status: result.status,
+                    output: value["output"].as_str().unwrap_or_default().into(),
+                    exit_code: result.exit_code,
+                    duration_ms: result.duration_ms,
+                    truncated: value["truncated"].as_bool(),
+                    reused: result.reused,
+                    session_state: value["state"].as_str().map(str::to_owned),
+                    operation_id: value["operation_id"].as_str().map(Into::into),
+                    output_incomplete: value["output_incomplete"].as_bool().unwrap_or(false),
+                };
+            }
             let metadata_valid = match result.status {
                 ToolCallStatus::Success => {
                     result.exit_code.is_some()
@@ -978,6 +1025,9 @@ pub fn tool_card_result_projection(
                 duration_ms: result.duration_ms,
                 truncated: result.truncated,
                 reused: result.reused,
+                session_state: None,
+                operation_id: None,
+                output_incomplete: false,
             }
         }
         ToolCardInputProjection::ReadOnly { .. } | ToolCardInputProjection::Automation { .. } => {

@@ -473,6 +473,14 @@ impl VegaWindow {
         cx: &mut Context<Self>,
     ) {
         self.bind_question_attention(view, cx);
+        cx.subscribe(
+            view,
+            |this, stream, request: &ShellRecoveryRequested, cx| {
+                this.request_shell_recovery(stream.clone(), request, cx);
+            },
+        )
+        .detach();
+        view.update(cx, |stream, cx| stream.refresh_shell_recovery(cx));
         cx.subscribe(view, |this, stream, request: &ForkRequested, cx| {
             this.fork_conversation(stream.clone(), request, cx);
         })
