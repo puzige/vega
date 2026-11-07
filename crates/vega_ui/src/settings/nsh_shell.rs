@@ -1,4 +1,4 @@
-use gpui_kit::{App, Context, Window};
+use gpui_kit::{App, Context, FocusHandle, KeyDownEvent, Window};
 use nsh_core::element::ImageSrc;
 use nsh_core::prelude::*;
 use tokio::sync::{mpsc, oneshot};
@@ -7,6 +7,7 @@ use vega_theme::{Layout, ThemeColors, Typography};
 
 use super::{SettingsDestination, SettingsView};
 use crate::icons::Icon;
+use crate::nsh::keyboard::{Key, Selection, Step};
 use crate::nsh::{ProjectionId, Surface};
 
 const SECTIONS: [usize; 6] = [1, 0, 5, 7, 6, 4];
@@ -43,8 +44,9 @@ struct Snapshot {
     selected: usize,
     error: Option<String>,
     colors: ThemeColors,
+    keyboard: Option<Action>,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Action {
     Back,
     Section(usize),
@@ -62,6 +64,17 @@ pub(super) struct Presentation {
     surface: Surface<Snapshot, Request>,
     id: ProjectionId,
     height: f32,
+    focus: FocusHandle,
+    keyboard_session: ProjectionId,
+    keyboard: Option<Selection<Action>>,
+    keyboard_observed: Option<Snapshot>,
+    _focus_subscriptions: Vec<gpui_kit::Subscription>,
+}
+fn enabled(snapshot: &Snapshot) -> Vec<Action> {
+    std::iter::once(Action::Back)
+        .chain(SECTIONS.into_iter().map(Action::Section))
+        .filter(|action| accepts(snapshot, snapshot, *action))
+        .collect()
 }
 fn accepts(current: &Snapshot, observed: &Snapshot, action: Action) -> bool {
     current.id.matches(&observed.id)
@@ -91,6 +104,7 @@ impl SettingsView {
             selected: self.navigation_section(),
             error: self.error.as_ref().map(|error| error.render()),
             colors: vega_theme::theme(cx).colors,
+            keyboard: None,
         }
     }
     pub(super) fn sync_shell_presentations(&self, cx: &App) {
@@ -122,10 +136,45 @@ impl SettingsView {
             };
             let (surface, mut requests) =
                 Surface::new(self.shell_snapshot(id.clone(), cx), renderer, window, cx);
+            let focus = cx.focus_handle().tab_stop(!heading);
+            let focus_subscriptions = if heading {
+                Vec::new()
+            } else {
+                vec![
+                    cx.on_focus_in(&focus, window, |this, window, cx| {
+                        let Some(page) = &this.shell_navigation else {
+                            return;
+                        };
+                        if page.focus.contains_focused(window, cx) {
+                            let focus = page.focus.clone();
+                            let snapshot = this.shell_snapshot(page.id.clone(), cx);
+                            let next = Selection::advance(
+                                None,
+                                &page.keyboard_session,
+                                &enabled(&snapshot),
+                                window.modifiers().shift,
+                            );
+                            if let Some(page) = &mut this.shell_navigation
+                                && let Step::Selected(next) = next
+                            {
+                                page.keyboard = Some(next);
+                            }
+                            window.focus(&focus, cx);
+                        }
+                        cx.notify();
+                    }),
+                    cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()),
+                ]
+            };
             let page = Presentation {
                 surface,
                 id,
                 height: Typography::SETTINGS_TITLE * 1.6,
+                focus,
+                keyboard_session: ProjectionId::new(),
+                keyboard: None,
+                keyboard_observed: None,
+                _focus_subscriptions: focus_subscriptions,
             };
             if heading {
                 self.shell_heading = Some(page);
@@ -138,47 +187,13 @@ impl SettingsView {
                         .update_in(cx, |this, window, cx| {
                             match request {
                                 Request::Decide(command) => {
-                                    let page = if heading {
-                                        &this.shell_heading
-                                    } else {
-                                        &this.shell_navigation
-                                    };
-                                    let accepted = page.as_ref().is_some_and(|page| {
-                                        accepts(
-                                            &this.shell_snapshot(page.id.clone(), cx),
+                                    let accepted = !heading
+                                        && this.shell_keyboard_activate(
                                             &command.observed,
                                             command.action,
-                                        )
-                                    });
-                                    if accepted {
-                                        match command.action {
-                                            Action::Back => this.on_back(
-                                                &gpui_kit::MouseUpEvent {
-                                                    button: gpui_kit::MouseButton::Left,
-                                                    position: gpui_kit::point(
-                                                        gpui_kit::px(0.),
-                                                        gpui_kit::px(0.),
-                                                    ),
-                                                    modifiers: Default::default(),
-                                                    click_count: 1,
-                                                },
-                                                window,
-                                                cx,
-                                            ),
-                                            Action::Section(section) => {
-                                                this.cancel_provider_operation(cx);
-                                                if this.section == 5
-                                                    && section != 5
-                                                    && (this.mcp.oauth_discovery.is_some()
-                                                        || this.mcp.oauth_flow_id.is_some())
-                                                {
-                                                    this.cancel_mcp_oauth(cx);
-                                                }
-                                                this.request_settings_section(section, cx);
-                                                cx.notify();
-                                            }
-                                        }
-                                    }
+                                            window,
+                                            cx,
+                                        );
                                     let _ = command.reply.send(accepted);
                                 }
                                 Request::Layout(height)
@@ -203,6 +218,12 @@ impl SettingsView {
             })
             .detach();
         }
+        let projected = if heading {
+            self.shell_heading.as_ref()
+        } else {
+            self.shell_navigation.as_ref()
+        }
+        .map(|page| self.shell_snapshot(page.id.clone(), cx));
         let page = if heading {
             &mut self.shell_heading
         } else {
@@ -212,7 +233,73 @@ impl SettingsView {
             return gpui_kit::div().into_any_element();
         };
         page.surface.sync_environment(cx);
+        if !heading && let Some(mut projected) = projected {
+            if page
+                .keyboard_observed
+                .as_ref()
+                .is_some_and(|previous| previous.authority != projected.authority)
+            {
+                page.keyboard_session = ProjectionId::new();
+                page.keyboard = None;
+            }
+            page.keyboard = Selection::reconcile(
+                page.keyboard.as_ref(),
+                &page.keyboard_session,
+                &enabled(&projected),
+            );
+            if page.focus.is_focused(window) {
+                projected.keyboard = page.keyboard.as_ref().and_then(|selection| {
+                    selection.action(&page.keyboard_session, &enabled(&projected))
+                });
+            }
+            page.keyboard_observed = Some(projected.clone());
+            page.surface.publish(projected);
+        }
+        let focus = page.focus.clone();
+        let selected = page
+            .keyboard_observed
+            .as_ref()
+            .and_then(|snapshot| snapshot.keyboard.map(|action| (snapshot.clone(), action)));
         let container = gpui_kit::div().w_full().child(page.surface.entity());
+        if !heading {
+            use gpui_kit::{InteractiveElement, StatefulInteractiveElement};
+            let mut container = container
+                .id("settings-nsh-navigation-host")
+                .relative()
+                .track_focus(&focus)
+                .tab_stop(true)
+                .role(gpui_kit::Role::Group)
+                .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    this.shell_keyboard(event, window, cx);
+                }))
+                .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
+                    if let Some(page) = &mut this.shell_navigation {
+                        page.keyboard = None;
+                    }
+                    cx.notify();
+                }));
+            if let Some((observed, action)) = selected {
+                let weak = cx.weak_entity();
+                container = container.child(
+                    gpui_kit::div()
+                        .id("settings-nsh-navigation-active")
+                        .absolute()
+                        .inset_0()
+                        .role(gpui_kit::Role::Button)
+                        .aria_label(match action {
+                            Action::Back => t("settings.navigation.back_app"),
+                            Action::Section(section) => section_label(section),
+                        })
+                        .aria_active_descendant()
+                        .on_a11y_action(gpui_kit::AccessibleAction::Click, move |_, window, cx| {
+                            let _ = weak.update(cx, |this, cx| {
+                                this.shell_keyboard_activate(&observed, action, window, cx);
+                            });
+                        }),
+                );
+            }
+            return container.h_full().into_any_element();
+        }
         if heading {
             container
                 .flex_shrink_0()
@@ -220,6 +307,94 @@ impl SettingsView {
                 .into_any_element()
         } else {
             container.h_full().into_any_element()
+        }
+    }
+    fn shell_keyboard_activate(
+        &mut self,
+        observed: &Snapshot,
+        action: Action,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(page) = &self.shell_navigation else {
+            return false;
+        };
+        if !accepts(&self.shell_snapshot(page.id.clone(), cx), observed, action) {
+            return false;
+        }
+        match action {
+            Action::Back => self.on_back(
+                &gpui_kit::MouseUpEvent {
+                    button: gpui_kit::MouseButton::Left,
+                    position: gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)),
+                    modifiers: Default::default(),
+                    click_count: 1,
+                },
+                window,
+                cx,
+            ),
+            Action::Section(section) => {
+                self.cancel_provider_operation(cx);
+                if self.section == 5
+                    && section != 5
+                    && (self.mcp.oauth_discovery.is_some() || self.mcp.oauth_flow_id.is_some())
+                {
+                    self.cancel_mcp_oauth(cx);
+                }
+                self.request_settings_section(section, cx);
+                cx.notify();
+            }
+        }
+        true
+    }
+    fn shell_keyboard(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(page) = &self.shell_navigation else {
+            return;
+        };
+        let current = self.shell_snapshot(page.id.clone(), cx);
+        if !current.authority.visible {
+            return;
+        }
+        let controls = enabled(&current);
+        match Key::from_event(event) {
+            Key::Next(backwards) => {
+                let previous = page
+                    .focus
+                    .is_focused(window)
+                    .then_some(page.keyboard.as_ref())
+                    .flatten();
+                let next =
+                    Selection::advance(previous, &page.keyboard_session, &controls, backwards);
+                let focus = page.focus.clone();
+                match next {
+                    Step::Selected(next) => {
+                        if let Some(page) = &mut self.shell_navigation {
+                            page.keyboard = Some(next);
+                        }
+                        window.focus(&focus, cx);
+                    }
+                    Step::Exit => crate::nsh::keyboard::leave(&focus, backwards, window, cx),
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }
+            Key::Activate if page.focus.is_focused(window) => {
+                let observed = page.keyboard_observed.clone();
+                let action = page
+                    .keyboard
+                    .as_ref()
+                    .and_then(|selection| selection.action(&page.keyboard_session, &controls));
+                if let (Some(observed), Some(action)) = (observed, action) {
+                    self.shell_keyboard_activate(&observed, action, window, cx);
+                }
+                cx.stop_propagation();
+            }
+            _ => {}
         }
     }
     pub(super) fn render_shell_navigation(
@@ -246,9 +421,9 @@ fn button(
     icon: Icon,
 ) -> AnyElement {
     let target = element_ref();
-    let focused = signal(false);
-    target.on_focus_in(move || focused.set(true));
-    target.on_focus_out(move || focused.set(false));
+    let focused = computed(move || {
+        state.get().keyboard == Some(section.map_or(Action::Back, Action::Section))
+    });
     let action = section.map_or(Action::Back, Action::Section);
     let label = move || {
         state.with(|_| section.map_or_else(|| t("settings.navigation.back_app"), section_label))
@@ -423,6 +598,7 @@ mod tests {
             selected: 0,
             error: None,
             colors: vega_theme::Theme::light().colors,
+            keyboard: None,
         }
     }
     #[test]

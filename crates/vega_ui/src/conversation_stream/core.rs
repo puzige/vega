@@ -290,11 +290,18 @@ pub(crate) struct PendingEcho {
 }
 
 impl ConversationStream {
+    pub fn suspend_shell_recovery_presentation(&mut self) {
+        self.hide_shell_recovery_surface();
+    }
+
     pub fn set_reading_preview(&mut self, reading: bool, cx: &mut Context<Self>) {
         if self.reading_preview == reading {
             return;
         }
         self.reading_preview = reading;
+        if reading {
+            self.hide_shell_recovery_surface();
+        }
         for card in self.artifact_cards.values() {
             card.update(cx, |card, cx| card.set_reading_preview(reading, cx));
         }
@@ -966,6 +973,9 @@ impl ConversationStream {
 
     pub fn apply_thread(&mut self, mut thread: Thread, cx: &mut Context<Self>) {
         if thread.id == self.thread.id && thread.project_id == self.thread.project_id {
+            if thread.backend != self.thread.backend {
+                self.hide_shell_recovery_surface();
+            }
             if thread.reasoning_preferences.is_none() {
                 thread.reasoning_preferences = self.thread.reasoning_preferences.clone();
             }
@@ -1033,6 +1043,7 @@ impl ConversationStream {
         {
             return None;
         }
+        self.hide_shell_recovery_surface();
         self.thread.backend = backend;
         self.backend_selector_open = false;
         self.close_composer_popovers(cx);
@@ -1075,6 +1086,7 @@ impl ConversationStream {
         if thread.project_id == self.thread.project_id {
             return true;
         }
+        self.hide_shell_recovery_surface();
         self.close_composer_popovers(cx);
         self.clear_skill_route_state();
         self.branch_selector.update(cx, |selector, cx| {

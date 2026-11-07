@@ -11,6 +11,8 @@ use nsh_core::prelude::{
 use nsh_platform_gpui::{App as NshApp, AppOptions, AppView, CacheOptions, Locale};
 use tokio::sync::{mpsc, oneshot, watch};
 
+pub(crate) mod keyboard;
+
 pub const COMMAND_CAPACITY: usize = 64;
 
 #[derive(Clone)]
