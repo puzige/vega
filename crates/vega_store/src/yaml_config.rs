@@ -23,6 +23,7 @@ pub enum ConfigurationFailureStage {
     Directory,
     LockOpen,
     LockValidation,
+    LockAcquire,
     Read,
     Parse,
 }
@@ -43,11 +44,23 @@ pub fn edit_lock_poisoned() -> bool {
     EDIT_LOCK.is_poisoned()
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("configuration lock acquisition failed")]
+struct ConfigurationLockError(#[source] io::Error);
+
 pub fn failure(error: &io::Error) -> Option<ConfigurationFailure> {
-    error
-        .get_ref()
-        .and_then(|error| error.downcast_ref::<ConfigurationFailure>())
+    let source = error.get_ref()?;
+    source
+        .downcast_ref::<ConfigurationFailure>()
         .copied()
+        .or_else(|| {
+            source
+                .downcast_ref::<ConfigurationLockError>()
+                .map(|error| ConfigurationFailure {
+                    stage: ConfigurationFailureStage::LockAcquire,
+                    kind: error.0.kind(),
+                })
+        })
 }
 
 pub struct Edit {
@@ -302,7 +315,9 @@ fn begin_with_guard(path: &Path, guard: MutexGuard<'static, ()>) -> io::Result<E
 fn lock_error(error: std::fs::TryLockError) -> io::Error {
     match error {
         std::fs::TryLockError::WouldBlock => ConfigurationLockBusy::File.into_io(),
-        std::fs::TryLockError::Error(error) => error,
+        std::fs::TryLockError::Error(error) => {
+            io::Error::new(error.kind(), ConfigurationLockError(error))
+        }
     }
 }
 

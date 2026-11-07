@@ -143,9 +143,10 @@ fn preparation_message(
             "configuration_lock_validation" | "configuration_parse" => {
                 "domain.failure.configuration_repair"
             }
-            "configuration_directory" | "configuration_lock_open" | "configuration_read" => {
-                "domain.failure.configuration_access"
-            }
+            "configuration_directory"
+            | "configuration_lock_open"
+            | "configuration_lock_acquire"
+            | "configuration_read" => "domain.failure.configuration_access",
             "database" | "configuration" => "ui.ordinary_send.safety_storage_failed",
             _ => "ui.ordinary_send.safety_state_failed",
         };

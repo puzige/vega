@@ -773,6 +773,7 @@ fn validate_credential_details(metrics: &DiagnosticMetrics) -> Result<(), Diagno
                 | "configuration_directory"
                 | "configuration_lock_open"
                 | "configuration_lock_validation"
+                | "configuration_lock_acquire"
                 | "configuration_read"
                 | "configuration_parse"
                 | "state"
