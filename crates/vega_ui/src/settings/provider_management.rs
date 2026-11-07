@@ -138,6 +138,10 @@ impl SettingsView {
         }
     }
 
+    pub(super) fn model_editor_visible(&self) -> bool {
+        self.section == 0 && self.provider_management.model_editor.is_some()
+    }
+
     pub(super) fn prepare_provider_presentation(&mut self, window: &Window) {
         if self.section != 0 || self.provider_management.model_editor.is_some() {
             return;

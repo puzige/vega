@@ -191,9 +191,7 @@ impl SettingsView {
                 .is_some_and(|open| open.0)
                 && match pane {
                     Pane::Efforts => self.section == 2,
-                    Pane::Image => {
-                        self.section == 0 && self.provider_management.model_editor.is_some()
-                    }
+                    Pane::Image => self.model_editor_visible(),
                 },
             rows,
             draft: self.model_capability_draft.clone(),

@@ -5,8 +5,8 @@ use gpui_kit::{
 };
 use vega_conversation::types::{
     ModelCapabilityOverride, ModelCapabilityPatch, ModelCapabilityProjection,
-    ModelCapabilitySettingsErrorCode, ModelCapabilitySettingsProjection, PricingDraftReason,
-    PricingEntryKind, PricingEntryProjection, PricingMutation, PricingNotice, PricingRateInputs,
+    ModelCapabilitySettingsProjection, PricingDraftReason, PricingEntryKind,
+    PricingEntryProjection, PricingMutation, PricingNotice, PricingRateInputs,
     PricingSettingsErrorCode, PricingSettingsProjection, REASONING_EFFORTS, ReasoningChoice,
     ReasoningProfileProjection, ReasoningSupport,
 };
