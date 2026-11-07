@@ -590,7 +590,7 @@ impl SettingsView {
                     .child(settings_field(
                         t("settings.defaults.permission_mode"),
                         None,
-                        self.render_mode_selector(window, cx),
+                        self.render_permission_picker(window, cx),
                         colors,
                     ))
                     .child(settings_field(
@@ -602,155 +602,6 @@ impl SettingsView {
             )
             .child(self.render_input_preferences(window, cx))
             .child(self.render_updater(window, cx))
-            .into_any_element()
-    }
-
-    /// In-place expandable picker for the permission mode (minimal equivalent
-    /// of a dropdown: click to expand, click an option to choose and collapse).
-    pub(crate) fn render_mode_selector(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = theme(cx).colors;
-        let current = self.config.defaults.permission_mode.clone();
-        let enabled = self.permission_picker_enabled();
-        div()
-            .min_w_0()
-            .max_w_full()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(
-                settings_action_chrome(colors)
-                    .id("settings-mode-picker")
-                    .role(gpui_kit::Role::Button)
-                    .aria_label(format!(
-                        "{}: {}",
-                        t("settings.defaults.permission_mode"),
-                        permission_mode_label(&current)
-                    ))
-                    .aria_toggled(self.mode_open.into())
-                    .when(!enabled, |button| button.text_color(colors.text_tertiary))
-                    .interaction_surface(
-                        colors.bg_elevated,
-                        colors.bg_hover,
-                        colors.bg_active,
-                        enabled,
-                    )
-                    .track_focus(&self.permission_picker_focus())
-                    .tab_stop(true)
-                    .focus_visible(move |style| style.border_color(colors.accent))
-                    .when(enabled, |button| {
-                        button
-                            .on_key_down(cx.listener(
-                                |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                        this.mode_open = !this.mode_open;
-                                        cx.stop_propagation();
-                                        cx.notify();
-                                    }
-                                },
-                            ))
-                            .cursor_pointer()
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                                    this.mode_open = !this.mode_open;
-                                    cx.notify();
-                                }),
-                            )
-                    })
-                    .child(permission_mode_label(&current))
-                    .child(crate::icons::icon(
-                        if self.mode_open {
-                            crate::icons::Icon::ChevronDown
-                        } else {
-                            crate::icons::Icon::ChevronRight
-                        },
-                        colors.text_tertiary,
-                    )),
-            )
-            .when(self.mode_open && enabled, |column| {
-                column.children(PERMISSION_MODES.iter().map(|mode| {
-                    let selected = *mode == current;
-                    div()
-                        .id(gpui_kit::SharedString::from(format!(
-                            "settings-permission-option-{mode}"
-                        )))
-                        .role(gpui_kit::Role::Button)
-                        .aria_label(if selected {
-                            t_args(
-                                "settings.selection.selected",
-                                &[("label", permission_mode_label(mode))],
-                            )
-                        } else {
-                            permission_mode_label(mode).to_string()
-                        })
-                        .aria_toggled(selected.into())
-                        .interaction_surface(
-                            if selected {
-                                colors.bg_active
-                            } else {
-                                colors.bg_elevated
-                            },
-                            if selected {
-                                colors.bg_active
-                            } else {
-                                colors.bg_hover
-                            },
-                            colors.bg_active,
-                            true,
-                        )
-                        .focusable()
-                        .tab_stop(true)
-                        .border_1()
-                        .border_color(gpui_kit::transparent_black())
-                        .focus_visible(move |style| style.border_color(colors.accent))
-                        .on_key_down(cx.listener(
-                            move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                    this.select_mode(mode, cx);
-                                    cx.stop_propagation();
-                                }
-                            },
-                        ))
-                        .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
-                        .py_1()
-                        .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-                        .text_size(px(Typography::BODY))
-                        .cursor_pointer()
-                        .when(selected, move |row| {
-                            row.bg(colors.bg_active).text_color(colors.brand_primary)
-                        })
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                                this.select_mode(mode, cx);
-                            }),
-                        )
-                        .when(*mode == "full_access", |row| {
-                            row.flex()
-                                .items_center()
-                                .gap_2()
-                                .text_color(colors.warning)
-                                .child(crate::icons::icon(
-                                    crate::icons::Icon::Warning,
-                                    colors.warning,
-                                ))
-                        })
-                        .child(permission_mode_label(mode))
-                }))
-            })
-            .child(self.render_default_permission_feedback(cx))
-            .when(
-                !matches!(
-                    self.permission_reset.projection,
-                    vega_conversation::types::PermissionResetProjection::Idle
-                        | vega_conversation::types::PermissionResetProjection::Completed
-                ),
-                |section| section.child(self.render_permission_reset(window, cx)),
-            )
             .into_any_element()
     }
 }
@@ -777,6 +628,7 @@ impl Render for SettingsView {
         }
         self.resume_settings_navigation(window, cx);
         self.sync_default_model(cx);
+        self.sync_permission_presentation(cx);
         self.prepare_default_permission_focus(window, cx);
         self.prepare_permission_reset_focus(window, cx);
         self.prepare_provider_presentation(window);

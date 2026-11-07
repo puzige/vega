@@ -138,6 +138,8 @@ GPUI Fast 宿主/窗口/可信控制器（原有业务与后台任务所有者�
 - 输入预测开关及 Queue/Steer 已接入生产 NSH，旧 GPUI 控件删除，原字段级保存路径保留；命令重查页面、展示身份、观察值及保存可用性。Queue/Steer 帮助使用受控 Tooltip 同时响应悬停与键盘聚焦，并保留读屏 hint。新增两项开发回归覆盖陈旧预测翻转、运行中消息选择及保存忙碌边界，待 Actions；本地格式/差异静态检查通过，不代表原生交互验收。
 - `d273f6809ded394ccc80fd3be19a66254e467298` 的 [第七轮 Actions](https://github.com/puzige/vega/actions/runs/42343962692) 中 Clippy 因外观/输入偏好 `Request::Decide` 内联完整快照触发 `large_enum_variant` 失败；Nextest SUCCESS，Rust 实际 10 发现/10 执行/10 通过/0 跳过，Python 三组 5/15/40 通过；汇总 required check FAILURE。日志中 shell 分支的 `0 discovered` 是未执行分支脚本文本，实际以 Nextest 清单和 Summary 为准。修正为 `Box<Decision>`，保留原快照与回执，不禁用 lint。默认模型新增实现沿用该布局。
 - 默认模型生产入口已改为 NSH，旧 GPUI 选择器移除；保留启用提供方目录并集、首次顺序去重、原值/空态、原字段级保存和设置错误。选择动作拒绝变化后的默认值/目录、已删除候选及不可见页面；Escape 收起，焦点恢复等待保存结束并受页面可见性围栏限制。新增两项开发回归，待 Actions；本地格式/差异检查通过，未做原生运行验证。
+- 默认权限模式区域已接入生产 NSH，旧模式选择器及 GPUI 反馈按钮移除，原 prepare/save/read 服务代码保留；模式/权限版本/操作号/阶段/错误/可见性均在可信控制器复核。Full access 原警示及清理 Surface 保留；取消仅准备/重载或展开态可用，保存不可取消。Picker/Cancel/Reload 和清理完成的焦点转为 NSH 挂载后请求，反馈仅阶段/错误变化时重建；新增两项阶段和陈旧权威回归待 Actions。本地格式/差异检查通过，未执行权限变更或原生交互验收。
+- `4714451a8d342d1f85380dbb50462f6b4e7c12d1` 的 [第八轮 Actions](https://github.com/puzige/vega/actions/runs/42344965658) Clippy、Nextest、汇总 required check 全部 SUCCESS；Rust 实际 12 发现/12 执行/12 通过/0 跳过，含默认模型两项新增回归，Python 三组 5/15/40 通过。该版本未包含后续权限模式区域增量，不外推为全量迁移或原生行为验收。
 - 本地化静态检查仍报告 3 条过期分类、14 条未分类字符串；尚未完整归因，不记为通过，不扩大本卡修复范围。
 
 独立审查仍为合并前提；在暂禁子 Agent 期间不启动审查子任务，也不以实现者自审代替。实现可继续，最终若仍无获准的独立审查渠道，则如实保留待审状态、不合并。

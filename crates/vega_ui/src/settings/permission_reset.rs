@@ -105,7 +105,7 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) {
         if self.section == 1 && std::mem::take(&mut self.permission_reset.focus_completed) {
-            window.focus(&self.permission_picker_focus(), cx);
+            self.focus_permission_picker(window, cx);
         }
     }
 
