@@ -572,7 +572,11 @@ impl SettingsView {
         self.save_preferences(candidate, cx);
     }
 
-    pub(crate) fn render_defaults(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_defaults(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = theme(cx).colors;
         let sidebar_visible = !cx
             .try_global::<crate::sidebar::SidebarCollapsed>()
@@ -768,7 +772,7 @@ impl SettingsView {
                         colors,
                     )),
             )
-            .child(self.render_updater(cx))
+            .child(self.render_updater(window, cx))
             .into_any_element()
     }
 
@@ -1430,7 +1434,7 @@ impl Render for SettingsView {
                                         body.child(self.render_provider_management(window, cx))
                                     })
                                     .when(self.section == 1, |body| {
-                                        body.child(self.render_defaults(cx))
+                                        body.child(self.render_defaults(window, cx))
                                     })
                                     .when(self.section == 2, |body| {
                                         body.child(self.render_reasoning(cx))
