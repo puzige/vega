@@ -25,7 +25,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.id AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.id AS owner FROM threads victim WHERE (victim.id IS NEW.id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.id AS owner FROM threads victim WHERE (victim.id IS NEW.id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -38,7 +38,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.id AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.id AS owner FROM threads victim WHERE (victim.id IS NEW.id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.id AS owner FROM threads victim WHERE (victim.id IS NEW.id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -55,7 +55,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.thread_id AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM messages victim WHERE (victim.id IS NEW.id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM messages victim WHERE (victim.id IS NEW.id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -68,7 +68,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.thread_id AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM messages victim WHERE (victim.id IS NEW.id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM messages victim WHERE (victim.id IS NEW.id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -85,10 +85,10 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.thread_id AS owner UNION SELECT thread_id FROM messages WHERE id=NEW.message_id) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM tool_calls victim WHERE (victim.id IS NEW.id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM tool_calls victim WHERE (victim.id IS NEW.id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM tool_calls victim WHERE (victim.id IS NEW.id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM tool_calls victim WHERE (victim.id IS NEW.id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -101,10 +101,10 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.thread_id AS owner UNION SELECT thread_id FROM messages WHERE id=NEW.message_id) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM tool_calls victim WHERE (victim.id IS NEW.id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM tool_calls victim WHERE (victim.id IS NEW.id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM tool_calls victim WHERE (victim.id IS NEW.id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM tool_calls victim WHERE (victim.id IS NEW.id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -121,7 +121,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=NEW.message_id) AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM image_attachments victim WHERE (victim.message_id IS NEW.message_id AND victim.ordinal IS NEW.ordinal)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM image_attachments victim WHERE (victim.message_id IS NEW.message_id AND victim.ordinal IS NEW.ordinal) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -134,7 +134,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=NEW.message_id) AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM image_attachments victim WHERE (victim.message_id IS NEW.message_id AND victim.ordinal IS NEW.ordinal)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM image_attachments victim WHERE (victim.message_id IS NEW.message_id AND victim.ordinal IS NEW.ordinal) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -151,7 +151,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.thread_id AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM pending_messages victim WHERE (victim.id IS NEW.id) OR (victim.thread_id IS NEW.thread_id AND victim.ordinal IS NEW.ordinal)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM pending_messages victim WHERE (victim.id IS NEW.id) OR (victim.thread_id IS NEW.thread_id AND victim.ordinal IS NEW.ordinal) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -164,7 +164,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.thread_id AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM pending_messages victim WHERE (victim.id IS NEW.id) OR (victim.thread_id IS NEW.thread_id AND victim.ordinal IS NEW.ordinal)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM pending_messages victim WHERE (victim.id IS NEW.id) OR (victim.thread_id IS NEW.thread_id AND victim.ordinal IS NEW.ordinal) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -181,10 +181,10 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.thread_id AS owner UNION SELECT thread_id FROM messages WHERE id=NEW.message_id) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM historical_message_delivery victim WHERE (victim.message_id IS NEW.message_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM historical_message_delivery victim WHERE (victim.message_id IS NEW.message_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM historical_message_delivery victim WHERE (victim.message_id IS NEW.message_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM historical_message_delivery victim WHERE (victim.message_id IS NEW.message_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -197,10 +197,10 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.thread_id AS owner UNION SELECT thread_id FROM messages WHERE id=NEW.message_id) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM historical_message_delivery victim WHERE (victim.message_id IS NEW.message_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM historical_message_delivery victim WHERE (victim.message_id IS NEW.message_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM historical_message_delivery victim WHERE (victim.message_id IS NEW.message_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM historical_message_delivery victim WHERE (victim.message_id IS NEW.message_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -217,10 +217,10 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.thread_id AS owner UNION SELECT thread_id FROM tool_calls WHERE id=NEW.call_id) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM historical_tool_receipts victim WHERE (victim.call_id IS NEW.call_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM historical_tool_receipts victim WHERE (victim.call_id IS NEW.call_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM tool_calls WHERE id=victim.call_id) AS owner FROM historical_tool_receipts victim WHERE (victim.call_id IS NEW.call_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM tool_calls WHERE id=victim.call_id) AS owner FROM historical_tool_receipts victim WHERE (victim.call_id IS NEW.call_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -233,10 +233,10 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.thread_id AS owner UNION SELECT thread_id FROM tool_calls WHERE id=NEW.call_id) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM historical_tool_receipts victim WHERE (victim.call_id IS NEW.call_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM historical_tool_receipts victim WHERE (victim.call_id IS NEW.call_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM tool_calls WHERE id=victim.call_id) AS owner FROM historical_tool_receipts victim WHERE (victim.call_id IS NEW.call_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM tool_calls WHERE id=victim.call_id) AS owner FROM historical_tool_receipts victim WHERE (victim.call_id IS NEW.call_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -253,7 +253,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=NEW.message_id) AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM tool_call_rounds victim WHERE (victim.message_id IS NEW.message_id AND victim.call_id IS NEW.call_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM tool_call_rounds victim WHERE (victim.message_id IS NEW.message_id AND victim.call_id IS NEW.call_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -266,7 +266,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=NEW.message_id) AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM tool_call_rounds victim WHERE (victim.message_id IS NEW.message_id AND victim.call_id IS NEW.call_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM tool_call_rounds victim WHERE (victim.message_id IS NEW.message_id AND victim.call_id IS NEW.call_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -283,10 +283,10 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.thread_id AS owner UNION SELECT thread_id FROM tool_calls WHERE id=NEW.call_id) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM context_micro_compactions victim WHERE (victim.call_id IS NEW.call_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM context_micro_compactions victim WHERE (victim.call_id IS NEW.call_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM tool_calls WHERE id=victim.call_id) AS owner FROM context_micro_compactions victim WHERE (victim.call_id IS NEW.call_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM tool_calls WHERE id=victim.call_id) AS owner FROM context_micro_compactions victim WHERE (victim.call_id IS NEW.call_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -299,10 +299,10 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.thread_id AS owner UNION SELECT thread_id FROM tool_calls WHERE id=NEW.call_id) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM context_micro_compactions victim WHERE (victim.call_id IS NEW.call_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM context_micro_compactions victim WHERE (victim.call_id IS NEW.call_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM tool_calls WHERE id=victim.call_id) AS owner FROM context_micro_compactions victim WHERE (victim.call_id IS NEW.call_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM tool_calls WHERE id=victim.call_id) AS owner FROM context_micro_compactions victim WHERE (victim.call_id IS NEW.call_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -319,10 +319,10 @@ BEGIN
     SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=NEW.message_id) AS owner UNION SELECT thread_id FROM tool_calls WHERE id=NEW.call_id) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM computer_screenshot_artifacts victim WHERE (victim.call_id IS NEW.call_id) OR (victim.message_id IS NEW.message_id AND victim.ordinal IS NEW.ordinal)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM computer_screenshot_artifacts victim WHERE (victim.call_id IS NEW.call_id) OR (victim.message_id IS NEW.message_id AND victim.ordinal IS NEW.ordinal) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM tool_calls WHERE id=victim.call_id) AS owner FROM computer_screenshot_artifacts victim WHERE (victim.call_id IS NEW.call_id) OR (victim.message_id IS NEW.message_id AND victim.ordinal IS NEW.ordinal)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM tool_calls WHERE id=victim.call_id) AS owner FROM computer_screenshot_artifacts victim WHERE (victim.call_id IS NEW.call_id) OR (victim.message_id IS NEW.message_id AND victim.ordinal IS NEW.ordinal) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -335,10 +335,10 @@ BEGIN
     SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=NEW.message_id) AS owner UNION SELECT thread_id FROM tool_calls WHERE id=NEW.call_id) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM computer_screenshot_artifacts victim WHERE (victim.call_id IS NEW.call_id) OR (victim.message_id IS NEW.message_id AND victim.ordinal IS NEW.ordinal)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM computer_screenshot_artifacts victim WHERE (victim.call_id IS NEW.call_id) OR (victim.message_id IS NEW.message_id AND victim.ordinal IS NEW.ordinal) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM tool_calls WHERE id=victim.call_id) AS owner FROM computer_screenshot_artifacts victim WHERE (victim.call_id IS NEW.call_id) OR (victim.message_id IS NEW.message_id AND victim.ordinal IS NEW.ordinal)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM tool_calls WHERE id=victim.call_id) AS owner FROM computer_screenshot_artifacts victim WHERE (victim.call_id IS NEW.call_id) OR (victim.message_id IS NEW.message_id AND victim.ordinal IS NEW.ordinal) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -355,7 +355,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.thread_id AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM context_checkpoints victim WHERE (victim.id IS NEW.id) OR (victim.thread_id IS NEW.thread_id AND victim.model IS NEW.model AND victim.source_version IS NEW.source_version AND victim.source_fingerprint IS NEW.source_fingerprint)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM context_checkpoints victim WHERE (victim.id IS NEW.id) OR (victim.thread_id IS NEW.thread_id AND victim.model IS NEW.model AND victim.source_version IS NEW.source_version AND victim.source_fingerprint IS NEW.source_fingerprint) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -368,7 +368,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.thread_id AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM context_checkpoints victim WHERE (victim.id IS NEW.id) OR (victim.thread_id IS NEW.thread_id AND victim.model IS NEW.model AND victim.source_version IS NEW.source_version AND victim.source_fingerprint IS NEW.source_fingerprint)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM context_checkpoints victim WHERE (victim.id IS NEW.id) OR (victim.thread_id IS NEW.thread_id AND victim.model IS NEW.model AND victim.source_version IS NEW.source_version AND victim.source_fingerprint IS NEW.source_fingerprint) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -385,7 +385,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=NEW.message_id) AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM assistant_responses victim WHERE (victim.message_id IS NEW.message_id AND victim.response_id IS NEW.response_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM assistant_responses victim WHERE (victim.message_id IS NEW.message_id AND victim.response_id IS NEW.response_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -398,7 +398,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=NEW.message_id) AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM assistant_responses victim WHERE (victim.message_id IS NEW.message_id AND victim.response_id IS NEW.response_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM assistant_responses victim WHERE (victim.message_id IS NEW.message_id AND victim.response_id IS NEW.response_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -415,7 +415,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=NEW.message_id) AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM assistant_response_starts victim WHERE (victim.message_id IS NEW.message_id AND victim.response_id IS NEW.response_id) OR (victim.message_id IS NEW.message_id AND victim.ordinal IS NEW.ordinal)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM assistant_response_starts victim WHERE (victim.message_id IS NEW.message_id AND victim.response_id IS NEW.response_id) OR (victim.message_id IS NEW.message_id AND victim.ordinal IS NEW.ordinal) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -428,7 +428,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=NEW.message_id) AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM assistant_response_starts victim WHERE (victim.message_id IS NEW.message_id AND victim.response_id IS NEW.response_id) OR (victim.message_id IS NEW.message_id AND victim.ordinal IS NEW.ordinal)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM assistant_response_starts victim WHERE (victim.message_id IS NEW.message_id AND victim.response_id IS NEW.response_id) OR (victim.message_id IS NEW.message_id AND victim.ordinal IS NEW.ordinal) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -445,7 +445,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=NEW.message_id) AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM message_timestamp_boundaries victim WHERE (victim.message_id IS NEW.message_id AND victim.operation_key IS NEW.operation_key)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM message_timestamp_boundaries victim WHERE (victim.message_id IS NEW.message_id AND victim.operation_key IS NEW.operation_key) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -458,7 +458,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=NEW.message_id) AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM message_timestamp_boundaries victim WHERE (victim.message_id IS NEW.message_id AND victim.operation_key IS NEW.operation_key)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM message_timestamp_boundaries victim WHERE (victim.message_id IS NEW.message_id AND victim.operation_key IS NEW.operation_key) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -475,7 +475,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=NEW.message_id) AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM generated_notices victim WHERE (victim.message_id IS NEW.message_id AND victim.text_start_bytes IS NEW.text_start_bytes)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM generated_notices victim WHERE (victim.message_id IS NEW.message_id AND victim.text_start_bytes IS NEW.text_start_bytes) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -488,7 +488,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=NEW.message_id) AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM generated_notices victim WHERE (victim.message_id IS NEW.message_id AND victim.text_start_bytes IS NEW.text_start_bytes)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM messages WHERE id=victim.message_id) AS owner FROM generated_notices victim WHERE (victim.message_id IS NEW.message_id AND victim.text_start_bytes IS NEW.text_start_bytes) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -505,7 +505,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.child_thread_id AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.child_thread_id AS owner FROM delegated_executions victim WHERE (victim.child_message_id IS NEW.child_message_id) OR (victim.child_thread_id IS NEW.child_thread_id AND victim.ordinal IS NEW.ordinal) OR (victim.parent_thread_id IS NEW.parent_thread_id AND victim.parent_message_id IS NEW.parent_message_id AND victim.request_call_id IS NEW.request_call_id) OR (victim.child_thread_id IS NEW.child_thread_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.child_thread_id AS owner FROM delegated_executions victim WHERE (victim.child_message_id IS NEW.child_message_id) OR (victim.child_thread_id IS NEW.child_thread_id AND victim.ordinal IS NEW.ordinal) OR (victim.parent_thread_id IS NEW.parent_thread_id AND victim.parent_message_id IS NEW.parent_message_id AND victim.request_call_id IS NEW.request_call_id) OR (victim.child_thread_id IS NEW.child_thread_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -518,7 +518,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.child_thread_id AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.child_thread_id AS owner FROM delegated_executions victim WHERE (victim.child_message_id IS NEW.child_message_id) OR (victim.child_thread_id IS NEW.child_thread_id AND victim.ordinal IS NEW.ordinal) OR (victim.parent_thread_id IS NEW.parent_thread_id AND victim.parent_message_id IS NEW.parent_message_id AND victim.request_call_id IS NEW.request_call_id) OR (victim.child_thread_id IS NEW.child_thread_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.child_thread_id AS owner FROM delegated_executions victim WHERE (victim.child_message_id IS NEW.child_message_id) OR (victim.child_thread_id IS NEW.child_thread_id AND victim.ordinal IS NEW.ordinal) OR (victim.parent_thread_id IS NEW.parent_thread_id AND victim.parent_message_id IS NEW.parent_message_id AND victim.request_call_id IS NEW.request_call_id) OR (victim.child_thread_id IS NEW.child_thread_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -535,7 +535,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.child_thread_id AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.child_thread_id AS owner FROM delegated_execution_messages victim WHERE (victim.message_id IS NEW.message_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.child_thread_id AS owner FROM delegated_execution_messages victim WHERE (victim.message_id IS NEW.message_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -548,7 +548,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.child_thread_id AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.child_thread_id AS owner FROM delegated_execution_messages victim WHERE (victim.message_id IS NEW.message_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.child_thread_id AS owner FROM delegated_execution_messages victim WHERE (victim.message_id IS NEW.message_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -565,7 +565,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.child_thread_id AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.child_thread_id AS owner FROM delegated_execution_recovery victim WHERE (victim.child_thread_id IS NEW.child_thread_id AND victim.child_message_id IS NEW.child_message_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.child_thread_id AS owner FROM delegated_execution_recovery victim WHERE (victim.child_thread_id IS NEW.child_thread_id AND victim.child_message_id IS NEW.child_message_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -578,7 +578,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.child_thread_id AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.child_thread_id AS owner FROM delegated_execution_recovery victim WHERE (victim.child_thread_id IS NEW.child_thread_id AND victim.child_message_id IS NEW.child_message_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.child_thread_id AS owner FROM delegated_execution_recovery victim WHERE (victim.child_thread_id IS NEW.child_thread_id AND victim.child_message_id IS NEW.child_message_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -595,7 +595,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.child_thread_id AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.child_thread_id AS owner FROM delegated_stage_checkpoints victim WHERE (victim.id IS NEW.id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.child_thread_id AS owner FROM delegated_stage_checkpoints victim WHERE (victim.id IS NEW.id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -608,7 +608,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.child_thread_id AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.child_thread_id AS owner FROM delegated_stage_checkpoints victim WHERE (victim.id IS NEW.id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.child_thread_id AS owner FROM delegated_stage_checkpoints victim WHERE (victim.id IS NEW.id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -625,7 +625,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT (SELECT thread_id FROM tool_calls WHERE id=NEW.call_id) AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM tool_calls WHERE id=victim.call_id) AS owner FROM fork_mutation_origins victim WHERE (victim.call_id IS NEW.call_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM tool_calls WHERE id=victim.call_id) AS owner FROM fork_mutation_origins victim WHERE (victim.call_id IS NEW.call_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -638,7 +638,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT (SELECT thread_id FROM tool_calls WHERE id=NEW.call_id) AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM tool_calls WHERE id=victim.call_id) AS owner FROM fork_mutation_origins victim WHERE (victim.call_id IS NEW.call_id)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT (SELECT thread_id FROM tool_calls WHERE id=victim.call_id) AS owner FROM fork_mutation_origins victim WHERE (victim.call_id IS NEW.call_id) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -655,7 +655,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.thread_id AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM thread_timestamp_fork_prefixes victim WHERE (victim.thread_id IS NEW.thread_id AND victim.prefix_seq IS NEW.prefix_seq)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM thread_timestamp_fork_prefixes victim WHERE (victim.thread_id IS NEW.thread_id AND victim.prefix_seq IS NEW.prefix_seq) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 
@@ -668,7 +668,7 @@ BEGIN
     SELECT owner,1 FROM (SELECT NEW.thread_id AS owner) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
     INSERT INTO preparation_revisions(thread_id,revision)
-    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM thread_timestamp_fork_prefixes victim WHERE (victim.thread_id IS NEW.thread_id AND victim.prefix_seq IS NEW.prefix_seq)) WHERE owner IS NOT NULL
+    SELECT owner,1 FROM (SELECT victim.thread_id AS owner FROM thread_timestamp_fork_prefixes victim WHERE (victim.thread_id IS NEW.thread_id AND victim.prefix_seq IS NEW.prefix_seq) OR (victim.rowid IS NEW.rowid)) WHERE owner IS NOT NULL
     ON CONFLICT(thread_id) DO UPDATE SET revision=revision+1;
 END;
 

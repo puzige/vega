@@ -116,7 +116,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0058_skill_pin_target.sql"),
     include_str!("../migrations/0059_configuration_failure_reasons.sql"),
     include_str!("../migrations/0060_configuration_lock_diagnostics.sql"),
-    include_str!("../migrations/0060_preparation_revisions.sql"),
+    include_str!("../migrations/0061_preparation_revisions.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.

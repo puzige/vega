@@ -155,6 +155,31 @@ fn change_then_restore_and_replace_invalidate_old_and_new_owners() -> TestResult
 }
 
 #[test]
+fn rowid_replace_invalidates_displaced_scope_without_recursive_triggers() -> TestResult {
+    for sql in [
+        "INSERT OR REPLACE INTO messages(rowid,id,thread_id,seq,role,content,status,created_at) SELECT rowid,'replacement','other',2,'assistant','replacement','done',3 FROM messages WHERE id='old'",
+        "UPDATE OR REPLACE messages SET rowid=(SELECT rowid FROM messages WHERE id='old') WHERE id='other-user'",
+        "INSERT OR REPLACE INTO delegated_stage_checkpoints(rowid,id,child_thread_id,child_message_id,payload,authority,created_at) SELECT rowid,'replacement','other','other-user','{}','authority',3 FROM delegated_stage_checkpoints WHERE id='checkpoint'",
+    ] {
+        let store = fixture()?;
+        store
+            .conn()
+            .pragma_update(None, "recursive_triggers", false)?;
+        let prepared = prepare(store.conn())?;
+        let old_revision = revision(store.conn(), "child")?;
+        let other_revision = revision(store.conn(), "other")?;
+        store.conn().execute_batch(sql)?;
+        assert!(revision(store.conn(), "child")? > old_revision, "{sql}");
+        assert!(revision(store.conn(), "other")? > other_revision, "{sql}");
+        let mut tx = store.immediate_transaction()?;
+        assert!(prepared.install(&mut tx).is_err(), "{sql}");
+        tx.rollback()?;
+        assert!(messages::find(store.conn(), "next")?.is_none());
+    }
+    Ok(())
+}
+
+#[test]
 fn parent_appends_do_not_invalidate_child_projection() -> TestResult {
     let store = fixture()?;
     let prepared = prepare(store.conn())?;
@@ -263,7 +288,7 @@ fn missing_revision_cannot_silently_reset_an_existing_scope() -> TestResult {
 #[test]
 fn migration_initializes_existing_threads_and_missing_schema_fails_closed() -> TestResult {
     let store = Store::open(":memory:")?;
-    for (index, sql) in crate::MIGRATIONS.iter().take(59).enumerate() {
+    for (index, sql) in crate::MIGRATIONS.iter().take(60).enumerate() {
         if index == 4 {
             store.conn().pragma_update(None, "foreign_keys", false)?;
         }
@@ -272,10 +297,12 @@ fn migration_initializes_existing_threads_and_missing_schema_fails_closed() -> T
             store.conn().pragma_update(None, "foreign_keys", true)?;
         }
         if index == 42 {
-            crate::permission_contracts::initialize(store.conn())?;
+            let tx = store.conn().unchecked_transaction()?;
+            crate::permission_contracts::initialize(&tx)?;
+            tx.commit()?;
         }
     }
-    store.conn().execute_batch("INSERT INTO threads(id,model,created_at,updated_at) VALUES('existing','model',1,1); PRAGMA user_version=59;")?;
+    store.conn().execute_batch("INSERT INTO threads(id,model,created_at,updated_at) VALUES('existing','model',1,1); PRAGMA user_version=60;")?;
     store.migrate()?;
     assert_eq!(revision(store.conn(), "existing")?, 0);
     assert!(DelegatedSnapshot::capture(store.conn(), "existing", "next").is_ok());
@@ -413,8 +440,9 @@ fn controlled_projection_writer_comparison() -> TestResult {
         new_totals[11],
         100.0 * (1.0 - new_holds[11].as_secs_f64() / old_holds[11].as_secs_f64())
     );
+    use std::io::Write;
+    std::io::stderr().write_all(report.as_bytes())?;
     if let Some(summary) = std::env::var_os("GITHUB_STEP_SUMMARY") {
-        use std::io::Write;
         std::fs::OpenOptions::new()
             .append(true)
             .open(summary)?
