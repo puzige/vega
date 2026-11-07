@@ -108,64 +108,6 @@ pub(crate) fn settings_field(
         )
 }
 
-pub(crate) fn settings_switch(
-    id: impl Into<String>,
-    label: impl Into<gpui_kit::SharedString>,
-    value: bool,
-    enabled: bool,
-    colors: vega_theme::ThemeColors,
-) -> crate::interaction::Interaction {
-    let id = id.into();
-    div()
-        .id(id.clone())
-        .interaction_surface(
-            if value {
-                colors.brand_primary
-            } else {
-                colors.bg_hover
-            },
-            if value {
-                colors.brand_primary_strong
-            } else {
-                colors.border_subtle
-            },
-            if value {
-                colors.brand_primary_strong
-            } else {
-                colors.bg_active
-            },
-            enabled,
-        )
-        .aria_label(label)
-        .w(px(Layout::SETTINGS_SWITCH_WIDTH))
-        .h(px(Layout::SETTINGS_SWITCH_HEIGHT))
-        .flex_shrink_0()
-        .p(px(1.))
-        .rounded_full()
-        .border_1()
-        .border_color(if value {
-            colors.brand_primary
-        } else {
-            colors.border_subtle
-        })
-        .flex()
-        .items_center()
-        .when(value, |switch| switch.justify_end())
-        .when(!value, |switch| switch.justify_start())
-        .when(enabled, |switch| {
-            switch.focusable().tab_stop(true).cursor_pointer()
-        })
-        .when(!enabled, |switch| switch.opacity(0.5))
-        .focus_visible(move |style| style.border_color(colors.text_primary))
-        .child(
-            div()
-                .size(px(Layout::ICON_SIZE))
-                .flex_shrink_0()
-                .rounded_full()
-                .bg(colors.bg_elevated),
-        )
-}
-
 pub(crate) fn settings_actions() -> Div {
     div().min_w_0().flex().flex_wrap().items_center().gap_2()
 }

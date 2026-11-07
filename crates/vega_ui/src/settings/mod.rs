@@ -28,8 +28,6 @@ actions!(
         ActivatePricingAction,
         NextPricingAction,
         PreviousPricingAction,
-        NextSkillsAction,
-        PreviousSkillsAction,
         NextMcpAction,
         PreviousMcpAction
     ]

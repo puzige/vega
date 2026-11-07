@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use gpui_kit::{App, Context, Window};
+use nsh_core::Checked;
 use nsh_core::prelude::*;
 use tokio::sync::{mpsc, oneshot};
 use vega_store::config::CodexAcpProfileConfig;
@@ -530,11 +531,11 @@ fn toggle(actions: Actions, commands: mpsc::Sender<Request>, desktop: bool) -> A
                 .focusable(true)
                 .label(move || actions.state.with(|_| vega_i18n::t(key)))
                 .accessibility_state(move || AccessibilityState {
-                    checked: if enabled() {
+                    checked: Some(if enabled() {
                         Checked::True
                     } else {
                         Checked::False
-                    },
+                    }),
                     ..Default::default()
                 })
                 .disabled(move || actions.pending.get() || !allowed(&actions.snapshot(), action))

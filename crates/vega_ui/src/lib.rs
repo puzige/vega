@@ -249,12 +249,6 @@ pub fn init(cx: &mut App) {
             settings::PreviousPricingAction,
             Some("PricingSettings"),
         ),
-        KeyBinding::new("tab", settings::NextSkillsAction, Some("SkillsSettings")),
-        KeyBinding::new(
-            "shift-tab",
-            settings::PreviousSkillsAction,
-            Some("SkillsSettings"),
-        ),
         KeyBinding::new("enter", text_input::InsertNewline, Some("McpSettings")),
         KeyBinding::new("tab", settings::NextMcpAction, Some("McpSettings")),
         KeyBinding::new(

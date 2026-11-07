@@ -848,32 +848,6 @@ impl SettingsView {
     ) {
         self.move_pricing_focus(true, window, cx);
     }
-
-    pub(crate) fn next_skills_action(
-        &mut self,
-        _: &NextSkillsAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.section == 6 {
-            window.focus_next(cx);
-        } else {
-            cx.propagate();
-        }
-    }
-
-    pub(crate) fn previous_skills_action(
-        &mut self,
-        _: &PreviousSkillsAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.section == 6 {
-            window.focus_prev(cx);
-        } else {
-            cx.propagate();
-        }
-    }
 }
 
 impl EventEmitter<vega_conversation::types::ModelCatalogRequested> for SettingsView {}

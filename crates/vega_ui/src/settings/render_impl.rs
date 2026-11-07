@@ -300,6 +300,7 @@ impl Render for SettingsView {
         self.sync_usage_presentation(cx);
         self.sync_pricing_presentation(cx);
         self.sync_agents_presentation(cx);
+        self.sync_skills_presentation(cx);
         self.sync_capability_presentations(cx);
         self.sync_permission_presentation(cx);
         self.prepare_default_permission_focus(window, cx);
@@ -375,8 +376,6 @@ impl Render for SettingsView {
             .on_action(cx.listener(Self::activate_pricing_action))
             .on_action(cx.listener(Self::next_pricing_action))
             .on_action(cx.listener(Self::previous_pricing_action))
-            .on_action(cx.listener(Self::next_skills_action))
-            .on_action(cx.listener(Self::previous_skills_action))
             .on_action(cx.listener(Self::next_mcp_action))
             .on_action(cx.listener(Self::previous_mcp_action))
             .size_full()
@@ -579,7 +578,7 @@ impl Render for SettingsView {
                                     })
                                     .when(self.section == 5, |body| body.child(self.render_mcp(cx)))
                                     .when(self.section == 6, |body| {
-                                        body.child(self.render_skills(cx))
+                                        body.child(self.render_skills(window, cx))
                                     })
                                     .when(self.section == 7, |body| {
                                         body.child(self.render_agents(window, cx))
