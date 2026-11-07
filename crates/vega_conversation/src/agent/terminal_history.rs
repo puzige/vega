@@ -7,6 +7,15 @@ pub(crate) fn recover_terminal_tools(
     project_id: &str,
     thread_id: &str,
 ) -> Result<HashMap<String, vega_runtime::CompletedToolCall>, ConversationError> {
+    recover_terminal_tools_with_origins(conn, project_id, thread_id, None)
+}
+
+pub(crate) fn recover_terminal_tools_with_origins(
+    conn: &vega_store::Connection,
+    project_id: &str,
+    thread_id: &str,
+    origins: Option<&HashMap<String, vega_store::fork_mutations::MutationOrigin>>,
+) -> Result<HashMap<String, vega_runtime::CompletedToolCall>, ConversationError> {
     tool_calls::terminal_results(conn, thread_id)
         .map_err(|error| runtime_store_error(std::io::Error::other(error.to_string())))?
         .into_iter()
@@ -28,15 +37,20 @@ pub(crate) fn recover_terminal_tools(
                 }
             };
             let origin = if matches!(call.tool.as_str(), "Write" | "write" | "Edit" | "edit") {
-                Some(
-                    vega_store::fork_mutations::origin(conn, thread_id, &call_id).map_err(
+                Some(match origins {
+                    Some(origins) => origins.get(&call_id).cloned().ok_or_else(|| {
+                        ConversationError::CorruptRow(format!(
+                            "terminal tool call {call_id} has invalid mutation origin"
+                        ))
+                    })?,
+                    None => vega_store::fork_mutations::origin(conn, thread_id, &call_id).map_err(
                         |_| {
                             ConversationError::CorruptRow(format!(
                                 "terminal tool call {call_id} has invalid mutation origin"
                             ))
                         },
                     )?,
-                )
+                })
             } else {
                 None
             };
