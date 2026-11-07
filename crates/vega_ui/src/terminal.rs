@@ -22,6 +22,7 @@ pub struct TerminalView {
     accepted_input: u64,
     surface: Option<Surface<Projection, Request>>,
     surface_error: bool,
+    focus_subscription: Option<Subscription>,
 }
 
 impl TerminalView {
@@ -54,6 +55,7 @@ impl TerminalView {
             accepted_input: 0,
             surface: None,
             surface_error: false,
+            focus_subscription: None,
         }
     }
 
@@ -230,6 +232,18 @@ impl Focusable for TerminalView {
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_surface(window, cx);
+        if self.focus_subscription.is_none() {
+            self.focus_subscription = Some(cx.on_focus(&self.focus, window, |this, window, cx| {
+                if let Some(surface) = &this.surface {
+                    surface.focus(window, cx);
+                }
+            }));
+            if self.focus.is_focused(window)
+                && let Some(surface) = &self.surface
+            {
+                surface.focus(window, cx);
+            }
+        }
         if let Some(surface) = &mut self.surface {
             surface.sync_environment(cx);
         }
@@ -239,13 +253,6 @@ impl Render for TerminalView {
             .key_context("Terminal")
             .track_focus(&self.focus)
             .size_full()
-            .on_focus_in(cx.listener(|this, _, window, cx| {
-                if this.focus.is_focused(window)
-                    && let Some(surface) = &this.surface
-                {
-                    surface.focus(window, cx);
-                }
-            }))
             .children(self.surface.as_ref().map(Surface::entity))
     }
 }

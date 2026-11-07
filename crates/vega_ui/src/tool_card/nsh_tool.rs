@@ -325,13 +325,13 @@ impl ToolCard {
     }
 }
 
-fn icon(source: String, color: gpui_kit::Rgba) -> nsh_core::prelude::AnyElement {
+fn icon(source: String, tint: gpui_kit::Rgba) -> nsh_core::prelude::AnyElement {
     use nsh_core::prelude::*;
     svg(nsh_core::element::ImageSrc::svg_markup(&source))
         .size(px(Layout::ICON_SIZE))
         .flex_shrink_0()
-        .text_color(crate::nsh::color(color).to_hsla())
-        .tint_color(crate::nsh::color(color).to_hsla())
+        .text_color(crate::nsh::color(tint).to_hsla())
+        .tint_color(crate::nsh::color(tint).to_hsla())
         .into_element()
 }
 
@@ -409,13 +409,14 @@ fn render(
             },
         ))
         .child(
-            nsh_base::button()
+            view()
+                .role(AccessibilityRole::Button)
                 .w_full()
                 .h(px(Layout::CONVERSATION_TOOL_HEIGHT))
                 .flex_row()
                 .items_center()
                 .gap(px(Layout::CONVERSATION_INLINE_GAP))
-                .accessibility_label(move || Some(state.get().label.into()))
+                .optional_label(move || Some(state.get().label.into()))
                 .accessibility_state(move || nsh_core::AccessibilityState {
                     expanded: state
                         .with(|snapshot| snapshot.expandable.then_some(snapshot.expanded)),
@@ -424,7 +425,7 @@ fn render(
                 .disabled(move || {
                     pending.get() || !(state.get().expandable || state.get().target.is_some())
                 })
-                .on_press(move || {
+                .on_press(move |_: &nsh_core::PressEvent| {
                     if pending.get_untracked() {
                         return;
                     }

@@ -1,5 +1,5 @@
 use super::*;
-use gpui_kit::{AnyElement as HostElement, Entity, Window, div, prelude::*, px as host_px};
+use gpui_kit::{AnyElement as HostElement, Entity, Window, div, px as host_px};
 use nsh_core::prelude::*;
 use tokio::sync::{mpsc, oneshot};
 use vega_theme::{Layout, Typography};
@@ -15,11 +15,26 @@ enum Request {
 }
 
 impl PermissionCard {
+    pub fn row_count(&self) -> usize {
+        self.presentation.as_ref().map_or_else(
+            || {
+                self.prompt.display_target.lines().count().max(1)
+                    + self.scope_rows.as_ref().map_or(0, Vec::len)
+                    + 8
+            },
+            |presentation| {
+                (presentation.height / crate::conversation_stream::ROW_HEIGHT).ceil() as usize + 1
+            },
+        )
+    }
+
     pub(crate) fn render_card(
         card: Entity<Self>,
         window: &mut Window,
         cx: &mut App,
     ) -> HostElement {
+        use gpui_kit::{IntoElement, ParentElement, Styled};
+
         card.update(cx, |this, cx| {
             this.sync_external_resolution(cx);
             let snapshot = this.nsh_snapshot(cx);
@@ -306,7 +321,8 @@ fn render(
                         target.focus();
                     }
                 });
-                nsh_base::button()
+                view()
+                    .role(AccessibilityRole::Button)
                     .element_ref(&target)
                     .px_3()
                     .py_2()
@@ -323,7 +339,7 @@ fn render(
                             mounted.set(true);
                         }
                     })
-                    .on_press(move || {
+                    .on_press(move |_: &nsh_core::PressEvent| {
                         if let Some(choice) = state.get().decisions.get(index) {
                             decisions.send(commands.clone(), choice.action.clone(), false);
                         }

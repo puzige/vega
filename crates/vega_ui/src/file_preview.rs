@@ -106,15 +106,19 @@ impl Render for FilePreview {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl gpui_kit::IntoElement {
+        use gpui_kit::{ParentElement, Styled};
+
         if self.surface.is_none() {
             self.mount(window, cx);
         }
         let snapshot = self.snapshot(cx);
-        self.surface.as_mut().map(|surface| {
-            surface.sync_environment(cx);
-            surface.publish(snapshot);
-            surface.entity()
-        })
+        gpui_kit::div()
+            .size_full()
+            .children(self.surface.as_mut().map(|surface| {
+                surface.sync_environment(cx);
+                surface.publish(snapshot);
+                surface.entity()
+            }))
     }
 }
 

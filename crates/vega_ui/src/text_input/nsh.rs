@@ -4,8 +4,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::{
-    AppContext, Context, Entity, InteractiveElement as _, IntoElement as _, ParentElement as _,
-    Styled as _, Subscription, Window,
+    Context, Entity, InteractiveElement as _, IntoElement as _, ParentElement as _, Styled as _,
+    Subscription, Window,
 };
 use nsh_core::prelude::*;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -186,6 +186,7 @@ struct ComposerProjection {
     height: watch::Sender<f32>,
     shortcuts: mpsc::Sender<ShortcutRequest>,
     route: ComposerRoute,
+    host_failed: bool,
 }
 
 pub(super) struct ComposerEditor {
@@ -207,11 +208,13 @@ fn render_composer_editor(
     let snapshot = signal_with(initial.snapshot, SignalEquals::Never);
     let focus_revision = signal(initial.focus_revision);
     let route = signal(initial.route);
+    let host_failed = signal(initial.host_failed);
     effect(move || {
         let projection = state.get();
         snapshot.set(projection.snapshot);
         focus_revision.set(projection.focus_revision);
         route.set(projection.route);
+        host_failed.set(projection.host_failed);
     });
     let editor = editor(
         snapshot,
@@ -220,6 +223,7 @@ fn render_composer_editor(
         focus_revision,
         route,
         initial.shortcuts,
+        host_failed,
     );
     let height = initial.height;
     let measured = Cell::new(0.0f32);
@@ -245,9 +249,9 @@ fn render_composer_editor(
 
 impl TextInput {
     pub(crate) fn composer_editor_ready(&self) -> bool {
-        self.nsh_composer
-            .as_ref()
-            .is_none_or(|editor| editor.gate.matches(self))
+        self.nsh_composer.as_ref().is_none_or(|editor| {
+            editor.surface.errors().borrow().is_none() && editor.gate.matches(self)
+        })
     }
 
     pub(crate) fn composer_contains_focus(&self, window: &Window, cx: &gpui_kit::App) -> bool {
@@ -284,9 +288,26 @@ impl TextInput {
                     height: height_tx.clone(),
                     shortcuts: shortcuts.clone(),
                     route,
+                    host_failed: false,
                 };
                 let (surface, mut requests) =
                     crate::nsh::Surface::new(initial, render_composer_editor, window, cx);
+                let mut errors = surface.errors();
+                let error_gate = gate.clone();
+                cx.spawn(async move |this, cx| {
+                    loop {
+                        if errors.borrow_and_update().is_some() {
+                            error_gate.close();
+                            if this.update(cx, |_, cx| cx.notify()).is_err() {
+                                break;
+                            }
+                        }
+                        if errors.changed().await.is_err() {
+                            break;
+                        }
+                    }
+                })
+                .detach();
                 let focus_subscription =
                     cx.on_focus(&this.focus_handle, window, |this, window, cx| {
                         let snapshot = this.nsh_snapshot();
@@ -301,6 +322,7 @@ impl TextInput {
                                 height: editor.height_sender.clone(),
                                 shortcuts: editor.shortcuts.clone(),
                                 route: editor.route,
+                                host_failed: editor.surface.errors().borrow().is_some(),
                             });
                             editor.surface.focus(window, cx);
                         }
@@ -379,6 +401,7 @@ impl TextInput {
                 height: editor.height_sender.clone(),
                 shortcuts: editor.shortcuts.clone(),
                 route: editor.route,
+                host_failed: editor.surface.errors().borrow().is_some(),
             });
             gpui_kit::div()
                 .w_full()
@@ -767,6 +790,7 @@ fn editor(
     focus_revision: Signal<u64>,
     route: Signal<ComposerRoute>,
     shortcuts: mpsc::Sender<ShortcutRequest>,
+    host_failed: Signal<bool>,
 ) -> EditorView {
     let first = state.get();
     let dispatch = Dispatch {
@@ -785,6 +809,12 @@ fn editor(
         generation: signal(0),
         gate: gate.clone(),
     };
+    let failure = dispatch.clone();
+    effect(move || {
+        if host_failed.get() && !failure.failed.get_untracked() {
+            failure.fail();
+        }
+    });
     let sync = dispatch.clone();
     effect(move || {
         let snapshot = state.get();
@@ -804,7 +834,8 @@ fn editor(
     let barrier = dispatch.clone();
     effect(move || {
         let snapshot = state.get();
-        let ready = !barrier.failed.get()
+        let ready = !host_failed.get()
+            && !barrier.failed.get()
             && barrier.pending.get() == 0
             && !barrier.composing.get()
             && !snapshot.composing
@@ -1176,9 +1207,11 @@ fn editor(
                     }))
                     .child(
                         nsh_base::button()
-                            .disabled(move || pending.get() != 0)
+                            .disabled(move || pending.get() != 0 || host_failed.get())
                             .on_press(move || {
-                                if reload.pending.get_untracked() != 0 {
+                                if reload.pending.get_untracked() != 0
+                                    || host_failed.get_untracked()
+                                {
                                     return;
                                 }
                                 let snapshot = state.get_untracked();

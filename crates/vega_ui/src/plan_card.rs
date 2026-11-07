@@ -134,6 +134,13 @@ impl PlanCard {
         self.plan.status
     }
 
+    pub fn row_count(&self) -> usize {
+        self.presentation.as_ref().map_or_else(
+            || self.display_content().lines().count().max(1) + 4,
+            |presentation| (presentation.height / ROW_HEIGHT).ceil() as usize + 1,
+        )
+    }
+
     pub(crate) fn set_generated_notices(
         &mut self,
         notices: Vec<crate::conversation_stream::generated_notice::GeneratedNoticeSpan>,

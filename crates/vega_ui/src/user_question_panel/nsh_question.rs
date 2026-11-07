@@ -145,7 +145,7 @@ impl UserQuestionPanel {
             surface.publish(snapshot);
             surface.entity().into_any_element()
         } else {
-            div().into_any_element()
+            gpui_kit::div().into_any_element()
         }
     }
 }
@@ -305,7 +305,7 @@ fn render(
                                             .selectable(true),
                                     )
                                     .child(each(
-                                        ids,
+                                        move || ids.clone(),
                                         |index| *index,
                                         move |index, _| {
                                             let index = index.get();
@@ -318,7 +318,8 @@ fn render(
                                                     target.focus();
                                                 }
                                             });
-                                            nsh_base::button()
+                                            view()
+                                                .role(AccessibilityRole::Button)
                                                 .element_ref(&target)
                                                 .on_layout(move |_: &Bounds<Points>| {
                                                     mounted.set(true)
@@ -349,7 +350,7 @@ fn render(
                                                     )
                                                     .to_hsla()
                                                 })
-                                                .on_press(move || {
+                                                .on_press(move |_: &nsh_core::PressEvent| {
                                                     sender.send(Command {
                                                         id: id.clone(),
                                                         page: page_index,
@@ -409,7 +410,7 @@ fn render(
                                                 .gap_1()
                                                 .child(text(move || state.get().note_label))
                                                 .child(
-                                                    input()
+                                                    nsh_core::element::input()
                                                         .value(value)
                                                         .on_focus(move |_: &()| {
                                                             keyboard_target
@@ -458,7 +459,8 @@ fn render(
                                         move || {
                                             let sender = page_commands.clone();
                                             let id = state.get().id;
-                                            nsh_base::button()
+                                            view()
+                                                .role(AccessibilityRole::Button)
                                                 .on_focus(move |_: &()| {
                                                     keyboard_target.set(KeyboardTarget::Control(
                                                         PanelAction::Note,
@@ -468,7 +470,7 @@ fn render(
                                                     keyboard_target.set(KeyboardTarget::None)
                                                 })
                                                 .disabled(move || !state.get().enabled)
-                                                .on_press(move || {
+                                                .on_press(move |_: &nsh_core::PressEvent| {
                                                     sender.send(Command {
                                                         id: id.clone(),
                                                         page: page_index,
@@ -494,7 +496,8 @@ fn render(
                             .justify_between()
                             .gap_2()
                             .child(
-                                nsh_base::button()
+                                view()
+                                    .role(AccessibilityRole::Button)
                                     .on_focus(move |_: &()| {
                                         keyboard_target
                                             .set(KeyboardTarget::Control(PanelAction::Back))
@@ -503,7 +506,7 @@ fn render(
                                         keyboard_target.set(KeyboardTarget::None)
                                     })
                                     .disabled(move || !state.get().enabled || page_index == 0)
-                                    .on_press(move || {
+                                    .on_press(move |_: &nsh_core::PressEvent| {
                                         let snapshot = state.get();
                                         back_commands.send(Command {
                                             id: snapshot.id,
@@ -514,7 +517,8 @@ fn render(
                                     .child(text(move || state.get().back)),
                             )
                             .child(
-                                nsh_base::button()
+                                view()
+                                    .role(AccessibilityRole::Button)
                                     .on_focus(move |_: &()| {
                                         keyboard_target
                                             .set(KeyboardTarget::Control(PanelAction::Skip))
@@ -523,7 +527,7 @@ fn render(
                                         keyboard_target.set(KeyboardTarget::None)
                                     })
                                     .disabled(move || !state.get().enabled)
-                                    .on_press(move || {
+                                    .on_press(move |_: &nsh_core::PressEvent| {
                                         let snapshot = state.get();
                                         skip_commands.send(Command {
                                             id: snapshot.id,
@@ -534,7 +538,8 @@ fn render(
                                     .child(text(move || state.get().skip)),
                             )
                             .child(
-                                nsh_base::button()
+                                view()
+                                    .role(AccessibilityRole::Button)
                                     .on_focus(move |_: &()| {
                                         keyboard_target
                                             .set(KeyboardTarget::Control(PanelAction::Advance))
@@ -543,7 +548,7 @@ fn render(
                                         keyboard_target.set(KeyboardTarget::None)
                                     })
                                     .disabled(move || !state.get().can_advance || composing.get())
-                                    .on_press(move || {
+                                    .on_press(move |_: &nsh_core::PressEvent| {
                                         let snapshot = state.get();
                                         next_commands.send(Command {
                                             id: snapshot.id,

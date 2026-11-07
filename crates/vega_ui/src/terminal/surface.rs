@@ -194,7 +194,7 @@ fn draw(projection: &Projection, metrics: Metrics, selection: Option<Selection>)
                     .contains(&index)
         });
         let background = if selected {
-            rgb(projection.colors.accent_muted)
+            rgb(projection.colors.bg_active)
         } else {
             ansi(background, projection.colors.bg_base)
         };
@@ -593,7 +593,7 @@ pub(super) fn render(projection: Signal<Projection>, sender: mpsc::Sender<Reques
                             ),
                     )
                     .child(
-                        input()
+                        nsh_core::element::input()
                             .element_ref(&native_input)
                             .value(text_value)
                             .label(vega_i18n::t("ui.terminal"))
