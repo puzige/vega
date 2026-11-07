@@ -17,6 +17,7 @@ pub(crate) enum TrustedActionKind {
     /// same single-flight gate as sends and model changes until workers drain.
     ContextSettings,
     ContextCompaction,
+    ShellRecovery,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

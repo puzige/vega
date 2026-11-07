@@ -90,9 +90,10 @@ impl Tools {
         if canonical.is_dir() {
             return Err(ToolError::InvalidInput(format!("{path} is a directory")));
         }
+        let epoch = crate::ReadState::observation_epoch(&canonical)?;
         let bytes = read_text_head_probed(&canonical, path, self.credential_policy.is_some())?;
         let text = TextFile::decode(&bytes)?;
-        self.reads.record(&canonical, &bytes)?;
+        self.reads.record_observation(&canonical, &bytes, epoch)?;
         let output = render_numbered(&text.content, offset.unwrap_or(1), limit);
         let mut hash = Sha256::new();
         hash.update(&bytes);

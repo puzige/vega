@@ -225,6 +225,7 @@ impl VegaWindow {
         if let Some(identity) = identity {
             self.schedule_diff_refresh(&identity, cx);
         }
+        stream.update(cx, |stream, cx| stream.refresh_shell_recovery(cx));
     }
 
     pub(crate) fn owns_stream_request(

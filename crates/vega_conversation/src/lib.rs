@@ -16,6 +16,7 @@ pub mod permission_reset;
 pub mod plans;
 mod pricing;
 pub mod session_reasoning;
+pub mod shell_recovery;
 pub mod startup;
 pub mod summary;
 mod thread_access;

@@ -19,7 +19,8 @@ mod sha256;
 mod tools;
 
 pub use bash::{
-    BashInputError, BashLaunchPolicy, BashScopeDirectory, BashScopeRequest,
+    BashInputError, BashLaunchPolicy, BashScopeDirectory, BashScopeRequest, BashSession,
+    BashSessionRedactor, BashSessionResource, BashSessionResourceHook, BashSessionSnapshot,
     DEFAULT_BASH_TIMEOUT_MS, PreparedBash, PreparedBashScope, bash_input_error,
     bash_inputs_semantically_equal, bash_permission_signature, legacy_bash_input_is_invalid,
 };

@@ -453,6 +453,7 @@ impl ConversationStream {
             .children(self.active_user_question.clone())
             .child(self.render_automation(cx))
             .child(self.render_thread_permission_feedback(cx))
+            .child(self.render_shell_recovery(cx))
             .child(
                 div()
                     .on_drop(cx.listener(Self::drop_images))
@@ -1992,6 +1993,14 @@ impl Render for ConversationStream {
                         && !this.input.read(cx).is_composing()
                     {
                         this.on_model_close(&CloseModel, window, cx);
+                        cx.stop_propagation();
+                        return;
+                    }
+                    if this.shell_recovery.opened
+                        && event.keystroke.key == "escape"
+                        && !this.input.read(cx).is_composing()
+                    {
+                        this.dismiss_shell_recovery(window, cx);
                         cx.stop_propagation();
                         return;
                     }
