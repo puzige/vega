@@ -342,14 +342,14 @@ impl BashSession {
                 deadline,
                 tokio::time::Instant::now() + super::TERMINATION_GRACE,
             );
-            while !tracker.settled() && tokio::time::Instant::now() < grace {
+            while !tracker.settled(deadline) && tokio::time::Instant::now() < grace {
                 tokio::time::sleep_until(std::cmp::min(
                     grace,
                     tokio::time::Instant::now() + Duration::from_millis(10),
                 ))
                 .await;
             }
-            if !tracker.settled() {
+            if !tracker.settled(deadline) {
                 tracker.signal(libc::SIGKILL, deadline);
             }
         }
@@ -369,7 +369,7 @@ impl BashSession {
         let resolved = resources
             .tracker
             .as_mut()
-            .is_none_or(|tracker| tracker.settled());
+            .is_none_or(|tracker| tracker.settled(deadline));
         let temp_closed = if resolved && reader_closed {
             resources
                 .temp

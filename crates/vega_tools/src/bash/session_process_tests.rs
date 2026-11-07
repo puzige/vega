@@ -8,6 +8,7 @@ struct ObservedProcesses {
     inspections: usize,
     change_at: Option<usize>,
     list_failure: bool,
+    lists: usize,
     now: Option<tokio::time::Instant>,
     inspect_cost: Duration,
 }
@@ -50,7 +51,8 @@ impl ProcessApi for FakeProcesses {
     }
 
     fn list(&self, pid: i32, group: bool) -> Result<Vec<i32>, &'static str> {
-        let state = self.0.borrow();
+        let mut state = self.0.borrow_mut();
+        state.lists += 1;
         if state.list_failure {
             return Err("process_observation_failed");
         }
@@ -92,7 +94,7 @@ fn identity_change_during_signal_validation_permanently_revokes_authority() {
     tracker.signal(libc::SIGTERM, deadline());
     tracker.signal(libc::SIGKILL, deadline());
     assert!(tracker.api.0.borrow().signals.is_empty());
-    assert!(!tracker.settled());
+    assert!(!tracker.settled(deadline()));
     assert!(
         tracker
             .reasons()
@@ -109,7 +111,7 @@ fn group_observation_identity_mismatch_never_reacquires_pid_authority() {
     tracker.signal(libc::SIGTERM, deadline());
     tracker.signal(libc::SIGKILL, deadline());
     assert!(tracker.api.0.borrow().signals.is_empty());
-    assert!(!tracker.settled());
+    assert!(!tracker.settled(deadline()));
 }
 
 #[test]
@@ -147,7 +149,7 @@ fn reused_descendant_never_receives_a_signal_after_identity_returns() {
             .iter()
             .all(|(target, _)| *target != 20)
     );
-    assert!(!tracker.settled());
+    assert!(!tracker.settled(deadline()));
 }
 
 #[test]
@@ -166,9 +168,9 @@ fn observed_reparented_descendant_remains_owned_after_root_disappears() {
     }
     tracker.signal(libc::SIGTERM, deadline());
     assert_eq!(tracker.api.0.borrow().signals, vec![(20, libc::SIGTERM)]);
-    assert!(!tracker.settled());
+    assert!(!tracker.settled(deadline()));
     tracker.api.0.borrow_mut().identities.clear();
-    assert!(tracker.settled());
+    assert!(tracker.settled(deadline()));
 }
 
 #[test]
@@ -193,7 +195,7 @@ fn unknown_group_member_revokes_group_signals_across_retry() {
             .iter()
             .all(|(target, _)| *target != -10 && *target != 30)
     );
-    assert!(!tracker.settled());
+    assert!(!tracker.settled(deadline()));
 }
 
 #[test]
@@ -201,13 +203,13 @@ fn observation_failure_stays_unresolved_after_later_empty_snapshot() {
     let api = FakeProcesses::root();
     let mut tracker = ProcessTracker::with_api(10, api);
     tracker.api.0.borrow_mut().list_failure = true;
-    assert!(!tracker.settled());
+    assert!(!tracker.settled(deadline()));
     {
         let mut state = tracker.api.0.borrow_mut();
         state.list_failure = false;
         state.identities.clear();
     }
-    assert!(!tracker.settled());
+    assert!(!tracker.settled(deadline()));
     tracker.signal(libc::SIGKILL, deadline());
     assert!(tracker.api.0.borrow().signals.is_empty());
 }
@@ -234,7 +236,7 @@ fn identity_limit_blocks_completion_without_signalling_unretained_children() {
             .any(|(target, _)| *target == 147)
     );
     tracker.api.0.borrow_mut().identities.clear();
-    assert!(!tracker.settled());
+    assert!(!tracker.settled(deadline()));
     assert!(
         tracker
             .reasons()
@@ -259,9 +261,18 @@ fn observation_consumes_shared_budget_and_prevents_late_signals() {
     }
     let deadline = start + Duration::from_secs(5);
     tracker.signal(libc::SIGTERM, deadline);
+    let observations = {
+        let state = tracker.api.0.borrow();
+        (state.inspections, state.lists)
+    };
     tracker.signal(libc::SIGKILL, deadline);
     assert!(tracker.api.0.borrow().signals.is_empty());
-    assert!(!tracker.settled());
+    assert!(!tracker.settled(deadline));
+    let state = tracker.api.0.borrow();
+    assert_eq!((state.inspections, state.lists), observations);
+    assert_eq!(state.inspections, 4);
+    assert_eq!(state.lists, 3);
+    drop(state);
     assert!(
         tracker
             .reasons()
@@ -277,5 +288,5 @@ fn expired_cleanup_budget_performs_no_process_observation_or_signal() {
     tracker.signal(libc::SIGKILL, tokio::time::Instant::now());
     assert_eq!(tracker.api.0.borrow().inspections, before);
     assert!(tracker.api.0.borrow().signals.is_empty());
-    assert!(!tracker.settled());
+    assert!(!tracker.settled(deadline()));
 }

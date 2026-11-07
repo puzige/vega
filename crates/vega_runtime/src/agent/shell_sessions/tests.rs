@@ -465,6 +465,32 @@ async fn persisted_blocker_excludes_external_root_and_full_access_without_enteri
     Ok(())
 }
 
+#[tokio::test]
+async fn missing_historical_workspace_keeps_its_range_blocked_without_disabling_other_projects()
+-> Result<(), Box<dyn Error>> {
+    let _serial = serial().lock().await;
+    let parent = Workspace::new()?;
+    let other = Workspace::new()?;
+    let missing = parent.0.join("deleted-project");
+    RuntimeWorkspaceMutationGuard::set_persisted_block(
+        &missing,
+        "missing-project-operation",
+        true,
+    )?;
+    drop(RuntimeWorkspaceMutationGuard::acquire(&other.0)?);
+    assert!(RuntimeWorkspaceMutationGuard::acquire(&parent.0).is_err());
+    assert!(RuntimeWorkspaceMutationGuard::acquire_all(&[PathBuf::from("/")]).is_err());
+    std::fs::create_dir(&missing)?;
+    assert!(RuntimeWorkspaceMutationGuard::acquire(&missing).is_err());
+    RuntimeWorkspaceMutationGuard::set_persisted_block(
+        &missing,
+        "missing-project-operation",
+        false,
+    )?;
+    drop(RuntimeWorkspaceMutationGuard::acquire(&missing)?);
+    Ok(())
+}
+
 #[test]
 fn session_observation_parameters_reject_scope_expansion_and_out_of_range_waits() {
     let handle = ulid::Ulid::generate().to_string();

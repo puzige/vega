@@ -229,7 +229,21 @@ impl RuntimeWorkspaceMutationGuard {
         if operation_id.is_empty() {
             return Err(failure("operation_identity_required"));
         }
-        let workspace = workspace_identity(workspace)?;
+        let workspace = match workspace_identity(workspace) {
+            Ok(identity) => identity,
+            Err(_)
+                if workspace.is_absolute()
+                    && workspace.components().all(|component| {
+                        matches!(
+                            component,
+                            std::path::Component::RootDir | std::path::Component::Normal(_)
+                        )
+                    }) =>
+            {
+                workspace.to_path_buf()
+            }
+            Err(error) => return Err(error),
+        };
         let mut registry = registry()
             .lock()
             .map_err(|_| failure("registry_unavailable"))?;

@@ -91,6 +91,10 @@ impl<A: ProcessApi> ProcessTracker<A> {
     }
 
     pub(super) fn discover(&mut self) {
+        self.discover_until(None);
+    }
+
+    fn discover_until(&mut self, deadline: Option<tokio::time::Instant>) {
         let mut visited = BTreeSet::new();
         loop {
             let next = self
@@ -105,11 +109,20 @@ impl<A: ProcessApi> ProcessTracker<A> {
             if self.invalid.contains(&parent.pid) {
                 continue;
             }
+            if !self.observation_allowed(deadline) {
+                return;
+            }
             match self.api.inspect(parent.pid) {
                 Ok(Some(current)) if current.birth == parent.birth => {
+                    if !self.observation_allowed(deadline) {
+                        return;
+                    }
                     match self.api.list(parent.pid, false) {
                         Ok(children) => {
                             for pid in children {
+                                if !self.observation_allowed(deadline) {
+                                    return;
+                                }
                                 match self.api.inspect(pid) {
                                     Ok(Some(child)) if child.parent == parent.pid as u32 => {
                                         self.remember(child)
@@ -134,9 +147,15 @@ impl<A: ProcessApi> ProcessTracker<A> {
                 }
             }
         }
+        if !self.observation_allowed(deadline) {
+            return;
+        }
         match self.api.list(self.group, true) {
             Ok(members) => {
                 for pid in members {
+                    if !self.observation_allowed(deadline) {
+                        return;
+                    }
                     match self.api.inspect(pid) {
                         Ok(Some(identity))
                             if self
@@ -161,8 +180,8 @@ impl<A: ProcessApi> ProcessTracker<A> {
         }
     }
 
-    fn matching(&mut self, identity: Identity) -> Option<Identity> {
-        if self.invalid.contains(&identity.pid) {
+    fn matching(&mut self, identity: Identity, deadline: tokio::time::Instant) -> Option<Identity> {
+        if !self.within_budget(deadline) || self.invalid.contains(&identity.pid) {
             return None;
         }
         match self.api.inspect(identity.pid) {
@@ -181,17 +200,23 @@ impl<A: ProcessApi> ProcessTracker<A> {
         if !self.within_budget(deadline) {
             return;
         }
-        self.discover();
+        self.discover_until(Some(deadline));
+        if !self.within_budget(deadline) {
+            return;
+        }
         let members = self.api.list(self.group, true);
         let mut group_verified =
             !self.group_invalid && members.as_ref().is_ok_and(|members| !members.is_empty());
         if let Ok(members) = &members {
             for pid in members {
+                if !self.within_budget(deadline) {
+                    return;
+                }
                 let current = self
                     .known
                     .get(pid)
                     .copied()
-                    .and_then(|known| self.matching(known));
+                    .and_then(|known| self.matching(known, deadline));
                 group_verified &= current.is_some_and(|current| current.group == self.group as u32);
             }
         }
@@ -211,7 +236,7 @@ impl<A: ProcessApi> ProcessTracker<A> {
             if !self.within_budget(deadline) {
                 return;
             }
-            if let Some(current) = self.matching(identity)
+            if let Some(current) = self.matching(identity, deadline)
                 && self.within_budget(deadline)
                 && !current.zombie
                 && (!group_verified || current.group != self.group as u32)
@@ -231,17 +256,27 @@ impl<A: ProcessApi> ProcessTracker<A> {
         }
     }
 
-    pub(super) fn settled(&mut self) -> bool {
-        self.discover();
+    fn observation_allowed(&mut self, deadline: Option<tokio::time::Instant>) -> bool {
+        deadline.is_none_or(|deadline| self.within_budget(deadline))
+    }
+
+    pub(super) fn settled(&mut self, deadline: tokio::time::Instant) -> bool {
+        self.discover_until(Some(deadline));
         let identities: Vec<_> = self.known.values().copied().collect();
         let mut gone = true;
         for identity in identities {
+            if !self.within_budget(deadline) {
+                return false;
+            }
             if self
-                .matching(identity)
+                .matching(identity, deadline)
                 .is_some_and(|current| !current.zombie)
             {
                 gone = false;
             }
+        }
+        if !self.within_budget(deadline) {
+            return false;
         }
         match self.api.list(self.group, true) {
             Ok(members) if members.is_empty() => {}
@@ -251,7 +286,7 @@ impl<A: ProcessApi> ProcessTracker<A> {
                 gone = false;
             }
         }
-        gone && self.failures.is_empty()
+        self.within_budget(deadline) && gone && self.failures.is_empty()
     }
 
     pub(super) fn reasons(&self) -> Vec<String> {
@@ -323,7 +358,7 @@ pub(super) async fn execute(
     };
     let deadline = writer.begin_cleanup(reason);
     tracker.discover();
-    if status.is_none() || !tracker.settled() {
+    if status.is_none() || !tracker.settled(deadline) {
         tracker.signal(libc::SIGTERM, deadline);
         let grace = std::cmp::min(deadline, tokio::time::Instant::now() + TERMINATION_GRACE);
         loop {
@@ -339,7 +374,7 @@ pub(super) async fn execute(
                     }
                 }
             }
-            if status.is_some() && tracker.settled() {
+            if status.is_some() && tracker.settled(deadline) {
                 break;
             }
             if tokio::time::Instant::now() >= grace {
@@ -351,7 +386,7 @@ pub(super) async fn execute(
             ))
             .await;
         }
-        if status.is_none() || !tracker.settled() {
+        if status.is_none() || !tracker.settled(deadline) {
             tracker.signal(libc::SIGKILL, deadline);
         }
     }
@@ -369,7 +404,7 @@ pub(super) async fn execute(
                 }
             }
         }
-        if status.is_some() && tracker.settled() {
+        if status.is_some() && tracker.settled(deadline) {
             break;
         }
         if tokio::time::Instant::now() >= process_deadline {
@@ -381,7 +416,7 @@ pub(super) async fn execute(
         ))
         .await;
     }
-    let resolved = status.is_some() && tracker.settled();
+    let resolved = status.is_some() && tracker.settled(deadline);
     let mut reasons = tracker.reasons();
     if !resolved {
         reasons.push("process_cleanup_unresolved".into());
