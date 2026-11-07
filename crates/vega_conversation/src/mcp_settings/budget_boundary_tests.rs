@@ -89,6 +89,8 @@ fn released_lock_after_backoff_deadline_cannot_be_acquired() {
         assert!(start.elapsed() < Duration::from_secs(3));
         std::thread::sleep(Duration::from_millis(1));
     };
+    assert!(!budget.exhausted);
+    assert!(budget.attempts < 6);
     let attempts = budget.attempts;
     let waited = budget.wait_ms;
     drop(holder);
