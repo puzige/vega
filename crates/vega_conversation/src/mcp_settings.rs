@@ -117,17 +117,11 @@ fn configuration_failure(
         Stage::Directory => CredentialReadReason::ConfigurationDirectory,
         Stage::LockOpen => CredentialReadReason::ConfigurationLockOpen,
         Stage::LockValidation => CredentialReadReason::ConfigurationLockValidation,
+        Stage::LockAcquire => CredentialReadReason::ConfigurationLockAcquire,
         Stage::Read => CredentialReadReason::ConfigurationRead,
         Stage::Parse => CredentialReadReason::ConfigurationParse,
     };
     error
-}
-
-fn configuration_io(error: std::io::Error) -> CredentialReadError {
-    match vega_store::yaml_config::failure(&error) {
-        Some(failure) => configuration_failure(failure),
-        None => CredentialReadError::configuration_io(CredentialReadStage::Mcp, error.kind()),
-    }
 }
 
 fn mcp_read_error(error: McpStoreError) -> CredentialReadError {

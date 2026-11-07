@@ -162,7 +162,10 @@ impl RunFailureKind {
                     Self::ConfigurationRepairRequired
                 }
                 Some(
-                    "configuration_directory" | "configuration_lock_open" | "configuration_read",
+                    "configuration_directory"
+                    | "configuration_lock_open"
+                    | "configuration_lock_acquire"
+                    | "configuration_read",
                 ) => Self::ConfigurationAccessUnavailable,
                 Some("database" | "configuration") => Self::CredentialInternalUnavailable,
                 Some("state" | "worker") => Self::CredentialStateUnavailable,
@@ -394,7 +397,8 @@ impl RunFailureKind {
             vega_runtime::VegaError::CredentialRead(error) => {
                 if error.configuration_lock.is_some() {
                     Self::ConfigurationBusy
-                } else if error.reason == vega_runtime::CredentialReadReason::ConfigurationPoisoned {
+                } else if error.reason == vega_runtime::CredentialReadReason::ConfigurationPoisoned
+                {
                     Self::ConfigurationRestartRequired
                 } else if matches!(
                     error.reason,
@@ -406,6 +410,7 @@ impl RunFailureKind {
                     error.reason,
                     vega_runtime::CredentialReadReason::ConfigurationDirectory
                         | vega_runtime::CredentialReadReason::ConfigurationLockOpen
+                        | vega_runtime::CredentialReadReason::ConfigurationLockAcquire
                         | vega_runtime::CredentialReadReason::ConfigurationRead
                 ) {
                     Self::ConfigurationAccessUnavailable

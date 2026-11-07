@@ -129,6 +129,7 @@ pub fn append(conn: &Connection, event: &PreparationEvent) -> rusqlite::Result<(
                                 | "configuration_directory"
                                 | "configuration_lock_open"
                                 | "configuration_lock_validation"
+                                | "configuration_lock_acquire"
                                 | "configuration_read"
                                 | "configuration_parse"
                                 | "state"

@@ -13,8 +13,10 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let root =
-            std::env::temp_dir().join(format!("configuration-retry-{}", ulid::Ulid::generate()));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("configuration-retry-{}", ulid::Ulid::generate()));
         std::fs::create_dir(&root).unwrap();
         let database = root.join("synthetic.db");
         let store = Store::open(&database).unwrap();
@@ -280,6 +282,14 @@ fn malformed_configuration_and_unsafe_lock_file_do_not_retry() {
             error.storage.unwrap().io_kind,
             Some(vega_runtime::RuntimeIoKind::InvalidData)
         );
+        assert_eq!(
+            error.reason,
+            if invalid_lock {
+                CredentialReadReason::ConfigurationLockValidation
+            } else {
+                CredentialReadReason::ConfigurationParse
+            }
+        );
         assert!(error.configuration_lock.is_none());
         assert_eq!(
             operation
@@ -358,4 +368,137 @@ fn readiness_retries_only_lock_acquisition_before_empty_tool_projection() {
     release.join().unwrap();
     assert!(ready.ready_servers.is_empty());
     assert!(ready.unavailable.is_empty());
+}
+
+#[test]
+fn invalid_mcp_declaration_is_not_retried_and_explicit_repair_reads_fresh_configuration() {
+    let _serial = TEST_LOCK.lock().unwrap();
+    let fixture = Fixture::new();
+    std::fs::write(
+        fixture.root.join("config.yaml"),
+        "schema_version: 1\nmcp_servers: invalid\n",
+    )
+    .unwrap();
+    let operation = fixture.service.configuration_operation();
+    let error = operation.current_owner_credential_values().unwrap_err();
+    assert_eq!(error.reason, CredentialReadReason::ConfigurationParse);
+    assert!(error.configuration_lock.is_none());
+    assert_eq!(
+        operation
+            .configuration_budget
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .attempts,
+        0
+    );
+    assert_eq!(
+        crate::types::RunFailureKind::from_runtime(&error.into()),
+        crate::types::RunFailureKind::ConfigurationRepairRequired
+    );
+    std::fs::write(
+        fixture.root.join("config.yaml"),
+        "schema_version: 1\nmcp_servers: []\n",
+    )
+    .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let ready = runtime.block_on(fixture.service.ready_for_run()).unwrap();
+    assert!(ready.ready_servers.is_empty());
+    assert!(ready.unavailable.is_empty());
+}
+
+#[test]
+fn released_lock_does_not_allow_a_changed_invalid_configuration_or_reuse_stale_authority() {
+    let _serial = TEST_LOCK.lock().unwrap();
+    let fixture = Fixture::new();
+    fixture
+        .service
+        .lock()
+        .unwrap()
+        .epochs
+        .insert("existing".into(), 4);
+    let operation = fixture.service.configuration_operation();
+    let holder = fixture.holder();
+    let worker = operation.clone();
+    let join = std::thread::spawn(move || worker.current_owner_credential_values());
+    wait_until_retry(&operation);
+    std::fs::write(
+        fixture.root.join("config.yaml"),
+        "schema_version: 1\nmcp_servers: invalid\n",
+    )
+    .unwrap();
+    drop(holder);
+    let error = join.join().unwrap().unwrap_err();
+    assert_eq!(error.reason, CredentialReadReason::ConfigurationParse);
+    assert!(error.configuration_lock.is_none());
+    assert_eq!(fixture.service.lock().unwrap().epochs["existing"], 5);
+    assert!(
+        operation
+            .configuration_budget
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .attempts
+            < 6
+    );
+}
+
+#[test]
+fn lock_syscall_failure_remains_distinct_from_busy_through_runtime_and_submission_diagnostics() {
+    use vega_store::yaml_config::{ConfigurationFailure, ConfigurationFailureStage};
+    for kind in [
+        std::io::ErrorKind::PermissionDenied,
+        std::io::ErrorKind::Interrupted,
+        std::io::ErrorKind::Other,
+        std::io::ErrorKind::WouldBlock,
+    ] {
+        let error = mcp_read_error(McpStoreError::ConfigurationFailure(ConfigurationFailure {
+            stage: ConfigurationFailureStage::LockAcquire,
+            kind,
+        }));
+        assert_eq!(error.reason, CredentialReadReason::ConfigurationLockAcquire);
+        assert!(error.configuration_lock.is_none());
+        let runtime: vega_runtime::VegaError = error.into();
+        assert_eq!(
+            crate::types::RunFailureKind::from_runtime(&runtime),
+            crate::types::RunFailureKind::ConfigurationAccessUnavailable
+        );
+        let detail = crate::submission_diagnostics::runtime_failure(
+            crate::submission_diagnostics::PreparationStage::Launch,
+            &runtime,
+        );
+        assert_eq!(detail.credential_reason, Some("configuration_lock_acquire"));
+        assert!(detail.configuration_lock.is_none());
+        assert!(detail.configuration_lock_attempts.is_none());
+        assert!(detail.configuration_lock_wait_ms.is_none());
+        let _serial = TEST_LOCK.lock().unwrap();
+        let fixture = Fixture::new();
+        let store = fixture.store();
+        let submission = vega_store::submission_diagnostics::PreparationEvent {
+            submission_id: ulid::Ulid::generate().to_string(),
+            attempt: 1,
+            state: vega_store::submission_diagnostics::PreparationState::Failed,
+            occurred_at: 1,
+            failure: Some(detail),
+        };
+        vega_store::submission_diagnostics::append(store.conn(), &submission).unwrap();
+        let exported =
+            vega_store::submission_diagnostics::read(store.conn(), &submission.submission_id)
+                .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&exported[0]).unwrap();
+        assert_eq!(
+            value["failure"]["credential_reason"],
+            "configuration_lock_acquire"
+        );
+        assert_eq!(
+            value["failure"]["io_kind"],
+            vega_runtime::RuntimeIoKind::from(kind).as_str()
+        );
+        assert!(!exported[0].contains(fixture.root.to_str().unwrap()));
+    }
 }
