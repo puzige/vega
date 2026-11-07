@@ -23,7 +23,6 @@ pub struct SettingsView {
     pub(crate) pending_settings_close: bool,
     pub(crate) section_scrolls: [gpui_kit::ScrollHandle; 8],
     pub(crate) usage: super::usage::UsageState,
-    pub(crate) usage_focuses: [FocusHandle; 6],
     pub(crate) section_focuses: [FocusHandle; 8],
     pub(crate) mcp: super::mcp::McpSettingsState,
     pub(crate) skills: super::skills::SkillsSettingsState,
@@ -299,7 +298,6 @@ impl SettingsView {
                 1
             },
             usage: Default::default(),
-            usage_focuses: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             section_focuses: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             mcp: super::mcp::McpSettingsState::new(cx),
             skills: Default::default(),
