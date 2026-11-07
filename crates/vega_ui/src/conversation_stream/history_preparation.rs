@@ -14,7 +14,8 @@ pub(super) struct PreparedHistoryEntries {
 }
 
 impl PreparedHistoryEntries {
-    pub(super) fn new(entries: Vec<HistoryEntry>, counters: &StreamCounters) -> Self {
+    pub(super) fn new(mut entries: Vec<HistoryEntry>, counters: &StreamCounters) -> Self {
+        entries.retain(|entry| !matches!(entry, HistoryEntry::SkillActivation { .. }));
         let mut response_boundaries = phase::history_response_boundaries(&entries);
         let mut timestamp_boundaries: HashMap<String, HashSet<usize>> = HashMap::new();
         for entry in &entries {

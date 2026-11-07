@@ -141,7 +141,6 @@ impl ConversationStream {
                 StreamEntry::Subagents { .. }
                     | StreamEntry::ContextCompaction { .. }
                     | StreamEntry::Summary { .. }
-                    | StreamEntry::SkillActivation { .. }
             ) {
                 continue;
             }
@@ -202,9 +201,7 @@ impl ConversationStream {
                 .or(identity.pending_id.as_ref());
             let boundary = matches!(
                 entry,
-                StreamEntry::ContextCompaction { .. }
-                    | StreamEntry::Summary { .. }
-                    | StreamEntry::SkillActivation { .. }
+                StreamEntry::ContextCompaction { .. } | StreamEntry::Summary { .. }
             );
             if boundary || owner.is_none() {
                 segment_owner = None;

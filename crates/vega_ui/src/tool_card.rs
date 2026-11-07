@@ -270,32 +270,6 @@ impl ToolCard {
         card
     }
 
-    pub(crate) fn activated_skill(name: String) -> Self {
-        Self::hydrated(
-            Some(ToolCardInputProjection::Skill {
-                kind: vega_conversation::types::SkillToolKind::Load,
-                name: Some(name),
-                path_bytes: None,
-                path_sha256: None,
-            }),
-            ToolCallStatus::Success,
-            None,
-            Some(ToolCardResultProjection::Skill {
-                status: ToolCallStatus::Success,
-                outcome: SkillCardOutcome::Loaded,
-                reused: false,
-            }),
-            None,
-        )
-    }
-
-    pub(crate) fn reads_skill(&self, name: &str) -> bool {
-        matches!(&self.input, Some(ToolCardInputProjection::Skill {
-            kind: vega_conversation::types::SkillToolKind::Load,
-            name: Some(loaded), ..
-        }) if loaded == name)
-    }
-
     /// Whether a duplicate proposal is semantically identical.
     pub fn matches_call(&self, call: &ToolCall) -> bool {
         self.status == ToolCallStatus::PendingApproval

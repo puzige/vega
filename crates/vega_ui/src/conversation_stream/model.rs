@@ -1350,10 +1350,6 @@ pub(crate) enum StreamEntry {
     Summary {
         card: Entity<SummaryCard>,
     },
-    /// Content-free historical Skill provenance; never a live capability.
-    SkillActivation {
-        activation: vega_conversation::history::SkillHistoryActivation,
-    },
 }
 
 impl StreamEntry {
@@ -1378,7 +1374,6 @@ impl StreamEntry {
                 card.read(cx).summary().outcome
                     != vega_conversation::types::TaskSummaryOutcome::Completed,
             ),
-            StreamEntry::SkillActivation { .. } => 1,
             StreamEntry::ContextCompaction { record, .. } => usize::from(!matches!(
                 record.status,
                 vega_conversation::types::ContextCompactionStatus::Succeeded
