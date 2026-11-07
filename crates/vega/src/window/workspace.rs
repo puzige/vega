@@ -1,7 +1,11 @@
 use super::*;
 use vega_ui::artifact_card::ArtifactCard;
-use vega_ui::icons::{Icon, icon_button};
-use vega_ui::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade, ScrollableFadeExt};
+use vega_ui::icons::Icon;
+use vega_ui::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
+
+#[path = "nsh_workspace/mod.rs"]
+pub(super) mod nsh_workspace;
+use nsh_workspace::Kind;
 
 const MIN_RIGHT_WORKSPACE_AVAILABLE_WIDTH: f32 = 610.;
 const MIN_BOTTOM_WORKSPACE_WINDOW_HEIGHT: f32 = 480.;
@@ -18,7 +22,7 @@ pub(super) enum TabKey {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WorkspaceCreateAction {
+pub(super) enum WorkspaceCreateAction {
     Subagents,
     Review,
     NewTerminal,
@@ -42,7 +46,8 @@ pub(super) struct Workspace {
     pub(super) tabs: Vec<(TabKey, bool)>,
     selected: [Option<TabKey>; 2],
     automation_previous_maximized: Option<[bool; 2]>,
-    tab_scroll: [ScrollHandle; 2],
+    nsh: nsh_workspace::Pages,
+    nsh_visible: bool,
     artifact_scrolls: std::collections::HashMap<ArtifactCardId, gpui_kit::UniformListScrollHandle>,
     reveal_tabs: [bool; 2],
     window_size: Option<Size<Pixels>>,
@@ -50,7 +55,6 @@ pub(super) struct Workspace {
     menu: bool,
     menu_bottom: bool,
     menu_focus: Option<FocusHandle>,
-    tab_focuses: std::collections::HashMap<TabKey, FocusHandle>,
     maximized: [bool; 2],
     width: Option<f32>,
     height: Option<f32>,
@@ -136,6 +140,7 @@ impl VegaWindow {
 
 impl Workspace {
     pub(super) fn open(&mut self, key: TabKey) {
+        self.invalidate_nsh();
         let bottom = self
             .tabs
             .iter()
@@ -151,6 +156,7 @@ impl Workspace {
     }
 
     pub(super) fn close(&mut self, key: &TabKey) {
+        self.invalidate_nsh();
         let Some(position) = self.tabs.iter().position(|(tab, _)| tab == key) else {
             return;
         };
@@ -160,7 +166,6 @@ impl Workspace {
             .filter(|(_, bottom)| usize::from(*bottom) == pane)
             .count();
         self.tabs.remove(position);
-        self.tab_focuses.remove(key);
         if let TabKey::Artifact(id) = key {
             self.artifact_scrolls.remove(id);
         }
@@ -249,7 +254,6 @@ impl VegaWindow {
         self.workspace.hidden = hidden;
     }
 
-    /// Open an explicitly requested human terminal in the trusted selected project.
     pub(crate) fn workspace_open_terminal(
         &mut self,
         bottom: bool,
@@ -310,7 +314,6 @@ impl VegaWindow {
         cx.notify();
     }
 
-    /// Show a prevalidated read-only file projection supplied by the palette controller.
     pub(crate) fn workspace_open_file(
         &mut self,
         view: Entity<vega_ui::file_preview::FilePreview>,
@@ -341,7 +344,6 @@ impl VegaWindow {
         cx.notify();
     }
 
-    /// Whether an existing artifact/file preview can be restored without fabricating content.
     pub(crate) fn workspace_has_preview(&self) -> bool {
         self.workspace.tabs.iter().any(|(key, _)| {
             matches!(
@@ -362,9 +364,6 @@ impl VegaWindow {
             })
     }
 
-    /// Whether the bottom dock's selected tab is actually rendered (maximized
-    /// counts as rendered, a narrow window below the bottom minimum does not),
-    /// regardless of whether the tab is a terminal or workspace content.
     pub(super) fn bottom_workspace_selected_is_rendered(&self, window: &Window) -> bool {
         !self.workspace.hidden[1]
             && self.workspace.selected[1].is_some()
@@ -372,8 +371,6 @@ impl VegaWindow {
                 || f32::from(window.bounds().size.height) >= MIN_BOTTOM_WORKSPACE_WINDOW_HEIGHT)
     }
 
-    /// Whether the right dock could render its selected tab at the current
-    /// responsive width.
     fn right_workspace_renderable(&self, window: &Window, cx: &App) -> bool {
         self.workspace.maximized[0]
             || self.workspace_available_width(window, cx) >= MIN_RIGHT_WORKSPACE_AVAILABLE_WIDTH
@@ -385,9 +382,6 @@ impl VegaWindow {
             && self.right_workspace_renderable(window, cx)
     }
 
-    /// Whether the right dock's selected tab is actually rendered and is not
-    /// a terminal. A rendered right terminal is owned by the bottom-dock
-    /// shell slot, so the right slot must never act on it.
     pub(super) fn right_workspace_rendered_non_terminal(&self, window: &Window, cx: &App) -> bool {
         !self.workspace.selected[0]
             .as_ref()
@@ -472,7 +466,6 @@ impl VegaWindow {
         cx.notify();
     }
 
-    /// Idempotently reveal the current project's terminal without activating its PTY.
     fn workspace_reveal_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_workspace_route(cx);
         if let Some((key, bottom)) = self
@@ -538,7 +531,6 @@ impl VegaWindow {
         self.workspace_focus_composer(window, cx);
     }
 
-    /// Restore an existing preview or show the workspace menu when no preview exists.
     pub(crate) fn workspace_open_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some((key, bottom)) = self
             .workspace
@@ -705,6 +697,7 @@ impl VegaWindow {
     }
 
     fn workspace_hide(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.workspace.invalidate_nsh();
         self.workspace.hidden[index] = true;
         self.workspace.maximized[index] = false;
         self.sync_automation_workspace_size(window, cx);
@@ -811,6 +804,7 @@ impl VegaWindow {
     }
 
     fn workspace_toggle_menu(&mut self, bottom: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.workspace.invalidate_nsh();
         self.workspace.menu = !self.workspace.menu;
         self.workspace.menu_bottom = bottom;
         let focus = self
@@ -903,9 +897,6 @@ impl VegaWindow {
         self.workspace_focus(index, window, cx);
     }
 
-    /// Returns the selected project only when it is also the current task's
-    /// durable project binding. This is the shell's route fence for every
-    /// project-only header and Environment action.
     pub(super) fn shell_project_id(&self, cx: &App) -> Option<String> {
         let selected = cx.global::<vega_ui::sidebar::SelectedProject>().0.clone()?;
         match cx.global::<OpenedThread>().0.as_ref() {
@@ -1003,6 +994,7 @@ impl VegaWindow {
         if !self.environment_available(cx) || self.persistent_right_workspace_visible(window, cx) {
             return;
         }
+        self.workspace.invalidate_nsh();
         if self.environment_is_wide(window, cx) {
             self.environment_collapsed = !self.environment_collapsed;
             self.environment_overlay_open = false;
@@ -1012,101 +1004,14 @@ impl VegaWindow {
         cx.notify();
     }
 
-    fn render_environment(&mut self, overlay: bool, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        if !self.environment_available(cx) {
-            return div().into_any_element();
-        }
-        let project_label = self.shell_project_label(cx);
-        let thread = self.shell_project_thread(cx);
-        let close = icon_button(
-            Icon::Close,
-            vega_i18n::t("app.workspace.close_environment"),
-            colors,
-            cx.listener(move |this, _, _, cx| {
-                if overlay {
-                    this.environment_overlay_open = false;
-                } else {
-                    this.environment_collapsed = true;
-                }
-                cx.notify();
-            }),
-        );
-        let mut card = div()
-            .id(if overlay {
-                "environment-overlay-card"
-            } else {
-                "environment-card"
-            })
-            .w(px(Layout::ENVIRONMENT_CARD_WIDTH))
-            .max_w_full()
-            .max_h_full()
-            .p_3()
-            .rounded(px(Layout::ENVIRONMENT_CARD_RADIUS))
-            .border_1()
-            .border_color(colors.border_subtle)
-            .bg(colors.bg_elevated)
-            .shadow_sm()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(
-                div()
-                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .text_size(px(Typography::SIDEBAR))
-                    .text_color(colors.text_secondary)
-                    .child(vega_i18n::t("app.workspace.environment"))
-                    .child(close),
-            );
-        if let Some(label) = project_label {
-            card = card.child(
-                div()
-                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .text_size(px(Typography::SIDEBAR))
-                    .text_color(colors.text_primary)
-                    .child(vega_ui::icons::icon(Icon::Folder, colors.brand_primary))
-                    .child(div().min_w_0().flex_1().truncate().child(label)),
-            );
-        }
-        if thread.is_some() {
-            card = card.child(environment_action(
-                "environment-review",
-                vega_i18n::t("app.workspace.changes_review"),
-                Icon::Split,
-                colors,
-                cx.listener(|this, _, _, cx| {
-                    this.environment_overlay_open = false;
-                    this.workspace_open_diff(cx);
-                    cx.notify();
-                }),
-            ));
-        }
-        card = card.children(self.render_subagent_overview(cx));
-        if self.shell_project_id(cx).is_some() {
-            card = card.child(environment_action(
-                "environment-terminal",
-                vega_i18n::t("app.workspace.local_terminal"),
-                Icon::Terminal,
-                colors,
-                cx.listener(|this, _, window, cx| {
-                    this.environment_overlay_open = false;
-                    this.workspace_reveal_terminal(window, cx);
-                }),
-            ));
-        }
+    fn render_environment(
+        &mut self,
+        overlay: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let content = self.render_nsh_workspace(Kind::Environment(overlay), window, cx);
         div()
-            .id(if overlay {
-                "environment-overlay"
-            } else {
-                "environment-rail"
-            })
             .w(px(Layout::ENVIRONMENT_RAIL_WIDTH))
             .h_full()
             .flex_shrink_0()
@@ -1114,7 +1019,12 @@ impl VegaWindow {
                 Layout::MAIN_HEADER_HEIGHT + Layout::ENVIRONMENT_CARD_INSET
             ))
             .pr(px(Layout::ENVIRONMENT_CARD_INSET))
-            .child(card)
+            .child(
+                div()
+                    .w(px(Layout::ENVIRONMENT_CARD_WIDTH))
+                    .h_full()
+                    .child(content),
+            )
             .into_any_element()
     }
 
@@ -1127,205 +1037,16 @@ impl VegaWindow {
         let colors = theme(cx).colors;
         let index = usize::from(bottom);
         let selected = self.workspace.selected[index].clone();
-        let review_selected = selected == Some(TabKey::Diff);
-        let tabs = self
-            .workspace
-            .tabs
-            .iter()
-            .filter(|(_, dock)| *dock == bottom)
-            .cloned()
-            .collect::<Vec<_>>();
-        if self.workspace.reveal_tabs[index] {
-            if let Some(position) = tabs
-                .iter()
-                .position(|(key, _)| Some(key) == selected.as_ref())
-            {
-                self.workspace.tab_scroll[index].scroll_to_item(position);
-            }
-            self.workspace.reveal_tabs[index] = false;
-        }
-        let tabs_selector = if bottom { "bottom-tabs" } else { "right-tabs" };
-        let mut strip = div()
-            .id(tabs_selector)
-            .flex()
-            .flex_1()
-            .min_w_0()
-            .overflow_x_scroll()
-            .track_scroll(&self.workspace.tab_scroll[index])
-            .gap_1()
-            .tracked_scroll_edge_fade(
-                self.workspace.tab_scroll[index].clone(),
-                colors.bg_base,
-                ScrollFade::compact(),
-            );
-        for (key, _) in tabs {
-            let label = self.workspace_label(&key, cx);
-            let close_key = key.clone();
-            let keyboard_key = key.clone();
-            let active = selected.as_ref() == Some(&key);
-            let tab_color = if active {
-                colors.text_primary
-            } else {
-                colors.text_secondary
-            };
-            let tab_icon = Self::workspace_tab_icon(&key);
-            let tab_group = SharedString::from(format!("workspace-tab-group-{key:?}"));
-            let tab_selector = SharedString::from(format!("workspace-tab-{key:?}"));
-            let tab_focus = self
-                .workspace
-                .tab_focuses
-                .entry(key.clone())
-                .or_insert_with(|| cx.focus_handle().tab_stop(true))
-                .clone();
-            let close = icon_button(
-                Icon::Close,
-                vega_i18n::t_args(
-                    "app.workspace.close",
-                    &[("label", &self.workspace_label(&close_key, cx))],
-                ),
-                colors,
-                cx.listener(move |this, _, window, cx| {
-                    this.workspace_close_tab(&close_key, window, cx);
-                }),
-            )
-            .when(!active, |close| {
-                close
-                    .opacity(0.)
-                    .group_hover(tab_group.clone(), |style| style.opacity(1.))
-                    .in_focus(|style| style.opacity(1.))
-                    .focus_visible(|style| style.opacity(1.))
-            });
-            strip = strip.child(
-                div()
-                    .id(tab_selector.clone())
-                    .aria_label(label.clone())
-                    .flex_shrink_0()
-                    .max_w_full()
-                    .focusable()
-                    .track_focus(&tab_focus)
-                    .tab_stop(true)
-                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            this.workspace.open(keyboard_key.clone());
-                            this.workspace_activate_tab(index, window, cx);
-                            cx.stop_propagation();
-                            cx.notify();
-                        }
-                    }))
-                    .flex()
-                    .items_center()
-                    .group(tab_group)
-                    .h(px(Layout::TAB_HEIGHT))
-                    .gap(px(Layout::TAB_CONTENT_GAP))
-                    .px(px(Layout::TAB_HORIZONTAL_INSET))
-                    .rounded(px(Layout::TAB_RADIUS))
-                    // Reserve the focus ring's 1px border so keyboard focus
-                    // cannot change the tab's text or close-control geometry.
-                    .border_1()
-                    .border_color(colors.bg_base.alpha(0.))
-                    .focus_visible(|style| style.border_color(colors.accent))
-                    .bg(if active {
-                        colors.bg_active_alpha
-                    } else {
-                        colors.bg_sidebar.opacity(0.)
-                    })
-                    .hover(move |s| s.bg(colors.bg_hover))
-                    .cursor_pointer()
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            this.workspace.open(key.clone());
-                            this.workspace_activate_tab(index, window, cx);
-                            cx.notify();
-                        }),
-                    )
-                    .child(vega_ui::icons::icon(tab_icon, tab_color))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .max_w(px(150.))
-                            .truncate()
-                            .text_size(px(Typography::SIDEBAR))
-                            .text_color(tab_color)
-                            .child(label),
-                    )
-                    .child(close),
-            );
-        }
-        let mut actions = div().flex().items_center().gap_1().flex_shrink_0();
-        if review_selected {
-            actions = actions.child(icon_button(
-                Icon::Document,
-                vega_i18n::t("app.workspace.commit"),
-                colors,
-                cx.listener(|this, _, _, cx| this.workspace_open_commit(cx)),
-            ));
-        }
-        let actions = actions
-            .child(icon_button(
-                Icon::Plus,
-                vega_i18n::t("app.workspace.new_tab"),
-                colors,
-                cx.listener(move |this, _, window, cx| {
-                    this.workspace_toggle_menu(bottom, window, cx)
-                }),
-            ))
-            .child(icon_button(
-                Icon::DockMove,
-                if bottom {
-                    vega_i18n::t("app.workspace.move_right")
-                } else {
-                    vega_i18n::t("app.workspace.move_bottom")
-                },
-                colors,
-                cx.listener(move |this, _, window, cx| {
-                    this.workspace_move_selected(index, window, cx);
-                }),
-            ))
-            .child(icon_button(
-                Icon::Maximize,
-                if self.workspace.maximized[index] {
-                    vega_i18n::t("app.workspace.restore")
-                } else {
-                    vega_i18n::t("app.workspace.maximize")
-                },
-                colors,
-                cx.listener(move |this, _, window, cx| {
-                    this.image_preview.previous_maximized = None;
-                    if this.workspace.selected[index] == Some(TabKey::Subagents) {
-                        this.subagent_panel.previous_maximized = None;
-                    }
-                    this.workspace.maximized[index] = !this.workspace.maximized[index];
-                    this.workspace.reveal_tabs[index] = true;
-                    this.workspace_focus(index, window, cx);
-                    cx.notify();
-                }),
-            ));
-
+        let header_content = self.render_nsh_workspace(Kind::Header(index), window, cx);
         let header = div()
-            .flex()
-            .items_center()
-            .gap_1()
             .h(px(Layout::WORKSPACE_HEADER_HEIGHT))
-            .px_1()
+            .flex_shrink_0()
             .when(self.workspace_pane_header_in_top_band(bottom), |header| {
                 header.pr(px(
                     Layout::SHELL_SLOT_CLUSTER_RESERVE + Layout::SHELL_SLOT_GUTTER
                 ))
             })
-            .child(icon_button(
-                if bottom {
-                    Icon::ChevronDown
-                } else {
-                    Icon::ChevronRight
-                },
-                vega_i18n::t("app.workspace.hide_panel"),
-                colors,
-                cx.listener(move |this, _, window, cx| this.workspace_hide(index, window, cx)),
-            ))
-            .child(strip)
-            .child(actions);
+            .child(header_content);
         let body = match selected {
             Some(TabKey::Subagents) => Some(self.render_subagent_panel(window, cx)),
             Some(TabKey::Automation(key)) => self
@@ -1392,17 +1113,6 @@ impl VegaWindow {
             .flex()
             .flex_col()
             .min_w_0()
-            .bg(colors.bg_base)
-            .on_key_down(|event, window, cx| {
-                if event.keystroke.key == "tab" {
-                    if event.keystroke.modifiers.shift {
-                        window.focus_prev(cx);
-                    } else {
-                        window.focus_next(cx);
-                    }
-                    cx.stop_propagation();
-                }
-            })
             .child(header)
             .child(div().flex_1().min_h_0().overflow_hidden().children(body))
             .into_any_element()
@@ -1414,6 +1124,7 @@ impl VegaWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.set_workspace_presentation_visible(true, cx);
         self.sync_image_preview(window, cx);
         if self.workspace.composer_focus_pending {
             self.workspace_focus_composer(window, cx);
@@ -1422,6 +1133,7 @@ impl VegaWindow {
         let colors = theme(cx).colors;
         let size = window.bounds().size;
         if self.workspace.window_size != Some(size) {
+            self.workspace.invalidate_nsh();
             self.workspace.window_size = Some(size);
             self.workspace.reveal_tabs = [true; 2];
         }
@@ -1526,7 +1238,7 @@ impl VegaWindow {
                         .child(self.render_workspace_pane(false, window, cx)),
                 );
         } else if environment_rail {
-            row = row.child(self.render_environment(false, cx));
+            row = row.child(self.render_environment(false, window, cx));
         }
         let mut layout = div()
             .size_full()
@@ -1567,6 +1279,7 @@ impl VegaWindow {
                 .child(div().absolute().inset_0().on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, window, cx| {
+                        this.workspace.invalidate_nsh();
                         this.environment_overlay_open = false;
                         this.workspace_focus_composer(window, cx);
                         cx.notify();
@@ -1580,58 +1293,31 @@ impl VegaWindow {
                         .w(px(Layout::ENVIRONMENT_RAIL_WIDTH))
                         .h_full()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(self.render_environment(true, cx)),
+                        .child(self.render_environment(true, window, cx)),
                 );
         }
         if self.workspace.terminal_error {
+            let error = self.render_nsh_workspace(Kind::Error, window, cx);
             layout = layout.child(
                 div()
                     .absolute()
                     .top(px(40.))
                     .right(px(8.))
-                    .text_color(colors.danger)
-                    .child(vega_i18n::t("app.workspace.terminal_unavailable")),
+                    .w(px(320.))
+                    .h(px(64.))
+                    .child(error),
             );
         }
         if self.workspace.menu {
-            let creation_actions = self.workspace_creation_actions(cx);
+            let content = self.render_nsh_workspace(Kind::Menu, window, cx);
             let focus = self
                 .workspace
                 .menu_focus
                 .get_or_insert_with(|| cx.focus_handle())
                 .clone();
-            let mut menu = div()
+            let menu = div()
                 .id("workspace-add-menu")
                 .track_focus(&focus)
-                .key_context("WorkspaceMenu")
-                .on_key_down(cx.listener(|_this, event: &KeyDownEvent, window, cx| {
-                    match event.keystroke.key.as_str() {
-                        "tab" | "down" => {
-                            if event.keystroke.modifiers.shift {
-                                window.focus_prev(cx);
-                            } else {
-                                window.focus_next(cx);
-                            }
-                            cx.stop_propagation();
-                        }
-                        "up" => {
-                            window.focus_prev(cx);
-                            cx.stop_propagation();
-                        }
-                        _ => {}
-                    }
-                }))
-                .on_action(cx.listener(|this, _: &CloseSettings, window, cx| {
-                    this.workspace.menu = false;
-                    this.workspace_focus_composer(window, cx);
-                    cx.stop_propagation();
-                    cx.notify();
-                }))
-                .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, window, cx| {
-                    this.workspace.menu = false;
-                    this.workspace_focus_composer(window, cx);
-                    cx.notify();
-                }))
                 .absolute()
                 .when(
                     !self.workspace.menu_bottom || fullscreen.is_some(),
@@ -1640,46 +1326,24 @@ impl VegaWindow {
                 .when(self.workspace.menu_bottom && fullscreen.is_none(), |menu| {
                     menu.bottom(px((height - 40.).max(0.)))
                 })
-                .max_h(px(280.))
-                .overflow_y_scroll()
                 .right(px(8.))
                 .w(px(Layout::TASK_MENU_WIDTH.min(Layout::MENU_MAX_WIDTH)))
-                .p_2()
-                .rounded(px(Layout::MENU_RADIUS))
-                .border_1()
-                .border_color(colors.border_subtle)
-                .bg(colors.bg_elevated)
-                .shadow_sm()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .scroll_edge_fade(colors.bg_elevated, ScrollFade::compact());
-            for action in creation_actions {
-                menu = match action {
-                    WorkspaceCreateAction::Subagents => menu.child(workspace_button(
-                        vega_i18n::t("app.workspace.subagents"),
-                        colors,
-                        cx.listener(|this, _, window, cx| this.open_subagent_panel(window, cx)),
-                    )),
-                    WorkspaceCreateAction::Review => menu.child(workspace_button(
-                        vega_i18n::t("app.workspace.review_changes"),
-                        colors,
-                        cx.listener(|this, _, _, cx| {
-                            this.workspace_open_diff(cx);
-                            this.workspace.menu = false;
-                            cx.notify();
-                        }),
-                    )),
-                    WorkspaceCreateAction::NewTerminal => menu.child(workspace_button(
-                        vega_i18n::t("app.workspace.new_shell"),
-                        colors,
-                        cx.listener(|this, _, window, cx| {
-                            this.workspace_open_terminal(this.workspace.menu_bottom, window, cx);
-                        }),
-                    )),
-                };
-            }
-            layout = layout.child(menu);
+                .h(px((self.workspace_creation_actions(cx).len() as f32
+                    * Layout::TAB_HEIGHT
+                    + 20.)
+                    .min(280.)))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    if this.workspace_menu_pointer_in_header(event.position) {
+                        return;
+                    }
+                    this.workspace.invalidate_nsh();
+                    this.workspace.menu = false;
+                    this.workspace_focus_composer(window, cx);
+                    cx.notify();
+                }))
+                .child(content);
+            layout = layout.child(gpui_kit::deferred(menu));
         }
         layout
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
@@ -1709,80 +1373,4 @@ impl VegaWindow {
             )
             .into_any_element()
     }
-}
-
-fn workspace_button(
-    label: impl Into<SharedString>,
-    colors: ThemeColors,
-    activate: impl Fn(&(), &mut Window, &mut App) + 'static,
-) -> Stateful<Div> {
-    let label = label.into();
-    let keyboard_label = label.clone();
-    let activate = std::rc::Rc::new(activate);
-    let keyboard = activate.clone();
-    div()
-        .id(label.clone())
-        .aria_label(keyboard_label)
-        .focusable()
-        .tab_stop(true)
-        .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-        .px_2()
-        .rounded_md()
-        .flex()
-        .items_center()
-        .text_size(px(Typography::SIDEBAR))
-        .text_color(colors.text_secondary)
-        .cursor_pointer()
-        .hover(move |style| style.bg(colors.bg_hover))
-        .focus(move |style| style.bg(colors.bg_active))
-        .on_mouse_up(MouseButton::Left, move |_, window, cx| {
-            cx.stop_propagation();
-            activate(&(), window, cx);
-        })
-        .on_key_down(move |event, window, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                cx.stop_propagation();
-                keyboard(&(), window, cx);
-            }
-        })
-        .child(label)
-}
-
-fn environment_action(
-    id: &'static str,
-    label: &'static str,
-    icon: Icon,
-    colors: ThemeColors,
-    activate: impl Fn(&(), &mut Window, &mut App) + 'static,
-) -> Stateful<Div> {
-    let activate = std::rc::Rc::new(activate);
-    let keyboard = activate.clone();
-    div()
-        .id(id)
-        .aria_label(label)
-        .focusable()
-        .tab_stop(true)
-        .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-        .px_2()
-        .rounded_md()
-        .flex()
-        .items_center()
-        .gap_2()
-        .text_size(px(Typography::SIDEBAR))
-        .text_color(colors.text_primary)
-        .cursor_pointer()
-        .hover(move |style| style.bg(colors.bg_hover))
-        .focus(move |style| style.bg(colors.bg_active))
-        .on_mouse_up(MouseButton::Left, move |_, window, cx| {
-            cx.stop_propagation();
-            activate(&(), window, cx);
-        })
-        .on_key_down(move |event, window, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                cx.stop_propagation();
-                keyboard(&(), window, cx);
-            }
-        })
-        .child(vega_ui::icons::icon(icon, colors.text_secondary))
-        .child(div().min_w_0().flex_1().truncate().child(label))
 }

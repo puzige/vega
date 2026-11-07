@@ -325,6 +325,7 @@ mod core;
 mod file_reference;
 mod message_anchors;
 mod model;
+mod nsh_parent;
 mod phase;
 mod render;
 mod render_rows;

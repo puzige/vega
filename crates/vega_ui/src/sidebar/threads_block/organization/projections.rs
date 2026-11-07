@@ -1,5 +1,6 @@
 use super::render::Control;
 use super::*;
+use gpui_kit::component::{IconName, Sizable as _, spinner::Spinner};
 impl ThreadsBlock {
     pub(super) fn render_group_projection(
         &self,
@@ -59,11 +60,20 @@ impl ThreadsBlock {
                     }
                     cx.stop_propagation();
                 }))
-                .child(
-                    div()
-                        .text_color(group_color(group.color, &colors))
-                        .child("●"),
-                )
+                .child({
+                    let mut item = nsh_leaf::Item::action("●", None);
+                    item.enabled = false;
+                    item.tint = Some(group_color(group.color, &colors));
+                    div().w(px(Layout::ICON_SIZE)).child(nsh_leaf::host(
+                        format!("group-color-{}", group.id),
+                        None,
+                        vec![item],
+                        false,
+                        Typography::SIDEBAR_LINE_HEIGHT,
+                        |_| true,
+                        |_, _, _, _| {},
+                    ))
+                })
                 .child(self.organization_control(
                     format!("group-collapse-{}", group.id),
                     vega_i18n::t("ui.expand_or_collapse_group"),
@@ -78,7 +88,7 @@ impl ThreadsBlock {
                         .truncate()
                         .text_size(px(Typography::SIDEBAR))
                         .text_color(colors.text_primary)
-                        .child(group.name.clone()),
+                        .child(self.section_label(&group.name, cx)),
                 )
                 .child(self.organization_control(
                     format!("group-menu-{}", group.id),
@@ -428,14 +438,29 @@ impl ThreadsBlock {
         body.into_any_element()
     }
     pub(super) fn section_label(&self, text: &str, cx: &App) -> AnyElement {
-        div()
-            .px_2()
-            .py_1()
-            .text_size(px(Typography::METADATA))
-            .font_weight(Typography::HEADING_CARD_WEIGHT)
-            .text_color(theme(cx).colors.text_tertiary)
-            .child(text.to_string())
-            .into_any_element()
+        let section = [
+            vega_i18n::t("sidebar.pinned"),
+            vega_i18n::t("sidebar.projects"),
+            vega_i18n::t("sidebar.recents"),
+        ]
+        .contains(&text);
+        let _ = cx;
+        let mut item = nsh_leaf::Item::action(text, None);
+        item.enabled = false;
+        item.section = section;
+        nsh_leaf::host(
+            format!("sidebar-label-{text}"),
+            None,
+            vec![item],
+            false,
+            if section {
+                28.
+            } else {
+                Typography::SIDEBAR_LINE_HEIGHT
+            },
+            |_| true,
+            |_, _, _, _| {},
+        )
     }
     fn group_drop_empty(&self, group_id: String, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;

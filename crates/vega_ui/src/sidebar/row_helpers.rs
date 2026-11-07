@@ -5,11 +5,11 @@ pub fn render_delete_confirm_overlay(
     sidebar: Entity<Sidebar>,
     colors: ThemeColors,
 ) -> AnyElement {
+    let observed = thread.clone();
     let thread_id = thread.id.clone();
-    let cancel = |_event: &MouseDownEvent, _window: &mut Window, cx: &mut App| {
-        cx.set_global(PendingDeleteConfirm(None));
-        cx.refresh_windows();
-    };
+    let mut delete =
+        nsh_leaf::Item::action(vega_i18n::t("ui.delete"), Some(crate::icons::Icon::Trash));
+    delete.danger = true;
     div()
         .absolute()
         .inset_0()
@@ -21,84 +21,45 @@ pub fn render_delete_confirm_overlay(
         .child(
             div()
                 .w(px(320.))
-                .flex()
-                .flex_col()
-                .gap_3()
-                .rounded_lg()
-                .border_1()
-                .border_color(colors.border_subtle)
-                .bg(colors.bg_elevated)
-                .px_4()
-                .py_4()
-                .on_mouse_down_out(cancel)
-                .child(
-                    div()
-                        .text_size(px(Typography::HEADING_CARD))
-                        .font_weight(Typography::HEADING_CARD_WEIGHT)
-                        .text_color(colors.text_primary)
-                        .child(vega_i18n::t("ui.delete_conversation")),
-                )
-                .child(
-                    div()
-                        .text_size(px(Typography::SIDEBAR))
-                        .text_color(colors.text_secondary)
-                        .child(vega_i18n::t_args(
+                .on_mouse_down_out(|_, _, cx| {
+                    cx.set_global(PendingDeleteConfirm(None));
+                    cx.refresh_windows();
+                })
+                .child(nsh_leaf::host(
+                    format!("sidebar-delete-confirm-{thread_id}"),
+                    Some(format!(
+                        "{}\n{}",
+                        vega_i18n::t("ui.delete_conversation"),
+                        vega_i18n::t_args(
                             "ui.delete_title_all_messages_and_tool_call_records",
-                            &[("title", &(thread_title(thread)).to_string())],
-                        )),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .justify_end()
-                        .gap_2()
-                        .child(
-                            // [取消]
-                            div()
-                                .px_3()
-                                .py_1()
-                                .rounded_md()
-                                .border_1()
-                                .border_color(colors.border_subtle)
-                                .text_size(px(Typography::SIDEBAR))
-                                .text_color(colors.text_secondary)
-                                .cursor_pointer()
-                                .hover(move |s| s.bg(colors.bg_hover))
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    |_: &MouseUpEvent, _window, cx: &mut App| {
-                                        cx.set_global(PendingDeleteConfirm(None));
-                                        cx.refresh_windows();
-                                    },
-                                )
-                                .child(vega_i18n::t("ui.cancel")),
+                            &[("title", &thread_title(thread))],
                         )
-                        .child(
-                            div()
-                                .px_3()
-                                .py_1()
-                                .rounded_md()
-                                .bg(colors.danger)
-                                .text_size(px(Typography::SIDEBAR))
-                                .text_color(colors.bg_base)
-                                .cursor_pointer()
-                                .hover(move |s| s.bg(colors.danger.opacity(0.85)))
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    move |_: &MouseUpEvent, _window, cx: &mut App| {
-                                        if cx
-                                            .global::<PendingDeleteConfirm>()
-                                            .0
-                                            .as_ref()
-                                            .is_some_and(|thread| thread.id == thread_id)
-                                        {
-                                            sidebar.update(cx, Sidebar::confirm_pending_delete);
-                                        }
-                                    },
-                                )
-                                .child(vega_i18n::t("ui.delete")),
-                        ),
-                ),
+                    )),
+                    vec![
+                        nsh_leaf::Item::action(vega_i18n::t("ui.cancel"), None),
+                        delete,
+                    ],
+                    true,
+                    Typography::SIDEBAR_LINE_HEIGHT * 6.,
+                    move |cx| {
+                        cx.try_global::<PendingDeleteConfirm>()
+                            .and_then(|value| value.0.as_ref())
+                            == Some(&observed)
+                    },
+                    move |index, _, _, cx| {
+                        if index == 0 {
+                            cx.set_global(PendingDeleteConfirm(None));
+                            cx.refresh_windows();
+                        } else if cx
+                            .global::<PendingDeleteConfirm>()
+                            .0
+                            .as_ref()
+                            .is_some_and(|thread| thread.id == thread_id)
+                        {
+                            sidebar.update(cx, Sidebar::confirm_pending_delete);
+                        }
+                    },
+                )),
         )
         .into_any_element()
 }
@@ -133,17 +94,21 @@ pub(crate) fn error_bar(
     message: crate::localized_copy::LocalizedCopy,
     colors: &ThemeColors,
 ) -> AnyElement {
-    div()
-        .px_2()
-        .py_1()
-        .rounded_md()
-        .bg(colors.bg_elevated)
-        .border_1()
-        .border_color(colors.danger)
-        .text_color(colors.danger)
-        .text_size(px(Typography::SIDEBAR))
-        .child(message.render())
-        .into_any_element()
+    let _ = colors;
+    let text = message.render();
+    let mut item = nsh_leaf::Item::action(text.clone(), None);
+    item.danger = true;
+    item.enabled = false;
+    item.wrap = true;
+    nsh_leaf::host(
+        format!("sidebar-error-{text}"),
+        None,
+        vec![item],
+        false,
+        Typography::SIDEBAR_LINE_HEIGHT * 3.,
+        |_| true,
+        |_, _, _, _| {},
+    )
 }
 
 pub(crate) fn thread_title(thread: &Thread) -> String {

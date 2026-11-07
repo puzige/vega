@@ -1659,7 +1659,10 @@ impl ConversationStream {
 impl Render for ConversationStream {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.reading_preview {
-            self.hide_shell_recovery_surface();
+            self.suspend_ui_presentations(cx);
+        } else if self.thread.is_standalone() {
+            self.commit_panel
+                .update(cx, |panel, cx| panel.suspend_presentation(cx));
         }
         if !self.reading_preview {
             self.prepare_nsh_composer(window, cx);
@@ -2029,7 +2032,7 @@ impl Render for ConversationStream {
             .on_action(cx.listener(Self::open_diff_action))
             .on_action(cx.listener(Self::copy_selected_text))
             .when(!self.reading_preview, |root| {
-                root.children(self.render_subagent_parent(cx))
+                root.children(self.render_parent_navigation(window, cx))
             })
             .child(
                 div()

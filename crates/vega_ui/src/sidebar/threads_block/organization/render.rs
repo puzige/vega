@@ -1,6 +1,5 @@
 use super::*;
 use gpui_kit::{Bounds, Pixels, Point};
-use std::{cell::Cell, rc::Rc};
 
 #[derive(Clone)]
 pub(super) enum Control {
@@ -144,96 +143,68 @@ impl ThreadsBlock {
         selected: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let colors = theme(cx).colors;
-        let id = id.into();
-        let label = label.into();
-        let aria = match &action {
-            Control::CollapseAll => vega_i18n::t("ui.collapse_all").to_string(),
-            Control::Menu(_) => vega_i18n::t("ui.organization_actions").to_string(),
-            _ => label.clone(),
+        let label = match &action {
+            Control::CollapseAll => vega_i18n::t("ui.collapse_all").to_owned(),
+            Control::Menu(_) => vega_i18n::t("ui.organization_actions").to_owned(),
+            _ => label.into(),
         };
-        let keyboard_action = action.clone();
-        let button_bounds =
-            matches!(&action, Control::Menu(_)).then(|| Rc::new(Cell::new(None::<Bounds<Pixels>>)));
-        let mouse_bounds = button_bounds.clone();
-        let keyboard_bounds = button_bounds.clone();
-        let control = div()
-            .id(ElementId::Name(id.clone().into()))
-            .focusable()
-            .tab_stop(true)
-            .aria_label(aria)
-            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-            .px_2()
-            .rounded_lg()
-            .flex()
-            .items_center()
-            .text_size(px(Typography::SIDEBAR))
-            .text_color(if selected {
-                colors.text_primary
-            } else {
-                colors.text_secondary
-            })
-            .cursor_pointer()
-            .interactive(colors, true, selected)
-            .focus_visible(move |style| {
-                style
-                    .bg(if selected {
-                        colors.bg_active
-                    } else {
-                        colors.bg_hover
-                    })
-                    .shadow(vec![gpui_kit::BoxShadow {
-                        color: colors.accent.into(),
-                        offset: point(px(0.), px(0.)),
-                        blur_radius: px(0.),
-                        spread_radius: px(1.),
-                        inset: true,
-                    }])
-            })
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _, window, cx| {
-                    if cx.has_active_drag() {
-                        return;
-                    }
-                    cx.stop_propagation();
-                    this.control_action_from_button(
-                        action.clone(),
-                        mouse_bounds.as_ref().and_then(|bounds| bounds.get()),
-                        window,
-                        cx,
-                    );
-                }),
-            )
-            .on_key_down(
-                cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "enter" || event.keystroke.key == "space" {
-                        cx.stop_propagation();
-                        this.control_action_from_button(
-                            keyboard_action.clone(),
-                            keyboard_bounds.as_ref().and_then(|bounds| bounds.get()),
-                            window,
-                            cx,
-                        );
-                    }
-                }),
-            )
-            .child(label)
-            .when_some(button_bounds, |control, bounds| {
-                let button_geometry = gpui_kit::ScrollHandle::new();
-                control.relative().track_scroll(&button_geometry).child(
-                    gpui_kit::canvas(
-                        move |_, _, _| bounds.set(Some(button_geometry.bounds())),
-                        |_, (), _, _| {},
-                    )
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full(),
-                )
-            });
-        control.into_any_element()
+        let mut item = nsh_leaf::Item::action(label, None);
+        item.selected = selected;
+        self.nsh_control(id.into(), item, action, false, cx)
     }
+
+    fn nsh_control(
+        &self,
+        id: String,
+        item: nsh_leaf::Item,
+        action: Control,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let observed = self
+            .organization
+            .as_ref()
+            .and_then(|org| org.snapshot.clone());
+        let generation = self.organization.as_ref().map_or(0, |org| org.generation);
+        let archive = self.organization.as_ref().is_some_and(|org| org.archive);
+        let revision = observed.as_ref().map_or(0, |snapshot| snapshot.revision);
+        let weak = cx.weak_entity();
+        let target = weak.clone();
+        let mut item = item;
+        item.compact = compact;
+        nsh_leaf::host(
+            format!("{id}-{revision}-{generation}-{archive}"),
+            None,
+            vec![item],
+            false,
+            if compact {
+                Layout::SIDEBAR_ACTION_SIZE
+            } else {
+                Typography::SIDEBAR_LINE_HEIGHT
+            },
+            move |cx| {
+                weak.upgrade().is_some_and(|entity| {
+                    let this = entity.read(cx);
+                    this.editing.is_none()
+                        && !this.action_pending
+                        && this.organization.as_ref().is_some_and(|org| {
+                            org.snapshot == observed
+                                && org.generation == generation
+                                && org.archive == archive
+                                && !org.pending
+                                && org.editor.is_none()
+                                && !org.reorder.gesture
+                        })
+                })
+            },
+            move |_, bounds, window, cx| {
+                let _ = target.update(cx, |this, cx| {
+                    this.control_action_from_button(action.clone(), Some(bounds), window, cx)
+                });
+            },
+        )
+    }
+
     pub(in crate::sidebar::threads_block) fn render_organization(
         &mut self,
         _: &mut Window,
@@ -355,93 +326,18 @@ impl ThreadsBlock {
         hidden_until_hover: bool,
         cx: &mut Context<Self>,
     ) -> gpui_kit::Stateful<gpui_kit::Div> {
-        let colors = theme(cx).colors;
-        let id = id.into();
-        let label = label.into();
         let selected = matches!(action, Control::Archive)
             && self.organization.as_ref().is_some_and(|org| org.archive);
-        let button_bounds =
-            matches!(&action, Control::Menu(_)).then(|| Rc::new(Cell::new(None::<Bounds<Pixels>>)));
-        let mouse_bounds = button_bounds.clone();
-        let keyboard_bounds = button_bounds.clone();
-        let control = div()
-            .id(ElementId::Name(id.clone().into()))
-            .aria_label(label.clone())
-            .focusable()
-            .tab_stop(true)
+        let mut item = nsh_leaf::Item::action(label.into(), Some(kind));
+        item.selected = selected;
+        item.quiet = hidden_until_hover && !selected;
+        let id = id.into();
+        let content = self.nsh_control(id.clone(), item, action, true, cx);
+        div()
+            .id(gpui_kit::SharedString::from(format!("{id}-host")))
             .size(px(Layout::SIDEBAR_ACTION_SIZE))
             .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_md()
-            .cursor_pointer()
-            .when(selected, |style| style.bg(colors.bg_active))
-            .when(hidden_until_hover && !selected, |style| style.opacity(0.))
-            .hover(move |style| {
-                style.opacity(1.).bg(if selected {
-                    colors.bg_active
-                } else {
-                    colors.bg_hover
-                })
-            })
-            .focus_visible(move |style| {
-                style
-                    .opacity(1.)
-                    .bg(colors.bg_active)
-                    .border_1()
-                    .border_color(colors.border_subtle)
-            });
-        let control = if matches!(action, Control::Archive) {
-            control
-                .role(gpui_kit::Role::Button)
-                .on_click(cx.listener(|this, _, window, cx| {
-                    cx.stop_propagation();
-                    this.control_action(Control::Archive, window, cx);
-                }))
-        } else {
-            let keyboard_action = action.clone();
-            control
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, window, cx| {
-                        cx.stop_propagation();
-                        this.control_action_from_button(
-                            action.clone(),
-                            mouse_bounds.as_ref().and_then(|bounds| bounds.get()),
-                            window,
-                            cx,
-                        );
-                    }),
-                )
-                .on_key_down(cx.listener(
-                    move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            cx.stop_propagation();
-                            this.control_action_from_button(
-                                keyboard_action.clone(),
-                                keyboard_bounds.as_ref().and_then(|bounds| bounds.get()),
-                                window,
-                                cx,
-                            );
-                        }
-                    },
-                ))
-        }
-        .when_some(button_bounds, |control, bounds| {
-            let button_geometry = gpui_kit::ScrollHandle::new();
-            control.relative().track_scroll(&button_geometry).child(
-                gpui_kit::canvas(
-                    move |_, _, _| bounds.set(Some(button_geometry.bounds())),
-                    |_, (), _, _| {},
-                )
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full(),
-            )
-        });
-        control.child(crate::icons::icon(kind, colors.text_secondary))
+            .child(content)
     }
 
     pub(super) fn archive_control(
@@ -504,7 +400,7 @@ impl ThreadsBlock {
                         .text_size(px(Typography::SIDEBAR_SECTION))
                         .font_weight(Typography::SIDEBAR_SECTION_WEIGHT)
                         .text_color(colors.text_tertiary)
-                        .child(div().pl(px(Layout::SIDEBAR_LABEL_INSET)).child(label)),
+                        .child(self.section_label(label, cx)),
                 )
                 .child(
                     div()
@@ -556,7 +452,7 @@ impl ThreadsBlock {
                     .font_weight(Typography::SIDEBAR_SECTION_WEIGHT)
                     .text_color(colors.text_tertiary)
                     .pl(px(Layout::SIDEBAR_LABEL_INSET))
-                    .child(label),
+                    .child(self.section_label(label, cx)),
             )
             .child(
                 div()
@@ -592,17 +488,21 @@ impl ThreadsBlock {
         let empty = recents.is_empty();
 
         self.recents_total = recents.len();
-        let rows = recents.iter().take(self.recents_visible).map(|thread| {
-            let archived = thread.status == ThreadStatus::Archived;
-            self.render_recent_row(
-                thread,
-                &opened_id,
-                archived,
-                "standalone-thread-row-",
-                true,
-                cx,
-            )
-        });
+        let rows: Vec<_> = recents
+            .iter()
+            .take(self.recents_visible)
+            .map(|thread| {
+                let archived = thread.status == ThreadStatus::Archived;
+                self.render_recent_row(
+                    thread,
+                    &opened_id,
+                    archived,
+                    "standalone-thread-row-",
+                    true,
+                    cx,
+                )
+            })
+            .collect();
         let empty = empty.then(|| {
             div()
                 .id("organization-recents-empty")
@@ -612,7 +512,7 @@ impl ThreadsBlock {
                 .items_center()
                 .text_size(px(Typography::SIDEBAR))
                 .text_color(colors.text_tertiary)
-                .child(vega_i18n::t("ui.no_recent_tasks"))
+                .child(self.section_label(vega_i18n::t("ui.no_recent_tasks"), cx))
         });
         div()
             .id("organization-recents")
@@ -654,7 +554,7 @@ impl ThreadsBlock {
                     .font_weight(Typography::SIDEBAR_SECTION_WEIGHT)
                     .text_color(colors.text_tertiary)
                     .pl(px(Layout::SIDEBAR_LABEL_INSET))
-                    .child(label),
+                    .child(self.section_label(label, cx)),
             )
             .child(div().child(self.vector_control(
                 "organization-add-project",
@@ -702,55 +602,29 @@ impl ThreadsBlock {
     }
 
     fn render_progressive_control(&self, expanded: bool, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        let state_name = if expanded { "less" } else { "more" };
-        let label = if expanded {
-            vega_i18n::t("ui.collapse")
-        } else {
-            vega_i18n::t("ui.show_more")
-        };
-        let id = format!("organization-projects-show-{state_name}");
-        let focus = &self.projects_progressive_focus;
-        div()
-            .id(ElementId::Name(id.clone().into()))
-            .track_focus(focus)
-            .focusable()
-            .tab_stop(true)
-            .role(gpui_kit::Role::Button)
-            .aria_label(label)
-            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-            .pl(px(Layout::SIDEBAR_LABEL_INSET))
-            .rounded_lg()
-            .flex()
-            .items_center()
-            .cursor_pointer()
-            .text_size(px(Typography::SIDEBAR))
-            .text_color(colors.text_tertiary)
-            .hover(move |style| style.bg(colors.bg_hover).text_color(colors.text_secondary))
-            .focus_visible(move |style| {
-                style
-                    .bg(colors.bg_active)
-                    .text_color(colors.text_primary)
-                    .border_1()
-                    .border_color(colors.border_subtle)
-            })
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.toggle_progressive_section(cx);
-                }),
-            )
-            .on_key_down(
-                cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        cx.stop_propagation();
-                        this.toggle_progressive_section(cx);
-                    }
-                }),
-            )
-            .child(div().child(label))
-            .into_any_element()
+        let weak = cx.weak_entity();
+        let target = weak.clone();
+        nsh_leaf::host(
+            format!("organization-projects-show-{expanded}"),
+            None,
+            vec![nsh_leaf::Item::action(
+                if expanded {
+                    vega_i18n::t("ui.collapse")
+                } else {
+                    vega_i18n::t("ui.show_more")
+                },
+                None,
+            )],
+            false,
+            Typography::SIDEBAR_LINE_HEIGHT,
+            move |cx| {
+                weak.upgrade()
+                    .is_some_and(|entity| entity.read(cx).projects_expanded == expanded)
+            },
+            move |_, _, _, cx| {
+                let _ = target.update(cx, |this, cx| this.toggle_progressive_section(cx));
+            },
+        )
     }
 
     fn toggle_progressive_section(&mut self, cx: &mut Context<Self>) {
@@ -763,53 +637,13 @@ impl ThreadsBlock {
         project_id: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let colors = theme(cx).colors;
-        let label = vega_i18n::t("ui.show_more");
-        let id = format!("project-{project_id}-show-more");
-        let mouse_project_id = project_id.to_owned();
-        let keyboard_project_id = project_id.to_owned();
-        div()
-            .id(ElementId::Name(id.clone().into()))
-            .focusable()
-            .tab_stop(true)
-            .role(gpui_kit::Role::Button)
-            .aria_label(label)
-            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-            .pl(px(Layout::SIDEBAR_ROW_INSET))
-            .rounded_lg()
-            .flex()
-            .items_center()
-            .cursor_pointer()
-            .text_size(px(Typography::SIDEBAR))
-            .text_color(colors.text_tertiary)
-            .hover(move |style| style.bg(colors.bg_hover).text_color(colors.text_secondary))
-            .focus_visible(move |style| {
-                style
-                    .bg(colors.bg_active)
-                    .text_color(colors.text_primary)
-                    .border_1()
-                    .border_color(colors.border_subtle)
-            })
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _, window, cx| {
-                    if cx.has_active_drag() {
-                        return;
-                    }
-                    cx.stop_propagation();
-                    this.control_action(Control::More(mouse_project_id.clone()), window, cx);
-                }),
-            )
-            .on_key_down(
-                cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        cx.stop_propagation();
-                        this.control_action(Control::More(keyboard_project_id.clone()), window, cx);
-                    }
-                }),
-            )
-            .child(div().child(label))
-            .into_any_element()
+        self.nsh_control(
+            format!("project-show-more-{project_id}"),
+            nsh_leaf::Item::action(vega_i18n::t("ui.show_more"), None),
+            Control::More(project_id.to_owned()),
+            false,
+            cx,
+        )
     }
 
     fn render_pi_project(
@@ -819,15 +653,10 @@ impl ThreadsBlock {
         show_archived: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let colors = theme(cx).colors;
         let target = SidebarCollapseTarget::Project(project.id.clone());
         let collapsed = snapshot.collapsed.contains(&target);
         let project_id = project.id.clone();
         let project_for_hover = project.id.clone();
-        let project_for_toggle = project.id.clone();
-        let project_for_keyboard = project.id.clone();
-        let project_for_add = project.id.clone();
-        let project_for_menu = project.id.clone();
         let selected = project_row_is_active(&project.id, cx);
         let actions_visible = self.hovered_project.as_deref() == Some(project.id.as_str())
             || self.focused_project.as_deref() == Some(project.id.as_str())
@@ -842,83 +671,31 @@ impl ThreadsBlock {
                 format!("project-header-{}", project.id).into(),
             ))
             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-            .pl(px(Layout::SIDEBAR_LABEL_INSET))
             .flex()
             .items_center()
             .gap_2()
             .pr_2()
-            .rounded_lg()
-            .focusable()
-            .tab_stop(true)
-            .role(gpui_kit::Role::Button)
-            .aria_label(project.name.clone())
-            .aria_expanded(!collapsed)
-            .cursor_pointer()
-            .interactive(colors, true, selected)
-            .focus_visible(move |style| {
-                style
-                    .bg(if selected {
-                        colors.bg_active
-                    } else {
-                        colors.bg_hover
-                    })
-                    .shadow(vec![gpui_kit::BoxShadow {
-                        color: colors.accent.into(),
-                        offset: point(px(0.), px(0.)),
-                        blur_radius: px(0.),
-                        spread_radius: px(1.),
-                        inset: true,
-                    }])
-            })
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 this.set_hovered_project(&project_for_hover, *hovered, cx);
             }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _, window, cx| {
-                    if cx.has_active_drag() {
-                        return;
-                    }
-                    cx.stop_propagation();
-                    this.control_action(
-                        Control::ToggleProject(project_for_toggle.clone()),
-                        window,
-                        cx,
-                    );
-                }),
-            )
-            .on_key_down(
-                cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        cx.stop_propagation();
-                        this.control_action(
-                            Control::ToggleProject(project_for_keyboard.clone()),
-                            window,
-                            cx,
-                        );
-                    }
-                }),
-            )
-            .child(crate::icons::icon(
-                if collapsed {
-                    crate::icons::Icon::Folder
-                } else {
-                    crate::icons::Icon::FolderOpen
-                },
-                colors.text_secondary,
-            ))
-            .child(
-                div()
-                    .id(ElementId::Name(
-                        format!("organization-project-{}", project.id).into(),
-                    ))
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(px(Typography::SIDEBAR))
-                    .text_color(colors.text_primary)
-                    .child(project.name.clone()),
-            )
+            .child({
+                let mut item = nsh_leaf::Item::action(
+                    project.name.clone(),
+                    Some(if collapsed {
+                        crate::icons::Icon::Folder
+                    } else {
+                        crate::icons::Icon::FolderOpen
+                    }),
+                );
+                item.selected = selected;
+                div().flex_1().min_w_0().child(self.nsh_control(
+                    format!("project-label-{}", project.id),
+                    item,
+                    Control::ToggleProject(project.id.clone()),
+                    false,
+                    cx,
+                ))
+            })
             .child(
                 div()
                     .when_some(self.project_focuses.get(&project.id), |actions, focus| {
@@ -931,7 +708,7 @@ impl ThreadsBlock {
                         format!("project-add-{}", project.id),
                         vega_i18n::t_args("ui.new_task_in_project", &[("project", &project.name)]),
                         crate::icons::Icon::Plus,
-                        Control::NewProjectTask(project_for_add),
+                        Control::NewProjectTask(project.id.clone()),
                         !actions_visible,
                         cx,
                     ))
@@ -942,7 +719,7 @@ impl ThreadsBlock {
                             &[("project", &project.name)],
                         ),
                         crate::icons::Icon::More,
-                        Control::Menu(OrganizationMenu::Project(project_for_menu)),
+                        Control::Menu(OrganizationMenu::Project(project.id.clone())),
                         !actions_visible,
                         cx,
                     )),

@@ -436,7 +436,7 @@ impl GuidanceCard {
                 .presentation
                 .as_ref()
                 .map(|page| page.id.clone())
-                .unwrap_or_else(ProjectionId::new);
+                .unwrap_or_default();
             let (surface, requests) =
                 Surface::new(self.nsh_snapshot(id, true, cx), render_recovery, window, cx);
             transparent(&surface, cx);

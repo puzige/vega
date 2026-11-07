@@ -2,7 +2,7 @@
 
 ## 用户裁决与范围
 
-版本 v1.3；原始基线 `d4beacac2f01d4c09af7545163393e9d43753fe9`，当前集成基线 `eec9984bab2a1cd530bef8cb21e4383aca3e05b8`。
+版本 v1.4；原始基线 `d4beacac2f01d4c09af7545163393e9d43753fe9`，当前已提交集成基线 `bd89db7d182e6d9a5c60b1388e79a4623e8cacc4`。
 
 用户要求取消渐进试点，直接制定全量迁移方案；不做性能比较。最新执行裁决：重启后继续全量迁移，允许使用子 Agent 加速；主 Agent 负责集成，同一写入范围保持单一所有者，独立叶子实现与只读审查按收益并行。平台裁决为 macOS、Windows、Linux，保留 GPUI Fast 桌面宿主，全部产品界面改用 NSH。此文取代本卡先前“只做预览、等待 P2 授权”的范围限制；不改变既有权限、安全、数据与功能契约。
 
@@ -42,16 +42,17 @@ GPUI Fast 宿主/窗口/可信控制器（原有业务与后台任务所有者�
 
 ## 通用 Surface 契约
 
-- 固定现有 NSH `=0.4.0`、Kit `=0.7.3`、Fast/平台 `=0.1.9`；不自动升级、不 fork。现阶段纯 Rust UI，不引入 TSX/QuickJS/动态下载。
+- 固定现有 NSH `=0.4.0`、Kit `=0.7.3`、Fast/平台 `=0.1.9`；不自动升级、不 fork。用户在获知原生 IME 分发缺口后再次明确维持此约束；命令面板 IME 验收保持阻塞，不以引擎侧组合输入守卫或异步注销绑定冒充解决，继续独立迁移范围。现阶段纯 Rust UI，不引入 TSX/QuickJS/动态下载。
 - `Surface<S,C>` 持有一个 `Entity<AppView>` 和 `watch::Sender<S>`，渲染器为 `fn(Signal<S>, mpsc::Sender<C>) -> nsh_core::element::AnyElement`。`S: Clone + Send + Sync + 'static`、`C: Send + 'static`。
 - `Surface::new(initial, renderer, window, cx)` 返回 `(Surface, mpsc::Receiver<C>)`；命令容量固定 64。业务所有者持有消费任务，通过 `cx.spawn_in` 与弱实体 `update_in` 回到主线程处理命令，必须保留实体身份/路由/代际与授权检查。
 - `publish` 仅同步当前投影；NSH 组件按 signal 订阅，不因每帧重建引擎。页面端用异步 `send`，不以 `try_send` 静默丢弃用户操作。敏感输入不进入普通过往状态、错误与日志。
 - GPUI Render 只返回 Surface 的 AppView；焦点、locale、appearance 由宿主同步。引擎关闭只结束展示任务，不拥有或取消 Agent/PTY。
 - 子模块协议在 crate 内定义；跨 crate 的共享业务类型仍使用 `vega_conversation::types`，不能为本次迁移制造重复领域结构。
+- 工作区生产宿主位于 `vega` crate；将既有 UI 基础设施 `ProjectionId::{new,matches}` 与 `OrderedCommands::{new,send}` 公开供其复用，仅改变可见性。字段仍封装，不新增业务类型、依赖或另一套队列；身份比较和命令顺序/失败语义保持不变。公共键盘策略暂不扩大接口，由实际叶子需求确定。
 
 ## 验证与交付
 
-本地仅低 CPU 的格式、差异、静态 API/类型契约检查；不运行 Vega、不编译/测试/打包。所有主/子 Agent 同样适用。自动验证使用现有 Actions；不削弱断言、不修改 required check 求绿。Rust 开发测试若使用则留痕并按仓库政策在最终 head 清理；保留现有 Python 测试。
+当前用户裁决允许本地编译和测试，取代本文及历史叶子交接中的旧禁令；正常执行权限已经恢复，无需重置机器权限。主 Agent 协调编译并发并优先执行任务相关验证，子 Agent 的具体执行权限按本轮分工，不同时争抢构建资源。正式发布/打包仍走云端，本轮未启动应用、安装或发布。现有 Actions 保留最终门禁；不削弱断言、不修改 required check 求绿。Rust 开发测试留痕并按仓库政策在最终 head 清理；保留现有 Python 测试。
 
 实现完成后对停写的精确版本做非实现者独立审查；最终完整 head required CI 通过才合并。未在本轮取得的 Windows/Linux 证据必须标待验证，不能以“框架支持”代替。云端发布和用户纯手测仍按既有流程。
 
@@ -245,6 +246,16 @@ GPUI Fast 宿主/窗口/可信控制器（原有业务与后台任务所有者�
 - 两处生产窗口导航改为 NSH，保留原 ToggleSidebar/OpenPalette/Back/Forward 与草稿导航保护；Artifact 卡片、分组、菜单和状态改为 NSH。独立审查发现的窗口级菜单视口、AX激活绕过、触发几何缺口均已修复并增量闭环。详见 [窗口导航](nsh-window-navigation.md)、[Artifact](nsh-artifact.md)。实际编译又发现 API/事件/Tooltip/SVG 和测试宏导入错误，按责任层修正，未削弱断言；修正独立审查无新增具体发现。
 - 停写源码基于 `bc7d8ae0d91649a8ed0fb48679eb43d6efd6ce4d`，通过 `cargo check -p vega -p vega_ui --locked --offline -j 2`、workspace fmt/diff、全目标严格Clippy；Nextest **111发现/111执行/111通过/0跳过**，run `74a739c9-cb15-4040-82a0-646607972288`，包括新增导航4项、Artifact13项。Python三组5/15/40通过。工具rustc1.98.0/Cargo1.101.0-fork0.102.0-9/Nextest0.9.151，CI0.9.146不变。开发测试尚未清理，精确新提交CI待取得；原生手测、三桌面、全量迁移均未完成。
 - 下一批不重叠并行迁移：命令面板和分支选择器。它们不包含在前述111测试版本的验证结论内，主Agent统一编译与集成；生产Composer保真缺口仍保留，不升级/fork依赖、不降级交互凑完成。无应用执行、安装、合并或发布。
+
+### 本轮并行集成与当前验证边界
+
+- 基线仍为 `bd89db7d182e6d9a5c60b1388e79a4623e8cacc4`，未提交增量包含命令面板、分支选择器、工具组标题、父会话导航、工作区、Commit 面板、侧栏和启动页。此前 124 项测试仅覆盖较早的命令面板/分支中间版本，不覆盖本批；不因源码已编写提高完成比例。
+- 本轮 `cargo check -p vega -p vega_ui --locked --offline -j 2` 和 `cargo fmt --all -- --check` 已实际通过。主程序固定 API 修正使用 `LineHeight::Multiple`、真实 NSH `Scroll` 及正确的 `ScrollEdgeFadeExt`，保留偏移/测量/最小揭示。现存 manifest 未使用依赖警告不在本卡扩展清理。
+- 严格 all-target Clippy 依次暴露测试 Props 接线、冗余分配/Default 写法、测试构造/复杂类型和 GPUI `test` 宏通配导入遮蔽；已按责任层修正，未删断言、放宽预期或提高递归上限。后台会话式检查曾在执行前返回 `permission decision failed closed`；普通阻塞式 Cargo 实际可执行，无需改机器权限。最终本批 fmt、workspace all-target Clippy `-D warnings` 通过；Nextest run `3cf61ac2-a25a-4720-96c4-2e3630be7a15` 为 **166发现/166执行/166通过/0跳过**，测试编译6.69s、执行0.291s；Python5/15/40通过。先前165通过/1失败的原始栈定位为测试在引擎外读取signal，现改为通道在引擎任务发布投影，保留全部尺寸/状态/节点断言后重跑通过。后续仍在开发的运行提示、会话加载和CUA通知不包含在该166项版本结论内；最新提交CI尚未取得。
+- 实际工具链已查询：rustc `1.98.0 (88d9e12ae 2026-08-18)`、Cargo `1.101.0 (e611c7a87 2026-11-04)` / huacnlee fork `0.102.0-9`、Nextest `0.9.151`。未改 CI 固定版本、依赖 pin 或机器配置。
+- 非实现者静态审查已关闭启动页发布前显示确认缺陷，以及等待加载、Commit 面板、父导航、工具组、工作区隐藏撤销增量。侧栏审查发现任务菜单 Escape 丢失实际叶节点焦点，已增加控制器句柄直连叶节点及关闭回焦，非实现者增量复核静态关闭；该修正随后编译/Clippy通过，原生 Escape重开/Shift-Tab手测未运行。引擎 layout ack 不是 compositor/原生可见像素证据。
+- 子 Agent 本轮实际四路同时运行：侧栏复核、启动页复核、隐藏生命周期复核、独立运行提示 NSH 迁移。主 Agent 保留集成与验证职责；冻结审查范围不并发写入。随后槽位轮换为集成增量审查、运行提示、会话加载和CUA接管/批准/恢复通知的独立迁移；这些新增叶子仍在开发，不计已交付。
+- 用户维持原依赖约束：原生 IME、Composer 保真、Commit 消息输入 Cmd-Enter、全工具组滚动与侧栏残余绘制/输入缺口继续显式保留；不升级或 fork 来绕过。无应用启动、安装、合并、发布或全量完成声明。
 
 ### 重启后继续执行
 

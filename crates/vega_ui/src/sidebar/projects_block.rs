@@ -577,10 +577,6 @@ impl ProjectsBlock {
         .detach();
     }
 
-    fn on_add_clicked(&mut self, _: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        self.open_picker(cx);
-    }
-
     /// Register and reveal through the durable service on the background executor.
     pub(super) fn register_path(&mut self, path: &Path, cx: &mut Context<Self>) {
         self.invalidate_background_reload();
@@ -695,58 +691,37 @@ impl ProjectsBlock {
     }
 
     /// Block header: collapsible title (chevron shows the state) + [+].
-    fn render_header(&self, cx: &mut Context<Self>, colors: &ThemeColors) -> AnyElement {
+    fn render_header(&self, cx: &mut Context<Self>, _colors: &ThemeColors) -> AnyElement {
         let collapsed = cx.global::<ProjectsCollapsed>().0;
-        let label = vega_i18n::t("sidebar.projects");
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .px_1()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(colors.bg_hover))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|_, _: &MouseUpEvent, _, cx| toggle_projects_block(cx)),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(Typography::METADATA))
-                            .font_weight(Typography::HEADING_CARD_WEIGHT)
-                            .text_color(colors.text_secondary)
-                            .child(label),
-                    )
-                    .child(crate::icons::icon(
-                        if collapsed {
-                            crate::icons::Icon::ChevronRight
-                        } else {
-                            crate::icons::Icon::ChevronDown
-                        },
-                        colors.text_tertiary,
-                    )),
-            )
-            .child(
-                div()
-                    .px_1()
-                    .rounded_md()
-                    .text_size(px(Typography::HEADING_BLOCK))
-                    .text_color(colors.text_secondary)
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(colors.bg_hover).text_color(colors.text_primary))
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_add_clicked))
-                    .child(crate::icons::icon(
-                        crate::icons::Icon::FolderPlus,
-                        colors.brand_primary,
-                    )),
-            )
-            .into_any_element()
+        let weak = cx.weak_entity();
+        nsh_leaf::host(
+            "sidebar-projects-header",
+            None,
+            vec![
+                nsh_leaf::Item::action(
+                    vega_i18n::t("sidebar.projects"),
+                    Some(if collapsed {
+                        crate::icons::Icon::ChevronRight
+                    } else {
+                        crate::icons::Icon::ChevronDown
+                    }),
+                ),
+                nsh_leaf::Item::action(
+                    vega_i18n::t("ui.add_project_folder"),
+                    Some(crate::icons::Icon::FolderPlus),
+                ),
+            ],
+            true,
+            Typography::SIDEBAR_LINE_HEIGHT,
+            move |cx| cx.global::<ProjectsCollapsed>().0 == collapsed,
+            move |index, _, _, cx| {
+                if index == 0 {
+                    toggle_projects_block(cx);
+                } else {
+                    let _ = weak.update(cx, |this, cx| this.open_picker(cx));
+                }
+            },
+        )
     }
 
     fn render_body(&self, cx: &mut Context<Self>, colors: &ThemeColors) -> AnyElement {
@@ -756,133 +731,100 @@ impl ProjectsBlock {
             .flex_col()
             .child(self.render_sort_row(cx, colors))
             .children(self.projects.is_empty().then(|| {
-                div()
-                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                    .flex()
-                    .items_center()
-                    .px_1()
-                    .text_size(px(Typography::SIDEBAR))
-                    .text_color(colors.text_tertiary)
-                    .child(vega_i18n::t("ui.click_to_add_a_folder"))
-                    .into_any_element()
+                nsh_leaf::host(
+                    "sidebar-projects-empty",
+                    Some(vega_i18n::t("ui.click_to_add_a_folder").to_owned()),
+                    Vec::new(),
+                    false,
+                    Typography::SIDEBAR_LINE_HEIGHT,
+                    |_| true,
+                    |_, _, _, _| {},
+                )
             }))
             .children(self.projects.iter().map(|project| {
                 let project_id = project.id.clone();
-                let remove_id = project.id.clone();
-                let is_selected = selected.as_deref() == Some(project.id.as_str());
-
-                let branch = self.branch_suffix(project).map(str::to_owned);
-                div()
-                    .flex()
-                    .items_center()
-                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                    .rounded_lg()
-                    .overflow_hidden()
-                    .text_size(px(Typography::SIDEBAR))
-                    .when(is_selected, move |row| row.bg(colors.bg_active))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .pl_2()
-                            .cursor_pointer()
-                            .when(!is_selected, move |main| {
-                                main.hover(move |s| s.bg(colors.bg_hover))
-                            })
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                                    this.select_project(&project_id, cx);
-                                }),
-                            )
-                            .child(crate::icons::icon(
-                                crate::icons::Icon::Folder,
-                                colors.text_secondary,
-                            ))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_color(colors.text_primary)
-                                    .child(project.name.clone()),
-                            )
-                            .children(branch.map(|branch| {
-                                div()
-                                    .flex_shrink_0()
-                                    .text_color(colors.text_tertiary)
-                                    .child(branch)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .px_2()
-                            .h_full()
-                            .flex()
-                            .items_center()
-                            .text_color(colors.text_secondary)
-                            .cursor_pointer()
-                            .hover(move |s| s.text_color(colors.danger))
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                                    this.remove_project(&remove_id, cx);
-                                }),
-                            )
-                            .child(crate::icons::icon(
-                                crate::icons::Icon::Close,
-                                colors.text_secondary,
-                            )),
-                    )
-                    .into_any_element()
+                let observed = project.clone();
+                let generation = self.reload_generation;
+                let weak = cx.weak_entity();
+                let target = weak.clone();
+                let mut label =
+                    nsh_leaf::Item::action(project.name.clone(), Some(crate::icons::Icon::Folder));
+                label.selected = selected.as_deref() == Some(project.id.as_str());
+                label.hint = self.branch_suffix(project).map(str::to_owned);
+                let mut remove = nsh_leaf::Item::action(
+                    vega_i18n::t("ui.remove_project"),
+                    Some(crate::icons::Icon::Close),
+                );
+                remove.compact = true;
+                remove.danger = true;
+                nsh_leaf::host(
+                    format!("sidebar-project-{}", project.id),
+                    None,
+                    vec![label, remove],
+                    true,
+                    Typography::SIDEBAR_LINE_HEIGHT,
+                    move |cx| {
+                        weak.upgrade().is_some_and(|entity| {
+                            let this = entity.read(cx);
+                            this.reload_generation == generation
+                                && this.projects.contains(&observed)
+                                && !this.registration_pending
+                                && !this.selection_pending
+                        })
+                    },
+                    move |index, _, _, cx| {
+                        let _ = target.update(cx, |this, cx| {
+                            if index == 0 {
+                                this.select_project(&project_id, cx);
+                            } else {
+                                this.remove_project(&project_id, cx);
+                            }
+                        });
+                    },
+                )
             }))
             .into_any_element()
     }
 
-    fn render_sort_row(&self, cx: &mut Context<Self>, colors: &ThemeColors) -> AnyElement {
-        div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .px_1()
-            .children(
-                [
-                    (ProjectSort::Name, vega_i18n::t("ui.name")),
-                    (
-                        ProjectSort::RecentlyOpened,
-                        vega_i18n::t("ui.recently_opened"),
-                    ),
-                ]
-                .map(|(sort, label)| {
-                    let selected = self.sort == sort;
-                    div()
-                        .px_2()
-                        .py_1()
-                        .rounded_md()
-                        .text_size(px(Typography::SIDEBAR))
-                        .cursor_pointer()
-                        .text_color(if selected {
-                            colors.brand_primary
-                        } else {
-                            colors.text_secondary
-                        })
-                        .when(selected, move |chip| chip.bg(colors.bg_active))
-                        .when(!selected, move |chip| {
-                            chip.hover(move |s| s.bg(colors.bg_hover))
-                        })
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                                this.sort = sort;
-                                this.reload(cx);
-                            }),
-                        )
-                        .child(label)
-                }),
-            )
-            .into_any_element()
+    fn render_sort_row(&self, cx: &mut Context<Self>, _colors: &ThemeColors) -> AnyElement {
+        let observed = self.sort;
+        let weak = cx.weak_entity();
+        let target = weak.clone();
+        let items = [
+            (ProjectSort::Name, vega_i18n::t("ui.name")),
+            (
+                ProjectSort::RecentlyOpened,
+                vega_i18n::t("ui.recently_opened"),
+            ),
+        ]
+        .into_iter()
+        .map(|(sort, label)| {
+            let mut item = nsh_leaf::Item::action(label, None);
+            item.selected = observed == sort;
+            item
+        })
+        .collect();
+        nsh_leaf::host(
+            "sidebar-project-sort",
+            None,
+            items,
+            true,
+            Typography::SIDEBAR_LINE_HEIGHT,
+            move |cx| {
+                weak.upgrade()
+                    .is_some_and(|entity| entity.read(cx).sort == observed)
+            },
+            move |index, _, _, cx| {
+                let _ = target.update(cx, |this, cx| {
+                    this.sort = if index == 0 {
+                        ProjectSort::Name
+                    } else {
+                        ProjectSort::RecentlyOpened
+                    };
+                    this.reload(cx);
+                });
+            },
+        )
     }
 }
 

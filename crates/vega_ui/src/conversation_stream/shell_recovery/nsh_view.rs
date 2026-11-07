@@ -273,9 +273,7 @@ impl ConversationStream {
             appearance: vega_theme::theme(cx).appearance,
             language: vega_i18n::language(),
             selected: page.and_then(|page| page.selected.clone()),
-            selection: page
-                .map(|page| page.selection.clone())
-                .unwrap_or_else(ProjectionId::new),
+            selection: page.map(|page| page.selection.clone()).unwrap_or_default(),
             keyboard_active: false,
             reveal: page.is_some_and(|page| page.reveal),
         }

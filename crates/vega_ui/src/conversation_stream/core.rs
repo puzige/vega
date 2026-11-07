@@ -62,6 +62,8 @@ pub struct ConversationStream {
         HashMap<(String, String), vega_conversation::types::SubagentSnapshot>,
     pub(crate) subagent_groups: HashMap<String, Entity<super::subagents::SubagentGroup>>,
     pub(crate) subagent_parent_focus: FocusHandle,
+    pub(crate) parent_navigation: super::nsh_parent::ParentNavigation,
+    pub(crate) run_notice_epoch: crate::nsh::ProjectionId,
     pub(crate) delegated_run_active: bool,
     pub(crate) automation: super::automation::AutomationUi,
     pub(crate) privacy: super::privacy::PrivacyPanel,
@@ -294,13 +296,29 @@ impl ConversationStream {
         self.hide_shell_recovery_surface();
     }
 
+    pub fn suspend_ui_presentations(&mut self, cx: &mut Context<Self>) {
+        self.run_notice_epoch = crate::nsh::ProjectionId::new();
+        self.hide_shell_recovery_surface();
+        self.parent_navigation.hide(cx);
+        self.commit_panel
+            .update(cx, |panel, cx| panel.suspend_presentation(cx));
+        for entry in &self.entries {
+            if let StreamEntry::ToolGroup { group } = entry {
+                group.update(cx, |group, cx| group.suspend_presentation(cx));
+            }
+        }
+        for group in self.run_activity_groups.values() {
+            group.update(cx, |group, cx| group.suspend_child_presentations(cx));
+        }
+    }
+
     pub fn set_reading_preview(&mut self, reading: bool, cx: &mut Context<Self>) {
         if self.reading_preview == reading {
             return;
         }
         self.reading_preview = reading;
         if reading {
-            self.hide_shell_recovery_surface();
+            self.suspend_ui_presentations(cx);
         }
         for card in self.artifact_cards.values() {
             card.update(cx, |card, cx| card.set_reading_preview(reading, cx));
@@ -536,6 +554,8 @@ impl ConversationStream {
             subagent_groups: HashMap::new(),
             subagent_executions: HashMap::new(),
             subagent_parent_focus: cx.focus_handle().tab_stop(true),
+            parent_navigation: super::nsh_parent::ParentNavigation::default(),
+            run_notice_epoch: crate::nsh::ProjectionId::new(),
             delegated_run_active: false,
             context_control: context_control::ContextControl::new(cx),
             computer_use_control: None,

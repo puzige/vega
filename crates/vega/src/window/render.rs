@@ -251,6 +251,9 @@ impl Render for VegaWindow {
         let pending_delete = cx.global::<PendingDeleteConfirm>().0.clone();
 
         let settings_open = cx.global::<SettingsOpen>().0;
+        if settings_open {
+            self.set_workspace_presentation_visible(false, cx);
+        }
         if self.diff_controller.active.as_ref().is_some_and(|active| {
             settings_open || !Self::diff_route_is_current(&active.identity, cx)
         }) {
@@ -296,7 +299,7 @@ impl Render for VegaWindow {
         if (settings_open || self.sidebar.read(cx).opening_thread(cx).is_some())
             && let Some((_, stream)) = &self.stream_view
         {
-            stream.update(cx, |stream, _| stream.suspend_shell_recovery_presentation());
+            stream.update(cx, ConversationStream::suspend_ui_presentations);
         }
         let content: AnyElement = if settings_open {
             self.conversation_loading.clear();
@@ -500,6 +503,9 @@ impl Render for VegaWindow {
                         && !draft_route
                         && !self.conversation_ready(&thread.id, cx);
                     if waiting {
+                        if let Some((_, stream)) = &self.stream_view {
+                            stream.update(cx, ConversationStream::suspend_ui_presentations);
+                        }
                         self.render_conversation_loading(None, cx)
                     } else {
                         if cached.is_some() || draft_route {
@@ -511,9 +517,10 @@ impl Render for VegaWindow {
                                     thread_id != &thread.id || cached != &view
                                 }) {
                                     if let Some((previous_id, previous)) = self.stream_view.take() {
-                                        previous.update(cx, |stream, _| {
-                                            stream.suspend_shell_recovery_presentation()
-                                        });
+                                        previous.update(
+                                            cx,
+                                            ConversationStream::suspend_ui_presentations,
+                                        );
                                         if previous_id != thread.id {
                                             let anchor = previous.read(cx).scroll_anchor_snapshot();
                                             self.thread_scroll_states
@@ -584,9 +591,8 @@ impl Render for VegaWindow {
                             }
                             None => {
                                 if let Some((previous_id, previous)) = self.stream_view.take() {
-                                    previous.update(cx, |stream, _| {
-                                        stream.suspend_shell_recovery_presentation()
-                                    });
+                                    previous
+                                        .update(cx, ConversationStream::suspend_ui_presentations);
                                     if previous_id != thread.id {
                                         let anchor = previous.read(cx).scroll_anchor_snapshot();
                                         self.thread_scroll_states

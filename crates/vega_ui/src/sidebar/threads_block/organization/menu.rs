@@ -234,53 +234,46 @@ impl ThreadsBlock {
                     cx.notify();
                 }),
             )
-            .child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .text_size(px(Typography::METADATA))
-                    .text_color(colors.text_tertiary)
-                    .child(title),
-            )
-            .children(
-                items
+            .child({
+                let observed = org.snapshot.clone();
+                let generation = org.generation;
+                let observed_menu = org.menu.clone();
+                let weak = cx.weak_entity();
+                let target = weak.clone();
+                let items = items
                     .into_iter()
-                    .enumerate()
-                    .map(|(index, (label, command))| {
-                        div()
-                            .id(ElementId::Name(format!("organization-menu-{index}").into()))
-                            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .px_2()
-                            .rounded_md()
-                            .text_size(px(Typography::SIDEBAR))
-                            .text_color(
-                                if matches!(
-                                    command,
-                                    MenuCommand::Apply(
-                                        SidebarOrganizationAction::DissolveGroup { .. }
-                                    )
-                                ) {
-                                    colors.danger
-                                } else {
-                                    colors.text_primary
-                                },
-                            )
-                            .when(org.menu_index == index, |s| s.bg(colors.bg_active))
-                            .cursor_pointer()
-                            .hover(move |s| s.bg(colors.bg_hover))
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.activate_organization_menu(index, window, cx);
-                                }),
-                            )
-                            .child(label)
-                    }),
-            );
+                    .map(|(label, command)| {
+                        let mut item = nsh_leaf::Item::action(label, None);
+                        item.danger = matches!(
+                            command,
+                            MenuCommand::Apply(SidebarOrganizationAction::DissolveGroup { .. })
+                        );
+                        item
+                    })
+                    .collect::<Vec<_>>();
+                nsh_leaf::menu(
+                    format!("organization-menu-nsh-{generation}"),
+                    Some(title.to_owned()),
+                    items,
+                    org.menu_scroll.clone(),
+                    move |cx| {
+                        weak.upgrade().is_some_and(|entity| {
+                            entity.read(cx).organization.as_ref().is_some_and(|org| {
+                                org.snapshot == observed
+                                    && org.generation == generation
+                                    && org.menu == observed_menu
+                                    && !org.pending
+                                    && org.editor.is_none()
+                            })
+                        })
+                    },
+                    move |index, _, window, cx| {
+                        let _ = target.update(cx, |this, cx| {
+                            this.activate_organization_menu(index, window, cx)
+                        });
+                    },
+                )
+            });
         div()
             .absolute()
             .top_0()

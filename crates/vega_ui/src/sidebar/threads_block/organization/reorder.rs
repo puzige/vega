@@ -66,17 +66,16 @@ struct ReorderDrag {
 
 impl Render for ReorderDrag {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = theme(cx).colors;
-        div()
-            .px_3()
-            .py_2()
-            .rounded_md()
-            .bg(colors.bg_elevated)
-            .border_1()
-            .border_color(colors.border_subtle)
-            .text_size(px(Typography::SIDEBAR))
-            .text_color(colors.text_primary)
-            .child(self.label.clone())
+        let _ = cx;
+        div().w(px(Layout::SIDEBAR_WIDTH)).child(nsh_leaf::host(
+            "sidebar-reorder-preview",
+            Some(self.label.clone()),
+            Vec::new(),
+            false,
+            Typography::SIDEBAR_LINE_HEIGHT,
+            |_| true,
+            |_, _, _, _| {},
+        ))
     }
 }
 
@@ -305,7 +304,7 @@ impl ThreadsBlock {
         &self,
         item: ReorderItem,
         label: String,
-        row: crate::interaction::Interaction,
+        row: gpui_kit::Stateful<gpui_kit::Div>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(org) = &self.organization else {

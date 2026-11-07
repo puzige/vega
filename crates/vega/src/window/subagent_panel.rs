@@ -1,6 +1,7 @@
+use super::workspace::nsh_workspace::{
+    Action, AgentIdentity, Control, Kind, Line, PanelAuthority, Snapshot,
+};
 use super::*;
-use vega_ui::icons::{Icon, icon};
-use vega_ui::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 
 pub(super) struct SubagentPanel {
     parent: Option<String>,
@@ -17,7 +18,6 @@ pub(super) struct SubagentPanel {
     preview_visible: bool,
     detail: Option<SubagentDetail>,
     pub(super) focus: FocusHandle,
-    scroll: ScrollHandle,
     pub(super) previous_maximized: Option<[bool; 2]>,
 }
 
@@ -35,6 +35,38 @@ struct PanelReadOwner {
     epoch: u64,
     selection: u64,
     child: String,
+    identity: Option<AgentIdentity>,
+}
+
+impl PanelReadOwner {
+    fn same_request(&self, other: &Self) -> bool {
+        self.parent == other.parent
+            && self.epoch == other.epoch
+            && self.selection == other.selection
+            && self.child == other.child
+    }
+}
+
+impl SubagentDetail {
+    fn accept_completion(
+        &mut self,
+        observed: &PanelReadOwner,
+        current: Option<&PanelReadOwner>,
+    ) -> bool {
+        let Some(current) =
+            current.filter(|current| observed.same_request(current) && self.id == current.child)
+        else {
+            return false;
+        };
+        if current.identity != observed.identity {
+            if self.loading {
+                self.loading = false;
+                self.error = true;
+            }
+            return false;
+        }
+        true
+    }
 }
 
 struct PanelHistoryRead {
@@ -67,7 +99,6 @@ impl SubagentPanel {
             preview_visible: false,
             detail: None,
             focus: cx.focus_handle(),
-            scroll: ScrollHandle::new(),
             previous_maximized: None,
         }
     }
@@ -322,40 +353,193 @@ impl VegaWindow {
         .join(" · ")
     }
 
-    pub(super) fn render_subagent_overview(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        if !self.has_subagents(cx) && !self.subagent_panel.error {
-            return None;
+    pub(super) fn nsh_subagent_authority(&self) -> PanelAuthority {
+        PanelAuthority {
+            parent: self.subagent_panel.parent.clone(),
+            epoch: self.subagent_panel.epoch,
+            selection: self.subagent_panel.selection,
+            revision: self.subagent_panel.revision,
+            history_epoch: self.subagent_panel.history_epoch,
+            detail: self
+                .subagent_panel
+                .detail
+                .as_ref()
+                .map(|detail| detail.id.clone()),
+            agents: self
+                .subagent_panel
+                .agents
+                .iter()
+                .map(|agent| self.nsh_subagent_identity(agent))
+                .collect(),
         }
-        let colors = theme(cx).colors;
+    }
+
+    fn nsh_subagent_identity(&self, agent: &SubagentSnapshot) -> AgentIdentity {
+        let active = self.agent_controller.active.get(&agent.agent_id);
+        AgentIdentity {
+            child: agent.agent_id.clone(),
+            parent: agent.parent_thread_id.clone(),
+            parent_message: agent.parent_message_id.clone(),
+            message: agent.message_id.clone(),
+            generation: active.map(|active| active.generation),
+            operation: active.map(|active| active.queue_generation.clone()),
+        }
+    }
+
+    pub(super) fn nsh_subagent_overview(&self, snapshot: &mut Snapshot, cx: &App) {
+        if !self.has_subagents(cx) && !self.subagent_panel.error {
+            return;
+        }
+        snapshot.controls.push(Control::new(
+            Action::Subagents,
+            vega_i18n::t("app.workspace.subagents"),
+            Some(vega_ui::icons::Icon::Bot),
+        ));
         let counts = self.subagent_counts();
-        let mut section = div().py_2().flex().flex_col().gap_1();
-        section = section.child(
-            panel_button(
-                "environment-subagents-open",
-                vega_i18n::t("app.workspace.subagents"),
-                colors,
-                cx.listener(|this, _, window, cx| {
-                    this.open_subagent_panel(window, cx);
-                }),
-            )
-            .child(icon(Icon::Bot, colors.text_secondary)),
-        );
         if !counts.is_empty() {
-            section = section.child(
-                div()
-                    .px_2()
-                    .text_size(px(Typography::METADATA))
-                    .text_color(colors.text_secondary)
-                    .child(counts),
-            );
+            snapshot.lines.push(Line::new(counts, false));
         }
         if self.subagent_panel.error {
-            section = section.child(self.subagent_load_error(cx));
+            self.nsh_subagent_load_error(snapshot);
         }
-        Some(section.into_any_element())
+    }
+
+    fn nsh_subagent_load_error(&self, snapshot: &mut Snapshot) {
+        snapshot
+            .lines
+            .push(Line::new(vega_i18n::t("app.workspace.load_failed"), true));
+        snapshot.controls.push(Control::new(
+            Action::RetryAgents,
+            vega_i18n::t("app.workspace.retry"),
+            None,
+        ));
+    }
+
+    pub(super) fn nsh_subagent_clear_maximized(&mut self, index: usize) {
+        if self.workspace.tabs.iter().any(|(key, bottom)| {
+            *key == super::workspace::TabKey::Subagents && usize::from(*bottom) == index
+        }) {
+            self.subagent_panel.previous_maximized = None;
+        }
+    }
+
+    pub(super) fn nsh_subagent_controls(&self, snapshot: &mut Snapshot, cx: &App) {
+        if let Some(child) = &self.subagent_panel.stop_error {
+            snapshot
+                .lines
+                .push(Line::new(vega_i18n::t("app.workspace.stop_failed"), true));
+            snapshot.controls.push(Control::new(
+                Action::Open(child.clone()),
+                vega_i18n::t("app.workspace.open_conversation"),
+                None,
+            ));
+        }
+        if let Some(detail) = &self.subagent_panel.detail {
+            let agent = self
+                .subagent_panel
+                .agents
+                .iter()
+                .find(|agent| agent.agent_id == detail.id);
+            snapshot.controls.push(Control::new(
+                Action::Back,
+                vega_i18n::t("app.workspace.back"),
+                None,
+            ));
+            snapshot.lines.push(Line::new(
+                agent
+                    .map(|agent| agent.name.clone())
+                    .unwrap_or_else(|| vega_i18n::t("app.workspace.subagent").into()),
+                false,
+            ));
+            let model = detail
+                .stream
+                .as_ref()
+                .map(|stream| stream.read(cx).displayed_model().to_string())
+                .filter(|model| !model.is_empty())
+                .or_else(|| detail.model.clone());
+            if let Some(model) = model {
+                snapshot.lines.push(Line::new(model, false));
+            }
+            if let Some(agent) = agent {
+                snapshot.lines.push(Line::new(
+                    state_label(self.subagent_display_state(agent)),
+                    self.subagent_display_state(agent) == SubagentState::Failed,
+                ));
+            }
+            snapshot.controls.push(Control::new(
+                Action::Open(detail.id.clone()),
+                vega_i18n::t("app.workspace.open_conversation"),
+                None,
+            ));
+            self.nsh_subagent_stop(snapshot, &detail.id);
+            if detail.loading {
+                snapshot
+                    .lines
+                    .push(Line::new(vega_i18n::t("app.workspace.loading"), false));
+            }
+            if detail.error {
+                snapshot
+                    .lines
+                    .push(Line::new(vega_i18n::t("app.workspace.open_failed"), true));
+                snapshot.controls.push(Control::new(
+                    Action::Detail(detail.id.clone()),
+                    vega_i18n::t("app.workspace.retry"),
+                    None,
+                ));
+            }
+        } else {
+            if self.subagent_panel.error {
+                self.nsh_subagent_load_error(snapshot);
+            }
+            if self.subagent_panel.loading {
+                snapshot
+                    .lines
+                    .push(Line::new(vega_i18n::t("app.workspace.loading"), false));
+            }
+            for agent in &self.subagent_panel.agents {
+                snapshot.controls.push(Control::new(
+                    Action::Detail(agent.agent_id.clone()),
+                    format!(
+                        "{} · {}",
+                        agent.name,
+                        state_label(self.subagent_display_state(agent))
+                    ),
+                    None,
+                ));
+                self.nsh_subagent_stop(snapshot, &agent.agent_id);
+            }
+        }
+    }
+
+    fn nsh_subagent_stop(&self, snapshot: &mut Snapshot, child: &str) {
+        if let Some(active) = self.agent_controller.active.get(child)
+            && !active.cancel.is_cancelled()
+        {
+            snapshot.controls.push(Control::new(
+                Action::Stop(child.into(), active.generation),
+                vega_i18n::t("app.workspace.stop"),
+                None,
+            ));
+        }
+    }
+
+    pub(super) fn nsh_subagent_action(
+        &mut self,
+        action: Action,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            Action::RetryAgents => self.load_subagent_panel(cx),
+            Action::Detail(child) => self.select_subagent_detail(&child, window, cx),
+            Action::Back => {
+                self.clear_subagent_detail(cx);
+                window.focus(&self.subagent_panel.focus, cx);
+            }
+            Action::Open(child) => self.open_panel_child_conversation(&child, cx),
+            Action::Stop(child, generation) => self.stop_panel_child(&child, generation, cx),
+            _ => {}
+        }
     }
 
     pub(super) fn open_subagent_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -436,6 +620,12 @@ impl VegaWindow {
             epoch: self.subagent_panel.epoch,
             selection: self.subagent_panel.selection,
             child: child.into(),
+            identity: self
+                .subagent_panel
+                .agents
+                .iter()
+                .find(|agent| agent.agent_id == child)
+                .map(|agent| self.nsh_subagent_identity(agent)),
         })
     }
 
@@ -443,6 +633,13 @@ impl VegaWindow {
         self.subagent_parent_current(&owner.parent, cx)
             && self.subagent_panel.epoch == owner.epoch
             && self.subagent_panel.selection == owner.selection
+            && owner.identity
+                == self
+                    .subagent_panel
+                    .agents
+                    .iter()
+                    .find(|agent| agent.agent_id == owner.child)
+                    .map(|agent| self.nsh_subagent_identity(agent))
             && self
                 .subagent_panel
                 .detail
@@ -522,7 +719,17 @@ impl VegaWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.panel_owner_current(&owner, cx) {
+        let current = self
+            .subagent_parent_current(&owner.parent, cx)
+            .then(|| self.panel_read_owner(&owner.child))
+            .flatten();
+        if !self
+            .subagent_panel
+            .detail
+            .as_mut()
+            .is_some_and(|detail| detail.accept_completion(&owner, current.as_ref()))
+        {
+            cx.notify();
             return;
         }
         let Ok((thread, page)) = result else {
@@ -735,6 +942,14 @@ impl VegaWindow {
         let epoch = self.subagent_panel.epoch;
         let selection = self.subagent_panel.selection;
         let target = child.to_string();
+        let identity = self
+            .subagent_panel
+            .agents
+            .iter()
+            .find(|agent| agent.agent_id == child)
+            .map(|agent| self.nsh_subagent_identity(agent));
+        let identity_child = child.to_string();
+        let history_epoch = self.subagent_panel.history_epoch;
         let worker_source = source.clone();
         let work = cx.background_executor().spawn(async move {
             let store = vega_store::Store::open(database).map_err(|_| ())?;
@@ -753,6 +968,15 @@ impl VegaWindow {
                     || !this.subagent_parent_current(&source, cx)
                     || this.subagent_panel.epoch != epoch
                     || this.subagent_panel.selection != selection
+                    || this.subagent_panel.history_epoch != history_epoch
+                    || !this.subagent_panel.preview_visible
+                    || identity
+                        != this
+                            .subagent_panel
+                            .agents
+                            .iter()
+                            .find(|agent| agent.agent_id == identity_child)
+                            .map(|agent| this.nsh_subagent_identity(agent))
                 {
                     return;
                 }
@@ -788,6 +1012,14 @@ impl VegaWindow {
             return;
         }
         let epoch = self.subagent_panel.epoch;
+        let history_epoch = self.subagent_panel.history_epoch;
+        let selection = self.subagent_panel.selection;
+        let identity = self
+            .subagent_panel
+            .agents
+            .iter()
+            .find(|agent| agent.agent_id == child)
+            .map(|agent| self.nsh_subagent_identity(agent));
         let Some(database) = self.context_database(cx) else {
             return;
         };
@@ -808,7 +1040,18 @@ impl VegaWindow {
         cx.spawn(async move |this, cx| {
             let result = work.await;
             let _ = this.update(cx, |this, cx| {
-                if !this.subagent_parent_current(&parent, cx) || this.subagent_panel.epoch != epoch
+                if !this.subagent_parent_current(&parent, cx)
+                    || this.subagent_panel.epoch != epoch
+                    || this.subagent_panel.history_epoch != history_epoch
+                    || this.subagent_panel.selection != selection
+                    || !this.subagent_panel.preview_visible
+                    || identity
+                        != this
+                            .subagent_panel
+                            .agents
+                            .iter()
+                            .find(|agent| agent.agent_id == target)
+                            .map(|agent| this.nsh_subagent_identity(agent))
                 {
                     return;
                 }
@@ -828,46 +1071,6 @@ impl VegaWindow {
             });
         })
         .detach();
-    }
-
-    fn subagent_stop_button(&self, child: &str, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let active = self.agent_controller.active.get(child)?;
-        if active.cancel.is_cancelled() {
-            return None;
-        }
-        let generation = active.generation;
-        let child = child.to_string();
-        let button = panel_button(
-            format!("subagent-panel-stop-{child}"),
-            vega_i18n::t("app.workspace.stop"),
-            theme(cx).colors,
-            cx.listener(move |this, _, _, cx| {
-                this.stop_panel_child(&child, generation, cx);
-            }),
-        );
-        Some(button.into_any_element())
-    }
-
-    fn subagent_load_error(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap_2()
-            .child(
-                div()
-                    .text_size(px(Typography::METADATA))
-                    .text_color(colors.danger)
-                    .child(vega_i18n::t("app.workspace.load_failed")),
-            )
-            .child(panel_button(
-                "subagent-panel-retry",
-                vega_i18n::t("app.workspace.retry"),
-                colors,
-                cx.listener(|this, _, _, cx| this.load_subagent_panel(cx)),
-            ))
-            .into_any_element()
     }
 
     fn bind_subagent_detail_stream(
@@ -908,8 +1111,13 @@ impl VegaWindow {
         }) {
             self.bind_subagent_detail_stream(&child, &stream, window, cx);
         }
-        let colors = theme(cx).colors;
-        let mut root = div()
+        let stream = self
+            .subagent_panel
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.stream.clone());
+        let chrome = self.render_nsh_workspace(Kind::Subagents, window, cx);
+        div()
             .id("subagent-panel")
             .track_focus(&self.subagent_panel.focus)
             .size_full()
@@ -917,217 +1125,18 @@ impl VegaWindow {
             .min_h_0()
             .flex()
             .flex_col()
-            .bg(colors.bg_base);
-        if let Some(child) = self.subagent_panel.stop_error.clone() {
-            root = root.child(
-                div()
-                    .p_2()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_color(colors.danger)
-                            .child(vega_i18n::t("app.workspace.stop_failed")),
-                    )
-                    .child(panel_button(
-                        "subagent-stop-error-open",
-                        vega_i18n::t("app.workspace.open_conversation"),
-                        colors,
-                        cx.listener(move |this, _, _, cx| {
-                            this.open_panel_child_conversation(&child, cx)
-                        }),
-                    )),
-            );
-        }
-        if let Some(detail) = &self.subagent_panel.detail {
-            let child = detail.id.clone();
-            let label = self
-                .subagent_panel
-                .agents
-                .iter()
-                .find(|agent| agent.agent_id == child)
-                .map(|agent| agent.name.clone())
-                .unwrap_or_else(|| vega_i18n::t("app.workspace.subagent").into());
-            let state = self
-                .subagent_panel
-                .agents
-                .iter()
-                .find(|agent| agent.agent_id == child)
-                .map(|agent| self.subagent_display_state(agent));
-            let model = detail
-                .stream
-                .as_ref()
-                .map(|stream| stream.read(cx).displayed_model().to_string())
-                .filter(|model| !model.is_empty())
-                .or_else(|| detail.model.clone());
-            let loading = detail.loading;
-            let error = detail.error;
-            let stream = detail.stream.clone();
-            let open_child = child.clone();
-            let mut header = div()
-                .p_2()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap_2()
-                .border_b_1()
-                .border_color(colors.border_subtle)
-                .child(panel_button(
-                    "subagent-panel-back",
-                    vega_i18n::t("app.workspace.back"),
-                    colors,
-                    cx.listener(|this, _, window, cx| {
-                        this.clear_subagent_detail(cx);
-                        window.focus(&this.subagent_panel.focus, cx);
-                        cx.notify();
-                    }),
-                ))
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .text_size(px(Typography::BODY))
-                        .text_color(colors.text_primary)
-                        .child(label),
-                )
-                .children(model.map(|model| {
-                    div()
-                        .text_size(px(Typography::METADATA))
-                        .text_color(colors.text_secondary)
-                        .child(model)
-                }))
-                .child(panel_button(
-                    "subagent-panel-open-conversation",
-                    vega_i18n::t("app.workspace.open_conversation"),
-                    colors,
-                    cx.listener(move |this, _, _, cx| {
-                        this.open_panel_child_conversation(&open_child, cx)
-                    }),
-                ));
-            if let Some(state) = state {
-                header = header.child(
-                    div()
-                        .text_size(px(Typography::METADATA))
-                        .text_color(if state == SubagentState::Failed {
-                            colors.danger
-                        } else {
-                            colors.text_secondary
-                        })
-                        .child(state_label(state)),
-                );
-            }
-            header = header.children(self.subagent_stop_button(&child, cx));
-            root = root.child(header);
-            if loading {
-                root = root.child(
-                    div()
-                        .p_3()
-                        .text_color(colors.text_secondary)
-                        .child(vega_i18n::t("app.workspace.loading")),
-                );
-            }
-            if error {
-                root = root.child(
-                    div()
-                        .p_3()
-                        .flex()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_color(colors.danger)
-                                .child(vega_i18n::t("app.workspace.open_failed")),
-                        )
-                        .child(panel_button(
-                            "subagent-detail-retry",
-                            vega_i18n::t("app.workspace.retry"),
-                            colors,
-                            cx.listener(move |this, _, window, cx| {
-                                this.select_subagent_detail(&child, window, cx)
-                            }),
-                        )),
-                );
-            }
-            if let Some(stream) = stream {
-                root = root.child(
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .child(stream),
-                );
-            }
-        } else {
-            if self.subagent_panel.error {
-                root = root.child(self.subagent_load_error(cx));
-            }
-            if self.subagent_panel.loading {
-                root = root.child(
-                    div()
-                        .p_3()
-                        .text_color(colors.text_secondary)
-                        .child(vega_i18n::t("app.workspace.loading")),
-                );
-            }
-            let rows = self.subagent_panel.agents.clone();
-            let mut list = div()
-                .id("subagent-panel-list")
-                .flex_1()
-                .min_h_0()
-                .p_3()
-                .overflow_y_scroll()
-                .track_scroll(&self.subagent_panel.scroll)
-                .flex()
-                .flex_col()
-                .gap_2()
-                .tracked_scroll_edge_fade(
-                    self.subagent_panel.scroll.clone(),
-                    colors.bg_base,
-                    ScrollFade::reading(),
-                );
-            for agent in rows {
-                let state = self.subagent_display_state(&agent);
-                let child = agent.agent_id.clone();
-                list = list.child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            panel_button(
-                                format!("subagent-panel-open-{child}"),
-                                agent.name,
-                                colors,
-                                cx.listener(move |this, _, window, cx| {
-                                    this.select_subagent_detail(&child, window, cx)
-                                }),
-                            )
-                            .flex_1()
-                            .min_w_0(),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(Typography::METADATA))
-                                .text_color(if state == SubagentState::Failed {
-                                    colors.danger
-                                } else {
-                                    colors.text_secondary
-                                })
-                                .child(state_label(state)),
-                        )
-                        .children(self.subagent_stop_button(&agent.agent_id, cx)),
-                );
-            }
-            root = root.child(list);
-        }
-        root.into_any_element()
+            .overflow_hidden()
+            .child(super::workspace::nsh_workspace::detail_body(
+                chrome,
+                stream.map(|stream| stream.into_any_element()),
+            ))
+            .into_any_element()
     }
 }
+
+#[cfg(test)]
+#[path = "nsh_workspace/detail_tests.rs"]
+mod detail_tests;
 
 fn state_label(state: SubagentState) -> &'static str {
     match state {
@@ -1137,46 +1146,4 @@ fn state_label(state: SubagentState) -> &'static str {
         SubagentState::Failed => vega_i18n::t("app.subagent.failed"),
         SubagentState::Interrupted => vega_i18n::t("app.subagent.interrupted"),
     }
-}
-
-fn panel_button(
-    id: impl Into<SharedString>,
-    label: impl Into<SharedString>,
-    colors: ThemeColors,
-    activate: impl Fn(&(), &mut Window, &mut App) + 'static,
-) -> Stateful<Div> {
-    let id = id.into();
-    let label = label.into();
-    let activate = std::rc::Rc::new(activate);
-    let keyboard = activate.clone();
-    div()
-        .id(id)
-        .role(Role::Button)
-        .aria_label(label.clone())
-        .focusable()
-        .tab_stop(true)
-        .px_2()
-        .py_1()
-        .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-        .border_1()
-        .border_color(transparent_black())
-        .text_size(px(Typography::BODY))
-        .text_color(colors.text_primary)
-        .hover(move |style| style.bg(colors.bg_hover))
-        .focus_visible(move |style| style.border_color(colors.accent))
-        .cursor_pointer()
-        .flex()
-        .items_center()
-        .gap_2()
-        .on_click(move |_, window, cx| {
-            cx.stop_propagation();
-            activate(&(), window, cx);
-        })
-        .on_key_down(move |event, window, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                cx.stop_propagation();
-                keyboard(&(), window, cx);
-            }
-        })
-        .child(label)
 }

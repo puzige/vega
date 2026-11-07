@@ -5,15 +5,11 @@ use std::{
     sync::Arc,
 };
 
-use gpui_kit::component::{
-    Disableable, Sizable,
-    button::{Button, ButtonCustomVariant, ButtonVariants},
-};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Anchor, AnchoredPositionMode, AnyElement, App, Context, ElementId, Entity, EventEmitter,
-    FocusHandle, Focusable, Global, MouseButton, MouseDownEvent, MouseUpEvent, PathPromptOptions,
-    Subscription, Window, actions, anchored, deferred, div, point, px,
+    FocusHandle, Focusable, Global, MouseButton, MouseUpEvent, PathPromptOptions, Subscription,
+    Window, actions, anchored, deferred, div, point, px,
 };
 use vega_conversation::threads as conversation;
 use vega_conversation::types::{Thread, ThreadStatus};
@@ -23,7 +19,6 @@ use vega_store::git_detect;
 use vega_store::projects::{self, Project, ProjectSort};
 use vega_theme::{Layout, ThemeColors, Typography, theme};
 
-use crate::interaction::InteractionExt;
 use crate::settings::{CloseSettings, SettingsOpen};
 use crate::text_input::TextInput;
 
@@ -300,30 +295,33 @@ fn toggle_sessions_block(cx: &mut App) {
 
 pub fn preference_save_notice(cx: &App) -> Option<AnyElement> {
     let status = preferences::status(cx);
-    let error = status.error?;
-    let colors = theme(cx).colors;
-    Some(
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .px_3()
-            .py_1()
-            .text_size(px(Typography::METADATA))
-            .text_color(colors.danger)
-            .child(div().flex_1().child(error.render()))
-            .child(
-                Button::new("retry-sidebar-preferences")
-                    .label(if status.saving {
-                        vega_i18n::t("ui.saving")
-                    } else {
-                        vega_i18n::t("ui.retry")
-                    })
-                    .disabled(!status.can_retry)
-                    .on_click(|_, _, cx| preferences::retry(cx)),
-            )
-            .into_any_element(),
-    )
+    let saving = status.saving;
+    let can_retry = status.can_retry;
+    let error = status.error?.render();
+    let observed = error.clone();
+    let mut retry = nsh_leaf::Item::action(
+        if status.saving {
+            vega_i18n::t("ui.saving")
+        } else {
+            vega_i18n::t("ui.retry")
+        },
+        Some(crate::icons::Icon::Refresh),
+    );
+    retry.enabled = status.can_retry;
+    Some(nsh_leaf::host(
+        "sidebar-preferences-notice",
+        Some(error),
+        vec![retry],
+        true,
+        Typography::SIDEBAR_LINE_HEIGHT * 3.,
+        move |cx| {
+            let current = preferences::status(cx);
+            current.error.map(|error| error.render()).as_deref() == Some(observed.as_str())
+                && current.can_retry == can_retry
+                && current.saving == saving
+        },
+        |_, _, _, cx| preferences::retry(cx),
+    ))
 }
 
 /// Mutations and accepted navigation visits share one short application fence.
@@ -599,101 +597,65 @@ impl Sidebar {
 
     /// The light [新建任务] entry. It creates a task in the selected project
     /// or a standalone task when no project is selected.
-    fn render_new_task(&mut self, cx: &mut Context<Self>, colors: &ThemeColors) -> AnyElement {
+    fn render_new_task(&mut self, cx: &mut Context<Self>, _colors: &ThemeColors) -> AnyElement {
+        let weak = cx.weak_entity();
         div()
             .flex()
             .flex_col()
             .flex_shrink_0()
             .gap_1()
-            .child(
-                div()
-                    .id("sidebar-new-task")
-                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .pl(px(Layout::SIDEBAR_LABEL_INSET))
-                    .pr_2()
-                    .rounded_lg()
-                    .text_color(colors.text_primary)
-                    .text_size(px(Typography::SIDEBAR))
-                    .cursor_pointer()
-                    .interactive(*colors, true, false)
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &MouseUpEvent, _, cx| this.create_thread(cx)),
+            .child(nsh_leaf::host(
+                "sidebar-new-task",
+                None,
+                vec![
+                    nsh_leaf::Item::action(
+                        vega_i18n::t("ui.new_task"),
+                        Some(crate::icons::Icon::Plus),
                     )
-                    .child(crate::icons::icon(
-                        crate::icons::Icon::Plus,
-                        colors.text_secondary,
-                    ))
-                    .child(div().child(vega_i18n::t("ui.new_task")))
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .text_size(px(Typography::METADATA))
-                            .text_color(colors.text_tertiary)
-                            .child("⌘N"),
-                    ),
-            )
+                    .with_hint("⌘N"),
+                ],
+                false,
+                Typography::SIDEBAR_LINE_HEIGHT,
+                |_| true,
+                move |_, _, _, cx| {
+                    let _ = weak.update(cx, |this, cx| this.create_thread(cx));
+                },
+            ))
             .children(
                 self.new_task_error
                     .clone()
-                    .map(|message| error_bar(message, colors)),
+                    .map(|message| error_bar(message, _colors)),
             )
             .into_any_element()
     }
 
     /// Stable low-frequency settings entry. It stays in the rail even when
     /// project/session blocks grow or collapse, so the route is discoverable.
-    fn render_settings_entry(colors: &ThemeColors, cx: &App) -> AnyElement {
+    fn render_settings_entry(_colors: &ThemeColors, _cx: &App) -> AnyElement {
         div()
             .w_full()
             .flex_shrink_0()
             .px(px(Layout::SIDEBAR_PADDING))
             .pt(px(Layout::SIDEBAR_FOOTER_TOP))
             .pb(px(Layout::SIDEBAR_PADDING))
-            .child(
-                div()
-                    .id("sidebar-settings-surface")
-                    .w_full()
-                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                    .rounded_lg()
-                    .overflow_hidden()
-                    .interactive(*colors, true, false)
-                    .capture_native_button_press()
-                    .child(
-                        Button::new("sidebar-settings")
-                            .custom(
-                                ButtonCustomVariant::new(cx).foreground(colors.text_primary.into()),
-                            )
-                            .small()
-                            .w_full()
-                            .h_full()
-                            .rounded_lg()
-                            .pl(px(Layout::SIDEBAR_LABEL_INSET))
-                            .pr_2()
-                            .text_color(colors.text_primary)
-                            .accessibility_label(vega_i18n::t("ui.settings"))
-                            .tooltip(vega_i18n::t("ui.settings"))
-                            .on_click(|_, _, cx| {
-                                cx.set_global(SettingsOpen(true));
-                                cx.refresh_windows();
-                            })
-                            .child(crate::icons::icon(
-                                crate::icons::Icon::Settings,
-                                colors.text_secondary,
-                            ))
-                            .child(div().child(vega_i18n::t("ui.settings_284")))
-                            .child(div().flex_1())
-                            .child(
-                                div()
-                                    .text_size(px(Typography::METADATA))
-                                    .text_color(colors.text_tertiary)
-                                    .child("⌘,"),
-                            ),
-                    ),
-            )
+            .child(nsh_leaf::host(
+                "sidebar-settings-surface",
+                None,
+                vec![
+                    nsh_leaf::Item::action(
+                        vega_i18n::t("ui.settings_284"),
+                        Some(crate::icons::Icon::Settings),
+                    )
+                    .with_hint("⌘,"),
+                ],
+                false,
+                Typography::SIDEBAR_LINE_HEIGHT,
+                |_| true,
+                |_, _, _, cx| {
+                    cx.set_global(SettingsOpen(true));
+                    cx.refresh_windows();
+                },
+            ))
             .into_any_element()
     }
 }
@@ -787,6 +749,7 @@ impl Render for Sidebar {
     }
 }
 
+mod nsh_leaf;
 mod preferences;
 mod projects_block;
 mod row_helpers;

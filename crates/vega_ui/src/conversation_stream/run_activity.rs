@@ -170,8 +170,24 @@ impl RunActivityGroup {
                     && (!self.stage_is_aggregate(index, cx) || segment.expanded)
             };
             for child in &segment.children {
-                if let RunActivityChild::Thinking(card) = child {
-                    card.update(cx, |card, _| card.set_ancestor_visible(visible));
+                match child {
+                    RunActivityChild::Thinking(card) => {
+                        card.update(cx, |card, _| card.set_ancestor_visible(visible));
+                    }
+                    RunActivityChild::ToolGroup(group) if !visible => {
+                        group.update(cx, |group, cx| group.suspend_presentation(cx));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    pub(super) fn suspend_child_presentations(&self, cx: &mut App) {
+        for segment in &self.segments {
+            for child in &segment.children {
+                if let RunActivityChild::ToolGroup(group) = child {
+                    group.update(cx, |group, cx| group.suspend_presentation(cx));
                 }
             }
         }

@@ -16,19 +16,25 @@ pub(crate) mod keyboard;
 pub const COMMAND_CAPACITY: usize = 64;
 
 #[derive(Clone)]
-pub(crate) struct ProjectionId(Arc<()>);
+pub struct ProjectionId(Arc<()>);
+
+impl Default for ProjectionId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ProjectionId {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self(Arc::new(()))
     }
 
-    pub(crate) fn matches(&self, other: &Self) -> bool {
+    pub fn matches(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
-pub(crate) struct OrderedCommands<C> {
+pub struct OrderedCommands<C> {
     sender: mpsc::Sender<C>,
     previous: Rc<RefCell<Option<oneshot::Receiver<()>>>>,
     pub failed: Signal<bool>,
@@ -45,7 +51,7 @@ impl<C> Clone for OrderedCommands<C> {
 }
 
 impl<C: 'static> OrderedCommands<C> {
-    pub(crate) fn new(sender: mpsc::Sender<C>) -> Self {
+    pub fn new(sender: mpsc::Sender<C>) -> Self {
         Self {
             sender,
             previous: Rc::new(RefCell::new(None)),
@@ -53,7 +59,7 @@ impl<C: 'static> OrderedCommands<C> {
         }
     }
 
-    pub(crate) fn send(&self, command: C) {
+    pub fn send(&self, command: C) {
         let (finished, pending) = oneshot::channel();
         let previous = self.previous.borrow_mut().replace(pending);
         let sender = self.sender.clone();

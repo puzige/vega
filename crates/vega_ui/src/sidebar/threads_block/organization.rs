@@ -141,7 +141,7 @@ struct GroupEditor {
     group_id: Option<String>,
     input: Entity<TextInput>,
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 enum OrganizationMenu {
     Group(String),
     Project(String),
@@ -183,17 +183,16 @@ fn project_row_is_active(project_id: &str, cx: &App) -> bool {
 
 impl Render for OrganizationDrag {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = theme(cx).colors;
-        div()
-            .px_3()
-            .py_2()
-            .rounded_md()
-            .bg(colors.bg_elevated)
-            .border_1()
-            .border_color(colors.border_subtle)
-            .text_size(px(Typography::SIDEBAR))
-            .text_color(colors.text_primary)
-            .child(self.label.clone())
+        let _ = cx;
+        div().w(px(Layout::SIDEBAR_WIDTH)).child(nsh_leaf::host(
+            "sidebar-organization-drag-preview",
+            Some(self.label.clone()),
+            Vec::new(),
+            false,
+            Typography::SIDEBAR_LINE_HEIGHT,
+            |_| true,
+            |_, _, _, _| {},
+        ))
     }
 }
 

@@ -1,5 +1,5 @@
+use super::host::State;
 use super::*;
-use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 
 pub struct CommitPanel {
     pub(crate) thread_id: String,
@@ -8,9 +8,7 @@ pub struct CommitPanel {
     pub(crate) message: Entity<TextInput>,
     pub(crate) focus: FocusHandle,
     pub(crate) cancel_focus: FocusHandle,
-    pub(crate) draft_focus: FocusHandle,
-    pub(crate) confirm_focus: FocusHandle,
-    pub(crate) scroll: UniformListScrollHandle,
+    pub(super) presentation: State,
     pub(crate) disabled: bool,
     pub(crate) editor_revision: u64,
     pub(crate) editor_revision_overflow: bool,
@@ -26,7 +24,7 @@ impl EventEmitter<CommitPanelClosed> for CommitPanel {}
 
 impl Focusable for CommitPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.cancel_focus.clone()
+        self.focus.clone()
     }
 }
 
@@ -38,23 +36,19 @@ impl CommitPanel {
                 .with_scroll_fade_on_base()
         });
         cx.observe(&message, |this, _, cx| {
-            match this.editor_revision.checked_add(1) {
-                Some(revision) => this.editor_revision = revision,
-                None => this.editor_revision_overflow = true,
-            }
+            this.reconcile_carrier(cx);
             cx.notify();
         })
         .detach();
+        let cancel_focus = cx.focus_handle().tab_stop(true);
         Self {
             thread_id,
             project_id,
             model: CommitPanelModel::default(),
             message,
-            focus: cx.focus_handle().tab_stop(true),
-            cancel_focus: cx.focus_handle().tab_stop(true),
-            draft_focus: cx.focus_handle().tab_stop(true),
-            confirm_focus: cx.focus_handle().tab_stop(true),
-            scroll: UniformListScrollHandle::new(),
+            focus: cancel_focus.clone(),
+            cancel_focus,
+            presentation: State::default(),
             disabled: false,
             editor_revision: 0,
             editor_revision_overflow: false,
@@ -67,14 +61,12 @@ impl CommitPanel {
         (&self.thread_id, &self.project_id)
     }
 
-    /// Keeps the cached panel's route aligned with an unmaterialized draft.
-    /// The app never opens a commit controller for a draft, so no prepared
-    /// operation may cross this boundary.
     pub fn rebind_draft_project(&mut self, project_id: &str, cx: &mut Context<Self>) {
         if self.project_id == project_id {
             return;
         }
         self.project_id = project_id.to_owned();
+        self.presentation.unmount();
         self.model = CommitPanelModel::default();
         cx.notify();
     }
@@ -89,6 +81,13 @@ impl CommitPanel {
 
     pub fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
         self.disabled = disabled;
+        if let Ok(mut draft) = self.presentation.draft.0.lock() {
+            draft.editable = !disabled
+                && matches!(
+                    self.model.stage(),
+                    CommitPanelStage::CommitReady | CommitPanelStage::Drafting
+                );
+        }
         cx.notify();
     }
 
@@ -96,6 +95,7 @@ impl CommitPanel {
         if self.disabled || !self.model.open() {
             return false;
         }
+        self.presentation.unmount();
         cx.emit(CommitChecklistRequested {
             thread_id: self.thread_id.clone(),
             project_id: self.project_id.clone(),
@@ -151,22 +151,28 @@ impl CommitPanel {
         draft: Result<CommitDraft, CommitErrorCode>,
         cx: &mut Context<Self>,
     ) -> bool {
-        let text = draft.as_ref().ok().map(|draft| draft.text().to_string());
-        let unchanged = self.draft_revision_is_current(operation);
-        self.draft_revision = None;
-        let result = if unchanged {
-            draft.map(|_| ())
-        } else {
-            Err(CommitErrorCode::ChangedDuringRead)
-        };
-        let accepted = self.model.finish_draft(operation, result);
-        if accepted
-            && unchanged
-            && let Some(text) = text
-        {
-            self.message
-                .update(cx, |message, cx| message.set_text(&text, cx));
+        if !self.model.owns_pending(operation) || self.model.stage() != CommitPanelStage::Drafting {
+            return false;
         }
+        self.reconcile_carrier(cx);
+        let revision_current = self.draft_revision_is_current(operation);
+        let shared = self.presentation.draft.clone();
+        let Ok(mut value) = shared.0.lock() else {
+            return false;
+        };
+        let accepted = super::draft::finish_generated(
+            &mut self.model,
+            &mut self.draft_revision,
+            &mut value,
+            operation,
+            revision_current,
+            draft.map(|draft| draft.text().to_owned()),
+        );
+        self.editor_revision = value.revision;
+        self.editor_revision_overflow = value.overflow;
+        let text = value.text.clone();
+        drop(value);
+        self.update_carrier(&text, cx);
         if accepted {
             self.focus_cancel_pending = matches!(self.model.stage(), CommitPanelStage::Failed(_));
             cx.notify();
@@ -176,7 +182,12 @@ impl CommitPanel {
 
     pub(crate) fn draft_revision_is_current(&self, operation: CommitOperationId) -> bool {
         !self.editor_revision_overflow
-            && self.draft_revision == Some((operation, self.editor_revision))
+            && self.presentation.draft.0.lock().is_ok_and(|value| {
+                !value.overflow
+                    && !value.composing
+                    && value.revision >= self.editor_revision
+                    && self.draft_revision == Some((operation, value.revision))
+            })
     }
 
     pub fn finish_commit(
@@ -224,6 +235,7 @@ impl CommitPanel {
         if !self.model.close_visible() {
             return false;
         }
+        self.presentation.unmount();
         cx.emit(CommitPanelClosed {
             thread_id: self.thread_id.clone(),
             project_id: self.project_id.clone(),
@@ -232,7 +244,12 @@ impl CommitPanel {
         true
     }
 
-    fn confirm(&mut self, _: &ConfirmCommitStage, _: &mut Window, cx: &mut Context<Self>) {
+    pub fn suspend_presentation(&mut self, cx: &mut Context<Self>) {
+        self.presentation.unmount();
+        cx.notify();
+    }
+
+    pub(super) fn confirm_message(&mut self, message: String, cx: &mut Context<Self>) {
         match self.model.stage() {
             CommitPanelStage::Checklist => {
                 if let Some((snapshot_id, selected, operation_id)) = self.model.begin_prepare() {
@@ -246,7 +263,6 @@ impl CommitPanel {
                 }
             }
             CommitPanelStage::CommitReady => {
-                let message = self.message.read(cx).text().to_string();
                 if let Some((prepared_id, operation_id, message)) = self.model.begin_commit(message)
                 {
                     cx.emit(CommitRequested {
@@ -265,8 +281,8 @@ impl CommitPanel {
         cx.notify();
     }
 
-    fn draft(&mut self, _: &RequestCommitDraft, _: &mut Window, cx: &mut Context<Self>) {
-        if self.editor_revision_overflow {
+    pub(super) fn draft_message(&mut self, revision: u64, overflow: bool, cx: &mut Context<Self>) {
+        if overflow {
             self.model.stage = CommitPanelStage::Failed(CommitErrorCode::OutputTooLarge);
             self.model.focus = CommitPanelFocus::Cancel;
             self.focus_cancel_pending = true;
@@ -274,7 +290,7 @@ impl CommitPanel {
             return;
         }
         if let Some((prepared_id, operation_id)) = self.model.begin_draft() {
-            self.draft_revision = Some((operation_id, self.editor_revision));
+            self.draft_revision = Some((operation_id, revision));
             cx.emit(CommitDraftRequested {
                 thread_id: self.thread_id.clone(),
                 project_id: self.project_id.clone(),
@@ -285,78 +301,7 @@ impl CommitPanel {
         }
     }
 
-    fn close(&mut self, _: &CloseCommitPanel, _: &mut Window, cx: &mut Context<Self>) {
-        let _ = self.request_close(cx);
-    }
-
-    fn toggle_action(&mut self, _: &ToggleCommitSelection, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(id) = self.model.focused_optional() {
-            self.toggle_row(id, cx);
-        }
-    }
-
-    fn activate_enter(
-        &mut self,
-        _: &ActivateCommitEnter,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match self.model.focus() {
-            CommitPanelFocus::Draft => {
-                window.dispatch_action(Box::new(crate::text_input::InsertNewline), cx)
-            }
-            CommitPanelFocus::Generate => self.draft(&RequestCommitDraft, window, cx),
-            _ => {}
-        }
-    }
-
-    fn activate_space(
-        &mut self,
-        _: &ActivateCommitSpace,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.model.focus() == CommitPanelFocus::Generate {
-            self.draft(&RequestCommitDraft, window, cx);
-        } else {
-            self.toggle_action(&ToggleCommitSelection, window, cx);
-        }
-    }
-
-    fn focus_current(&self, window: &mut Window, cx: &mut App) {
-        match self.model.focus() {
-            CommitPanelFocus::Cancel => self.cancel_focus.focus(window, cx),
-            CommitPanelFocus::Draft => self.message.read(cx).focus_handle(cx).focus(window, cx),
-            CommitPanelFocus::Generate => self.draft_focus.focus(window, cx),
-            CommitPanelFocus::Confirm => self.confirm_focus.focus(window, cx),
-            CommitPanelFocus::Optional(_) => self.focus.focus(window, cx),
-        }
-    }
-
-    fn next_focus(&mut self, _: &NextCommitFocus, window: &mut Window, cx: &mut Context<Self>) {
-        if self.model.move_focus(false) {
-            self.focus_current(window, cx);
-        } else {
-            window.focus_next(cx);
-        }
-        cx.notify();
-    }
-
-    fn previous_focus(
-        &mut self,
-        _: &PreviousCommitFocus,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.model.move_focus(true) {
-            self.focus_current(window, cx);
-        } else {
-            window.focus_prev(cx);
-        }
-        cx.notify();
-    }
-
-    fn toggle_row(&mut self, id: WorkspaceFileId, cx: &mut Context<Self>) {
+    pub(super) fn toggle_row(&mut self, id: WorkspaceFileId, cx: &mut Context<Self>) {
         if self.model.toggle(id) {
             cx.notify();
         }
@@ -365,257 +310,11 @@ impl CommitPanel {
 
 impl Render for CommitPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = theme(cx).colors;
-        if !self.model.is_open() {
-            return div().hidden().into_any_element();
-        }
-        if self.focus_cancel_pending {
-            self.cancel_focus.focus(window, cx);
-            self.focus_cancel_pending = false;
-        }
-        let rows = self.model.checklist.as_ref().map_or(0, |checklist| {
-            checklist.staged.len() + checklist.optional.len()
-        });
-        let staged_len = self
-            .model
-            .checklist
-            .as_ref()
-            .map_or(0, |checklist| checklist.staged.len());
-        let workspace_generation = self
-            .model
-            .checklist
-            .as_ref()
-            .map_or(0, |checklist| checklist.workspace_generation);
-        let view = cx.entity().clone();
-        let ready = self.model.stage() == CommitPanelStage::CommitReady;
-        let actionable = matches!(
-            self.model.stage(),
-            CommitPanelStage::Checklist | CommitPanelStage::CommitReady
-        );
-        let inline_error = match self.model.stage() {
-            CommitPanelStage::Failed(code) => Some(commit_error_label(code)),
-            _ => None,
-        };
-        div()
-            .key_context("CommitPanel")
-            .track_focus(&self.focus)
-            .on_action(cx.listener(Self::confirm))
-            .on_action(cx.listener(Self::draft))
-            .on_action(cx.listener(Self::activate_enter))
-            .on_action(cx.listener(Self::activate_space))
-            .on_action(cx.listener(Self::close))
-            .on_action(cx.listener(Self::toggle_action))
-            .on_action(cx.listener(Self::next_focus))
-            .on_action(cx.listener(Self::previous_focus))
-            .absolute()
-            .inset_0()
-            .bg(colors.bg_base)
-            .p_4()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(Typography::HEADING_BLOCK))
-                            .text_color(colors.text_primary)
-                            .child(vega_i18n::t("ui.commit_changes")),
-                    )
-                    .child(
-                        div()
-                            .id("commit-cancel")
-                            .track_focus(&self.cancel_focus)
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(colors.border_subtle)
-                            .when(self.model.focus == CommitPanelFocus::Cancel, |button| {
-                                button.bg(colors.bg_hover)
-                            })
-                            .cursor_pointer()
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    let _ = this.request_close(cx);
-                                }),
-                            )
-                            .child(vega_i18n::t("ui.cancel")),
-                    ),
-            )
-            .when_some(inline_error, |panel, code| {
-                panel.child(
-                    div()
-                        .text_size(px(Typography::BODY))
-                        .text_color(colors.danger)
-                        .child(vega_i18n::t_args(
-                            "ui.commit_unavailable_code",
-                            &[("code", code)],
-                        )),
-                )
-            })
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .border_1()
-                    .border_color(colors.border_subtle)
-                    .rounded_md()
-                    .overflow_hidden()
-                    .map(|mut frame| {
-                        let fade = ScrollFade::reading().rounded_parent(frame.style());
-                        frame.child(
-                            uniform_list(
-                                "commit-checklist",
-                                rows,
-                                cx.processor(move |this: &mut CommitPanel, range, _, _cx| {
-                                    this.model
-                                        .rows(range)
-                                        .into_iter()
-                                        .map(|(index, row, selected)| {
-                                            let row_id = row.file_id;
-                                            let view = view.clone();
-                                            let key = commit_row_key(
-                                                workspace_generation,
-                                                index,
-                                                staged_len,
-                                            );
-                                            div()
-                                                .id(key)
-                                                .h(px(COMMIT_ROW_HEIGHT))
-                                                .px_2()
-                                                .flex()
-                                                .items_center()
-                                                .gap_2()
-                                                .text_size(px(Typography::CODE))
-                                                .text_color(if row.forced {
-                                                    colors.text_tertiary
-                                                } else {
-                                                    colors.text_primary
-                                                })
-                                                .when(
-                                                    this.model.focus
-                                                        == CommitPanelFocus::Optional(
-                                                            index.saturating_sub(staged_len),
-                                                        )
-                                                        && !row.forced,
-                                                    |element| element.bg(colors.bg_hover),
-                                                )
-                                                .when(
-                                                    commit_row_is_focusable(row.forced),
-                                                    |element| {
-                                                        element.cursor_pointer().on_mouse_up(
-                                                            MouseButton::Left,
-                                                            move |_, _, cx| {
-                                                                view.update(cx, |this, cx| {
-                                                                    this.toggle_row(row_id, cx)
-                                                                });
-                                                            },
-                                                        )
-                                                    },
-                                                )
-                                                .child(if row.forced || selected {
-                                                    "●"
-                                                } else {
-                                                    "○"
-                                                })
-                                                .child(
-                                                    div().text_color(colors.text_tertiary).child(
-                                                        commit_row_status(row.forced, selected),
-                                                    ),
-                                                )
-                                                .child(div().min_w_0().truncate().child(row.label))
-                                        })
-                                        .collect::<Vec<_>>()
-                                }),
-                            )
-                            .track_scroll(&self.scroll)
-                            .h_full()
-                            .tracked_scroll_edge_fade(
-                                self.scroll.clone(),
-                                colors.bg_base,
-                                fade,
-                            ),
-                        )
-                    }),
-            )
-            .when(ready, |panel| {
-                panel
-                    .child(
-                        div()
-                            .h(px(112.0))
-                            .border_1()
-                            .border_color(colors.border_subtle)
-                            .when(self.model.focus == CommitPanelFocus::Draft, |button| {
-                                button.bg(colors.bg_hover)
-                            })
-                            .rounded_md()
-                            .p_2()
-                            .child(self.message.clone()),
-                    )
-                    .child(
-                        div()
-                            .id("commit-draft")
-                            .track_focus(&self.draft_focus)
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(colors.border_subtle)
-                            .when(self.model.focus == CommitPanelFocus::Generate, |button| {
-                                button.bg(colors.bg_hover)
-                            })
-                            .cursor_pointer()
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _, window, cx| {
-                                    this.draft(&RequestCommitDraft, window, cx)
-                                }),
-                            )
-                            .child(vega_i18n::t("ui.generate_message")),
-                    )
-            })
-            .child(
-                div()
-                    .id("commit-confirm")
-                    .track_focus(&self.confirm_focus)
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(colors.border_subtle)
-                    .when(self.model.focus == CommitPanelFocus::Confirm, |button| {
-                        button.bg(colors.bg_hover)
-                    })
-                    .bg(if actionable {
-                        colors.bg_active
-                    } else {
-                        colors.bg_elevated
-                    })
-                    .text_color(colors.text_primary)
-                    .when(actionable, |button| {
-                        button.cursor_pointer().on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(|this, _, window, cx| {
-                                this.confirm(&ConfirmCommitStage, window, cx)
-                            }),
-                        )
-                    })
-                    .child(if ready {
-                        vega_i18n::t("ui.commit")
-                    } else {
-                        vega_i18n::t("ui.prepare")
-                    }),
-            )
-            .into_any_element()
+        self.render_nsh(window, cx)
     }
 }
 
-fn commit_error_label(code: CommitErrorCode) -> &'static str {
+pub(super) fn commit_error_label(code: CommitErrorCode) -> &'static str {
     match code {
         CommitErrorCode::GitUnavailable => {
             vega_i18n::t("ui.git_2_40_was_not_found_install_homebrew")

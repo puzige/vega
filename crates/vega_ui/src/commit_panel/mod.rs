@@ -1,18 +1,15 @@
-//! IO-free canonical two-stage commit panel.
-
 use std::collections::HashSet;
 use std::ops::Range;
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, Render,
-    UniformListScrollHandle, Window, actions, div, px, uniform_list,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, Render, Window, actions,
 };
 use vega_conversation::types::{
     CommitChecklist, CommitDraft, CommitErrorCode, CommitSelection, IndexSnapshotId,
     PreparedCommit, PreparedCommitId, WorkspaceFileId,
 };
-use vega_theme::{Typography, theme};
+use vega_theme::theme;
 
 use crate::text_input::TextInput;
 
@@ -29,8 +26,13 @@ actions!(
         PreviousCommitFocus
     ]
 );
+mod draft;
+mod host;
 mod model;
+mod nsh_view;
 mod panel;
+#[cfg(test)]
+mod tests;
 
 pub(crate) use model::{
     COMMIT_ROW_HEIGHT, commit_row_is_focusable, commit_row_key, commit_row_status,

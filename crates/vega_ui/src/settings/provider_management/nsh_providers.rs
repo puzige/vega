@@ -525,10 +525,8 @@ impl SettingsView {
         let state = &self.provider_management;
         let page = state.presentation.as_ref();
         Snapshot {
-            id: page.map(|p| p.id.clone()).unwrap_or_else(ProjectionId::new),
-            version: page
-                .map(|p| p.version.clone())
-                .unwrap_or_else(ProjectionId::new),
+            id: page.map(|p| p.id.clone()).unwrap_or_default(),
+            version: page.map(|p| p.version.clone()).unwrap_or_default(),
             visible: provider_visible(
                 self.section,
                 cx.try_global::<super::super::SettingsOpen>()
