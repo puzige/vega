@@ -319,8 +319,9 @@ impl ConfigurationRetryBudget {
     fn next_delay(
         &mut self,
         busy: vega_store::yaml_config::ConfigurationLockBusy,
+        now: Instant,
     ) -> Result<Duration, CredentialReadError> {
-        let started = *self.started.get_or_insert_with(Instant::now);
+        let elapsed = now.saturating_duration_since(*self.started.get_or_insert(now));
         self.attempts = self.attempts.saturating_add(1).min(6);
         let attempts = self.attempts;
         let previous_wait_ms = self.wait_ms;
@@ -336,11 +337,11 @@ impl ConfigurationRetryBudget {
             configuration_lock_wait_ms = previous_wait_ms,
             "configuration lock acquisition busy"
         );
-        if self.attempts >= 6 || started.elapsed() >= Duration::from_millis(500) {
+        if self.attempts >= 6 || elapsed >= Duration::from_millis(500) {
             return Err(error(previous_wait_ms));
         }
         let delay = Duration::from_millis(10 << (self.attempts - 1));
-        if started.elapsed() + delay > Duration::from_millis(500) {
+        if elapsed + delay > Duration::from_millis(500) {
             return Err(error(previous_wait_ms));
         }
         self.wait_ms += delay.as_millis() as u64;
@@ -485,7 +486,7 @@ impl McpServerSettingsService {
             let result = budget
                 .lock()
                 .map_err(|_| crate::credential_errors::state_error(CredentialReadStage::Mcp))?
-                .next_delay(busy);
+                .next_delay(busy, Instant::now());
             let delay = match result {
                 Ok(delay) => delay,
                 Err(error) => {

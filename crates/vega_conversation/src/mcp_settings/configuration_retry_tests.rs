@@ -153,12 +153,41 @@ fn persistent_lock_exhausts_shared_budget_and_preserves_diagnostics() {
     let error = operation.current_owner_credential_values().unwrap_err();
     assert!(start.elapsed() < Duration::from_secs(2));
     assert_eq!(error.configuration_lock, Some("file"));
-    assert_eq!(error.configuration_lock_attempts, Some(6));
-    assert_eq!(error.configuration_lock_wait_ms, Some(310));
+    let attempts = error.configuration_lock_attempts.unwrap();
+    let waited = error.configuration_lock_wait_ms.unwrap();
+    assert!((1..=6).contains(&attempts));
+    assert!(waited <= 310);
+    assert!(
+        operation
+            .configuration_budget
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .started
+            .unwrap()
+            .elapsed()
+            >= Duration::from_millis(500)
+            || attempts == 6
+            || operation
+                .configuration_budget
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .started
+                .unwrap()
+                .elapsed()
+                + Duration::from_millis(10 << (attempts - 1))
+                > Duration::from_millis(500)
+    );
     assert_eq!(fixture.service.lock().unwrap().epochs["existing"], 4);
     let second = operation.current_owner_credential_values().unwrap_err();
-    assert_eq!(second.configuration_lock_wait_ms, Some(310));
-    assert_eq!(second.configuration_lock_attempts, Some(6));
+    assert_eq!(second.configuration_lock_wait_ms, Some(waited));
+    assert_eq!(
+        second.configuration_lock_attempts,
+        Some((attempts + 1).min(6))
+    );
     let store = fixture.store();
     store.conn().execute_batch("INSERT INTO projects(id,path,name,created_at,last_opened_at) VALUES ('synthetic-project','/synthetic','Synthetic',1,1); INSERT INTO threads(id,project_id,title,model,created_at,updated_at) VALUES ('synthetic-thread','synthetic-project','Synthetic','synthetic-model',1,1)").unwrap();
     let runtime_error: vega_runtime::VegaError = error.into();
@@ -222,13 +251,75 @@ fn persistent_lock_exhausts_shared_budget_and_preserves_diagnostics() {
         vega_store::submission_diagnostics::read(store.conn(), &submission.submission_id).unwrap();
     let value: serde_json::Value = serde_json::from_str(&exported[0]).unwrap();
     assert_eq!(value["failure"]["configuration_lock"], "file");
-    assert_eq!(value["failure"]["configuration_lock_attempts"], 6);
-    assert_eq!(value["failure"]["configuration_lock_wait_ms"], 310);
+    assert_eq!(value["failure"]["configuration_lock_attempts"], attempts);
+    assert_eq!(value["failure"]["configuration_lock_wait_ms"], waited);
     assert!(matches!(
         crate::types::RunFailureKind::from_runtime(&runtime_error),
         crate::types::RunFailureKind::ConfigurationBusy
     ));
     drop(holder);
+}
+
+#[test]
+fn retry_budget_enforces_full_sequence_and_independent_deadline_without_reset() {
+    use vega_store::yaml_config::ConfigurationLockBusy;
+    let start = Instant::now();
+    let mut now = start;
+    let mut budget = ConfigurationRetryBudget::default();
+    for millis in [10, 20, 40, 80, 160] {
+        let delay = budget.next_delay(ConfigurationLockBusy::File, now).unwrap();
+        assert_eq!(delay, Duration::from_millis(millis));
+        now += delay;
+    }
+    let exhausted = budget
+        .next_delay(ConfigurationLockBusy::Edit, now)
+        .unwrap_err();
+    assert_eq!(exhausted.configuration_lock_attempts, Some(6));
+    assert_eq!(exhausted.configuration_lock_wait_ms, Some(310));
+    assert_eq!(
+        budget
+            .next_delay(ConfigurationLockBusy::Registry, now)
+            .unwrap_err()
+            .configuration_lock_wait_ms,
+        Some(310)
+    );
+    let mut deadline = ConfigurationRetryBudget::default();
+    assert_eq!(
+        deadline
+            .next_delay(ConfigurationLockBusy::File, start)
+            .unwrap(),
+        Duration::from_millis(10)
+    );
+    let elapsed = deadline
+        .next_delay(
+            ConfigurationLockBusy::File,
+            start + Duration::from_millis(500),
+        )
+        .unwrap_err();
+    assert_eq!(elapsed.configuration_lock_attempts, Some(2));
+    assert_eq!(elapsed.configuration_lock_wait_ms, Some(10));
+    assert_eq!(
+        deadline
+            .next_delay(
+                ConfigurationLockBusy::File,
+                start + Duration::from_millis(501)
+            )
+            .unwrap_err()
+            .configuration_lock_wait_ms,
+        Some(10)
+    );
+    let mut insufficient = ConfigurationRetryBudget::default();
+    insufficient
+        .next_delay(ConfigurationLockBusy::File, start)
+        .unwrap();
+    let error = insufficient
+        .next_delay(
+            ConfigurationLockBusy::File,
+            start + Duration::from_millis(490),
+        )
+        .unwrap_err();
+    assert_eq!(error.configuration_lock_attempts, Some(2));
+    assert_eq!(error.configuration_lock_wait_ms, Some(10));
 }
 
 #[test]
