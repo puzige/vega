@@ -191,15 +191,21 @@ fn persistent_lock_exhausts_shared_budget_and_preserves_diagnostics() {
             ..DiagnosticMetrics::default()
         },
     };
+    let mut started = event.clone();
+    started.state = DiagnosticState::Started;
+    started.failure_code = None;
+    started.duration_ms = None;
+    started.metrics = DiagnosticMetrics::default();
+    insert(store.conn(), &started).unwrap();
     insert(store.conn(), &event).unwrap();
-    assert_eq!(
-        read_by_run(store.conn(), "synthetic-thread", "synthetic-run").unwrap()[0].event,
-        event
-    );
-    assert_eq!(
-        read_by_thread(store.conn(), "synthetic-thread").unwrap()[0].event,
-        event
-    );
+    let run = read_by_run(store.conn(), "synthetic-thread", "synthetic-run").unwrap();
+    assert_eq!(run.len(), 2);
+    assert_eq!(run[0].event, started);
+    assert_eq!(run[1].event, event);
+    let thread = read_by_thread(store.conn(), "synthetic-thread").unwrap();
+    assert_eq!(thread.len(), 2);
+    assert_eq!(thread[0].event, started);
+    assert_eq!(thread[1].event, event);
     let preparation = crate::submission_diagnostics::runtime_failure(
         crate::submission_diagnostics::PreparationStage::Launch,
         &runtime_error,
