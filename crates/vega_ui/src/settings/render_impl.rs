@@ -596,7 +596,7 @@ impl SettingsView {
                     .child(settings_field(
                         t("settings.defaults.model"),
                         None,
-                        self.render_model_selector(cx),
+                        self.render_default_model(window, cx),
                         colors,
                     )),
             )
@@ -753,129 +753,6 @@ impl SettingsView {
             )
             .into_any_element()
     }
-
-    /// In-place expandable picker for the default model; options are the
-    /// union of all providers' models, with an empty-state hint when none.
-    pub(crate) fn render_model_selector(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        let models = all_models(&self.config.providers);
-        let enabled = !self.provider_management.saving && !self.default_permission.io_pending();
-        let current = self.config.defaults.model.clone();
-        let trigger_label = if current.is_empty() {
-            t("settings.model.not_selected").to_string()
-        } else {
-            current.clone()
-        };
-        div()
-            .min_w_0()
-            .max_w_full()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(
-                settings_action_chrome(colors)
-                    .id("settings-model-picker")
-                    .interaction_surface(
-                        colors.bg_elevated,
-                        colors.bg_hover,
-                        colors.bg_active,
-                        enabled,
-                    )
-                    .focusable()
-                    .tab_stop(enabled)
-                    .focus_visible(move |style| style.border_color(colors.accent))
-                    .when(enabled, |button| {
-                        button
-                            .on_key_down(cx.listener(
-                                |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                        this.model_open = !this.model_open;
-                                        cx.stop_propagation();
-                                        cx.notify();
-                                    }
-                                },
-                            ))
-                            .cursor_pointer()
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                                    this.model_open = !this.model_open;
-                                    cx.notify();
-                                }),
-                            )
-                    })
-                    .when(!enabled, |button| button.text_color(colors.text_tertiary))
-                    .child(div().min_w_0().child(trigger_label))
-                    .child(crate::icons::icon(
-                        if self.model_open {
-                            crate::icons::Icon::ChevronDown
-                        } else {
-                            crate::icons::Icon::ChevronRight
-                        },
-                        colors.text_tertiary,
-                    )),
-            )
-            .when(self.model_open && enabled, |column| {
-                column
-                    .children(models.is_empty().then(|| {
-                        div()
-                            .text_color(colors.text_tertiary)
-                            .text_size(px(Typography::BODY))
-                            .child(t("settings.model.none_available"))
-                    }))
-                    .children(models.iter().map(|model| {
-                        let model = model.clone();
-                        let selected = model == current;
-                        let row_model = model.clone();
-                        let keyboard_model = model.clone();
-                        div()
-                            .id(format!("settings-model-option-{row_model}"))
-                            .interaction_surface(
-                                if selected {
-                                    colors.bg_active
-                                } else {
-                                    colors.bg_elevated
-                                },
-                                if selected {
-                                    colors.bg_active
-                                } else {
-                                    colors.bg_hover
-                                },
-                                colors.bg_active,
-                                true,
-                            )
-                            .focusable()
-                            .tab_stop(true)
-                            .border_1()
-                            .border_color(gpui_kit::transparent_black())
-                            .focus_visible(move |style| style.border_color(colors.accent))
-                            .on_key_down(cx.listener(
-                                move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                        this.select_model(&keyboard_model, cx);
-                                        cx.stop_propagation();
-                                    }
-                                },
-                            ))
-                            .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
-                            .py_1()
-                            .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-                            .text_size(px(Typography::BODY))
-                            .cursor_pointer()
-                            .when(selected, move |row| {
-                                row.bg(colors.bg_active).text_color(colors.brand_primary)
-                            })
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                                    this.select_model(&row_model, cx);
-                                }),
-                            )
-                            .child(model)
-                    }))
-            })
-            .into_any_element()
-    }
 }
 
 impl Render for SettingsView {
@@ -899,6 +776,7 @@ impl Render for SettingsView {
             cx.set_global(NativePreparationSettingsRequested(false));
         }
         self.resume_settings_navigation(window, cx);
+        self.sync_default_model(cx);
         self.prepare_default_permission_focus(window, cx);
         self.prepare_permission_reset_focus(window, cx);
         self.prepare_provider_presentation(window);

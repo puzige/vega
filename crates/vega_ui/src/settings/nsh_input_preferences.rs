@@ -35,7 +35,7 @@ struct Decision {
 }
 
 enum Request {
-    Decide(Decision),
+    Decide(Box<Decision>),
     Layout(f32),
 }
 
@@ -169,11 +169,11 @@ impl Actions {
         spawn(async move {
             let (reply, response) = oneshot::channel();
             if commands
-                .send(Request::Decide(Decision {
+                .send(Request::Decide(Box::new(Decision {
                     observed,
                     action,
                     reply,
-                }))
+                })))
                 .await
                 .is_err()
                 || !matches!(response.await, Ok(true))

@@ -90,6 +90,17 @@ GPUI Fast 宿主/窗口/可信控制器（原有业务与后台任务所有者�
 - 主题 Light/Dark/System、English/中文与侧栏可见性全部由 NSH 绘制，用选中态与开关轨道表达当前值；保留系统字体、现有 token、Tab/Enter/Space 与可见焦点。帮助与错误不重复添加说明。
 - 主题与语言继续走原 `save_preferences` 的字段级冲突校验和保存失败恢复，saving/default-permission IO 时禁用；侧栏继续发出原 ToggleSidebar 动作。命令核对页面、展示标识及观察到的当前值，陈旧选择不得覆盖更新后的状态。新投影实时反映原控制器主题/语言/侧栏状态，错误仍由原设置页展示。
 
+### 默认权限模式区域验收
+
+- 模式触发器、readonly/confirm/auto/full_access 四项、准备/保存/重载反馈及错误恢复由 NSH 绘制；full_access 保留明确的警示图标和颜色，选中态含非颜色标记。原授权清理 NSH Surface 保留独立状态机，不改变服务或增加执行权限。
+- 选择仍经 `select_mode` → 原 prepare/save 服务，重载与取消仍使用原控制器。命令核对展示身份、设置可见性、权限版本/模式、操作阶段/编号、错误和可用性；准备/重载可取消，保存中不可取消，错误后按原规则重载。旧动作不能跨阶段、跨操作或跨页面生效，未知结果不自动重放。
+- 原 Picker/Cancel/Reload 焦点意图转为 NSH 挂载后目标，Escape 保留取消准备/重载或收起选项的优先级，保存中不得绕过关闭保护；授权清理 Completed 恢复 NSH 模式触发器。页面切换不抢回焦点，原生键盘与权限行为待用户手测，不以静态检查代替。
+
+### 默认模型选择器验收
+
+- 默认模型触发器、展开选项与无可用模型空态由 NSH 绘制；仍使用启用提供方的模型并集，保持原始首次出现顺序并去重，不替换当前未在目录中的已保存值。模型名原样展示，选中态和焦点不只依赖颜色，Tab/Enter/Space 可操作，Escape 收起并回到触发器。
+- 保存继续调用原 `select_model` / `save_preferences`；provider saving/default-permission IO 时禁用。动作重查设置页、展示身份、当前默认值和候选目录，陈旧值或已移除候选不得触发保存；保存失败保持原权威值、原错误和重试入口。权限模式选择器及其确认/清理流程不由该模型区域代替。
+
 ### 设置输入偏好验收
 
 - 输入预测开关及运行中消息 Queue/Steer 的选择由 NSH 绘制；保留现有标签、预测说明和 Queue/Steer 按需帮助，不新增常驻实现说明。选中/开关状态及键盘焦点清晰，Enter/Space 可操作。
@@ -125,6 +136,8 @@ GPUI Fast 宿主/窗口/可信控制器（原有业务与后台任务所有者�
 - [第三轮 Actions](https://github.com/puzige/vega/actions/runs/42340330432) 对 `16e26859a5c644ef2ba511e18bfceb3ba854ee12` 的 Clippy、Nextest、汇总 required check 全部 SUCCESS；Python 三组 5/15/40 项通过；Rust 实际 2 发现/2 执行/2 通过/0 跳过。两项开发回归覆盖恢复副本跨重建保全和旧宿主后到失败隔离，源码固定在该提交的 `crates/vega_ui/src/text_input/nsh.rs`；并非完整输入/IME/附件行为覆盖。当前更新面板新增两项开发回归验证安装/稍后仅 Ready 可用、忙碌阶段拒绝检查/偏好更改且发行页面仍可用，待 Actions。合并前按政策留存实际源码/完整 SHA/结果并清理测试及独占支持，重新验证最终 head。
 - `b6258b961c61eb4bdd510786c1a257df57d02d0c` 的 [第五轮 Actions](https://github.com/puzige/vega/actions/runs/42342301838) 中 Nextest SUCCESS，Rust 实际 6 发现/6 执行/6 通过/0 跳过，包含恢复、更新阶段和授权清理权限的全部开发回归；Clippy 因无调用者的旧 `markdown_item` 包装和 `collapsible_match` 失败，required check FAILURE（新 push 导致 run 总状态 cancelled，不作通过）。已删除零调用旧包装并保留原链接安全条件合并分支；后续 head 待云端验证。外观增量提交 `98a9f3d9e4024421678dfc08aeb060705e360c09` 的 [第六轮 Actions](https://github.com/puzige/vega/actions/runs/42342952030) 中 Clippy/Nextest 均因 `nsh_appearance.rs:218` 的 E0308 编译失败：固定版 `AccessibilityState.selected` 为 `bool`，不是 `Option<bool>`；Rust 测试尚未发现或执行，计数未取得。当前已按实际依赖修正外观及输入偏好的同类赋值，未改行为或断言，待新 head 验证。
 - 输入预测开关及 Queue/Steer 已接入生产 NSH，旧 GPUI 控件删除，原字段级保存路径保留；命令重查页面、展示身份、观察值及保存可用性。Queue/Steer 帮助使用受控 Tooltip 同时响应悬停与键盘聚焦，并保留读屏 hint。新增两项开发回归覆盖陈旧预测翻转、运行中消息选择及保存忙碌边界，待 Actions；本地格式/差异静态检查通过，不代表原生交互验收。
+- `d273f6809ded394ccc80fd3be19a66254e467298` 的 [第七轮 Actions](https://github.com/puzige/vega/actions/runs/42343962692) 中 Clippy 因外观/输入偏好 `Request::Decide` 内联完整快照触发 `large_enum_variant` 失败；Nextest SUCCESS，Rust 实际 10 发现/10 执行/10 通过/0 跳过，Python 三组 5/15/40 通过；汇总 required check FAILURE。日志中 shell 分支的 `0 discovered` 是未执行分支脚本文本，实际以 Nextest 清单和 Summary 为准。修正为 `Box<Decision>`，保留原快照与回执，不禁用 lint。默认模型新增实现沿用该布局。
+- 默认模型生产入口已改为 NSH，旧 GPUI 选择器移除；保留启用提供方目录并集、首次顺序去重、原值/空态、原字段级保存和设置错误。选择动作拒绝变化后的默认值/目录、已删除候选及不可见页面；Escape 收起，焦点恢复等待保存结束并受页面可见性围栏限制。新增两项开发回归，待 Actions；本地格式/差异检查通过，未做原生运行验证。
 - 本地化静态检查仍报告 3 条过期分类、14 条未分类字符串；尚未完整归因，不记为通过，不扩大本卡修复范围。
 
 独立审查仍为合并前提；在暂禁子 Agent 期间不启动审查子任务，也不以实现者自审代替。实现可继续，最终若仍无获准的独立审查渠道，则如实保留待审状态、不合并。

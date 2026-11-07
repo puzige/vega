@@ -215,6 +215,7 @@ pub use model_capabilities::ModelCapabilityFocusTarget;
 mod model_configuration;
 mod motion;
 mod nsh_appearance;
+mod nsh_default_model;
 mod nsh_input_preferences;
 use model_configuration::SettingsDestination;
 mod permission_reset;
