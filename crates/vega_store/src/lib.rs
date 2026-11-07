@@ -25,6 +25,7 @@ pub mod permission_contracts;
 pub mod permission_reset;
 pub mod permissions;
 pub mod persistence_failures;
+pub mod preparation;
 pub mod projects;
 pub mod reasoning;
 pub mod recovery;
@@ -114,6 +115,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0057_skill_target_binding.sql"),
     include_str!("../migrations/0058_skill_pin_target.sql"),
     include_str!("../migrations/0059_configuration_failure_reasons.sql"),
+    include_str!("../migrations/0060_preparation_revisions.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
