@@ -37,6 +37,7 @@ pub enum CredentialReadReason {
     ConfigurationDirectory,
     ConfigurationLockOpen,
     ConfigurationLockValidation,
+    ConfigurationLockAcquire,
     ConfigurationRead,
     ConfigurationParse,
     State,
@@ -58,6 +59,7 @@ impl CredentialReadReason {
             Self::ConfigurationDirectory => "configuration_directory",
             Self::ConfigurationLockOpen => "configuration_lock_open",
             Self::ConfigurationLockValidation => "configuration_lock_validation",
+            Self::ConfigurationLockAcquire => "configuration_lock_acquire",
             Self::ConfigurationRead => "configuration_read",
             Self::ConfigurationParse => "configuration_parse",
             Self::State => "state",
@@ -84,6 +86,9 @@ pub struct CredentialReadError {
     pub stage: CredentialReadStage,
     pub reason: CredentialReadReason,
     pub storage: Option<RuntimeFailureDetail>,
+    pub configuration_lock: Option<&'static str>,
+    pub configuration_lock_attempts: Option<u64>,
+    pub configuration_lock_wait_ms: Option<u64>,
 }
 
 impl CredentialReadError {
@@ -92,6 +97,9 @@ impl CredentialReadError {
             stage,
             reason,
             storage: None,
+            configuration_lock: None,
+            configuration_lock_attempts: None,
+            configuration_lock_wait_ms: None,
         }
     }
 
@@ -106,6 +114,9 @@ impl CredentialReadError {
             stage,
             reason: CredentialReadReason::Database,
             storage: Some(detail),
+            configuration_lock: None,
+            configuration_lock_attempts: None,
+            configuration_lock_wait_ms: None,
         }
     }
 
@@ -117,6 +128,9 @@ impl CredentialReadError {
             stage,
             reason: CredentialReadReason::Configuration,
             storage: Some(detail),
+            configuration_lock: None,
+            configuration_lock_attempts: None,
+            configuration_lock_wait_ms: None,
         }
     }
 }

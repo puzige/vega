@@ -1078,6 +1078,9 @@ pub enum RuntimeDiagnosticFailure {
 pub struct RuntimeDiagnosticMetrics {
     pub credential_stage: Option<&'static str>,
     pub credential_reason: Option<&'static str>,
+    pub configuration_lock: Option<&'static str>,
+    pub configuration_lock_attempts: Option<u64>,
+    pub configuration_lock_wait_ms: Option<u64>,
     pub runtime_stage: Option<&'static str>,
     pub protocol_reason: Option<&'static str>,
     pub runtime_reason: Option<&'static str>,

@@ -313,6 +313,7 @@
 "domain.failure.context_budget" = "The context budget is invalid. Check the model context settings, then retry."
 "domain.failure.context_arithmetic" = "Context accounting exceeded safe arithmetic bounds. Start a new conversation; if this persists, report the issue."
 "domain.failure.credential_storage" = "Local credentials are missing or cannot be read safely. Check credential settings before continuing. Completed actions are preserved."
+"domain.failure.configuration_busy" = "Configuration is temporarily busy. Try continuing shortly. Completed actions are preserved."
 "domain.failure.credential_internal" = "The safety check could not access local storage or configuration. Try continuing shortly. Completed actions are preserved."
 "domain.failure.configuration_restart" = "Configuration access stopped after an internal failure. Restart Vega before continuing. Completed actions are preserved."
 "domain.failure.configuration_repair" = "Configuration could not be validated safely. Repair the configuration or its lock file permissions before retrying. Completed actions are preserved."
