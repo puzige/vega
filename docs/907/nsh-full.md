@@ -239,6 +239,13 @@ GPUI Fast 宿主/窗口/可信控制器（原有业务与后台任务所有者�
 - 最新停写源码：workspace fmt/diff及严格all-target Clippy通过（8.21s）；Nextest94执行/94通过/0跳过（0.411s），含Shell十九项、共享键盘三项。工具链仍rustc1.98.0/Cargo1.101.0-fork0.102.0-9/Nextest0.9.151。新阶段最终提交CI尚待；未运行App、打包、安装、合并或发布。
 - 完整目标仍有生产Composer保真/切换、主窗口/会话/侧栏/工作区等迁移、跨页面键盘/原生无障碍和三桌面验收，开发Rust测试归档清理与最终无测试head门禁均未完成。国际化审计旧缺口不因本轮测试通过而视为关闭。
 
+### 窗口导航与 Artifact：权限恢复后的验证
+
+- 用户明确要求重试正常编译／测试，标准执行已恢复；无需调整权限或机器配置。后台会话参数被 `workspace_sandbox_required` 拒绝后，去掉不适用参数使用同一标准 Cargo 路线，未绕过权限。原 `permission decision failed closed` 阻碍已解除。
+- 两处生产窗口导航改为 NSH，保留原 ToggleSidebar/OpenPalette/Back/Forward 与草稿导航保护；Artifact 卡片、分组、菜单和状态改为 NSH。独立审查发现的窗口级菜单视口、AX激活绕过、触发几何缺口均已修复并增量闭环。详见 [窗口导航](nsh-window-navigation.md)、[Artifact](nsh-artifact.md)。实际编译又发现 API/事件/Tooltip/SVG 和测试宏导入错误，按责任层修正，未削弱断言；修正独立审查无新增具体发现。
+- 停写源码基于 `bc7d8ae0d91649a8ed0fb48679eb43d6efd6ce4d`，通过 `cargo check -p vega -p vega_ui --locked --offline -j 2`、workspace fmt/diff、全目标严格Clippy；Nextest **111发现/111执行/111通过/0跳过**，run `74a739c9-cb15-4040-82a0-646607972288`，包括新增导航4项、Artifact13项。Python三组5/15/40通过。工具rustc1.98.0/Cargo1.101.0-fork0.102.0-9/Nextest0.9.151，CI0.9.146不变。开发测试尚未清理，精确新提交CI待取得；原生手测、三桌面、全量迁移均未完成。
+- 下一批不重叠并行迁移：命令面板和分支选择器。它们不包含在前述111测试版本的验证结论内，主Agent统一编译与集成；生产Composer保真缺口仍保留，不升级/fork依赖、不降级交互凑完成。无应用执行、安装、合并或发布。
+
 ### 重启后继续执行
 
 - 当前基线 `4b604cb8c2a8c33ae8e5ed3a1ec9f941bbd19b01` 已在任务分支中；恢复时 HEAD 为 `bf0be9adb642077b2cebdb6f081b3ecf01209dba`。该版 Actions 42351769914 的 Rust 回归为 27 执行/27 通过/0 跳过，Clippy 因 helpers/skills 两条失效导入失败；两条导入现已清理，不把旧 run 记作通过。

@@ -719,7 +719,7 @@ impl Render for VegaWindow {
                 .min_h_0()
                 .flex()
                 .flex_col()
-                .child(self.render_main_header(sidebar_visible, cx))
+                .child(self.render_main_header(sidebar_visible, window, cx))
                 .children(self.render_permission_reset_notice(cx))
                 .children(navigation_error.map(|error| {
                     div()
@@ -926,7 +926,12 @@ impl VegaWindow {
         }
     }
 
-    fn render_main_header(&mut self, sidebar_visible: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn render_main_header(
+        &mut self,
+        sidebar_visible: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = theme(cx).colors;
         let title = self.main_header_title(cx);
         div()
@@ -942,7 +947,7 @@ impl VegaWindow {
             .when(!sidebar_visible, |header| {
                 header
                     .pl(px(Layout::TITLEBAR_LEADING_INSET))
-                    .child(vega_ui::navigation::controls(cx, false))
+                    .child(vega_ui::navigation::controls(window, cx, false))
             })
             .when(sidebar_visible, |header| header.pl_3())
             .child(
