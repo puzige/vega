@@ -47,6 +47,12 @@ No local execution/build/test. Existing Actions only. No private data in fixture
 
 ## Status
 
-Fifteen synthetic development regressions are present; no current-version cloud results yet. Local formatting/diff checks only; no local Vega execution, compilation, Clippy or tests. Original incident remains unproven as real contention. No user runtime data changed.
+Development validation passed at `6007cc4de285825332ccc8cf794eccc62a9766c2`: [Actions 42329042987](https://github.com/puzige/vega/actions/runs/42329042987), Clippy and required check success; Rust 16 discovered / 16 executed / 16 passed / 0 skipped; Python suites 5 / 15 / 40 passed. Earlier recovery runs 42326277870 and 42327490471 each executed 15 tests with 13 passes / 2 failures; original evidence and responsibility-layer corrections are recorded in PR comments. No failed regression was dropped to obtain success.
+
+Recoverable remote tag: `evidence/887-config-lock-tests-6007cc4d`, verified via GitHub contents API. Source SHA-256:
+- `crates/vega_conversation/src/mcp_settings/configuration_retry_tests.rs`: `eb110a293bc42369ab2ea475846e8046dd32d60ee7c4b0f9b2d49dd0084fb312`
+- `crates/vega_store/src/yaml_config/configuration_lock_tests.rs`: `5ccee49cf96899b99e6ec02a1782a03e7dfed9477b248b3cb408bb2677af80a2`
+
+Synced baseline `922cabfe5c1dbf2b19bff9ee75e8afc3c7ac9d75` (#910/#911 unrelated UI); range-diff confirms all four task commits identical. Rebased development head before cleanup: `f411c4304b9fcf1fabbbf20b009fbbb58a0cd6e6`. Cleanup removes exactly the two test files and two cfg(test) module declarations; containing production files are otherwise byte-identical. No test-exclusive dependencies or manifest changes exist. Final no-Rust-test head required CI remains pending; local formatting/diff checks pass, static Rust test entry scan finds none. No local Vega execution, compilation, Clippy or tests. Original incident remains unproven as real contention. No user runtime data changed.
 
 User explicitly prohibits subagents for this run. No subagent is used, and no independent review result is claimed. The implementation writer's own inspection cannot satisfy independent review. Keep the draft unmerged until a non-writer review of the exact frozen version is available. Development test evidence must be retained before cleanup; final no-Rust-test head still requires full CI. Issue stays In progress, not In review or Done.

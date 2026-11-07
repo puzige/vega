@@ -105,9 +105,6 @@ pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> io::Result<T> {
     serde_json::from_value(value).map_err(|_| invalid())
 }
 
-#[cfg(test)]
-mod configuration_lock_tests;
-
 fn value(bytes: &[u8]) -> io::Result<Value> {
     if bytes.len() as u64 > MAX_BYTES {
         return Err(invalid());

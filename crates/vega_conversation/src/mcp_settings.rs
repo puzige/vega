@@ -2472,6 +2472,3 @@ async fn connect_row(
         }
     }
 }
-
-#[cfg(test)]
-mod configuration_retry_tests;
