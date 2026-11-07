@@ -261,13 +261,33 @@ pub fn recovery_projection(
     child: &str,
     message: &str,
 ) -> rusqlite::Result<Option<String>> {
+    let source = crate::context_compaction::load_source_in_transaction(conn, child)?;
+    recovery_projection_with_source(conn, child, message, &source)
+}
+
+pub fn recovery_projection_with_source(
+    conn: &rusqlite::Transaction<'_>,
+    child: &str,
+    message: &str,
+    source: &crate::context_compaction::ContextSource,
+) -> rusqlite::Result<Option<String>> {
+    if source.thread_id != child {
+        return Err(invalid());
+    }
     let row: Option<(Option<String>,String)> = conn.query_row("SELECT resume_checkpoint_id,reconciliations FROM delegated_execution_recovery WHERE child_thread_id=?1 AND child_message_id=?2",params![child,message],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
     let Some((Some(id), resolutions)) = row else {
         return Ok(None);
     };
+    let owner: String = conn.query_row(
+        "SELECT child_thread_id FROM delegated_stage_checkpoints WHERE id=?1",
+        [&id],
+        |row| row.get(0),
+    )?;
+    if owner != child {
+        return Err(invalid());
+    }
     let checkpoint = checkpoint(conn, &id)?;
     let old = checkpoint["message_id"].as_str().ok_or_else(invalid)?;
-    let source = crate::context_compaction::load_source_in_transaction(conn, child)?;
     let segments = conn.prepare("SELECT message_id FROM delegated_execution_messages WHERE child_thread_id=?1 AND execution_message_id=?2")?.query_map(params![child,old],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
     let partial = source
         .messages
@@ -283,7 +303,7 @@ pub fn recovery_projection(
     )))
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct PayloadRows {
     checkpoints: Vec<(String, String)>,
     recoveries: Vec<(String, String)>,
@@ -306,6 +326,7 @@ impl PayloadRows {
     }
 }
 
+#[derive(Clone)]
 pub struct PreparedPayloadRedaction {
     child: String,
     source: PayloadRows,
@@ -313,13 +334,26 @@ pub struct PreparedPayloadRedaction {
 }
 
 impl PreparedPayloadRedaction {
+    pub(crate) fn belongs_to(&self, child: &str) -> bool {
+        self.child == child
+    }
+
     pub fn install(&self, transaction: &mut crate::Transaction<'_>) -> rusqlite::Result<bool> {
         if PayloadRows::load(transaction, &self.child)? != self.source {
             return Err(invalid());
         }
         let savepoint = transaction.savepoint()?;
+        let changed = self.install_preparation_updates(&savepoint)?;
+        savepoint.commit()?;
+        Ok(changed)
+    }
+
+    pub(crate) fn install_preparation_updates(
+        &self,
+        transaction: &Connection,
+    ) -> rusqlite::Result<bool> {
         for (id, projected) in &self.updates.checkpoints {
-            if savepoint.execute(
+            if transaction.execute(
                 "UPDATE delegated_stage_checkpoints SET payload=?1 WHERE id=?2 AND child_thread_id=?3",
                 params![projected, id, self.child],
             )? != 1 {
@@ -327,14 +361,13 @@ impl PreparedPayloadRedaction {
             }
         }
         for (id, projected) in &self.updates.recoveries {
-            if savepoint.execute(
+            if transaction.execute(
                 "UPDATE delegated_execution_recovery SET reconciliations=?1 WHERE child_message_id=?2 AND child_thread_id=?3",
                 params![projected, id, self.child],
             )? != 1 {
                 return Err(invalid());
             }
         }
-        savepoint.commit()?;
         Ok(!self.updates.checkpoints.is_empty() || !self.updates.recoveries.is_empty())
     }
 }
