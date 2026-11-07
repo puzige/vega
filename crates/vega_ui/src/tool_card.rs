@@ -1,17 +1,15 @@
-//! Audited tool-call activities over strict `vega_conversation` projections.
-
-use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
+mod nsh_tool;
 use std::time::Duration;
 
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, App, Entity, MouseButton, MouseUpEvent, ScrollHandle, Task, div, px};
+use gpui_kit::{AnyElement, App, Entity, ScrollHandle, Task, div, px};
 use vega_conversation::types::{
     Approval, BashStartClock, CodexAcpActivityIdentity, CodexArgumentPreview, CodexDisplayMetadata,
     InvalidToolKind, ReadOnlyToolKind, SkillCardOutcome, SubagentOpenRequested, SubagentSnapshot,
     SubagentState, ToolCall, ToolCallStatus, ToolCardInputProjection, ToolCardResultProjection,
     ToolResult, tool_card_description, tool_card_input_projection, tool_card_result_projection,
 };
-use vega_theme::{Layout, ThemeColors, Typography, theme};
+use vega_theme::{Layout, ThemeColors, theme};
 
 use crate::conversation_stream::{MONOFONT, ROW_HEIGHT};
 use crate::icons::Icon;
@@ -135,8 +133,6 @@ impl ToolDetail {
     }
 }
 
-/// UI-only audited tool call. It never retains a provider call id, raw
-/// write/edit input, fingerprint, checkpoint reference, or checkpoint path.
 pub struct ToolCard {
     input: Option<ToolCardInputProjection>,
     description: Option<String>,
@@ -147,7 +143,7 @@ pub struct ToolCard {
     summary_language: &'static str,
     output_rows: Vec<String>,
     expanded: bool,
-    detail_scroll: ScrollHandle,
+    presentation: Option<nsh_tool::Presentation>,
     running_started_at: Option<BashStartClock>,
     running_elapsed_seconds: Option<u64>,
     elapsed_refresh_task: Option<Task<()>>,
@@ -158,7 +154,6 @@ pub struct ToolCard {
 impl gpui_kit::EventEmitter<SubagentOpenRequested> for ToolCard {}
 
 impl ToolCard {
-    /// Creates a pending card from a durable safe proposal.
     pub fn proposed(call: &ToolCall) -> Self {
         let input = tool_card_input_projection(call);
         let corrupt = matches!(input, ToolCardInputProjection::Corrupt);
@@ -176,7 +171,7 @@ impl ToolCard {
             summary_language: vega_i18n::language(),
             output_rows: Vec::new(),
             expanded: false,
-            detail_scroll: ScrollHandle::new(),
+            presentation: None,
             running_started_at: None,
             running_elapsed_seconds: None,
             elapsed_refresh_task: None,
@@ -187,7 +182,6 @@ impl ToolCard {
         card
     }
 
-    /// Creates a validated proposal-free invalid-input card.
     pub fn invalid_terminal(result: &ToolResult) -> Self {
         let projection = tool_card_result_projection(None, result);
         let status = match projection {
@@ -204,7 +198,7 @@ impl ToolCard {
             summary_language: vega_i18n::language(),
             output_rows: Vec::new(),
             expanded: false,
-            detail_scroll: ScrollHandle::new(),
+            presentation: None,
             running_started_at: None,
             running_elapsed_seconds: None,
             elapsed_refresh_task: None,
@@ -215,7 +209,6 @@ impl ToolCard {
         card
     }
 
-    /// Fixed content-free corrupt card for an unknown or illegal transition.
     pub fn corrupt() -> Self {
         let mut card = Self {
             input: None,
@@ -227,7 +220,7 @@ impl ToolCard {
             summary_language: vega_i18n::language(),
             output_rows: Vec::new(),
             expanded: false,
-            detail_scroll: ScrollHandle::new(),
+            presentation: None,
             running_started_at: None,
             running_elapsed_seconds: None,
             elapsed_refresh_task: None,
@@ -238,7 +231,6 @@ impl ToolCard {
         card
     }
 
-    /// Builds the durable hydrated card. Expansion is deliberately reset.
     pub fn hydrated(
         input: Option<ToolCardInputProjection>,
         status: ToolCallStatus,
@@ -259,7 +251,7 @@ impl ToolCard {
             summary: String::new(),
             summary_language: vega_i18n::language(),
             expanded: false,
-            detail_scroll: ScrollHandle::new(),
+            presentation: None,
             running_started_at: None,
             running_elapsed_seconds: None,
             elapsed_refresh_task: None,
@@ -270,7 +262,6 @@ impl ToolCard {
         card
     }
 
-    /// Whether a duplicate proposal is semantically identical.
     pub fn matches_call(&self, call: &ToolCall) -> bool {
         self.status == ToolCallStatus::PendingApproval
             && self.result.is_none()
@@ -293,7 +284,6 @@ impl ToolCard {
             })
     }
 
-    /// Converts an illegal transition to the fixed corrupt state.
     pub fn fail_corrupt(&mut self, cx: &mut gpui_kit::Context<Self>) {
         self.set_corrupt();
         cx.notify();
@@ -311,7 +301,6 @@ impl ToolCard {
         self.refresh_summary();
     }
 
-    /// Marks the post-commit approval visible without starting elapsed time.
     pub fn apply_approved(&mut self, approval: Approval) -> bool {
         if let Some(existing) = self.approval {
             if existing == approval
@@ -336,9 +325,6 @@ impl ToolCard {
         true
     }
 
-    /// Applies the content-free runtime execution boundary. Only Bash owns a
-    /// live elapsed clock; other tools still advance to the truthful Running
-    /// lifecycle state without adding time copy.
     pub fn apply_running(
         &mut self,
         started_at: Option<BashStartClock>,
@@ -423,7 +409,6 @@ impl ToolCard {
         true
     }
 
-    /// Applies one terminal result with strict projection validation.
     pub fn apply_finished(&mut self, result: &ToolResult) -> bool {
         let projection = tool_card_result_projection(self.input.as_ref(), result);
         if let Some(existing) = &self.result {
@@ -459,7 +444,6 @@ impl ToolCard {
         true
     }
 
-    /// Exact mutating permission target associated with the safe proposal.
     pub fn permission_identity(&self) -> Option<(&str, &str)> {
         if self.status != ToolCallStatus::PendingApproval
             || self.approval.is_some()
@@ -510,7 +494,6 @@ impl ToolCard {
         }
     }
 
-    /// Number of logical compact/detail rows carried by this call.
     pub fn row_count(&self) -> usize {
         1 + if self.expanded {
             self.detail_row_count()
@@ -760,182 +743,6 @@ impl ToolCard {
         }
     }
 
-    pub(crate) fn render(
-        card: Entity<Self>,
-        indented: bool,
-        window: &mut gpui_kit::Window,
-        cx: &mut App,
-    ) -> AnyElement {
-        Self::render_with_title(card, indented, None, window, cx)
-    }
-
-    pub(crate) fn render_with_title(
-        card: Entity<Self>,
-        indented: bool,
-        headline: Option<(String, Option<Icon>, AnyElement)>,
-        window: &mut gpui_kit::Window,
-        cx: &mut App,
-    ) -> AnyElement {
-        if card.read(cx).is_subagent_invocation() {
-            return Self::render_invocation(
-                card,
-                indented,
-                headline.map(|(title, _, element)| (title, element)),
-                window,
-                cx,
-            );
-        }
-        let colors = theme(cx).colors;
-        let (title, leading_icon, leading_icon_color, expanded, expandable, detail) = {
-            let card_ref = card.read(cx);
-            let expanded = card_ref.expanded;
-            let title = card_ref.compact_title();
-            (
-                title,
-                card_ref.leading_icon(),
-                card_ref.leading_icon_color(&colors),
-                expanded,
-                card_ref.has_detail(),
-                if expanded { card_ref.detail() } else { None },
-            )
-        };
-        let notice = {
-            let card = card.read(cx);
-            headline.as_ref().and_then(|(title, _, _)| {
-                card.headline_notice(title)
-                    .map(|notice| (notice, card.activity_state().terminal_color(&colors)))
-            })
-        };
-        let (title, leading_icon, title_element) = headline.unwrap_or_else(|| {
-            (
-                title.clone(),
-                Some(leading_icon),
-                div().child(title).into_any_element(),
-            )
-        });
-        let accessible_title = notice.as_ref().map_or_else(
-            || title.clone(),
-            |(notice, _)| format!("{title} · {notice}"),
-        );
-        let detail_scroll = card.read(cx).detail_scroll.clone();
-        let detail_id = format!("tool-detail-{}", card.entity_id());
-        let toggle_card = card.clone();
-        let keyboard_card = card.clone();
-        let disclosure_group: gpui_kit::SharedString =
-            format!("tool-disclosure-{}", card.entity_id()).into();
-        let focus =
-            crate::disclosure::focus(disclosure_group.clone(), window, cx).tab_stop(expandable);
-        let row = div()
-            .id(("tool-activity-toggle", card.entity_id()))
-            .group(disclosure_group.clone());
-
-        let row = row
-            .track_focus(&focus)
-            .aria_expanded(expanded)
-            .aria_label(vega_i18n::t_args(
-                "ui.tool_disclosure",
-                &[
-                    ("title", &accessible_title),
-                    (
-                        "action",
-                        vega_i18n::t(if expanded { "ui.collapse" } else { "ui.expand" }),
-                    ),
-                ],
-            ))
-            .tab_stop(expandable)
-            .focus_visible(move |row| row.bg(colors.bg_hover))
-            .h(px(Layout::CONVERSATION_TOOL_HEIGHT))
-            .text_size(px(Typography::CONVERSATION))
-            .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
-            .w_full()
-            .min_w_0()
-            .flex()
-            .items_center()
-            .gap(px(Layout::CONVERSATION_INLINE_GAP))
-            .on_key_down(move |event, _, cx| {
-                if expandable && matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    keyboard_card.update(cx, |card, cx| {
-                        card.expanded = !card.expanded;
-                        cx.notify();
-                    });
-                    cx.stop_propagation();
-                }
-            })
-            .when(expandable, |row| {
-                row.cursor_pointer().on_mouse_up(
-                    MouseButton::Left,
-                    move |_: &MouseUpEvent, _, cx| {
-                        toggle_card.update(cx, |card, cx| {
-                            card.expanded = !card.expanded;
-                            cx.notify();
-                        });
-                    },
-                )
-            })
-            .child(
-                div()
-                    .size(px(Layout::ICON_SIZE))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .when_some(leading_icon, |slot, icon| {
-                        slot.child(crate::icons::sized_icon(
-                            icon,
-                            leading_icon_color,
-                            Layout::ICON_SIZE,
-                        ))
-                    }),
-            )
-            .child(
-                div()
-                    .min_w_0()
-                    .flex_shrink(1.)
-                    .truncate()
-                    .text_size(px(Typography::CONVERSATION))
-                    .text_color(colors.conversation_tool)
-                    .child(title_element),
-            )
-            .child(crate::disclosure::inline_chevron(
-                disclosure_group,
-                &focus,
-                expanded,
-                expandable,
-                colors,
-                window,
-            ));
-        div()
-            .w_full()
-            .min_w_0()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .when(indented, |card| card.pl_4())
-            .child(row)
-            .when_some(notice, |card, (notice, color)| {
-                card.child(
-                    div()
-                        .h(px(Layout::CONVERSATION_TOOL_HEIGHT))
-                        .pl(px(Layout::ICON_SIZE + Layout::CONVERSATION_INLINE_GAP))
-                        .text_size(px(Typography::CONVERSATION))
-                        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
-                        .text_color(color)
-                        .truncate()
-                        .child(notice),
-                )
-            })
-            .when_some(expanded.then_some(detail).flatten(), move |card, detail| {
-                card.child(render_detail(
-                    detail,
-                    detail_id,
-                    &detail_scroll,
-                    &colors,
-                    cx,
-                ))
-            })
-            .into_any_element()
-    }
-
     pub(crate) fn is_subagent_invocation(&self) -> bool {
         matches!(&self.input, Some(ToolCardInputProjection::Subagent { tool, .. }) if matches!(tool.as_str(), "spawn_agent" | "followup_agent"))
     }
@@ -958,192 +765,6 @@ impl ToolCard {
             self.execution = Some(snapshot);
             cx.notify();
         }
-    }
-
-    fn render_invocation(
-        card: Entity<Self>,
-        indented: bool,
-        headline: Option<(String, AnyElement)>,
-        window: &mut gpui_kit::Window,
-        cx: &mut App,
-    ) -> AnyElement {
-        let colors = theme(cx).colors;
-        let current = card.read(cx);
-        let agent = current.subagent().cloned();
-        let title = current
-            .description_title()
-            .unwrap_or_else(|| match (&current.input, &agent) {
-                (Some(ToolCardInputProjection::Subagent { tool, .. }), Some(agent)) => {
-                    vega_i18n::t_args(
-                        "ui.action_name",
-                        &[
-                            (
-                                "action",
-                                if tool == "spawn_agent" {
-                                    vega_i18n::t("ui.delegate")
-                                } else {
-                                    vega_i18n::t("ui.continue")
-                                },
-                            ),
-                            ("name", &agent.name),
-                        ],
-                    )
-                }
-                (Some(ToolCardInputProjection::Subagent { title, .. }), _) => title.clone(),
-                _ => vega_i18n::t("ui.delegate_task").into(),
-            });
-        let (title, title_element) =
-            headline.unwrap_or_else(|| (title.clone(), div().child(title).into_any_element()));
-        let status = agent.as_ref().map_or_else(
-            || match current.status {
-                ToolCallStatus::PendingApproval => vega_i18n::t("ui.pending"),
-                ToolCallStatus::Approved => vega_i18n::t("ui.ready"),
-                ToolCallStatus::Running => vega_i18n::t("ui.running"),
-                ToolCallStatus::Cancelled => vega_i18n::t("ui.interrupted"),
-                ToolCallStatus::Rejected => vega_i18n::t("ui.rejected"),
-                ToolCallStatus::Failed => vega_i18n::t("ui.failed"),
-                ToolCallStatus::Success => vega_i18n::t("ui.failed"),
-            },
-            |agent| match agent.state {
-                SubagentState::Running => vega_i18n::t("ui.running"),
-                SubagentState::Cancelling => vega_i18n::t("ui.stopping"),
-                SubagentState::Completed => vega_i18n::t("ui.completed"),
-                SubagentState::Failed => vega_i18n::t("ui.failed"),
-                SubagentState::Interrupted => vega_i18n::t("ui.interrupted"),
-            },
-        );
-        let failed = agent.as_ref().map_or_else(
-            || {
-                matches!(
-                    current.status,
-                    ToolCallStatus::Failed | ToolCallStatus::Success
-                )
-            },
-            |agent| agent.state == SubagentState::Failed,
-        );
-        let error_detail = agent.is_none() && !current.output_rows.is_empty();
-        let expanded = error_detail && current.expanded;
-        let detail = expanded.then(|| ToolDetail {
-            title: None,
-            command: None,
-            output: current.output_rows.clone(),
-            output_copy: None,
-            footer: None,
-        });
-        let detail_scroll = current.detail_scroll.clone();
-        let detail_id = format!("tool-detail-{}", card.entity_id());
-        let enabled = agent.is_some() || error_detail;
-        let group: gpui_kit::SharedString =
-            format!("subagent-invocation-{}", card.entity_id()).into();
-        let focus = crate::disclosure::focus(group, window, cx).tab_stop(enabled);
-        let keyboard = card.clone();
-        let keyboard_agent = agent.clone();
-        let row = div()
-            .id(("subagent-invocation", card.entity_id()))
-            .role(gpui_kit::Role::Button)
-            .aria_label(vega_i18n::t_args(
-                "ui.title_status",
-                &[("title", &title), ("status", status)],
-            ))
-            .when(error_detail, |row| row.aria_expanded(expanded))
-            .track_focus(&focus)
-            .tab_stop(enabled)
-            .focus_visible(move |row| row.bg(colors.bg_hover))
-            .h(px(Layout::CONVERSATION_TOOL_HEIGHT))
-            .w_full()
-            .min_w_0()
-            .flex()
-            .items_center()
-            .gap(px(Layout::CONVERSATION_INLINE_GAP))
-            .text_size(px(Typography::CONVERSATION))
-            .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
-            .when(indented, |row| row.pl_4())
-            .when(enabled, |row| row.cursor_pointer())
-            .on_click(move |_, _, cx| {
-                if let Some(agent) = &agent {
-                    card.update(cx, |_, cx| {
-                        cx.emit(SubagentOpenRequested {
-                            source_thread_id: agent.parent_thread_id.clone(),
-                            thread_id: agent.agent_id.clone(),
-                        })
-                    });
-                    cx.stop_propagation();
-                } else if error_detail {
-                    card.update(cx, |card, cx| {
-                        card.expanded = !card.expanded;
-                        cx.notify();
-                    });
-                    cx.stop_propagation();
-                }
-            })
-            .on_key_down(move |event, _, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    if let Some(agent) = &keyboard_agent {
-                        keyboard.update(cx, |_, cx| {
-                            cx.emit(SubagentOpenRequested {
-                                source_thread_id: agent.parent_thread_id.clone(),
-                                thread_id: agent.agent_id.clone(),
-                            })
-                        });
-                        cx.stop_propagation();
-                    } else if error_detail {
-                        keyboard.update(cx, |card, cx| {
-                            card.expanded = !card.expanded;
-                            cx.notify();
-                        });
-                        cx.stop_propagation();
-                    }
-                }
-            })
-            .child(crate::icons::sized_icon(
-                Icon::Bot,
-                colors.text_secondary,
-                Layout::ICON_SIZE,
-            ))
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(colors.conversation_tool)
-                    .child(title_element),
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .text_color(if failed {
-                        colors.danger
-                    } else {
-                        colors.text_secondary
-                    })
-                    .child(status),
-            )
-            .when(error_detail, |row| {
-                row.child(crate::icons::sized_icon(
-                    if expanded {
-                        Icon::ChevronDown
-                    } else {
-                        Icon::ChevronRight
-                    },
-                    colors.text_secondary,
-                    Layout::ICON_SIZE,
-                ))
-            });
-        div()
-            .w_full()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .child(row)
-            .when_some(detail, |view, detail| {
-                view.child(render_detail(
-                    detail,
-                    detail_id,
-                    &detail_scroll,
-                    &colors,
-                    cx,
-                ))
-            })
-            .into_any_element()
     }
 
     fn description_title(&self) -> Option<String> {
@@ -1959,186 +1580,10 @@ pub(crate) fn contain_disclosure_scroll(
     }
 }
 
-fn render_detail(
-    detail: ToolDetail,
-    id: String,
-    scroll: &ScrollHandle,
-    colors: &ThemeColors,
-    cx: &App,
-) -> AnyElement {
-    let mut rows = Vec::with_capacity(detail.logical_rows());
-    if let Some(title) = detail.title {
-        rows.push(detail_row(
-            "tool-detail-type",
-            title,
-            colors.text_secondary,
-            false,
-        ));
-    }
-    if let Some(command) = detail.command {
-        let text = detail_row(
-            "tool-detail-command",
-            format!("$ {command}"),
-            colors.text_primary,
-            true,
-        );
-        let source = (!command.is_empty()).then_some(command);
-        rows.push(detail_copy_region(
-            text,
-            source,
-            format!("{id}-copy-command"),
-            vega_i18n::t("ui.copy_command"),
-            colors,
-        ));
-    }
-    let output = div()
-        .w_full()
-        .min_w_0()
-        .flex()
-        .flex_col()
-        .children(detail.output.into_iter().enumerate().map(|(index, line)| {
-            detail_row(
-                gpui_kit::SharedString::from(format!("tool-output-{index}")),
-                line,
-                colors.text_primary,
-                true,
-            )
-        }))
-        .into_any_element();
-    rows.push(detail_copy_region(
-        output,
-        detail.output_copy,
-        format!("{id}-copy-output"),
-        vega_i18n::t("ui.copy_output"),
-        colors,
-    ));
-    if let Some((footer, state)) = detail.footer {
-        let color = if state == ToolActivityState::Success {
-            colors.text_secondary
-        } else {
-            state.terminal_color(colors)
-        };
-        rows.push(
-            div()
-                .w_full()
-                .min_h(px(ROW_HEIGHT))
-                .flex_shrink_0()
-                .flex()
-                .justify_end()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(Layout::CONVERSATION_INLINE_GAP))
-                        .text_size(px(Typography::CONVERSATION))
-                        .text_color(color)
-                        .when_some(state.terminal_icon(), |row, icon| {
-                            row.child(
-                                div().size(px(Layout::ICON_SIZE)).flex_shrink_0().child(
-                                    crate::icons::sized_icon(icon, color, Layout::ICON_SIZE),
-                                ),
-                            )
-                        })
-                        .child(footer),
-                )
-                .into_any_element(),
-        );
-    }
-    div()
-        .relative()
-        .w_full()
-        .min_w_0()
-        .mt(px(Layout::PROCESS_ITEM_GAP))
-        .rounded(px(Layout::TOOL_DETAIL_RADIUS))
-        .bg(colors.code_bg)
-        .border_1()
-        .border_color(colors.border_subtle)
-        .map(|mut surface| {
-            let fade = ScrollFade::compact()
-                .rounded_parent(surface.style())
-                .vertical_gutter(px(Layout::DISCLOSURE_SCROLLBAR_GUTTER));
-            surface.child(
-                div()
-                    .id(gpui_kit::SharedString::from(id))
-                    .max_h(px(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT))
-                    .track_scroll(scroll)
-                    .on_scroll_wheel(contain_disclosure_scroll(scroll))
-                    .w_full()
-                    .min_w_0()
-                    .p(px(Layout::TOOL_DETAIL_PADDING))
-                    .pr(px(
-                        Layout::TOOL_DETAIL_PADDING + Layout::DISCLOSURE_SCROLLBAR_GUTTER
-                    ))
-                    .overflow_x_hidden()
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_col()
-                    .children(rows)
-                    .tracked_scroll_edge_fade(scroll.clone(), colors.code_bg, fade),
-            )
-        })
-        .child(disclosure_scrollbar(scroll, cx))
-        .into_any_element()
-}
-
-fn detail_copy_region(
-    content: AnyElement,
-    source: Option<String>,
-    id: String,
-    label: &'static str,
-    colors: &ThemeColors,
-) -> AnyElement {
-    let Some(source) = source else {
-        return content;
-    };
-    let group: gpui_kit::SharedString = format!("{id}-region").into();
-    div()
-        .id(group.clone())
-        .group(group.clone())
-        .w_full()
-        .min_w_0()
-        .flex_shrink_0()
-        .flex()
-        .items_start()
-        .gap(px(Layout::COPY_ACTION_GAP))
-        .child(div().min_w_0().flex_1().child(content))
-        .child(crate::conversation_stream::tool_text_copy_button(
-            id.into(),
-            group,
-            source,
-            label,
-            *colors,
-        ))
-        .into_any_element()
-}
-
 pub(crate) fn disclosure_scrollbar(scroll: &ScrollHandle, cx: &App) -> gpui_kit::base::Scrollbar {
     gpui_kit::base::Scrollbar::vertical(scroll).mode(if cx.should_auto_hide_scrollbars() {
         gpui_kit::base::ScrollbarMode::Hover
     } else {
         gpui_kit::base::ScrollbarMode::Always
     })
-}
-
-fn detail_row(
-    id: impl Into<gpui_kit::ElementId>,
-    text: String,
-    color: gpui_kit::Rgba,
-    code: bool,
-) -> AnyElement {
-    div()
-        .w_full()
-        .min_w_0()
-        .min_h(px(ROW_HEIGHT))
-        .flex_shrink_0()
-        .line_height(gpui_kit::relative(Typography::CODE_LINE_HEIGHT))
-        .when(code, |row| row.font_family(MONOFONT))
-        .text_size(px(if code {
-            Typography::CODE
-        } else {
-            Typography::BODY
-        }))
-        .text_color(color)
-        .child(gpui_kit::base::SelectableText::new(id, text))
-        .into_any_element()
 }

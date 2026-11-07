@@ -305,6 +305,7 @@ mod composer_predictions;
 pub(crate) use composer_predictions::ComposerPredictionsEnabled;
 pub use composer_predictions::set_composer_predictions_enabled;
 mod composer_actions;
+mod nsh_composer;
 use composer_actions::ComposerActions;
 mod code_drag;
 mod code_viewport;

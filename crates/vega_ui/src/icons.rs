@@ -214,36 +214,57 @@ pub fn icon(kind: Icon, color: Rgba) -> AnyElement {
     sized_icon(kind, color, Layout::ICON_SIZE)
 }
 
+fn inline_data(kind: Icon) -> Option<&'static [u8]> {
+    Some(match kind {
+        Icon::Copy => COPY_SVG,
+        Icon::Code => CODE_SVG,
+        Icon::Chart => CHART_SVG,
+        Icon::Plug => PLUG_SVG,
+        Icon::Wifi => WIFI_SVG,
+        Icon::Blocks => BLOCKS_SVG,
+        Icon::Pin => PIN_SVG,
+        Icon::FolderPlus => FOLDER_PLUS_SVG,
+        Icon::Summary => SUMMARY_SVG,
+        Icon::DockMove => DOCK_MOVE_SVG,
+        Icon::Hand => HAND_SVG,
+        Icon::Shield => SHIELD_SVG,
+        Icon::GitBranch => GIT_BRANCH_SVG,
+        Icon::TextSelect => TEXT_SELECT_SVG,
+        Icon::Help => HELP_SVG,
+        Icon::Pencil => PENCIL_SVG,
+        Icon::Wrench => WRENCH_SVG,
+        Icon::Monitor => MONITOR_SVG,
+        Icon::Camera => CAMERA_SVG,
+        Icon::MousePointer => MOUSE_POINTER_SVG,
+        Icon::Keyboard => KEYBOARD_SVG,
+        Icon::Queue => QUEUE_SVG,
+        Icon::Steer => STEER_SVG,
+        Icon::Trash => TRASH_SVG,
+        Icon::Goal => GOAL_SVG,
+        Icon::Pause => PAUSE_SVG,
+        Icon::Play => PLAY_SVG,
+        _ => return None,
+    })
+}
+
+pub(crate) fn nsh_source(kind: Icon) -> Option<String> {
+    if let Some(data) = inline_data(kind) {
+        return std::str::from_utf8(data).ok().map(str::to_owned);
+    }
+    use gpui_kit::{AssetSource, component::IconNamed};
+    let path = icon_name(kind).path();
+    gpui_kit::assets::Assets::new("")
+        .load(&path)
+        .ok()
+        .flatten()
+        .and_then(|data| String::from_utf8(data.into_owned()).ok())
+}
+
 pub(crate) fn sized_icon(kind: Icon, color: Rgba, size: f32) -> AnyElement {
-    let glyph = match kind {
-        Icon::Copy => inline_icon(COPY_SVG, color, size),
-        Icon::Code => inline_icon(CODE_SVG, color, size),
-        Icon::Chart => inline_icon(CHART_SVG, color, size),
-        Icon::Plug => inline_icon(PLUG_SVG, color, size),
-        Icon::Wifi => inline_icon(WIFI_SVG, color, size),
-        Icon::Blocks => inline_icon(BLOCKS_SVG, color, size),
-        Icon::Pin => inline_icon(PIN_SVG, color, size),
-        Icon::FolderPlus => inline_icon(FOLDER_PLUS_SVG, color, size),
-        Icon::Summary => inline_icon(SUMMARY_SVG, color, size),
-        Icon::DockMove => inline_icon(DOCK_MOVE_SVG, color, size),
-        Icon::Hand => inline_icon(HAND_SVG, color, size),
-        Icon::Shield => inline_icon(SHIELD_SVG, color, size),
-        Icon::GitBranch => inline_icon(GIT_BRANCH_SVG, color, size),
-        Icon::TextSelect => inline_icon(TEXT_SELECT_SVG, color, size),
-        Icon::Help => inline_icon(HELP_SVG, color, size),
-        Icon::Pencil => inline_icon(PENCIL_SVG, color, size),
-        Icon::Wrench => inline_icon(WRENCH_SVG, color, size),
-        Icon::Monitor => inline_icon(MONITOR_SVG, color, size),
-        Icon::Camera => inline_icon(CAMERA_SVG, color, size),
-        Icon::MousePointer => inline_icon(MOUSE_POINTER_SVG, color, size),
-        Icon::Keyboard => inline_icon(KEYBOARD_SVG, color, size),
-        Icon::Queue => inline_icon(QUEUE_SVG, color, size),
-        Icon::Steer => inline_icon(STEER_SVG, color, size),
-        Icon::Trash => inline_icon(TRASH_SVG, color, size),
-        Icon::Goal => inline_icon(GOAL_SVG, color, size),
-        Icon::Pause => inline_icon(PAUSE_SVG, color, size),
-        Icon::Play => inline_icon(PLAY_SVG, color, size),
-        _ => kit_icon(kind, color, size),
+    let glyph = if let Some(data) = inline_data(kind) {
+        inline_icon(data, color, size)
+    } else {
+        kit_icon(kind, color, size)
     };
     gpui_kit::div()
         .size(px(size))

@@ -269,38 +269,8 @@ fn render_entry_internal(
                 .into_any_element()
         }
         StreamEntry::ArtifactGroup { group } => ArtifactGroup::render(group.clone(), window, cx),
-        StreamEntry::Permission { card } => {
-            let card = card.clone();
-            let row_count = card.read(cx).row_count();
-            let rows = (0..row_count)
-                .map(|row| PermissionCard::render_row(card.clone(), row, window, cx))
-                .collect::<Vec<_>>();
-            div()
-                .w_full()
-                .flex_shrink_0()
-                .pt_1()
-                .pb_2()
-                .child(
-                    div()
-                        .w_full()
-                        .rounded(px(Layout::STATUS_RADIUS))
-                        .border_1()
-                        .border_color(colors.border_subtle)
-                        .p(px(Layout::STATUS_PADDING))
-                        .flex()
-                        .flex_col()
-                        .gap(px(Layout::STATUS_GAP))
-                        .children(rows),
-                )
-                .into_any_element()
-        }
-        StreamEntry::Plan { card } => {
-            let card = card.clone();
-            let row_count = card.read(cx).row_count();
-            card_rows_item(row_count, move |row| {
-                PlanCard::render_row(card.clone(), row, window, cx)
-            })
-        }
+        StreamEntry::Permission { card } => PermissionCard::render_card(card.clone(), window, cx),
+        StreamEntry::Plan { card } => PlanCard::render_card(card.clone(), false, window, cx),
         StreamEntry::Summary { card }
             if suppress_run_notices
                 && card.read(cx).summary().outcome

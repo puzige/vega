@@ -2107,25 +2107,15 @@ impl RunActivityGroup {
                                             headline.title.clone()
                                         }
                                     };
-                                    title_view.update(cx, |view, cx| {
-                                        view.set(title.clone(), shimmering.then_some(epoch), cx)
-                                    });
                                     ToolCard::render_with_title(
                                         card,
                                         false,
-                                        Some((
-                                            title,
-                                            headline.icon,
-                                            title_view.clone().into_any_element(),
-                                        )),
+                                        Some((title, headline.icon, shimmering.then_some(epoch))),
                                         window,
                                         cx,
                                     )
                                 }
                                 RunActivityChild::Tool(card) if !aggregate => {
-                                    title_view.update(cx, |view, cx| {
-                                        view.set(card.read(cx).compact_title(), None, cx)
-                                    });
                                     ToolCard::render(card, false, window, cx)
                                 }
                                 child => Self::render_child(child, window, cx),

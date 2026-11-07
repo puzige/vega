@@ -127,7 +127,7 @@ impl ConversationStream {
 
     fn render_conversation_foreground(
         &self,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
@@ -272,7 +272,7 @@ impl ConversationStream {
             .into_any_element()
     }
 
-    fn render_composer(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_composer(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if self.automation_permission.busy() {
             return self.render_automation_permission(window, cx);
         }
@@ -1657,6 +1657,7 @@ impl ConversationStream {
 impl Render for ConversationStream {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.reading_preview {
+            self.prepare_nsh_composer(window, cx);
             self.reconcile_pending_focus(window, cx);
             self.prepare_thread_permission_focus(window, cx);
             self.prepare_automation_permission_focus(window, cx);
