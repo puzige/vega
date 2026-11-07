@@ -249,7 +249,6 @@ impl ConversationStream {
             .filter_map(|entry| match entry {
                 HistoryEntry::AssistantResponseMetadata { message_id, .. }
                 | HistoryEntry::Tool { message_id, .. } => Some(message_id.clone()),
-                HistoryEntry::SkillActivation { activation, .. } => Some(activation.run_id.clone()),
                 _ => None,
             })
             .collect();
@@ -575,80 +574,7 @@ impl ConversationStream {
                         ));
                     }
                 }
-                HistoryEntry::SkillActivation { seq, activation } => {
-                    use vega_conversation::history::{
-                        SkillHistoryStatus, SkillHistoryVerification,
-                    };
-                    if activation.status == SkillHistoryStatus::Loaded
-                        && activation.verification == SkillHistoryVerification::Verified
-                    {
-                        let message_id = &activation.run_id;
-                        let group =
-                            self.run_activity_groups
-                                .get(message_id)
-                                .cloned()
-                                .or_else(|| {
-                                    terminal_runs.get(message_id).map(|(status, duration)| {
-                                        self.ensure_hydrated_run_activity_group(
-                                            message_id,
-                                            run_activity_status(*status),
-                                            *duration,
-                                            &mut hydrated,
-                                            &mut hydrated_identities,
-                                            cx,
-                                        )
-                                    })
-                                });
-                        if let Some(group) = group {
-                            if !group.read(cx).reads_skill(&activation.name, cx) {
-                                let card =
-                                    cx.new(|_| ToolCard::activated_skill(activation.name.clone()));
-                                self.observe_tool_card(&card, cx);
-                                let segment = hydrated
-                                    .last()
-                                    .and_then(|entry| match entry {
-                                        StreamEntry::RunActivitySegment {
-                                            group: previous,
-                                            segment,
-                                        } if previous == &group => Some(*segment),
-                                        _ => None,
-                                    })
-                                    .unwrap_or_else(|| {
-                                        let segment =
-                                            group.update(cx, RunActivityGroup::start_segment);
-                                        hydrated.push(StreamEntry::RunActivitySegment {
-                                            group: group.clone(),
-                                            segment,
-                                        });
-                                        hydrated_identities.push(self.durable_entry_identity(
-                                            message_id,
-                                            &format!("run-activity-segment-{segment}"),
-                                            Some(seq),
-                                        ));
-                                        segment
-                                    });
-                                group.update(cx, |group, cx| {
-                                    group.append_hydrated_tool(segment, card, cx)
-                                });
-                            }
-                            continue;
-                        }
-                    }
-                    let stable_id = format!(
-                        "{}:{}:{}:{:?}:{:?}",
-                        activation.run_id,
-                        activation.name,
-                        activation.content_sha256,
-                        activation.origin,
-                        activation.source_scope
-                    );
-                    hydrated.push(StreamEntry::SkillActivation { activation });
-                    hydrated_identities.push(self.durable_entry_identity(
-                        &stable_id,
-                        "skill-activation",
-                        Some(seq),
-                    ));
-                }
+                HistoryEntry::SkillActivation { .. } => {}
             }
         }
         for (message_id, mut responses) in restored_responses {
@@ -1803,24 +1729,8 @@ impl ConversationStream {
                     }
                 }
             }
-            ConversationEvent::SkillActivated { message_id, skill } => {
-                if self
-                    .active_agent_message
-                    .as_ref()
-                    .is_some_and(|(active, _)| active == &message_id)
-                    && !self
-                        .active_run_activity
-                        .as_ref()
-                        .is_some_and(|(_, group)| group.read(cx).reads_skill(&skill.name, cx))
-                {
-                    let card = cx.new(|_| ToolCard::activated_skill(skill.name));
-                    self.observe_tool_card(&card, cx);
-                    self.append_live_tool(card.clone(), false, cx);
-                    self.record_tool_event(&card, cx);
-                    cx.notify();
-                }
-            }
-            ConversationEvent::UsageUpdated { .. }
+            ConversationEvent::SkillActivated { .. }
+            | ConversationEvent::UsageUpdated { .. }
             | ConversationEvent::ContextCompactionUsageUpdated { .. }
             | ConversationEvent::ContextCompactionStatus { .. }
             | ConversationEvent::ContextAccounting { .. } => {}

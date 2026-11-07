@@ -328,51 +328,6 @@ fn render_entry_internal(
                 ))
                 .into_any_element(),
         },
-        StreamEntry::SkillActivation { activation } => {
-            use vega_conversation::history::{
-                SkillHistoryOrigin, SkillHistorySource, SkillHistoryStatus,
-                SkillHistoryVerification,
-            };
-            let source = match activation.source_scope {
-                SkillHistorySource::Project => vega_i18n::t("ui.project"),
-                SkillHistorySource::VegaGlobal => vega_i18n::t("ui.vega_global"),
-                SkillHistorySource::Imported => vega_i18n::t("ui.imported"),
-            };
-            let origin = match activation.origin {
-                SkillHistoryOrigin::Model => vega_i18n::t("ui.loaded_by_model"),
-                SkillHistoryOrigin::ExplicitUser => vega_i18n::t("ui.preloaded_by_user"),
-            };
-            let status = match activation.status {
-                SkillHistoryStatus::Loaded => vega_i18n::t("ui.loaded"),
-                SkillHistoryStatus::Revoked => vega_i18n::t("ui.revoked"),
-            };
-            let verification = match activation.verification {
-                SkillHistoryVerification::Verified => vega_i18n::t("ui.snapshot_verified"),
-                SkillHistoryVerification::Unavailable => {
-                    vega_i18n::t("ui.snapshot_unavailable_or_unverified")
-                }
-            };
-            let digest = activation
-                .content_sha256
-                .get(..12)
-                .unwrap_or_else(|| vega_i18n::t("ui.invalid"));
-            div()
-                .py_1()
-                .text_size(px(Typography::METADATA))
-                .text_color(colors.text_secondary)
-                .child(vega_i18n::t_args(
-                    "ui.skill_history_name_source_origin_status_verification_sha",
-                    &[
-                        ("name", &activation.name),
-                        ("source", source),
-                        ("origin", origin),
-                        ("status", status),
-                        ("verification", verification),
-                        ("digest", digest),
-                    ],
-                ))
-                .into_any_element()
-        }
     }
 }
 

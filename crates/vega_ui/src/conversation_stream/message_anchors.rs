@@ -189,7 +189,6 @@ impl ConversationStream {
                 | StreamEntry::RunActivity { .. }
                 | StreamEntry::RunActivitySegment { .. }
                 | StreamEntry::Permission { .. }
-                | StreamEntry::SkillActivation { .. }
                 | StreamEntry::Screenshot { .. } => continue,
             };
             if !seen.insert(message_id) {
@@ -834,7 +833,6 @@ pub(super) fn estimate_entry_height(
             }
             estimate_compaction_activity_height(&label, text_width)
         }
-        StreamEntry::SkillActivation { .. } => 30.0,
         _ => (entry.row_count(cx).max(1) as f32 * ROW_HEIGHT + 12.0).max(30.0),
     }
 }
