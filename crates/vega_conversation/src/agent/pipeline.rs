@@ -1,12 +1,29 @@
 use super::*;
 use sha2::{Digest, Sha256};
+use std::time::Instant;
 
 mod authority;
+#[cfg(test)]
+mod concurrency_tests;
 mod context_projection;
 
 pub(crate) use context_projection::{
     interpret_projection, interpret_projection_with_live, match_live_ranges,
 };
+
+fn preparation_should_cancel(
+    ordinary: Option<&super::ordinary::OrdinaryPreparation>,
+    config: &PersistenceActorConfig,
+) -> bool {
+    config
+        .steering_cancel
+        .as_ref()
+        .is_some_and(CancellationToken::is_cancelled)
+        || ordinary.is_some_and(|ordinary| {
+            let snapshot = ordinary.run.submission.snapshot();
+            snapshot.unavailable || snapshot.retired
+        })
+}
 
 fn skill_preparation_error(error: vega_runtime::skills::SkillError) -> ConversationError {
     ConversationError::Runtime(Arc::new(VegaError::Tool {
@@ -1080,6 +1097,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         transaction.commit().map_err(runtime_store_error)?;
         authority
     };
+    drop(permission_coordination);
     if let Some(slot) = &config.steering_authority
         && slot.get_or_init(|| credential_authority.fence.clone()) != &credential_authority.fence
     {
@@ -1153,103 +1171,166 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     {
         return Err(ConversationError::InvalidTaskIdentity);
     }
-    let revision_projection = config.delegated;
-    let delegated_snapshot = revision_projection
-        .then(|| {
-            vega_store::preparation::DelegatedSnapshot::capture(
-                store.conn(),
-                &thread_id,
-                &assistant_message_id,
-            )
-        })
-        .transpose()
+    store
+        .conn()
+        .busy_timeout(Duration::ZERO)
         .map_err(runtime_store_error)?;
-    let preparation_connection = delegated_snapshot
-        .as_ref()
-        .map_or(store.conn(), |snapshot| snapshot.connection());
-    let prepared_redaction = vega_store::context_compaction::prepare_legacy_thread_redaction(
-        preparation_connection,
-        &thread_id,
-        |text, offsets| {
-            vega_runtime::redact_sensitive_credential_text_with_offsets_and_policy(
-                text,
-                &credential_values,
-                offsets,
-                redaction_authority
-                    .as_ref()
-                    .map(|authority| authority.policy()),
-            )
-        },
-    )
-    .map_err(runtime_store_error)?;
-    let prepared_payloads = vega_store::delegated_stages::prepare_payload_redaction(
-        preparation_connection,
-        &thread_id,
-        |text| {
-            vega_runtime::redact_sensitive_credential_text_with_policy(
-                text,
-                &credential_values,
-                redaction_authority
-                    .as_ref()
-                    .map(|authority| authority.policy()),
-            )
-        },
-    )
-    .map_err(runtime_store_error)?;
     let checkpoint_root = database_path
         .parent()
         .ok_or_else(|| ConversationError::CorruptRow("database path has no parent".to_string()))?
         .join("checkpoints");
-    if checkpoint_root.as_os_str().is_empty() {
-        return Err(ConversationError::CorruptRow(
-            "database path has no parent".to_string(),
-        ));
-    }
     if credential_authority.run_mode == ThreadMode::Execute {
         fs::create_dir_all(&checkpoint_root).map_err(runtime_store_error)?;
     }
-    let mut delegated_preparation = if let Some(snapshot) = delegated_snapshot {
-        let assistant = messages::MessageRow {
-            id: assistant_message_id.clone(),
-            thread_id: thread_id.clone(),
-            seq: messages::next_seq(snapshot.connection(), &thread_id)
-                .map_err(runtime_store_error)?,
-            role: "assistant".into(),
-            kind: "text".into(),
-            content: String::new(),
-            status: "streaming".into(),
-            created_at: now_ms(),
-            plan_status: None,
-            plan_review_note: None,
-            plan_reviewed_at: None,
+    let mut admission_remaining = Duration::from_secs(10);
+    let mut projection_attempt = 0;
+    let (
+        prepared_redaction,
+        prepared_payloads,
+        mut delegated_preparation,
+        foreign_call_ids,
+        permission_coordination,
+        mut transaction,
+    ) = loop {
+        let revision_projection = config.delegated;
+        let delegated_snapshot = revision_projection
+            .then(|| {
+                vega_store::preparation::DelegatedSnapshot::capture(
+                    store.conn(),
+                    &thread_id,
+                    &assistant_message_id,
+                )
+            })
+            .transpose()
+            .map_err(runtime_store_error)?;
+        let preparation_connection = delegated_snapshot
+            .as_ref()
+            .map_or(store.conn(), |snapshot| snapshot.connection());
+        let prepared_redaction = vega_store::context_compaction::prepare_legacy_thread_redaction(
+            preparation_connection,
+            &thread_id,
+            |text, offsets| {
+                vega_runtime::redact_sensitive_credential_text_with_offsets_and_policy(
+                    text,
+                    &credential_values,
+                    offsets,
+                    redaction_authority
+                        .as_ref()
+                        .map(|authority| authority.policy()),
+                )
+            },
+        )
+        .map_err(runtime_store_error)?;
+        let prepared_payloads = vega_store::delegated_stages::prepare_payload_redaction(
+            preparation_connection,
+            &thread_id,
+            |text| {
+                vega_runtime::redact_sensitive_credential_text_with_policy(
+                    text,
+                    &credential_values,
+                    redaction_authority
+                        .as_ref()
+                        .map(|authority| authority.policy()),
+                )
+            },
+        )
+        .map_err(runtime_store_error)?;
+        let delegated_preparation = if let Some(snapshot) = delegated_snapshot {
+            let assistant = messages::MessageRow {
+                id: assistant_message_id.clone(),
+                thread_id: thread_id.clone(),
+                seq: messages::next_seq(snapshot.connection(), &thread_id)
+                    .map_err(runtime_store_error)?,
+                role: "assistant".into(),
+                kind: "text".into(),
+                content: String::new(),
+                status: "streaming".into(),
+                created_at: now_ms(),
+                plan_status: None,
+                plan_review_note: None,
+                plan_reviewed_at: None,
+            };
+            let install = snapshot
+                .prepare_install(
+                    prepared_redaction.clone(),
+                    prepared_payloads.clone(),
+                    assistant,
+                )
+                .map_err(runtime_store_error)?;
+            let projection = install
+                .connection()
+                .unchecked_transaction()
+                .map_err(runtime_store_error)?;
+            let source =
+                vega_store::context_compaction::load_source_in_transaction(&projection, &thread_id)
+                    .map_err(runtime_store_error)?;
+            let history = delegated_history(&projection, &source, &assistant_message_id)?;
+            let completed = super::terminal_history::recover_terminal_tools_with_origins(
+                &projection,
+                &credential_authority.thread.project_id,
+                &thread_id,
+                Some(install.origins()),
+            )?;
+            projection.commit().map_err(runtime_store_error)?;
+            Some((install, Some((source, history, completed))))
+        } else {
+            None
         };
-        let install = snapshot
-            .prepare_install(
-                prepared_redaction.clone(),
-                prepared_payloads.clone(),
-                assistant,
+        #[cfg(test)]
+        concurrency_tests::foreign_ids_boundary();
+        let foreign_call_ids =
+            tool_calls::foreign_call_ids(store.conn(), &thread_id).map_err(runtime_store_error)?;
+        let permission_coordination = crate::permission_contracts::coordinate()?;
+        let admission_started = Instant::now();
+        let transaction = store
+            .immediate_transaction_with_budget(
+                || preparation_should_cancel(ordinary, &config),
+                admission_remaining,
             )
             .map_err(runtime_store_error)?;
-        let projection = install
-            .connection()
-            .unchecked_transaction()
-            .map_err(runtime_store_error)?;
-        let source =
-            vega_store::context_compaction::load_source_in_transaction(&projection, &thread_id)
-                .map_err(runtime_store_error)?;
-        let history = delegated_history(&projection, &source, &assistant_message_id)?;
-        let completed = super::terminal_history::recover_terminal_tools_with_origins(
-            &projection,
-            &credential_authority.thread.project_id,
-            &thread_id,
-            Some(install.origins()),
-        )?;
-        projection.commit().map_err(runtime_store_error)?;
-        Some((install, Some((source, history, completed))))
-    } else {
-        None
+        admission_remaining = admission_remaining.saturating_sub(admission_started.elapsed());
+        if let Some((install, _)) = &delegated_preparation {
+            let current = authority::verified(
+                &store,
+                &config,
+                &thread_id,
+                &assistant_message_id,
+                &user_message_id,
+                uses_existing_user,
+                &user_content,
+                &images,
+                ordinary,
+            )?;
+            if !credential_authority.matches(&current) {
+                return Err(ConversationError::InvalidTaskIdentity);
+            }
+            if !install
+                .validate(&transaction)
+                .map_err(runtime_store_error)?
+            {
+                transaction.rollback().map_err(runtime_store_error)?;
+                drop(permission_coordination);
+                if projection_attempt >= 2
+                    || admission_remaining.is_zero()
+                    || preparation_should_cancel(ordinary, &config)
+                {
+                    return Err(ConversationError::CorruptRow(
+                        "preparation context changed repeatedly; retry the task".into(),
+                    ));
+                }
+                projection_attempt += 1;
+                continue;
+            }
+        }
+        break (
+            prepared_redaction,
+            prepared_payloads,
+            delegated_preparation,
+            foreign_call_ids,
+            permission_coordination,
+            transaction,
+        );
     };
-    let mut transaction = store.immediate_transaction().map_err(runtime_store_error)?;
     let preparation = (|| -> Result<_, ConversationError> {
         let current = authority::verified(
             &store,
@@ -1837,8 +1918,6 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         };
         let next_tool_seq =
             tool_calls::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
-        let foreign_call_ids =
-            tool_calls::foreign_call_ids(&transaction, &thread_id).map_err(runtime_store_error)?;
         let receipt = ordinary
             .map(|ordinary| ordinary.bind_persisted(&transaction))
             .transpose()?;

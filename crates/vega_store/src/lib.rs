@@ -267,6 +267,22 @@ impl Store {
         WriteTransaction::new(&self.conn, WriteCategory::RuntimeEvent)
     }
 
+    pub fn immediate_transaction_with_budget<F>(
+        &self,
+        should_cancel: F,
+        budget: std::time::Duration,
+    ) -> Result<WriteTransaction<'_>, rusqlite::Error>
+    where
+        F: Fn() -> bool,
+    {
+        WriteTransaction::new_with_budget(
+            &self.conn,
+            WriteCategory::RuntimeEvent,
+            should_cancel,
+            budget,
+        )
+    }
+
     /// Returns the file backing this store, or `None` for SQLite in-memory or
     /// temporary databases that cannot be reopened by a dedicated DB actor.
     pub fn database_path(&self) -> Option<&Path> {
