@@ -18,6 +18,10 @@ use crate::icons::Icon;
 
 const CORRUPT_LABEL: &str = "ui.tool_result_corrupted";
 
+#[cfg(test)]
+#[path = "tool_card_shell_tests.rs"]
+mod shell_control_tests;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ToolActivityCategory {
     Shell,
@@ -1557,8 +1561,14 @@ impl ToolCard {
         if !matches || !matches!(&self.input, Some(ToolCardInputProjection::Bash { .. })) {
             return false;
         }
-        self.shell_control_pending = false;
-        self.shell_control_failed = false;
+        if !command.cleanup_unresolved
+            && matches!(
+                command.state.as_str(),
+                "succeeded" | "failed" | "cancelled" | "timed_out"
+            )
+        {
+            self.shell_control_failed = false;
+        }
         self.shell_command = Some(command.clone());
         self.refresh_summary();
         true

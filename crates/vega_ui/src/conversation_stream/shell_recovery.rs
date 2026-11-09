@@ -70,7 +70,8 @@ impl EventEmitter<ShellRecoveryRequested> for ConversationStream {}
 
 pub(crate) struct ShellRecoveryUi {
     sequence: u64,
-    pub(super) pending: Option<&'static str>,
+    pending: Option<&'static str>,
+    pending_read: bool,
     pub(super) opened: bool,
     pub(super) projection: Option<ShellRecoveryProjection>,
     decision: RecoveryDecision<ShellRecoveryConfirmation>,
@@ -109,6 +110,7 @@ impl ShellRecoveryUi {
         Self {
             sequence: 0,
             pending: None,
+            pending_read: false,
             opened: false,
             projection: None,
             decision: RecoveryDecision::default(),
@@ -151,6 +153,21 @@ impl ConversationStream {
         }
     }
 
+    pub(super) fn request_shell_control(&mut self, operation: String, cx: &mut Context<Self>) {
+        if self.shell_recovery.pending.is_some() && !self.shell_recovery.pending_read {
+            for card in self.tool_cards.values() {
+                card.update(cx, |card, cx| {
+                    if card.finish_shell_control(&operation, true) {
+                        cx.notify();
+                    }
+                });
+            }
+            return;
+        }
+        self.shell_recovery.pending = None;
+        self.request_shell_recovery(ShellRecoveryAction::Cancel(operation), cx);
+    }
+
     pub(super) fn request_shell_recovery(
         &mut self,
         action: ShellRecoveryAction,
@@ -173,6 +190,7 @@ impl ConversationStream {
         }
         self.shell_recovery.sequence = sequence;
         self.shell_recovery.pending = Some(label);
+        self.shell_recovery.pending_read = matches!(&action, ShellRecoveryAction::Read);
         self.shell_recovery.error = None;
         cx.emit(ShellRecoveryRequested {
             source: self.thread.clone(),
@@ -193,6 +211,7 @@ impl ConversationStream {
             return;
         }
         self.shell_recovery.pending = None;
+        self.shell_recovery.pending_read = false;
         let mut card_control = false;
         if let ShellRecoveryAction::Cancel(operation) = &request.action {
             for card in self.tool_cards.values() {

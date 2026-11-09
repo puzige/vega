@@ -221,6 +221,16 @@ impl ShellRecoveryService {
         source: &Thread,
         operation_id: &str,
     ) -> Result<ShellRecoveryProjection, ShellRecoveryError> {
+        let projection = self.read(source)?;
+        if projection.commands.iter().any(|command| {
+            command.operation_id == operation_id
+                && command.thread_id == source.id
+                && command.concurrent
+                && !command.can_cancel
+                && !command.can_retry
+        }) {
+            return Ok(projection);
+        }
         let store = Store::open_existing(&self.database_path).map_err(unavailable)?;
         let workspace = self.workspace(&store, source)?;
         if vega_runtime::concurrent_shell_cleanup_available(
@@ -260,6 +270,7 @@ impl ShellRecoveryService {
             )
             .map_err(unavailable)?;
             if snapshot.cleanup_safe {
+                reconcile_commits(&store, &workspace)?;
                 vega_runtime::release_shell_recovery(operation_id).map_err(unavailable)?;
             }
         } else {

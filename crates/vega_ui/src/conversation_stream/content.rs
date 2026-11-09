@@ -2192,18 +2192,8 @@ impl ConversationStream {
     fn observe_tool_card(&mut self, card: &Entity<ToolCard>, cx: &mut Context<Self>) {
         cx.subscribe(
             card,
-            |this, card, event: &crate::tool_card::ShellControlRequested, cx| {
-                if this.shell_recovery.pending.is_some() {
-                    card.update(cx, |card, cx| {
-                        card.finish_shell_control(&event.operation_id, true);
-                        cx.notify();
-                    });
-                    return;
-                }
-                this.request_shell_recovery(
-                    super::shell_recovery::ShellRecoveryAction::Cancel(event.operation_id.clone()),
-                    cx,
-                );
+            |this, _, event: &crate::tool_card::ShellControlRequested, cx| {
+                this.request_shell_control(event.operation_id.clone(), cx);
             },
         )
         .detach();
