@@ -18,10 +18,6 @@ use crate::icons::Icon;
 
 const CORRUPT_LABEL: &str = "ui.tool_result_corrupted";
 
-#[cfg(test)]
-#[path = "tool_card_shell_tests.rs"]
-mod shell_control_tests;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ToolActivityCategory {
     Shell,

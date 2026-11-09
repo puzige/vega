@@ -636,7 +636,3 @@ pub fn resume_writes(
     tx.execute("INSERT INTO shell_dispositions(disposition_id,workspace,operation_ids,expected_epoch,committed_epoch,kind,content,created_at) VALUES(?1,?2,?3,?4,?5,'user_risk',?6,?7)",params![decision,workspace,json(&selected)?,expected_epoch.epoch,next.epoch,content,now])?;
     tx.commit()
 }
-
-#[cfg(test)]
-#[path = "shell_concurrency_tests.rs"]
-mod shell_concurrency_tests;

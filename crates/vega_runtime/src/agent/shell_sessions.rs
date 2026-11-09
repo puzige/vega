@@ -1252,7 +1252,3 @@ pub(super) fn admit(
     }
     RuntimeWorkspaceMutationGuard::acquire_all(&ranges).map(Some)
 }
-
-#[cfg(test)]
-#[path = "shell_concurrency_tests.rs"]
-mod shell_concurrency_tests;
