@@ -2,7 +2,7 @@
 
 ## 版本与工具链
 
-基线 `f3688f5ae0b7becf1f46434c7b7d732e3a3c759a`，任务分支 `feat/918-preparation-concurrency`。开发验证版本为本文件同提交的源码；后续清理版须重验。macOS aarch64；cargo 1.101.0 (e611c7a87 2026-11-04), huacnlee/cargo 0.102.0-9；rustc 1.98.0 (88d9e12ae 2026-08-18)。`CARGO_FORK_AUTO_UPDATE=0`，`--locked --offline -j 2`，不修改机器配置。安装的本地 nextest 0.9.151 未用作测试执行；CI 固定 0.9.146 不变。
+基线 `f3688f5ae0b7becf1f46434c7b7d732e3a3c759a`，任务分支 `feat/918-preparation-concurrency`。开发验证与独立审查版本 `75fb56d14ac913828e569b09137e2ef05e14ab6b`，已推送 origin；[原始开发测试源码](https://github.com/puzige/vega/blob/75fb56d14ac913828e569b09137e2ef05e14ab6b/crates/vega_conversation/src/agent/pipeline/concurrency_tests.rs) SHA256 `0628fccc194284d990514272433934b132e85a1fa5298ea6ee7c3ab4292201c9`。macOS aarch64；cargo 1.101.0 (e611c7a87 2026-11-04), huacnlee/cargo 0.102.0-9；rustc 1.98.0 (88d9e12ae 2026-08-18)。`CARGO_FORK_AUTO_UPDATE=0`，`--locked --offline -j 2`，不修改机器配置。安装的本地 nextest 0.9.151 未用作测试执行；CI 固定 0.9.146 不变。
 
 ## 实际本地结果
 
@@ -19,10 +19,12 @@
 
 180000 条其他线程工具记录，每条约 2 KiB 合成 output；6 个样本，当前线程少历史。基线完整准备 ms：986.666,530.242,589.354,437.769,445.002,461.863；writer 持有 ms：390,239,253,223,231,241。当前完整准备 ms：1268.870,430.090,421.242,420.166,421.714,424.842；writer：4,1,1,1,1,1。首样本冷态不剔除，不能宣称整体准备加速；关键改善是全库读取不占 writer。
 
-另执行 `VEGA_PREPARATION_LONG_HISTORY=1 ... cargo test -p vega_conversation full_preparation_with_large_foreign_history_reports_writer_hold ...`，180000 工具＋本线程1000条约1.4 KiB历史。1 发现/执行/通过，9 filtered，11.99 秒。6 个完整准备 ms：1329.132,630.707,656.294,658.561,659.203,662.891；writer 均1ms。此长历史测量早于最后 busy_timeout 参数类型修正，生产控制流相同，仍须在冻结版复跑。观测精度1ms，样本量小，不推算真实应用 p95。
+另执行 `VEGA_PREPARATION_LONG_HISTORY=1 ... cargo test -p vega_conversation full_preparation_with_large_foreign_history_reports_writer_hold ...`，180000 工具＋本线程1000条约1.4 KiB历史。1 发现/执行/通过，9 filtered，11.99 秒。6 个完整准备 ms：1329.132,630.707,656.294,658.561,659.203,662.891；writer 均1ms。初次长历史测量早于最后参数类型修正。已在冻结 SHA `75fb56d14ac913828e569b09137e2ef05e14ab6b` 复跑：1发现/执行/通过、11 filtered，10.93秒；总耗时 ms 955.747,604.092,592.908,594.265,594.373,594.393，writer ms 1,2,1,1,1,1。观测精度1ms，样本量小，不推算真实应用 p95。
 
 ## 边界与待完成
 
 暂态重试仅发生在 BEGIN 成功之前，提交回执未知不自动重放；现有事件持久化/用量/工具幂等路径未改写。最终权限、来源、Skill 与凭据校验保留。不宣称已覆盖真实外部模型/工具执行、安装二进制内容或所有主运行显式 Skill 的性能；真实系统集成由用户在合并后手测。
 
-待独立审查、Rust 开发源码固定可访问 SHA 后清理、最终 head 本地验证与 required CI。尚未合并或用户验收；#919 未实施。
+非实现者独立只读审查已完成，无阻断性发现，绑定开发 SHA；静态限制：未动态组合 FIFO→engine busy、连续冲突耗尽、owner变更，不冒充已测通过。10秒只约束最终写入准入累计等待（FIFO/BEGIN/退避），不含锁外计算或权限 Mutex 获取；末次权限锁仍遵循权限→writer 顺序，不宣称全 preparation 端到端限时。
+
+清理版仅删除开发测试文件、cfg(test)模块与暂停钩子，生产语义无变化；store 两文件与审查 SHA 完全相同。清理版 fmt check、两 crate 全目标 Clippy 再次通过（2.81秒）；三组 Python 5+15+40通过。原始测试在可访问 SHA 中留痕，不将可执行测试搬到最终树。最终完整 required CI 待PR head验证，尚未合并/用户验收；#919未实施。
