@@ -30,6 +30,13 @@
 
 ## 剩余验证与边界
 
-开发测试将固定可访问提交、源码和真实结果；按仓库规则合并前删除 Rust 测试及独占接线，最终空集 head 的 required CI 仅说明 no Rust tests，不当作行为测试通过。
+开发回归最终可恢复源码：[69f195baa8011da65eb81c1b1cd3d002179f923e](https://github.com/puzige/vega/commit/69f195baa8011da65eb81c1b1cd3d002179f923e)。该版本本地 `cargo test -p vega_conversation -p vega_ui shell_recovery --locked -j 2` 实际 9+7 发现 / 执行 / 通过，0 失败 / 忽略 / 过滤，编译 10.13 秒、服务执行 2.46 秒。最终增量严格 Clippy 4.36 秒退出 0；fmt check 通过。
 
-实现独立审查、最终 required CI 尚待取得。真实窗口的浮层布局、键盘/焦点、Escape 与手动恢复仍交用户验收，不以状态测试冒充。没有升级、重启或访问修改远端机器。
+- 服务测试源码 `crates/vega_conversation/src/shell_recovery_tests.rs`，SHA256 `6f98ecc16b60587fe90bb29831b9864d12364ad095ccdb97a898bac01942bb1a`。
+- UI 状态测试源码 `crates/vega_ui/src/conversation_stream/shell_recovery_tests.rs`，SHA256 `02e8aa33fad15fab0a8ab55a69e4ab022a09b0e80109712ee40bd40ae6a72100`。
+- 首版开发 CI [42543960581](https://github.com/puzige/vega/actions/runs/42543960581) 全绿；只对应 `1a5d42d8697e978ea94956f63d5b33dc416d1c9a`，不代替增量或清理后最终版本。
+- 非实现者对首版完整差异和增量分别审查，确认原 P2 在 `69f195baa8011da65eb81c1b1cd3d002179f923e` 已解决、增量无新增发现。独立审查未运行 native 交互。
+
+按仓库规则，合并前删除上述两份开发 Rust 测试及独占模块接线；未删除生产 helper、assertion、安全门禁或保留的 Python 检查。清理后再做独立清理差异复核与最终 head required CI。最终空集仅说明 no Rust tests（0 发现 / 0 执行），不当作行为测试通过。
+
+最终 required CI 尚待取得。真实窗口的浮层布局、键盘/焦点、Escape 与手动恢复仍交用户验收，不以状态测试冒充。没有升级、重启或访问修改远端机器。

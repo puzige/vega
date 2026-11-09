@@ -1,8 +1,5 @@
 use super::*;
 use crate::interaction::InteractionExt;
-#[cfg(test)]
-#[path = "shell_recovery_tests.rs"]
-mod tests;
 use vega_conversation::types::{
     ShellRecoveryConfirmation, ShellRecoveryError, ShellRecoveryProjection,
 };
