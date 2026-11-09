@@ -14,7 +14,7 @@ use vega_store::run_diagnostics::{
 const DIAGNOSTIC_CHANNEL_CAPACITY: usize = 64;
 
 enum DiagnosticsSink {
-    Persistence(tokio::sync::mpsc::Sender<super::persistence::PersistenceCommand>),
+    Persistence(super::persistence::PersistenceSender),
     Buffered(VecDeque<NewDiagnosticEvent>),
     Compaction {
         events: VecDeque<NewDiagnosticEvent>,
@@ -77,9 +77,7 @@ pub(crate) struct ToolDiagnosticEvent<'a> {
 }
 
 impl DiagnosticsWriter {
-    pub(crate) fn for_persistence_actor(
-        sender: tokio::sync::mpsc::Sender<super::persistence::PersistenceCommand>,
-    ) -> Self {
+    pub(crate) fn for_persistence_actor(sender: super::persistence::PersistenceSender) -> Self {
         Self {
             sender: std::sync::Mutex::new(Some(DiagnosticsSink::Persistence(sender))),
         }
@@ -106,7 +104,7 @@ impl DiagnosticsWriter {
         };
         match sender.as_mut() {
             Some(DiagnosticsSink::Persistence(sender)) => {
-                let _ = sender.try_send(super::persistence::PersistenceCommand::Diagnostic(
+                sender.try_send(super::persistence::PersistenceCommand::Diagnostic(
                     Box::new(event),
                 ));
             }
