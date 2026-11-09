@@ -1,6 +1,6 @@
 use super::*;
 
-mod database_writer;
+pub(crate) mod database_writer;
 use vega_store::write_coordination::PersistenceCategory;
 
 const PERSISTENCE_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);

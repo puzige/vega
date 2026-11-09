@@ -53,6 +53,7 @@ const TABLES: &[(&str, &str)] = &[
 
 pub struct DelegatedSnapshot<'a> {
     original: &'a Connection,
+    database: Option<crate::DatabaseIdentity>,
     connection: Connection,
     thread: String,
     revision: i64,
@@ -62,6 +63,17 @@ pub struct DelegatedSnapshot<'a> {
 
 pub struct PreparedDelegatedInstall<'a> {
     snapshot: DelegatedSnapshot<'a>,
+    legacy: PreparedLegacyRedaction,
+    payloads: PreparedPayloadRedaction,
+    assistant: crate::messages::MessageRow,
+}
+
+pub struct OwnedDelegatedInstall {
+    database: crate::DatabaseIdentity,
+    thread: String,
+    revision: i64,
+    schema: i64,
+    origins: HashMap<String, MutationOrigin>,
     legacy: PreparedLegacyRedaction,
     payloads: PreparedPayloadRedaction,
     assistant: crate::messages::MessageRow,
@@ -101,6 +113,11 @@ fn verify_schema(conn: &Connection) -> rusqlite::Result<()> {
 
 impl<'a> DelegatedSnapshot<'a> {
     pub fn capture(conn: &'a Connection, thread: &str, assistant: &str) -> rusqlite::Result<Self> {
+        let database = conn
+            .path()
+            .filter(|path| !path.is_empty())
+            .map(|_| crate::DatabaseIdentity::for_connection(conn))
+            .transpose()?;
         let read = conn.unchecked_transaction()?;
         verify_schema(&read)?;
         let revision = revision(&read, thread)?;
@@ -182,6 +199,7 @@ impl<'a> DelegatedSnapshot<'a> {
         read.commit()?;
         Ok(Self {
             original: conn,
+            database,
             connection,
             thread: thread.to_owned(),
             revision,
@@ -231,6 +249,22 @@ impl<'a> DelegatedSnapshot<'a> {
 }
 
 impl PreparedDelegatedInstall<'_> {
+    pub fn into_owned(self) -> rusqlite::Result<OwnedDelegatedInstall> {
+        Ok(OwnedDelegatedInstall {
+            database: self
+                .snapshot
+                .database
+                .ok_or(rusqlite::Error::InvalidQuery)?,
+            thread: self.snapshot.thread,
+            revision: self.snapshot.revision,
+            schema: self.snapshot.schema,
+            origins: self.snapshot.origins,
+            legacy: self.legacy,
+            payloads: self.payloads,
+            assistant: self.assistant,
+        })
+    }
+
     pub fn connection(&self) -> &Connection {
         &self.snapshot.connection
     }
@@ -255,6 +289,39 @@ impl PreparedDelegatedInstall<'_> {
         let savepoint = transaction.savepoint()?;
         for (id, expected) in &self.snapshot.origins {
             if crate::fork_mutations::origin(&savepoint, &self.snapshot.thread, id)? != *expected {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+        }
+        self.payloads.install_preparation_updates(&savepoint)?;
+        let changed = self.legacy.install_preparation_updates(&savepoint)?;
+        savepoint.commit()?;
+        Ok(changed)
+    }
+
+    pub fn assistant(&self) -> &crate::messages::MessageRow {
+        &self.assistant
+    }
+}
+
+impl OwnedDelegatedInstall {
+    pub fn validate(&self, transaction: &Transaction<'_>) -> rusqlite::Result<bool> {
+        Ok(
+            crate::DatabaseIdentity::for_connection(transaction)? == self.database
+                && transaction
+                    .pragma_query_value(None, "schema_version", |row| row.get::<_, i64>(0))?
+                    == self.schema
+                && revision(transaction, &self.thread)? == self.revision
+                && crate::messages::next_seq(transaction, &self.thread)? == self.assistant.seq,
+        )
+    }
+
+    pub fn install(&self, transaction: &mut Transaction<'_>) -> rusqlite::Result<bool> {
+        if !self.validate(transaction)? {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        let savepoint = transaction.savepoint()?;
+        for (id, expected) in &self.origins {
+            if crate::fork_mutations::origin(&savepoint, &self.thread, id)? != *expected {
                 return Err(rusqlite::Error::InvalidQuery);
             }
         }

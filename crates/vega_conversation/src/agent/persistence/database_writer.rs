@@ -6,8 +6,9 @@ use vega_store::Connection;
 #[cfg(test)]
 mod tests;
 
-pub(super) struct DatabaseWriter {
+pub(crate) struct DatabaseWriter {
     pub(super) registrations: std::sync::mpsc::SyncSender<RunRegistration>,
+    commands: std::sync::mpsc::SyncSender<Box<dyn crate::database_writer::WriteRequest>>,
     wakeup: std::sync::mpsc::SyncSender<()>,
 }
 
@@ -37,41 +38,57 @@ impl DatabaseWriter {
     }
 
     pub(super) async fn open(path: PathBuf) -> Result<Arc<Self>, VegaError> {
-        tokio::task::spawn_blocking(move || {
-            let store = Store::open_with_busy_timeout(&path, PERSISTENCE_BUSY_TIMEOUT)?;
-            let identity = store.database_identity();
-            static WRITERS: OnceLock<
-                Mutex<HashMap<vega_store::DatabaseIdentity, Weak<DatabaseWriter>>>,
-            > = OnceLock::new();
-            let mut writers = WRITERS
-                .get_or_init(Default::default)
-                .lock()
-                .map_err(|_| persistence_actor_error("writer registry unavailable"))?;
-            writers.retain(|_, writer| writer.strong_count() > 0);
-            if let Some(writer) = writers.get(&identity).and_then(Weak::upgrade) {
-                return Ok(writer);
-            }
-            store.conn().busy_handler(Some(persistence_busy_handler))?;
-            let (registrations, receiver) = std::sync::mpsc::sync_channel(128);
-            let (wakeup, awakened) = std::sync::mpsc::sync_channel(1);
-            let writer = Arc::new(Self {
-                registrations,
-                wakeup,
-            });
-            std::thread::Builder::new()
-                .name("vega-database-writer".into())
-                .spawn(move || Self::run(store, receiver, awakened))
-                .map_err(|_| persistence_actor_error("writer startup failed"))?;
-            writers.insert(identity, Arc::downgrade(&writer));
-            Ok(writer)
-        })
-        .await
-        .map_err(|_| persistence_actor_error("writer startup join failed"))?
+        tokio::task::spawn_blocking(move || Self::open_blocking(path))
+            .await
+            .map_err(|_| persistence_actor_error("writer startup join failed"))?
+    }
+
+    pub(crate) fn submit(
+        &self,
+        command: Box<dyn crate::database_writer::WriteRequest>,
+    ) -> Result<(), VegaError> {
+        self.commands
+            .send(command)
+            .map_err(|_| persistence_actor_error("writer command queue closed"))?;
+        self.wake();
+        Ok(())
+    }
+
+    pub(crate) fn open_blocking(path: PathBuf) -> Result<Arc<Self>, VegaError> {
+        let store = Store::open_with_busy_timeout(&path, PERSISTENCE_BUSY_TIMEOUT)?;
+        let identity = store.database_identity();
+        static WRITERS: OnceLock<
+            Mutex<HashMap<vega_store::DatabaseIdentity, Weak<DatabaseWriter>>>,
+        > = OnceLock::new();
+        let mut writers = WRITERS
+            .get_or_init(Default::default)
+            .lock()
+            .map_err(|_| persistence_actor_error("writer registry unavailable"))?;
+        writers.retain(|_, writer| writer.strong_count() > 0);
+        if let Some(writer) = writers.get(&identity).and_then(Weak::upgrade) {
+            return Ok(writer);
+        }
+        store.conn().busy_handler(Some(persistence_busy_handler))?;
+        let (registrations, receiver) = std::sync::mpsc::sync_channel(128);
+        let (wakeup, awakened) = std::sync::mpsc::sync_channel(1);
+        let (commands, pending) = std::sync::mpsc::sync_channel(128);
+        let writer = Arc::new(Self {
+            registrations,
+            commands,
+            wakeup,
+        });
+        std::thread::Builder::new()
+            .name("vega-database-writer".into())
+            .spawn(move || Self::run(store, receiver, pending, awakened))
+            .map_err(|_| persistence_actor_error("writer startup failed"))?;
+        writers.insert(identity, Arc::downgrade(&writer));
+        Ok(writer)
     }
 
     fn run(
         store: Store,
         registrations: std::sync::mpsc::Receiver<RunRegistration>,
+        commands: std::sync::mpsc::Receiver<Box<dyn crate::database_writer::WriteRequest>>,
         awakened: std::sync::mpsc::Receiver<()>,
     ) {
         let mut runs = VecDeque::<ActiveRun>::new();
@@ -79,15 +96,12 @@ impl DatabaseWriter {
             while let Ok(run) = registrations.try_recv() {
                 Self::register(&store, run, &mut runs);
             }
-            if runs.is_empty() {
-                match registrations.recv() {
-                    Ok(run) => Self::register(&store, run, &mut runs),
-                    Err(_) => break,
-                }
-                continue;
-            }
             let count = runs.len();
             let mut progressed = false;
+            if let Ok(command) = commands.try_recv() {
+                command.execute(&store);
+                progressed = true;
+            }
             for _ in 0..count {
                 let Some(mut run) = runs.pop_front() else {
                     break;

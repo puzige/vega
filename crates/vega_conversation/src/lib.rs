@@ -1,5 +1,6 @@
 pub mod agent;
 mod credential_errors;
+mod database_writer;
 pub use credential_errors::provider_credential_error;
 mod artifact;
 pub mod attachments;

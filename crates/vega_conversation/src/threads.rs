@@ -481,6 +481,53 @@ pub fn get_thread(store: &Store, thread_id: &str) -> Result<Thread, Conversation
     thread_from_row(&row)
 }
 
+enum ThreadWrite {
+    Status {
+        thread: String,
+        status: ThreadStatus,
+    },
+    Pin {
+        thread: String,
+        pinned: bool,
+    },
+    Update {
+        thread: String,
+        update: ThreadUpdate,
+    },
+    Visit {
+        thread: String,
+    },
+}
+impl crate::database_writer::Sealed for ThreadWrite {}
+impl crate::database_writer::DatabaseCommand for ThreadWrite {
+    type Output = Result<Thread, ConversationError>;
+    fn apply(self, store: &Store) -> Self::Output {
+        match self {
+            Self::Status { thread, status } => {
+                set_thread_status(store, &thread, status)?;
+                get_thread(store, &thread)
+            }
+            Self::Pin { thread, pinned } => {
+                set_thread_pinned(store, &thread, pinned)?;
+                get_thread(store, &thread)
+            }
+            Self::Update { thread, update } => {
+                update_thread(store, &thread, &update)?;
+                get_thread(store, &thread)
+            }
+            Self::Visit { thread } => visit_thread(store, &thread),
+        }
+    }
+}
+
+fn submit_thread_write(store: &Store, command: ThreadWrite) -> Result<Thread, ConversationError> {
+    let path = store
+        .database_path()
+        .ok_or(ConversationError::InvalidTaskIdentity)?;
+    crate::database_writer::commit(path, store.database_identity(), command)
+        .map_err(ConversationError::CorruptRow)?
+}
+
 pub fn rename_thread(
     store: &Store,
     thread_id: &str,
@@ -525,7 +572,13 @@ pub fn persist_thread_update(
             pinned: None,
             unread: None,
         } => {
-            set_thread_status(&store, thread_id, *status)?;
+            return submit_thread_write(
+                &store,
+                ThreadWrite::Status {
+                    thread: thread_id.into(),
+                    status: *status,
+                },
+            );
         }
         ThreadUpdate {
             pinned: Some(pinned),
@@ -533,11 +586,22 @@ pub fn persist_thread_update(
             status: None,
             unread: None,
         } => {
-            set_thread_pinned(&store, thread_id, *pinned)?;
+            return submit_thread_write(
+                &store,
+                ThreadWrite::Pin {
+                    thread: thread_id.into(),
+                    pinned: *pinned,
+                },
+            );
         }
-        _ => update_thread(&store, thread_id, update)?,
+        _ => submit_thread_write(
+            &store,
+            ThreadWrite::Update {
+                thread: thread_id.into(),
+                update: update.clone(),
+            },
+        ),
     }
-    get_thread(&store, thread_id)
 }
 
 pub fn persist_thread_deletion(
@@ -553,7 +617,12 @@ pub fn persist_thread_visit(
     thread_id: &str,
 ) -> Result<Thread, ConversationError> {
     let store = Store::open_existing(database).map_err(store_error)?;
-    visit_thread(&store, thread_id)
+    submit_thread_write(
+        &store,
+        ThreadWrite::Visit {
+            thread: thread_id.into(),
+        },
+    )
 }
 
 pub fn persist_thread_pinned(
@@ -562,8 +631,13 @@ pub fn persist_thread_pinned(
     pinned: bool,
 ) -> Result<Thread, ConversationError> {
     let store = Store::open_existing(database).map_err(store_error)?;
-    set_thread_pinned(&store, thread_id, pinned)?;
-    get_thread(&store, thread_id)
+    submit_thread_write(
+        &store,
+        ThreadWrite::Pin {
+            thread: thread_id.into(),
+            pinned,
+        },
+    )
 }
 
 pub fn set_thread_pinned(
