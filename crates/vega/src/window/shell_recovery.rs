@@ -8,7 +8,9 @@ impl VegaWindow {
         request: &ShellRecoveryRequested,
         cx: &mut Context<Self>,
     ) {
-        if !self.owns_stream_request(&stream, &request.source.id, cx) {
+        if !self.owns_stream_request(&stream, &request.source.id, cx)
+            || request.draft != self.is_draft_route(&request.source.id)
+        {
             stream.update(cx, |stream, cx| {
                 stream.finish_shell_recovery(request, Err(ShellRecoveryError::Changed), cx)
             });
@@ -38,10 +40,15 @@ impl VegaWindow {
         } else {
             None
         };
+        let draft = self.is_draft_route(&request.source.id);
         let request = request.clone();
         let worker_request = request.clone();
         let worker = cx.background_executor().spawn(async move {
-            let service = ShellRecoveryService::new(path);
+            let service = if draft {
+                ShellRecoveryService::for_draft(path)
+            } else {
+                ShellRecoveryService::new(path)
+            };
             let source = &worker_request.source;
             match &worker_request.action {
                 ShellRecoveryAction::Read => {

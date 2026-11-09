@@ -993,6 +993,7 @@ impl ConversationStream {
     pub fn set_draft_route(&mut self, draft: bool, cx: &mut Context<Self>) {
         if self.draft_route != draft {
             self.draft_route = draft;
+            self.reset_shell_recovery(cx);
             cx.notify();
         }
     }
@@ -1032,6 +1033,7 @@ impl ConversationStream {
             return None;
         }
         self.thread.backend = backend;
+        self.reset_shell_recovery(cx);
         self.backend_selector_open = false;
         self.close_composer_popovers(cx);
         cx.notify();
@@ -1085,6 +1087,7 @@ impl ConversationStream {
         self.begin_computer_use_task(cx);
         self.thread = thread;
         self.project_label = label;
+        self.reset_shell_recovery(cx);
         cx.notify();
         true
     }

@@ -17,6 +17,8 @@ pub mod plans;
 mod pricing;
 pub mod session_reasoning;
 pub mod shell_recovery;
+#[cfg(test)]
+mod shell_recovery_tests;
 pub mod startup;
 pub mod summary;
 mod thread_access;

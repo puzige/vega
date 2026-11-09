@@ -9,6 +9,7 @@
 "ui.shell_session.timed_out" = "命令已超时"
 "ui.shell_session.output_incomplete" = "输出不完整"
 "ui.shell_recovery.paused" = "工作区写入已暂停"
+"ui.shell_recovery.status_unavailable" = "无法确认工作区恢复状态"
 "ui.shell_recovery.review" = "检查恢复选项"
 "ui.shell_recovery.retrying" = "正在重试清理"
 "ui.shell_recovery.checking" = "正在检查状态"
