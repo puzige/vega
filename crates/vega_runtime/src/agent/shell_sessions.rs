@@ -593,12 +593,30 @@ impl ShellRun {
         if !cfg!(target_os = "macos") {
             return Err(failure("session_process_control_unsupported"));
         }
-        if policy != BashLaunchPolicy::WorkspaceWrite
-            || prepared
-                .requested_scope()
-                .is_some_and(|scope| !scope.write_roots().is_empty())
-        {
-            return Err(failure("workspace_sandbox_required"));
+        let incompatible_policy = match policy {
+            BashLaunchPolicy::FullAccess => {
+                Some("the current Full Access policy does not support asynchronous Shell sessions")
+            }
+            BashLaunchPolicy::ReadOnly => {
+                Some("the current read-only policy does not support asynchronous Shell sessions")
+            }
+            BashLaunchPolicy::WorkspaceWrite => None,
+        };
+        let incompatible_scope = prepared
+            .requested_scope()
+            .is_some_and(|scope| !scope.write_roots().is_empty());
+        if incompatible_policy.is_some() || incompatible_scope {
+            let mut reasons = Vec::new();
+            if let Some(reason) = incompatible_policy {
+                reasons.push(reason);
+            }
+            if incompatible_scope {
+                reasons.push("requested_scope.write_roots contains extra writable directories, which asynchronous Shell sessions do not support");
+            }
+            return Err(failure(&format!(
+                "workspace_sandbox_required: command NOT started. A non-null wait_ms (including 0) requested asynchronous execution, but {}. Keep the current permissions and any necessary scope; to run this command in blocking mode, explicitly resubmit with wait_ms omitted or null. timeout remains the total command deadline in seconds. No automatic retry or fallback was performed.",
+                reasons.join("; ")
+            )));
         }
         if workspace_identity(prepared.project_root())? != self.workspace {
             return Err(failure("workspace_identity_mismatch"));
@@ -1186,3 +1204,7 @@ pub(super) fn admit(
     }
     RuntimeWorkspaceMutationGuard::acquire_all(&ranges).map(Some)
 }
+
+#[cfg(test)]
+#[path = "shell_guidance_tests.rs"]
+mod guidance_tests;
