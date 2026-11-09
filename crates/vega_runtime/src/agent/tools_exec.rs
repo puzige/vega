@@ -344,6 +344,9 @@ pub(crate) fn prepare_runtime_call(
         .shell_run
         .as_ref()
         .is_some_and(|owner| owner.active().unwrap_or(true))
+        && !(raw_call.name == "bash"
+            && crate::permission::bash_launch_policy(config.run_mode, config.permission_mode)
+                == vega_tools::BashLaunchPolicy::FullAccess)
         && !matches!(
             raw_call.name.as_str(),
             "read" | "Read" | "glob" | "grep" | "bash_wait" | "bash_cancel"
@@ -2175,6 +2178,21 @@ pub(crate) async fn execute_prepared_waiting(
                 };
                 return (shell_result(&call, output), false);
             }
+            let concurrent = policy == vega_tools::BashLaunchPolicy::FullAccess;
+            if concurrent
+                && vega_tools::ReadState::invalidate_workspace(std::path::Path::new("/")).is_err()
+            {
+                return (
+                    terminal_result(
+                        &call,
+                        "Full Access command not started: read observation invalidation failed"
+                            .into(),
+                        RuntimeToolStatus::Failed,
+                        None,
+                    ),
+                    false,
+                );
+            }
             let result = if prepared.requested_scope().is_some()
                 && policy != vega_tools::BashLaunchPolicy::FullAccess
             {
@@ -2199,6 +2217,11 @@ pub(crate) async fn execute_prepared_waiting(
                     )
                     .await
             };
+            if concurrent
+                && vega_tools::ReadState::invalidate_workspace(std::path::Path::new("/")).is_err()
+            {
+                return (terminal_result(&call, "Full Access command returned, but read observation invalidation failed; command was not rerun".into(), RuntimeToolStatus::Failed, None), false);
+            }
             match result {
                 Ok(output) => (
                     RuntimeToolResult {
@@ -2667,14 +2690,14 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
     }
     definitions.push(ToolDefinition {
         name: "bash".into(),
-        description: "Run a non-empty command at the project root. Ask/Plan and ReadOnly use a read-only sandbox; Confirm/Auto permit workspace writes after approval. Sandboxed commands are offline and ignore user shell startup files by default. Optional requested_scope asks for one-command network access and/or extra writable directories with a reason; it requires separate explicit approval, never changes the permission mode, and cannot bypass danger checks. Extra writable directories require Execute Confirm/Auto. Network access with credential bindings uses only their HTTPS destinations; otherwise approval permits any network destination including local services. Full access uses current-user permissions without sandbox restrictions. timeout is positive seconds; null uses 120 seconds. A cd affects only this command. Optional wait_ms (0–30000) explicitly starts a run-bound session in the workspace-write sandbox; omit or null for the original blocking protocol. A running receipt is not command success. Use bash_wait or bash_cancel for that session. Sessions reject Full Access and extra writable roots. Filter large output; do not automatically retry side effects. Example: {\"command\":\"pwd\",\"timeout\":null}.".into(),
-        input_schema: serde_json::json!({"type":"object","properties":{"command":{"type":"string","minLength":1},"description":vega_tools::description_field_schema(),"timeout":{"type":["integer","null"],"minimum":1,"maximum":18446744073709551u64},"wait_ms":{"type":["integer","null"],"minimum":0,"maximum":30000},"requested_scope":{"type":"object","properties":{"network":{"type":"boolean","default":false},"write_roots":{"type":"array","items":{"type":"string"},"default":[]},"reason":{"type":"string","minLength":1,"maxLength":512}},"required":["reason"],"additionalProperties":false}},"required":["command","timeout"],"additionalProperties":false}),
+        description: "Run a non-empty command at the project root. Ask/Plan and ReadOnly use a read-only sandbox; Confirm/Auto permit workspace writes after approval. Sandboxed commands are offline and ignore user shell startup files by default. Optional requested_scope asks for one-command network access and/or extra writable directories with a reason; it requires separate explicit approval, never changes the permission mode, and cannot bypass danger checks. Extra writable directories require Execute Confirm/Auto. Network access with credential bindings uses only their HTTPS destinations; otherwise approval permits any network destination including local services. Full access uses current-user permissions without sandbox restrictions. timeout is positive seconds; null uses 120 seconds. A cd affects only this command. Default to blocking: omit wait_ms or set it to null. timeout is the total command deadline in seconds, not an observation window. Any integer wait_ms (0–30000), including 0, explicitly starts a run-bound background session; it only bounds the first observation, not command lifetime. Sessions support workspace-write sandbox or already-authorized Full Access, but reject ReadOnly and extra writable roots. Full Access background commands may run concurrently with other commands and file writes; no write exclusion is provided. Workspace-sandbox sessions still require waiting or cancelling before conflicting writes. A running receipt is not command success. Use bash_wait or bash_cancel; never rerun merely to observe. Filter large output; do not automatically retry side effects. Example: {\"command\":\"pwd\",\"timeout\":null}.".into(),
+        input_schema: serde_json::json!({"type":"object","properties":{"command":{"type":"string","minLength":1},"description":vega_tools::description_field_schema(),"timeout":{"type":["integer","null"],"minimum":1,"maximum":18446744073709551u64},"wait_ms":{"type":["integer","null"],"minimum":0,"maximum":30000,"description":"Optional background opt-in, not timeout. Omit/null = blocking; any integer including 0 = background. Milliseconds to observe initially; command timeout remains seconds. Requires workspace-write or authorized Full Access; no extra writable roots."},"requested_scope":{"type":"object","properties":{"network":{"type":"boolean","default":false},"write_roots":{"type":"array","items":{"type":"string"},"default":[]},"reason":{"type":"string","minLength":1,"maxLength":512}},"required":["reason"],"additionalProperties":false}},"required":["command","timeout"],"additionalProperties":false}),
         strict: false,
     });
     definitions.extend([
         ToolDefinition {
             name: "bash_wait".into(),
-            description: "Observe an existing shell session in this run; never reruns its command. wait_ms defaults to 30000 and only bounds this observation. Use the returned cursor to read later output. Wait or cancel before starting mutations or requesting new approvals.".into(),
+            description: "Observe an existing shell session in this run; never reruns its command. wait_ms defaults to 30000 and only bounds this observation. Use the returned cursor to read later output. For workspace-sandbox sessions, wait or cancel before conflicting mutations or new approvals. Full Access background sessions do not exclude other writes.".into(),
             input_schema: serde_json::json!({"type":"object","properties":{"handle":{"type":"string","minLength":26,"maxLength":26},"cursor":{"type":["integer","null"],"minimum":0},"wait_ms":{"type":["integer","null"],"minimum":0,"maximum":300000}},"required":["handle"],"additionalProperties":false}),
             strict: false,
         },

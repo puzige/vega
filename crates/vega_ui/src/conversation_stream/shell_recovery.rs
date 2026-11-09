@@ -71,6 +71,7 @@ impl EventEmitter<ShellRecoveryRequested> for ConversationStream {}
 pub(crate) struct ShellRecoveryUi {
     sequence: u64,
     pending: Option<&'static str>,
+    pending_read: bool,
     pub(super) opened: bool,
     pub(super) projection: Option<ShellRecoveryProjection>,
     decision: RecoveryDecision<ShellRecoveryConfirmation>,
@@ -109,6 +110,7 @@ impl ShellRecoveryUi {
         Self {
             sequence: 0,
             pending: None,
+            pending_read: false,
             opened: false,
             projection: None,
             decision: RecoveryDecision::default(),
@@ -151,7 +153,26 @@ impl ConversationStream {
         }
     }
 
-    fn request_shell_recovery(&mut self, action: ShellRecoveryAction, cx: &mut Context<Self>) {
+    pub(super) fn request_shell_control(&mut self, operation: String, cx: &mut Context<Self>) {
+        if self.shell_recovery.pending.is_some() && !self.shell_recovery.pending_read {
+            for card in self.tool_cards.values() {
+                card.update(cx, |card, cx| {
+                    if card.finish_shell_control(&operation, true) {
+                        cx.notify();
+                    }
+                });
+            }
+            return;
+        }
+        self.shell_recovery.pending = None;
+        self.request_shell_recovery(ShellRecoveryAction::Cancel(operation), cx);
+    }
+
+    pub(super) fn request_shell_recovery(
+        &mut self,
+        action: ShellRecoveryAction,
+        cx: &mut Context<Self>,
+    ) {
         if self.shell_recovery.pending.is_some() {
             return;
         }
@@ -169,6 +190,7 @@ impl ConversationStream {
         }
         self.shell_recovery.sequence = sequence;
         self.shell_recovery.pending = Some(label);
+        self.shell_recovery.pending_read = matches!(&action, ShellRecoveryAction::Read);
         self.shell_recovery.error = None;
         cx.emit(ShellRecoveryRequested {
             source: self.thread.clone(),
@@ -189,6 +211,19 @@ impl ConversationStream {
             return;
         }
         self.shell_recovery.pending = None;
+        self.shell_recovery.pending_read = false;
+        let mut card_control = false;
+        if let ShellRecoveryAction::Cancel(operation) = &request.action {
+            for card in self.tool_cards.values() {
+                card_control |= card.update(cx, |card, cx| {
+                    let matched = card.finish_shell_control(operation, result.is_err());
+                    if matched {
+                        cx.notify();
+                    }
+                    matched
+                });
+            }
+        }
         match result {
             Ok(ShellRecoveryOutcome::Projection(projection)) => {
                 for command in &projection.commands {
@@ -218,7 +253,9 @@ impl ConversationStream {
                 if error == ShellRecoveryError::Changed {
                     self.shell_recovery.decision = RecoveryDecision::default();
                 }
-                self.shell_recovery.error = Some(error);
+                if !card_control {
+                    self.shell_recovery.error = Some(error);
+                }
             }
         }
         let refresh = self
@@ -578,7 +615,7 @@ fn recovery_reason(reason: &str) -> String {
         .join(" ")
 }
 
-fn button(
+pub(crate) fn button(
     id: &'static str,
     key: &'static str,
     enabled: bool,

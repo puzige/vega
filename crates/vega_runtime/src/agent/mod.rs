@@ -43,8 +43,9 @@ mod shell_sessions;
 pub use shell_sessions::{
     RuntimeActiveShell, RuntimeShellOperationHook, RuntimeShellOperationRecord,
     RuntimeWorkspaceMutationGuard, active_shell_sessions, cancel_shell_session,
-    confirm_shell_commit, pending_shell_commits, release_shell_recovery, retry_shell_cleanup,
-    shell_generation, shutdown_shell_sessions,
+    concurrent_shell_cleanup_available, confirm_shell_commit, pending_shell_commits,
+    release_shell_recovery, retry_concurrent_shell_cleanup, retry_shell_cleanup, shell_generation,
+    shutdown_shell_sessions,
 };
 
 mod mcp_registry;

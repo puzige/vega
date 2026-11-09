@@ -1,4 +1,6 @@
 "ui.collapse_save_failed_retry" = "展开状态保存失败，请再次点击项目重试。{error}"
+"ui.shell_session.control_failed" = "无法确认命令清理结果，请重试或手动检查命令。"
+"ui.shell_session.cleanup_unresolved" = "清理结果未确认"
 "ui.shell_session.cancel" = "取消命令"
 "ui.shell_session.running" = "命令运行中"
 "ui.shell_session.finishing" = "正在完成命令"

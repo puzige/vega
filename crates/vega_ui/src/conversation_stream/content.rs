@@ -2192,6 +2192,13 @@ impl ConversationStream {
     fn observe_tool_card(&mut self, card: &Entity<ToolCard>, cx: &mut Context<Self>) {
         cx.subscribe(
             card,
+            |this, _, event: &crate::tool_card::ShellControlRequested, cx| {
+                this.request_shell_control(event.operation_id.clone(), cx);
+            },
+        )
+        .detach();
+        cx.subscribe(
+            card,
             |this, _, event: &vega_conversation::types::SubagentOpenRequested, cx| {
                 if event.source_thread_id == this.thread.id {
                     cx.emit(event.clone());
