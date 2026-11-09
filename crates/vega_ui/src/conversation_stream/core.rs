@@ -980,7 +980,12 @@ impl ConversationStream {
             {
                 self.next_turn_model = None;
             }
+            let recovery_changed =
+                !super::shell_recovery::same_recovery_authority(&self.thread, &thread);
             self.thread = thread;
+            if recovery_changed {
+                self.reset_shell_recovery(cx);
+            }
             self.acknowledge_mode_action(cx);
             self.controller_runtime_error = None;
             self.controller_error = None;

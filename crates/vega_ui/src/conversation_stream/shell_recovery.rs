@@ -29,9 +29,20 @@ impl ShellRecoveryRequested {
     fn matches_route(&self, thread: &Thread, draft: bool, sequence: u64) -> bool {
         self.source.id == thread.id
             && self.source.project_id == thread.project_id
+            && same_recovery_authority(&self.source, thread)
             && self.draft == draft
             && self.sequence == sequence
     }
+}
+
+pub(super) fn same_recovery_authority(source: &Thread, current: &Thread) -> bool {
+    source.backend == current.backend
+        && source.mode == current.mode
+        && source.permission_mode == current.permission_mode
+        && source.permission_revision == current.permission_revision
+        && source.draft_authority_epoch == current.draft_authority_epoch
+        && source.default_permission == current.default_permission
+        && source.full_access_grant == current.full_access_grant
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -87,9 +98,11 @@ impl<T> Default for RecoveryDecision<T> {
 }
 
 impl<T> RecoveryDecision<T> {
-    fn dismiss(&mut self) {
+    fn dismiss(&mut self, sequence: &mut u64, pending: &mut Option<&'static str>) {
         if !self.submitted {
             self.confirmation = None;
+            *sequence = sequence.saturating_add(1);
+            *pending = None;
         }
     }
 }
@@ -123,9 +136,10 @@ impl ConversationStream {
 
     pub(super) fn dismiss_shell_recovery(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.shell_recovery.opened = false;
-        if self.shell_recovery.pending.is_none() {
-            self.shell_recovery.decision.dismiss();
-        }
+        self.shell_recovery.decision.dismiss(
+            &mut self.shell_recovery.sequence,
+            &mut self.shell_recovery.pending,
+        );
         self.shell_recovery.review_focus.focus(window, cx);
         cx.notify();
     }

@@ -1,3 +1,4 @@
+use super::RecoveryDecision;
 use super::{
     RecoveryPresentation, ShellRecoveryAction, ShellRecoveryRequested, recovery_presentation,
 };
@@ -61,4 +62,54 @@ fn recovery_receipt_requires_current_project_draft_and_sequence() {
     assert!(request.matches_route(&thread, true, 3));
     let other = draft_thread(Some("project-a"), "model", "confirm");
     assert!(!request.matches_route(&other, true, 3));
+    let mut changed = thread.clone();
+    changed.permission_revision += 1;
+    assert!(!request.matches_route(&changed, true, 3));
+    changed = thread.clone();
+    changed.permission_mode = vega_conversation::types::PermissionMode::FullAccess;
+    assert!(!request.matches_route(&changed, true, 3));
+}
+
+#[test]
+fn closing_pending_prepare_rejects_late_confirmation_after_permission_change() {
+    let thread = draft_thread(Some("project-a"), "model", "confirm");
+    let request = ShellRecoveryRequested {
+        source: thread.clone(),
+        sequence: 3,
+        draft: true,
+        action: ShellRecoveryAction::Prepare(vega_conversation::types::ShellRecoveryProjection {
+            workspace: "/workspace".into(),
+            epoch: vega_store::shell_operations::ShellRecoveryVersion {
+                epoch: 1,
+                scopes: Vec::new(),
+            },
+            rows: Vec::new(),
+            active: Vec::new(),
+            commands: Vec::new(),
+        }),
+    };
+    let mut decision: RecoveryDecision<()> = RecoveryDecision::default();
+    let mut sequence = 3;
+    let mut pending = Some("ui.shell_recovery.checking");
+    decision.dismiss(&mut sequence, &mut pending);
+    assert!(pending.is_none());
+    assert!(decision.confirmation.is_none());
+    assert!(!request.matches_route(&thread, true, sequence));
+    let mut changed = thread;
+    changed.permission_revision += 1;
+    assert!(!request.matches_route(&changed, true, sequence));
+}
+
+#[test]
+fn closing_submitted_resume_does_not_claim_to_cancel_it() {
+    let mut decision = RecoveryDecision {
+        confirmation: Some(Box::new(())),
+        submitted: true,
+    };
+    let mut sequence = 3;
+    let mut pending = Some("ui.shell_recovery.resuming");
+    decision.dismiss(&mut sequence, &mut pending);
+    assert_eq!(sequence, 3);
+    assert!(pending.is_some());
+    assert!(decision.confirmation.is_some());
 }

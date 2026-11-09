@@ -10,6 +10,9 @@ impl VegaWindow {
     ) {
         if !self.owns_stream_request(&stream, &request.source.id, cx)
             || request.draft != self.is_draft_route(&request.source.id)
+            || request.draft
+                && self.draft_for_route(&request.source.id).as_ref() != Some(&request.source)
+            || matches!(&request.action, ShellRecoveryAction::Resume(confirmation) if confirmation.source != request.source)
         {
             stream.update(cx, |stream, cx| {
                 stream.finish_shell_recovery(request, Err(ShellRecoveryError::Changed), cx)
