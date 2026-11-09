@@ -42,6 +42,7 @@ pub struct ShellRecoveryConfirmation {
     pub projection: ShellRecoveryProjection,
     pub decision_id: String,
     authority_epoch: String,
+    draft: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,16 +54,57 @@ pub enum ShellRecoveryError {
 
 pub struct ShellRecoveryService {
     database_path: PathBuf,
+    draft: bool,
 }
 
 impl ShellRecoveryService {
     pub fn new(database_path: PathBuf) -> Self {
-        Self { database_path }
+        Self {
+            database_path,
+            draft: false,
+        }
+    }
+
+    pub fn for_draft(database_path: PathBuf) -> Self {
+        Self {
+            database_path,
+            draft: true,
+        }
+    }
+
+    fn workspace(&self, store: &Store, source: &Thread) -> Result<String, ShellRecoveryError> {
+        if !self.draft {
+            return workspace(store, source);
+        }
+        if vega_store::threads::find(store.conn(), &source.id)
+            .map_err(unavailable)?
+            .is_some()
+            || source.backend != crate::types::TaskBackend::Native
+            || source.status != crate::types::ThreadStatus::Active
+            || source.parent_thread_id.is_some()
+            || source.forked_from_thread_id.is_some()
+            || source.forked_from_message_id.is_some()
+            || !(0..i64::MAX).contains(&source.permission_revision)
+            || ulid::Ulid::from_string(&source.id).is_err()
+        {
+            return Err(ShellRecoveryError::Changed);
+        }
+        let authority =
+            vega_store::permission_contracts::load_state(store.conn()).map_err(unavailable)?;
+        if authority.reset_pending
+            || source
+                .draft_authority_epoch
+                .as_ref()
+                .is_some_and(|epoch| epoch != &authority.authority_epoch)
+        {
+            return Err(ShellRecoveryError::Changed);
+        }
+        project_workspace(store, &source.project_id)
     }
 
     pub fn read(&self, source: &Thread) -> Result<ShellRecoveryProjection, ShellRecoveryError> {
         let store = Store::open_existing(&self.database_path).map_err(unavailable)?;
-        let workspace = workspace(&store, source)?;
+        let workspace = self.workspace(&store, source)?;
         reconcile_commits(&store, &workspace)?;
         vega_store::shell_operations::recover_generation(
             store.conn(),
@@ -161,7 +203,7 @@ impl ShellRecoveryService {
         operation_id: &str,
     ) -> Result<ShellRecoveryProjection, ShellRecoveryError> {
         let store = Store::open_existing(&self.database_path).map_err(unavailable)?;
-        let workspace = workspace(&store, source)?;
+        let workspace = self.workspace(&store, source)?;
         vega_runtime::cancel_shell_session(
             &source.id,
             std::path::Path::new(&workspace),
@@ -243,6 +285,7 @@ impl ShellRecoveryService {
             projection,
             decision_id: ulid::Ulid::generate().to_string(),
             authority_epoch: authority.authority_epoch,
+            draft: self.draft,
         })
     }
 
@@ -252,7 +295,9 @@ impl ShellRecoveryService {
     ) -> Result<ShellRecoveryProjection, ShellRecoveryError> {
         let _coordination = crate::permission_contracts::coordinate().map_err(unavailable)?;
         let store = Store::open_existing(&self.database_path).map_err(unavailable)?;
-        if workspace(&store, &confirmation.source)? != confirmation.projection.workspace {
+        if self.draft != confirmation.draft
+            || self.workspace(&store, &confirmation.source)? != confirmation.projection.workspace
+        {
             return Err(ShellRecoveryError::Changed);
         }
         let authority =
@@ -450,7 +495,11 @@ fn workspace(store: &Store, source: &Thread) -> Result<String, ShellRecoveryErro
     {
         return Err(ShellRecoveryError::Changed);
     }
-    let project = vega_store::projects::find(store.conn(), &current.project_id)
+    project_workspace(store, &current.project_id)
+}
+
+fn project_workspace(store: &Store, project_id: &str) -> Result<String, ShellRecoveryError> {
+    let project = vega_store::projects::find(store.conn(), project_id)
         .map_err(unavailable)?
         .ok_or(ShellRecoveryError::Changed)?;
     let path = std::fs::canonicalize(&project.path).map_err(unavailable)?;

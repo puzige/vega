@@ -9,6 +9,7 @@
 "ui.shell_session.timed_out" = "Command timed out"
 "ui.shell_session.output_incomplete" = "Output incomplete"
 "ui.shell_recovery.paused" = "Workspace writes paused"
+"ui.shell_recovery.status_unavailable" = "Workspace recovery status unavailable"
 "ui.shell_recovery.review" = "Review recovery"
 "ui.shell_recovery.retrying" = "Retrying cleanup"
 "ui.shell_recovery.checking" = "Checking status"

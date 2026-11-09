@@ -2073,6 +2073,7 @@ impl Render for ConversationStream {
             })
             .when(!self.reading_preview, |root| {
                 root.children(self.render_pending_menu(cx))
+                    .child(self.render_shell_recovery_overlay(cx))
             })
             .into_any_element();
         counters.record_render(render_t0);

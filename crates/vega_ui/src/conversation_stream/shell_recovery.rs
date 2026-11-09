@@ -18,7 +18,47 @@ pub enum ShellRecoveryAction {
 pub struct ShellRecoveryRequested {
     pub source: Thread,
     pub sequence: u64,
+    pub draft: bool,
     pub action: ShellRecoveryAction,
+}
+
+impl ShellRecoveryRequested {
+    fn matches_route(&self, thread: &Thread, draft: bool, sequence: u64) -> bool {
+        self.source.id == thread.id
+            && self.source.project_id == thread.project_id
+            && same_recovery_authority(&self.source, thread)
+            && self.draft == draft
+            && self.sequence == sequence
+    }
+}
+
+pub(super) fn same_recovery_authority(source: &Thread, current: &Thread) -> bool {
+    source.backend == current.backend
+        && source.mode == current.mode
+        && source.permission_mode == current.permission_mode
+        && source.permission_revision == current.permission_revision
+        && source.draft_authority_epoch == current.draft_authority_epoch
+        && source.default_permission == current.default_permission
+        && source.full_access_grant == current.full_access_grant
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RecoveryPresentation {
+    Hidden,
+    Summary(&'static str),
+    Details,
+}
+
+fn recovery_presentation(draft: bool, blocked: bool, unavailable: bool) -> RecoveryPresentation {
+    if !draft {
+        RecoveryPresentation::Details
+    } else if unavailable {
+        RecoveryPresentation::Summary("ui.shell_recovery.status_unavailable")
+    } else if blocked {
+        RecoveryPresentation::Summary("ui.shell_recovery.paused")
+    } else {
+        RecoveryPresentation::Hidden
+    }
 }
 
 pub enum ShellRecoveryOutcome {
@@ -55,9 +95,11 @@ impl<T> Default for RecoveryDecision<T> {
 }
 
 impl<T> RecoveryDecision<T> {
-    fn dismiss(&mut self) {
+    fn dismiss(&mut self, sequence: &mut u64, pending: &mut Option<&'static str>) {
         if !self.submitted {
             self.confirmation = None;
+            *sequence = sequence.saturating_add(1);
+            *pending = None;
         }
     }
 }
@@ -79,11 +121,22 @@ impl ShellRecoveryUi {
 }
 
 impl ConversationStream {
+    pub(super) fn reset_shell_recovery(&mut self, cx: &mut Context<Self>) {
+        let sequence = self.shell_recovery.sequence.saturating_add(1);
+        self.shell_recovery = ShellRecoveryUi::new(cx);
+        self.shell_recovery.sequence = sequence;
+        let stream = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let _ = stream.update(cx, |this, cx| this.refresh_shell_recovery(cx));
+        });
+    }
+
     pub(super) fn dismiss_shell_recovery(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.shell_recovery.opened = false;
-        if self.shell_recovery.pending.is_none() {
-            self.shell_recovery.decision.dismiss();
-        }
+        self.shell_recovery.decision.dismiss(
+            &mut self.shell_recovery.sequence,
+            &mut self.shell_recovery.pending,
+        );
         self.shell_recovery.review_focus.focus(window, cx);
         cx.notify();
     }
@@ -120,6 +173,7 @@ impl ConversationStream {
         cx.emit(ShellRecoveryRequested {
             source: self.thread.clone(),
             sequence,
+            draft: self.draft_route,
             action,
         });
         cx.notify();
@@ -131,10 +185,7 @@ impl ConversationStream {
         result: Result<ShellRecoveryOutcome, ShellRecoveryError>,
         cx: &mut Context<Self>,
     ) {
-        if request.source.id != self.thread.id
-            || request.source.project_id != self.thread.project_id
-            || request.sequence != self.shell_recovery.sequence
-        {
+        if !request.matches_route(&self.thread, self.draft_route, self.shell_recovery.sequence) {
             return;
         }
         self.shell_recovery.pending = None;
@@ -199,6 +250,87 @@ impl ConversationStream {
     }
 
     pub(super) fn render_shell_recovery(&self, cx: &mut Context<Self>) -> AnyElement {
+        let state = &self.shell_recovery;
+        let blocked = state
+            .projection
+            .as_ref()
+            .is_some_and(|p| !p.rows.is_empty());
+        let label = match recovery_presentation(self.draft_route, blocked, state.error.is_some()) {
+            RecoveryPresentation::Hidden => return div().into_any_element(),
+            RecoveryPresentation::Details => return self.render_shell_recovery_details(cx),
+            RecoveryPresentation::Summary(label) => label,
+        };
+        let colors = theme(cx).colors;
+        div()
+            .w_full()
+            .max_w(px(Layout::COMPOSER_MAX_WIDTH))
+            .mx_auto()
+            .px(px(Layout::CONVERSATION_PADDING))
+            .flex()
+            .items_center()
+            .gap_2()
+            .text_color(colors.text_secondary)
+            .child(vega_i18n::t(label))
+            .child(focused_button(
+                "shell-draft-review",
+                "ui.shell_recovery.review",
+                Some(&state.review_focus),
+                true,
+                colors,
+                cx.listener(|this, _, window, cx| {
+                    this.shell_recovery.opened = true;
+                    this.shell_recovery.safe_focus.focus(window, cx);
+                    this.refresh_shell_recovery(cx);
+                    cx.notify();
+                }),
+            ))
+            .into_any_element()
+    }
+
+    pub(super) fn render_shell_recovery_overlay(&self, cx: &mut Context<Self>) -> AnyElement {
+        if !self.draft_route || !self.shell_recovery.opened {
+            return div().into_any_element();
+        }
+        let colors = theme(cx).colors;
+        gpui_kit::deferred(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .occlude()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    div()
+                        .id("draft-shell-recovery-details")
+                        .track_focus(&self.shell_recovery.safe_focus)
+                        .w_full()
+                        .max_w(px(Layout::COMPOSER_MAX_WIDTH))
+                        .max_h(px(Layout::COMPOSER_PICKER_MAX_HEIGHT))
+                        .overflow_y_scroll()
+                        .rounded(px(Layout::MENU_RADIUS))
+                        .border_1()
+                        .border_color(colors.border_subtle)
+                        .bg(colors.bg_elevated)
+                        .shadow_sm()
+                        .child(button(
+                            "shell-draft-close",
+                            "ui.shell_recovery.not_now",
+                            true,
+                            colors,
+                            cx.listener(|this, _, window, cx| {
+                                this.dismiss_shell_recovery(window, cx);
+                            }),
+                        ))
+                        .child(self.render_shell_recovery_details(cx)),
+                ),
+        )
+        .with_priority(3)
+        .into_any_element()
+    }
+
+    fn render_shell_recovery_details(&self, cx: &mut Context<Self>) -> AnyElement {
         let state = &self.shell_recovery;
         let rows = state
             .projection
