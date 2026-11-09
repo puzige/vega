@@ -11,6 +11,7 @@ pub struct RuntimeShellOperationRecord {
     pub call_id: String,
     pub generation: String,
     pub workspace: String,
+    pub concurrent: bool,
     pub state: String,
     pub exit_code: Option<i32>,
     pub error: Option<String>,
@@ -300,45 +301,48 @@ impl Drop for RuntimeWorkspaceMutationGuard {
 
 struct Reservation {
     workspace: PathBuf,
+    concurrent: bool,
     blocker_id: String,
     active: AtomicBool,
 }
 
 impl Reservation {
-    fn acquire(workspace: &Path) -> Result<Self, VegaError> {
+    fn acquire(workspace: &Path, concurrent: bool) -> Result<Self, VegaError> {
         let mut registry = registry()
             .lock()
             .map_err(|_| failure("registry_unavailable"))?;
         if registry.retained >= 64 || registry.active >= 4 {
             return Err(failure("application_capacity_reached"));
         }
-        if registry.workspaces.iter().any(|(path, state)| {
-            workspace_overlap(workspace, path)
-                && (state.session || state.blocked() || state.mutations != 0)
-        }) {
+        if !concurrent
+            && registry.workspaces.iter().any(|(path, state)| {
+                workspace_overlap(workspace, path)
+                    && (state.session || state.blocked() || state.mutations != 0)
+            })
+        {
             return Err(failure("workspace_busy"));
         }
-        let state = registry
-            .workspaces
-            .entry(workspace.to_path_buf())
-            .or_default();
-        if state.blocked() {
-            return Err(failure("workspace_quarantined"));
+        if !concurrent {
+            registry
+                .workspaces
+                .entry(workspace.to_path_buf())
+                .or_default()
+                .session = true;
         }
-        if state.session || state.mutations != 0 {
-            return Err(failure("workspace_busy"));
-        }
-        state.session = true;
         registry.retained += 1;
         registry.active += 1;
         Ok(Self {
             workspace: workspace.to_path_buf(),
+            concurrent,
             blocker_id: ulid::Ulid::generate().to_string(),
             active: AtomicBool::new(true),
         })
     }
 
     fn release_blocker(&self) -> Result<(), VegaError> {
+        if self.concurrent {
+            return Ok(());
+        }
         let mut registry = registry()
             .lock()
             .map_err(|_| failure("registry_unavailable"))?;
@@ -363,7 +367,9 @@ impl Reservation {
         }
         if let Ok(mut registry) = registry().lock() {
             registry.active = registry.active.saturating_sub(1);
-            if let Some(state) = registry.workspaces.get_mut(&self.workspace) {
+            if !self.concurrent
+                && let Some(state) = registry.workspaces.get_mut(&self.workspace)
+            {
                 state.session = false;
                 if !cleanup_safe {
                     state.blockers.insert(self.blocker_id.clone());
@@ -423,6 +429,7 @@ fn application_shell_runs() -> &'static Mutex<ApplicationShellRuns> {
 #[derive(Clone, Debug)]
 pub struct RuntimeActiveShell {
     pub operation_id: String,
+    pub concurrent: bool,
     pub state: String,
 }
 
@@ -466,6 +473,7 @@ pub fn active_shell_sessions(
         .map(|(_, operation)| {
             Ok(RuntimeActiveShell {
                 operation_id: operation.record.operation_id.clone(),
+                concurrent: operation.record.concurrent,
                 state: operation
                     .session
                     .snapshot(None)
@@ -474,6 +482,32 @@ pub fn active_shell_sessions(
             })
         })
         .collect()
+}
+
+pub fn concurrent_shell_cleanup_available(
+    thread: &str,
+    workspace: &Path,
+    operation_id: &str,
+) -> Result<bool, VegaError> {
+    let owners = recovery_owners()
+        .lock()
+        .map_err(|_| failure("registry_unavailable"))?;
+    Ok(owners.get(operation_id).is_some_and(|operation| {
+        operation.record.concurrent
+            && operation.record.thread_id == thread
+            && workspace_overlap(Path::new(&operation.record.workspace), workspace)
+    }))
+}
+
+pub async fn retry_concurrent_shell_cleanup(
+    thread: &str,
+    workspace: &Path,
+    operation_id: &str,
+) -> Result<BashSessionSnapshot, VegaError> {
+    if !concurrent_shell_cleanup_available(thread, workspace, operation_id)? {
+        return Err(failure("session_control_expired"));
+    }
+    retry_shell_cleanup(operation_id).await
 }
 
 pub async fn cancel_shell_session(
@@ -575,10 +609,9 @@ impl ShellRun {
     }
 
     pub(super) fn active(&self) -> Result<bool, VegaError> {
-        Ok(self
-            .operations()?
-            .iter()
-            .any(|operation| operation.reservation.active.load(Ordering::Acquire)))
+        Ok(self.operations()?.iter().any(|operation| {
+            !operation.record.concurrent && operation.reservation.active.load(Ordering::Acquire)
+        }))
     }
 
     pub(super) fn validate_launch(
@@ -593,12 +626,14 @@ impl ShellRun {
         if !cfg!(target_os = "macos") {
             return Err(failure("session_process_control_unsupported"));
         }
-        if policy != BashLaunchPolicy::WorkspaceWrite
+        if policy == BashLaunchPolicy::ReadOnly
             || prepared
                 .requested_scope()
                 .is_some_and(|scope| !scope.write_roots().is_empty())
         {
-            return Err(failure("workspace_sandbox_required"));
+            return Err(failure(
+                "session_policy_incompatible: non-null wait_ms requests background execution, which requires workspace-write or authorized Full Access without extra writable roots. Command NOT started. Keep permissions and required scope; explicitly resubmit with wait_ms null for blocking execution.",
+            ));
         }
         if workspace_identity(prepared.project_root())? != self.workspace {
             return Err(failure("workspace_identity_mismatch"));
@@ -615,9 +650,10 @@ impl ShellRun {
         if operations.len() >= 4 {
             return Err(failure("run_retained_capacity_reached"));
         }
-        if operations
-            .iter()
-            .any(|operation| operation.reservation.active.load(Ordering::Acquire))
+        if policy != BashLaunchPolicy::FullAccess
+            && operations.iter().any(|operation| {
+                !operation.record.concurrent && operation.reservation.active.load(Ordering::Acquire)
+            })
         {
             return Err(failure("wait_or_cancel_active_shell"));
         }
@@ -647,15 +683,18 @@ impl ShellRun {
             "unresolved"
         }
         .into();
-        RuntimeWorkspaceMutationGuard::set_persisted_block(
-            &self.workspace,
-            &record.operation_id,
-            true,
-        )?;
+        if !record.concurrent {
+            RuntimeWorkspaceMutationGuard::set_persisted_block(
+                &self.workspace,
+                &record.operation_id,
+                true,
+            )?;
+        }
+        let concurrent = record.concurrent;
         let operation = record.operation_id.clone();
         let result = self.record(record).await;
         reservation.finish(true);
-        if result.is_ok() && resources_closed {
+        if !concurrent && result.is_ok() && resources_closed {
             RuntimeWorkspaceMutationGuard::set_persisted_block(&self.workspace, &operation, false)?;
         }
         result
@@ -672,6 +711,10 @@ impl ShellRun {
         let mut terminal = operation.terminal.lock().await;
         if *terminal {
             return Ok(());
+        }
+        if operation.record.concurrent {
+            vega_tools::ReadState::invalidate_workspace(Path::new("/"))
+                .map_err(|_| failure("read_invalidation_failed"))?;
         }
         let mut record = operation.record.clone();
         record.state = if snapshot.cleanup_safe {
@@ -716,7 +759,7 @@ impl ShellRun {
             Ok(result) => result,
             Err(_) => Err(failure("cleanup_commit_unconfirmed")),
         };
-        if persisted.is_err() || !snapshot.cleanup_safe {
+        if persisted.is_err() || !operation.record.concurrent && !snapshot.cleanup_safe {
             self.failed.store(true, Ordering::Release);
             self.closed.store(true, Ordering::Release);
             self.cancel.cancel();
@@ -754,7 +797,12 @@ impl ShellRun {
     ) -> Result<String, VegaError> {
         let lifecycle = self.lifecycle.lock().await;
         self.validate_launch(&prepared, policy)?;
-        let reservation = Reservation::acquire(&self.workspace)?;
+        let concurrent = policy == BashLaunchPolicy::FullAccess;
+        if concurrent {
+            vega_tools::ReadState::invalidate_workspace(Path::new("/"))
+                .map_err(|_| failure("read_invalidation_failed"))?;
+        }
+        let reservation = Reservation::acquire(&self.workspace, concurrent)?;
         let mut record = RuntimeShellOperationRecord {
             operation_id: ulid::Ulid::generate().to_string(),
             run_id: self
@@ -765,6 +813,7 @@ impl ShellRun {
             call_id: call.id.clone(),
             generation: shell_generation().into(),
             workspace: self.workspace.to_string_lossy().into_owned(),
+            concurrent,
             state: "prepared".into(),
             exit_code: None,
             error: None,
@@ -1026,12 +1075,13 @@ impl ShellRun {
         self.closed.store(true, Ordering::Release);
         let _lifecycle = self.lifecycle.lock().await;
         let operations = self.operations()?;
-        let mut failed = false;
-        for operation in &operations {
+        let outcomes = futures::future::join_all(operations.iter().map(|operation| async move {
             let snapshot = operation.session.cancel_and_wait().await;
-            failed |= !snapshot.cleanup_safe;
-            failed |= self.finish(operation, &snapshot).await.is_err();
-        }
+            let persisted = self.finish(operation, &snapshot).await;
+            persisted.is_err() || !operation.record.concurrent && !snapshot.cleanup_safe
+        }))
+        .await;
+        let mut failed = outcomes.into_iter().any(|failed| failed);
         let monitors = self
             .monitors
             .lock()
@@ -1105,6 +1155,9 @@ pub(super) fn admit_prepared(
         return Ok(None);
     };
     owner.open()?;
+    if full_access(call) {
+        return Ok(None);
+    }
     if owner.active()? && !independent_read(call) {
         return Err(failure("wait_or_cancel_active_shell"));
     }
@@ -1126,6 +1179,16 @@ pub(super) fn execution_admission(
     admit(call, config, tools)
 }
 
+fn full_access(call: &super::tools_exec::PreparedRuntimeCall) -> bool {
+    matches!(
+        call,
+        super::tools_exec::PreparedRuntimeCall::Bash {
+            policy: BashLaunchPolicy::FullAccess,
+            ..
+        }
+    )
+}
+
 pub(super) fn independent_read(call: &super::tools_exec::PreparedRuntimeCall) -> bool {
     use super::tools_exec::PreparedRuntimeCall;
     matches!(
@@ -1142,6 +1205,9 @@ pub(super) fn admit(
 ) -> Result<Option<RuntimeWorkspaceMutationGuard>, VegaError> {
     if let Some(owner) = &config.shell_run {
         owner.open()?;
+        if full_access(call) {
+            return Ok(None);
+        }
         if owner.active()? && !independent_read(call) {
             return Err(failure("wait_or_cancel_active_shell"));
         }
@@ -1177,7 +1243,7 @@ pub(super) fn admit(
     } = call
     {
         if *policy == BashLaunchPolicy::FullAccess {
-            ranges.push(PathBuf::from("/"));
+            return Ok(None);
         } else if let Some(scope) = prepared.requested_scope() {
             for root in scope.write_roots() {
                 ranges.push(PathBuf::from(root));
@@ -1186,3 +1252,7 @@ pub(super) fn admit(
     }
     RuntimeWorkspaceMutationGuard::acquire_all(&ranges).map(Some)
 }
+
+#[cfg(test)]
+#[path = "shell_concurrency_tests.rs"]
+mod shell_concurrency_tests;

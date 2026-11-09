@@ -1,6 +1,6 @@
 mod automation_permission;
 mod privacy;
-mod shell_recovery;
+pub(crate) mod shell_recovery;
 pub use shell_recovery::{ShellRecoveryAction, ShellRecoveryOutcome, ShellRecoveryRequested};
 mod thread_permissions;
 pub use privacy::{PrivacyAction, PrivacyRequested};

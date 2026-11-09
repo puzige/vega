@@ -70,7 +70,7 @@ impl EventEmitter<ShellRecoveryRequested> for ConversationStream {}
 
 pub(crate) struct ShellRecoveryUi {
     sequence: u64,
-    pending: Option<&'static str>,
+    pub(super) pending: Option<&'static str>,
     pub(super) opened: bool,
     pub(super) projection: Option<ShellRecoveryProjection>,
     decision: RecoveryDecision<ShellRecoveryConfirmation>,
@@ -151,7 +151,11 @@ impl ConversationStream {
         }
     }
 
-    fn request_shell_recovery(&mut self, action: ShellRecoveryAction, cx: &mut Context<Self>) {
+    pub(super) fn request_shell_recovery(
+        &mut self,
+        action: ShellRecoveryAction,
+        cx: &mut Context<Self>,
+    ) {
         if self.shell_recovery.pending.is_some() {
             return;
         }
@@ -189,6 +193,18 @@ impl ConversationStream {
             return;
         }
         self.shell_recovery.pending = None;
+        let mut card_control = false;
+        if let ShellRecoveryAction::Cancel(operation) = &request.action {
+            for card in self.tool_cards.values() {
+                card_control |= card.update(cx, |card, cx| {
+                    let matched = card.finish_shell_control(operation, result.is_err());
+                    if matched {
+                        cx.notify();
+                    }
+                    matched
+                });
+            }
+        }
         match result {
             Ok(ShellRecoveryOutcome::Projection(projection)) => {
                 for command in &projection.commands {
@@ -218,7 +234,9 @@ impl ConversationStream {
                 if error == ShellRecoveryError::Changed {
                     self.shell_recovery.decision = RecoveryDecision::default();
                 }
-                self.shell_recovery.error = Some(error);
+                if !card_control {
+                    self.shell_recovery.error = Some(error);
+                }
             }
         }
         let refresh = self
@@ -578,7 +596,7 @@ fn recovery_reason(reason: &str) -> String {
         .join(" ")
 }
 
-fn button(
+pub(crate) fn button(
     id: &'static str,
     key: &'static str,
     enabled: bool,

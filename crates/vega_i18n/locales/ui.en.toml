@@ -1,4 +1,6 @@
 "ui.collapse_save_failed_retry" = "Could not save the expanded state. Click the project again to retry. {error}"
+"ui.shell_session.control_failed" = "Could not confirm command cleanup. Retry or check the command manually."
+"ui.shell_session.cleanup_unresolved" = "Cleanup not confirmed"
 "ui.shell_session.cancel" = "Cancel command"
 "ui.shell_session.running" = "Command running"
 "ui.shell_session.finishing" = "Finishing command"

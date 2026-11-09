@@ -135,6 +135,11 @@ impl ToolDetail {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct ShellControlRequested {
+    pub operation_id: String,
+}
+
 /// UI-only audited tool call. It never retains a provider call id, raw
 /// write/edit input, fingerprint, checkpoint reference, or checkpoint path.
 pub struct ToolCard {
@@ -144,6 +149,8 @@ pub struct ToolCard {
     approval: Option<Approval>,
     result: Option<ToolCardResultProjection>,
     shell_command: Option<vega_conversation::types::ShellCommandProjection>,
+    shell_control_pending: bool,
+    shell_control_failed: bool,
     summary: String,
     summary_language: &'static str,
     output_rows: Vec<String>,
@@ -157,6 +164,7 @@ pub struct ToolCard {
 }
 
 impl gpui_kit::EventEmitter<SubagentOpenRequested> for ToolCard {}
+impl gpui_kit::EventEmitter<ShellControlRequested> for ToolCard {}
 
 impl ToolCard {
     /// Creates a pending card from a durable safe proposal.
@@ -174,6 +182,8 @@ impl ToolCard {
             approval: None,
             result: corrupt.then_some(ToolCardResultProjection::Corrupt),
             shell_command: None,
+            shell_control_pending: false,
+            shell_control_failed: false,
             summary: String::new(),
             summary_language: vega_i18n::language(),
             output_rows: Vec::new(),
@@ -203,6 +213,8 @@ impl ToolCard {
             approval: None,
             result: Some(projection),
             shell_command: None,
+            shell_control_pending: false,
+            shell_control_failed: false,
             summary: String::new(),
             summary_language: vega_i18n::language(),
             output_rows: Vec::new(),
@@ -227,6 +239,8 @@ impl ToolCard {
             approval: None,
             result: Some(ToolCardResultProjection::Corrupt),
             shell_command: None,
+            shell_control_pending: false,
+            shell_control_failed: false,
             summary: String::new(),
             summary_language: vega_i18n::language(),
             output_rows: Vec::new(),
@@ -261,6 +275,8 @@ impl ToolCard {
             approval,
             result,
             shell_command: None,
+            shell_control_pending: false,
+            shell_control_failed: false,
             summary: String::new(),
             summary_language: vega_i18n::language(),
             expanded: false,
@@ -826,12 +842,56 @@ impl ToolCard {
                 if expanded { card_ref.detail() } else { None },
             )
         };
+        let control = {
+            let state = card.read(cx);
+            state
+                .shell_command
+                .as_ref()
+                .filter(|command| command.concurrent && (command.can_cancel || command.can_retry))
+                .map(|command| {
+                    let operation = command.operation_id.clone();
+                    let enabled = !state.shell_control_pending;
+                    let label = if state.shell_control_pending {
+                        "ui.shell_session.stopping"
+                    } else if command.can_retry {
+                        "ui.shell_recovery.retry"
+                    } else {
+                        "ui.shell_session.cancel"
+                    };
+                    let target = card.clone();
+                    super::conversation_stream::shell_recovery::button(
+                        "shell-card-control",
+                        label,
+                        enabled,
+                        colors,
+                        move |_, _, cx| {
+                            target.update(cx, |card, cx| {
+                                if !card.shell_control_pending {
+                                    card.shell_control_pending = true;
+                                    card.shell_control_failed = false;
+                                    cx.emit(ShellControlRequested {
+                                        operation_id: operation.clone(),
+                                    });
+                                    cx.notify();
+                                }
+                            });
+                        },
+                    )
+                })
+        };
         let notice = {
             let card = card.read(cx);
-            headline.as_ref().and_then(|(title, _, _)| {
-                card.headline_notice(title)
-                    .map(|notice| (notice, card.activity_state().terminal_color(&colors)))
-            })
+            if card.shell_control_failed {
+                Some((
+                    vega_i18n::t("ui.shell_session.control_failed").to_string(),
+                    colors.text_secondary,
+                ))
+            } else {
+                headline.as_ref().and_then(|(title, _, _)| {
+                    card.headline_notice(title)
+                        .map(|notice| (notice, card.activity_state().terminal_color(&colors)))
+                })
+            }
         };
         let (title, leading_icon, title_element) = headline.unwrap_or_else(|| {
             (
@@ -951,6 +1011,7 @@ impl ToolCard {
                         .child(notice),
                 )
             })
+            .when_some(control, |card, control| card.child(control))
             .when_some(expanded.then_some(detail).flatten(), move |card, detail| {
                 card.child(render_detail(
                     detail,
@@ -1496,9 +1557,24 @@ impl ToolCard {
         if !matches || !matches!(&self.input, Some(ToolCardInputProjection::Bash { .. })) {
             return false;
         }
+        self.shell_control_pending = false;
+        self.shell_control_failed = false;
         self.shell_command = Some(command.clone());
         self.refresh_summary();
         true
+    }
+
+    pub(crate) fn finish_shell_control(&mut self, operation_id: &str, failed: bool) -> bool {
+        if self
+            .shell_command
+            .as_ref()
+            .is_some_and(|command| command.operation_id == operation_id)
+        {
+            self.shell_control_pending = false;
+            self.shell_control_failed = failed;
+            return true;
+        }
+        false
     }
 
     fn shell_session_state(&self) -> Option<&str> {
@@ -1580,6 +1656,14 @@ impl ToolCard {
 
     fn bash_detail_title(&self) -> String {
         let mut title = vega_i18n::t("ui.shell").to_string();
+        if self
+            .shell_command
+            .as_ref()
+            .is_some_and(|command| command.concurrent && command.cleanup_unresolved)
+        {
+            title.push_str(" · ");
+            title.push_str(vega_i18n::t("ui.shell_session.cleanup_unresolved"));
+        }
         if let Some(ToolCardResultProjection::Bash {
             truncated,
             reused,

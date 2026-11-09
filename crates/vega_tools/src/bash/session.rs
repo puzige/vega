@@ -608,7 +608,7 @@ impl Tools {
         redactor: BashSessionRedactor,
     ) -> Result<BashSession, BashError> {
         self.validate_bash_launch(&prepared, &cancel)?;
-        if policy == BashLaunchPolicy::FullAccess
+        if policy == BashLaunchPolicy::ReadOnly
             || prepared
                 .requested_scope()
                 .is_some_and(|scope| !scope.write_roots().is_empty())
