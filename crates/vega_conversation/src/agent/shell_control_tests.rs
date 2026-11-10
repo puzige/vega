@@ -69,8 +69,30 @@ fn lifecycle(tool: &str, state: &str, status: RuntimeToolStatus, safe: bool, exi
         None,
     )
     .unwrap();
-    let thread =
-        crate::threads::create_thread(&store, &project.id, "test-model", "confirm").unwrap();
+    let thread_id = ulid::Ulid::generate().to_string();
+    vega_store::threads::create(
+        store.conn(),
+        vega_store::threads::NewThread {
+            reasoning_preferences: None,
+            id: &thread_id,
+            project_id: &project.id,
+            title: "control regression",
+            mode: "execute",
+            permission_mode: "confirm",
+            permission_revision: 0,
+            full_access_grant: None,
+            model: "test-model",
+            status: "active",
+            pinned: false,
+            unread: false,
+            created_at: 1,
+            updated_at: 1,
+        },
+    )
+    .unwrap();
+    let thread = vega_store::threads::find(store.conn(), &thread_id)
+        .unwrap()
+        .unwrap();
     let message = ulid::Ulid::generate().to_string();
     messages::insert(
         store.conn(),
@@ -92,8 +114,14 @@ fn lifecycle(tool: &str, state: &str, status: RuntimeToolStatus, safe: bool, exi
     let proposed = call(tool, json!({"handle":ulid::Ulid::generate().to_string()}));
     let mut seq = 0;
     let mut persist = |event| {
-        events::persist_runtime_event(
+        let tx = vega_store::write_coordination::WriteTransaction::new(
+            store.conn(),
+            vega_store::write_coordination::WriteCategory::RuntimeEvent,
+        )
+        .unwrap();
+        let result = events::persist_runtime_event(
             &store,
+            &tx,
             &project.id,
             &thread.id,
             &message,
@@ -104,7 +132,11 @@ fn lifecycle(tool: &str, state: &str, status: RuntimeToolStatus, safe: bool, exi
             &event,
             None,
             None,
-        )
+        );
+        if result.is_ok() {
+            tx.commit().unwrap();
+        }
+        result
     };
     persist(RuntimeEvent::ToolCallProposed(proposed.clone())).unwrap();
     let audit = RuntimeApprovalAudit {

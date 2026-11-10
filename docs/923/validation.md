@@ -33,3 +33,11 @@
 固定开发源码与哈希、独立实现审查、开发 Rust 测试清理及清理复核、完整最终 head required CI、合并后用户手测。开发测试不会进入 master；清理后的 0 发现/0 执行标为 no Rust tests，不冒称行为测试通过。
 
 未升级/重启远端，未重跑结果未知命令，未修改真实恢复记录或清理状态。
+
+## 主分支集成后重验
+
+开发初版 `0b617e0e0a6389c7c5945c1a47924911c86ecdfa` 的 PR merge-ref CI run `42784732497` Clippy job `129723013347` 报 E0061：主分支 #924 / `f2d59991` 新增 persist_runtime_event 的 WriteTransaction 参数，测试仍为旧签名。原始日志明确为测试 API 接线故障，不归因产品参数校验。
+
+已合入 `f2d59991`，保留其数据库 writer / sealed transaction 行为，测试每次事件使用 WriteTransaction(RuntimeEvent)，成功才 commit。旧 create_thread(:memory:) 因新在线任务身份前提报 InvalidTaskIdentity，测试前置改用真实 store NewThread 行；控制提案→审批→运行→终态→历史恢复断言不变。
+
+本轮在整合后代码重新执行上述 13 项 Rust 回归，13/13 通过；受影响三 crate 全目标严格 Clippy 通过。前版独立实现审查无阻塞发现；新增集成差异需复核后才清理开发测试。旧 CI 失败不以清理测试规避，已先修 harness 并保留本轮实际回归。
