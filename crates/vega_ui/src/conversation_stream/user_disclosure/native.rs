@@ -356,7 +356,7 @@ impl RenderOnce for Native {
             owner.entity_id(),
             self.input.copy.id
         );
-        let host = window.use_keyed_state(key, cx, |window, cx| {
+        let make_host = |window: &mut Window, cx: &mut Context<Host>| {
             let focus = self.input.focus.clone();
             let subscriptions = vec![
                 cx.on_release(|host: &mut Host, cx| host.stop(cx)),
@@ -411,6 +411,12 @@ impl RenderOnce for Native {
                 lease: Weak::new(),
                 _subscriptions: subscriptions,
             }
+        };
+        let host = window.with_global_id(key.into(), |id, window| {
+            window.with_element_state::<gpui_kit::Entity<Host>, _>(id, |previous, window| {
+                let host = previous.unwrap_or_else(|| cx.new(|cx| make_host(window, cx)));
+                (host.clone(), host)
+            })
         });
         host.update(cx, |host, cx| {
             if host.input.source != self.input.source
