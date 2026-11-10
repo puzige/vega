@@ -87,7 +87,7 @@ use std::{
 
 use gpui::{
     A11ySubtreeBuilder, AnyElement, App, AvailableSpace, FocusHandle, InteractiveElement,
-    IntoElement, StatefulInteractiveElement, Styled, Window,
+    IntoElement, ParentElement, StatefulInteractiveElement, Styled, Window,
     accesskit::{
         self, Action, ActionData, AriaCurrent, CustomAction, Live, Node, Role, ScrollUnit, Toggled,
     },
@@ -618,25 +618,60 @@ pub(crate) struct Built {
     top: Vec<accesskit::NodeId>,
 }
 
-impl Built {
-    fn index(&self, id: accesskit::NodeId) -> Option<usize> {
-        self.entries.iter().position(|e| e.id == id)
+fn semantic_element(
+    id: accesskit::NodeId,
+    entries: &mut FxHashMap<accesskit::NodeId, Entry>,
+    key: u64,
+    focused: Option<NodeId>,
+    focus_handle: &FocusHandle,
+    scale: f32,
+    parent_origin: (f32, f32),
+) -> Option<AnyElement> {
+    let entry = entries.remove(&id)?;
+    let mut node = entry.node;
+    let children = node.children().to_vec();
+    node.set_children(Vec::<accesskit::NodeId>::new());
+    let bounds = node.bounds().unwrap_or_default();
+    let x = bounds.x0 as f32 / scale;
+    let y = bounds.y0 as f32 / scale;
+    let mut element = div()
+        .id(id.0)
+        .role(node.role())
+        .absolute()
+        .left(px(x - parent_origin.0))
+        .top(px(y - parent_origin.1))
+        .w(px((bounds.x1 - bounds.x0) as f32 / scale))
+        .h(px((bounds.y1 - bounds.y0) as f32 / scale));
+    if focused.is_some_and(|view| id == node_id(key, view)) {
+        element = element.track_focus(focus_handle);
     }
-
-    /// Takes the element `id` and its subtree out.
-    fn take_subtree(&mut self, id: accesskit::NodeId) -> Option<(Entry, Vec<Entry>)> {
-        let entry = self.entries.swap_remove(self.index(id)?);
-        let mut below = Vec::new();
-        let mut queue: Vec<accesskit::NodeId> = entry.node.children().to_vec();
-        while let Some(child) = queue.pop() {
-            if let Some(i) = self.index(child) {
-                let e = self.entries.swap_remove(i);
-                queue.extend_from_slice(e.node.children());
-                below.push(e);
+    for action in entry.actions {
+        let view = entry.view;
+        element = element.on_a11y_action(action, move |data, window, cx| {
+            if let Some(surface) = Surface::by_key(key)
+                && let Some(view) = surface.view(view)
+            {
+                perform(&surface, &view, action, data, window.scale_factor());
             }
-        }
-        Some((entry, below))
+            crate::rt::flush(cx);
+        });
     }
+    for child in children {
+        if let Some(child) =
+            semantic_element(child, entries, key, focused, focus_handle, scale, (x, y))
+        {
+            element = element.child(child);
+        }
+    }
+    Some(
+        element
+            .a11y_synthetic_children(move |builder: &mut A11ySubtreeBuilder| {
+                let children = builder.parent_node().children().to_vec();
+                *builder.parent_node() = node;
+                builder.parent_node().set_children(children);
+            })
+            .into_any_element(),
+    )
 }
 
 /// What the walk over the views needs.
@@ -813,17 +848,7 @@ struct State {
     active: bool,
     /// The element `AccessibilityFocus` gave the focus to.
     focus: Option<NodeId>,
-    /// This frame's nodes, between the prepaint and the synthetic
-    /// children.
-    built: Option<Built>,
-    /// The element the focus proxy stands for this frame, with its
-    /// actions.
-    proxied: Option<(NodeId, Vec<Action>)>,
-    /// The focus proxy, prepainted, to paint (in this frame's element
-    /// arena: taken by the paint that follows).
-    proxy: Option<AnyElement>,
-    /// The listeners to register as the surface paints.
-    listeners: Vec<(accesskit::NodeId, NodeId, Vec<Action>)>,
+    proxies: Vec<AnyElement>,
     /// The last announcement and its sequence number.
     announcement: Option<(u64, String)>,
 }
@@ -938,58 +963,38 @@ pub(crate) fn prepaint(
     if !active {
         with_state(surface, |s| {
             s.active = false;
-            s.built = None;
-            s.proxied = None;
-            s.proxy = None;
-            s.listeners.clear();
+            s.proxies.clear();
         });
         return;
     }
     let field = |v: &NshView| crate::text_input::accessible_value(v);
     let scale = window.scale_factor();
-    let mut built = build(key, &surface.root, surface.origin.get(), scale, &field);
-    let mut proxied = None;
-    let mut proxy = None;
-    if let Some(view) = focused(surface).map(|v| v.id())
-        && let Some((entry, below)) = built.take_subtree(node_id(key, view))
-    {
-        let node = entry.node;
-        let k = scale.max(f32::EPSILON) as f64;
-        let b = node.bounds().unwrap_or_default();
-        let (x, y) = ((b.x0 / k) as f32, (b.y0 / k) as f32);
-        let (w, h) = (((b.x1 - b.x0) / k) as f32, ((b.y1 - b.y0) / k) as f32);
-        let mut element = div()
-            .id("nsh-a11y-focus")
-            .track_focus(focus_handle)
-            .role(node.role())
-            .w(px(w))
-            .h(px(h))
-            .a11y_synthetic_children(move |builder: &mut A11ySubtreeBuilder| {
-                let children = node.children().to_vec();
-                *builder.parent_node() = node;
-                for e in below {
-                    builder.push_child(e.id, e.node);
-                }
-                builder.parent_node().set_children(children);
-            })
-            .into_any_element();
-        element.prepaint_as_root(
-            point(px(x), px(y)),
-            size(
-                AvailableSpace::Definite(px(w)),
-                AvailableSpace::Definite(px(h)),
-            ),
-            window,
-            cx,
-        );
-        proxied = Some((view, entry.actions));
-        proxy = Some(element);
+    let built = build(key, &surface.root, surface.origin.get(), scale, &field);
+    let mut entries: FxHashMap<_, _> = built.entries.into_iter().map(|e| (e.id, e)).collect();
+    let focused = focused(surface).map(|view| view.id());
+    let mut proxies = Vec::with_capacity(built.top.len());
+    for id in built.top {
+        let scale = scale.max(f32::EPSILON);
+        let bounds = entries
+            .get(&id)
+            .and_then(|entry| entry.node.bounds())
+            .unwrap_or_default();
+        let origin = ((bounds.x0 as f32) / scale, (bounds.y0 as f32) / scale);
+        if let Some(mut element) =
+            semantic_element(id, &mut entries, key, focused, focus_handle, scale, origin)
+        {
+            element.prepaint_as_root(
+                point(px(origin.0), px(origin.1)),
+                size(AvailableSpace::MinContent, AvailableSpace::MinContent),
+                window,
+                cx,
+            );
+            proxies.push(element);
+        }
     }
     with_state(surface, |s| {
         s.active = true;
-        s.built = Some(built);
-        s.proxied = proxied;
-        s.proxy = proxy;
+        s.proxies = proxies;
     });
 }
 
@@ -997,78 +1002,20 @@ pub(crate) fn prepaint(
 /// proxy put where its element is, and the last announcement.
 pub(crate) fn synthetic(surface: &Surface, builder: &mut A11ySubtreeBuilder) {
     let key = surface.key();
-    let (built, proxied, announcement) = with_state(surface, |s| {
-        (s.built.take(), s.proxied.take(), s.announcement.clone())
-    });
-    let Some(mut built) = built else { return };
-    // The proxy is the one node pushed under the surface's so far.
-    let proxy = proxied.and_then(|(view, actions)| {
-        let id = builder.parent_node().children().first().copied()?;
-        Some((id, view, actions))
-    });
-    if let Some((proxy_id, view, _)) = &proxy {
-        let stood_for = node_id(key, *view);
-        let swap = |ids: &[accesskit::NodeId]| -> Option<Vec<accesskit::NodeId>> {
-            ids.contains(&stood_for).then(|| {
-                ids.iter()
-                    .map(|&id| if id == stood_for { *proxy_id } else { id })
-                    .collect()
-            })
-        };
-        if let Some(top) = swap(&built.top) {
-            built.top = top;
-        } else {
-            for e in &mut built.entries {
-                if let Some(children) = swap(e.node.children()) {
-                    e.node.set_children(children);
-                    break;
-                }
-            }
-        }
-    }
-    let mut listeners = Vec::with_capacity(built.entries.len() + 1);
-    for e in built.entries {
-        listeners.push((e.id, e.view, e.actions));
-        builder.push_child(e.id, e.node);
-    }
-    if let Some((id, view, actions)) = proxy {
-        listeners.push((id, view, actions));
-    }
-    let mut top = built.top;
-    if let Some((sequence, text)) = announcement {
+    if let Some((sequence, text)) = with_state(surface, |s| s.announcement.clone()) {
         let id = announcement_id(key, sequence);
         let mut node = Node::new(Role::Label);
         node.set_value(text);
         node.set_live(Live::Polite);
-        if builder.push_child(id, node) {
-            top.push(id);
-        }
+        builder.push_child(id, node);
     }
-    builder.parent_node().set_children(top);
-    with_state(surface, |s| s.listeners = listeners);
 }
 
 /// The surface element paints: paints the focus proxy and registers the
 /// action listeners.
 pub(crate) fn paint(surface: &Surface, window: &mut Window, cx: &mut App) {
-    let (proxy, listeners) = with_state(surface, |s| {
-        (s.proxy.take(), std::mem::take(&mut s.listeners))
-    });
-    if let Some(mut proxy) = proxy {
+    for mut proxy in with_state(surface, |s| std::mem::take(&mut s.proxies)) {
         proxy.paint(window, cx);
-    }
-    let key = surface.key();
-    for (node, view, actions) in listeners {
-        for action in actions {
-            window.on_a11y_action(node, action, move |data, window, cx| {
-                if let Some(surface) = Surface::by_key(key)
-                    && let Some(view) = surface.view(view)
-                {
-                    perform(&surface, &view, action, data, window.scale_factor());
-                }
-                crate::rt::flush(cx);
-            });
-        }
     }
 }
 
@@ -1241,6 +1188,10 @@ fn scroll_to(surface: &Rc<Surface>, view: &NshView, x: f32, y: f32) {
     };
     crate::scroll::command(surface, view, &command);
 }
+
+#[cfg(test)]
+#[path = "access/replay_tests.rs"]
+mod replay_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1704,6 +1655,26 @@ mod tests {
         // physical pixels.
         let r = cell.node.bounds().unwrap();
         assert_eq!((r.x0, r.y0, r.x1, r.y1), (100.0, 44.0, 180.0, 84.0));
+    }
+
+    impl Built {
+        fn index(&self, id: accesskit::NodeId) -> Option<usize> {
+            self.entries.iter().position(|e| e.id == id)
+        }
+
+        fn take_subtree(&mut self, id: accesskit::NodeId) -> Option<(Entry, Vec<Entry>)> {
+            let entry = self.entries.swap_remove(self.index(id)?);
+            let mut below = Vec::new();
+            let mut queue: Vec<accesskit::NodeId> = entry.node.children().to_vec();
+            while let Some(child) = queue.pop() {
+                if let Some(i) = self.index(child) {
+                    let e = self.entries.swap_remove(i);
+                    queue.extend_from_slice(e.node.children());
+                    below.push(e);
+                }
+            }
+            Some((entry, below))
+        }
     }
 
     #[test]
