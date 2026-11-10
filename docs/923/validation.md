@@ -41,3 +41,19 @@
 已合入 `f2d59991`，保留其数据库 writer / sealed transaction 行为，测试每次事件使用 WriteTransaction(RuntimeEvent)，成功才 commit。旧 create_thread(:memory:) 因新在线任务身份前提报 InvalidTaskIdentity，测试前置改用真实 store NewThread 行；控制提案→审批→运行→终态→历史恢复断言不变。
 
 本轮在整合后代码重新执行上述 13 项 Rust 回归，13/13 通过；受影响三 crate 全目标严格 Clippy 通过。前版独立实现审查无阻塞发现；新增集成差异需复核后才清理开发测试。旧 CI 失败不以清理测试规避，已先修 harness 并保留本轮实际回归。
+
+## 开发源码留痕与清理
+
+最终可恢复开发提交：`b85a5472086865bbac3072f35c43d35b3369152c`，已通过 GitHub commits API 读回完整 SHA。原始源码地址：`https://github.com/puzige/vega/blob/b85a5472086865bbac3072f35c43d35b3369152c/<path>`。
+
+| 路径 | SHA256 |
+|---|---|
+| `crates/vega_conversation/src/agent/shell_control_tests.rs` | `a62cbad16ecca329091c9411d0dc71ef6e22efc4be6c430b7cc7f3617f16bf54` |
+| `crates/vega/src/app_agent_tests.rs` | `96c8da9e22e1ab96a58a19e1d34c54f92a6808adb601cfcbd497c22f38cf7688` |
+| `crates/vega_ui/src/conversation_stream/composer_run_tests.rs` | `76d184b590fc65f84bcc14ce5fa993fd1998e2bf6a056f13e176c8f9c683df31` |
+
+独立实现审查绑定 `0b617e0e0a6389c7c5945c1a47924911c86ecdfa`，主线集成复核绑定 `b85a5472086865bbac3072f35c43d35b3369152c`，均无阻塞发现。最终开发版本本地 13/13、严格 Clippy、三组 Python 已重验。开发测试清理仅移除三份测试源码及三处独占模块声明；生产参数校验、真实清理状态、终态动作和现有 Python 不删除。
+
+清理后最终候选还需 fmt/diff、严格 Clippy、静态 Rust 清点、清理差异复核与该 head required CI。最终 Rust 空集不是行为测试通过；native 窗口和真实用户进程清理仍待用户手测，Issue 保持开放。
+
+清理后本地复验：fmt/diff、受影响三 crate 全目标严格 Clippy 均通过；`cargo nextest list --workspace --message-format json` = 0 discovered，`cargo nextest run --workspace --no-tests=pass` = 0 executed（no Rust tests）；crates/xtask 的测试属性、cfg(test) 及本轮模块标记静态扫描无命中。独立清理复核和最终 head 云端仍待完成。

@@ -1901,7 +1901,3 @@ fn prepare_worker_system_prompt(
         failure
     })
 }
-
-#[cfg(test)]
-#[path = "app_agent_tests.rs"]
-mod shell_control_tests;

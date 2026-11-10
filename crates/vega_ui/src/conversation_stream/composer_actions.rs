@@ -1222,7 +1222,3 @@ impl ConversationStream {
             .into_any_element()
     }
 }
-
-#[cfg(test)]
-#[path = "composer_run_tests.rs"]
-mod shell_control_tests;
