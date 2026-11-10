@@ -16,6 +16,8 @@ pub enum ForkThreadError {
     Refused(#[from] vega_store::thread_fork::ForkError),
     #[error("fork history validation failed: {0}")]
     History(ConversationError),
+    #[error("fork database commit failed: {0}")]
+    Commit(String),
 }
 
 pub fn load_conversation(
@@ -72,19 +74,54 @@ fn fork_thread_at(
     through_message_id: Option<&str>,
 ) -> Result<Thread, ForkThreadError> {
     let prepared = prepare_fork(store, source_thread_id, through_message_id)?;
-    commit_fork(
-        store,
-        source_thread_id,
-        through_message_id.is_none(),
-        prepared,
-    )
+    commit_fork(store, prepared)
 }
 
 struct PreparedFork {
-    cutoff: String,
-    images: Vec<vega_store::image_attachments::ImageRow>,
-    thread: store::ThreadRow,
-    source: context_compaction::ContextSourceVersion,
+    install: vega_store::thread_fork::PreparedForkInstall,
+}
+
+struct ForkCommand {
+    prepared: PreparedFork,
+}
+
+impl crate::database_writer::Sealed for ForkCommand {}
+
+impl crate::database_writer::DatabaseCommand for ForkCommand {
+    type Output = Result<Thread, ForkThreadError>;
+
+    fn apply(self, store: &Store) -> Self::Output {
+        self.install(store, None)
+    }
+
+    fn apply_with_admission(self, store: &Store, remaining: std::time::Duration) -> Self::Output {
+        self.install(store, Some(remaining))
+    }
+}
+
+impl ForkCommand {
+    fn install(
+        self,
+        store: &Store,
+        remaining: Option<std::time::Duration>,
+    ) -> Result<Thread, ForkThreadError> {
+        use vega_store::thread_fork::ForkError;
+        use vega_store::write_coordination::{WriteCategory, WriteTransaction};
+        let tx = match remaining {
+            Some(remaining) => WriteTransaction::new_with_budget(
+                store.conn(),
+                WriteCategory::Threads,
+                || false,
+                remaining,
+            ),
+            None => WriteTransaction::new(store.conn(), WriteCategory::Threads),
+        }
+        .map_err(ForkError::from)?;
+        let row = self.prepared.install.install(&tx)?;
+        let thread = thread_from_row(&row).map_err(ForkThreadError::History)?;
+        tx.commit().map_err(ForkError::from)?;
+        Ok(thread)
+    }
 }
 
 fn prepare_fork(
@@ -92,84 +129,52 @@ fn prepare_fork(
     source_thread_id: &str,
     through_message_id: Option<&str>,
 ) -> Result<PreparedFork, ForkThreadError> {
-    use vega_store::thread_fork::ForkError;
-    let (cutoff, images, thread, source) = {
-        let tx = store
-            .conn()
-            .unchecked_transaction()
-            .map_err(ForkError::from)?;
-        let cutoff = match through_message_id {
-            Some(message_id) => message_id.to_owned(),
-            None => vega_store::thread_fork::latest_fork_cutoff(&tx, source_thread_id)
-                .map_err(ForkError::from)?
-                .ok_or(ForkError::InvalidCutoff)?,
-        };
-        let images = vega_store::thread_fork::prefix_images(&tx, source_thread_id, &cutoff)?;
-        let thread = store::find(&tx, source_thread_id)
-            .map_err(ForkError::from)?
-            .ok_or(ForkError::MissingSource)?;
-        let source = context_compaction::load_source_version_in_transaction(&tx, source_thread_id)
-            .map_err(ForkError::from)?;
-        tx.commit().map_err(ForkError::from)?;
-        (cutoff, images, thread, source)
-    };
-    validate_fork_images(&images)?;
-    Ok(PreparedFork {
-        cutoff,
-        images,
-        thread,
-        source,
-    })
+    let projection = vega_store::thread_fork::ForkProjection::capture(
+        store.conn(),
+        source_thread_id,
+        through_message_id,
+    )?;
+    prepare_fork_projection(projection, source_thread_id)
 }
 
-fn commit_fork(
-    store: &Store,
+fn prepare_fork_projection(
+    projection: vega_store::thread_fork::ForkProjection,
     source_thread_id: &str,
-    latest: bool,
-    prepared: PreparedFork,
-) -> Result<Thread, ForkThreadError> {
+) -> Result<PreparedFork, ForkThreadError> {
     use vega_store::thread_fork::ForkError;
-    let PreparedFork {
-        cutoff,
-        images,
-        thread: prepared_thread,
-        source: prepared_source,
-    } = prepared;
-    let tx = store.immediate_transaction().map_err(ForkError::from)?;
-    if latest
-        && vega_store::thread_fork::latest_fork_cutoff(&tx, source_thread_id)
-            .map_err(ForkError::from)?
-            .as_deref()
-            != Some(cutoff.as_str())
-    {
-        return Err(ForkError::InvalidCutoff.into());
-    }
-    let current_source =
-        context_compaction::load_source_version_in_transaction(&tx, source_thread_id)
-            .map_err(ForkError::from)?;
-    if store::find(&tx, source_thread_id)
-        .map_err(ForkError::from)?
-        .as_ref()
-        != Some(&prepared_thread)
-        || current_source.source_version != prepared_source.source_version
-        || current_source.fingerprint != prepared_source.fingerprint
-        || vega_store::thread_fork::prefix_images(&tx, source_thread_id, &cutoff)? != images
-    {
-        return Err(
-            ForkError::CorruptHistory("fork source changed during preparation".into()).into(),
-        );
-    }
-    let row = vega_store::thread_fork::clone_prefix(&tx, source_thread_id, &cutoff, now_ms())?;
-    let mut source =
-        context_compaction::load_source_in_transaction(&tx, &row.id).map_err(ForkError::from)?;
+    let images = vega_store::thread_fork::prefix_images(
+        projection.connection(),
+        source_thread_id,
+        projection.cutoff(),
+    )?;
+    validate_fork_images(&images)?;
+    let (projection, row) = projection.project(now_ms())?;
+    let mut source = context_compaction::load_source(projection.connection(), &row.id)
+        .map_err(ForkError::from)?;
     source.images.clear();
     crate::agent::history_from_context_source(&source, "", None)
         .map_err(|error| ForkError::CorruptHistory(error.to_string()))?;
-    crate::agent::recover_terminal_tools(&tx, &row.project_id, &row.id)
+    crate::agent::recover_terminal_tools(projection.connection(), &row.project_id, &row.id)
         .map_err(ForkThreadError::History)?;
-    let thread = thread_from_row(&row).map_err(ForkThreadError::History)?;
-    tx.commit().map_err(ForkError::from)?;
-    Ok(thread)
+    thread_from_row(&row).map_err(ForkThreadError::History)?;
+    Ok(PreparedFork {
+        install: projection.prepare_install(row)?,
+    })
+}
+
+fn commit_fork(store: &Store, prepared: PreparedFork) -> Result<Thread, ForkThreadError> {
+    let command = ForkCommand { prepared };
+    match store.database_path() {
+        Some(path) => crate::database_writer::commit_with_admission(
+            path,
+            store.database_identity(),
+            command,
+            crate::database_writer::CommitCancellation::default(),
+            std::time::Duration::from_secs(10),
+        )
+        .map_err(|error| ForkThreadError::Commit(error.to_string()))?,
+        None => command.install(store, None),
+    }
 }
 
 fn validate_fork_images(
@@ -415,15 +420,45 @@ pub fn draft_thread_from_defaults(
 pub fn materialize_draft(store: &Store, thread: &Thread) -> Result<Thread, ConversationError> {
     let creation = crate::permission_contracts::DraftCreationGuard::begin(store, thread)?;
     let workspace = prepare_draft_workspace(store, thread)?;
-    let transaction = store.immediate_transaction().map_err(store_error)?;
-    let thread = creation.materialize(&transaction)?;
-    if let Some(workspace) = workspace
-        && existing_task_workspace_root(store, &thread.id)? != workspace
-    {
-        return Err(ConversationError::InvalidTaskIdentity);
+    let path = store
+        .database_path()
+        .ok_or(ConversationError::InvalidTaskIdentity)?;
+    crate::database_writer::commit(
+        path,
+        store.database_identity(),
+        MaterializeDraft {
+            creation,
+            workspace,
+        },
+    )
+    .map_err(ConversationError::Store)?
+}
+
+struct MaterializeDraft {
+    creation: crate::permission_contracts::DraftCreationGuard,
+    workspace: Option<std::path::PathBuf>,
+}
+impl crate::database_writer::Sealed for MaterializeDraft {}
+impl crate::database_writer::DatabaseCommand for MaterializeDraft {
+    type Output = Result<Thread, ConversationError>;
+    fn apply(self, store: &Store) -> Self::Output {
+        let _coordination = crate::permission_contracts::coordinate()?;
+        crate::permission_contracts::require_admission_open(store)?;
+        let transaction = store.immediate_transaction().map_err(store_error)?;
+        let thread = self.creation.materialize(&transaction)?;
+        let row = store::find(&transaction, &thread.id)
+            .map_err(store_error)?
+            .ok_or(ConversationError::InvalidTaskIdentity)?;
+        let fence = crate::permission_contracts::capture_fence_for_commit(store, &row)?;
+        if self
+            .workspace
+            .is_some_and(|workspace| workspace.to_str() != Some(fence.workspace.as_str()))
+        {
+            return Err(ConversationError::InvalidTaskIdentity);
+        }
+        transaction.commit().map_err(store_error)?;
+        Ok(thread)
     }
-    transaction.commit().map_err(store_error)?;
-    Ok(thread)
 }
 
 pub(crate) fn materialize_draft_in_transaction(
@@ -481,7 +516,101 @@ pub fn get_thread(store: &Store, thread_id: &str) -> Result<Thread, Conversation
     thread_from_row(&row)
 }
 
+enum ThreadWrite {
+    Status {
+        thread: String,
+        status: ThreadStatus,
+    },
+    Pin {
+        thread: String,
+        pinned: bool,
+    },
+    Update {
+        thread: String,
+        update: ThreadUpdate,
+    },
+    Visit {
+        thread: String,
+    },
+    Rename {
+        thread: String,
+        title: String,
+    },
+    Open {
+        thread: String,
+    },
+    Mode {
+        thread: String,
+        mode: ThreadMode,
+    },
+    Model {
+        thread: String,
+        model: String,
+    },
+    Stage {
+        thread: String,
+        model: String,
+    },
+    Promote {
+        thread: String,
+        model: String,
+        admission: ThreadAdmission,
+    },
+}
+impl crate::database_writer::Sealed for ThreadWrite {}
+impl crate::database_writer::DatabaseCommand for ThreadWrite {
+    type Output = Result<Thread, ConversationError>;
+    fn apply(self, store: &Store) -> Self::Output {
+        match self {
+            Self::Status { thread, status } => {
+                set_thread_status_committed(store, &thread, status)?;
+                get_thread(store, &thread)
+            }
+            Self::Pin { thread, pinned } => {
+                set_thread_pinned_committed(store, &thread, pinned)?;
+                get_thread(store, &thread)
+            }
+            Self::Update { thread, update } => {
+                update_thread_committed(store, &thread, &update)?;
+                get_thread(store, &thread)
+            }
+            Self::Visit { thread } => visit_thread_committed(store, &thread),
+            Self::Rename { thread, title } => rename_thread_committed(store, &thread, &title),
+            Self::Open { thread } => open_thread_committed(store, &thread),
+            Self::Mode { thread, mode } => set_thread_mode_committed(store, &thread, mode),
+            Self::Model { thread, model } => set_thread_model_committed(store, &thread, &model),
+            Self::Stage { thread, model } => stage_thread_model_committed(store, &thread, &model),
+            Self::Promote {
+                thread,
+                model,
+                admission,
+            } => promote_thread_model_committed(store, &thread, &model, &admission),
+        }
+    }
+}
+
+fn submit_thread_write(store: &Store, command: ThreadWrite) -> Result<Thread, ConversationError> {
+    let path = store
+        .database_path()
+        .ok_or(ConversationError::InvalidTaskIdentity)?;
+    crate::database_writer::commit(path, store.database_identity(), command)
+        .map_err(ConversationError::CorruptRow)?
+}
+
 pub fn rename_thread(
+    store: &Store,
+    thread: &str,
+    title: &str,
+) -> Result<Thread, ConversationError> {
+    submit_thread_write(
+        store,
+        ThreadWrite::Rename {
+            thread: thread.into(),
+            title: title.into(),
+        },
+    )
+}
+fn rename_thread_committed(
     store: &Store,
     thread_id: &str,
     title: &str,
@@ -494,6 +623,20 @@ pub fn rename_thread(
 }
 
 pub fn set_thread_status(
+    store: &Store,
+    thread: &str,
+    status: ThreadStatus,
+) -> Result<(), ConversationError> {
+    submit_thread_write(
+        store,
+        ThreadWrite::Status {
+            thread: thread.into(),
+            status,
+        },
+    )
+    .map(|_| ())
+}
+fn set_thread_status_committed(
     store: &Store,
     thread_id: &str,
     status: ThreadStatus,
@@ -524,20 +667,33 @@ pub fn persist_thread_update(
             title: None,
             pinned: None,
             unread: None,
-        } => {
-            set_thread_status(&store, thread_id, *status)?;
-        }
+        } => submit_thread_write(
+            &store,
+            ThreadWrite::Status {
+                thread: thread_id.into(),
+                status: *status,
+            },
+        ),
         ThreadUpdate {
             pinned: Some(pinned),
             title: None,
             status: None,
             unread: None,
-        } => {
-            set_thread_pinned(&store, thread_id, *pinned)?;
-        }
-        _ => update_thread(&store, thread_id, update)?,
+        } => submit_thread_write(
+            &store,
+            ThreadWrite::Pin {
+                thread: thread_id.into(),
+                pinned: *pinned,
+            },
+        ),
+        _ => submit_thread_write(
+            &store,
+            ThreadWrite::Update {
+                thread: thread_id.into(),
+                update: update.clone(),
+            },
+        ),
     }
-    get_thread(&store, thread_id)
 }
 
 pub fn persist_thread_deletion(
@@ -553,7 +709,12 @@ pub fn persist_thread_visit(
     thread_id: &str,
 ) -> Result<Thread, ConversationError> {
     let store = Store::open_existing(database).map_err(store_error)?;
-    visit_thread(&store, thread_id)
+    submit_thread_write(
+        &store,
+        ThreadWrite::Visit {
+            thread: thread_id.into(),
+        },
+    )
 }
 
 pub fn persist_thread_pinned(
@@ -562,11 +723,30 @@ pub fn persist_thread_pinned(
     pinned: bool,
 ) -> Result<Thread, ConversationError> {
     let store = Store::open_existing(database).map_err(store_error)?;
-    set_thread_pinned(&store, thread_id, pinned)?;
-    get_thread(&store, thread_id)
+    submit_thread_write(
+        &store,
+        ThreadWrite::Pin {
+            thread: thread_id.into(),
+            pinned,
+        },
+    )
 }
 
 pub fn set_thread_pinned(
+    store: &Store,
+    thread: &str,
+    pinned: bool,
+) -> Result<(), ConversationError> {
+    submit_thread_write(
+        store,
+        ThreadWrite::Pin {
+            thread: thread.into(),
+            pinned,
+        },
+    )
+    .map(|_| ())
+}
+fn set_thread_pinned_committed(
     store: &Store,
     thread_id: &str,
     pinned: bool,
@@ -581,6 +761,19 @@ pub fn set_thread_pinned(
 /// Persists a typed Ask/Plan/Execute selection. Execute is rejected while a
 /// pending Plan exists; approval owns that transition.
 pub fn set_thread_mode(
+    store: &Store,
+    thread: &str,
+    mode: ThreadMode,
+) -> Result<Thread, ConversationError> {
+    submit_thread_write(
+        store,
+        ThreadWrite::Mode {
+            thread: thread.into(),
+            mode,
+        },
+    )
+}
+fn set_thread_mode_committed(
     store: &Store,
     thread_id: &str,
     mode: ThreadMode,
@@ -643,6 +836,19 @@ fn pause_context_precompute(
 
 pub fn set_thread_model(
     store: &Store,
+    thread: &str,
+    model: &str,
+) -> Result<Thread, ConversationError> {
+    submit_thread_write(
+        store,
+        ThreadWrite::Model {
+            thread: thread.into(),
+            model: model.into(),
+        },
+    )
+}
+fn set_thread_model_committed(
+    store: &Store,
     thread_id: &str,
     model: &str,
 ) -> Result<Thread, ConversationError> {
@@ -661,6 +867,19 @@ pub fn set_thread_model(
 
 pub fn stage_thread_model(
     store: &Store,
+    thread: &str,
+    model: &str,
+) -> Result<Thread, ConversationError> {
+    submit_thread_write(
+        store,
+        ThreadWrite::Stage {
+            thread: thread.into(),
+            model: model.into(),
+        },
+    )
+}
+fn stage_thread_model_committed(
+    store: &Store,
     thread_id: &str,
     model: &str,
 ) -> Result<Thread, ConversationError> {
@@ -676,6 +895,21 @@ pub fn stage_thread_model(
 }
 
 pub fn promote_thread_model(
+    store: &Store,
+    thread: &str,
+    model: &str,
+    admission: &ThreadAdmission,
+) -> Result<Thread, ConversationError> {
+    submit_thread_write(
+        store,
+        ThreadWrite::Promote {
+            thread: thread.into(),
+            model: model.into(),
+            admission: admission.clone(),
+        },
+    )
+}
+fn promote_thread_model_committed(
     store: &Store,
     thread_id: &str,
     model: &str,
@@ -725,11 +959,58 @@ pub fn delete_thread(store: &Store, thread_id: &str) -> Result<(), ConversationE
             return Err(ConversationError::ContextCleanupPending);
         }
     }
-    let deleted = store::delete_thread(store.conn(), thread_id).map_err(store_error)?;
-    if deleted == 0 {
-        return Err(ConversationError::NotFound(thread_id.to_string()));
+    let path = store
+        .database_path()
+        .ok_or(ConversationError::InvalidTaskIdentity)?;
+    crate::database_writer::commit(
+        path,
+        store.database_identity(),
+        DeleteThread {
+            thread: thread_id.to_owned(),
+            admission: _admission,
+            children: _child_admissions,
+            precompute,
+        },
+    )
+    .map_err(ConversationError::Store)?
+}
+
+struct DeleteThread {
+    thread: String,
+    admission: ThreadAdmission,
+    children: Vec<ThreadAdmission>,
+    precompute: Vec<crate::types::ContextPrecomputePause>,
+}
+impl crate::database_writer::Sealed for DeleteThread {}
+impl crate::database_writer::DatabaseCommand for DeleteThread {
+    type Output = Result<(), ConversationError>;
+    fn apply(self, store: &Store) -> Self::Output {
+        crate::thread_access::verify(store, &self.thread, &self.admission)?;
+        let children =
+            vega_store::subagents::list(store.conn(), &self.thread, None).map_err(store_error)?;
+        if children.len() != self.children.len()
+            || children.iter().any(|child| {
+                !self.children.iter().any(|admission| {
+                    admission.verifies(store.database_identity(), &child.child_thread_id)
+                }) || crate::subagents::is_live(store, &child.child_thread_id)
+            })
+            || crate::subagents::is_live(store, &self.thread)
+        {
+            return Err(ConversationError::InvalidTaskIdentity);
+        }
+        if self
+            .precompute
+            .iter()
+            .any(|pause| !pause.drain().is_finished().unwrap_or(false))
+        {
+            return Err(ConversationError::ContextCleanupPending);
+        }
+        let deleted = store::delete_thread(store.conn(), &self.thread).map_err(store_error)?;
+        if deleted == 0 {
+            return Err(ConversationError::NotFound(self.thread));
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// Applies a partial update (title/status/pinned/unread) to one thread.
@@ -737,6 +1018,23 @@ pub fn delete_thread(store: &Store, thread_id: &str) -> Result<(), ConversationE
 /// An all-`None` update is a no-op; updating a thread that does not exist
 /// reports [`ConversationError::NotFound`].
 pub fn update_thread(
+    store: &Store,
+    thread: &str,
+    update: &ThreadUpdate,
+) -> Result<(), ConversationError> {
+    if update.is_empty() {
+        return Ok(());
+    }
+    submit_thread_write(
+        store,
+        ThreadWrite::Update {
+            thread: thread.into(),
+            update: update.clone(),
+        },
+    )
+    .map(|_| ())
+}
+fn update_thread_committed(
     store: &Store,
     thread_id: &str,
     update: &ThreadUpdate,
@@ -780,6 +1078,14 @@ pub fn read_thread_title(
 
 /// Opens a thread: bumps task/project activity timestamps and returns it.
 pub fn open_thread(store: &Store, thread_id: &str) -> Result<Thread, ConversationError> {
+    submit_thread_write(
+        store,
+        ThreadWrite::Open {
+            thread: thread_id.into(),
+        },
+    )
+}
+fn open_thread_committed(store: &Store, thread_id: &str) -> Result<Thread, ConversationError> {
     let row = store::open_thread(store.conn(), thread_id, now_ms())
         .map_err(store_error)?
         .ok_or_else(|| ConversationError::NotFound(thread_id.to_string()))?;
@@ -789,6 +1095,14 @@ pub fn open_thread(store: &Store, thread_id: &str) -> Result<Thread, Conversatio
 /// Records a genuine user visit: touches task/project timestamps and clears unread
 /// atomically. Metadata refreshes must continue to use `open_thread`.
 pub fn visit_thread(store: &Store, thread_id: &str) -> Result<Thread, ConversationError> {
+    submit_thread_write(
+        store,
+        ThreadWrite::Visit {
+            thread: thread_id.into(),
+        },
+    )
+}
+fn visit_thread_committed(store: &Store, thread_id: &str) -> Result<Thread, ConversationError> {
     let row = store::visit_thread(store.conn(), thread_id, now_ms())
         .map_err(store_error)?
         .ok_or_else(|| ConversationError::NotFound(thread_id.to_string()))?;

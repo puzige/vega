@@ -1,9 +1,12 @@
 pub mod agent;
 mod credential_errors;
+mod database_writer;
 pub use credential_errors::provider_credential_error;
+pub use database_writer::shutdown_database_writers;
 mod artifact;
 pub mod attachments;
 mod automatic_titles;
+pub mod codex_persistence;
 pub mod codex_tasks;
 pub mod command_scope;
 mod composer_predictions;

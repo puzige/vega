@@ -150,8 +150,7 @@ pub(crate) fn recover_children(
             )
             .map_err(|_| ConversationError::InvalidTaskIdentity)?;
             if let Some(_admission) = admission {
-                vega_store::recovery::recover_thread(store.conn(), &child.child_thread_id, now)
-                    .map_err(|error| ConversationError::Store(error.to_string()))?;
+                recover_child(store, &child.child_thread_id, now, Some(_admission))?;
             }
         }
     }
@@ -187,4 +186,64 @@ pub(crate) fn is_live(store: &Store, thread: &str) -> bool {
             thread.into(),
         ))
     })
+}
+
+pub(crate) fn recover_child(
+    store: &Store,
+    thread: &str,
+    now: i64,
+    admission: Option<vega_store::thread_admission::ThreadAdmission>,
+) -> Result<(), ConversationError> {
+    let admission = match admission {
+        Some(admission) => admission,
+        None => crate::thread_access::acquire(store, thread)?,
+    };
+    let owner = vega_store::delegated_ownership::acquire_for_thread(store.conn(), thread)
+        .map_err(|error| ConversationError::Store(error.to_string()))?;
+    let path = store
+        .database_path()
+        .ok_or(ConversationError::InvalidTaskIdentity)?;
+    let prepared =
+        vega_store::delegated_stages::PreparedAbandonedRecovery::prepare(store.conn(), thread, now)
+            .map_err(|error| ConversationError::Store(error.to_string()))?;
+    crate::database_writer::commit(
+        path,
+        store.database_identity(),
+        RecoverChild {
+            thread: thread.into(),
+            prepared,
+            owner,
+            admission,
+        },
+    )
+    .map_err(ConversationError::Store)?
+}
+
+struct RecoverChild {
+    thread: String,
+    prepared: vega_store::delegated_stages::PreparedAbandonedRecovery,
+    owner: Option<std::sync::Arc<vega_store::delegated_ownership::DelegatedOwnership>>,
+    admission: vega_store::thread_admission::ThreadAdmission,
+}
+impl crate::database_writer::Sealed for RecoverChild {}
+impl crate::database_writer::DatabaseCommand for RecoverChild {
+    type Output = Result<(), ConversationError>;
+    fn apply(self, store: &Store) -> Self::Output {
+        crate::thread_access::verify(store, &self.thread, &self.admission)?;
+        if let Some(owner) = &self.owner
+            && !store
+                .database_path()
+                .is_some_and(|path| owner.verifies(path, &self.thread))
+        {
+            return Err(ConversationError::InvalidTaskIdentity);
+        }
+        let tx = store
+            .immediate_transaction()
+            .map_err(|error| ConversationError::Store(error.to_string()))?;
+        self.prepared
+            .install(&tx, &self.thread, self.owner.as_deref())
+            .map_err(|error| ConversationError::Store(error.to_string()))?;
+        tx.commit()
+            .map_err(|error| ConversationError::Store(error.to_string()))
+    }
 }

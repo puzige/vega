@@ -108,21 +108,59 @@ impl RuntimeAutomationHook for AutomationBinding {
                 if cancel.is_cancelled() {
                     return Err(tool_error("自动任务已撤销"));
                 }
-                let store = Store::open(path).map_err(|_| tool_error("自动任务存储不可用"))?;
-                let tx = store
-                    .immediate_transaction()
-                    .map_err(|_| tool_error("自动任务存储不可用"))?;
-                let result =
-                    call_in_transaction(&tx, &claim, &tool, arguments).map_err(tool_error)?;
-                if cancel.is_cancelled() {
-                    return Err(tool_error("自动任务已撤销"));
-                }
-                tx.commit().map_err(|_| tool_error("自动任务保存失败"))?;
-                Ok(result)
+                let store =
+                    Store::open_read_only(&path).map_err(|_| tool_error("自动任务存储不可用"))?;
+                crate::database_writer::commit(
+                    &path,
+                    store.database_identity(),
+                    CallAutomation {
+                        claim,
+                        tool,
+                        arguments,
+                        cancel,
+                    },
+                )
+                .map_err(tool_error)?
             })
             .await
             .map_err(|_| tool_error("自动任务处理失败"))?
         })
+    }
+}
+
+struct CallAutomation {
+    claim: AutomationRunClaim,
+    tool: String,
+    arguments: serde_json::Value,
+    cancel: tokio_util::sync::CancellationToken,
+}
+
+impl crate::database_writer::Sealed for CallAutomation {}
+
+impl crate::database_writer::DatabaseCommand for CallAutomation {
+    type Output = Result<serde_json::Value, VegaError>;
+
+    fn apply(self, store: &Store) -> Self::Output {
+        let _coordination = crate::permission_contracts::coordinate()
+            .map_err(|_| tool_error("自动任务权限不可用"))?;
+        crate::permission_contracts::require_admission_open(store)
+            .map_err(|_| tool_error("自动任务已撤销"))?;
+        if self.cancel.is_cancelled() {
+            return Err(tool_error("自动任务已撤销"));
+        }
+        let tx = store
+            .immediate_transaction()
+            .map_err(|_| tool_error("自动任务存储不可用"))?;
+        if !super::current_claim_for_commit(store, &self.claim).map_err(tool_error)? {
+            return Err(tool_error("自动任务已撤销"));
+        }
+        let result = call_in_transaction(&tx, &self.claim, &self.tool, self.arguments)
+            .map_err(tool_error)?;
+        if self.cancel.is_cancelled() {
+            return Err(tool_error("自动任务已撤销"));
+        }
+        tx.commit().map_err(|_| tool_error("自动任务保存失败"))?;
+        Ok(result)
     }
 }
 

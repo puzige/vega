@@ -57,29 +57,53 @@ impl ChildPrecompute {
         let admission = admission.clone();
         tokio::task::spawn_blocking(move || {
             let _pause = pause;
-            let store = Store::open(database).map_err(VegaError::Store)?;
-            if store.database_identity() != identity || !admission.verifies(identity, &thread) {
-                return Err(failure("child context cleanup authority changed"));
-            }
-            let transaction = vega_store::write_coordination::WriteTransaction::new(
-                store.conn(),
-                vega_store::write_coordination::WriteCategory::ContextCompaction,
+            super::writer::commit(
+                &database,
+                RetireChildPrecompute {
+                    thread,
+                    identity,
+                    admission,
+                },
             )
-            .map_err(VegaError::Store)?;
-            let generation =
-                vega_store::context_precompute::ready::current_generation(&transaction, &thread)
-                    .map_err(|_| failure("child context cleanup unavailable"))?;
-            if let Some(generation) = generation {
-                vega_store::context_precompute::ready::retire_in_transaction(
-                    &transaction,
-                    &thread,
-                    &generation,
-                )
-                .map_err(|_| failure("child context cleanup unavailable"))?;
-            }
-            transaction.commit().map_err(VegaError::Store)
         })
         .await
         .map_err(|_| failure("child context cleanup unavailable"))?
+    }
+}
+
+struct RetireChildPrecompute {
+    thread: String,
+    identity: vega_store::DatabaseIdentity,
+    admission: vega_store::thread_admission::ThreadAdmission,
+}
+impl crate::database_writer::Sealed for RetireChildPrecompute {}
+impl crate::database_writer::DatabaseCommand for RetireChildPrecompute {
+    type Output = Result<(), VegaError>;
+    fn apply(self, store: &Store) -> Self::Output {
+        let Self {
+            thread,
+            identity,
+            admission,
+        } = self;
+        if store.database_identity() != identity || !admission.verifies(identity, &thread) {
+            return Err(failure("child context cleanup authority changed"));
+        }
+        let transaction = vega_store::write_coordination::WriteTransaction::new(
+            store.conn(),
+            vega_store::write_coordination::WriteCategory::ContextCompaction,
+        )
+        .map_err(VegaError::Store)?;
+        let generation =
+            vega_store::context_precompute::ready::current_generation(&transaction, &thread)
+                .map_err(|_| failure("child context cleanup unavailable"))?;
+        if let Some(generation) = generation {
+            vega_store::context_precompute::ready::retire_in_transaction(
+                &transaction,
+                &thread,
+                &generation,
+            )
+            .map_err(|_| failure("child context cleanup unavailable"))?;
+        }
+        transaction.commit().map_err(VegaError::Store)
     }
 }

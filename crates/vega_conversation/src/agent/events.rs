@@ -561,6 +561,7 @@ fn with_terminal_execution_duration(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn persist_runtime_event(
     store: &Store,
+    tx: &vega_store::write_coordination::WriteTransaction<'_>,
     project_id: &str,
     thread_id: &str,
     message_id: &str,
@@ -576,53 +577,45 @@ pub(crate) fn persist_runtime_event(
         RuntimeEvent::ResponseRetrying {
             text_start_bytes, ..
         } => {
-            let tx = store.immediate_transaction()?;
             messages::rollback_assistant_response_starts(
-                &tx,
+                tx,
                 message_id,
                 *text_start_bytes,
                 active_response_id,
             )?;
             ensure_message_updated(
-                messages::update_streaming_content(&tx, message_id, streamed_content)?,
+                messages::update_streaming_content(tx, message_id, streamed_content)?,
                 message_id,
             )?;
-            tx.commit()?;
         }
         RuntimeEvent::AssistantResponseStarted {
             response_id,
             text_start_bytes,
         } => {
-            let tx = store.immediate_transaction()?;
             ensure_message_updated(
-                messages::update_streaming_content(&tx, message_id, streamed_content)?,
+                messages::update_streaming_content(tx, message_id, streamed_content)?,
                 message_id,
             )?;
             messages::record_assistant_response_start(
-                &tx,
+                tx,
                 message_id,
                 response_id,
                 *text_start_bytes,
                 now_ms(),
             )?;
-            tx.commit()?;
         }
         RuntimeEvent::ReasoningCompleted { .. } => {}
         RuntimeEvent::SteeringAccepted(input) => {
-            let _coordination = crate::permission_contracts::coordinate()
-                .map_err(|_| safe_audit_error("steering"))?;
-            let tx = store.immediate_transaction()?;
             crate::pending_messages::verify_steering_acceptance(store, input, thread_id)?;
-            let admitted_at = vega_store::pending_messages::find(&tx, thread_id, &input.id)?
+            let admitted_at = vega_store::pending_messages::find(tx, thread_id, &input.id)?
                 .ok_or_else(runtime_state_error)?
                 .created_at;
-            if !vega_store::pending_messages::mark_accepted(&tx, thread_id, &input.id, message_id)?
-            {
+            if !vega_store::pending_messages::mark_accepted(tx, thread_id, &input.id, message_id)? {
                 return Err(runtime_state_error());
             }
             ensure_message_updated(
                 messages::finish_streaming_in_transaction(
-                    &tx,
+                    tx,
                     message_id,
                     streamed_content,
                     "done",
@@ -631,12 +624,12 @@ pub(crate) fn persist_runtime_event(
                 message_id,
             )?;
             vega_store::pending_messages::preserve_model_input(
-                &tx,
+                tx,
                 thread_id,
                 &input.id,
                 &input.message.content,
             )?;
-            let seq = messages::next_seq(&tx, thread_id)?;
+            let seq = messages::next_seq(tx, thread_id)?;
             if seq != input.user_message_seq {
                 return Err(runtime_state_error());
             }
@@ -657,7 +650,7 @@ pub(crate) fn persist_runtime_event(
                 ),
             ] {
                 messages::insert(
-                    &tx,
+                    tx,
                     &messages::MessageRow {
                         id: id.clone(),
                         thread_id: thread_id.into(),
@@ -678,13 +671,13 @@ pub(crate) fn persist_runtime_event(
                 )?;
             }
             vega_store::delegated_stages::inherit_execution(
-                &tx,
+                tx,
                 thread_id,
                 message_id,
                 &input.assistant_message_id,
             )?;
             for (ordinal, image) in input.message.images.iter().enumerate() {
-                vega_store::image_attachments::insert(&tx, &input.id, ordinal, image.bytes())?;
+                vega_store::image_attachments::insert(tx, &input.id, ordinal, image.bytes())?;
             }
             if let Some(skills) = &input.skills {
                 let snapshot = skill_snapshot_input(
@@ -693,11 +686,11 @@ pub(crate) fn persist_runtime_event(
                     &skills.binding,
                     &skills.snapshot,
                 )?;
-                vega_store::skills::save_snapshot_in_transaction(&tx, snapshot)
+                vega_store::skills::save_snapshot_in_transaction(tx, snapshot)
                     .map_err(skill_store_error)?;
                 for audit in &skills.audits {
                     vega_store::skills::append_activation_audit(
-                        &tx,
+                        tx,
                         skill_activation_audit(thread_id, &input.assistant_message_id, audit),
                     )
                     .map_err(skill_store_error)?;
@@ -706,7 +699,7 @@ pub(crate) fn persist_runtime_event(
                 return Err(safe_audit_error("skill"));
             }
             let mut metadata = Vec::new();
-            if messages::timestamp_break_before(&tx, &input.id)? {
+            if messages::timestamp_break_before(tx, &input.id)? {
                 metadata.push(ConversationEvent::TimestampBreakBefore {
                     message_id: input.id.clone(),
                 });
@@ -722,7 +715,6 @@ pub(crate) fn persist_runtime_event(
                 message_id: input.assistant_message_id.clone(),
                 sent_at_ms: None,
             });
-            tx.commit()?;
             return Ok(metadata);
         }
         RuntimeEvent::BuiltinSkillActivated(activation) => {
@@ -736,49 +728,26 @@ pub(crate) fn persist_runtime_event(
             )
             .map_err(|error| storage_or_audit_error(error, "builtin_skill"))?;
         }
-        RuntimeEvent::ScreenshotDelivered {
-            call_id,
-            image,
-            control,
-            epoch,
-            cancel,
-            delivered,
-        } => {
-            crate::attachments::validate_images(std::slice::from_ref(image))
-                .map_err(|_| safe_audit_error("ComputerScreenshot"))?;
-            let committed = control.commit_delivery(*epoch, || -> Result<(), VegaError> {
-                if cancel.is_cancelled() {
-                    return Ok(());
-                }
-                vega_store::computer_use_delivery::insert_screenshot(
-                    store.conn(),
-                    thread_id,
-                    message_id,
-                    call_id,
-                    image.bytes(),
-                )
-                .map_err(|error| storage_or_audit_error(error, "ComputerScreenshot"))?;
-                delivered.store(true, std::sync::atomic::Ordering::Release);
-                Ok(())
-            });
-            match committed {
-                Ok(result) => result?,
-                Err(vega_runtime::computer_use::ComputerUseError::Cancelled) => {}
-                Err(_) => return Err(safe_audit_error("ComputerScreenshot")),
-            }
+        RuntimeEvent::ScreenshotDelivered { call_id, image, .. } => {
+            vega_store::computer_use_delivery::insert_screenshot_in_transaction(
+                tx,
+                thread_id,
+                message_id,
+                call_id,
+                image.bytes(),
+            )
+            .map_err(|error| storage_or_audit_error(error, "ComputerScreenshot"))?;
         }
         RuntimeEvent::ToolRoundCompleted {
             response_id,
             call_ids,
         } => {
-            let transaction = store.immediate_transaction()?;
             for call_id in call_ids {
-                transaction.execute(
+                tx.execute(
                     "INSERT OR IGNORE INTO tool_call_rounds (message_id, call_id, response_id) VALUES (?1, ?2, ?3)",
                     (message_id, &call_id, &response_id),
                 )?;
             }
-            transaction.commit()?;
         }
         RuntimeEvent::AssistantResponseCompleted {
             response_id,
@@ -786,8 +755,8 @@ pub(crate) fn persist_runtime_event(
             text_end_bytes,
             kind,
         } => {
-            messages::record_assistant_response(
-                store.conn(),
+            messages::record_assistant_response_in_transaction(
+                tx,
                 message_id,
                 streamed_content,
                 &messages::AssistantResponseRow {
@@ -816,8 +785,8 @@ pub(crate) fn persist_runtime_event(
                     ("computer_stopped", None, Some(*delivered_images))
                 }
             };
-            let recorded = messages::record_generated_notice(
-                store.conn(),
+            let recorded = messages::record_generated_notice_in_transaction(
+                tx,
                 message_id,
                 streamed_content,
                 &messages::GeneratedNoticeRow {
@@ -834,7 +803,7 @@ pub(crate) fn persist_runtime_event(
             }
         }
         RuntimeEvent::SkillSnapshot { binding, snapshot } => {
-            persist_skill_snapshot(store, thread_id, message_id, binding, snapshot)?;
+            persist_skill_snapshot(tx, thread_id, message_id, binding, snapshot)?;
         }
         RuntimeEvent::SkillActivation {
             audit,
@@ -843,7 +812,7 @@ pub(crate) fn persist_runtime_event(
         } => {
             if let Some(snapshot) = snapshot {
                 let binding = binding.as_ref().ok_or_else(|| safe_audit_error("skill"))?;
-                persist_skill_snapshot(store, thread_id, message_id, binding, snapshot)?;
+                persist_skill_snapshot(tx, thread_id, message_id, binding, snapshot)?;
             }
             vega_store::skills::append_activation_audit(
                 store.conn(),
@@ -961,7 +930,7 @@ pub(crate) fn persist_runtime_event(
                         })
                 })
                 .flatten();
-            tool_calls::approve(store.conn(), call_id, &approval_json, remember, now_ms())
+            tool_calls::approve_in_transaction(tx, call_id, &approval_json, remember, now_ms())
                 .map_err(tool_transition_error)?;
         }
         RuntimeEvent::ToolCallRunning { call_id, .. } => {
@@ -998,8 +967,8 @@ pub(crate) fn persist_runtime_event(
                     &approval_audit_from_runtime(approval),
                 )?;
                 validate_rejected_remember(&state, result, &approval_audit_from_runtime(approval))?;
-                tool_calls::reject(
-                    store.conn(),
+                tool_calls::reject_in_transaction(
+                    tx,
                     &result.call_id,
                     &approval_json,
                     &result.output,
@@ -1036,9 +1005,8 @@ pub(crate) fn persist_runtime_event(
                     RuntimeToolStatus::Cancelled => "cancelled",
                     RuntimeToolStatus::Rejected => return Err(safe_audit_error("permission")),
                 };
-                let tx = store.immediate_transaction()?;
                 tool_calls::finish(
-                    &tx,
+                    tx,
                     tool_calls::FinishToolCall {
                         id: &result.call_id,
                         status,
@@ -1057,7 +1025,7 @@ pub(crate) fn persist_runtime_event(
                         return Err(runtime_state_error());
                     }
                     vega_store::delegated_stages::record_read(
-                        &tx,
+                        tx,
                         thread_id,
                         message_id,
                         &result.call_id,
@@ -1065,7 +1033,6 @@ pub(crate) fn persist_runtime_event(
                         &identity.sha256,
                     )?;
                 }
-                tx.commit()?;
             }
         }
         RuntimeEvent::UsageUpdated {
@@ -1167,19 +1134,18 @@ pub(crate) fn persist_runtime_event(
                 vega_runtime::ContextCompactionStatusFailure::OverLimit => "over_limit",
                 vega_runtime::ContextCompactionStatusFailure::Unavailable => "unavailable",
             });
-            let tx = store.immediate_transaction()?;
             ensure_message_updated(
-                messages::update_streaming_content(&tx, message_id, streamed_content)?,
+                messages::update_streaming_content(tx, message_id, streamed_content)?,
                 message_id,
             )?;
             messages::record_timestamp_boundary(
-                &tx,
+                tx,
                 message_id,
                 &status.operation_key,
                 streamed_content.len(),
             )?;
             vega_store::context_compaction::insert_status(
-                &tx,
+                tx,
                 vega_store::context_compaction::NewContextCompactionStatus {
                     thread_id,
                     model,
@@ -1195,14 +1161,12 @@ pub(crate) fn persist_runtime_event(
                     created_at: now_ms(),
                 },
             )?;
-            tx.commit()?;
         }
         RuntimeEvent::StageHandoff { checkpoint_id } => {
-            let tx = store.immediate_transaction()?;
-            vega_store::delegated_stages::mark_handoff(&tx, thread_id, message_id, checkpoint_id)?;
+            vega_store::delegated_stages::mark_handoff(tx, thread_id, message_id, checkpoint_id)?;
             ensure_message_updated(
                 messages::finish_streaming_in_transaction(
-                    &tx,
+                    tx,
                     message_id,
                     streamed_content,
                     "done",
@@ -1210,13 +1174,12 @@ pub(crate) fn persist_runtime_event(
                 )?,
                 message_id,
             )?;
-            vega_store::threads::open_thread_in_transaction(&tx, thread_id, now_ms())?;
-            tx.commit()?;
+            vega_store::threads::open_thread_in_transaction(tx, thread_id, now_ms())?;
         }
         RuntimeEvent::Finished(_) => {
             if is_plan {
-                messages::complete_plan(
-                    store.conn(),
+                messages::complete_plan_in_transaction(
+                    tx,
                     thread_id,
                     message_id,
                     streamed_content,
@@ -1229,8 +1192,8 @@ pub(crate) fn persist_runtime_event(
                 })?;
             } else {
                 ensure_message_updated(
-                    messages::finish_streaming(
-                        store.conn(),
+                    messages::finish_streaming_in_transaction(
+                        tx,
                         message_id,
                         streamed_content,
                         "done",
@@ -1238,13 +1201,13 @@ pub(crate) fn persist_runtime_event(
                     )?,
                     message_id,
                 )?;
-                vega_store::threads::open_thread(store.conn(), thread_id, now_ms())?;
+                vega_store::threads::open_thread_in_transaction(tx, thread_id, now_ms())?;
             }
         }
         RuntimeEvent::Interrupted => {
             ensure_message_updated(
-                messages::finish_streaming(
-                    store.conn(),
+                messages::finish_streaming_in_transaction(
+                    tx,
                     message_id,
                     streamed_content,
                     "interrupted",
@@ -1252,13 +1215,12 @@ pub(crate) fn persist_runtime_event(
                 )?,
                 message_id,
             )?;
-            vega_store::threads::open_thread(store.conn(), thread_id, now_ms())?;
+            vega_store::threads::open_thread_in_transaction(tx, thread_id, now_ms())?;
         }
         RuntimeEvent::Error(error) => {
-            let transaction = store.immediate_transaction()?;
             ensure_message_updated(
                 messages::finish_streaming_in_transaction(
-                    &transaction,
+                    tx,
                     message_id,
                     streamed_content,
                     "failed",
@@ -1278,16 +1240,15 @@ pub(crate) fn persist_runtime_event(
             };
             if let Some(reason) = reason {
                 vega_store::credential_continuation::suspend(
-                    &transaction,
+                    tx,
                     thread_id,
                     message_id,
                     &reason,
                     now_ms(),
                 )?;
             }
-            vega_store::credential_continuation::complete(&transaction, message_id)?;
-            vega_store::threads::open_thread_in_transaction(&transaction, thread_id, now_ms())?;
-            transaction.commit()?;
+            vega_store::credential_continuation::complete(tx, message_id)?;
+            vega_store::threads::open_thread_in_transaction(tx, thread_id, now_ms())?;
         }
         RuntimeEvent::TextDelta(_)
         | RuntimeEvent::ThinkingDelta(_)
@@ -1327,14 +1288,14 @@ fn skill_activation_audit<'a>(
 }
 
 fn persist_skill_snapshot(
-    store: &Store,
+    tx: &vega_store::write_coordination::WriteTransaction<'_>,
     thread_id: &str,
     message_id: &str,
     binding: &vega_runtime::skills::RunBinding,
     snapshot: &vega_runtime::skills::SkillRunSnapshot,
 ) -> Result<(), VegaError> {
-    vega_store::skills::save_snapshot(
-        store.conn(),
+    vega_store::skills::save_snapshot_in_transaction(
+        tx,
         skill_snapshot_input(thread_id, message_id, binding, snapshot)?,
     )
     .map_err(skill_store_error)

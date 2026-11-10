@@ -11,6 +11,7 @@ use crate::types::{
 };
 
 mod session;
+mod writer;
 pub use session::PermissionResetSession;
 
 pub fn pause_admission(store: &Store) -> Result<DatabaseAdmissionPause, PermissionResetError> {
@@ -73,33 +74,24 @@ pub fn reset_quiescent(
     if identity != intent.source.configuration_id {
         return Err(PermissionResetError::ConfigurationConflict);
     }
-    let mut edit = config::begin_existing_edit(Path::new(&identity))
+    let edit = config::begin_existing_edit(Path::new(&identity))
         .map_err(|_| PermissionResetError::ConfigurationUnavailable)?;
     if config_source(&identity, &edit.config) != intent.source
         || configuration_identity(config_path)? != identity
     {
         return Err(PermissionResetError::ConfigurationConflict);
     }
-    let tx = store.immediate_transaction().map_err(unavailable)?;
-    let state = vega_store::permission_contracts::load_state(&tx).map_err(unavailable)?;
-    if state.reset_pending {
-        return Err(PermissionResetError::Busy);
-    }
-    if state.authority_epoch != intent.authority_epoch {
-        return Err(PermissionResetError::ConfigurationConflict);
-    }
-    require_settled(&tx)?;
-    let record = persistence::begin(
-        &tx,
-        &intent.authority_epoch,
-        &intent.source,
-        crate::threads::now_ms(),
-    )
-    .map_err(unavailable)?;
-    crate::automation::revoke_in_transaction(&tx, crate::threads::now_ms()).map_err(unavailable)?;
-    tx.commit_with_rollback()
-        .map_err(|_| PermissionResetError::OutcomeUnknown)?;
-    finish_pending(store, config_path, pause, &record, &mut edit, Some(replay))
+    drop(edit);
+    drop(_coordination);
+    let record = commit_reset(
+        store,
+        writer::ResetWrite::Begin {
+            authority_epoch: intent.authority_epoch.clone(),
+            source: intent.source.clone(),
+        },
+    )?
+    .ok_or(PermissionResetError::OutcomeUnknown)?;
+    finish_pending(store, config_path, pause, &record, Some(replay))
 }
 
 pub fn recover_pending_with_pause(
@@ -116,6 +108,7 @@ pub fn recover_pending_with_pause(
     if record.completed {
         return Ok(None);
     }
+    drop(_coordination);
     resume_record(store, config_path, pause, &record, Some(replay)).map(Some)
 }
 
@@ -134,6 +127,7 @@ pub fn recover_pending(
     let pause = try_pause_database(store.database_identity())
         .map_err(unavailable)?
         .ok_or(PermissionResetError::Busy)?;
+    drop(_coordination);
     resume_record(store, config_path, &pause, &record, None).map(Some)
 }
 
@@ -149,9 +143,7 @@ fn resume_record(
     if identity != record.source.configuration_id {
         return Err(PermissionResetError::ConfigurationConflict);
     }
-    let mut edit = config::begin_existing_edit(Path::new(&identity))
-        .map_err(|_| PermissionResetError::ConfigurationUnavailable)?;
-    finish_pending(store, config_path, pause, record, &mut edit, replay)
+    finish_pending(store, config_path, pause, record, replay)
 }
 
 fn require_precompute_settled(
@@ -171,7 +163,6 @@ fn finish_pending(
     config_path: &Path,
     pause: &DatabaseAdmissionPause,
     record: &ResetRecord,
-    edit: &mut config::ConfigEdit,
     replay: Option<&ReplaySessionRegistry>,
 ) -> Result<PermissionResetReceipt, PermissionResetError> {
     crate::ordinary_submissions::require_database_settled(store.database_identity(), pause)?;
@@ -181,20 +172,29 @@ fn finish_pending(
         return Err(PermissionResetError::ConfigurationConflict);
     }
     let path = Path::new(&identity);
-    let current = config_source(&identity, &edit.config);
-    if !record.accepts_config(&current) {
+    let observed =
+        config::read_from(path).map_err(|_| PermissionResetError::ConfigurationUnavailable)?;
+    if !record.accepts_config(&config_source(&identity, &observed))
+        || configuration_identity(config_path)? != identity
+    {
         return Err(PermissionResetError::ConfigurationConflict);
     }
-    let tx = store.immediate_transaction().map_err(unavailable)?;
-    verify_pending(&tx, record)?;
-    require_settled(&tx)?;
-    crate::automation::revoke_in_transaction(&tx, crate::threads::now_ms()).map_err(unavailable)?;
-    tx.commit_with_rollback()
-        .map_err(|_| PermissionResetError::OutcomeUnknown)?;
+    commit_reset(
+        store,
+        writer::ResetWrite::Revoke {
+            record: record.clone(),
+        },
+    )?;
     crate::ordinary_submissions::invalidate_database_recovery(store.database_identity(), pause)
         .map_err(unavailable)?;
     if let Some(replay) = replay {
         replay.invalidate_all_acknowledged()?;
+    }
+    let mut edit = config::begin_existing_edit(path)
+        .map_err(|_| PermissionResetError::ConfigurationUnavailable)?;
+    let current = config_source(&identity, &edit.config);
+    if !record.accepts_config(&current) {
+        return Err(PermissionResetError::ConfigurationConflict);
     }
     let latest =
         config::read_from(path).map_err(|_| PermissionResetError::ConfigurationUnavailable)?;
@@ -216,12 +216,15 @@ fn finish_pending(
     if !record.config_is_reset(&saved_source) || configuration_identity(config_path)? != identity {
         return Err(PermissionResetError::OutcomeUnknown);
     }
-    let tx = store.immediate_transaction().map_err(unavailable)?;
-    verify_pending(&tx, record)?;
-    require_settled(&tx)?;
-    persistence::finish(&tx, record, &saved_source).map_err(unavailable)?;
-    tx.commit_with_rollback()
-        .map_err(|_| PermissionResetError::OutcomeUnknown)?;
+    drop(edit);
+    crate::ordinary_submissions::require_database_settled(store.database_identity(), pause)?;
+    commit_reset(
+        store,
+        writer::ResetWrite::Finish {
+            record: record.clone(),
+            saved_source,
+        },
+    )?;
     let mut expected = record.clone();
     expected.completed = true;
     if persistence::load(store.conn()).map_err(unavailable)? != Some(expected) {
@@ -279,4 +282,18 @@ fn config_source(identity: &str, config: &AppConfig) -> ResetConfigSource {
 
 fn unavailable(_: impl std::fmt::Display) -> PermissionResetError {
     PermissionResetError::Unavailable
+}
+
+fn commit_reset(
+    store: &Store,
+    command: writer::ResetWrite,
+) -> Result<Option<ResetRecord>, PermissionResetError> {
+    crate::database_writer::commit(
+        store
+            .database_path()
+            .ok_or(PermissionResetError::Unavailable)?,
+        store.database_identity(),
+        command,
+    )
+    .map_err(|_| PermissionResetError::OutcomeUnknown)?
 }

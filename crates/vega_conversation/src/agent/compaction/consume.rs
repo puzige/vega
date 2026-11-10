@@ -295,66 +295,32 @@ impl ConversationCompactionHook<'_> {
         let path = self.database_path.clone();
         let install_cancel = cancel.clone();
         let install = tokio::task::spawn_blocking(move || {
-            let store = Store::open(path).map_err(VegaError::Store)?;
-            crate::thread_access::verify(&store, &checkpoint.thread_id, &admission)
-                .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?;
-            if borrow {
-                let transaction = store
-                    .conn()
-                    .unchecked_transaction()
-                    .map_err(VegaError::Store)?;
-                if !consume::validate_for_install_in_transaction(
-                    &transaction,
-                    &prepared,
-                    &checkpoint.model,
-                    now_ms(),
+            let store = Store::open_existing(&path)?;
+            let install = if borrow {
+                None
+            } else {
+                Some(
+                    prepared
+                        .prepare_install(store.conn(), checkpoint.clone())
+                        .map_err(precompute::store_error)?,
                 )
-                .map_err(precompute::store_error)?
-                {
-                    return Err(context_error(ContextRuntimeError::SourceChanged));
-                }
-                transaction.commit().map_err(VegaError::Store)?;
-                if install_cancel.is_cancelled() {
-                    return Err(VegaError::Cancelled);
-                }
-                if tokio::time::Instant::now() >= deadline {
-                    return Err(context_error(ContextRuntimeError::SourceChanged));
-                }
-                return Ok(None);
-            }
-            match consume::install_with_guard(
-                store.conn(),
-                &prepared,
-                &checkpoint,
-                now_ms(),
-                || install_cancel.is_cancelled() || tokio::time::Instant::now() >= deadline,
-            ) {
-                Err(ContextCheckpointError::Cancelled) if !install_cancel.is_cancelled() => {
-                    let transaction = store
-                        .conn()
-                        .unchecked_transaction()
-                        .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?;
-                    if !matches!(
-                        consume::validate_for_install_in_transaction(
-                            &transaction,
-                            &prepared,
-                            &checkpoint.model,
-                            now_ms(),
-                        ),
-                        Ok(true)
-                    ) {
-                        return Err(context_error(ContextRuntimeError::SourceChanged));
-                    }
-                    transaction
-                        .commit()
-                        .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?;
-                    if install_cancel.is_cancelled() {
-                        return Err(VegaError::Cancelled);
-                    }
-                    Err(context_error(ContextRuntimeError::SummaryTimedOut))
-                }
-                result => result.map(Some).map_err(precompute::store_error),
-            }
+            };
+            let commit = prepared
+                .commit_projection()
+                .map_err(precompute::store_error)?;
+            drop(prepared);
+            super::writer::commit(
+                &path,
+                super::writer::Consume {
+                    checkpoint,
+                    admission,
+                    prepared: commit,
+                    install,
+                    borrow,
+                    install_cancel,
+                    deadline,
+                },
+            )
         })
         .await
         .map_err(|_| context_error(ContextRuntimeError::SourceChanged))??;

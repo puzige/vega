@@ -73,7 +73,7 @@ pub(crate) use terminal_history::recover_terminal_tools;
 mod subagents;
 mod user_question_queue;
 pub use user_question_queue::*;
-mod persistence;
+pub(crate) mod persistence;
 mod pipeline;
 mod replay_sessions;
 mod skills;

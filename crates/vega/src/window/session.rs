@@ -1,4 +1,5 @@
 use super::*;
+use vega_store::Store;
 
 pub(crate) const MODEL_SELECTION_POLL: std::time::Duration = std::time::Duration::from_millis(4);
 
@@ -248,7 +249,7 @@ impl VegaWindow {
         &mut self,
         stream: &Entity<ConversationStream>,
         thread_id: &str,
-        admission: &ThreadAdmission,
+        _admission: &ThreadAdmission,
         cx: &mut Context<Self>,
     ) -> Result<bool, ()> {
         if self.is_draft_route(thread_id) {
@@ -272,9 +273,9 @@ impl VegaWindow {
         if unique_provider_for_model(&config, &model).is_none() {
             return Err(());
         }
-        let thread =
-            vega_conversation::threads::promote_thread_model(store, thread_id, &model, admission)
-                .map_err(|_| ())?;
+        let mut thread =
+            vega_conversation::threads::get_thread(store, thread_id).map_err(|_| ())?;
+        thread.model = model.clone();
         if let Some(sessions) = cx.try_global::<crate::app_agent::AppReplaySessions>() {
             sessions.0.invalidate_thread(thread_id);
         }
@@ -1153,30 +1154,49 @@ impl VegaWindow {
             stream.update(cx, |stream, cx| stream.apply_thread(next, cx));
             return;
         }
-        let result = match &cx.global::<VegaStore>().0 {
-            Ok(store) => (|| {
-                if let Some(mode) = request.mode {
-                    vega_conversation::threads::set_thread_mode(store, &thread_id, mode)?;
-                }
-                if let Some(permission_mode) = request.permission_mode {
-                    vega_conversation::threads::set_thread_permission_mode(
-                        store,
-                        &thread_id,
-                        permission_mode,
-                    )?;
-                }
-                vega_conversation::threads::open_thread(store, &thread_id)
-            })()
-            .map_err(|error| error.to_string()),
-            Err(error) => Err(error.clone()),
+        let Some(path) = self.context_database(cx) else {
+            stream.update(cx, ConversationStream::apply_controller_error);
+            return;
         };
-        match result {
-            Ok(thread) => {
-                cx.set_global(OpenedThread(Some(thread.clone())));
-                stream.update(cx, |stream, cx| stream.apply_thread(thread, cx));
+        let Some(lease) = self
+            .trusted_actions
+            .acquire(TrustedActionKind::ThreadSettings, 0, 0)
+        else {
+            stream.update(cx, ConversationStream::apply_controller_error);
+            return;
+        };
+        let mode = request.mode;
+        let worker_thread = thread_id.clone();
+        stream.update(cx, |stream, cx| stream.set_trusted_action_busy(true, cx));
+        let worker = cx.background_executor().spawn(async move {
+            let store = Store::open(path).map_err(|error| error.to_string())?;
+            if let Some(mode) = mode {
+                vega_conversation::threads::set_thread_mode(&store, &worker_thread, mode)
+                    .map_err(|error| error.to_string())?;
             }
-            Err(_) => stream.update(cx, ConversationStream::apply_controller_error),
-        }
+            vega_conversation::threads::open_thread(&store, &worker_thread)
+                .map_err(|error| error.to_string())
+        });
+        cx.spawn(async move |this, cx| {
+            let result = worker.await;
+            let _ = this.update(cx, |this, cx| {
+                if !this.trusted_actions.release(lease) {
+                    return;
+                }
+                stream.update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+                if !this.owns_stream_request(&stream, &thread_id, cx) {
+                    return;
+                }
+                match result {
+                    Ok(thread) => {
+                        cx.set_global(OpenedThread(Some(thread.clone())));
+                        stream.update(cx, |stream, cx| stream.apply_thread(thread, cx));
+                    }
+                    Err(_) => stream.update(cx, ConversationStream::apply_controller_error),
+                }
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn review_plan(
@@ -1231,6 +1251,12 @@ impl VegaWindow {
         {
             return;
         }
+        if self
+            .trusted_actions
+            .is_kind_active(TrustedActionKind::PlanReview)
+        {
+            return;
+        }
         if stream.read(cx).has_pending_model_selection() || self.trusted_actions.is_busy() {
             self.agent_controller
                 .pending_review
@@ -1238,45 +1264,85 @@ impl VegaWindow {
             stream.update(cx, ConversationStream::apply_controller_error);
             return;
         }
-        let result = match &cx.global::<VegaStore>().0 {
-            Ok(store) => persist_review(store, request),
-            Err(error) => Err(error.clone()),
+        let Some(path) = self.context_database(cx) else {
+            self.agent_controller
+                .pending_review
+                .remove(&request.thread_id);
+            stream.update(cx, ConversationStream::apply_controller_error);
+            return;
         };
-        match result {
-            Ok(refresh) => {
-                let approved_instruction_id = refresh.approved_instruction_id.clone();
-                if self.owns_stream_request(&stream, &request.thread_id, cx) {
-                    cx.set_global(OpenedThread(Some(refresh.thread.clone())));
+        let Some(lease) = self
+            .trusted_actions
+            .acquire(TrustedActionKind::PlanReview, 0, 0)
+        else {
+            return;
+        };
+        let request = request.clone();
+        let worker_request = request.clone();
+        stream.update(cx, |stream, cx| stream.set_trusted_action_busy(true, cx));
+        let worker = cx.background_executor().spawn(async move {
+            let store = Store::open(path).map_err(|error| error.to_string());
+            let result = store
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(|store| persist_review(store, &worker_request));
+            let reload = if result.is_err() {
+                store.as_ref().ok().and_then(|store| {
+                    reload_thread_and_plans(store, &worker_request.thread_id).ok()
+                })
+            } else {
+                None
+            };
+            (result, reload)
+        });
+        cx.spawn(async move |this, cx| {
+            let (result, reload) = worker.await;
+            let _ = this.update(cx, |this, cx| {
+                if !this.trusted_actions.release(lease) {
+                    return;
                 }
-                Self::apply_thread_and_plans(&stream, refresh.thread, refresh.plans, cx);
-                if let Some(instruction_message_id) = approved_instruction_id {
-                    self.sidebar.update(cx, Sidebar::reload_sessions);
-                    self.start_agent_run(
-                        stream,
-                        &request.thread_id,
-                        PendingAgentRun::ApprovedPlan(instruction_message_id),
-                        cx,
-                    );
+                stream.update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+                if !this
+                    .agent_controller
+                    .pending_review
+                    .get(&request.thread_id)
+                    .is_some_and(|pending| pending.stream == stream && pending.request == request)
+                {
+                    return;
                 }
-            }
-            Err(_) => {
-                // A SQLite error may be commit-ambiguous. Reload authoritative
-                // state before deciding whether the card may be re-armed.
-                let reload = match &cx.global::<VegaStore>().0 {
-                    Ok(store) => reload_thread_and_plans(store, &request.thread_id),
-                    Err(error) => Err(error.clone()),
-                };
-                if let Ok((thread, plans)) = reload {
-                    if self.owns_stream_request(&stream, &request.thread_id, cx) {
-                        cx.set_global(OpenedThread(Some(thread.clone())));
+                this.agent_controller
+                    .pending_review
+                    .remove(&request.thread_id);
+                let current = this.owns_stream_request(&stream, &request.thread_id, cx);
+                match result {
+                    Ok(refresh) => {
+                        let instruction = refresh.approved_instruction_id.clone();
+                        if current {
+                            cx.set_global(OpenedThread(Some(refresh.thread.clone())));
+                        }
+                        Self::apply_thread_and_plans(&stream, refresh.thread, refresh.plans, cx);
+                        if current && let Some(instruction_message_id) = instruction {
+                            this.sidebar.update(cx, Sidebar::reload_sessions);
+                            this.start_agent_run(
+                                stream.clone(),
+                                &request.thread_id,
+                                PendingAgentRun::ApprovedPlan(instruction_message_id),
+                                cx,
+                            );
+                        }
                     }
-                    Self::apply_thread_and_plans(&stream, thread, plans, cx);
+                    Err(_) => {
+                        if let Some((thread, plans)) = reload {
+                            if current {
+                                cx.set_global(OpenedThread(Some(thread.clone())));
+                            }
+                            Self::apply_thread_and_plans(&stream, thread, plans, cx);
+                        }
+                        stream.update(cx, ConversationStream::apply_controller_error);
+                    }
                 }
-                stream.update(cx, ConversationStream::apply_controller_error);
-            }
-        }
-        self.agent_controller
-            .pending_review
-            .remove(&request.thread_id);
+            });
+        })
+        .detach();
     }
 }

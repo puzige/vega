@@ -133,3 +133,120 @@ where
     transaction.commit()?;
     Ok(installed.fingerprint)
 }
+
+pub struct PreparedMicro {
+    fence: crate::context_compaction::source_version::SourceFence,
+    thread: String,
+    model: String,
+    previous: Option<i64>,
+    calls: Vec<(String, String)>,
+    fingerprint: String,
+    created_at: i64,
+}
+
+impl PreparedMicro {
+    pub fn prepare(
+        conn: &Connection,
+        source: &ContextSource,
+        model: &str,
+        previous: Option<i64>,
+        ids: &[String],
+        created_at: i64,
+    ) -> Result<Self, ContextCheckpointError> {
+        if ids.is_empty() || ids.len() > 4096 {
+            return Err(ContextCheckpointError::Invalid);
+        }
+        let tx = conn.unchecked_transaction()?;
+        let fence = crate::context_compaction::source_version::SourceFence::capture(
+            &tx,
+            &source.thread_id,
+        )?;
+        let mut current =
+            crate::context_compaction::load_source_in_transaction(&tx, &source.thread_id)?;
+        if current.source_version != source.source_version
+            || current.fingerprint != source.fingerprint
+        {
+            return Err(ContextCheckpointError::Stale);
+        }
+        let mut unique = std::collections::HashSet::new();
+        let mut calls = Vec::new();
+        for id in ids {
+            if !unique.insert(id) {
+                return Err(ContextCheckpointError::Invalid);
+            }
+            let call = current
+                .tool_calls
+                .iter_mut()
+                .find(|call| &call.id == id)
+                .ok_or(ContextCheckpointError::Invalid)?;
+            if !eligible(call) || call.micro_compacted {
+                return Err(ContextCheckpointError::Invalid);
+            }
+            calls.push((id.clone(), call_digest(call)));
+            call.micro_compacted = true;
+        }
+        let (fingerprint, _) = crate::context_compaction::fingerprint_source(
+            &tx,
+            &current.messages,
+            &current.tool_calls,
+            &source.thread_id,
+            false,
+        )?;
+        tx.commit()?;
+        Ok(Self {
+            fence,
+            thread: source.thread_id.clone(),
+            model: model.to_owned(),
+            previous,
+            calls,
+            fingerprint,
+            created_at,
+        })
+    }
+
+    pub fn thread(&self) -> &str {
+        &self.thread
+    }
+
+    pub fn install<F: Fn() -> bool>(
+        &self,
+        conn: &Connection,
+        cancel: F,
+    ) -> Result<String, ContextCheckpointError> {
+        let tx = crate::write_coordination::WriteTransaction::new_with_cancel(
+            conn,
+            crate::write_coordination::WriteCategory::ContextCompaction,
+            &cancel,
+        )
+        .map_err(|error| match error {
+            rusqlite::Error::SqliteFailure(ref failure, _)
+                if failure.extended_code == rusqlite::ffi::SQLITE_INTERRUPT =>
+            {
+                ContextCheckpointError::Cancelled
+            }
+            error => ContextCheckpointError::Store(error),
+        })?;
+        if cancel() {
+            return Err(ContextCheckpointError::Cancelled);
+        }
+        if !self.fence.validate(&tx)?
+            || !tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM threads WHERE id=?1 AND model=?2)",
+                params![self.thread, self.model],
+                |row| row.get::<_, bool>(0),
+            )?
+            || crate::context_compaction::source_version::latest_checkpoint_id(&tx, &self.thread)?
+                != self.previous
+        {
+            return Err(ContextCheckpointError::Stale);
+        }
+        for (id, digest) in &self.calls {
+            tx.execute("INSERT INTO context_micro_compactions(call_id,thread_id,source_digest,created_at) VALUES(?1,?2,?3,?4) ON CONFLICT(call_id) DO UPDATE SET source_digest=excluded.source_digest,created_at=excluded.created_at", params![id,self.thread,digest,self.created_at])?;
+        }
+        if cancel() {
+            return Err(ContextCheckpointError::Cancelled);
+        }
+        tx.commit()?;
+        Ok(self.fingerprint.clone())
+    }
+}
