@@ -266,6 +266,9 @@ pub(crate) fn valid_receipt(
 }
 
 pub(crate) fn valid_control_input(tool: &str, input: &str) -> bool {
+    if !matches!(tool, "bash_wait" | "bash_cancel") || input.len() > 2048 {
+        return false;
+    }
     let Ok(value) = serde_json::from_str::<Value>(input) else {
         return false;
     };
@@ -274,7 +277,7 @@ pub(crate) fn valid_control_input(tool: &str, input: &str) -> bool {
     };
     object.keys().all(|key| {
         matches!(key.as_str(), "handle" | "cursor" | "wait_ms")
-            && (tool != "bash_cancel" || key == "handle" || value[key].is_null())
+            && (tool != "bash_cancel" || key == "handle")
     }) && value["handle"]
         .as_str()
         .is_some_and(|id| id.len() == 26 && ulid::Ulid::from_string(id).is_ok())

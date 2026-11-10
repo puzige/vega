@@ -211,6 +211,13 @@ pub(crate) struct ComposerActions {
 }
 
 impl ComposerActions {
+    fn finish_run(&mut self, cancelled: bool) -> bool {
+        self.running = false;
+        self.restore_focus = self.stopping;
+        self.stopping = false;
+        self.terminal_cancelled.unwrap_or(cancelled)
+    }
+
     fn close_menu(&mut self) {
         self.menu = false;
         self.menu_rows.clear();
@@ -358,7 +365,6 @@ impl ConversationStream {
         }
         self.timeout_permission(cx);
         self.cancel_user_questions(cx);
-        self.actions.running = false;
         let finished_entries = self
             .entry_identities
             .iter()
@@ -377,9 +383,7 @@ impl ConversationStream {
         }
         self.permission_editor.active_mode = None;
         self.composer_resume_pending = false;
-        self.actions.restore_focus = self.actions.stopping;
-        self.actions.stopping = false;
-        let stopped = self.actions.terminal_cancelled.unwrap_or(cancelled);
+        let stopped = self.actions.finish_run(cancelled);
         self.sync_retained_thinking_actions(cx);
         cx.notify();
         stopped
