@@ -65,6 +65,7 @@ pub(super) struct Presentation {
     id: ProjectionId,
     height: f32,
     focus: FocusHandle,
+    entered_from_content: bool,
     keyboard_session: ProjectionId,
     keyboard: Option<Selection<Action>>,
     keyboard_observed: Option<Snapshot>,
@@ -167,11 +168,12 @@ impl SettingsView {
                                 None,
                                 &page.keyboard_session,
                                 &enabled(&snapshot),
-                                window.modifiers().shift,
+                                page.entered_from_content || window.modifiers().shift,
                             );
                             if let Some(page) = &mut this.shell_navigation
                                 && let Step::Selected(next) = next
                             {
+                                page.entered_from_content = false;
                                 page.keyboard = Some(next);
                             }
                             window.focus(&focus, cx);
@@ -186,6 +188,7 @@ impl SettingsView {
                 id,
                 height: Typography::SETTINGS_TITLE * 1.6,
                 focus,
+                entered_from_content: false,
                 keyboard_session,
                 keyboard,
                 keyboard_observed: None,
@@ -373,6 +376,19 @@ impl SettingsView {
         }
         true
     }
+    pub(super) fn focus_navigation_from_content(
+        &mut self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        let Some(page) = &mut self.shell_navigation else {
+            return false;
+        };
+        page.entered_from_content = true;
+        window.focus(&page.focus, cx);
+        true
+    }
+
     fn shell_keyboard(
         &mut self,
         event: &KeyDownEvent,
@@ -404,6 +420,7 @@ impl SettingsView {
                         }
                         window.focus(&focus, cx);
                     }
+                    Step::Exit if !backwards && self.focus_first_appearance(window, cx) => {}
                     Step::Exit => crate::nsh::keyboard::leave(&focus, backwards, window, cx),
                 }
                 cx.stop_propagation();

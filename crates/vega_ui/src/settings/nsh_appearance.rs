@@ -1,3 +1,5 @@
+mod keyboard;
+
 use gpui_kit::{App, Context, Window};
 use nsh_core::prelude::*;
 use tokio::sync::{mpsc, oneshot};
@@ -9,26 +11,34 @@ use crate::nsh::{ProjectionId, Surface};
 pub(super) struct Presentation {
     surface: Surface<Snapshot, Request>,
     id: ProjectionId,
+    epoch: u64,
     height: f32,
+    focused: Option<Action>,
+    targets: [keyboard::FocusTarget; 6],
+    _focus_events: Vec<gpui_kit::Subscription>,
 }
 
 impl Presentation {
     pub(super) fn revoke(&mut self) {
         self.id = ProjectionId::new();
+        self.epoch += 1;
+        self.focused = None;
     }
 }
 
 #[derive(Clone)]
 struct Snapshot {
+    epoch: u64,
     id: ProjectionId,
     theme: String,
     language: String,
     sidebar: bool,
     enabled: bool,
+    focused: Option<Action>,
     colors: ThemeColors,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum Action {
     Theme(&'static str),
     Language(&'static str),
@@ -50,6 +60,14 @@ impl SettingsView {
     fn appearance_snapshot(&self, cx: &App, id: ProjectionId) -> Snapshot {
         Snapshot {
             id,
+            epoch: self
+                .appearance_presentation
+                .as_ref()
+                .map_or(0, |page| page.epoch),
+            focused: self
+                .appearance_presentation
+                .as_ref()
+                .and_then(|page| page.focused),
             theme: self.config.ui.theme.clone(),
             language: vega_i18n::language().to_string(),
             sidebar: !cx
@@ -58,6 +76,39 @@ impl SettingsView {
             enabled: !self.provider_management.saving && !self.default_permission.io_pending(),
             colors: vega_theme::theme(cx).colors,
         }
+    }
+
+    fn appearance_visible(&self, cx: &App) -> bool {
+        self.section == 1
+            && self.pending_section.is_none()
+            && !self.pending_settings_close
+            && cx
+                .try_global::<super::SettingsOpen>()
+                .is_some_and(|open| open.0)
+    }
+
+    fn first_appearance_target(&self, cx: &App) -> Option<&keyboard::FocusTarget> {
+        let page = self.appearance_presentation.as_ref()?;
+        if !self.appearance_visible(cx) {
+            return None;
+        }
+        let current = self.appearance_snapshot(cx, page.id.clone());
+        page.targets
+            .iter()
+            .zip(keyboard::CONTROLS)
+            .find_map(|(target, action)| target.available(&current, action).then_some(target))
+    }
+
+    pub(super) fn focus_first_appearance(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(target) = self.first_appearance_target(cx) else {
+            return false;
+        };
+        window.focus(&target.handle, cx);
+        true
     }
 
     pub(super) fn render_appearance(
@@ -74,9 +125,76 @@ impl SettingsView {
                 window,
                 cx,
             );
+            let mut focus_events = Vec::new();
+            let targets = std::array::from_fn(|_| keyboard::FocusTarget::new(cx));
+            for (action, target) in keyboard::CONTROLS.into_iter().zip(targets.iter().cloned()) {
+                let focus = target.handle.clone();
+                let owner = cx.weak_entity();
+                focus_events.push(cx.on_focus(&focus, window, move |this, _, cx| {
+                    if let Some(page) = &mut this.appearance_presentation {
+                        page.focused = Some(action);
+                        cx.notify();
+                    }
+                }));
+                focus_events.push(cx.on_blur(&focus, window, move |this, _, cx| {
+                    if let Some(page) = &mut this.appearance_presentation
+                        && page.focused == Some(action)
+                    {
+                        page.focused = None;
+                        cx.notify();
+                    }
+                }));
+                surface.entity().read(cx).register_component(
+                    action.component(),
+                    std::rc::Rc::new(move |context| {
+                        Box::new(keyboard::Target {
+                            context,
+                            owner: owner.clone(),
+                            displayed: None,
+                            target: target.clone(),
+                            action,
+                            label: String::new(),
+                            selected: false,
+                            enabled: false,
+                        })
+                    }),
+                );
+            }
+            let owner = cx.weak_entity();
+            let window_id = window.window_handle().window_id();
+            focus_events.push(cx.intercept_keystrokes(move |event, window, cx| {
+                if event.keystroke.key != "tab"
+                    || event.keystroke.modifiers
+                        != (gpui_kit::Modifiers {
+                            shift: true,
+                            ..Default::default()
+                        })
+                    || window.window_handle().window_id() != window_id
+                    || !window.is_window_active()
+                {
+                    return;
+                }
+                let Some(owner) = owner.upgrade() else {
+                    return;
+                };
+                if owner
+                    .read(cx)
+                    .first_appearance_target(cx)
+                    .is_some_and(|target| target.handle.is_focused(window))
+                    && owner.update(cx, |settings, cx| {
+                        settings.focus_navigation_from_content(window, cx)
+                    })
+                {
+                    cx.stop_propagation();
+                }
+            }));
             self.appearance_presentation = Some(Presentation {
                 surface,
                 id,
+                focused: None,
+                _focus_events: focus_events,
+                targets,
+                epoch: 0,
                 height: Layout::SETTINGS_NOTES_MAX_HEIGHT,
             });
             cx.spawn_in(window, async move |this, cx| {
@@ -85,10 +203,7 @@ impl SettingsView {
                         .update_in(cx, |this, window, cx| {
                             match request {
                                 Request::Decide(command) => {
-                                    let accepted = cx
-                                        .try_global::<super::SettingsOpen>()
-                                        .is_some_and(|open| open.0)
-                                        && this.section == 1
+                                    let accepted = this.appearance_visible(cx)
                                         && this.appearance_presentation.as_ref().is_some_and(
                                             |page| {
                                                 if !page.id.matches(&command.snapshot.id) {
@@ -219,19 +334,8 @@ fn control(
     action: Action,
     key: &'static str,
 ) -> AnyElement {
-    let target = element_ref();
-    let focused = signal(false);
-    target.on_focus_in(move || focused.set(true));
-    target.on_focus_out(move || focused.set(false));
     view()
-        .element_ref(&target)
-        .role(AccessibilityRole::Button)
-        .label(move || actions.state.with(|_| vega_i18n::t(key)))
-        .accessibility_state(move || nsh_core::AccessibilityState {
-            selected: selected(&actions.state.get(), action),
-            ..Default::default()
-        })
-        .disabled(move || actions.pending.get() || !actions.state.get().enabled)
+        .relative()
         .self_start()
         .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
         .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
@@ -239,7 +343,7 @@ fn control(
         .border(px(1.))
         .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
         .border_color(move || {
-            crate::nsh::color(if focused.get() {
+            crate::nsh::color(if actions.state.get().focused == Some(action) {
                 actions.state.get().colors.accent
             } else {
                 actions.state.get().colors.border_subtle
@@ -253,8 +357,10 @@ fn control(
             })
         })
         .text_color(move || crate::nsh::color(actions.state.get().colors.text_primary))
-        .on_press(move |_: &nsh_core::PressEvent| actions.send(commands.clone(), action))
-        .child(text(move || actions.state.with(|_| vega_i18n::t(key))))
+        .child(text(move || actions.state.with(|_| vega_i18n::t(key))).accessible(false))
+        .child(keyboard::target(action, actions, commands, move || {
+            actions.state.with(|_| vega_i18n::t(key))
+        }))
         .into_element()
 }
 
@@ -276,10 +382,6 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
     let measured = signal(0.0f32);
     let layout = commands.clone();
     let sidebar = commands.clone();
-    let target = element_ref();
-    let focused = signal(false);
-    target.on_focus_in(move || focused.set(true));
-    target.on_focus_out(move || focused.set(false));
     view()
         .w_full()
         .flex_shrink_0()
@@ -363,38 +465,16 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
             state,
             "settings.appearance.sidebar",
             view()
-                .element_ref(&target)
-                .role(AccessibilityRole::Switch)
-                .label(move || {
-                    state.with(|snapshot| {
-                        vega_i18n::t(if snapshot.sidebar {
-                            "settings.sidebar.hide"
-                        } else {
-                            "settings.sidebar.show"
-                        })
-                    })
-                })
-                .accessibility_state(move || nsh_core::AccessibilityState {
-                    checked: Some(if state.get().sidebar {
-                        nsh_core::Checked::True
-                    } else {
-                        nsh_core::Checked::False
-                    }),
-                    ..Default::default()
-                })
-                .disabled(actions.pending)
+                .relative()
                 .self_start()
                 .border(px(1.))
                 .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
                 .border_color(move || {
-                    crate::nsh::color(if focused.get() {
+                    crate::nsh::color(if state.get().focused == Some(Action::Sidebar) {
                         state.get().colors.accent
                     } else {
                         state.get().colors.border_subtle
                     })
-                })
-                .on_press(move |_: &nsh_core::PressEvent| {
-                    actions.send(sidebar.clone(), Action::Sidebar)
                 })
                 .child(
                     view()
@@ -425,6 +505,20 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                                 .bg(move || crate::nsh::color(state.get().colors.bg_elevated)),
                         ),
                 )
+                .child(keyboard::target(
+                    Action::Sidebar,
+                    actions,
+                    sidebar,
+                    move || {
+                        state.with(|snapshot| {
+                            vega_i18n::t(if snapshot.sidebar {
+                                "settings.sidebar.hide"
+                            } else {
+                                "settings.sidebar.show"
+                            })
+                        })
+                    },
+                ))
                 .into_element(),
         ))
         .child(when(

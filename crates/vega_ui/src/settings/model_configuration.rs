@@ -241,6 +241,9 @@ impl SettingsView {
 
     pub(super) fn invalidate_settings_navigation_intent(&mut self) {
         self.settings_navigation_presentation = None;
+        if let Some(page) = &mut self.appearance_presentation {
+            page.revoke();
+        }
     }
 
     fn stay_in_settings(&mut self, cx: &mut Context<Self>) {
