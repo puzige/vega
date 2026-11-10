@@ -132,7 +132,11 @@ fn open_workspace(
     cx.bind_keys([
         KeyBinding::new("cmd-shift-l", ToggleTheme, None),
         KeyBinding::new("cmd-,", OpenSettings, None),
-        KeyBinding::new("escape", CloseSettings, Some("VegaWindow && !Terminal")),
+        KeyBinding::new(
+            "escape",
+            CloseSettings,
+            Some("VegaWindow && !Terminal && !NshCommandPalette"),
+        ),
         KeyBinding::new("escape", CloseSettings, Some("WorkspaceMenu")),
         KeyBinding::new("cmd-b", ToggleSidebar, None),
     ]);

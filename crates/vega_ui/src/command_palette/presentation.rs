@@ -213,7 +213,7 @@ impl CommandPalette {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Surface<Snapshot, Request> {
-        let (surface, mut requests) = Surface::new(snapshot, render, window, cx);
+        let (surface, mut requests) = Surface::new_transparent(snapshot, render, window, cx);
         let mut errors = surface.errors();
         cx.spawn(async move |this, cx| {
             while let Some(request) = requests.recv().await {
@@ -393,6 +393,7 @@ impl CommandPalette {
         let recovery = snapshot.recovery;
         let host = div()
             .id("nsh-command-palette-host")
+            .key_context("NshCommandPalette")
             .absolute()
             .inset_0()
             .capture_any_mouse_down(move |_, _, cx| {
@@ -566,7 +567,14 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
         .disabled(move || state.get().recovery)
         .submit_behavior(nsh_core::SubmitBehavior::Submit)
         .w_full()
-        .h(ns::px(36.))
+        .h(ns::px(
+            Typography::BODY * Typography::BODY_LINE_HEIGHT + 10.,
+        ))
+        .px_2()
+        .rounded(ns::px(Layout::SETTINGS_CONTROL_RADIUS))
+        .border(ns::px(1.))
+        .border_color(move || crate::nsh::color(state.get().colors.border_subtle))
+        .bg(move || crate::nsh::color(state.get().colors.bg_elevated))
         .text_size(ns::px(Typography::BODY))
         .text_color(move || crate::nsh::color(state.get().colors.text_primary))
         .on_focus(move || focused.set(true))

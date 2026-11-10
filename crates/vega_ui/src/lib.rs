@@ -97,7 +97,11 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-k", command_palette::OpenPalette, None),
         KeyBinding::new("cmd-o", command_palette::OpenWorkspacePicker, None),
         KeyBinding::new("cmd-j", command_palette::ToggleWorkspaceTerminal, None),
-        KeyBinding::new("escape", DismissEnvironmentOverlay, None),
+        KeyBinding::new(
+            "escape",
+            DismissEnvironmentOverlay,
+            Some("!NshCommandPalette"),
+        ),
         KeyBinding::new("down", command_palette::PaletteNext, Some("CommandPalette")),
         KeyBinding::new(
             "up",

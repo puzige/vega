@@ -122,6 +122,12 @@ impl VegaWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if cx
+            .try_global::<PendingDeleteConfirm>()
+            .is_some_and(|pending| pending.0.is_some())
+        {
+            return;
+        }
         if self.palette.view.is_some()
             && (self.palette.close_requested || self.palette.route.as_ref() != Some(&route(cx)))
         {
@@ -229,6 +235,15 @@ impl VegaWindow {
     }
     /// Render-loop hook applies window-bearing actions and completed read-only panes.
     pub(crate) fn sync_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if cx
+            .try_global::<PendingDeleteConfirm>()
+            .is_some_and(|pending| pending.0.is_some())
+        {
+            if self.palette.view.is_some() {
+                self.close_palette(window, cx);
+            }
+            return;
+        }
         if self.palette.view.is_some()
             && (self.palette.close_requested || self.palette.route.as_ref() != Some(&route(cx)))
         {
