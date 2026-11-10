@@ -41,3 +41,6 @@ pub use model::{
     CommitPanelFocus, CommitPanelModel, CommitPanelStage, CommitPrepareRequested, CommitRequested,
 };
 pub use panel::CommitPanel;
+
+#[cfg(test)]
+mod focus_regression;
