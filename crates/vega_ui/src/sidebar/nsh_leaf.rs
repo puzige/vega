@@ -17,6 +17,7 @@ mod geometry;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Presentation {
+    ThreadRow,
     Column,
     TaskMenu,
     Row,
@@ -200,12 +201,15 @@ struct Leaf {
     snapshot: Snapshot,
     surface: Option<Surface<Snapshot, Request>>,
     focus: FocusHandle,
+    actions_focus: Option<FocusHandle>,
     selected: Option<Selection<usize>>,
     pending_menu_key: Option<Selection<usize>>,
     lease: Weak<chrome::ChromeLease>,
     handler: Handler,
     guard: Guard,
     guard_valid: bool,
+    action_guard_valid: bool,
+    action_guard: Option<Guard>,
     geometry: gpui_kit::ScrollHandle,
     authority: Authority,
     measured_height: Option<f32>,
@@ -217,6 +221,31 @@ struct Leaf {
 }
 
 impl Leaf {
+    fn focus_for(&self, index: usize) -> &FocusHandle {
+        if index > 0
+            && let Some(focus) = &self.actions_focus
+        {
+            return focus;
+        }
+        &self.focus
+    }
+
+    fn focused(&self, window: &Window) -> bool {
+        self.focus.is_focused(window)
+            || self
+                .actions_focus
+                .as_ref()
+                .is_some_and(|f| f.is_focused(window))
+    }
+
+    fn scope_actions(&self, window: &Window) -> Vec<usize> {
+        let mut actions = self.snapshot.actions();
+        if let Some(secondary) = &self.actions_focus {
+            actions.retain(|i| (*i > 0) == secondary.is_focused(window));
+        }
+        actions
+    }
+
     fn action_is_current(&self, id: &ProjectionId, index: usize, cx: &App) -> bool {
         self.surface
             .as_ref()
@@ -226,7 +255,8 @@ impl Leaf {
                 index,
                 self.lease.upgrade().is_some(),
                 self.authority == Authority::current(cx),
-                (self.guard)(cx),
+                (self.guard)(cx)
+                    && (index == 0 || self.action_guard.as_ref().is_none_or(|g| g(cx))),
                 cx.has_active_drag(),
             )
     }
@@ -268,7 +298,7 @@ impl Leaf {
             cx.notify();
             return;
         }
-        window.focus(&self.focus, cx);
+        window.focus(self.focus_for(index), cx);
         self.selected = Selection::reconcile(None, &self.snapshot.id, &[index]);
         let action = if double {
             self.snapshot.items[index].double_action.unwrap_or(index)
@@ -413,14 +443,14 @@ impl Leaf {
     }
 
     fn activate_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.focus.is_focused(window) {
+        if !self.focused(window) {
             return;
         }
         let id = self.snapshot.id.clone();
         let Some(index) = self
             .selected
             .as_ref()
-            .and_then(|s| s.action(&id, &self.snapshot.actions()))
+            .and_then(|s| s.action(&id, &self.scope_actions(window)))
         else {
             return;
         };
@@ -483,7 +513,7 @@ impl Leaf {
                 match Selection::advance(
                     self.selected.as_ref(),
                     &self.snapshot.id,
-                    &self.snapshot.actions(),
+                    &self.scope_actions(window),
                     backwards,
                 ) {
                     Step::Selected(selected) => {
@@ -493,14 +523,48 @@ impl Leaf {
                         }) {
                             self.reveal(index);
                         }
-                        window.focus(&self.focus, cx);
+                        if let Some(index) = self
+                            .selected
+                            .as_ref()
+                            .and_then(|s| s.action(&self.snapshot.id, &self.snapshot.actions()))
+                        {
+                            window.focus(self.focus_for(index), cx);
+                        }
                     }
-                    Step::Exit => crate::nsh::keyboard::leave(&self.focus, backwards, window, cx),
+                    Step::Exit => {
+                        let handle = self
+                            .actions_focus
+                            .as_ref()
+                            .filter(|f| f.is_focused(window))
+                            .unwrap_or(&self.focus);
+                        if let Some(actions) = &self.actions_focus
+                            && ((actions.is_focused(window) && backwards)
+                                || (self.focus.is_focused(window) && !backwards))
+                            && self
+                                .snapshot
+                                .actions()
+                                .iter()
+                                .any(|i| (*i == 0) == backwards)
+                        {
+                            let next = if backwards { &self.focus } else { actions };
+                            window.focus(next, cx);
+                            if let Step::Selected(selected) = Selection::advance(
+                                None,
+                                &self.snapshot.id,
+                                &self.scope_actions(window),
+                                backwards,
+                            ) {
+                                self.selected = Some(selected);
+                            }
+                        } else {
+                            crate::nsh::keyboard::leave(handle, backwards, window, cx);
+                        }
+                    }
                 }
                 cx.stop_propagation();
                 cx.notify();
             }
-            Key::Activate if self.focus.is_focused(window) => {
+            Key::Activate if self.focused(window) => {
                 self.activate_selected(window, cx);
                 cx.stop_propagation();
             }
@@ -520,6 +584,7 @@ pub(super) struct Host {
     pub handler: Handler,
     pub menu_scroll: Option<gpui_kit::ScrollHandle>,
     pub focus: Option<FocusHandle>,
+    action_guard: Option<Guard>,
 }
 
 impl gpui_kit::RenderOnce for Host {
@@ -537,6 +602,18 @@ pub(super) fn host(
     guard: impl Fn(&App) -> bool + 'static,
     handler: impl Fn(usize, Bounds<Pixels>, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
+    host_parts(key, text, items, horizontal, height, guard, handler).into_any_element()
+}
+
+pub(super) fn host_parts(
+    key: impl Into<gpui_kit::SharedString>,
+    text: Option<String>,
+    items: Vec<Item>,
+    horizontal: bool,
+    height: f32,
+    guard: impl Fn(&App) -> bool + 'static,
+    handler: impl Fn(usize, Bounds<Pixels>, &mut Window, &mut App) + 'static,
+) -> Host {
     Host {
         key: key.into(),
         text,
@@ -550,9 +627,9 @@ pub(super) fn host(
         guard: Rc::new(guard),
         handler: Rc::new(handler),
         menu_scroll: None,
+        action_guard: None,
         focus: None,
     }
-    .into_any_element()
 }
 
 pub(super) fn focused_actions(
@@ -562,7 +639,7 @@ pub(super) fn focused_actions(
     height: f32,
     guard: impl Fn(&App) -> bool + 'static,
     handler: impl Fn(usize, Bounds<Pixels>, &mut Window, &mut App) + 'static,
-) -> AnyElement {
+) -> Host {
     Host {
         key: key.into(),
         text: None,
@@ -572,9 +649,28 @@ pub(super) fn focused_actions(
         guard: Rc::new(guard),
         handler: Rc::new(handler),
         menu_scroll: None,
+        action_guard: None,
         focus,
     }
-    .into_any_element()
+}
+
+pub(super) fn thread_row(mut title: Host, mut actions: Host) -> Host {
+    let rename = actions.items.len() + 1;
+    title.items[0].double_action = Some(rename);
+    title.items.append(&mut actions.items);
+    let title_handler = title.handler;
+    let action_handler = actions.handler;
+    title.action_guard = Some(actions.guard);
+    title.focus = actions.focus;
+    title.presentation = Presentation::ThreadRow;
+    title.handler = Rc::new(move |index, bounds, window, cx| {
+        if index == 0 || index == rename {
+            title_handler(usize::from(index == rename), bounds, window, cx);
+        } else {
+            action_handler(index - 1, bounds, window, cx);
+        }
+    });
+    title
 }
 
 pub(super) fn menu(
@@ -606,6 +702,7 @@ pub(super) fn menu(
         guard: Rc::new(guard),
         handler: Rc::new(handler),
         menu_scroll: Some(scroll),
+        action_guard: None,
         focus: None,
     }
     .into_any_element()
@@ -621,20 +718,31 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
         guard,
         handler,
         menu_scroll,
+        action_guard,
         focus,
     } = host;
     let focusable = items.iter().any(|item| item.enabled);
     let state = window.use_keyed_state(key.clone(), cx, |window, cx| {
+        let (focus, actions_focus) = if presentation == Presentation::ThreadRow {
+            (None, focus)
+        } else {
+            (focus, None)
+        };
         let focus = focus
             .unwrap_or_else(|| cx.focus_handle())
             .tab_stop(focusable);
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.on_focus_in(&focus, window, |this: &mut Leaf, window, cx| {
-                if this.focus.contains_focused(window, cx) {
+                if this.focus.contains_focused(window, cx)
+                    && !this
+                        .actions_focus
+                        .as_ref()
+                        .is_some_and(|f| f.is_focused(window))
+                {
                     if let Step::Selected(selected) = Selection::advance(
                         None,
                         &this.snapshot.id,
-                        &this.snapshot.actions(),
+                        &this.scope_actions(window),
                         this.snapshot.presentation != Presentation::DeleteConfirmation
                             && window.modifiers().shift,
                     ) {
@@ -657,6 +765,21 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
                 cx.notify()
             }),
         ];
+        if let Some(handle) = &actions_focus {
+            subscriptions.push(
+                cx.on_focus_in(handle, window, |this: &mut Leaf, window, cx| {
+                    if let Step::Selected(selected) = Selection::advance(
+                        None,
+                        &this.snapshot.id,
+                        &this.scope_actions(window),
+                        window.modifiers().shift,
+                    ) {
+                        this.selected = Some(selected);
+                    }
+                    cx.notify();
+                }),
+            );
+        }
         Leaf {
             snapshot: Snapshot {
                 id: ProjectionId::new(),
@@ -669,6 +792,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
                 presentation,
             },
             surface: None,
+            actions_focus,
             focus,
             selected: None,
             pending_menu_key: None,
@@ -676,6 +800,8 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
             handler: Rc::new(|_, _, _, _| {}),
             guard: Rc::new(|_| false),
             guard_valid: false,
+            action_guard: None,
+            action_guard_valid: false,
             geometry: gpui_kit::ScrollHandle::new(),
             authority: Authority::current(cx),
             measured_height: None,
@@ -710,13 +836,25 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
             this.pending_menu_key = None;
             this.snapshot.id = ProjectionId::new();
             this.snapshot.recovery = true;
+            if this
+                .actions_focus
+                .as_ref()
+                .is_some_and(|f| f.is_focused(window))
+            {
+                window.focus(&this.focus, cx);
+            }
             this.acknowledged = None;
             this.selected = None;
         }
         let authority = Authority::current(cx);
         let previous_guard = (this.guard)(cx);
         let next_guard = guard(cx);
-        let changed = (this.guard_valid && !previous_guard)
+        let actions_ready = action_guard.as_ref().is_none_or(|g| g(cx));
+        let actions_expired =
+            this.action_guard_valid && this.action_guard.as_ref().is_some_and(|g| !g(cx));
+        let changed = actions_expired
+            || this.action_guard_valid != actions_ready
+            || (this.guard_valid && !previous_guard)
             || this.guard_valid != next_guard
             || this.authority != authority
             || this.snapshot.text != text
@@ -760,6 +898,8 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
         this.snapshot.colors = theme(cx).colors;
         this.snapshot.presentation = presentation;
         this.handler = handler;
+        this.action_guard = action_guard;
+        this.action_guard_valid = actions_ready;
         this.guard = guard;
         this.guard_valid = next_guard;
         this.menu_scroll = menu_scroll;
@@ -775,11 +915,10 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
         this.selected = Selection::reconcile(
             this.selected.as_ref(),
             &this.snapshot.id,
-            &this.snapshot.actions(),
+            &this.scope_actions(window),
         );
         this.snapshot.selected = this
-            .focus
-            .is_focused(window)
+            .focused(window)
             .then(|| {
                 this.selected.as_ref().and_then(|selected| {
                     selected.action(&this.snapshot.id, &this.snapshot.actions())
@@ -807,6 +946,30 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
             .role(Role::Group)
             .capture_key_down(cx.listener(Leaf::key))
             .child(surface.entity());
+        let mut action_area = this
+            .actions_focus
+            .as_ref()
+            .filter(|_| !this.snapshot.recovery)
+            .map(|focus| {
+                div()
+                    .id("nsh-thread-action-area")
+                    .role(Role::Group)
+                    .absolute()
+                    .right_0()
+                    .top(px((height - Layout::SIDEBAR_ACTION_SIZE) / 2.))
+                    .w(px(Layout::SIDEBAR_ACTIONS_WIDTH))
+                    .h(px(Layout::SIDEBAR_ACTION_SIZE))
+                    .track_focus(
+                        &focus
+                            .clone()
+                            .tab_stop(this.snapshot.actions().iter().any(|i| *i > 0)),
+                    )
+                    .key_context("ThreadActionTrigger")
+                    .on_action(cx.listener(|this, _: &OpenThreadActions, window, cx| {
+                        this.activate_selected(window, cx);
+                        cx.stop_propagation();
+                    }))
+            });
         if presentation == Presentation::DeleteConfirmation {
             host = host
                 .key_context("NshDeleteConfirm")
@@ -849,27 +1012,47 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
                 this.snapshot.items[index].label.clone()
             };
             let weak = cx.weak_entity();
-            host = host.child(
-                div()
-                    .id("nsh-sidebar-active")
-                    .absolute()
-                    .inset_0()
-                    .role(Role::Button)
-                    .aria_label(label)
-                    .aria_active_descendant()
-                    .on_a11y_action(AccessibleAction::Click, move |_, window, cx| {
-                        let _ = weak.update(cx, |this, cx| {
-                            if this.focus.is_focused(window)
-                                && this.selected.as_ref().and_then(|selected| {
-                                    selected.action(&id, &this.snapshot.actions())
-                                }) == Some(index)
-                            {
-                                this.activate(&id, index, false, window, cx);
-                            }
-                        });
-                    }),
-            );
+            let mut active = div().id("nsh-sidebar-active").absolute().inset_0();
+            if presentation == Presentation::ThreadRow && !this.snapshot.recovery {
+                let count = this.snapshot.items.len() - 1;
+                if index == 0 {
+                    active = active.right(px(Layout::SIDEBAR_ACTIONS_WIDTH));
+                } else {
+                    let w = Layout::SIDEBAR_ACTIONS_WIDTH / count as f32;
+
+                    active = div()
+                        .id("nsh-sidebar-active")
+                        .absolute()
+                        .right(px(w * (count - index) as f32))
+                        .top_0()
+                        .w(px(w))
+                        .h(px(Layout::SIDEBAR_ACTION_SIZE));
+                }
+            }
+            let active = active
+                .role(Role::Button)
+                .aria_label(label)
+                .aria_active_descendant()
+                .on_a11y_action(AccessibleAction::Click, move |_, window, cx| {
+                    let _ = weak.update(cx, |this, cx| {
+                        if this.focused(window)
+                            && this.selected.as_ref().and_then(|selected| {
+                                selected.action(&id, &this.scope_actions(window))
+                            }) == Some(index)
+                        {
+                            this.activate(&id, index, false, window, cx);
+                        }
+                    });
+                });
+            if index > 0
+                && let Some(area) = action_area.take()
+            {
+                action_area = Some(area.child(active));
+            } else {
+                host = host.child(active);
+            }
         }
+        host = host.children(action_area);
         let weak = cx.weak_entity();
         let mount = this.mount.clone();
         Mounted {
@@ -1014,9 +1197,12 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
             let mut actions = ns::view().w_full().flex_col();
             if snapshot.presentation == Presentation::Row {
                 actions = actions.flex_row();
+            } else if snapshot.presentation == Presentation::ThreadRow {
+                actions = actions.flex_row().items_center();
             } else if snapshot.presentation == Presentation::TaskMenu {
                 actions = actions.gap(ns::px(TASK_MENU_GAP));
             }
+            let action_count = items.len().saturating_sub(1);
             for (index, item) in items.into_iter().enumerate() {
                 if let Some(style) = item.label_style {
                     let heading = style == LabelStyle::Heading;
@@ -1125,6 +1311,14 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
                 }
                 if snapshot.presentation == Presentation::Row {
                     button = button.flex_1();
+                } else if snapshot.presentation == Presentation::ThreadRow {
+                    button = if index == 0 {
+                        button.flex_1().min_w(ns::px(0.))
+                    } else {
+                        button
+                            .w(ns::px(Layout::SIDEBAR_ACTIONS_WIDTH / action_count as f32))
+                            .h(ns::px(Layout::SIDEBAR_ACTION_SIZE))
+                    };
                 }
                 if quiet {
                     if item.running {

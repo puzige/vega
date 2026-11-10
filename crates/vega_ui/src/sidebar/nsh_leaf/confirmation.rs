@@ -18,6 +18,7 @@ pub(in crate::sidebar) fn delete_confirmation(
         guard: Rc::new(guard),
         handler: Rc::new(handler),
         menu_scroll: None,
+        action_guard: None,
         focus: None,
     }
     .into_any_element()

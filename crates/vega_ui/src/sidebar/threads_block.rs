@@ -1497,55 +1497,70 @@ impl ThreadsBlock {
             item.emphasis = thread.unread;
             item.double_action = Some(1);
             item.thread_title = true;
+            let title_host = nsh_leaf::host_parts(
+                format!("{row_key}-title"),
+                None,
+                vec![item],
+                false,
+                row_height,
+                move |cx| {
+                    weak.upgrade().is_some_and(|entity| {
+                        let this = entity.read(cx);
+                        this.project_generation == generation
+                            && this.editing.is_none()
+                            && this
+                                .threads
+                                .iter()
+                                .chain(this.archived.iter())
+                                .any(|thread| thread == &observed)
+                            && this
+                                .organization
+                                .as_ref()
+                                .and_then(|org| org.snapshot.clone())
+                                == projection
+                    })
+                },
+                move |index, _, window, cx| {
+                    let _ = target.update(cx, |this, cx| {
+                        if index == 1 {
+                            this.start_rename(&row_thread, rename_row_key.clone(), window, cx);
+                        } else {
+                            this.open_thread_from_row(
+                                &row_thread.id,
+                                Some(rename_row_key.clone()),
+                                cx,
+                            );
+                        }
+                    });
+                },
+            );
+            let (native, popup) = if actions_enabled {
+                let (buttons, popup) = self.render_row_actions(
+                    thread,
+                    archived,
+                    actions_visible,
+                    show_timestamp_at_rest,
+                    selector_prefix,
+                    cx,
+                );
+                (nsh_leaf::thread_row(title_host, buttons), popup)
+            } else {
+                (title_host, None)
+            };
+            let right = if actions_enabled {
+                Layout::SIDEBAR_ACTIONS_INSET
+            } else {
+                Layout::SIDEBAR_ACTIONS_WIDTH + Layout::SIDEBAR_ACTIONS_INSET
+            };
             row = row.child(
                 div()
+                    .relative()
                     .flex_1()
                     .min_w_0()
                     .h_full()
                     .pl(px(content_inset))
-                    .relative()
-                    .child(nsh_leaf::host(
-                        format!("{row_key}-title"),
-                        None,
-                        vec![item],
-                        false,
-                        row_height,
-                        move |cx| {
-                            weak.upgrade().is_some_and(|entity| {
-                                let this = entity.read(cx);
-                                this.project_generation == generation
-                                    && this.editing.is_none()
-                                    && this
-                                        .threads
-                                        .iter()
-                                        .chain(this.archived.iter())
-                                        .any(|thread| thread == &observed)
-                                    && this
-                                        .organization
-                                        .as_ref()
-                                        .and_then(|org| org.snapshot.clone())
-                                        == projection
-                            })
-                        },
-                        move |index, _, window, cx| {
-                            let _ = target.update(cx, |this, cx| {
-                                if index == 1 {
-                                    this.start_rename(
-                                        &row_thread,
-                                        rename_row_key.clone(),
-                                        window,
-                                        cx,
-                                    );
-                                } else {
-                                    this.open_thread_from_row(
-                                        &row_thread.id,
-                                        Some(rename_row_key.clone()),
-                                        cx,
-                                    );
-                                }
-                            });
-                        },
-                    ))
+                    .pr(px(right))
+                    .child(native)
                     .when(actions_enabled || self.organization.is_some(), |title| {
                         // Observe gestures before the embedded title consumes its mouse events.
                         // Primary clicks and accessibility activation still go to the NSH title.
@@ -1554,7 +1569,9 @@ impl ThreadsBlock {
                             .absolute()
                             .top_0()
                             .left(px(content_inset))
-                            .right_0()
+                            .right(px(
+                                Layout::SIDEBAR_ACTIONS_WIDTH + Layout::SIDEBAR_ACTIONS_INSET
+                            ))
                             .bottom_0()
                             .when(actions_enabled, |pad| {
                                 pad.on_mouse_down(MouseButton::Right, |_, _, cx| {
@@ -1570,26 +1587,9 @@ impl ThreadsBlock {
                                 cx,
                             )
                         }))
-                    }),
+                    })
+                    .children(popup),
             );
-            row = if actions_enabled {
-                row.child(self.render_row_actions(
-                    thread,
-                    archived,
-                    actions_visible,
-                    show_timestamp_at_rest,
-                    selector_prefix,
-                    cx,
-                ))
-            } else {
-                row.child(
-                    div()
-                        .w(px(
-                            Layout::SIDEBAR_ACTIONS_WIDTH + Layout::SIDEBAR_ACTIONS_INSET
-                        ))
-                        .flex_shrink_0(),
-                )
-            };
         }
         if self.organization.is_some() && !editing_this_row {
             self.render_reorder_row(reorder_item, thread_title(thread), row, cx)
@@ -1606,7 +1606,7 @@ impl ThreadsBlock {
         show_timestamp_at_rest: bool,
         selector_prefix: &str,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> (nsh_leaf::Host, Option<AnyElement>) {
         let thread_id = thread.id.clone();
         let row_key = format!("{selector_prefix}{thread_id}");
         let action_prefix = selector_prefix
@@ -1718,15 +1718,15 @@ impl ThreadsBlock {
                 });
             },
         );
-        let mut group = div()
-            .relative()
-            .w(px(Layout::SIDEBAR_ACTIONS_WIDTH))
-            .mr(px(Layout::SIDEBAR_ACTIONS_INSET))
-            .h(px(Layout::SIDEBAR_ACTION_SIZE))
-            .flex_shrink_0()
-            .child(content);
-        if menu_open {
-            group = group
+        let popup = menu_open.then(|| {
+            div()
+                .absolute()
+                .right(px(Layout::SIDEBAR_ACTIONS_INSET))
+                .top(px((Typography::SIDEBAR_LINE_HEIGHT
+                    - Layout::SIDEBAR_ACTION_SIZE)
+                    / 2.))
+                .w(px(Layout::SIDEBAR_ACTIONS_WIDTH))
+                .h(px(Layout::SIDEBAR_ACTION_SIZE))
                 .track_focus(&self.actions_scope_focus)
                 .key_context("ThreadActionsMenu")
                 .on_action(cx.listener(Self::previous_action))
@@ -1750,9 +1750,10 @@ impl ThreadsBlock {
                                 .with_priority(2),
                             ),
                     ),
-                );
-        }
-        group.into_any_element()
+                )
+                .into_any_element()
+        });
+        (content, popup)
     }
 
     /// Focusable popup menu for one row. Mouse activation calls the same
