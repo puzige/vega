@@ -292,3 +292,11 @@ macOS 15.8.2 arm64，源码 d477250538cb587394a9b756562940cdee48ad43，优化构
 辅助功能工具的当前焦点字段仍报告根窗口，VoiceOver 朗读未验。图表保持焦点但被手动滚出视口后，键盘选日不会自动滚回。仅本段所列操作已实测，设置矩阵仍为 PARTIAL。
 
 生产源码 338310ba732d35ce438f1e44daf97f0c4a15828a，macOS arm64 优化程序 SHA-256 f7ecf95e40f2ac6f6591df242661a9e8badd179e5d6200719a1ebd46b89ffd4d，UUID 185D432B-23DC-32A4-AE30-E6DFA06B33F2。独立复核最终两文件 SHA-256 为 54540ff15d51f02587ff24010161023ce77471a8b579f64b633188e4a4fbfce3 与 2e195431331ce6b12dc6b85cc3d1e01ad8d87ef648f0f7a9f0f0f4584fa35ef3。workspace fmt、全目标严格 Clippy、Python 5/15/40 项通过；Rust 为 0 发现、0 执行。隔离启动器验证创建了独立数据库。
+
+## 7d57e621 设置导航首开与连续切页
+
+macOS 0.1.413 前台按 ⌘,，焦点框在 General，Tab 后在 Providers。回车打开 Providers，焦点留在该项，再 Tab、回车打开 MCP。在 338310ba 同样操作没有初始焦点框，第一次 Tab、回车仍停在 General。原因是窗口先聚焦目标 section 的 handle，导航挂载时另建了一个 handle。中间版复用原焦点后能打开 Providers，但切页重建键盘会话时选中了 Back，随后 Tab、回车又回到 General。
+
+最终版在完整应用使用纯键盘走完 General → Providers → MCP → Providers → General，逐步读取实际内容标题，首开出现 General 焦点框。Shift-Tab 到 Back，回车返回主界面，再按 ⌘,、Tab、回车仍到 Providers。针对 CUA 诊断入口先聚焦 General 后解析到 Agents 的路径做了源码复核；本段没有实机触发诊断卡或未保存更改确认框。外观、默认值和更新卡之间仍有累积纵向误差。原始截图与步骤在本机 performance/settings-general-{old,r161,r167}-open.jpg 和 performance/settings-r167-navigation.json。
+
+生产源码 7d57e621c2a9d0d8c532b31da6a0cadbda8a60f0，macOS arm64 优化程序 SHA-256 5e9747ad14b8a02412eef55ad41c414683a955f3c865f27fe1aa3053555ed94a，UUID B53EAC5F-7757-33B1-81CA-EF1075053944。独立审查差异 SHA-256 e32b70fc42f5000337e9db199d59329947d13f6d3ce69a8c1b96b444ac531580。隔离启动器新库和进程身份已核对。工作区 fmt、全目标严格 Clippy 与 Python 5/15/40 项通过，Rust 0 发现、0 执行。
