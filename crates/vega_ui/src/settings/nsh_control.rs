@@ -54,6 +54,8 @@ impl FocusTarget {
                     sent_focus: None,
                     displayed: None,
                     label: String::new(),
+                    hint: String::new(),
+                    report_hover: false,
                     selected: false,
                     enabled: false,
                 })
@@ -74,6 +76,8 @@ struct Target {
     context: ComponentContext,
     target: FocusTarget,
     label: String,
+    hint: String,
+    report_hover: bool,
     selected: bool,
     enabled: bool,
 }
@@ -105,6 +109,8 @@ impl NativeComponent for Target {
         match name {
             "focus-request" => self.focus_request = value.and_then(Value::as_u64),
             "state" => self.displayed = value.cloned(),
+            "report-hover" => self.report_hover = value.and_then(Value::as_bool).unwrap_or(false),
+            "hint" => self.hint = value.and_then(Value::as_str).unwrap_or_default().to_owned(),
             "label" => self.label = value.and_then(Value::as_str).unwrap_or_default().to_owned(),
             "selected" => self.selected = value.and_then(Value::as_bool).unwrap_or(false),
             "enabled" => self.enabled = value.and_then(Value::as_bool).unwrap_or(false),
@@ -123,6 +129,9 @@ impl NativeComponent for Target {
             .size_full()
             .role(if switch { Role::Switch } else { Role::Button })
             .aria_label(self.label.clone());
+        if !self.hint.is_empty() {
+            element = element.aria_description(self.hint.clone());
+        }
         if switch {
             element = element.aria_toggled(if self.selected {
                 Toggled::True
@@ -136,6 +145,13 @@ impl NativeComponent for Target {
             }
         } else if matches!(self.semantics, Semantics::Selection) {
             element = element.aria_selected(self.selected);
+        }
+        if self.report_hover && self.enabled {
+            let hover_state = displayed.clone();
+            let context = self.context.clone();
+            element = element.on_hover(move |inside, _, _| {
+                context.emit("hover", serde_json::json!([hover_state, inside]));
+            });
         }
         if !self.enabled {
             return Some(

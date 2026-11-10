@@ -11,24 +11,31 @@ pub(super) struct Presentation {
     surface: Surface<Snapshot, Request>,
     id: ProjectionId,
     height: f32,
+    epoch: u64,
+    focused: Option<Action>,
+    _focus_events: Vec<gpui_kit::Subscription>,
+    keyboard_modality: bool,
 }
 
 impl Presentation {
     pub(super) fn revoke(&mut self) {
         self.id = ProjectionId::new();
+        self.epoch = self.epoch.wrapping_add(1);
     }
 }
 
 #[derive(Clone)]
 struct Snapshot {
     id: ProjectionId,
+    epoch: u64,
+    focused: Option<Action>,
     predictions: bool,
     running: String,
     enabled: bool,
     colors: ThemeColors,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Action {
     Predictions,
     Running(PendingMessageBehavior),
@@ -47,6 +54,7 @@ enum Request {
 
 fn accepts(current: &Snapshot, observed: &Snapshot, action: Action) -> bool {
     current.enabled
+        && current.epoch == observed.epoch
         && match action {
             Action::Predictions => current.predictions == observed.predictions,
             Action::Running(_) => current.running == observed.running,
@@ -57,9 +65,25 @@ impl SettingsView {
     fn input_preferences_snapshot(&self, cx: &App, id: ProjectionId) -> Snapshot {
         Snapshot {
             id,
+            epoch: self
+                .input_preferences_presentation
+                .as_ref()
+                .map_or(0, |p| p.epoch),
+            focused: self
+                .input_preferences_presentation
+                .as_ref()
+                .and_then(|p| p.focused.filter(|_| p.keyboard_modality)),
             predictions: self.config.agent.composer_predictions_enabled,
             running: self.config.agent.running_message_behavior.clone(),
-            enabled: !self.provider_management.saving && !self.default_permission.io_pending(),
+            enabled: self.section == 1
+                && !self.palette_open
+                && self.pending_section.is_none()
+                && !self.pending_settings_close
+                && cx
+                    .try_global::<super::SettingsOpen>()
+                    .is_some_and(|open| open.0)
+                && !self.provider_management.saving
+                && !self.default_permission.io_pending(),
             colors: vega_theme::theme(cx).colors,
         }
     }
@@ -78,7 +102,55 @@ impl SettingsView {
                 window,
                 cx,
             );
+            let mut focus_events = Vec::new();
+            for action in [
+                Action::Predictions,
+                Action::Running(PendingMessageBehavior::Queue),
+                Action::Running(PendingMessageBehavior::Steer),
+            ] {
+                use super::nsh_control::{FocusTarget, Semantics};
+                let target = FocusTarget::new(cx);
+                let owner = cx.weak_entity();
+                target.register(
+                    surface.entity().read(cx),
+                    action.name(),
+                    if action == Action::Predictions {
+                        Semantics::Switch
+                    } else {
+                        Semantics::Selection
+                    },
+                    move |displayed, cx| {
+                        let Some(owner) = owner.upgrade() else {
+                            return false;
+                        };
+                        let settings = owner.read(cx);
+                        let Some(page) = &settings.input_preferences_presentation else {
+                            return false;
+                        };
+                        let current = settings.input_preferences_snapshot(cx, page.id.clone());
+                        current.enabled && *displayed == stamp(&current)
+                    },
+                );
+                focus_events.push(cx.on_focus(&target.handle, window, move |settings, _, cx| {
+                    if let Some(page) = &mut settings.input_preferences_presentation {
+                        page.focused = Some(action);
+                        cx.notify();
+                    }
+                }));
+                focus_events.push(cx.on_blur(&target.handle, window, move |settings, _, cx| {
+                    if let Some(page) = &mut settings.input_preferences_presentation
+                        && page.focused == Some(action)
+                    {
+                        page.focused = None;
+                        cx.notify();
+                    }
+                }));
+            }
             self.input_preferences_presentation = Some(Presentation {
+                focused: None,
+                epoch: 0,
+                _focus_events: focus_events,
+                keyboard_modality: window.last_input_was_keyboard(),
                 surface,
                 id,
                 height: Layout::SETTINGS_NOTES_MAX_HEIGHT,
@@ -108,6 +180,10 @@ impl SettingsView {
                                                     )
                                             });
                                     if accepted {
+                                        if let Some(page) = &mut this.input_preferences_presentation
+                                        {
+                                            page.revoke();
+                                        }
                                         match command.action {
                                             Action::Predictions => {
                                                 this.toggle_composer_predictions(cx)
@@ -141,6 +217,9 @@ impl SettingsView {
                 }
             })
             .detach();
+        }
+        if let Some(page) = &mut self.input_preferences_presentation {
+            page.keyboard_modality = window.last_input_was_keyboard();
         }
         let Some(page) = &self.input_preferences_presentation else {
             return gpui_kit::div().into_any_element();
@@ -194,16 +273,120 @@ impl Actions {
     }
 }
 
-fn control(state: Signal<Snapshot>) -> nsh_core::element::View {
-    let target = element_ref();
-    let focused = signal(false);
-    target.on_focus_in(move || focused.set(true));
-    target.on_focus_out(move || focused.set(false));
+fn stamp(s: &Snapshot) -> serde_json::Value {
+    serde_json::json!([s.epoch, s.enabled, s.predictions, s.running])
+}
+
+impl Action {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Predictions => "input-predictions",
+            Self::Running(behavior) => behavior.as_str(),
+        }
+    }
+    fn hint(self) -> &'static str {
+        match self {
+            Self::Predictions => "settings.defaults.predictions_hint",
+            Self::Running(PendingMessageBehavior::Queue) => "settings.defaults.queue_hint",
+            Self::Running(PendingMessageBehavior::Steer) => "settings.defaults.steer_hint",
+        }
+    }
+}
+
+fn target(
+    actions: Actions,
+    commands: mpsc::Sender<Request>,
+    action: Action,
+    hovered: Option<Signal<Option<u64>>>,
+) -> AnyElement {
+    let state = actions.state;
+    let hover_timer = std::rc::Rc::new(std::cell::RefCell::new(
+        None::<nsh_core::element::Spawned<()>>,
+    ));
+    if let Some(hovered) = hovered {
+        let timer = hover_timer.clone();
+        effect(move || {
+            if !state.get().enabled || actions.pending.get() {
+                if let Some(task) = timer.take() {
+                    task.cancel();
+                }
+                hovered.set(None);
+            }
+        });
+    }
+    native(action.name())
+        .absolute()
+        .inset_0()
+        .prop("report-hover", serde_json::Value::from(hovered.is_some()))
+        .prop("state", move || state.with(stamp))
+        .prop("label", move || {
+            serde_json::Value::from(state.with(|s| match action {
+                Action::Predictions => vega_i18n::t("settings.defaults.predictions").to_owned(),
+                Action::Running(behavior) if s.running == behavior.as_str() => vega_i18n::t_args(
+                    "settings.selection.selected",
+                    &[("label", behavior.label())],
+                ),
+                Action::Running(behavior) => behavior.label().to_owned(),
+            }))
+        })
+        .prop("hint", move || {
+            serde_json::Value::from(state.with(|_| vega_i18n::t(action.hint())))
+        })
+        .prop("selected", move || {
+            serde_json::Value::from(state.with(|s| match action {
+                Action::Predictions => s.predictions,
+                Action::Running(behavior) => s.running == behavior.as_str(),
+            }))
+        })
+        .prop("enabled", move || {
+            serde_json::Value::from(state.get().enabled && !actions.pending.get())
+        })
+        .on_native_event(move |event: &NativeEvent| {
+            if &*event.name == "hover"
+                && let Some(hovered) = hovered
+            {
+                let current = state.get_untracked();
+                if event.data.get(0) != Some(&stamp(&current)) {
+                    return;
+                }
+                if let Some(timer) = hover_timer.take() {
+                    timer.cancel();
+                }
+                hovered.set(None);
+                if event.data.get(1).and_then(serde_json::Value::as_bool) == Some(true)
+                    && current.enabled
+                    && !actions.pending.get_untracked()
+                {
+                    let epoch = current.epoch;
+                    hover_timer.replace(Some(set_timeout(
+                        nsh_core::overlay::HINT_DELAY,
+                        move || {
+                            let live = state.get_untracked();
+                            if live.enabled
+                                && live.epoch == epoch
+                                && !actions.pending.get_untracked()
+                            {
+                                hovered.set(Some(epoch));
+                            }
+                        },
+                    )));
+                }
+            }
+
+            if &*event.name == "activate" && event.data == stamp(&state.get_untracked()) {
+                actions.send(commands.clone(), action);
+            }
+        })
+        .into_element()
+}
+
+fn control(state: Signal<Snapshot>, action: Action) -> nsh_core::element::View {
     view()
-        .element_ref(&target)
+        .relative()
+        .accessible(false)
         .border(px(1.))
         .border_color(move || {
-            crate::nsh::color(if focused.get() {
+            crate::nsh::color(if state.get().focused == Some(action) {
                 state.get().colors.accent
             } else {
                 state.get().colors.border_subtle
@@ -217,27 +400,22 @@ fn running_button(
     commands: mpsc::Sender<Request>,
     behavior: PendingMessageBehavior,
 ) -> AnyElement {
-    let hint = match behavior {
-        PendingMessageBehavior::Queue => "settings.defaults.queue_hint",
-        PendingMessageBehavior::Steer => "settings.defaults.steer_hint",
-    };
-    let focused = signal(false);
-    let hovered = signal(false);
-    control(actions.state)
+    let action = Action::Running(behavior);
+    let hint = action.hint();
+    let hovered = signal(None);
+    control(actions.state, action)
         .self_start()
         .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
         .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
         .py_1()
-        .role(AccessibilityRole::Button)
-        .on_focus(move |_: &()| focused.set(true))
-        .on_blur(move |_: &()| focused.set(false))
         .tooltip(
             nsh_base::tooltip()
-                .open(move || Some(focused.get() || hovered.get()))
-                .on_open_change(move |event: &nsh_base::TooltipEvent| {
-                    if let nsh_base::TooltipEvent::OpenChange(open, _) = event {
-                        hovered.set(*open);
-                    }
+                .open(move || {
+                    Some(
+                        actions.state.get().enabled
+                            && (actions.state.get().focused == Some(action)
+                                || hovered.get() == Some(actions.state.get().epoch)),
+                    )
                 })
                 .p_2()
                 .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
@@ -245,13 +423,6 @@ fn running_button(
                 .text_color(move || crate::nsh::color(actions.state.get().colors.text_primary))
                 .child(text(move || actions.state.with(|_| vega_i18n::t(hint)))),
         )
-        .label(move || actions.state.with(|_| behavior.label()))
-        .hint(move || actions.state.with(|_| vega_i18n::t(hint)))
-        .accessibility_state(move || nsh_core::AccessibilityState {
-            selected: actions.state.get().running == behavior.as_str(),
-            ..Default::default()
-        })
-        .disabled(move || actions.pending.get() || !actions.state.get().enabled)
         .bg(move || {
             crate::nsh::color(if actions.state.get().running == behavior.as_str() {
                 actions.state.get().colors.bg_active
@@ -259,23 +430,22 @@ fn running_button(
                 actions.state.get().colors.bg_elevated
             })
         })
-        .on_press(move |_: &nsh_core::PressEvent| {
-            actions.send(commands.clone(), Action::Running(behavior))
-        })
         .flex_row()
         .items_center()
         .gap_2()
-        .child(text(move || actions.state.with(|_| behavior.label())))
+        .child(text(move || actions.state.with(|_| behavior.label())).accessible(false))
         .child(view().size(px(Layout::ICON_SIZE)).child(when(
             move || actions.state.get().running == behavior.as_str(),
             move || {
                 svg(nsh_core::element::ImageSrc::svg_markup(
                     &crate::icons::nsh_source(crate::icons::Icon::Check).unwrap_or_default(),
                 ))
+                .accessible(false)
                 .size(px(Layout::ICON_SIZE))
                 .text_color(move || crate::nsh::color(actions.state.get().colors.text_primary))
             },
         )))
+        .child(target(actions, commands, action, Some(hovered)))
         .into_element()
 }
 
@@ -326,23 +496,9 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
             state,
             "settings.defaults.predictions",
             Some("settings.defaults.predictions_hint"),
-            control(state)
+            control(state, Action::Predictions)
                 .self_start()
                 .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
-                .role(AccessibilityRole::Switch)
-                .label(move || state.with(|_| vega_i18n::t("settings.defaults.predictions")))
-                .accessibility_state(move || nsh_core::AccessibilityState {
-                    checked: Some(if state.get().predictions {
-                        nsh_core::Checked::True
-                    } else {
-                        nsh_core::Checked::False
-                    }),
-                    ..Default::default()
-                })
-                .disabled(move || actions.pending.get() || !state.get().enabled)
-                .on_press(move |_: &nsh_core::PressEvent| {
-                    actions.send(predictions.clone(), Action::Predictions)
-                })
                 .child(
                     view()
                         .relative()
@@ -372,6 +528,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                                 .bg(move || crate::nsh::color(state.get().colors.bg_elevated)),
                         ),
                 )
+                .child(target(actions, predictions, Action::Predictions, None))
                 .into_element(),
         ))
         .child(field_row(
