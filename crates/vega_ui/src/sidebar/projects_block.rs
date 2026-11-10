@@ -100,7 +100,16 @@ impl ProjectsBlock {
                 cx.background_executor()
                     .timer(Duration::from_millis(100))
                     .await;
-                if this.update(cx, |this, cx| this.poll_branches(cx)).is_err() {
+                // The organized sidebar renders project names without branch suffixes.
+                // Its project controller stays alive for actions, but has no branch rows to probe.
+                let poll = this.update(cx, |this, cx| {
+                    if this.organization_mode {
+                        return false;
+                    }
+                    this.poll_branches(cx);
+                    true
+                });
+                if !matches!(poll, Ok(true)) {
                     break;
                 }
             }
