@@ -570,7 +570,7 @@ pub(super) fn panel(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> A
             let mut actions = view().flex_col().gap_2();
             if let Some(prepared) = &observed.prepared {
                 actions = actions.child(text(vega_i18n::t_args(
-                    "ui.artifact.edited_files",
+                    "ui.commit_staged_files",
                     &[("count", &prepared.staged_file_count.to_string())],
                 )));
                 if prepared.summary_truncated {

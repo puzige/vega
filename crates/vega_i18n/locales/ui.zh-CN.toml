@@ -233,6 +233,7 @@
 "ui.commit" = "提交（⌘↵）"
 "ui.commit_changes" = "提交更改"
 "ui.commit_message_enter_newline_cmd_enter_commit" = "提交说明…（Enter 换行 · Cmd+Enter 提交）"
+"ui.commit_staged_files" = "已暂存文件 · {count}"
 "ui.commit_unavailable_code" = "无法提交：{code}"
 "ui.compacting_context" = "正在压缩上下文"
 "ui.completed" = "已完成"
