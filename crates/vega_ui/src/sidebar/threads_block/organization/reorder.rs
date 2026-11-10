@@ -312,7 +312,7 @@ impl ThreadsBlock {
         };
         let bounds_cache = org.reorder.bounds.clone();
         let bounds_item = item.clone();
-        let valid_target = !org.pending
+        let valid_target = org.pending != Some(PendingRequest::Write)
             && org.reorder.source.as_ref().is_some_and(|source| {
                 source != &item
                     && std::mem::discriminant(source) == std::mem::discriminant(&item)

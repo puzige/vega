@@ -179,7 +179,7 @@ impl ThreadsBlock {
                 }),
             )
             .sidebar_scroll_fade(
-                format!("organization-menu-fade-{}", org.generation),
+                format!("organization-menu-fade-{}", org.presentation_generation),
                 org.menu_scroll.clone(),
                 true,
             )
@@ -231,7 +231,7 @@ impl ThreadsBlock {
             )
             .child({
                 let observed = org.snapshot.clone();
-                let generation = org.generation;
+                let generation = org.presentation_generation;
                 let observed_menu = org.menu.clone();
                 let weak = cx.weak_entity();
                 let target = weak.clone();
@@ -255,9 +255,9 @@ impl ThreadsBlock {
                         weak.upgrade().is_some_and(|entity| {
                             entity.read(cx).organization.as_ref().is_some_and(|org| {
                                 org.snapshot == observed
-                                    && org.generation == generation
+                                    && org.presentation_generation == generation
                                     && org.menu == observed_menu
-                                    && !org.pending
+                                    && org.pending != Some(PendingRequest::Write)
                                     && org.editor.is_none()
                             })
                         })
@@ -283,7 +283,7 @@ impl ThreadsBlock {
                     .snap_to_window_with_margin(px(8.))
                     .child(
                         deferred(nsh_leaf::chrome::popup(
-                            format!("organization-menu-chrome-{}", org.generation),
+                            format!("organization-menu-chrome-{}", org.presentation_generation),
                             menu.into_any_element(),
                         ))
                         .with_priority(3),

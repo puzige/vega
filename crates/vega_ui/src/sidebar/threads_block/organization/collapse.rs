@@ -100,8 +100,10 @@ impl ThreadsBlock {
         };
         let collapsed = org.collapse.effective();
         if let Some(snapshot) = org.snapshot.as_mut() {
-            let snapshot = std::rc::Rc::make_mut(snapshot);
-            snapshot.collapsed = collapsed;
+            if snapshot.collapsed != collapsed {
+                org.presentation_generation = org.presentation_generation.wrapping_add(1);
+                std::rc::Rc::make_mut(snapshot).collapsed = collapsed;
+            }
             for target in &snapshot.collapsed {
                 if let SidebarCollapseTarget::Project(id) = target {
                     org.project_threads_visible
@@ -123,7 +125,7 @@ impl ThreadsBlock {
             self.refresh_organization(cx);
             return;
         }
-        if org.pending || org.collapse.in_flight || org.collapse.intents.is_empty() {
+        if org.pending.is_some() || org.collapse.in_flight || org.collapse.intents.is_empty() {
             return;
         }
         let Some(database) = database else {

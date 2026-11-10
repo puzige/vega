@@ -8,8 +8,8 @@ use std::{
 use vega_conversation::sidebar_organization as service;
 use vega_conversation::types::{
     SidebarCollapseTarget, SidebarGroupColor, SidebarOrganizationAction,
-    SidebarOrganizationOutcome, SidebarOrganizationSnapshot, SidebarProject, SidebarTaskSort,
-    SidebarTimelineBucket, SidebarView,
+    SidebarOrganizationOutcome, SidebarOrganizationSnapshot, SidebarProject, SidebarProjectView,
+    SidebarTaskSort, SidebarTimelineBucket, SidebarView,
 };
 mod collapse;
 mod menu;
@@ -29,6 +29,12 @@ struct OrganizationRequestToken {
     was_mutation: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PendingRequest {
+    Read,
+    Write,
+}
+
 pub(super) struct Organization {
     pub(super) snapshot: Option<std::rc::Rc<SidebarOrganizationSnapshot>>,
     collapse: collapse::CollapseState,
@@ -36,10 +42,13 @@ pub(super) struct Organization {
     pub(super) focus_dirty: bool,
     database: Option<PathBuf>,
     projects: Entity<ProjectsBlock>,
-    pending: bool,
+    pending: Option<PendingRequest>,
     reorder: ReorderState,
     refresh_queued: bool,
     generation: u64,
+    presentation_generation: u64,
+    last_clock_ms: i64,
+    pub(super) next_time_change: std::cell::Cell<i64>,
     project_threads_visible: HashMap<String, usize>,
     project_threads_total: HashMap<String, usize>,
     project_growth_paused: HashSet<String>,
@@ -213,10 +222,13 @@ impl ThreadsBlock {
             focus_dirty: true,
             database: None,
             projects,
-            pending: false,
+            pending: None,
             reorder: ReorderState::new(cx),
             refresh_queued: false,
             generation: 0,
+            presentation_generation: 0,
+            last_clock_ms: now_ms(),
+            next_time_change: std::cell::Cell::new(i64::MAX),
             project_threads_visible: HashMap::new(),
             project_threads_total: HashMap::new(),
             project_growth_paused: HashSet::new(),
@@ -381,7 +393,8 @@ impl ThreadsBlock {
         if org.database != current_database {
             org.database = current_database;
             org.generation = org.generation.wrapping_add(1);
-            org.pending = false;
+            org.presentation_generation = org.presentation_generation.wrapping_add(1);
+            org.pending = None;
             org.refresh_queued = false;
             org.collapse = collapse::CollapseState::default();
             org.task_projection = None;
@@ -410,7 +423,9 @@ impl ThreadsBlock {
         let Some(org) = self.organization.as_mut() else {
             return;
         };
-        if org.pending
+        let was_mutation = action.is_some();
+        if org.pending == Some(PendingRequest::Write)
+            || (org.pending.is_some() && !was_mutation)
             || org.collapse.in_flight
             || !org.collapse.intents.is_empty()
             || task_mutation_busy(cx)
@@ -436,7 +451,11 @@ impl ThreadsBlock {
         let epoch = cx
             .try_global::<crate::navigation::TaskMutationState>()
             .map_or(0, |s| s.epoch);
-        org.pending = true;
+        org.pending = Some(if was_mutation {
+            PendingRequest::Write
+        } else {
+            PendingRequest::Read
+        });
         org.generation = org.generation.wrapping_add(1);
         let generation = org.generation;
         let submitted_editor = if matches!(
@@ -461,7 +480,9 @@ impl ThreadsBlock {
             cx.global::<OpenedThread>().0.as_ref().map(|t| t.id.clone()),
             cx.try_global::<SettingsOpen>().is_some_and(|s| s.0),
         );
-        let was_mutation = action.is_some();
+        if was_mutation {
+            org.presentation_generation = org.presentation_generation.wrapping_add(1);
+        }
         let request = OrganizationRequestToken {
             database: database.clone(),
             generation,
@@ -490,7 +511,9 @@ impl ThreadsBlock {
             .ok();
         })
         .detach();
-        cx.notify();
+        if was_mutation {
+            cx.notify();
+        }
     }
     fn finish_organization_request(
         &mut self,
@@ -512,7 +535,7 @@ impl ThreadsBlock {
         if generation != org.generation {
             return;
         }
-        org.pending = false;
+        org.pending = None;
         let current_database =
             with_store(cx, |store| Ok(store.database_path().map(Path::to_path_buf)))
                 .ok()
@@ -526,6 +549,23 @@ impl ThreadsBlock {
             .try_global::<crate::navigation::TaskMutationState>()
             .map_or(0, |s| s.epoch);
         let metadata_stale = epoch != current_epoch || task_mutation_busy(cx);
+        let now = now_ms();
+        let previous = std::mem::replace(&mut org.last_clock_ms, now);
+        let clock_due = now >= org.next_time_change.get();
+        if clock_due {
+            org.next_time_change.set(i64::MAX);
+        }
+        let mut repaint = was_mutation || now < previous || clock_due;
+        if !repaint
+            && now.div_euclid(60_000) != previous.div_euclid(60_000)
+            && org.snapshot.as_ref().is_some_and(|s| {
+                s.preferences.view == SidebarView::Projects
+                    && s.preferences.project_view == SidebarProjectView::Timeline
+            })
+        {
+            repaint = service::local_calendar_bucket(previous, now).ok()
+                != Some(SidebarTimelineBucket::Today);
+        }
         let mut created_id = None;
         match result {
             Ok(outcome) => {
@@ -590,6 +630,7 @@ impl ThreadsBlock {
                         if !self.threads.iter().eq(active.clone())
                             || !self.archived.iter().eq(archived.clone())
                         {
+                            repaint = true;
                             self.threads = active.cloned().collect();
                             self.archived = archived.cloned().collect();
                             org.task_projection = None;
@@ -604,13 +645,18 @@ impl ThreadsBlock {
                         org.task_projection = None;
                         org.focus_dirty = true;
                     }
-                    org.snapshot = Some(std::rc::Rc::new(snapshot));
+                    if org.snapshot.as_deref() != Some(&snapshot) {
+                        repaint = true;
+                        org.presentation_generation = org.presentation_generation.wrapping_add(1);
+                        org.snapshot = Some(std::rc::Rc::new(snapshot));
+                    }
                 }
                 if was_mutation {
                     self.error = None;
                 }
             }
             Err(error) => {
+                repaint = true;
                 self.error = Some(error);
                 if was_mutation {
                     org.refresh_queued = true;
@@ -630,7 +676,9 @@ impl ThreadsBlock {
         } else if refresh {
             self.refresh_organization(cx);
         }
-        cx.notify();
+        if repaint {
+            cx.notify();
+        }
     }
     pub(super) fn organization_actions(
         &self,

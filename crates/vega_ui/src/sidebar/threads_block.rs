@@ -1628,7 +1628,10 @@ impl ThreadsBlock {
             } else if thread.unread {
                 "●".to_owned()
             } else if show_timestamp_at_rest {
-                relative_time(thread.updated_at)
+                relative_time(
+                    thread.updated_at,
+                    self.organization.as_ref().map(|org| &org.next_time_change),
+                )
             } else {
                 String::new()
             });

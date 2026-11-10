@@ -165,7 +165,10 @@ impl ThreadsBlock {
             .organization
             .as_ref()
             .and_then(|org| org.snapshot.clone());
-        let generation = self.organization.as_ref().map_or(0, |org| org.generation);
+        let generation = self
+            .organization
+            .as_ref()
+            .map_or(0, |org| org.presentation_generation);
         let archive = self.organization.as_ref().is_some_and(|org| org.archive);
         let revision = observed.as_ref().map_or(0, |snapshot| snapshot.revision);
         let weak = cx.weak_entity();
@@ -189,9 +192,9 @@ impl ThreadsBlock {
                         && !this.action_pending
                         && this.organization.as_ref().is_some_and(|org| {
                             org.snapshot == observed
-                                && org.generation == generation
+                                && org.presentation_generation == generation
                                 && org.archive == archive
-                                && !org.pending
+                                && org.pending != Some(PendingRequest::Write)
                                 && org.editor.is_none()
                                 && !org.reorder.gesture
                         })
@@ -211,6 +214,9 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
+        if let Some(org) = &self.organization {
+            org.next_time_change.set(i64::MAX);
+        }
         let Some((snapshot, show_archived, menu_open)) = self.organization.as_ref().map(|org| {
             (
                 org.snapshot.clone().map(|mut snapshot| {
