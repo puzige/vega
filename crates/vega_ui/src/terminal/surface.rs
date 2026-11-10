@@ -211,23 +211,32 @@ fn draw(
     let selected = |index| range.as_ref().is_some_and(|range| range.contains(&index));
     for (row, cells) in snapshot.cells.iter().enumerate() {
         let y = PAD + row as f32 * metrics.line;
-        for (col, cell) in cells.iter().enumerate() {
-            let lead = if cell.continuation {
+        let background_at = |col: usize| {
+            let lead = if cells[col].continuation {
                 col.saturating_sub(1)
             } else {
                 col
             };
-            let (_, background) = cell_colors(
+            cell_colors(
                 &cells[lead],
                 &projection.colors,
                 selected(row * cols + lead),
-            );
+            )
+            .1
+        };
+        let mut start = 0;
+        while start < cells.len() {
+            let background = background_at(start);
+            let end = (start + 1..cells.len())
+                .find(|col| background_at(*col) != background)
+                .unwrap_or(cells.len());
             painter = painter.fill_style(background).fill_rect(
-                PAD + col as f32 * metrics.cell,
+                PAD + start as f32 * metrics.cell,
                 y,
-                metrics.cell,
+                (end - start) as f32 * metrics.cell,
                 metrics.line,
             );
+            start = end;
         }
         for (col, cell) in cells.iter().enumerate() {
             if !cell.continuation && !cell.text.is_empty() {
