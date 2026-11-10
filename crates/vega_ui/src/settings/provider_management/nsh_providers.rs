@@ -1055,6 +1055,7 @@ impl SettingsView {
 
 #[derive(Clone, Copy)]
 struct Actions {
+    owner: nsh_core::element::Owner,
     state: Signal<Snapshot>,
     pending: Signal<bool>,
     failed: Signal<bool>,
@@ -1097,23 +1098,25 @@ impl Actions {
         let value = secret.map(|s| s.get_untracked());
         self.pending.set(true);
         self.failed.set(false);
-        spawn(async move {
-            let (reply, response) = oneshot::channel();
-            let accepted = commands
-                .send(Request::Decide(Box::new(Decision {
-                    observed,
-                    action,
-                    secret: value,
-                    reply,
-                })))
-                .await
-                .is_ok()
-                && matches!(response.await, Ok(true));
-            if accepted && let Some(secret) = secret {
-                secret.set(String::new());
-            }
-            self.failed.set(!accepted);
-            self.pending.set(false);
+        self.owner.run(|| {
+            spawn(async move {
+                let (reply, response) = oneshot::channel();
+                let accepted = commands
+                    .send(Request::Decide(Box::new(Decision {
+                        observed,
+                        action,
+                        secret: value,
+                        reply,
+                    })))
+                    .await
+                    .is_ok()
+                    && matches!(response.await, Ok(true));
+                if accepted && let Some(secret) = secret {
+                    secret.try_set(String::new());
+                }
+                self.failed.set(!accepted);
+                self.pending.set(false);
+            });
         });
     }
 }
@@ -1809,16 +1812,23 @@ fn form(actions: Actions, commands: mpsc::Sender<Request>, editor: Editor) -> An
             false,
         ))
         .child(
-            view()
-                .gap_1()
-                .pb_3()
-                .text_size(px(Typography::METADATA))
-                .text_color(move || crate::nsh::color(state.get().colors.text_secondary))
-                .child(text(t_args(
-                    "settings.provider.models_hint",
-                    &[("limit", &super::super::PROVIDER_MODEL_COUNT_MAX.to_string())],
-                )))
-                .child(text(t("settings.provider.responses_hint"))),
+            text(move || {
+                state.with(|_| {
+                    t_args(
+                        "settings.provider.models_hint",
+                        &[("limit", &super::super::PROVIDER_MODEL_COUNT_MAX.to_string())],
+                    )
+                })
+            })
+            .text_size(px(Typography::BODY))
+            .line_height(px((Typography::BODY * Typography::BODY_LINE_HEIGHT).round()))
+            .text_color(move || crate::nsh::color(state.get().colors.text_tertiary)),
+        )
+        .child(
+            text(move || state.with(|_| t("settings.provider.responses_hint")))
+                .text_size(px(Typography::BODY))
+                .line_height(px((Typography::BODY * Typography::BODY_LINE_HEIGHT).round()))
+                .text_color(move || crate::nsh::color(state.get().colors.text_tertiary)),
         )
         .child(field(
             actions,
@@ -2337,6 +2347,7 @@ fn provider_list(actions: Actions, commands: mpsc::Sender<Request>) -> AnyElemen
 }
 fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
     let actions = Actions {
+        owner: nsh_core::element::Owner::current(),
         state,
         pending: signal(false),
         failed: signal(false),
