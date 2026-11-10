@@ -19,6 +19,14 @@ pub const COMMAND_CAPACITY: usize = 64;
 #[derive(Clone)]
 pub struct ProjectionId(Arc<()>);
 
+impl PartialEq for ProjectionId {
+    fn eq(&self, other: &Self) -> bool {
+        self.matches(other)
+    }
+}
+
+impl Eq for ProjectionId {}
+
 impl Default for ProjectionId {
     fn default() -> Self {
         Self::new()
@@ -195,6 +203,19 @@ where
 
     pub fn publish(&self, state: S) {
         self.state.send_replace(state);
+    }
+
+    pub fn publish_if_changed(&self, next: S)
+    where
+        S: PartialEq,
+    {
+        self.state.send_if_modified(|current| {
+            if *current == next {
+                return false;
+            }
+            *current = next;
+            true
+        });
     }
 
     pub fn errors(&self) -> watch::Receiver<Option<String>> {

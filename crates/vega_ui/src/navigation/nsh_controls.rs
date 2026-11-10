@@ -41,9 +41,10 @@ impl Action {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct Snapshot {
     id: ProjectionId,
+    language: &'static str,
     navigation: NavigationState,
     mutation: TaskMutationState,
     task: Option<String>,
@@ -109,6 +110,7 @@ struct Controls {
 impl Controls {
     fn current(&self, cx: &App) -> Snapshot {
         Snapshot {
+            language: vega_i18n::language(),
             navigation: cx
                 .try_global::<NavigationState>()
                 .cloned()
@@ -284,6 +286,7 @@ pub(super) fn controls(
                 surface: None,
                 snapshot: Snapshot {
                     id: ProjectionId::new(),
+                    language: vega_i18n::language(),
                     navigation: NavigationState::default(),
                     mutation: TaskMutationState::default(),
                     task: None,
@@ -349,7 +352,7 @@ pub(super) fn controls(
             return div().into_any_element();
         };
         surface.sync_environment(cx);
-        surface.publish(snapshot.clone());
+        surface.publish_if_changed(snapshot.clone());
         let mut host = div()
             .id("nsh-window-navigation-host")
             .relative()

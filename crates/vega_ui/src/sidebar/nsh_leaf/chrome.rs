@@ -18,7 +18,7 @@ enum Geometry {
     Insertion(bool),
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct ChromeSnapshot {
     kind: Kind,
     colors: ThemeColors,
@@ -176,7 +176,7 @@ impl gpui_kit::RenderOnce for Decoration {
                 return div().into_any_element();
             };
             surface.sync_environment(cx);
-            surface.publish(this.snapshot.clone());
+            surface.publish_if_changed(this.snapshot.clone());
             let lease = this.lease.upgrade().unwrap_or_else(|| {
                 Rc::new(ChromeLease {
                     view: surface.entity().downgrade(),
@@ -250,7 +250,7 @@ impl gpui_kit::RenderOnce for Decoration {
                             if let Some(surface) = &this.surface
                                 && surface.errors().borrow().is_none()
                             {
-                                surface.publish(this.snapshot.clone());
+                                surface.publish_if_changed(this.snapshot.clone());
                             }
                         }
                     });

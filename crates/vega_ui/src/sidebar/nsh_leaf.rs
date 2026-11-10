@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 pub(super) mod chrome;
 mod geometry;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(super) struct Item {
     pub label: String,
     pub icon: Option<Icon>,
@@ -124,9 +124,10 @@ impl Authority {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct Snapshot {
     id: ProjectionId,
+    language: &'static str,
     text: Option<String>,
     items: Vec<Item>,
     colors: ThemeColors,
@@ -585,6 +586,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
         Leaf {
             snapshot: Snapshot {
                 id: ProjectionId::new(),
+                language: vega_i18n::language(),
                 text: None,
                 items: Vec::new(),
                 colors: theme(cx).colors,
@@ -675,6 +677,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
                 item
             })
             .collect();
+        this.snapshot.language = vega_i18n::language();
         this.snapshot.colors = theme(cx).colors;
         this.snapshot.horizontal = horizontal;
         this.handler = handler;
@@ -712,7 +715,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
             .unwrap_or_else(|| Rc::new(chrome::ChromeLease::new(surface, cx)));
         this.lease = Rc::downgrade(&lease);
         surface.sync_environment(cx);
-        surface.publish(this.snapshot.clone());
+        surface.publish_if_changed(this.snapshot.clone());
         let mut host = div()
             .id(key.clone())
             .relative()
@@ -796,7 +799,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
                         if let Some(surface) = &this.surface
                             && surface.errors().borrow().is_none()
                         {
-                            surface.publish(this.snapshot.clone());
+                            surface.publish_if_changed(this.snapshot.clone());
                         }
                     }
                 });

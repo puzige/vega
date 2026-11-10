@@ -39,7 +39,7 @@ const fn rgba_alpha(hex: u32, a: f32) -> Rgba {
 ///
 /// Field values must come from the token table in the UI spec; the two
 /// shipped palettes are [`LIGHT`] and [`DARK`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThemeColors {
     pub context_tooltip_bg: Rgba,
     pub context_tooltip_border: Rgba,
