@@ -557,19 +557,21 @@ fn render_data(actions: Actions, commands: mpsc::Sender<Request>) -> AnyElement 
                         .justify_between()
                         .gap_2()
                         .child(local(state, "settings.usage.activity"))
-                        .children(
-                            [
-                                ("settings.usage.daily", 0),
-                                ("settings.usage.weekly", 1),
-                                ("settings.usage.cumulative", 2),
-                            ]
-                            .into_iter()
-                            .map({
-                                let commands = commands.clone();
-                                move |(key, mode)| {
-                                    control(actions, commands.clone(), Action::Mode(mode), key)
-                                }
-                            }),
+                        .child(
+                            view().flex_row().flex_wrap().gap_1().children(
+                                [
+                                    ("settings.usage.daily", 0),
+                                    ("settings.usage.weekly", 1),
+                                    ("settings.usage.cumulative", 2),
+                                ]
+                                .into_iter()
+                                .map({
+                                    let commands = commands.clone();
+                                    move |(key, mode)| {
+                                        control(actions, commands.clone(), Action::Mode(mode), key)
+                                    }
+                                }),
+                            ),
                         ),
                 )
                 .child(
