@@ -332,7 +332,7 @@ impl SettingsView {
             let id = ProjectionId::new();
             let snapshot = self.navigation_snapshot(pane, id.clone(), cx);
             let intent = snapshot.authority.intent.clone();
-            let (surface, mut requests) = Surface::new(snapshot, render, window, cx);
+            let (surface, mut requests) = Surface::new_transparent(snapshot, render, window, cx);
             *self.navigation_page_mut(pane) = Some(Presentation {
                 surface,
                 id,
@@ -455,8 +455,11 @@ fn route_button(
             ..Default::default()
         })
         .disabled(move || actions.pending.get() || !allowed(&actions.state.get(), action))
-        .px_3()
-        .py_2()
+        .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
+        .py_1()
+        .items_center()
+        .justify_center()
+        .line_height(px((Typography::BODY * Typography::BODY_LINE_HEIGHT).round()))
         .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
         .border(px(1.))
         .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
@@ -471,7 +474,7 @@ fn route_button(
             crate::nsh::color(if selected(&actions.state.get(), action) {
                 actions.state.get().colors.bg_active
             } else {
-                actions.state.get().colors.bg_elevated
+                actions.state.get().colors.bg_base.opacity(0.)
             })
         })
         .text_color(move || {

@@ -304,7 +304,7 @@ impl SettingsView {
         if self.pricing_presentation.is_none() {
             let id = ProjectionId::new();
             let (surface, mut requests) =
-                Surface::new(self.pricing_snapshot(id.clone(), cx), render, window, cx);
+                Surface::new_transparent(self.pricing_snapshot(id.clone(), cx), render, window, cx);
             self.pricing_presentation = Some(Presentation {
                 surface,
                 id,
@@ -427,6 +427,7 @@ impl SettingsView {
 
 #[derive(Clone, Copy)]
 struct Actions {
+    owner: nsh_core::element::Owner,
     state: Signal<Snapshot>,
     pending: Signal<bool>,
     failed: Signal<bool>,
@@ -449,19 +450,21 @@ impl Actions {
         }
         self.pending.set(true);
         self.failed.set(false);
-        spawn(async move {
-            let (reply, response) = oneshot::channel();
-            let accepted = commands
-                .send(Request::Decide(Box::new(Decision {
-                    observed,
-                    action,
-                    reply,
-                })))
-                .await
-                .is_ok()
-                && matches!(response.await, Ok(true));
-            self.failed.set(!accepted);
-            self.pending.set(false);
+        self.owner.run(|| {
+            spawn(async move {
+                let (reply, response) = oneshot::channel();
+                let accepted = commands
+                    .send(Request::Decide(Box::new(Decision {
+                        observed,
+                        action,
+                        reply,
+                    })))
+                    .await
+                    .is_ok()
+                    && matches!(response.await, Ok(true));
+                self.failed.set(!accepted);
+                self.pending.set(false);
+            });
         });
     }
 }
@@ -501,21 +504,97 @@ fn button(
     let focused = signal(false);
     target.on_focus_in(move || focused.set(true));
     target.on_focus_out(move || focused.set(false));
-    view().element_ref(&target).role(AccessibilityRole::Button).focusable(true)
+    let enabled = move || !actions.pending.get() && allowed(&actions.snapshot(), &action());
+    let primary = move || matches!(action(), Action::Save);
+    let destructive = move || matches!(action(), Action::Secondary(entry) if entry.kind == PricingEntryKind::CustomStatic);
+    view()
+        .element_ref(&target)
+        .role(AccessibilityRole::Button)
+        .focusable(true)
         .label(move || label(&actions.snapshot(), &action()))
-        .disabled(move || actions.pending.get() || !allowed(&actions.snapshot(), &action()))
-        .flex_row().items_center().gap_2().border(px(1.)).rounded(px(Layout::SETTINGS_CONTROL_RADIUS)).px_3().py_2()
-        .border_color(move || crate::nsh::color(if focused.get() { actions.state.get().colors.accent } else { actions.state.get().colors.border_subtle }))
-        .bg(move || crate::nsh::color(if matches!(action(), Action::Save) { actions.state.get().colors.brand_primary } else { actions.state.get().colors.bg_elevated }))
-        .text_color(move || crate::nsh::color(if matches!(action(), Action::Save) { actions.state.get().colors.brand_on_accent } else if matches!(action(), Action::Secondary(entry) if entry.kind == PricingEntryKind::CustomStatic) { actions.state.get().colors.danger } else { actions.state.get().colors.text_primary }))
+        .disabled(move || !enabled())
+        .min_w_0()
+        .max_w(relative(1.))
+        .self_start()
+        .flex_shrink_0()
+        .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+        .flex_row()
+        .items_center()
+        .justify_center()
+        .gap_2()
+        .border(px(1.))
+        .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+        .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
+        .py_1()
+        .border_color(move || {
+            actions.state.with(|s| {
+                crate::nsh::color(if focused.get() {
+                    s.colors.accent
+                } else if primary() || destructive() || matches!(action(), Action::Advanced) {
+                    s.colors.border_subtle
+                } else {
+                    s.colors.bg_base.opacity(0.)
+                })
+            })
+        })
+        .bg(move || {
+            actions.state.with(|s| {
+                crate::nsh::color(if enabled() && primary() {
+                    s.colors.brand_primary
+                } else {
+                    s.colors.bg_base.opacity(0.)
+                })
+            })
+        })
+        .style_when(enabled, |style| style.cursor_pointer())
+        .hover(|style| {
+            style.bg(move || {
+                actions.state.with(|s| {
+                    crate::nsh::color(if !enabled() {
+                        s.colors.bg_base.opacity(0.)
+                    } else if primary() {
+                        s.colors.brand_primary_strong
+                    } else {
+                        s.colors.bg_hover
+                    })
+                })
+            })
+        })
+        .active(|style| {
+            style.bg(move || {
+                actions.state.with(|s| {
+                    crate::nsh::color(if !enabled() {
+                        s.colors.bg_base.opacity(0.)
+                    } else if primary() {
+                        s.colors.brand_primary_strong
+                    } else {
+                        s.colors.bg_active
+                    })
+                })
+            })
+        })
+        .text_color(move || {
+            actions.state.with(|s| {
+                crate::nsh::color(if !enabled() {
+                    s.colors.text_tertiary
+                } else if primary() {
+                    s.colors.brand_on_accent
+                } else if destructive() {
+                    s.colors.danger
+                } else {
+                    s.colors.text_primary
+                })
+            })
+        })
         .on_press(move |_: &PressEvent| actions.send(commands.clone(), action()))
-        .child(text(move || label(&actions.snapshot(), &action()))).into_element()
+        .child(text(move || label(&actions.snapshot(), &action())))
+        .into_element()
 }
 
 fn group(state: Signal<Snapshot>) -> nsh_core::element::View {
     view()
         .w_full()
-        .gap_3()
+        .gap_0()
         .p(px(Layout::SETTINGS_GROUP_PADDING))
         .border(px(1.))
         .rounded(px(Layout::PANEL_RADIUS))
@@ -543,66 +622,57 @@ fn field(actions: Actions, editor: Editor, index: usize) -> AnyElement {
     let focused = signal(false);
     target.on_focus_in(move || focused.set(true));
     target.on_focus_out(move || focused.set(false));
-    view()
-        .gap_1()
-        .w_full()
-        .child(text(move || {
-            actions.state.with(|_| vega_i18n::t(FIELD_KEYS[index]))
-        }))
-        .child(when(
-            move || index > 0,
-            move || {
-                text(move || {
+    super::nsh_form::field(
+        move || actions.state.get().colors,
+        text(move || actions.state.with(|_| vega_i18n::t(FIELD_KEYS[index]))),
+        (index > 0).then(|| {
+            text(move || {
+                actions
+                    .state
+                    .with(|_| vega_i18n::t("settings.pricing.units"))
+            })
+            .into_element()
+        }),
+        nsh_base::input()
+            .element_ref(&target)
+            .label(move || actions.state.with(|_| vega_i18n::t(FIELD_KEYS[index])))
+            .value(move || value.get())
+            .max_length(super::state::PRICING_INPUT_BYTES_LIMIT as u32)
+            .readonly(move || {
+                actions.pending.get() || !editing(&actions.state.get()) || {
+                    actions.edits.get();
+                    editor.draft.read().frozen
+                }
+            })
+            .border(px(1.))
+            .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+            .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
+            .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+            .w_full()
+            .border_color(move || {
+                crate::nsh::color(if focused.get() {
+                    actions.state.get().colors.accent
+                } else {
+                    actions.state.get().colors.border_subtle
+                })
+            })
+            .bg(move || crate::nsh::color(actions.state.get().colors.bg_elevated))
+            .on_change(move |text: &str| {
+                if draft.edit(index, Some(text), None) {
+                    value.set(text.to_owned());
                     actions
-                        .state
-                        .with(|_| vega_i18n::t("settings.pricing.units"))
-                })
-                .text_size(px(Typography::METADATA))
-                .text_color(move || crate::nsh::color(actions.state.get().colors.text_secondary))
-            },
-        ))
-        .child(
-            nsh_base::input()
-                .element_ref(&target)
-                .label(move || actions.state.with(|_| vega_i18n::t(FIELD_KEYS[index])))
-                .value(move || value.get())
-                .max_length(super::state::PRICING_INPUT_BYTES_LIMIT as u32)
-                .readonly(move || {
-                    actions.pending.get() || !editing(&actions.state.get()) || {
-                        actions.edits.get();
-                        editor.draft.read().frozen
-                    }
-                })
-                .border(px(1.))
-                .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-                .px_3()
-                .py_2()
-                .w_full()
-                .border_color(move || {
-                    crate::nsh::color(if focused.get() {
-                        actions.state.get().colors.accent
-                    } else {
-                        actions.state.get().colors.border_subtle
-                    })
-                })
-                .bg(move || crate::nsh::color(actions.state.get().colors.bg_elevated))
-                .on_change(move |text: &str| {
-                    if draft.edit(index, Some(text), None) {
-                        value.set(text.to_owned());
-                        actions
-                            .edits
-                            .update(|revision| *revision = revision.wrapping_add(1));
-                    }
-                })
-                .on_composition_change(move |event: &Composition| {
-                    if composition.edit(index, None, Some(event.composing)) {
-                        actions
-                            .edits
-                            .update(|revision| *revision = revision.wrapping_add(1));
-                    }
-                }),
-        )
-        .into_element()
+                        .edits
+                        .update(|revision| *revision = revision.wrapping_add(1));
+                }
+            })
+            .on_composition_change(move |event: &Composition| {
+                if composition.edit(index, None, Some(event.composing)) {
+                    actions
+                        .edits
+                        .update(|revision| *revision = revision.wrapping_add(1));
+                }
+            }),
+    )
 }
 
 fn editor(actions: Actions, commands: mpsc::Sender<Request>, editor: Editor) -> AnyElement {
@@ -616,7 +686,11 @@ fn editor(actions: Actions, commands: mpsc::Sender<Request>, editor: Editor) -> 
             },
             {
                 let model = editor.descriptor.model.clone();
-                move || text(model.clone().unwrap_or_default())
+                move || {
+                    text(model.clone().unwrap_or_default())
+                        .mb_3()
+                        .font_weight(FontWeight(Typography::HEADING_CARD_WEIGHT.0 as u16))
+                }
             },
         ))
         .child(when(
@@ -634,17 +708,17 @@ fn editor(actions: Actions, commands: mpsc::Sender<Request>, editor: Editor) -> 
                 let commands = commands.clone();
                 move || {
                     view()
-                        .gap_3()
-                        .child(button(actions, commands.clone(), || Action::Advanced))
+                        .gap_0()
                         .child(when(move || actions.state.get().advanced, {
                             let peak = peak.clone();
                             move || {
-                                view().gap_3().children((5..9).map({
+                                view().gap_0().children((5..9).map({
                                     let peak = peak.clone();
                                     move |index| field(actions, peak.clone(), index)
                                 }))
                             }
                         }))
+                        .child(button(actions, commands.clone(), || Action::Advanced))
                 }
             },
         ))
@@ -661,6 +735,7 @@ fn editor(actions: Actions, commands: mpsc::Sender<Request>, editor: Editor) -> 
 
 fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
     let actions = Actions {
+        owner: nsh_core::element::Owner::current(),
         state,
         pending: signal(false),
         failed: signal(false),
@@ -722,7 +797,8 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
     view()
         .w_full()
         .flex_shrink_0()
-        .gap(px(Layout::SETTINGS_SECTION_GAP))
+        .gap(px(Layout::SETTINGS_CONTENT_GAP))
+        .line_height(px((Typography::BODY * Typography::BODY_LINE_HEIGHT).round()))
         .text_size(px(Typography::BODY))
         .text_color(move || crate::nsh::color(state.get().colors.text_primary))
         .on_layout(move |bounds: &Bounds<Points>| {
@@ -752,13 +828,20 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                 .flex_row()
                 .flex_wrap()
                 .justify_between()
+                .items_center()
                 .gap_2()
                 .child(
                     text(move || state.with(|_| vega_i18n::t("settings.pricing.title")))
-                        .text_size(px(Typography::HEADING_BLOCK)),
+                        .text_size(px(Typography::HEADING_BLOCK))
+                        .font_weight(FontWeight(Typography::HEADING_BLOCK_WEIGHT.0 as u16)),
                 )
-                .child(button(actions, commands.clone(), || Action::Reload))
-                .child(button(actions, commands.clone(), || Action::Add)),
+                .child(
+                    view()
+                        .flex_row()
+                        .gap_2()
+                        .child(button(actions, commands.clone(), || Action::Reload))
+                        .child(button(actions, commands.clone(), || Action::Add)),
+                ),
         )
         .child(each(
             move || status.get(),
@@ -866,16 +949,21 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
             },
             |entry| entry.model.clone(),
             move |entry, _| {
-                group(state)
+                view()
+                    .w_full()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .py_3()
+                    .border_b_1()
+                    .border_color(move || crate::nsh::color(state.get().colors.border_subtle))
                     .flex_row()
                     .flex_wrap()
                     .items_center()
-                    .gap_3()
+                    .gap(px(Layout::SETTINGS_FIELD_GAP))
                     .child(
                         view()
                             .flex_1()
-                            .min_w(px(Layout::SETTINGS_LABEL_WIDTH))
-                            .gap_1()
+                            .min_w_0()
                             .child(text(move || entry.get().model))
                             .child(
                                 text(move || {
@@ -896,12 +984,18 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                                 }),
                             ),
                     )
-                    .child(button(actions, rows.clone(), move || {
-                        Action::Edit(Box::new(entry.get()))
-                    }))
-                    .child(button(actions, rows.clone(), move || {
-                        Action::Secondary(Box::new(entry.get()))
-                    }))
+                    .child(
+                        view()
+                            .flex_row()
+                            .flex_shrink_0()
+                            .gap_2()
+                            .child(button(actions, rows.clone(), move || {
+                                Action::Edit(Box::new(entry.get()))
+                            }))
+                            .child(button(actions, rows.clone(), move || {
+                                Action::Secondary(Box::new(entry.get()))
+                            })),
+                    )
             },
         ))
         .child(each(
