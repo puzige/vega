@@ -170,7 +170,12 @@ fn allowed(snapshot: &Snapshot, action: &Action) -> bool {
                 ..
             }
         ),
-        Action::Add => editing(snapshot) && snapshot.editor.is_none(),
+        Action::Add => {
+            editing(snapshot)
+                && snapshot.editor.as_ref().is_none_or(|editor| {
+                    !editor.observed.frozen && !editor.observed.composing.contains(&true)
+                })
+        }
         Action::Edit(entry) | Action::Secondary(entry) => {
             editing(snapshot)
                 && snapshot.editor.is_none()
@@ -330,7 +335,20 @@ impl SettingsView {
                                             Action::Reload => {
                                                 cx.emit(super::PricingReloadRequested)
                                             }
-                                            Action::Add => this.begin_add_custom(cx),
+                                            Action::Add => {
+                                                accepted =
+                                                    command.observed.editor.as_ref().is_none_or(
+                                                        |editor| {
+                                                            editor
+                                                                .draft
+                                                                .claim(Some(&editor.observed))
+                                                                .is_some()
+                                                        },
+                                                    );
+                                                if accepted {
+                                                    this.begin_add_custom(cx);
+                                                }
+                                            }
                                             Action::Edit(entry) => {
                                                 this.begin_edit_pricing(*entry, cx)
                                             }
@@ -636,6 +654,11 @@ fn field(actions: Actions, editor: Editor, index: usize) -> AnyElement {
         nsh_base::input()
             .element_ref(&target)
             .label(move || actions.state.with(|_| vega_i18n::t(FIELD_KEYS[index])))
+            .placeholder(move || {
+                actions
+                    .state
+                    .with(|_| vega_i18n::t(FIELD_KEYS[index]).to_owned())
+            })
             .value(move || value.get())
             .max_length(super::state::PRICING_INPUT_BYTES_LIMIT as u32)
             .readonly(move || {
@@ -843,42 +866,6 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                         .child(button(actions, commands.clone(), || Action::Add)),
                 ),
         )
-        .child(each(
-            move || status.get(),
-            |(key, _)| *key,
-            move |item, _| {
-                text(move || vega_i18n::t(item.get().0)).text_color(move || {
-                    crate::nsh::color(if item.get().1 {
-                        state.get().colors.warning
-                    } else {
-                        state.get().colors.text_secondary
-                    })
-                })
-            },
-        ))
-        .child(when(
-            move || {
-                matches!(
-                    &*state.get().projection,
-                    PricingSettingsProjection::Invalid(_)
-                ) || matches!(
-                    &*state.get().projection,
-                    PricingSettingsProjection::Ready { error: Some(_), .. }
-                )
-            },
-            move || {
-                text(move || {
-                    state.with(|snapshot| match &*snapshot.projection {
-                        PricingSettingsProjection::Invalid(code)
-                        | PricingSettingsProjection::Ready {
-                            error: Some(code), ..
-                        } => super::helpers::pricing_error_label(*code),
-                        _ => "",
-                    })
-                })
-                .text_color(move || crate::nsh::color(state.get().colors.danger))
-            },
-        ))
         .child(when(
             move || {
                 matches!(
@@ -890,16 +877,36 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                 )
             },
             move || {
-                text(move || {
-                    state.with(|snapshot| match &*snapshot.projection {
-                        PricingSettingsProjection::Ready {
-                            notice: Some(notice),
-                            ..
-                        } => super::helpers::pricing_notice_label(*notice),
-                        _ => "",
-                    })
-                })
-                .text_color(move || crate::nsh::color(state.get().colors.warning))
+                super::nsh_form::status(
+                    move || state.get().colors,
+                    move || state.get().colors.warning,
+                    text(move || {
+                        state.with(|snapshot| match &*snapshot.projection {
+                            PricingSettingsProjection::Ready {
+                                notice: Some(notice),
+                                ..
+                            } => super::helpers::pricing_notice_label(*notice),
+                            _ => "",
+                        })
+                    }),
+                )
+            },
+        ))
+        .child(each(
+            move || status.get(),
+            |(key, _)| *key,
+            move |item, _| {
+                super::nsh_form::status(
+                    move || state.get().colors,
+                    move || {
+                        if item.get().1 {
+                            state.get().colors.warning
+                        } else {
+                            state.get().colors.text_secondary
+                        }
+                    },
+                    text(move || vega_i18n::t(item.get().0)),
+                )
             },
         ))
         .child(when(
@@ -922,6 +929,32 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                         .child(button(actions, commands.clone(), || Action::Retry))
                         .child(button(actions, commands.clone(), || Action::Discard))
                 }
+            },
+        ))
+        .child(when(
+            move || {
+                matches!(
+                    &*state.get().projection,
+                    PricingSettingsProjection::Invalid(_)
+                ) || matches!(
+                    &*state.get().projection,
+                    PricingSettingsProjection::Ready { error: Some(_), .. }
+                )
+            },
+            move || {
+                super::nsh_form::status(
+                    move || state.get().colors,
+                    move || state.get().colors.danger,
+                    text(move || {
+                        state.with(|snapshot| match &*snapshot.projection {
+                            PricingSettingsProjection::Invalid(code)
+                            | PricingSettingsProjection::Ready {
+                                error: Some(code), ..
+                            } => super::helpers::pricing_error_label(*code),
+                            _ => "",
+                        })
+                    }),
+                )
             },
         ))
         .child(each(
