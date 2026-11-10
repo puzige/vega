@@ -194,6 +194,7 @@ mod model_catalog;
 mod model_configuration;
 mod motion;
 mod nsh_appearance;
+mod nsh_control;
 mod nsh_default_model;
 mod nsh_form;
 mod nsh_input_preferences;

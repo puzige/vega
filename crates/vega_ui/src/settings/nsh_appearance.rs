@@ -14,7 +14,7 @@ pub(super) struct Presentation {
     epoch: u64,
     height: f32,
     focused: Option<Action>,
-    targets: [keyboard::FocusTarget; 6],
+    targets: [super::nsh_control::FocusTarget; 6],
     _focus_events: Vec<gpui_kit::Subscription>,
 }
 
@@ -79,7 +79,8 @@ impl SettingsView {
     }
 
     fn appearance_visible(&self, cx: &App) -> bool {
-        self.section == 1
+        !self.palette_open
+            && self.section == 1
             && self.pending_section.is_none()
             && !self.pending_settings_close
             && cx
@@ -87,7 +88,7 @@ impl SettingsView {
                 .is_some_and(|open| open.0)
     }
 
-    fn first_appearance_target(&self, cx: &App) -> Option<&keyboard::FocusTarget> {
+    fn first_appearance_target(&self, cx: &App) -> Option<&super::nsh_control::FocusTarget> {
         let page = self.appearance_presentation.as_ref()?;
         if !self.appearance_visible(cx) {
             return None;
@@ -96,7 +97,9 @@ impl SettingsView {
         page.targets
             .iter()
             .zip(keyboard::CONTROLS)
-            .find_map(|(target, action)| target.available(&current, action).then_some(target))
+            .find_map(|(target, action)| {
+                keyboard::available(target, &current, action).then_some(target)
+            })
     }
 
     pub(super) fn focus_first_appearance(
@@ -126,7 +129,7 @@ impl SettingsView {
                 cx,
             );
             let mut focus_events = Vec::new();
-            let targets = std::array::from_fn(|_| keyboard::FocusTarget::new(cx));
+            let targets = std::array::from_fn(|_| super::nsh_control::FocusTarget::new(cx));
             for (action, target) in keyboard::CONTROLS.into_iter().zip(targets.iter().cloned()) {
                 let focus = target.handle.clone();
                 let owner = cx.weak_entity();
@@ -144,29 +147,16 @@ impl SettingsView {
                         cx.notify();
                     }
                 }));
-                surface.entity().read(cx).register_component(
-                    action.component(),
-                    std::rc::Rc::new(move |context| {
-                        Box::new(keyboard::Target {
-                            context,
-                            owner: owner.clone(),
-                            displayed: None,
-                            target: target.clone(),
-                            action,
-                            label: String::new(),
-                            selected: false,
-                            enabled: false,
-                        })
-                    }),
-                );
+                keyboard::register(&target, surface.entity().read(cx), action, owner);
             }
             let owner = cx.weak_entity();
             let window_id = window.window_handle().window_id();
             focus_events.push(cx.intercept_keystrokes(move |event, window, cx| {
+                let modifiers = event.keystroke.modifiers;
                 if event.keystroke.key != "tab"
-                    || event.keystroke.modifiers
+                    || modifiers
                         != (gpui_kit::Modifiers {
-                            shift: true,
+                            shift: modifiers.shift,
                             ..Default::default()
                         })
                     || window.window_handle().window_id() != window_id
@@ -177,14 +167,40 @@ impl SettingsView {
                 let Some(owner) = owner.upgrade() else {
                     return;
                 };
-                if owner
-                    .read(cx)
-                    .first_appearance_target(cx)
-                    .is_some_and(|target| target.handle.is_focused(window))
-                    && owner.update(cx, |settings, cx| {
-                        settings.focus_navigation_from_content(window, cx)
-                    })
-                {
+                let handled = owner.update(cx, |settings, cx| {
+                    if modifiers.shift
+                        && settings
+                            .first_appearance_target(cx)
+                            .is_some_and(|t| t.handle.is_focused(window))
+                    {
+                        return settings.focus_navigation_from_content(window, cx);
+                    }
+                    let Some(page) = &settings.appearance_presentation else {
+                        return false;
+                    };
+                    let Some(last) = page.targets.last() else {
+                        return false;
+                    };
+                    let current = settings.appearance_snapshot(cx, page.id.clone());
+                    if !settings.appearance_visible(cx)
+                        || !keyboard::available(last, &current, Action::Sidebar)
+                    {
+                        return false;
+                    }
+                    let Some(picker) = settings.permission_trigger_handle(cx) else {
+                        return false;
+                    };
+                    if !modifiers.shift && last.handle.is_focused(window) {
+                        window.focus(picker, cx);
+                        return true;
+                    }
+                    if modifiers.shift && picker.is_focused(window) {
+                        window.focus(&last.handle, cx);
+                        return true;
+                    }
+                    false
+                });
+                if handled {
                     cx.stop_propagation();
                 }
             }));

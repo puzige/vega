@@ -8,6 +8,7 @@ use vega_conversation::types::{
 pub(crate) struct DefaultPermissionState {
     service: Option<DefaultPermissionService>,
     operation: u64,
+    display_epoch: u64,
     phase: PermissionPhase,
     error: Option<DefaultPermissionError>,
     focus_pending: Option<PermissionFocus>,
@@ -36,6 +37,7 @@ impl DefaultPermissionState {
         Self {
             service: None,
             operation: 0,
+            display_epoch: 0,
             phase: PermissionPhase::Idle,
             error: None,
             focus_pending: None,
@@ -86,6 +88,19 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) {
         self.default_permission.service = service;
+        cx.notify();
+    }
+
+    pub fn set_settings_palette_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.palette_open == open {
+            return;
+        }
+        self.palette_open = open;
+        self.default_permission.display_epoch += 1;
+        if let Some(page) = &mut self.appearance_presentation {
+            page.revoke();
+        }
+        self.sync_permission_presentation(cx);
         cx.notify();
     }
 
@@ -258,6 +273,7 @@ impl SettingsView {
     }
 
     pub(crate) fn discard_default_permission_intent(&mut self) {
+        self.default_permission.display_epoch += 1;
         if !self.default_permission.saving() {
             self.default_permission.phase = PermissionPhase::Idle;
             self.default_permission.focus_pending = None;

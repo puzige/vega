@@ -456,6 +456,9 @@ impl Render for VegaWindow {
                 });
                 let focus = settings.read(cx).focus_handle(cx);
                 window.focus(&focus, cx);
+                if self.palette.view.is_some() {
+                    settings.update(cx, |s, cx| s.set_settings_palette_open(true, cx));
+                }
                 self.settings_view = Some(settings.clone());
                 self.request_model_capability_reload(settings, cx);
             }

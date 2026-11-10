@@ -1,3 +1,5 @@
+mod keyboard;
+
 use gpui_kit::{App, Context, Window};
 use nsh_core::prelude::*;
 use tokio::sync::{mpsc, oneshot};
@@ -10,12 +12,16 @@ pub(super) struct Presentation {
     surface: Surface<Snapshot, Request>,
     id: ProjectionId,
     height: f32,
+    restored_focus: Option<u64>,
+    keyboard: keyboard::Keyboard,
 }
 
 #[derive(Clone)]
 struct Snapshot {
     id: ProjectionId,
     mode: String,
+    epoch: u64,
+    keyboard_focus: Option<Action>,
     permission_revision: i64,
     operation: u64,
     phase: PermissionPhase,
@@ -28,7 +34,7 @@ struct Snapshot {
     colors: ThemeColors,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Action {
     Toggle,
     Select(&'static str),
@@ -45,6 +51,7 @@ struct Decision {
 enum Request {
     Decide(Box<Decision>),
     Layout(f32),
+    FocusReady(Action, u64),
 }
 
 fn allowed(snapshot: &Snapshot, action: Action) -> bool {
@@ -71,6 +78,7 @@ fn allowed(snapshot: &Snapshot, action: Action) -> bool {
 
 fn accepts(current: &Snapshot, observed: &Snapshot, action: Action) -> bool {
     current.visible
+        && current.epoch == observed.epoch
         && current.operation == observed.operation
         && current.phase == observed.phase
         && current.mode == observed.mode
@@ -84,6 +92,12 @@ impl SettingsView {
     fn permission_snapshot(&self, cx: &App, id: ProjectionId) -> Snapshot {
         Snapshot {
             id,
+            epoch: self.default_permission.display_epoch,
+            keyboard_focus: self
+                .default_permission
+                .presentation
+                .as_ref()
+                .and_then(|page| page.keyboard.focused()),
             mode: self.config.defaults.permission_mode.clone(),
             permission_revision: self.config.defaults.permission_revision,
             operation: self.default_permission.operation,
@@ -95,7 +109,10 @@ impl SettingsView {
                     .then_some(DefaultPermissionError::Unavailable)
             }),
             open: self.mode_open,
-            visible: self.section == 1
+            visible: !self.palette_open
+                && self.pending_section.is_none()
+                && !self.pending_settings_close
+                && self.section == 1
                 && cx
                     .try_global::<super::super::SettingsOpen>()
                     .is_some_and(|open| open.0),
@@ -121,7 +138,10 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.section != 1
+        if self.palette_open
+            || self.pending_section.is_some()
+            || self.pending_settings_close
+            || self.section != 1
             || !cx
                 .try_global::<super::super::SettingsOpen>()
                 .is_some_and(|open| open.0)
@@ -135,6 +155,12 @@ impl SettingsView {
             page.surface.focus(window, cx);
         }
         self.sync_permission_presentation(cx);
+        self.apply_permission_focus(
+            Action::requested(focus),
+            self.default_permission.focus_sequence,
+            window,
+            cx,
+        );
     }
 
     pub(crate) fn focus_permission_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -155,7 +181,10 @@ impl SettingsView {
                 window,
                 cx,
             );
+            let keyboard = keyboard::Keyboard::new(&surface, window, cx);
             self.default_permission.presentation = Some(Presentation {
+                restored_focus: None,
+                keyboard,
                 surface,
                 id,
                 height: Layout::SETTINGS_NOTES_MAX_HEIGHT,
@@ -181,6 +210,7 @@ impl SettingsView {
                                     if accepted {
                                         match command.action {
                                             Action::Toggle => {
+                                                this.default_permission.display_epoch += 1;
                                                 this.mode_open = !this.mode_open;
                                                 cx.notify();
                                             }
@@ -192,6 +222,9 @@ impl SettingsView {
                                         }
                                     }
                                     let _ = command.reply.send(accepted);
+                                }
+                                Request::FocusReady(action, seq) => {
+                                    this.apply_permission_focus(action, seq, window, cx);
                                 }
                                 Request::Layout(height) if height.is_finite() && height > 0. => {
                                     if let Some(page) = &mut this.default_permission.presentation
@@ -247,6 +280,7 @@ impl SettingsView {
 
 #[derive(Clone, Copy)]
 struct Actions {
+    owner: nsh_core::element::Owner,
     state: Signal<Snapshot>,
     pending: Signal<bool>,
     failed: Signal<bool>,
@@ -260,78 +294,48 @@ impl Actions {
         }
         self.pending.set(true);
         self.failed.set(false);
-        spawn(async move {
-            let (reply, response) = oneshot::channel();
-            let accepted = commands
-                .send(Request::Decide(Box::new(Decision {
-                    observed,
-                    action,
-                    reply,
-                })))
-                .await
-                .is_ok()
-                && matches!(response.await, Ok(true));
-            self.failed.set(!accepted);
-            self.pending.set(false);
+        self.owner.run(|| {
+            spawn(async move {
+                let (reply, response) = oneshot::channel();
+                let accepted = commands
+                    .send(Request::Decide(Box::new(Decision {
+                        observed,
+                        action,
+                        reply,
+                    })))
+                    .await
+                    .is_ok()
+                    && matches!(response.await, Ok(true));
+                self.failed.set(!accepted);
+                self.pending.set(false);
+            })
         });
     }
 }
 
-fn control(
-    actions: Actions,
-    target: ElementRef,
-    focus: Option<PermissionFocus>,
-    focused_request: Signal<Option<u64>>,
-) -> nsh_core::element::View {
-    let focused = signal(false);
-    target.on_focus_in(move || focused.set(true));
-    target.on_focus_out(move || focused.set(false));
-    let focus_target = move || {
-        let snapshot = actions.state.get();
-        let Some((sequence, requested)) = snapshot.focus else {
-            return;
-        };
-        let enabled = match requested {
-            PermissionFocus::Picker => snapshot.enabled,
-            PermissionFocus::Cancel => allowed(&snapshot, Action::Cancel),
-            PermissionFocus::Reload => allowed(&snapshot, Action::Reload),
-        };
-        if snapshot.visible
-            && !actions.pending.get()
-            && enabled
-            && focus == Some(requested)
-            && focused_request.get_untracked() != Some(sequence)
-            && target.node().is_some()
-        {
-            focused_request.set(Some(sequence));
-            target.focus();
-        }
-    };
-    effect(focus_target);
+fn control(actions: Actions, action: Action) -> nsh_core::element::View {
     view()
-        .element_ref(&target)
-        .role(AccessibilityRole::Button)
-        .focusable(true)
+        .relative()
         .border(px(1.))
         .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
         .px_3()
         .py_2()
         .border_color(move || {
-            crate::nsh::color(if focused.get() {
+            crate::nsh::color(if actions.state.get().keyboard_focus == Some(action) {
                 actions.state.get().colors.accent
-            } else if focus.is_none() {
+            } else if matches!(action, Action::Select(_)) {
                 gpui_kit::transparent_black().into()
             } else {
                 actions.state.get().colors.border_subtle
             })
         })
         .bg(move || crate::nsh::color(actions.state.get().colors.bg_elevated))
-        .on_layout(move |_: &Bounds<Points>| focus_target())
 }
 
 fn icon(kind: crate::icons::Icon, state: Signal<Snapshot>, warning: bool) -> AnyElement {
     let source = crate::icons::nsh_source(kind).unwrap_or_default();
     svg(nsh_core::element::ImageSrc::svg_markup(&source))
+        .accessible(false)
         .size(px(Layout::ICON_SIZE))
         .flex_shrink_0()
         .tint_color(move || {
@@ -359,43 +363,27 @@ fn action_button(
     actions: Actions,
     commands: mpsc::Sender<Request>,
     action: Action,
-    focus: PermissionFocus,
     key: &'static str,
-    focused: Signal<Option<u64>>,
 ) -> AnyElement {
-    control(actions, element_ref(), Some(focus), focused)
-        .label(move || actions.state.with(|_| vega_i18n::t(key)))
-        .disabled(move || actions.pending.get() || !allowed(&actions.state.get(), action))
-        .on_press(move |_: &PressEvent| actions.send(commands.clone(), action))
-        .child(text(move || actions.state.with(|_| vega_i18n::t(key))))
+    control(actions, action)
+        .child(text(move || actions.state.with(|_| vega_i18n::t(key))).accessible(false))
+        .child(keyboard::target(actions, commands, action))
         .into_element()
 }
 
 fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
     let actions = Actions {
+        owner: nsh_core::element::Owner::current(),
         state,
         pending: signal(false),
         failed: signal(false),
     };
-    let focused = signal(None::<u64>);
-    let feedback = computed(move || state.with(|snapshot| (snapshot.phase, snapshot.error)));
-    effect(move || {
-        let snapshot = state.get();
-        if !snapshot.visible {
-            focused.set(snapshot.focus.map(|(sequence, _)| sequence));
-        }
-    });
-    let root = element_ref();
-    let within = signal(false);
-    root.on_focus_in(move || within.set(true));
-    root.on_focus_out(move || within.set(false));
+    let feedback = computed(move || state.with(|s| (s.phase, s.error)));
     let measured = signal(0.0f32);
     let layout = commands.clone();
     let toggle = commands.clone();
-    let escape = commands.clone();
     let options = commands.clone();
     view()
-        .element_ref(&root)
         .w_full()
         .flex_shrink_0()
         .gap_1()
@@ -415,65 +403,34 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                 });
             }
         })
-        .child(when(
-            move || within.get() && allowed(&state.get(), Action::Cancel),
-            move || {
-                let commands = escape.clone();
-                on_key_with(
-                    "escape",
-                    KeyOptions {
-                        when: nsh_core::keymap::When::NotEditing,
-                        ..Default::default()
-                    },
-                    move |_| actions.send(commands.clone(), Action::Cancel),
-                );
-                view()
-            },
-        ))
         .child(
-            control(
-                actions,
-                element_ref(),
-                Some(PermissionFocus::Picker),
-                focused,
-            )
-            .label(move || {
-                state.with(|snapshot| {
-                    format!(
-                        "{}: {}",
-                        vega_i18n::t("settings.defaults.permission_mode"),
-                        super::super::permission_mode_label(&snapshot.mode)
-                    )
-                })
-            })
-            .accessibility_state(move || AccessibilityState {
-                expanded: Some(state.get().open),
-                ..Default::default()
-            })
-            .disabled(move || actions.pending.get() || !state.get().enabled)
-            .self_start()
-            .max_w(relative(1.))
-            .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
-            .py_1()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .on_press(move |_: &PressEvent| actions.send(toggle.clone(), Action::Toggle))
-            .child(text(move || {
-                state.with(|snapshot| super::super::permission_mode_label(&snapshot.mode))
-            }))
-            .child(dynamic(move || {
-                icon(
-                    if state.get().open {
-                        crate::icons::Icon::ChevronDown
-                    } else {
-                        crate::icons::Icon::ChevronRight
-                    },
-                    state,
-                    false,
+            control(actions, Action::Toggle)
+                .self_start()
+                .max_w(relative(1.))
+                .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+                .py_1()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(
+                    text(move || {
+                        state.with(|snapshot| super::super::permission_mode_label(&snapshot.mode))
+                    })
+                    .accessible(false),
                 )
-            })),
+                .child(dynamic(move || {
+                    icon(
+                        if state.get().open {
+                            crate::icons::Icon::ChevronDown
+                        } else {
+                            crate::icons::Icon::ChevronRight
+                        },
+                        state,
+                        false,
+                    )
+                }))
+                .child(keyboard::target(actions, toggle, Action::Toggle)),
         )
         .child(when(
             move || state.get().open && state.get().enabled,
@@ -483,16 +440,8 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                     .gap_1()
                     .children(super::super::PERMISSION_MODES.into_iter().map(move |mode| {
                         let commands = commands.clone();
-                        control(actions, element_ref(), None, focused)
+                        control(actions, Action::Select(mode))
                             .py_1()
-                            .label(move || {
-                                state.with(|_| super::super::permission_mode_label(mode))
-                            })
-                            .accessibility_state(move || AccessibilityState {
-                                selected: state.get().mode == mode,
-                                ..Default::default()
-                            })
-                            .disabled(move || actions.pending.get() || !state.get().enabled)
                             .flex_row()
                             .items_center()
                             .gap_2()
@@ -512,20 +461,21 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                                     state.get().colors.text_primary
                                 })
                             })
-                            .on_press(move |_: &PressEvent| {
-                                actions.send(commands.clone(), Action::Select(mode))
-                            })
                             .child(when(
                                 move || mode == "full_access",
                                 move || icon(crate::icons::Icon::Warning, state, true),
                             ))
-                            .child(text(move || {
-                                state.with(|_| super::super::permission_mode_label(mode))
-                            }))
+                            .child(
+                                text(move || {
+                                    state.with(|_| super::super::permission_mode_label(mode))
+                                })
+                                .accessible(false),
+                            )
                             .child(when(
                                 move || state.get().mode == mode,
                                 move || icon(crate::icons::Icon::Check, state, false),
                             ))
+                            .child(keyboard::target(actions, commands, Action::Select(mode)))
                     }))
             },
         ))
@@ -546,9 +496,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                         actions,
                         commands,
                         Action::Cancel,
-                        PermissionFocus::Cancel,
                         "settings.action.cancel",
-                        focused,
                     ))
                     .into_element(),
                 PermissionPhase::Idle => {
@@ -565,9 +513,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                                 actions,
                                 commands,
                                 Action::Reload,
-                                PermissionFocus::Reload,
                                 "settings.permission.reload",
-                                focused,
                             ))
                             .into_element()
                     } else {

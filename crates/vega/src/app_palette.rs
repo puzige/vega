@@ -174,6 +174,9 @@ impl VegaWindow {
         .detach();
         window.focus(&view.read(cx).focus_handle(cx), cx);
         self.palette.view = Some(view);
+        if let Some(settings) = &self.settings_view {
+            settings.update(cx, |s, cx| s.set_settings_palette_open(true, cx));
+        }
         self.block_conversation_controls(true, cx);
         self.search_palette(String::new(), cx);
         cx.notify();
@@ -182,6 +185,9 @@ impl VegaWindow {
         self.palette.cancel.cancel();
         self.palette.generation = self.palette.generation.wrapping_add(1);
         self.palette.view = None;
+        if let Some(settings) = &self.settings_view {
+            settings.update(cx, |s, cx| s.set_settings_palette_open(false, cx));
+        }
         self.palette.pending_query = None;
         self.palette.target = None;
         self.palette.activation = None;
