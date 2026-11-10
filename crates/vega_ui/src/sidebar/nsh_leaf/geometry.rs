@@ -121,20 +121,27 @@ impl<E: Element> Element for Overlay<E> {
 
 type Sampler = Box<dyn Fn(Bounds<Pixels>, &mut Window, &mut App)>;
 
+pub(super) enum HitMask {
+    Full,
+    Decoration,
+    Insets(f32, f32),
+}
+
 struct Sample {
     child: AnyElement,
     sampler: Sampler,
-    decorative: bool,
+    mask: HitMask,
 }
 
 pub(super) fn sample(
     child: AnyElement,
+    mask: HitMask,
     sampler: impl Fn(Bounds<Pixels>, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     Sample {
         child,
         sampler: Box::new(sampler),
-        decorative: false,
+        mask,
     }
     .into_any_element()
 }
@@ -146,7 +153,7 @@ pub(super) fn sample_decoration(
     Sample {
         child,
         sampler: Box::new(sampler),
-        decorative: true,
+        mask: HitMask::Decoration,
     }
     .into_any_element()
 }
@@ -191,18 +198,20 @@ impl Element for Sample {
         cx: &mut App,
     ) {
         (self.sampler)(bounds, window, cx);
-        if self.decorative {
-            window.with_content_mask(
-                Some(gpui_kit::ContentMask {
-                    bounds: Bounds::default(),
-                }),
-                |window| {
-                    self.child.prepaint(window, cx);
-                },
-            );
-        } else {
-            self.child.prepaint(window, cx);
-        }
+        let mask = match self.mask {
+            HitMask::Full => None,
+            HitMask::Decoration => Some(Bounds::default()),
+            HitMask::Insets(left, right) => {
+                let mut inner = bounds;
+                inner.origin.x += px(left);
+                inner.size.width = (inner.size.width - px(left + right)).max(px(0.));
+                Some(inner)
+            }
+        };
+        window.with_content_mask(
+            mask.map(|bounds| gpui_kit::ContentMask { bounds }),
+            |window| self.child.prepaint(window, cx),
+        );
     }
 
     fn paint(

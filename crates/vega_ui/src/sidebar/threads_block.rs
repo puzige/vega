@@ -1466,12 +1466,16 @@ impl ThreadsBlock {
             .rounded_lg()
             .overflow_hidden()
             .text_size(px(Typography::SIDEBAR))
-            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                this.set_hovered(&hover_thread_id, *hovered, cx);
-            }))
-            .on_mouse_move(cx.listener(move |this, _: &MouseMoveEvent, _, cx| {
-                this.on_thread_mouse_move(&mouse_move_thread_id, cx);
-            }))
+            .when(editing_this_row, |row| {
+                row.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                    this.set_hovered(&hover_thread_id, *hovered, cx);
+                }))
+                .on_mouse_move(cx.listener(
+                    move |this, _: &MouseMoveEvent, _, cx| {
+                        this.on_thread_mouse_move(&mouse_move_thread_id, cx);
+                    },
+                ))
+            })
             .on_mouse_up(MouseButton::Right, cx.listener(context_menu.clone()));
         let reorder_item = if selector_prefix == "standalone-thread-row-" {
             organization::ReorderItem::RecentThread(thread.id.clone())
@@ -1496,7 +1500,10 @@ impl ThreadsBlock {
             item.selected = selected;
             item.emphasis = thread.unread;
             item.double_action = Some(1);
-            item.thread_title = true;
+            item.thread_title = Some(nsh_leaf::ThreadTitle {
+                inset: content_inset,
+                highlighted: actions_visible,
+            });
             let title_host = nsh_leaf::host_parts(
                 format!("{row_key}-title"),
                 None,
@@ -1547,19 +1554,12 @@ impl ThreadsBlock {
             } else {
                 (title_host, None)
             };
-            let right = if actions_enabled {
-                Layout::SIDEBAR_ACTIONS_INSET
-            } else {
-                Layout::SIDEBAR_ACTIONS_WIDTH + Layout::SIDEBAR_ACTIONS_INSET
-            };
             row = row.child(
                 div()
                     .relative()
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .pl(px(content_inset))
-                    .pr(px(right))
                     .child(native)
                     .when(actions_enabled || self.organization.is_some(), |title| {
                         // Observe gestures before the embedded title consumes its mouse events.
@@ -1588,6 +1588,24 @@ impl ThreadsBlock {
                             )
                         }))
                     })
+                    .child(
+                        div()
+                            .id("sidebar-task-hover")
+                            .absolute()
+                            .inset_0()
+                            .on_hover(cx.listener({
+                                let key = row_key.clone();
+                                move |this, hovered: &bool, _, cx| {
+                                    this.set_hovered(&key, *hovered, cx)
+                                }
+                            }))
+                            .on_mouse_move(cx.listener({
+                                let key = row_key.clone();
+                                move |this, _: &MouseMoveEvent, _, cx| {
+                                    this.on_thread_mouse_move(&key, cx)
+                                }
+                            })),
+                    )
                     .children(popup),
             );
         }
@@ -1640,6 +1658,9 @@ impl ThreadsBlock {
                 ),
             ] {
                 let mut item = nsh_leaf::Item::action(label, Some(icon));
+                if icon == crate::icons::Icon::Pin && thread.pinned {
+                    item.tint = Some(theme(cx).colors.accent);
+                }
                 item.enabled = !pending;
                 item.compact = true;
                 items.push(item);

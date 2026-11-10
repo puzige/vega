@@ -26,6 +26,24 @@ enum Presentation {
 
 const TASK_MENU_GAP: f32 = 4.;
 
+#[derive(Clone, Copy, PartialEq)]
+pub(super) struct ThreadTitle {
+    pub inset: f32,
+    pub highlighted: bool,
+}
+
+fn action_slot_width(count: usize) -> f32 {
+    (Layout::SIDEBAR_ACTIONS_WIDTH - Layout::SIDEBAR_ACTION_GAP * (count - 1) as f32) / count as f32
+}
+
+fn trailing_inset(presentation: Presentation) -> f32 {
+    if presentation == Presentation::ThreadRow {
+        Layout::SIDEBAR_ACTIONS_INSET
+    } else {
+        Layout::SIDEBAR_ACTIONS_INSET + Layout::SIDEBAR_ACTIONS_WIDTH
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub(super) struct Item {
     pub label: String,
@@ -40,7 +58,7 @@ pub(super) struct Item {
     pub running: bool,
     motion: bool,
     pub emphasis: bool,
-    pub thread_title: bool,
+    pub thread_title: Option<ThreadTitle>,
     pub hint: Option<String>,
     pub wrap: bool,
     label_style: Option<LabelStyle>,
@@ -79,7 +97,7 @@ impl Item {
             running: false,
             motion: false,
             emphasis: false,
-            thread_title: false,
+            thread_title: None,
             hint: None,
             wrap: false,
             label_style: None,
@@ -876,7 +894,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
                     || a.resting != b.resting
                     || a.running != b.running
                     || a.emphasis != b.emphasis
-                    || a.thread_title != b.thread_title
+                    || a.thread_title.map(|t| t.inset) != b.thread_title.map(|t| t.inset)
                     || a.hint != b.hint
                     || a.wrap != b.wrap
                     || a.label_style != b.label_style
@@ -959,7 +977,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
                     .id("nsh-thread-action-area")
                     .role(Role::Group)
                     .absolute()
-                    .right_0()
+                    .right(px(Layout::SIDEBAR_ACTIONS_INSET))
                     .top(px((height - Layout::SIDEBAR_ACTION_SIZE) / 2.))
                     .w(px(Layout::SIDEBAR_ACTIONS_WIDTH))
                     .h(px(Layout::SIDEBAR_ACTION_SIZE))
@@ -1017,19 +1035,27 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
             };
             let weak = cx.weak_entity();
             let mut active = div().id("nsh-sidebar-active").absolute().inset_0();
-            if presentation == Presentation::ThreadRow && !this.snapshot.recovery {
-                let count = this.snapshot.items.len() - 1;
+            if !this.snapshot.recovery
+                && let Some(title) = this
+                    .snapshot
+                    .items
+                    .first()
+                    .and_then(|item| item.thread_title)
+            {
                 if index == 0 {
-                    active = active.right(px(Layout::SIDEBAR_ACTIONS_WIDTH));
+                    active = active.left(px(title.inset)).right(px(
+                        Layout::SIDEBAR_ACTIONS_WIDTH + Layout::SIDEBAR_ACTIONS_INSET
+                    ));
                 } else {
-                    let w = Layout::SIDEBAR_ACTIONS_WIDTH / count as f32;
-
+                    let count = this.snapshot.items.len() - 1;
+                    let width = action_slot_width(count);
+                    let offset = (width + Layout::SIDEBAR_ACTION_GAP) * (count - index) as f32;
                     active = div()
                         .id("nsh-sidebar-active")
                         .absolute()
-                        .right(px(w * (count - index) as f32))
+                        .right(px(offset))
                         .top_0()
-                        .w(px(w))
+                        .w(px(width))
                         .h(px(Layout::SIDEBAR_ACTION_SIZE));
                 }
             }
@@ -1059,35 +1085,48 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
         host = host.children(action_area);
         let weak = cx.weak_entity();
         let mount = this.mount.clone();
+        let hit_mask = this
+            .snapshot
+            .items
+            .first()
+            .and_then(|item| item.thread_title)
+            .filter(|_| !this.snapshot.recovery)
+            .map_or(geometry::HitMask::Full, |title| {
+                geometry::HitMask::Insets(title.inset, trailing_inset(presentation))
+            });
         Mounted {
             id: key,
-            child: geometry::sample(host.into_any_element(), move |bounds, window, cx| {
-                let on_screen = !bounds.intersect(&window.content_mask().bounds).is_empty();
-                let visible = on_screen
-                    && window.is_visible()
-                    && window.is_window_active()
-                    && !cx.reduce_motion();
-                let _ = weak.update(cx, |this, _cx| {
-                    let first_paint = this.snapshot.presentation == Presentation::ThreadRow
-                        && on_screen
-                        && !this.snapshot.row_was_visible;
-                    if this.mount.matches(&mount)
-                        && this.lease.upgrade().is_some()
-                        && (first_paint || this.motion_visible != visible)
-                    {
-                        this.snapshot.row_was_visible |= first_paint;
-                        this.motion_visible = visible;
-                        for item in &mut this.snapshot.items {
-                            item.motion = visible;
-                        }
-                        if let Some(surface) = &this.surface
-                            && surface.errors().borrow().is_none()
+            child: geometry::sample(
+                host.into_any_element(),
+                hit_mask,
+                move |bounds, window, cx| {
+                    let on_screen = !bounds.intersect(&window.content_mask().bounds).is_empty();
+                    let visible = on_screen
+                        && window.is_visible()
+                        && window.is_window_active()
+                        && !cx.reduce_motion();
+                    let _ = weak.update(cx, |this, _cx| {
+                        let first_paint = this.snapshot.presentation == Presentation::ThreadRow
+                            && on_screen
+                            && !this.snapshot.row_was_visible;
+                        if this.mount.matches(&mount)
+                            && this.lease.upgrade().is_some()
+                            && (first_paint || this.motion_visible != visible)
                         {
-                            surface.publish_if_changed(this.snapshot.clone());
+                            this.snapshot.row_was_visible |= first_paint;
+                            this.motion_visible = visible;
+                            for item in &mut this.snapshot.items {
+                                item.motion = visible;
+                            }
+                            if let Some(surface) = &this.surface
+                                && surface.errors().borrow().is_none()
+                            {
+                                surface.publish_if_changed(this.snapshot.clone());
+                            }
                         }
-                    }
-                });
-            }),
+                    });
+                },
+            ),
             lease,
         }
         .into_any_element()
@@ -1211,6 +1250,24 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
             } else if snapshot.presentation == Presentation::TaskMenu {
                 actions = actions.gap(ns::px(TASK_MENU_GAP));
             }
+            if let Some((item, title)) = items
+                .first()
+                .and_then(|item| item.thread_title.map(|title| (item, title)))
+            {
+                let bg = if item.selected {
+                    colors.bg_active
+                } else if title.highlighted {
+                    colors.bg_hover
+                } else {
+                    colors.bg_base.opacity(0.)
+                };
+                actions = actions
+                    .pl(ns::px(title.inset))
+                    .pr(ns::px(trailing_inset(snapshot.presentation)))
+                    .rounded(ns::px(8.))
+                    .bg(crate::nsh::color(bg))
+                    .active(|style| style.bg(crate::nsh::color(colors.bg_active)));
+            }
             let action_count = items.len().saturating_sub(1);
             for (index, item) in items.into_iter().enumerate() {
                 if let Some(style) = item.label_style {
@@ -1247,7 +1304,9 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
                 let id = snapshot.id.clone();
                 let hover = ns::signal(false);
                 let enabled = item.enabled;
-                let selected = item.selected || snapshot.selected == Some(index);
+                let selected = (item.selected && item.thread_title.is_none())
+                    || snapshot.selected == Some(index);
+                let title_button = item.thread_title.is_some();
                 let quiet = item.quiet && snapshot.selected.is_none();
                 let mut button = ns::view()
                     .min_h(ns::px(if item.compact {
@@ -1276,7 +1335,7 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
                     .bg(move || {
                         crate::nsh::color(if selected {
                             colors.bg_active
-                        } else if hover.get() && enabled {
+                        } else if !title_button && hover.get() && enabled {
                             colors.bg_hover
                         } else {
                             colors.bg_base.opacity(0.)
@@ -1296,7 +1355,7 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
                 if snapshot.presentation == Presentation::TaskMenu {
                     button = button.px(ns::px(7.));
                 }
-                if item.thread_title {
+                if item.thread_title.is_some() {
                     // The GPUI row owns the leading gutter for drag and context-menu events.
                     button = button.border(ns::px(0.)).pl(ns::px(0.)).pr(ns::px(8.));
                     if snapshot.selected == Some(index) {
@@ -1312,7 +1371,14 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
                         ns::svg(nsh_core::element::ImageSrc::svg_markup(&source))
                             .w(ns::px(Layout::ICON_SIZE))
                             .h(ns::px(Layout::ICON_SIZE))
-                            .text_color(crate::nsh::color(colors.text_secondary)),
+                            .text_color(crate::nsh::color(
+                                if snapshot.presentation == Presentation::ThreadRow && item.compact
+                                {
+                                    item.tint.unwrap_or(colors.text_secondary)
+                                } else {
+                                    colors.text_secondary
+                                },
+                            )),
                     );
                 }
                 if item.compact {
@@ -1325,8 +1391,13 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
                         button.flex_1().min_w(ns::px(0.))
                     } else {
                         button
-                            .w(ns::px(Layout::SIDEBAR_ACTIONS_WIDTH / action_count as f32))
+                            .w(ns::px(action_slot_width(action_count)))
                             .h(ns::px(Layout::SIDEBAR_ACTION_SIZE))
+                            .ml(ns::px(if index > 1 {
+                                Layout::SIDEBAR_ACTION_GAP
+                            } else {
+                                0.
+                            }))
                     };
                 }
                 if snapshot.presentation == Presentation::ThreadRow
