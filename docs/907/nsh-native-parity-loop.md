@@ -146,3 +146,15 @@ macOS 15.8.2 (24H232)，arm64。参照为实际 Vega 0.1.413 可执行文件，S
 - 10 个实现文件的独立复核清单 SHA-256 `7d0038b7e39db351ba9b5bda7c1dc8cb7abf6c4871ec42b60d2268bd4558da38`。本地 fmt、严格工作区 Clippy、优化与调试构建均通过。生产 nextest 为 16 个二进制，0 发现和 0 执行；三组 Python 测试分别为 5/15/40 项通过。上一提交计数修复 92535263 的 [PR CI](https://github.com/puzige/vega/actions/runs/42819437555) 通过。新文档 head 的独立 CI 链接保存在 Draft PR。
 
 7f448915 的同机优化程序再次运行慢速回环回复，侧栏展开、无终端及 Review。前台回复第 5.6–14.7 秒的十次 CPU 中位数为 36.45%（35.5%–37.2%）。切到另一个空白任务后，后台回复第 50.7–59.8 秒为 31.35%（30.4%–33.2%）。独立重复运行，在开始后先收起侧栏，第 7.2–16.3 秒为 4.75%（4.1%–5.7%）。回到已完成的 75 秒历史，十次为 2.05%（0.9%–6.2%）。一次前台运行中 AX 查询实际用了 6,241 毫秒；先前同机优化构建也测得 125–425 毫秒。该耗时包含自动化接口读取，没有测量每一帧。旧的两秒空闲更新已经修复，可见后台任务的绘制和交互延迟仍需单独调查。取样时刻、附加对照和排除项都保存在 `performance/final-stream-intervals.json`。
+
+提交说明的焦点回归需要验证正向 Tab 到生成说明、Shift-Tab 返回输入框、两方向完整循环及中文组词。7f448915 全尺寸窗口中，输入标记后一进一退，新的粘贴没有回到提交说明。原版 AX 同样只报告主窗口焦点，不能据此判断具体控件。
+
+## 3f25d99c 提交说明的键盘往返
+
+原版 0.1.413 中，依次粘贴 older-before、Tab、粘贴 -after、Shift-Tab、粘贴 -back 后，实际可见说明为 older-before-after。7f448915 上同类探针中，正反向按键后新粘贴的标记均没有进入说明框。像素和文字回读分别留在 commit-tab-return-original.jpeg 与 commit-tab-r43.jpeg。以操作规格要求的可达顺序修正 NSH 编辑框。
+
+最终生产源码 `3f25d99c1f987e5dd85bcf5cd1b1b8630086ead2`，同机优化二进制 SHA-256 `02a35fbad193e220a8859fbe8d475111de8a17ad723b7879a093c8b7aa3e849c`、UUID `6E36B2B9-1409-316D-8609-9550897ED645`。NSH 处理原生组字后将普通 Tab 的方向交给提交面板。仅移动焦点时允许同一草稿有更新，提交仍校验完整草稿版本。
+
+在正常窗口粘贴后立即 Tab，粘贴 outside，再 Shift-Tab 粘贴 back，实际值为 stable-back。缩到 960×600pt 并打开终端，真实焦点依次从编辑框到 Generate message、Commit，再反向回到 Generate message、编辑框。返回后粘贴并用真实拼音按键输入 nihao、Tab、空格，实际字段值为 stable-back-short-returned你好。取消后隔离 Git HEAD 仍为 8871fd3，仅测试文件保持已暂存。留存 commit-tab-generate-r47.jpeg。该项替代上一节的短视口 Tab 缺口，编辑框内 Cmd+Enter 仍单列。
+
+分支工作区 fmt、严格 Clippy 通过；生产 nextest 为 16 个二进制、0 发现及 0 执行。Python 三组 5/15/40 项通过。非作者复核精确差异 SHA-256 为 `a679b5ace1c04a79fb6b6d12990917e9e6cc5d0c1ef2c255af06876567e4e648`。
