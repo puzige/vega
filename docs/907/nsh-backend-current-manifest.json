@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "purpose": "Current fixed-version backend provenance inventory; not independent behavior/security review",
-  "snapshot_utc": "2026-11-09T10:57:13.997769+00:00",
+  "snapshot_utc": "2026-11-10T00:47:04.189967+00:00",
   "worktree": "vega-907-nsh-full",
   "branch": "feat/907-nsh-full",
-  "head": "0b5ea426abfd8d4358489e916273d89474fb190f",
+  "head": "c5cd4ffeceda9665dace2602f1d2429fbf9849b1",
   "dirty_snapshot": true,
   "observed_origin_master": "0b3dcd3603a8e97e0ef74ae25a26f17fc3a094e5",
-  "master_integration": "Parent fetched unchanged task branch and mainline #920; #916/#920 compatibility applied and compared as dirty source bytes, not Git ancestry. Current behavioral coverage limitations remain documented separately.",
+  "master_integration": "Final post-cleanup vendor source matches HEAD c5cd4ffeceda9665dace2602f1d2429fbf9849b1 byte-for-byte. Documentation-only refresh; observed_origin_master is a preceding historical observation, not a fresh remote/ancestry claim. No fetch, rebase or other Git mutation was authorized or performed.",
   "upstream_commit": "e626a8dd8f8d8b277b9507cfd5ac74d0e67020f3",
   "hash_convention": {
     "algorithm": "SHA-256",
@@ -258,24 +258,22 @@
       "archive_sha256": "1e3828245c26e734567b3e6058398c0e4d5809063636460f990a0eaf8a0f74c3",
       "counts": {
         "original": 45,
-        "current": 61,
-        "unchanged_original": 31,
-        "changed_original": 14,
-        "added": 16,
+        "current": 51,
+        "unchanged_original": 33,
+        "changed_original": 12,
+        "added": 6,
         "missing_original": 0
       },
       "original_tree_sha256": "74b07bb3fdc6bf7f352620062330c2635758df98feffffd304b494830afaccd7",
-      "tree_sha256": "d2654a80a9cc336403342eeba8098ef79c7b48e1c42769bdfe6bdb2f320104ee",
-      "delta_sha256": "6fa7b18c134020c0e8c53bfa9ebdd8d7564f122b7ed65c2d3980d02fe6ae2b9b",
+      "tree_sha256": "0177d081d33f90724a9f220546400d2c6fe219b5627522da6b60badf5b26577c",
+      "delta_sha256": "aac7fc3a1ed7d6a23448d9cf387c187b4633f27e70748bdddfbe5227e16a04b2",
       "changed_original_files": [
-        "Cargo.toml",
         "src/app.rs",
         "src/events.rs",
         "src/input.rs",
         "src/lib.rs",
         "src/native.rs",
         "src/render.rs",
-        "src/rt.rs",
         "src/scroll.rs",
         "src/selectable_view.rs",
         "src/surface.rs",
@@ -284,36 +282,15 @@
         "src/text_input.rs"
       ],
       "added_files": [
-        "src/app/integration_support.rs",
-        "src/app/scroll_integration_support.rs",
-        "src/app/text_integration_support.rs",
         "src/editing.rs",
         "src/events/scroll_bridge.rs",
-        "src/input/scroll_host_tests.rs",
         "src/reading.rs",
-        "src/reading/anchor_host_tests.rs",
         "src/reading/geometry.rs",
-        "src/reading/geometry_host_tests.rs",
-        "src/reading/host_tests.rs",
         "src/reading/opacity.rs",
-        "src/reading/opacity_host_tests.rs",
-        "src/scroll_scope.rs",
-        "src/selectable_view/host_tests.rs",
-        "src/text_input/host_tests.rs"
+        "src/scroll_scope.rs"
       ],
       "missing_original_files": [],
-      "development_only_added_files": [
-        "src/app/integration_support.rs",
-        "src/app/scroll_integration_support.rs",
-        "src/app/text_integration_support.rs",
-        "src/input/scroll_host_tests.rs",
-        "src/reading/anchor_host_tests.rs",
-        "src/reading/geometry_host_tests.rs",
-        "src/reading/host_tests.rs",
-        "src/reading/opacity_host_tests.rs",
-        "src/selectable_view/host_tests.rs",
-        "src/text_input/host_tests.rs"
-      ],
+      "development_only_added_files": [],
       "capability_added_files": [
         "src/editing.rs",
         "src/events/scroll_bridge.rs",
@@ -322,20 +299,9 @@
         "src/reading/opacity.rs",
         "src/scroll_scope.rs"
       ],
-      "mixed_development_cleanup_files": [
-        "Cargo.toml",
-        "src/lib.rs",
-        "src/rt.rs",
-        "src/surface.rs",
-        "src/input.rs",
-        "src/reading.rs",
-        "src/reading/geometry.rs",
-        "src/reading/opacity.rs",
-        "src/selectable_view.rs",
-        "src/text_input.rs"
-      ],
+      "mixed_development_cleanup_files": [],
       "files": {
-        "Cargo.toml": "6519a8053c0731a80fa40d5d21e880b85808db41dc72860abfd20c239ad0db05",
+        "Cargo.toml": "79e0e0b8f2ddb8baddf50a4a01e5b53a4b3dd5fa06facc9094f1336d9f52f7be",
         "Cargo.lock": "0eb94d82d9193ce5e73d03c85d327800b47b9f6aea6614fb70eb0bf1ff9dbbc6",
         "README.md": "547c4e92f8f6ee9929913d4673fe527f599710afe792cf7c56a2cda671d90302",
         ".cargo_vcs_info.json": "d0fcc104e87bfed96c1245f1c45903a12a0e1d22891167b26d30249bee0b1843",
@@ -344,23 +310,23 @@
         "src/keys.rs": "588934210e4de9cfc849f0a66d48af29e3637a33f019a084db8961db0df46561",
         "src/native.rs": "26d67c5a00e24a7fe244297c61213b38562f5b1e985916c32ac5f9e6049a7fba",
         "src/access.rs": "c4aca1f8d8a573b7821c057bbf4a6d4b2f331edd7f41f6d4cfdfaf1376aa87a4",
-        "src/reading.rs": "6920dcfccc129e4220103ed9dcfaf867bd4cc334a9b5b3dd34d81174e42670a2",
+        "src/reading.rs": "cc3398ebb2b4fe55f394c17569104ac4cf77c89b9ea16ec2be49ffc10859d2bb",
         "src/keymap.rs": "f9ef92d322882e61665cc2f841c9f71eacba978a644c7e944132efedd12da0f8",
         "src/events.rs": "7be330b4044795c3dfdf71b957e5a01420dd7c95f154affd6532b399b6ae6148",
-        "src/rt.rs": "1387dc172c741fa620c0e15e8a06914c5b2faf8bbd280d67faa960edb7b995cf",
+        "src/rt.rs": "217dc97d29ceadb5cb4baa8aa8747a50c1a752b5771cc1e299a815d48beb180e",
         "src/transition.rs": "39feede579fdf2465c4d9827130033f287009db5f86f1b2b5057cde0b23e6997",
-        "src/scroll.rs": "b14285ee3b997c0cdb04d4f68dcfd8dea8e5a369e2072fdb5c86c23c86859048",
+        "src/scroll.rs": "dfec2ed2dd54c9badb72199ceae1399c67becc06e0a405df9306b80e711774df",
         "src/geom.rs": "c3ec43a6f17f80371760c5f6cc2f8170fe0cc543bbda7094d683b3fbb287413e",
         "src/editing.rs": "f204864f88ce7e7a07c9d8f0af2815fbcd95fb15848fbb717c2faa554150689a",
         "src/shader.rs": "21174d671b1bcdffb29ac01d0a80ce826c9bd98b5748f5af8f514b663250fcf8",
         "src/render.rs": "b602deb11d26198704390ac10eb5969c66046ded6676c8e570a04d362c9e003d",
-        "src/lib.rs": "a509bd210b55681f08df36848e5f16f2396d9298f46b11571bb778298d0a58fc",
-        "src/selectable_view.rs": "52c454e75734a8f0d6eaac8803df86c91a707b062aeae276aced021e8e4e1e95",
+        "src/lib.rs": "0a7a7df92dd8ebb1d5f7b67fa8de8487303922033315815a2c8291cb684f2d39",
+        "src/selectable_view.rs": "900b0d8413a67dfa1c159c1e4b289e282ea4b8ed949377d1426ec320e90d437a",
         "src/scroll_scope.rs": "a9368371422cfb068b32fa929065c482cf49ef5b18942020ccacd0ed8febec8b",
         "src/synth.rs": "f1b2a6d1b9368f27ae0d9a895756c60790f08f7d12224af16b7b6d1b048bcfaa",
         "src/system.rs": "670e2aeffb3f6d0f9be1a8657c91954f4bfe137d8f1164037242602169edf4aa",
-        "src/text_input.rs": "e27b80250ce6d8ec7ab62d60b8e0b84045c2b7e133e8dd4dc17488a2923601e0",
-        "src/surface.rs": "2f182c026fe4a4b98380fa2f323c9378ba121d5a2e57ded0f1c311c251a5b712",
+        "src/text_input.rs": "973a2cb7e37004684f1bffb2e7e3df18fc87d1f6508e4f39ed5cae769e7889a7",
+        "src/surface.rs": "74b5ef0d4b4155ae35f4a2d146d0e1438c8270448d7171771ef864e66cc2a0c2",
         "src/image.rs": "4af71cafdd818fbf3a9aa8f2ff768549ed0c6ebb9a62435f85c7a26d15287c80",
         "src/canvas.rs": "a5ba3866f979cc3f6818569a581d6b475c27b413f859e36264de4b7feaccef1f",
         "src/dev.rs": "d7802d7a433feb62a2bd00cdbc9dbc94f9939b287905bd91eae439394a028d6c",
@@ -371,110 +337,158 @@
         "src/decor.rs": "ff99994c61c1887046c52bf9243f065695d322a9433581148a0cefd0afae181b",
         "src/tests.rs": "81915742cd3baadff42b7ee3073602a72b51d84230fe0ba04cb0fb7d7293315d",
         "src/agent.rs": "249dbf3091c3cce8e1ea425e8f1c915c13f29878ff88c4e494e3d96265c7ce38",
-        "src/text.rs": "91d6ea7c2737175abb4eefcc8d4c75641479b47e897f9f3dc6898b68bceea784",
+        "src/text.rs": "49e58077ed3e6bfbc009c19404692f106ab4365a58ad805d8966a196df16bf2c",
         "src/stats.rs": "b05468754e418be8b4fb4506b6036cd2b96c9f6f484fa5607b0fab9db74ab44e",
-        "src/input.rs": "e5de4dba419888effc2bfe7af57401e2892e1ce5c5dd404ac7c089150f3aacef",
+        "src/input.rs": "c27cc7913b38f47ab5660d3d2aa850130340bacfe82f89fe544fdd9184b463ce",
         "src/app.rs": "7d73eda709a7ab2cafa23384c35fedb33935374ad9972b3b8ba25be1e9eead6f",
         "src/animation.rs": "eca3121f02c97d815c8ef98ba26b37eb8fa6ecbe4af1b98dacd4eab6a09f2682",
         "src/view.rs": "164e4d504c291d7925fa717c7ce27522433a2381f811e482eabe9f93c1ae970e",
-        "src/reading/geometry_host_tests.rs": "514973578d8c4ff6aa297cadc2c418c26ce288bda3f20f9af43991cf3881a2c6",
-        "src/reading/host_tests.rs": "3d8ccac1d12ba357da2ad27011396f14204a2f652b48966dc6385113cec83670",
-        "src/reading/opacity_host_tests.rs": "c26d64cc6a687a582f77971a190dde5f532dd3e49536fa5ca07b90f69099369e",
-        "src/reading/geometry.rs": "e01d74807a0fbc2a117f4050677db1f63eaa2c5c061e27a3520e9a08583e0ab9",
-        "src/reading/opacity.rs": "718deef1183c61fd5fe63c2124f1d80837935b7bd80b0466271feddf55d6df7d",
-        "src/reading/anchor_host_tests.rs": "719be3f0a264741413d43d2347bb11dec7120422eec42abc72fd71c80b5b24fc",
-        "src/app/scroll_integration_support.rs": "a5acc38df9410b4f3174b87d9b0cf2ffab12e3966c8c42f57d06e90c56840fea",
-        "src/app/integration_support.rs": "ad96f234d393ec4e283bc44bab60335b018033ac1efbf492efb18dd3e54cc4e7",
-        "src/app/text_integration_support.rs": "d9a90d8d5a2a9558113288d37afecb320b9e353560d4bffeecdf5c1688f3ec4c",
+        "src/reading/geometry.rs": "f359deae15eeb21204959c191d4b3efb1db32b98f3ce60a013a53209f1743944",
+        "src/reading/opacity.rs": "ccba6235caddfcbacc9e3bda31ad307c73686323532c6be519c097ae130c00c7",
         "src/native/web.rs": "e7a9f2d16a935e27b8de529d282ea323a0355c39ad7190b6fbdced7378bc7c08",
         "src/native/video.rs": "e1a61eee03f49428c3860c2c732baa88709ac07fb8e837e0b09ba387f3473049",
-        "src/input/scroll_host_tests.rs": "6657c280e16d7fa6372f91b9ae601e418e40adcba6ebed8225e1864d5dfa2cb7",
         "src/chrome/menus.rs": "9136b5638a03a67c61cbc8625c80e43944cf08ec87d33d63587e41b2c7d11fc7",
         "src/text_input/layout.rs": "52c64fec26104655c00ea95e3ce0a526da0c056ba9ab80cb7d961540cd1bb07a",
-        "src/text_input/host_tests.rs": "98bb7764c80e023cb9a5bfa32a670a7525dd3b4d64f85eb54a67228d5ccacd63",
-        "src/selectable_view/host_tests.rs": "2b303fcc1d2ec2a4f0e5897621011f52be15f47ee4195b8d11f5670470d554d9",
         "src/events/scroll_bridge.rs": "f814dee84b66a0f26f8b82be0ebe02917586905c5ef0ed0ebf56b033c86c64c1",
         "src/decor/gradient.rs": "a2b962a2b3be0bd8881aa16f4fb625ada76c869efa30c9fd89a22231f41ccbed",
         "src/decor/shape.rs": "4bec3060c95d020c634739f3b40c99d21af91168201ad4fc2ccb1037a6995748"
       },
       "delta_files": {
-        "Cargo.toml": "6519a8053c0731a80fa40d5d21e880b85808db41dc72860abfd20c239ad0db05",
         "src/native.rs": "26d67c5a00e24a7fe244297c61213b38562f5b1e985916c32ac5f9e6049a7fba",
         "src/events.rs": "7be330b4044795c3dfdf71b957e5a01420dd7c95f154affd6532b399b6ae6148",
-        "src/rt.rs": "1387dc172c741fa620c0e15e8a06914c5b2faf8bbd280d67faa960edb7b995cf",
-        "src/scroll.rs": "b14285ee3b997c0cdb04d4f68dcfd8dea8e5a369e2072fdb5c86c23c86859048",
+        "src/scroll.rs": "dfec2ed2dd54c9badb72199ceae1399c67becc06e0a405df9306b80e711774df",
         "src/render.rs": "b602deb11d26198704390ac10eb5969c66046ded6676c8e570a04d362c9e003d",
-        "src/lib.rs": "a509bd210b55681f08df36848e5f16f2396d9298f46b11571bb778298d0a58fc",
-        "src/selectable_view.rs": "52c454e75734a8f0d6eaac8803df86c91a707b062aeae276aced021e8e4e1e95",
+        "src/lib.rs": "0a7a7df92dd8ebb1d5f7b67fa8de8487303922033315815a2c8291cb684f2d39",
+        "src/selectable_view.rs": "900b0d8413a67dfa1c159c1e4b289e282ea4b8ed949377d1426ec320e90d437a",
         "src/system.rs": "670e2aeffb3f6d0f9be1a8657c91954f4bfe137d8f1164037242602169edf4aa",
-        "src/text_input.rs": "e27b80250ce6d8ec7ab62d60b8e0b84045c2b7e133e8dd4dc17488a2923601e0",
-        "src/surface.rs": "2f182c026fe4a4b98380fa2f323c9378ba121d5a2e57ded0f1c311c251a5b712",
-        "src/text.rs": "91d6ea7c2737175abb4eefcc8d4c75641479b47e897f9f3dc6898b68bceea784",
-        "src/input.rs": "e5de4dba419888effc2bfe7af57401e2892e1ce5c5dd404ac7c089150f3aacef",
+        "src/text_input.rs": "973a2cb7e37004684f1bffb2e7e3df18fc87d1f6508e4f39ed5cae769e7889a7",
+        "src/surface.rs": "74b5ef0d4b4155ae35f4a2d146d0e1438c8270448d7171771ef864e66cc2a0c2",
+        "src/text.rs": "49e58077ed3e6bfbc009c19404692f106ab4365a58ad805d8966a196df16bf2c",
+        "src/input.rs": "c27cc7913b38f47ab5660d3d2aa850130340bacfe82f89fe544fdd9184b463ce",
         "src/app.rs": "7d73eda709a7ab2cafa23384c35fedb33935374ad9972b3b8ba25be1e9eead6f",
-        "src/reading.rs": "6920dcfccc129e4220103ed9dcfaf867bd4cc334a9b5b3dd34d81174e42670a2",
+        "src/reading.rs": "cc3398ebb2b4fe55f394c17569104ac4cf77c89b9ea16ec2be49ffc10859d2bb",
         "src/editing.rs": "f204864f88ce7e7a07c9d8f0af2815fbcd95fb15848fbb717c2faa554150689a",
         "src/scroll_scope.rs": "a9368371422cfb068b32fa929065c482cf49ef5b18942020ccacd0ed8febec8b",
-        "src/reading/geometry_host_tests.rs": "514973578d8c4ff6aa297cadc2c418c26ce288bda3f20f9af43991cf3881a2c6",
-        "src/reading/host_tests.rs": "3d8ccac1d12ba357da2ad27011396f14204a2f652b48966dc6385113cec83670",
-        "src/reading/opacity_host_tests.rs": "c26d64cc6a687a582f77971a190dde5f532dd3e49536fa5ca07b90f69099369e",
-        "src/reading/geometry.rs": "e01d74807a0fbc2a117f4050677db1f63eaa2c5c061e27a3520e9a08583e0ab9",
-        "src/reading/opacity.rs": "718deef1183c61fd5fe63c2124f1d80837935b7bd80b0466271feddf55d6df7d",
-        "src/reading/anchor_host_tests.rs": "719be3f0a264741413d43d2347bb11dec7120422eec42abc72fd71c80b5b24fc",
-        "src/app/scroll_integration_support.rs": "a5acc38df9410b4f3174b87d9b0cf2ffab12e3966c8c42f57d06e90c56840fea",
-        "src/app/integration_support.rs": "ad96f234d393ec4e283bc44bab60335b018033ac1efbf492efb18dd3e54cc4e7",
-        "src/app/text_integration_support.rs": "d9a90d8d5a2a9558113288d37afecb320b9e353560d4bffeecdf5c1688f3ec4c",
-        "src/input/scroll_host_tests.rs": "6657c280e16d7fa6372f91b9ae601e418e40adcba6ebed8225e1864d5dfa2cb7",
-        "src/text_input/host_tests.rs": "98bb7764c80e023cb9a5bfa32a670a7525dd3b4d64f85eb54a67228d5ccacd63",
-        "src/selectable_view/host_tests.rs": "2b303fcc1d2ec2a4f0e5897621011f52be15f47ee4195b8d11f5670470d554d9",
+        "src/reading/geometry.rs": "f359deae15eeb21204959c191d4b3efb1db32b98f3ce60a013a53209f1743944",
+        "src/reading/opacity.rs": "ccba6235caddfcbacc9e3bda31ad307c73686323532c6be519c097ae130c00c7",
         "src/events/scroll_bridge.rs": "f814dee84b66a0f26f8b82be0ebe02917586905c5ef0ed0ebf56b033c86c64c1"
       }
     }
   },
   "limitations": [
-    "No compilation, Cargo/rustc, Clippy, behavioral tests, network or Git mutations in this lane",
-    "No independent behavior/security review; consolidated review follows remaining implementation",
-    "Development-only support is preserved, not final-cleaned or durably archived by this manifest",
-    "Parent owns final archive, source/Cargo integration, final-head CI and OS/user acceptance",
-    "Kit/Fast source integrity not re-audited; pinned versions observed through TOML only"
+    "Provenance/static inventory only; not independent implementation, behavior or security review",
+    "No source, Cargo, lockfile or Git mutations, network, compilation, build, tests, Cargo/rustc or Clippy execution in this lane",
+    "Final vendor source matches the stated HEAD; dirty_snapshot reflects only this documentation refresh, not a claimed source change",
+    "Development archive commit and local evidence tag verified read-only; remote tag availability is parent-provided, not queried over the network",
+    "No original full-test acceptance, final-head CI, native/OS/user acceptance or merge approval established; historical executions apply only to their recorded snapshots",
+    "Parent owns independent final-source review, final gates, CI and user/native acceptance; this provenance lane is stopped after publication",
+    "Kit/Fast source integrity and upstream network authenticity not re-audited; package versions observed through TOML only"
   ],
   "combined": {
-    "current_file_count": 241,
-    "delta_file_count": 31,
-    "tree_sha256": "5b5662c032ef28ea8ef968ffc8958fa788fad95a7639ac37796af11c89dd0f61",
-    "delta_sha256": "de99c2770034c8aa72a04a03a53cbc835ccf693a2ef158efb9eabd94721263ab"
+    "current_file_count": 231,
+    "delta_file_count": 19,
+    "tree_sha256": "fb8603eb20796b571b3a38865904f22e052649b495ecadbfc4443ae068e74998",
+    "delta_sha256": "942a2d3955cb383da4a1fc414b8e72f7307257c291350b513e82bb369fc877a5"
   },
   "snapshot_increment": {
-    "scope": "Development-only read-only current nonselectable native text observation and feature-gated exports; provenance only, no production capability expansion",
-    "previous_snapshot_utc": "2026-11-09T08:40:58.370934+00:00",
-    "previous_manifest_sha256": "5083c6a877934019ad3405d5db560857495e305f43244ea41a6ac280c177b41c",
+    "scope": "Final source provenance after authorized cleanup; documentation-only, not implementation review",
+    "previous_snapshot_utc": "2026-11-09T10:57:13.997769+00:00",
+    "previous_manifest_sha256": "73318b7f0de0621ea9537f6704fdbec7a89fc75940c5073ed1ed3b9681cc64fc",
+    "previous_document_sha256": "dbbbda3512476ad427e52e88a6e94a2817723ee61d7253da3792248aefb0bdb6",
     "changed_files_since_previous_snapshot": [
+      "nsh-platform-gpui/Cargo.toml",
       "nsh-platform-gpui/src/app/integration_support.rs",
+      "nsh-platform-gpui/src/app/scroll_integration_support.rs",
       "nsh-platform-gpui/src/app/text_integration_support.rs",
-      "nsh-platform-gpui/src/lib.rs"
+      "nsh-platform-gpui/src/input.rs",
+      "nsh-platform-gpui/src/input/scroll_host_tests.rs",
+      "nsh-platform-gpui/src/lib.rs",
+      "nsh-platform-gpui/src/reading.rs",
+      "nsh-platform-gpui/src/reading/anchor_host_tests.rs",
+      "nsh-platform-gpui/src/reading/geometry.rs",
+      "nsh-platform-gpui/src/reading/geometry_host_tests.rs",
+      "nsh-platform-gpui/src/reading/host_tests.rs",
+      "nsh-platform-gpui/src/reading/opacity.rs",
+      "nsh-platform-gpui/src/reading/opacity_host_tests.rs",
+      "nsh-platform-gpui/src/rt.rs",
+      "nsh-platform-gpui/src/scroll.rs",
+      "nsh-platform-gpui/src/selectable_view.rs",
+      "nsh-platform-gpui/src/selectable_view/host_tests.rs",
+      "nsh-platform-gpui/src/surface.rs",
+      "nsh-platform-gpui/src/text.rs",
+      "nsh-platform-gpui/src/text_input.rs",
+      "nsh-platform-gpui/src/text_input/host_tests.rs"
     ],
     "changed_existing_files_since_previous_snapshot": [
+      "nsh-platform-gpui/Cargo.toml",
+      "nsh-platform-gpui/src/input.rs",
+      "nsh-platform-gpui/src/lib.rs",
+      "nsh-platform-gpui/src/reading.rs",
+      "nsh-platform-gpui/src/reading/geometry.rs",
+      "nsh-platform-gpui/src/reading/opacity.rs",
+      "nsh-platform-gpui/src/rt.rs",
+      "nsh-platform-gpui/src/scroll.rs",
+      "nsh-platform-gpui/src/selectable_view.rs",
+      "nsh-platform-gpui/src/surface.rs",
+      "nsh-platform-gpui/src/text.rs",
+      "nsh-platform-gpui/src/text_input.rs"
+    ],
+    "added_files_since_previous_snapshot": [],
+    "removed_files_since_previous_snapshot": [
       "nsh-platform-gpui/src/app/integration_support.rs",
-      "nsh-platform-gpui/src/lib.rs"
+      "nsh-platform-gpui/src/app/scroll_integration_support.rs",
+      "nsh-platform-gpui/src/app/text_integration_support.rs",
+      "nsh-platform-gpui/src/input/scroll_host_tests.rs",
+      "nsh-platform-gpui/src/reading/anchor_host_tests.rs",
+      "nsh-platform-gpui/src/reading/geometry_host_tests.rs",
+      "nsh-platform-gpui/src/reading/host_tests.rs",
+      "nsh-platform-gpui/src/reading/opacity_host_tests.rs",
+      "nsh-platform-gpui/src/selectable_view/host_tests.rs",
+      "nsh-platform-gpui/src/text_input/host_tests.rs"
     ],
-    "added_files_since_previous_snapshot": [
-      "nsh-platform-gpui/src/app/text_integration_support.rs"
-    ],
-    "removed_files_since_previous_snapshot": [],
     "previous_file_sha256": {
-      "nsh-platform-gpui/src/app/integration_support.rs": "3893c988fed9d8a3d3538f33710977478ac0c610ffdbbbfef656bb1ee1b9b128",
-      "nsh-platform-gpui/src/lib.rs": "43b97decb9b53954677d82ec3d223dee7870d23a22882c265ca8d29027264da2"
+      "nsh-platform-gpui/Cargo.toml": "6519a8053c0731a80fa40d5d21e880b85808db41dc72860abfd20c239ad0db05",
+      "nsh-platform-gpui/src/app/integration_support.rs": "ad96f234d393ec4e283bc44bab60335b018033ac1efbf492efb18dd3e54cc4e7",
+      "nsh-platform-gpui/src/app/scroll_integration_support.rs": "a5acc38df9410b4f3174b87d9b0cf2ffab12e3966c8c42f57d06e90c56840fea",
+      "nsh-platform-gpui/src/app/text_integration_support.rs": "d9a90d8d5a2a9558113288d37afecb320b9e353560d4bffeecdf5c1688f3ec4c",
+      "nsh-platform-gpui/src/input.rs": "e5de4dba419888effc2bfe7af57401e2892e1ce5c5dd404ac7c089150f3aacef",
+      "nsh-platform-gpui/src/input/scroll_host_tests.rs": "6657c280e16d7fa6372f91b9ae601e418e40adcba6ebed8225e1864d5dfa2cb7",
+      "nsh-platform-gpui/src/lib.rs": "a509bd210b55681f08df36848e5f16f2396d9298f46b11571bb778298d0a58fc",
+      "nsh-platform-gpui/src/reading.rs": "6920dcfccc129e4220103ed9dcfaf867bd4cc334a9b5b3dd34d81174e42670a2",
+      "nsh-platform-gpui/src/reading/anchor_host_tests.rs": "719be3f0a264741413d43d2347bb11dec7120422eec42abc72fd71c80b5b24fc",
+      "nsh-platform-gpui/src/reading/geometry.rs": "e01d74807a0fbc2a117f4050677db1f63eaa2c5c061e27a3520e9a08583e0ab9",
+      "nsh-platform-gpui/src/reading/geometry_host_tests.rs": "514973578d8c4ff6aa297cadc2c418c26ce288bda3f20f9af43991cf3881a2c6",
+      "nsh-platform-gpui/src/reading/host_tests.rs": "3d8ccac1d12ba357da2ad27011396f14204a2f652b48966dc6385113cec83670",
+      "nsh-platform-gpui/src/reading/opacity.rs": "718deef1183c61fd5fe63c2124f1d80837935b7bd80b0466271feddf55d6df7d",
+      "nsh-platform-gpui/src/reading/opacity_host_tests.rs": "c26d64cc6a687a582f77971a190dde5f532dd3e49536fa5ca07b90f69099369e",
+      "nsh-platform-gpui/src/rt.rs": "1387dc172c741fa620c0e15e8a06914c5b2faf8bbd280d67faa960edb7b995cf",
+      "nsh-platform-gpui/src/scroll.rs": "b14285ee3b997c0cdb04d4f68dcfd8dea8e5a369e2072fdb5c86c23c86859048",
+      "nsh-platform-gpui/src/selectable_view.rs": "52c454e75734a8f0d6eaac8803df86c91a707b062aeae276aced021e8e4e1e95",
+      "nsh-platform-gpui/src/selectable_view/host_tests.rs": "2b303fcc1d2ec2a4f0e5897621011f52be15f47ee4195b8d11f5670470d554d9",
+      "nsh-platform-gpui/src/surface.rs": "2f182c026fe4a4b98380fa2f323c9378ba121d5a2e57ded0f1c311c251a5b712",
+      "nsh-platform-gpui/src/text.rs": "91d6ea7c2737175abb4eefcc8d4c75641479b47e897f9f3dc6898b68bceea784",
+      "nsh-platform-gpui/src/text_input.rs": "e27b80250ce6d8ec7ab62d60b8e0b84045c2b7e133e8dd4dc17488a2923601e0",
+      "nsh-platform-gpui/src/text_input/host_tests.rs": "98bb7764c80e023cb9a5bfa32a670a7525dd3b4d64f85eb54a67228d5ccacd63"
     },
     "current_file_sha256": {
-      "nsh-platform-gpui/src/app/integration_support.rs": "ad96f234d393ec4e283bc44bab60335b018033ac1efbf492efb18dd3e54cc4e7",
-      "nsh-platform-gpui/src/app/text_integration_support.rs": "d9a90d8d5a2a9558113288d37afecb320b9e353560d4bffeecdf5c1688f3ec4c",
-      "nsh-platform-gpui/src/lib.rs": "a509bd210b55681f08df36848e5f16f2396d9298f46b11571bb778298d0a58fc"
+      "nsh-platform-gpui/Cargo.toml": "79e0e0b8f2ddb8baddf50a4a01e5b53a4b3dd5fa06facc9094f1336d9f52f7be",
+      "nsh-platform-gpui/src/input.rs": "c27cc7913b38f47ab5660d3d2aa850130340bacfe82f89fe544fdd9184b463ce",
+      "nsh-platform-gpui/src/lib.rs": "0a7a7df92dd8ebb1d5f7b67fa8de8487303922033315815a2c8291cb684f2d39",
+      "nsh-platform-gpui/src/reading.rs": "cc3398ebb2b4fe55f394c17569104ac4cf77c89b9ea16ec2be49ffc10859d2bb",
+      "nsh-platform-gpui/src/reading/geometry.rs": "f359deae15eeb21204959c191d4b3efb1db32b98f3ce60a013a53209f1743944",
+      "nsh-platform-gpui/src/reading/opacity.rs": "ccba6235caddfcbacc9e3bda31ad307c73686323532c6be519c097ae130c00c7",
+      "nsh-platform-gpui/src/rt.rs": "217dc97d29ceadb5cb4baa8aa8747a50c1a752b5771cc1e299a815d48beb180e",
+      "nsh-platform-gpui/src/scroll.rs": "dfec2ed2dd54c9badb72199ceae1399c67becc06e0a405df9306b80e711774df",
+      "nsh-platform-gpui/src/selectable_view.rs": "900b0d8413a67dfa1c159c1e4b289e282ea4b8ed949377d1426ec320e90d437a",
+      "nsh-platform-gpui/src/surface.rs": "74b5ef0d4b4155ae35f4a2d146d0e1438c8270448d7171771ef864e66cc2a0c2",
+      "nsh-platform-gpui/src/text.rs": "49e58077ed3e6bfbc009c19404692f106ab4365a58ad805d8966a196df16bf2c",
+      "nsh-platform-gpui/src/text_input.rs": "973a2cb7e37004684f1bffb2e7e3df18fc87d1f6508e4f39ed5cae769e7889a7"
     },
     "previous_combined": {
-      "current_file_count": 240,
-      "delta_file_count": 30,
-      "tree_sha256": "981fb7e1f80f461007f04cbe5d3d33c42d4cb809267a41e47aa323771676edc4",
-      "delta_sha256": "07cc9147b814bbb0e815b61782b40a6cf965b930d1fda0d26c914bcf88333cf8"
+      "current_file_count": 241,
+      "delta_file_count": 31,
+      "tree_sha256": "5b5662c032ef28ea8ef968ffc8958fa788fad95a7639ac37796af11c89dd0f61",
+      "delta_sha256": "de99c2770034c8aa72a04a03a53cbc835ccf693a2ef158efb9eabd94721263ab"
     },
     "previous_package_aggregates": {
       "nsh-core": {
@@ -492,21 +506,55 @@
       "nsh-platform-gpui": {
         "counts": {
           "original": 45,
-          "current": 60,
+          "current": 61,
           "unchanged_original": 31,
           "changed_original": 14,
-          "added": 15,
+          "added": 16,
           "missing_original": 0
         },
-        "tree_sha256": "87d7808e29d34d8ecc4127dd94ed60ddc1f27f03fd2ecccd1da3f4d0cf22bb77",
-        "delta_sha256": "2d6e2dcf1b9f669d03eff5a53bf5af718c90d4589411b23262189201c43d6a39"
+        "tree_sha256": "d2654a80a9cc336403342eeba8098ef79c7b48e1c42769bdfe6bdb2f320104ee",
+        "delta_sha256": "6fa7b18c134020c0e8c53bfa9ebdd8d7564f122b7ed65c2d3980d02fe6ae2b9b"
       }
     },
-    "source_observation": "lib.rs gates integration_support and its exports with vega-host-regressions; the existing development-only integration_support module wires and re-exports the new sibling. AppView::integration_text_observation reads current nonselectable DrawnText and actual native TextLine records with readiness/identity/layout checks; no engine command, event-history substitution or production capability added.",
-    "source_contract": "docs/907/nsh-current-text-observation.md",
-    "source_context": "HEAD/dirty status are parent-provided, not re-queried. observed_origin_master remains the preceding historical observation; parent reports #922 / 2a29adf9 integration and ordinary fixture work outside this vendor inventory. No Git/network used; no application-source validation claimed.",
-    "validation": "Full vendor inventory, original manifest hashes, local cached archive maps, VCS metadata, pinned versions and lexical POSIX-string/default-json aggregates statically verified. Development seam not yet compiled in this lane; earlier compiled/native passes do not validate these new bytes. No independent review, CI or native acceptance claim.",
-    "archive_evidence": "Original cached archive SHA-256 and all 180 core / 45 platform archive entries exactly match unchanged original manifests. All development support retained; genuine recoverable source/patch/full-SHA and actual validation archival must precede removal, later, not in this lane."
+    "development_archive_commit": "ef3dddd6791e3607e40b1b1bd8adb60b48979752",
+    "development_archive_tag": "evidence/907-nsh-development-ef3dddd6791e",
+    "development_archive_tag_observation": "Local tag resolves to the archived commit; remote tag existence supplied by parent, no network lookup",
+    "archived_development_gate_count": 32,
+    "current_development_gate_count": 0,
+    "removed_development_added_files": [
+      "nsh-platform-gpui/src/app/integration_support.rs",
+      "nsh-platform-gpui/src/app/scroll_integration_support.rs",
+      "nsh-platform-gpui/src/app/text_integration_support.rs",
+      "nsh-platform-gpui/src/input/scroll_host_tests.rs",
+      "nsh-platform-gpui/src/reading/anchor_host_tests.rs",
+      "nsh-platform-gpui/src/reading/geometry_host_tests.rs",
+      "nsh-platform-gpui/src/reading/host_tests.rs",
+      "nsh-platform-gpui/src/reading/opacity_host_tests.rs",
+      "nsh-platform-gpui/src/selectable_view/host_tests.rs",
+      "nsh-platform-gpui/src/text_input/host_tests.rs"
+    ],
+    "completed_mixed_cleanup_files": [
+      "nsh-platform-gpui/Cargo.toml",
+      "nsh-platform-gpui/src/input.rs",
+      "nsh-platform-gpui/src/lib.rs",
+      "nsh-platform-gpui/src/reading.rs",
+      "nsh-platform-gpui/src/reading/geometry.rs",
+      "nsh-platform-gpui/src/reading/opacity.rs",
+      "nsh-platform-gpui/src/rt.rs",
+      "nsh-platform-gpui/src/scroll.rs",
+      "nsh-platform-gpui/src/selectable_view.rs",
+      "nsh-platform-gpui/src/surface.rs",
+      "nsh-platform-gpui/src/text.rs",
+      "nsh-platform-gpui/src/text_input.rs"
+    ],
+    "restored_upstream_original_files": [
+      "nsh-platform-gpui/Cargo.toml",
+      "nsh-platform-gpui/src/rt.rs"
+    ],
+    "source_contract": "docs/907/nsh-final-cleanup-inventory.md#8-vendor-boundary-owner-v",
+    "source_context": "Source STOPPED per parent. Read-only Git confirms HEAD and every current vendor file/hash exactly equals its HEAD blob. Core matches the development archive; platform differs in exactly 12 retained files and 10 deleted development files, with no additional paths. This is identity/inventory verification, not proof that every production behavior is unchanged.",
+    "validation": "Python 3.15.2 static provenance verification: exact lexical POSIX-string/default-json aggregates; full cached original archive hashes/maps (180/45); unchanged original manifests, package VCS metadata and version pins; no missing upstream originals, symlinks or nonregular entries; six capability additions retained and ten development additions absent; no vega-host-regressions occurrence in either package. No build/tests/native/CI executed.",
+    "archive_evidence": "Original manifests, cached original archives, package pins and historical ledger remain unchanged. Development source retained at the full archived commit/local tag; this update neither republishes raw logs nor claims original full-test acceptance."
   },
   "historical_snapshot_increments": [
     {
@@ -572,6 +620,70 @@
       },
       "source_observation": "Import existing VK_SPACE constant in input and host regression modules; explicitly drop removed shortcut closure. No routing or assertion weakening.",
       "validation": "All eleven UI development targets compiled in 33.06s. Actual native host 36/36 and real palette mounted 3/3 pass; other UI and mounted failures remain documented. Execution metadata target/nsh-closure-mounted-execution.json. Not final-head/native acceptance or independent review."
+    },
+    {
+      "scope": "Development-only read-only current nonselectable native text observation and feature-gated exports; provenance only, no production capability expansion",
+      "previous_snapshot_utc": "2026-11-09T08:40:58.370934+00:00",
+      "previous_manifest_sha256": "5083c6a877934019ad3405d5db560857495e305f43244ea41a6ac280c177b41c",
+      "changed_files_since_previous_snapshot": [
+        "nsh-platform-gpui/src/app/integration_support.rs",
+        "nsh-platform-gpui/src/app/text_integration_support.rs",
+        "nsh-platform-gpui/src/lib.rs"
+      ],
+      "changed_existing_files_since_previous_snapshot": [
+        "nsh-platform-gpui/src/app/integration_support.rs",
+        "nsh-platform-gpui/src/lib.rs"
+      ],
+      "added_files_since_previous_snapshot": [
+        "nsh-platform-gpui/src/app/text_integration_support.rs"
+      ],
+      "removed_files_since_previous_snapshot": [],
+      "previous_file_sha256": {
+        "nsh-platform-gpui/src/app/integration_support.rs": "3893c988fed9d8a3d3538f33710977478ac0c610ffdbbbfef656bb1ee1b9b128",
+        "nsh-platform-gpui/src/lib.rs": "43b97decb9b53954677d82ec3d223dee7870d23a22882c265ca8d29027264da2"
+      },
+      "current_file_sha256": {
+        "nsh-platform-gpui/src/app/integration_support.rs": "ad96f234d393ec4e283bc44bab60335b018033ac1efbf492efb18dd3e54cc4e7",
+        "nsh-platform-gpui/src/app/text_integration_support.rs": "d9a90d8d5a2a9558113288d37afecb320b9e353560d4bffeecdf5c1688f3ec4c",
+        "nsh-platform-gpui/src/lib.rs": "a509bd210b55681f08df36848e5f16f2396d9298f46b11571bb778298d0a58fc"
+      },
+      "previous_combined": {
+        "current_file_count": 240,
+        "delta_file_count": 30,
+        "tree_sha256": "981fb7e1f80f461007f04cbe5d3d33c42d4cb809267a41e47aa323771676edc4",
+        "delta_sha256": "07cc9147b814bbb0e815b61782b40a6cf965b930d1fda0d26c914bcf88333cf8"
+      },
+      "previous_package_aggregates": {
+        "nsh-core": {
+          "counts": {
+            "original": 180,
+            "current": 180,
+            "unchanged_original": 179,
+            "changed_original": 1,
+            "added": 0,
+            "missing_original": 0
+          },
+          "tree_sha256": "dd6cc201bddb9508db77d0470c1b1f12dda9e32fa8e6f1de452feb8fd804afa1",
+          "delta_sha256": "93756724e4b15be0527844ddc7af302153ea1ba90c100a614dd45efc9b9fda8d"
+        },
+        "nsh-platform-gpui": {
+          "counts": {
+            "original": 45,
+            "current": 60,
+            "unchanged_original": 31,
+            "changed_original": 14,
+            "added": 15,
+            "missing_original": 0
+          },
+          "tree_sha256": "87d7808e29d34d8ecc4127dd94ed60ddc1f27f03fd2ecccd1da3f4d0cf22bb77",
+          "delta_sha256": "2d6e2dcf1b9f669d03eff5a53bf5af718c90d4589411b23262189201c43d6a39"
+        }
+      },
+      "source_observation": "lib.rs gates integration_support and its exports with vega-host-regressions; the existing development-only integration_support module wires and re-exports the new sibling. AppView::integration_text_observation reads current nonselectable DrawnText and actual native TextLine records with readiness/identity/layout checks; no engine command, event-history substitution or production capability added.",
+      "source_contract": "docs/907/nsh-current-text-observation.md",
+      "source_context": "HEAD/dirty status are parent-provided, not re-queried. observed_origin_master remains the preceding historical observation; parent reports #922 / 2a29adf9 integration and ordinary fixture work outside this vendor inventory. No Git/network used; no application-source validation claimed.",
+      "validation": "Full vendor inventory, original manifest hashes, local cached archive maps, VCS metadata, pinned versions and lexical POSIX-string/default-json aggregates statically verified. Development seam not yet compiled in this lane; earlier compiled/native passes do not validate these new bytes. No independent review, CI or native acceptance claim.",
+      "archive_evidence": "Original cached archive SHA-256 and all 180 core / 45 platform archive entries exactly match unchanged original manifests. All development support retained; genuine recoverable source/patch/full-SHA and actual validation archival must precede removal, later, not in this lane."
     }
   ]
 }

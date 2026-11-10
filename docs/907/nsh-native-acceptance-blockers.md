@@ -1,5 +1,11 @@
 # #907 — Native acceptance evidence inventory and blockers
 
+## Current clarification — final-source gates and native boundary
+
+The inventory below is a historical, delegated read-only snapshot from `2026-11-10T00:11:38Z`. Its prohibitions on network, Git mutation, application launch and desktop operations applied to that documentation assignment, **not to the parent agent or user globally**. They are not evidence that macOS native acceptance is impossible or that the user prohibited it. Current production source is committed at `c5cd4ffeceda9665dace2602f1d2429fbf9849b1`; both P2 findings and cleanup reviews are closed, development tests are remotely archived and removed, and the source-gate CI succeeded. See [current final-version gates](nsh-final-version-gates.md) for precise evidence and the separate final documentation-head check. The historical pending-gate statements below do not override those later results.
+
+Native status is unchanged: **none of the nine rows has current-version OS-native/user acceptance evidence on any of the three platforms**. macOS ARM64 host availability is established, but a matching accepted build/session and actual OS IME/clipboard/AX/window/pixel outcomes are not. Repository policy assigns real system integration to user manual acceptance; this report does not substitute agent fixtures or screenshots. Windows/Linux have no authorized available GUI route in the present context; machine availability elsewhere is unknown. These are incomplete evidence/environment prerequisites, not demonstrated product failures. No native row is waived or marked complete. No merge/release/install or user acceptance is asserted.
+
 ## Scope, snapshot and conclusion
 
 Inventory observed at `2026-11-10T00:11:38Z`; read-only HEAD inspection confirms `0b5ea426abfd8d4358489e916273d89474fb190f` in the supplied `vega-907-nsh-full` worktree. The implementation is dirty (tracked modifications and untracked sources/evidence), so HEAD alone does not identify its bytes. The user supplies the stopped, reviewed-P2-fixes state. This document does not independently refreeze or re-review the implementation, certify its final content identity, or assert that an old binary matches every current dirty file.

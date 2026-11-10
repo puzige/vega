@@ -445,3 +445,119 @@ Remaining: opaque GPUI string metadata is not representable in existing PasteEve
 Approved reading package continuation: add one exact-area listener per AppView, registered with the currently mounted area identity and an `Rc<dyn Fn(Option<ReadingSnapshot>)>`. Deliver initial/current actual snapshots, empty/cleared selection as None, and revoke with None on detach/replacement/Surface stop. Snapshot collection and user callbacks run only after releasing native selection/model/registration borrows. Cache publication before callback to prevent unchanged recursive notifications; reentrant replacement must not reinstall old callbacks. This observer never requests copy or writes a clipboard. App integration must still revalidate source/root/mount when accepting notifications. Endpoint installation is a separate still-pending increment; this listener alone does not preserve source-trim anchors or selection direction.
 
 Reading writer recovery: original agent `01M6W3C65DCGWDFMCWX51XXWS1` failed/released without a delivery declaration, no unknown effects in its checkpoint. Existing menu/controller/Thinking-owner code was preserved and handed to replacement `01M6W60AGJ7YG1Q7HQB2VCJK1R`; main body/source mapping remains in progress, not delivered. Tool writer reported an additional wheel consumption/remainder handoff dependency gap outside the two approved packages; no wheel patch has been made.
+
+
+## Final post-cleanup source provenance (supersedes preceding current-state records)
+
+Observed UTC `2026-11-10T00:47:04.189967+00:00` with Python **3.15.2**. **This appended section and the refreshed current manifest supersede every preceding current-state identity/count and verifier result, including the opening development-only observation section.** All preceding document bytes remain unchanged as historical evidence; their compiled/test/native results apply only to their recorded source snapshots. This is final-source provenance, **not implementation or independent behavior/security review**.
+
+Source is **STOPPED** per parent at HEAD `c5cd4ffeceda9665dace2602f1d2429fbf9849b1` (branch `feat/907-nsh-full`). Read-only Git object comparisons verified that all current files in both vendor packages exactly match HEAD, not an earlier development tree. The documentation refresh makes the worktree documentation-dirty; it does not change source. Development source remains archived at `ef3dddd6791e3607e40b1b1bd8adb60b48979752` with evidence tag `evidence/907-nsh-development-ef3dddd6791e`; the local tag resolves exactly to that commit. The remote tag is parent-provided evidence, not re-queried over the network. No fetch/update, Git mutation, source/Cargo/lockfile write, network, build or test was performed under this documentation-only authorization. Other source reviewers and parent final gates remain independent.
+
+Compared with prior manifest SHA-256 `73318b7f0de0621ea9537f6704fdbec7a89fc75940c5073ed1ed3b9681cc64fc` and that exact archived vendor map: core is byte-identical; platform has **12 retained files modified, 10 development-only files removed and 0 files added**. The archived platform has exactly **32** `#[cfg(feature = "vega-host-regressions")]` regions; the final packages contain **zero occurrences** of that feature. These are static counts, not executed tests. The manifest records every removed path and the preceding/current hashes of the affected paths. Cleanup scope: [inventory §8](nsh-final-cleanup-inventory.md#8-vendor-boundary-owner-v).
+
+Platform `Cargo.toml` and `src/rt.rs` now exactly match the upstream archive, reducing changed platform originals from **14 to 12**, not 14. No upstream original file is missing. The **six production capability additions** remain: `src/editing.rs`, `src/events/scroll_bridge.rs`, `src/reading.rs`, `src/reading/geometry.rs`, `src/reading/opacity.rs`, `src/scroll_scope.rs`. Three of these are mixed files with development regions removed; retained means present, not byte-identical to the development snapshot. The ten development additions listed in §8 are absent. This inventory does not certify production-behavior equivalence or complete original-test acceptance.
+
+| Scope | Original | Current | Unchanged originals | Changed originals | Added | Missing |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| nsh-core | 180 | 180 | 179 | 1 | 0 | 0 |
+| nsh-platform-gpui | 45 | 51 | 33 | 12 | 6 | 0 |
+| Total | 225 | 231 | 212 | 13 | 6 | 0 |
+
+| Final source identity | SHA-256 |
+| --- | --- |
+| nsh-core complete tree | `dd6cc201bddb9508db77d0470c1b1f12dda9e32fa8e6f1de452feb8fd804afa1` |
+| nsh-core delta | `93756724e4b15be0527844ddc7af302153ea1ba90c100a614dd45efc9b9fda8d` |
+| nsh-platform-gpui complete tree | `0177d081d33f90724a9f220546400d2c6fe219b5627522da6b60badf5b26577c` |
+| nsh-platform-gpui delta | `aac7fc3a1ed7d6a23448d9cf387c187b4633f27e70748bdddfbe5227e16a04b2` |
+| Combined complete tree (231 entries) | `fb8603eb20796b571b3a38865904f22e052649b495ecadbfc4443ae068e74998` |
+| Combined delta (19 entries) | `942a2d3955cb383da4a1fc414b8e72f7307257c291350b513e82bb369fc877a5` |
+| Current manifest at publication | `e7dcc6c51c217d48e323a2a57fa6296b3ec070ca07ff6df05718ace2469a8ba9` |
+
+Exact algorithm: `hashlib.sha256(json.dumps(sorted(entries)).encode()).hexdigest()` over `(relative_POSIX_path_string, SHA256_hex_string)` pairs, lexically sorted as strings using Python default JSON serialization. Package paths are package-root-relative; combined paths include `nsh-core/` or `nsh-platform-gpui/`. Every regular file, including hidden files, is included; missing originals are tracked separately, with no symlinks/nonregular entries.
+
+Both original manifests remain byte-identical: core `6e0856cdbc345291557ff5dfe3d3e0d14e78cb29a742b791f067d93e78ca34fd`, platform `612172f1c99ce52e34ad9fce8ef545a2c1eda190d0544e2b9210b66d6e325037`. Cached original archive SHA-256 values remain `171f17b402bedb0cead975d3abcefbf0e7963583fbdbf1dbcb03ef73ba11191d` and `1e3828245c26e734567b3e6058398c0e4d5809063636460f990a0eaf8a0f74c3`. Their **complete 180/45 regular-file maps** exactly match the respective original manifests; no archive links were found. Both normalized Cargo manifests and `Cargo.toml.orig` now match the originals. Package VCS metadata remains `e626a8dd8f8d8b277b9507cfd5ac74d0e67020f3`. NSH `0.4.0`, Kit `0.7.3`, Fast/platform `0.1.9` pins match the current lockfile. Original manifests, cached archives, historical ledger and pins were not rewritten. `observed_origin_master` is retained only as a historical observation; no fresh remote/ancestry, upstream network authenticity or Kit/Fast source audit is claimed.
+
+### Final read-only provenance verifier
+
+The earlier verifier's hardcoded **241/31** development counts are historical and do not apply to the cleaned source. Run this replacement from the selected worktree; it reads only repository files and the allowed cached original archives and performs no Git/Cargo/network/native execution:
+
+```bash
+python3 - <<'PY'
+import hashlib, json, pathlib, tarfile, tomllib
+H = lambda data: hashlib.sha256(data).hexdigest()
+A = lambda files: H(json.dumps(sorted(files.items())).encode())
+m = json.loads(pathlib.Path('docs/907/nsh-backend-current-manifest.json').read_text())
+cleanup = m['snapshot_increment']
+assert m['head'] == 'c5cd4ffeceda9665dace2602f1d2429fbf9849b1'
+assert len(cleanup['removed_development_added_files']) == 10
+assert cleanup['archived_development_gate_count'] == 32
+assert cleanup['current_development_gate_count'] == 0
+for rel in cleanup['removed_development_added_files']:
+    assert not (pathlib.Path('vendor') / rel).exists()
+combined, delta = {}, {}
+for crate, record in sorted(m['packages'].items()):
+    root = pathlib.Path(record['root'])
+    paths = list(root.rglob('*'))
+    assert not root.is_symlink() and not any(p.is_symlink() for p in paths)
+    assert all(p.is_file() or p.is_dir() for p in paths)
+    files = {p.relative_to(root).as_posix(): H(p.read_bytes()) for p in paths if p.is_file()}
+    original_path = pathlib.Path(record['original_manifest'])
+    original = json.loads(original_path.read_text())
+    assert H(original_path.read_bytes()) == record['original_manifest_sha256']
+    assert files == record['files']
+    assert not record['development_only_added_files']
+    assert not record['mixed_development_cleanup_files']
+    assert files['Cargo.toml'] == original['files']['Cargo.toml']
+    assert files['Cargo.toml.orig'] == original['files']['Cargo.toml.orig']
+    assert not any(b'vega-host-regressions' in p.read_bytes() for p in paths if p.is_file())
+    changed = {p: h for p, h in files.items() if p in original['files'] and h != original['files'][p]}
+    added = {p: h for p, h in files.items() if p not in original['files']}
+    missing = sorted(set(original['files']) - files.keys())
+    assert sorted(changed) == record['changed_original_files']
+    assert sorted(added) == record['added_files']
+    assert missing == record['missing_original_files'] == []
+    assert changed | added == record['delta_files']
+    assert record['counts'] == dict(original=len(original['files']), current=len(files), unchanged_original=len(original['files'])-len(changed)-len(missing), changed_original=len(changed), added=len(added), missing_original=len(missing))
+    assert A(files) == record['tree_sha256']
+    assert A(changed | added) == record['delta_sha256']
+    assert A(original['files']) == record['original_tree_sha256']
+    dev = set(record['development_only_added_files'])
+    production = set(record['capability_added_files'])
+    assert not dev & production and dev | production == set(added)
+    assert json.loads((root/'.cargo_vcs_info.json').read_text()) == record['vcs_info']
+    assert record['vcs_info']['git']['sha1'] == m['upstream_commit']
+    assert tomllib.loads((root/'Cargo.toml').read_text())['package']['version'] == record['version']
+    archives = sorted((pathlib.Path.home()/'.cargo/registry/cache').glob(f'*/{crate}-0.4.0.crate'))
+    assert archives
+    for archive in archives:
+        assert H(archive.read_bytes()) == record['archive_sha256'] == original['archive_sha256']
+        with tarfile.open(archive) as tar:
+            assert not any(x.issym() or x.islnk() for x in tar.getmembers())
+            archived = {x.name.split('/', 1)[1]: H(tar.extractfile(x).read()) for x in tar.getmembers() if x.isfile()}
+            assert len(archived) == len([x for x in tar.getmembers() if x.isfile()])
+        assert archived == original['files']
+    combined.update({f'{crate}/{p}': h for p, h in files.items()})
+    delta.update({f'{crate}/{p}': h for p, h in (changed | added).items()})
+    print(crate, record['counts'], 'archive-map=exact')
+    print('tree', A(files), 'delta', A(changed | added))
+assert len(m['packages']['nsh-platform-gpui']['capability_added_files']) == 6
+assert len(combined) == m['combined']['current_file_count'] == 231
+assert len(delta) == m['combined']['delta_file_count'] == 19
+assert A(combined) == m['combined']['tree_sha256']
+assert A(delta) == m['combined']['delta_sha256']
+print('combined-tree', A(combined), 'combined-delta', A(delta))
+lock = tomllib.loads(pathlib.Path('Cargo.lock').read_text())
+for name, version in m['pinned_packages'].items():
+    packages = [p for p in lock['package'] if p['name'] == name]
+    assert len(packages) == 1 and packages[0]['version'] == version
+print('pins=unchanged; VCS metadata=exact; symlinks/missing originals=0')
+print('manifest-sha256', H(pathlib.Path('docs/907/nsh-backend-current-manifest.json').read_bytes()))
+print('PASS provenance only; no compilation, behavior/security review or native acceptance')
+PY
+```
+
+### Final verification boundary and stopped handoff
+
+The replacement verifier is the final-file static check; its actual execution result is recorded below. The separate read-only archive/HEAD comparison established the exact 10 removed paths, 12 modified retained paths, 32 archived gates and current HEAD file mapping. Neither check executes original or development tests. **No original full-test acceptance, native/OS acceptance, CI success, workspace test discovery/execution count, merge approval or independent review is established here.** Prior raw validation ledger text and historical manifest increments remain untouched; they are not promoted to acceptance of this final source. Parent owns final review, final-head required CI and user/native acceptance. This documentation lane stops after publication.
+
+Executed the exact appended verifier through `subprocess.run(['bash', '-c', command])` with Python **3.15.2**: **exit 0**. Both archive maps were exact; final counts and all six tree/delta identities matched the tables above; pins and VCS metadata were exact; missing originals and symlinks were zero. `git --no-optional-locks diff --check -- docs/907/nsh-backend-current-manifest.json docs/907/nsh-authorized-backend-patches.md` exited **0**. Read-only changed-path enumeration found only these two authorized documentation files. The preceding **61,752 document bytes** remain an exact prefix with SHA-256 `dbbbda3512476ad427e52e88a6e94a2817723ee61d7253da3792248aefb0bdb6`; previous manifest increments are preserved as historical records. The first verifier execution exited **1** because the newly added duplicate-entry check called `TarFile.getmembers()` after archive closure; only that appended check's indentation was corrected to keep it inside the open archive context. No assertion was removed or weakened, and no source or archive repair was needed. **STOPPED** after this documentation/provenance publication; final review and parent gates remain independent.
