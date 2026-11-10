@@ -132,60 +132,63 @@ pub(crate) struct CodexWorkerRequest {
 
 pub(crate) fn run_codex_agent_worker(request: CodexWorkerRequest) -> bool {
     let store = CodexWrites::from_startup(request.persistence);
-    if request.cancel.is_cancelled() {
-        return false;
-    }
-    let arguments = request
-        .snapshot
-        .arguments
-        .iter()
-        .flat_map(|argument| argument.as_args().iter().cloned())
-        .collect::<Vec<_>>();
-    let launch = LaunchConfig::new(
-        PathBuf::from(&request.snapshot.executable),
-        arguments,
-        PathBuf::from(&request.snapshot.workspace.canonical_working_directory),
-    );
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(_) => {
-            let _ = store.session(CodexSessionOutcome::DefinitivelyFailed {
-                code: CodexSessionFailureCode::ProcessStartFailed,
-            });
+    let success = (|| {
+        if request.cancel.is_cancelled() {
             return false;
         }
-    };
-    if request.cancel.is_cancelled() {
-        return false;
-    }
-    if store.validate_external_start().is_err() || request.cancel.is_cancelled() {
-        return false;
-    }
-    store.mark_external_started();
-    let connection = match runtime.block_on(Connection::spawn(launch)) {
-        Ok(connection) => Arc::new(connection),
-        Err(_) => {
-            let _ = store.session(CodexSessionOutcome::DefinitivelyFailed {
-                code: CodexSessionFailureCode::ProcessStartFailed,
-            });
+        let arguments = request
+            .snapshot
+            .arguments
+            .iter()
+            .flat_map(|argument| argument.as_args().iter().cloned())
+            .collect::<Vec<_>>();
+        let launch = LaunchConfig::new(
+            PathBuf::from(&request.snapshot.executable),
+            arguments,
+            PathBuf::from(&request.snapshot.workspace.canonical_working_directory),
+        );
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(_) => {
+                let _ = store.session(CodexSessionOutcome::DefinitivelyFailed {
+                    code: CodexSessionFailureCode::ProcessStartFailed,
+                });
+                return false;
+            }
+        };
+        if request.cancel.is_cancelled() {
             return false;
         }
-    };
-    let success = runtime.block_on(run_codex_agent_with_connection(CodexAgentRunContext {
-        store: &store,
-        connection: connection.clone(),
-        thread: &request.thread,
-        snapshot: &request.snapshot,
-        prompt: &request.prompt,
-        permission_queue: &request.permission_queue,
-        cancel: request.cancel,
-        sender: &request.sender,
-    }));
-    runtime.block_on(connection.shutdown());
-    success && store.healthy()
+        if store.validate_external_start().is_err() || request.cancel.is_cancelled() {
+            return false;
+        }
+        store.mark_external_started();
+        let connection = match runtime.block_on(Connection::spawn(launch)) {
+            Ok(connection) => Arc::new(connection),
+            Err(_) => {
+                let _ = store.session(CodexSessionOutcome::DefinitivelyFailed {
+                    code: CodexSessionFailureCode::ProcessStartFailed,
+                });
+                return false;
+            }
+        };
+        let success = runtime.block_on(run_codex_agent_with_connection(CodexAgentRunContext {
+            store: &store,
+            connection: connection.clone(),
+            thread: &request.thread,
+            snapshot: &request.snapshot,
+            prompt: &request.prompt,
+            permission_queue: &request.permission_queue,
+            cancel: request.cancel,
+            sender: &request.sender,
+        }));
+        runtime.block_on(connection.shutdown());
+        success
+    })();
+    store.finish_worker(success)
 }
 
 pub(crate) struct CodexAgentRunContext<'a> {

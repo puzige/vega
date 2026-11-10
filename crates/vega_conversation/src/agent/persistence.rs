@@ -336,6 +336,7 @@ impl PersistenceActor {
             receiver,
             ready,
             drained,
+            capacity: None,
         };
         let owner = writer.clone();
         tokio::task::spawn_blocking(move || {

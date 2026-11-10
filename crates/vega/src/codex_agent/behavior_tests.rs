@@ -318,3 +318,170 @@ fn failed_tool_sql_is_not_replayed_by_prompt_finalization() -> TestResult {
     assert!(!fixture.writes.healthy());
     Ok(())
 }
+
+fn pending_startup(
+    fixture: &Fixture,
+) -> Result<vega_conversation::codex_tasks::CodexStartup, String> {
+    let snapshot =
+        vega_conversation::codex_tasks::codex_task_identity(&fixture.store, &fixture.thread)
+            .map_err(|error| error.to_string())?
+            .ok_or("Codex fixture missing")?
+            .snapshot;
+    let mut draft = vega_conversation::threads::draft_thread(None, "model", "confirm");
+    draft.backend = TaskBackend::Codex;
+    vega_conversation::codex_tasks::prepare_codex_startup(
+        &fixture.root.join("database.db"),
+        draft,
+        snapshot,
+    )
+}
+
+#[test]
+fn cancelled_request_and_started_writes_drop_do_not_wait_for_sql_writer() -> TestResult {
+    for external_started in [false, true] {
+        let fixture = Fixture::new()?;
+        let startup = pending_startup(&fixture)?;
+        let thread = startup.thread.id.clone();
+        fixture.store.conn().execute_batch("BEGIN IMMEDIATE;")?;
+        let (finished, returned) = std_mpsc::sync_channel(1);
+        let dropping = std::thread::spawn(move || {
+            if external_started {
+                let writes = CodexWrites::from_startup(startup.persistence);
+                writes.mark_external_started();
+                drop(writes);
+            } else {
+                let cancel = CancellationToken::new();
+                cancel.cancel();
+                let (sender, _events) = std_mpsc::sync_channel(1);
+                drop(CodexWorkerRequest {
+                    persistence: startup.persistence,
+                    thread: startup.thread,
+                    snapshot: startup.snapshot,
+                    prompt: "question".into(),
+                    permission_queue: PermissionQueue::new(),
+                    cancel,
+                    sender,
+                });
+            }
+            finished.send(()).unwrap();
+        });
+        let before_release = returned.recv_timeout(std::time::Duration::from_millis(100));
+        fixture.store.conn().execute_batch("COMMIT;")?;
+        dropping.join().unwrap();
+        before_release?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let state =
+                vega_conversation::codex_tasks::codex_task_identity(&fixture.store, &thread)?
+                    .unwrap()
+                    .session_creation;
+            if !matches!(state, CodexSessionCreationState::Intent { .. }) {
+                assert!(matches!(
+                    (external_started, state),
+                    (false, CodexSessionCreationState::DefinitivelyFailed { .. })
+                        | (true, CodexSessionCreationState::Uncertain { .. })
+                ));
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn cancelled_worker_returns_and_publishes_finished_only_after_settlement_ack() -> TestResult {
+    let fixture = Fixture::new()?;
+    let startup = pending_startup(&fixture)?;
+    let thread = startup.thread.id.clone();
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let (sender, events) = std_mpsc::sync_channel(8);
+    let request = CodexWorkerRequest {
+        persistence: startup.persistence,
+        thread: startup.thread,
+        snapshot: startup.snapshot,
+        prompt: "question".into(),
+        permission_queue: PermissionQueue::new(),
+        cancel,
+        sender: sender.clone(),
+    };
+    fixture.store.conn().execute_batch("BEGIN IMMEDIATE;")?;
+    let (begun, began) = std_mpsc::sync_channel(1);
+    let worker = std::thread::spawn(move || {
+        begun.send(()).unwrap();
+        let success = run_codex_agent_worker(request);
+        sender
+            .send(AgentUpdate::Finished {
+                success,
+                reference_failure: None,
+                credential_failure: false,
+            })
+            .unwrap();
+    });
+    began.recv_timeout(std::time::Duration::from_secs(5))?;
+    let before_release = events.recv_timeout(std::time::Duration::from_millis(100));
+    fixture.store.conn().execute_batch("COMMIT;")?;
+    assert!(matches!(
+        before_release,
+        Err(std_mpsc::RecvTimeoutError::Timeout)
+    ));
+    assert!(matches!(
+        events.recv_timeout(std::time::Duration::from_secs(5))?,
+        AgentUpdate::Finished { success: false, .. }
+    ));
+    assert!(matches!(
+        vega_conversation::codex_tasks::codex_task_identity(&fixture.store, &thread)?
+            .unwrap()
+            .session_creation,
+        CodexSessionCreationState::DefinitivelyFailed {
+            code: CodexSessionFailureCode::ProcessStartFailed,
+            ..
+        }
+    ));
+    worker.join().unwrap();
+    Ok(())
+}
+
+#[test]
+fn explicit_worker_finish_preserves_business_failure_and_reports_settlement_failure() -> TestResult
+{
+    for (success, unhealthy, sql_failure) in [
+        (true, false, false),
+        (false, false, false),
+        (true, true, false),
+        (true, false, true),
+    ] {
+        let fixture = Fixture::new()?;
+        let startup = pending_startup(&fixture)?;
+        let thread = startup.thread.id.clone();
+        let writes = CodexWrites::from_startup(startup.persistence);
+        writes.mark_external_started();
+        if unhealthy {
+            writes.fail("unknown prior receipt; no replay");
+        }
+        if sql_failure {
+            fixture.store.conn().execute_batch("CREATE TRIGGER fail_worker_settlement BEFORE UPDATE ON codex_session_creations BEGIN SELECT RAISE(ABORT,'injected worker settlement failure'); END;")?;
+        }
+        assert_eq!(
+            writes.finish_worker(success),
+            success && !unhealthy && !sql_failure
+        );
+        let state = vega_conversation::codex_tasks::codex_task_identity(&fixture.store, &thread)?
+            .unwrap()
+            .session_creation;
+        assert!(matches!(
+            (sql_failure, state),
+            (true, CodexSessionCreationState::Intent { .. })
+                | (
+                    false,
+                    CodexSessionCreationState::Uncertain {
+                        code: CodexSessionUncertaintyCode::OutcomeUnknown,
+                        ..
+                    }
+                )
+        ));
+    }
+    Ok(())
+}

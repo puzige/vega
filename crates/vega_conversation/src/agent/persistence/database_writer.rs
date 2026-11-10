@@ -6,10 +6,13 @@ use vega_store::Connection;
 #[cfg(test)]
 mod tests;
 
+const RUN_CAPACITY: usize = 128;
+
 type NecessaryReceiver = std::sync::mpsc::Receiver<Box<dyn crate::database_writer::WriteRequest>>;
 
 pub(crate) struct DatabaseWriter {
-    pub(super) registrations: std::sync::mpsc::SyncSender<RunRegistration>,
+    registrations: std::sync::mpsc::SyncSender<RunRegistration>,
+    run_capacity: Arc<tokio::sync::Semaphore>,
     commands: Arc<CommandQueue>,
     wakeup: std::sync::mpsc::SyncSender<()>,
     necessary: Arc<Mutex<Vec<NecessaryReceiver>>>,
@@ -58,6 +61,7 @@ pub(super) struct RunRegistration {
     pub(super) receiver: mpsc::Receiver<PersistenceCommand>,
     pub(super) ready: oneshot::Sender<Result<(), VegaError>>,
     pub(super) drained: oneshot::Sender<Result<(), VegaError>>,
+    pub(super) capacity: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 pub(super) struct RunState {
@@ -143,6 +147,7 @@ struct ActiveRun {
     state: RunState,
     receiver: mpsc::Receiver<PersistenceCommand>,
     drained: oneshot::Sender<Result<(), VegaError>>,
+    capacity: tokio::sync::OwnedSemaphorePermit,
 }
 
 impl DatabaseWriter {
@@ -151,31 +156,42 @@ impl DatabaseWriter {
     }
 
     pub(super) fn register_run(&self, mut registration: RunRegistration) -> Result<(), VegaError> {
-        loop {
-            let state = self
-                .lifecycle
-                .state
-                .lock()
-                .map_err(|_| persistence_actor_error("writer lifecycle unavailable"))?;
-            if state.closing || state.stopped {
-                return Err(persistence_actor_error("writer registration closed"));
-            }
-            match self.registrations.try_send(registration) {
-                Ok(()) => {
-                    self.wake();
-                    return Ok(());
-                }
-                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                    return Err(persistence_actor_error("writer registration closed"));
-                }
-                Err(std::sync::mpsc::TrySendError::Full(pending)) => registration = pending,
-            }
-            let _ = self
-                .lifecycle
-                .changed
-                .wait_timeout(state, Duration::from_millis(25))
-                .map_err(|_| persistence_actor_error("writer lifecycle unavailable"))?;
+        let state = self
+            .lifecycle
+            .state
+            .lock()
+            .map_err(|_| persistence_actor_error("writer lifecycle unavailable"))?;
+        if state.closing || state.stopped {
+            return Err(persistence_actor_error("writer registration closed"));
         }
+        if registration
+            .state
+            .start
+            .config
+            .steering_cancel
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            return Err(VegaError::Cancelled);
+        }
+        registration.capacity = Some(
+            self.run_capacity
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| persistence_actor_error("database writer run capacity exhausted"))?,
+        );
+        self.registrations
+            .try_send(registration)
+            .map_err(|error| match error {
+                std::sync::mpsc::TrySendError::Full(_) => {
+                    persistence_actor_error("database writer registration capacity exhausted")
+                }
+                std::sync::mpsc::TrySendError::Disconnected(_) => {
+                    persistence_actor_error("writer registration closed")
+                }
+            })?;
+        self.wake();
+        Ok(())
     }
 
     fn begin_close(&self) -> Result<(), String> {
@@ -186,6 +202,7 @@ impl DatabaseWriter {
             .map_err(|_| "writer lifecycle unavailable")?;
         state.closing = true;
         self.necessary_capacity.close();
+        self.run_capacity.close();
         let mut commands = self
             .commands
             .state
@@ -326,7 +343,7 @@ impl DatabaseWriter {
             return Ok(writer.clone());
         }
         store.conn().busy_handler(Some(persistence_busy_handler))?;
-        let (registrations, receiver) = std::sync::mpsc::sync_channel(128);
+        let (registrations, receiver) = std::sync::mpsc::sync_channel(RUN_CAPACITY);
         let (wakeup, awakened) = std::sync::mpsc::sync_channel(1);
         let commands = Arc::new(CommandQueue {
             state: Mutex::new(CommandQueueState::default()),
@@ -338,6 +355,7 @@ impl DatabaseWriter {
         let lifetime = lifecycle.clone();
         let writer = Arc::new(Self {
             registrations,
+            run_capacity: Arc::new(tokio::sync::Semaphore::new(RUN_CAPACITY)),
             commands,
             wakeup,
             necessary: necessary.clone(),
@@ -368,12 +386,12 @@ impl DatabaseWriter {
         let mut runs = VecDeque::<ActiveRun>::new();
         let mut terminal_failed = false;
         loop {
-            while let Ok(run) = registrations.try_recv() {
-                lifecycle.changed.notify_all();
+            let mut progressed = false;
+            if let Ok(run) = registrations.try_recv() {
                 Self::register(&store, run, &mut runs);
+                progressed = true;
             }
             let count = runs.len();
-            let mut progressed = false;
             let terminals = necessary
                 .lock()
                 .map(|mut receivers| {
@@ -415,6 +433,7 @@ impl DatabaseWriter {
                         if let Some(task) = run.state.ordinary_task.take() {
                             task.complete(Ok(()));
                         }
+                        drop(run.capacity);
                         let _ = run.drained.send(Ok(()));
                         continue;
                     }
@@ -464,7 +483,24 @@ impl DatabaseWriter {
             receiver,
             ready,
             drained,
+            capacity,
         } = run;
+        let Some(capacity) = capacity else {
+            let _ = ready.send(Err(persistence_actor_error("run capacity not reserved")));
+            let _ = drained.send(Err(persistence_actor_error("run capacity not reserved")));
+            return;
+        };
+        if state
+            .start
+            .config
+            .steering_cancel
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            let _ = ready.send(Err(VegaError::Cancelled));
+            let _ = drained.send(Err(VegaError::Cancelled));
+            return;
+        }
         if state
             .start
             .config
@@ -497,11 +533,17 @@ impl DatabaseWriter {
             let _ = drained.send(Err(persistence_actor_error("run recovery unavailable")));
             return;
         }
-        let _ = ready.send(Ok(()));
+        if ready.send(Ok(())).is_err() {
+            let _ = drained.send(Err(persistence_actor_error(
+                "run startup receipt abandoned",
+            )));
+            return;
+        }
         runs.push_back(ActiveRun {
             state,
             receiver,
             drained,
+            capacity,
         });
     }
 }

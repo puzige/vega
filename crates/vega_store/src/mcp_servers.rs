@@ -265,6 +265,19 @@ pub fn create(conn: &Connection, draft: &McpServerDraft) -> Result<McpServerRow,
         conn,
         crate::write_coordination::WriteCategory::McpServers,
     )?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
+    let result = create_in_transaction(&tx, draft)?;
+    tx.commit()?;
+    Ok(result)
+}
+
+pub fn create_in_transaction(
+    tx: &crate::write_coordination::WriteTransaction<'_>,
+    draft: &McpServerDraft,
+) -> Result<McpServerRow, McpStoreError> {
     validate(draft)?;
     let id = ulid::Ulid::generate().to_string();
     let credential_ref =
@@ -275,10 +288,6 @@ pub fn create(conn: &Connection, draft: &McpServerDraft) -> Result<McpServerRow,
         };
     let environment_slots = local_slots(&id, 1, draft)?;
     let now = now_ms();
-    let tx = crate::write_coordination::WriteTransaction::new(
-        conn,
-        crate::write_coordination::WriteCategory::McpServers,
-    )?;
     tx.execute(
         "INSERT INTO mcp_servers (id, display_name, transport, local_executable, local_args_json, \
          local_working_directory, local_env_refs_json, remote_endpoint, remote_allow_loopback_http, \
@@ -293,9 +302,8 @@ pub fn create(conn: &Connection, draft: &McpServerDraft) -> Result<McpServerRow,
             now,
         ],
     )?;
-    let row = find(&tx, &id)?.ok_or(McpStoreError::NotFound)?;
-    crate::mcp_config::stage(&tx)?;
-    tx.commit()?;
+    let row = find(tx, &id)?.ok_or(McpStoreError::NotFound)?;
+    crate::mcp_config::stage(tx)?;
     Ok(row)
 }
 
@@ -327,6 +335,21 @@ pub fn replace(
         conn,
         crate::write_coordination::WriteCategory::McpServers,
     )?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
+    let result = replace_in_transaction(&tx, id, expected_revision, draft)?;
+    tx.commit()?;
+    Ok(result)
+}
+
+pub fn replace_in_transaction(
+    tx: &crate::write_coordination::WriteTransaction<'_>,
+    id: &str,
+    expected_revision: u64,
+    draft: &McpServerDraft,
+) -> Result<McpServerRow, McpStoreError> {
     validate(draft)?;
     let expected = i64::try_from(expected_revision).map_err(|_| McpStoreError::Invalid)?;
     let next_revision = expected_revision
@@ -339,11 +362,7 @@ pub fn replace(
             None
         };
     let environment_slots = local_slots(id, next_revision, draft)?;
-    let tx = crate::write_coordination::WriteTransaction::new(
-        conn,
-        crate::write_coordination::WriteCategory::McpServers,
-    )?;
-    let old = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
+    let old = find(tx, id)?.ok_or(McpStoreError::NotFound)?;
     if old.config_revision != expected_revision || old.deleting {
         return Err(McpStoreError::Conflict);
     }
@@ -375,13 +394,12 @@ pub fn replace(
     if updated == 0 {
         return Err(McpStoreError::Conflict);
     }
-    let new = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
+    let new = find(tx, id)?.ok_or(McpStoreError::NotFound)?;
     let new_refs = server_secret_refs(&new)?;
     for reference in server_secret_refs(&old)?.difference(&new_refs) {
-        enqueue_cleanup(&tx, id, reference)?;
+        enqueue_cleanup(tx, id, reference)?;
     }
-    crate::mcp_config::stage(&tx)?;
-    tx.commit()?;
+    crate::mcp_config::stage(tx)?;
     Ok(new)
 }
 
@@ -414,12 +432,23 @@ pub fn set_enabled(
         conn,
         crate::write_coordination::WriteCategory::McpServers,
     )?;
-    let expected = i64::try_from(expected_revision).map_err(|_| McpStoreError::Invalid)?;
     let tx = crate::write_coordination::WriteTransaction::new(
         conn,
         crate::write_coordination::WriteCategory::McpServers,
     )?;
-    let current = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
+    let result = set_enabled_in_transaction(&tx, id, expected_revision, enabled)?;
+    tx.commit()?;
+    Ok(result)
+}
+
+pub fn set_enabled_in_transaction(
+    tx: &crate::write_coordination::WriteTransaction<'_>,
+    id: &str,
+    expected_revision: u64,
+    enabled: bool,
+) -> Result<McpServerRow, McpStoreError> {
+    let expected = i64::try_from(expected_revision).map_err(|_| McpStoreError::Invalid)?;
+    let current = find(tx, id)?.ok_or(McpStoreError::NotFound)?;
     if current.config_revision != expected_revision {
         return Err(McpStoreError::Conflict);
     }
@@ -451,9 +480,8 @@ pub fn set_enabled(
          last_error_code = NULL, updated_at = ?2 WHERE id = ?3 AND config_revision = ?4",
         params![enabled, now_ms(), id, expected],
     )?;
-    let changed = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
-    crate::mcp_config::stage(&tx)?;
-    tx.commit()?;
+    let changed = find(tx, id)?.ok_or(McpStoreError::NotFound)?;
+    crate::mcp_config::stage(tx)?;
     Ok(changed)
 }
 
@@ -471,6 +499,22 @@ pub fn begin_oauth_install(
         conn,
         crate::write_coordination::WriteCategory::McpServers,
     )?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
+    let result = begin_oauth_install_in_transaction(&tx, id, expected_revision, issuer, client_id)?;
+    tx.commit()?;
+    Ok(result)
+}
+
+pub fn begin_oauth_install_in_transaction(
+    tx: &crate::write_coordination::WriteTransaction<'_>,
+    id: &str,
+    expected_revision: u64,
+    issuer: &str,
+    client_id: &str,
+) -> Result<(McpServerRow, String), McpStoreError> {
     let expected = i64::try_from(expected_revision).map_err(|_| McpStoreError::Invalid)?;
     if issuer.is_empty()
         || issuer.len() > 4096
@@ -485,11 +529,7 @@ pub fn begin_oauth_install(
         .checked_add(1)
         .ok_or(McpStoreError::Invalid)?;
     let reference = format!("mcp-{id}-r{next_revision}-oauth");
-    let tx = crate::write_coordination::WriteTransaction::new(
-        conn,
-        crate::write_coordination::WriteCategory::McpServers,
-    )?;
-    let old = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
+    let old = find(tx, id)?.ok_or(McpStoreError::NotFound)?;
     if old.config_revision != expected_revision
         || old.deleting
         || old.transport != "remote"
@@ -503,13 +543,12 @@ pub fn begin_oauth_install(
          last_error_code = NULL, updated_at = ?4 WHERE id = ?5 AND config_revision = ?6",
         params![reference, issuer, client_id, now_ms(), id, expected],
     )?;
-    let changed = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
+    let changed = find(tx, id)?.ok_or(McpStoreError::NotFound)?;
     let new_refs = server_secret_refs(&changed)?;
     for old_ref in server_secret_refs(&old)?.difference(&new_refs) {
-        enqueue_cleanup(&tx, id, old_ref)?;
+        enqueue_cleanup(tx, id, old_ref)?;
     }
-    crate::mcp_config::stage(&tx)?;
-    tx.commit()?;
+    crate::mcp_config::stage(tx)?;
     Ok((changed, reference))
 }
 
@@ -524,12 +563,22 @@ pub fn begin_oauth_disconnect(
         conn,
         crate::write_coordination::WriteCategory::McpServers,
     )?;
-    let expected = i64::try_from(expected_revision).map_err(|_| McpStoreError::Invalid)?;
     let tx = crate::write_coordination::WriteTransaction::new(
         conn,
         crate::write_coordination::WriteCategory::McpServers,
     )?;
-    let old = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
+    let result = begin_oauth_disconnect_in_transaction(&tx, id, expected_revision)?;
+    tx.commit()?;
+    Ok(result)
+}
+
+pub fn begin_oauth_disconnect_in_transaction(
+    tx: &crate::write_coordination::WriteTransaction<'_>,
+    id: &str,
+    expected_revision: u64,
+) -> Result<McpServerRow, McpStoreError> {
+    let expected = i64::try_from(expected_revision).map_err(|_| McpStoreError::Invalid)?;
+    let old = find(tx, id)?.ok_or(McpStoreError::NotFound)?;
     if old.config_revision != expected_revision
         || old.deleting
         || old.transport != "remote"
@@ -544,11 +593,10 @@ pub fn begin_oauth_disconnect(
         params![now_ms(), id, expected],
     )?;
     for old_ref in server_secret_refs(&old)? {
-        enqueue_cleanup(&tx, id, &old_ref)?;
+        enqueue_cleanup(tx, id, &old_ref)?;
     }
-    let changed = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
-    crate::mcp_config::stage(&tx)?;
-    tx.commit()?;
+    let changed = find(tx, id)?.ok_or(McpStoreError::NotFound)?;
+    crate::mcp_config::stage(tx)?;
     Ok(changed)
 }
 
@@ -569,7 +617,18 @@ pub fn begin_local_secret_rotation(
         conn,
         crate::write_coordination::WriteCategory::McpServers,
     )?;
-    let old = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
+    let result = begin_local_secret_rotation_in_transaction(&tx, id, expected_revision, variable)?;
+    tx.commit()?;
+    Ok(result)
+}
+
+pub fn begin_local_secret_rotation_in_transaction(
+    tx: &crate::write_coordination::WriteTransaction<'_>,
+    id: &str,
+    expected_revision: u64,
+    variable: &str,
+) -> Result<(McpServerRow, String), McpStoreError> {
+    let old = find(tx, id)?.ok_or(McpStoreError::NotFound)?;
     if old.config_revision != expected_revision || old.deleting || old.transport != "local" {
         return Err(McpStoreError::Conflict);
     }
@@ -606,10 +665,9 @@ pub fn begin_local_secret_rotation(
          local_env_refs_json = ?1, updated_at = ?2 WHERE id = ?3",
         params![next_slots_json, now_ms(), id],
     )?;
-    enqueue_cleanup(&tx, id, &old_reference)?;
-    let changed = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
-    crate::mcp_config::stage(&tx)?;
-    tx.commit()?;
+    enqueue_cleanup(tx, id, &old_reference)?;
+    let changed = find(tx, id)?.ok_or(McpStoreError::NotFound)?;
+    crate::mcp_config::stage(tx)?;
     Ok((changed, reference))
 }
 
@@ -625,6 +683,21 @@ pub fn set_last_error(
         conn,
         crate::write_coordination::WriteCategory::McpServers,
     )?;
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::McpServers,
+    )?;
+    set_last_error_in_transaction(&tx, id, revision, code)?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn set_last_error_in_transaction(
+    tx: &crate::write_coordination::WriteTransaction<'_>,
+    id: &str,
+    revision: u64,
+    code: Option<&str>,
+) -> Result<(), McpStoreError> {
     if code.is_some_and(|code| {
         code.is_empty()
             || code.len() > 64
@@ -635,7 +708,7 @@ pub fn set_last_error(
         return Err(McpStoreError::Invalid);
     }
     let revision = i64::try_from(revision).map_err(|_| McpStoreError::Invalid)?;
-    let updated = conn.execute(
+    let updated = tx.execute(
         "UPDATE mcp_servers SET last_error_code = ?1 WHERE id = ?2 AND config_revision = ?3",
         params![code, id, revision],
     )?;
@@ -660,7 +733,17 @@ pub fn begin_remove(
         conn,
         crate::write_coordination::WriteCategory::McpServers,
     )?;
-    let row = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
+    let result = begin_remove_in_transaction(&tx, id, expected_revision)?;
+    tx.commit()?;
+    Ok(result)
+}
+
+pub fn begin_remove_in_transaction(
+    tx: &crate::write_coordination::WriteTransaction<'_>,
+    id: &str,
+    expected_revision: u64,
+) -> Result<McpServerRow, McpStoreError> {
+    let row = find(tx, id)?.ok_or(McpStoreError::NotFound)?;
     if row.deleting {
         return Ok(row);
     }
@@ -673,11 +756,10 @@ pub fn begin_remove(
         params![now_ms(), id],
     )?;
     for reference in server_secret_refs(&row)? {
-        enqueue_cleanup(&tx, id, &reference)?;
+        enqueue_cleanup(tx, id, &reference)?;
     }
-    let changed = find(&tx, id)?.ok_or(McpStoreError::NotFound)?;
-    crate::mcp_config::stage(&tx)?;
-    tx.commit()?;
+    let changed = find(tx, id)?.ok_or(McpStoreError::NotFound)?;
+    crate::mcp_config::stage(tx)?;
     Ok(changed)
 }
 

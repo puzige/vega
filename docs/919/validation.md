@@ -93,3 +93,27 @@
 同版本三组 Python 实际命令分别 `python3 scripts/release_tests.py`、`python3 scripts/prepare_computer_use_tests.py`、`python3 -m unittest discover -s scripts/tests -v`，分别 5/5、15/15、40/40，退出 0；日志 `/tmp/vega-919-python-{release,computer,suite}-finaldev.log`。suite 中 Unsupported bundle path 是失败路径夹具的预期输出，不是命令失败。
 
 当前源码停止写入，随后保存开发提交（包含测试，仅用于可恢复证据及独立实现审查，不得直接合并）。最终移除开发 Rust 测试及独占支持后，仍须核对清理差异、最终 head 全套 required CI；本地行为通过不代表真实 UI/外部服务或用户验收。全库迁移不分批合并，不安装新应用，不改用户库。
+
+## 开发独审结果与修复中状态
+
+三份非实现者审查绑定已发布开发提交 `32af3eb9d5eb19d25d878b495f2b330066a406ea`，比较基线 `2a29adf9b2ea78eaf59d591838531b45adc7373e`。均已完成，但均有阻断，不代表通过：
+
+- 核心 writer：P1，全库只限制待注册队列，已注册运行可无限增长，且无界排空 registration 可饿死已有工作。主线新增覆盖待注册+活跃直到 drain 的 128 个运行 permit、每轮一个注册、满额立即明确拒绝（非新增等待），并检查 queued cancel/abandoned startup receipt，生产编译已通过，独立范围正在补饱和/持续注册公平性开发回归。
+- 服务安全：P1，外部直接修改默认权限 YAML 不推进 SQL generation。Guard 现在锁外读取前后捕获文件身份/版本，并在安装前后仅作 metadata 校验，保留所有 epoch/generation/intent/source CAS；专项实际 `cargo test -p vega_conversation --lib --locked --offline -j 2 permission_contracts::intents::tests:: -- --nocapture` 4 执行/4 通过，1.19 秒，日志 `/tmp/vega-919-draft-source-tests.log`。真实 actor 安装前暂停，直接原地写、原子替换、删除配置均拒绝，线程不创建、intent 保持 prepared、SQL generation 不变。未把 YAML body/配置锁搬进 actor；metadata 仍无耗时保证。
+- 服务安全：P2，MCP metadata 预检与实际 SQL 写入不在同一事务，外进程登记 import 后可破坏 source 恢复。独立实现范围已交付八类命令同事务检查+写入、五项开发测试源码，尚待中央运行。
+- 应用/委派：P2，CodexWrites Drop 同步等待普通 actor 回执。独立实现范围正在移至显式 worker 收尾，Drop 仅保留预留 necessary 通道；开发回归待交付。
+
+以上均为本卡范围内具体缺陷；修后需集中复验并交非实现者增量审查，旧 112/112 与旧 Clippy 不证明新字节。开发 Rust 测试尚未清理，最终 required CI、合并、用户手测均未发生。
+
+## 四项独审修复中央复验
+
+全部实现范围已停写，原三审阻断均已实现修正，尚待非实现者增量结论。
+
+- 核心专项 `cargo test -p vega_conversation --lib --locked --offline -j 1 agent::persistence::database_writer::tests:: -- --nocapture`：21 执行/21 通过，7.98 秒；日志 `/tmp/vega-919-capacity-review-tests.log`。含128运行上限、真 drain 释放、持续注册公平、排队取消、丢 ready、关闭结算、既有 necessary 失败不报成功。
+- MCP 专项 `cargo test -p vega_conversation --lib --locked --offline -j 1 mcp_settings::protocol_tests:: -- --nocapture`：10/10，8.96 秒；日志 `/tmp/vega-919-mcp-review-tests.log`。八类 metadata 同实际事务复核 pending/projection，独立连接 import 交错拒绝后恢复成功。
+- Codex 应用专项 `cargo test -p vega --bin vega --locked --offline -j 1 codex_agent::behavior_tests:: -- --nocapture`：8/8，4.55 秒；日志 `/tmp/vega-919-codex-settlement-app.log`。会话首次错用 codex_tasks::persistence_tests 过滤器，0 执行不算通过；核对实际模块后 `cargo test -p vega_conversation --lib --locked --offline -j 1 codex_persistence::persistence_tests:: -- --nocapture`：5/5，2.10 秒；日志 `/tmp/vega-919-codex-settlement-conversation.log`。
+- 全工作区 `cargo clippy --workspace --all-targets --locked --offline -j 1 -- -D warnings`：通过，24.43 秒；日志 `/tmp/vega-919-clippy-review-fixes.log`。首次新增 MCP 测试 tuple type_complexity 失败，仅提取 ConfigState 类型别名后重跑，未放宽 lint 或断言。现有 manifest unused dependency 提示未修改。
+- 同一源码 `cargo test --workspace --all-targets --locked --offline -j 1`：**128 执行/128 通过，0 失败/0 忽略/0 过滤**；app 10（4.06 秒）、conversation 91（68.25 秒）、store 27（15.36 秒）。编译55.98秒，日志 `/tmp/vega-919-workspace-review-fixes.log`，其他目标0测试不称行为通过。
+- `cargo fmt --all -- --check`、`git diff --check`：通过。本轮仍固定工具链及 `CARGO_FORK_AUTO_UPDATE=0`，因其他任务构建使用 -j1 协调负载；未干预其他任务进程。Python前轮5/15/40为未改脚本版本证据，最终无Rust测试head仍须重跑。
+
+保存新的修复开发提交后停止写入交增量独审；保留完整开发测试，不先清理换绿。来源metadata末检风险及用户真实外部/UI手测限制不变。未开最终PR、未合并、未安装。

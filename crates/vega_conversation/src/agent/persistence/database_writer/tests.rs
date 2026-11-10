@@ -25,6 +25,13 @@ impl Fixture {
         &self,
         config: PersistenceActorConfig,
     ) -> Result<PersistenceActor, VegaError> {
+        PersistenceActor::start(self.start_with_config(config)?).await
+    }
+
+    fn start_with_config(
+        &self,
+        config: PersistenceActorConfig,
+    ) -> Result<PersistenceActorStart, VegaError> {
         let thread = ulid::Ulid::generate().to_string();
         let message = ulid::Ulid::generate().to_string();
         self.store.conn().execute("INSERT INTO threads(id,model,mode,permission_mode,created_at,updated_at) VALUES(?1,'model','execute','confirm',1,1)", [&thread])?;
@@ -43,7 +50,7 @@ impl Fixture {
         let admission =
             super::super::super::ordinary::verified_admission(&self.store, &thread, None)
                 .map_err(|_| persistence_actor_error("fixture admission"))?;
-        PersistenceActor::start(PersistenceActorStart {
+        Ok(PersistenceActorStart {
             database_path: self.root.join("fixture.db"),
             project_id: String::new(),
             thread_id: thread,
@@ -53,7 +60,6 @@ impl Fixture {
             next_tool_seq: 1,
             config: config.with_thread_admission(admission),
         })
-        .await
     }
 }
 
@@ -859,5 +865,487 @@ async fn moved_database_rejects_command_instead_of_writing_replacement() -> Test
             .query_row("SELECT count(*) FROM messages", [], |row| row.get(0))?;
     assert_eq!((old_count, new_count), (0, 0));
     drop(replacement);
+    Ok(())
+}
+
+struct PendingRun {
+    sender: mpsc::Sender<PersistenceCommand>,
+    ready: oneshot::Receiver<Result<(), VegaError>>,
+    drained: oneshot::Receiver<Result<(), VegaError>>,
+}
+
+fn pending_run(start: &PersistenceActorStart) -> (RunRegistration, PendingRun) {
+    let (sender, receiver) = mpsc::channel(PERSISTENCE_CHANNEL_CAPACITY);
+    let (ready, opened) = oneshot::channel();
+    let (drained, completed) = oneshot::channel();
+    (
+        RunRegistration {
+            state: RunState {
+                start: PersistenceActorStart {
+                    database_path: start.database_path.clone(),
+                    project_id: start.project_id.clone(),
+                    thread_id: start.thread_id.clone(),
+                    message_id: start.message_id.clone(),
+                    model: start.model.clone(),
+                    is_plan: start.is_plan,
+                    next_tool_seq: start.next_tool_seq,
+                    config: start.config.clone(),
+                },
+                ordinary_task: None,
+                run_id: start.message_id.clone(),
+                active_response_id: None,
+            },
+            receiver,
+            ready,
+            drained,
+            capacity: None,
+        },
+        PendingRun {
+            sender,
+            ready: opened,
+            drained: completed,
+        },
+    )
+}
+
+struct ReservedTerminalInsert;
+impl crate::database_writer::Sealed for ReservedTerminalInsert {}
+impl crate::database_writer::DatabaseCommand for ReservedTerminalInsert {
+    type Output = Result<(), String>;
+    fn apply(self, store: &Store) -> Self::Output {
+        let tx = store
+            .immediate_transaction()
+            .map_err(|error| error.to_string())?;
+        tx.execute_batch(
+            "CREATE TABLE reserved_terminal_drain(value INTEGER); INSERT INTO reserved_terminal_drain VALUES(1);",
+        )
+        .map_err(|error| error.to_string())?;
+        tx.commit().map_err(|error| error.to_string())
+    }
+}
+
+#[tokio::test]
+async fn full_run_capacity_preserves_service_terminal_and_reopens_only_after_drain() -> TestResult {
+    assert_eq!(RUN_CAPACITY, 128);
+    let fixture = Fixture::new()?;
+    let first = fixture.actor().await?;
+    let writer = first.sender.writer.clone();
+    let terminal = writer.reserve_necessary()?;
+    let mut actors = vec![first];
+    for _ in 1..RUN_CAPACITY {
+        actors.push(tokio::time::timeout(Duration::from_secs(5), fixture.actor()).await??);
+    }
+    assert_eq!(writer.run_capacity.available_permits(), 0);
+    for _ in 0..2 {
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), fixture.actor())
+                .await?
+                .is_err()
+        );
+        assert_eq!(writer.run_capacity.available_permits(), 0);
+    }
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        actors[0].snapshot("snapshot at run capacity".into()),
+    )
+    .await??;
+    let path = fixture.root.join("fixture.db");
+    let identity = fixture.store.database_identity();
+    let service_path = path.clone();
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        tokio::task::spawn_blocking(move || {
+            crate::database_writer::commit(&service_path, identity, NecessaryInsert)
+        }),
+    )
+    .await????;
+    terminal
+        .submit(identity, ReservedTerminalInsert)?
+        .recv_timeout(Duration::from_secs(2))??;
+    let counts: (i64, i64, i64) = fixture.store.conn().query_row(
+        "SELECT (SELECT count(*) FROM messages WHERE content='snapshot at run capacity'), (SELECT count(*) FROM necessary_drain), (SELECT count(*) FROM reserved_terminal_drain)",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    assert_eq!(counts, (1, 1, 1));
+    assert_eq!(writer.run_capacity.available_permits(), 0);
+    let (started, observed) = std::sync::mpsc::channel();
+    let (release, gate) = std::sync::mpsc::channel();
+    let held = tokio::task::spawn_blocking(move || {
+        crate::database_writer::commit(
+            &path,
+            identity,
+            AdmissionGate {
+                started,
+                release: gate,
+            },
+        )
+    });
+    observed.recv_timeout(Duration::from_secs(2))?;
+    let mut closing = Box::pin(actors.pop().ok_or("missing full-capacity run")?.close());
+    tokio::select! {
+        result = &mut closing => panic!("run drained while writer was gated: {result:?}"),
+        _ = tokio::time::sleep(Duration::from_millis(25)) => {}
+    }
+    assert_eq!(writer.run_capacity.available_permits(), 0);
+    release.send(())?;
+    held.await???;
+    tokio::time::timeout(Duration::from_secs(2), &mut closing).await??;
+    assert_eq!(writer.run_capacity.available_permits(), 1);
+    actors.push(tokio::time::timeout(Duration::from_secs(2), fixture.actor()).await??);
+    assert_eq!(writer.run_capacity.available_permits(), 0);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        for actor in actors {
+            actor.close().await?;
+        }
+        Ok::<(), VegaError>(())
+    })
+    .await??;
+    assert_eq!(writer.run_capacity.available_permits(), RUN_CAPACITY);
+    writer.begin_close()?;
+    writer.wait_stopped(std::time::Instant::now() + Duration::from_secs(2))?;
+    let state = writer
+        .lifecycle
+        .state
+        .lock()
+        .map_err(|_| "lifecycle poisoned")?;
+    assert!(state.closing && state.stopped && state.settled);
+    assert!(
+        writer
+            .commands
+            .state
+            .lock()
+            .map_err(|_| "queue poisoned")?
+            .commands
+            .is_empty()
+    );
+    assert!(
+        writer
+            .necessary
+            .lock()
+            .map_err(|_| "necessary queue poisoned")?
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn registration_churn_keeps_existing_snapshot_service_and_necessary_progressing() -> TestResult
+{
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let fixture = Fixture::new()?;
+    let actor = fixture.actor().await?;
+    let template = fixture.start_with_config(PersistenceActorConfig::default())?;
+    let writer = actor.sender.writer.clone();
+    let identity = fixture.store.database_identity();
+    let path = fixture.root.join("fixture.db");
+    let terminal = writer.reserve_necessary()?;
+    let (started, observed) = std::sync::mpsc::channel();
+    let (release, gate) = std::sync::mpsc::channel();
+    let held_path = path.clone();
+    let held = tokio::task::spawn_blocking(move || {
+        crate::database_writer::commit(
+            &held_path,
+            identity,
+            AdmissionGate {
+                started,
+                release: gate,
+            },
+        )
+    });
+    observed.recv_timeout(Duration::from_secs(2))?;
+    let mut receipts = VecDeque::new();
+    for _ in 1..RUN_CAPACITY {
+        let (registration, pending) = pending_run(&template);
+        writer.register_run(registration)?;
+        drop(pending.sender);
+        receipts.push_back((pending.ready, pending.drained));
+    }
+    assert_eq!(writer.run_capacity.available_permits(), 0);
+    let stop = CancellationToken::new();
+    let stop_guard = stop.clone().drop_guard();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let drained = Arc::new(AtomicUsize::new(0));
+    let producer_writer = writer.clone();
+    let producer_stop = stop.clone();
+    let producer_attempts = attempts.clone();
+    let producer_accepted = accepted.clone();
+    let producer_drained = drained.clone();
+    let producer = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let mut receipts = receipts;
+        while !producer_stop.is_cancelled() {
+            producer_attempts.fetch_add(1, Ordering::SeqCst);
+            let (registration, pending) = pending_run(&template);
+            if producer_writer.register_run(registration).is_ok() {
+                drop(pending.sender);
+                receipts.push_back((pending.ready, pending.drained));
+                producer_accepted.fetch_add(1, Ordering::SeqCst);
+            }
+            let count = receipts.len();
+            for _ in 0..count {
+                let (mut ready, mut drained) = receipts.pop_front().ok_or("missing receipt")?;
+                match drained.try_recv() {
+                    Ok(Ok(())) => {
+                        ready
+                            .try_recv()
+                            .map_err(|error| error.to_string())?
+                            .map_err(|error| error.to_string())?;
+                        producer_drained.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Ok(Err(error)) => return Err(error.to_string()),
+                    Err(oneshot::error::TryRecvError::Empty) => {
+                        receipts.push_back((ready, drained))
+                    }
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+            std::thread::yield_now();
+        }
+        for (ready, drained) in receipts {
+            ready
+                .blocking_recv()
+                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())?;
+            drained
+                .blocking_recv()
+                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while attempts.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    let service = tokio::task::spawn_blocking(move || {
+        crate::database_writer::commit(&path, identity, NecessaryInsert)
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !writer
+                .commands
+                .state
+                .lock()
+                .map_err(|_| "queue poisoned")?
+                .commands
+                .is_empty()
+            {
+                return Ok::<(), String>(());
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await??;
+    let terminal_receipt = terminal.submit(identity, ReservedTerminalInsert)?;
+    let necessary =
+        tokio::task::spawn_blocking(move || terminal_receipt.recv_timeout(Duration::from_secs(5)));
+    release.send(())?;
+    held.await???;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (snapshot, service, necessary) = tokio::join!(
+            actor.snapshot("snapshot during registration churn".into()),
+            service,
+            necessary,
+        );
+        snapshot?;
+        service???;
+        necessary???;
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })
+    .await??;
+    assert!(!stop.is_cancelled());
+    let accepted_at_completion = accepted.load(Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while accepted.load(Ordering::SeqCst) <= accepted_at_completion
+            || drained.load(Ordering::SeqCst) < RUN_CAPACITY - 1
+        {
+            assert!(
+                !producer.is_finished(),
+                "registration producer stopped before completion"
+            );
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    let counts: (i64, i64, i64) = fixture.store.conn().query_row(
+        "SELECT (SELECT count(*) FROM messages WHERE content='snapshot during registration churn'), (SELECT count(*) FROM necessary_drain), (SELECT count(*) FROM reserved_terminal_drain)",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    assert_eq!(counts, (1, 1, 1));
+    assert!(!stop.is_cancelled());
+    stop.cancel();
+    tokio::time::timeout(Duration::from_secs(5), producer).await???;
+    drop(stop_guard);
+    assert_eq!(writer.run_capacity.available_permits(), RUN_CAPACITY - 1);
+    tokio::time::timeout(Duration::from_secs(2), actor.close()).await??;
+    writer.begin_close()?;
+    writer.wait_stopped(std::time::Instant::now() + Duration::from_secs(2))?;
+    assert_eq!(writer.run_capacity.available_permits(), RUN_CAPACITY);
+    assert!(
+        writer
+            .commands
+            .state
+            .lock()
+            .map_err(|_| "queue poisoned")?
+            .commands
+            .is_empty()
+    );
+    assert!(
+        writer
+            .necessary
+            .lock()
+            .map_err(|_| "necessary queue poisoned")?
+            .is_empty()
+    );
+    let state = writer
+        .lifecycle
+        .state
+        .lock()
+        .map_err(|_| "lifecycle poisoned")?;
+    assert!(state.closing && state.stopped && state.settled);
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_or_abandoned_registration_releases_capacity_and_close_settles_accepted_run()
+-> TestResult {
+    let fixture = Fixture::new()?;
+    let actor = fixture.actor().await?;
+    let writer = actor.sender.writer.clone();
+    let before = CancellationToken::new();
+    before.cancel();
+    assert!(
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            fixture.actor_with_config(PersistenceActorConfig {
+                steering_cancel: Some(before),
+                ..Default::default()
+            })
+        )
+        .await?
+        .is_err()
+    );
+    assert_eq!(writer.run_capacity.available_permits(), RUN_CAPACITY - 1);
+    let queued_cancel = CancellationToken::new();
+    let queued_start = fixture.start_with_config(PersistenceActorConfig {
+        steering_cancel: Some(queued_cancel.clone()),
+        ..Default::default()
+    })?;
+    let abandoned_start = fixture.start_with_config(PersistenceActorConfig::default())?;
+    let path = fixture.root.join("fixture.db");
+    let identity = fixture.store.database_identity();
+    let (started, observed) = std::sync::mpsc::channel();
+    let (release, gate) = std::sync::mpsc::channel();
+    let held = tokio::task::spawn_blocking(move || {
+        crate::database_writer::commit(
+            &path,
+            identity,
+            AdmissionGate {
+                started,
+                release: gate,
+            },
+        )
+    });
+    observed.recv_timeout(Duration::from_secs(2))?;
+    let (registration, mut queued) = pending_run(&queued_start);
+    writer.register_run(registration)?;
+    assert!(matches!(
+        queued.ready.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+    queued_cancel.cancel();
+    let (registration, abandoned) = pending_run(&abandoned_start);
+    writer.register_run(registration)?;
+    let PendingRun {
+        sender: abandoned_sender,
+        ready: abandoned_ready,
+        drained: abandoned_drained,
+    } = abandoned;
+    drop(abandoned_ready);
+    assert_eq!(writer.run_capacity.available_permits(), RUN_CAPACITY - 3);
+    writer.begin_close()?;
+    assert!(writer.run_capacity.is_closed());
+    let (registration, rejected) = pending_run(&abandoned_start);
+    assert!(writer.register_run(registration).is_err());
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), rejected.ready)
+            .await?
+            .is_err()
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), fixture.actor())
+            .await?
+            .is_err()
+    );
+    assert_eq!(writer.run_capacity.available_permits(), RUN_CAPACITY - 3);
+    assert!(
+        writer
+            .wait_stopped(std::time::Instant::now() + Duration::from_millis(10))
+            .is_err()
+    );
+    release.send(())?;
+    held.await???;
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), queued.ready).await??,
+        Err(VegaError::Cancelled)
+    ));
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), queued.drained).await??,
+        Err(VegaError::Cancelled)
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), abandoned_drained)
+            .await??
+            .is_err()
+    );
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while writer.run_capacity.available_permits() != RUN_CAPACITY - 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    assert!(queued.sender.is_closed());
+    assert!(abandoned_sender.is_closed());
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        actor.snapshot("accepted run settles after rejected registrations".into()),
+    )
+    .await??;
+    tokio::time::timeout(Duration::from_secs(2), actor.close()).await??;
+    writer.wait_stopped(std::time::Instant::now() + Duration::from_secs(2))?;
+    assert_eq!(writer.run_capacity.available_permits(), RUN_CAPACITY);
+    let count: i64 = fixture.store.conn().query_row(
+        "SELECT count(*) FROM messages WHERE content='accepted run settles after rejected registrations'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(count, 1);
+    assert!(
+        writer
+            .commands
+            .state
+            .lock()
+            .map_err(|_| "queue poisoned")?
+            .commands
+            .is_empty()
+    );
+    assert!(
+        writer
+            .necessary
+            .lock()
+            .map_err(|_| "necessary queue poisoned")?
+            .is_empty()
+    );
+    let state = writer
+        .lifecycle
+        .state
+        .lock()
+        .map_err(|_| "lifecycle poisoned")?;
+    assert!(state.closing && state.stopped && state.settled);
     Ok(())
 }

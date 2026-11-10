@@ -116,8 +116,13 @@ impl CodexPersistence {
         let CodexSessionCreationState::Intent { intent_id } = &source.task.session_creation else {
             return Ok(());
         };
-        crate::database_writer::commit(
-            &self.path,
+        let lease = self
+            .abandonment
+            .lock()
+            .map_err(|_| "Codex abandonment lease unavailable")?
+            .take()
+            .ok_or("Codex startup settlement already submitted; reconcile before retry")?;
+        let receipt = lease.submit(
             self.database,
             crate::codex_tasks::startup::AbandonedStartup {
                 thread_id: source.task.thread_id.clone(),
@@ -128,12 +133,10 @@ impl CodexPersistence {
                     .external_started
                     .load(std::sync::atomic::Ordering::Acquire),
             },
-        )??;
-        self.abandonment
-            .lock()
-            .map_err(|_| "Codex abandonment lease unavailable")?
-            .take();
-        Ok(())
+        )?;
+        receipt
+            .recv()
+            .map_err(|_| "Codex startup settlement outcome unknown; reconcile before retry")?
     }
 
     pub fn validate_external_start(&self) -> Result<(), String> {

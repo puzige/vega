@@ -100,19 +100,31 @@ impl crate::database_writer::DatabaseCommand for SaveMcpMetadata {
             vega_store::write_coordination::WriteCategory::McpServers,
         )
         .map_err(|_| McpSettingsError::Store)?;
-        if CleanupProjection::read(store.conn())? != self.projection
+        let tx = vega_store::write_coordination::WriteTransaction::new(
+            store.conn(),
+            vega_store::write_coordination::WriteCategory::McpServers,
+        )
+        .map_err(|_| McpSettingsError::Store)?;
+        if CleanupProjection::read(&tx)? != self.projection
             || self.projection.pending_declarations.is_some()
         {
             return Err(McpSettingsError::Conflict);
         }
+        let resume = matches!(
+            &self.command,
+            McpMetadataWrite::Enable { enabled: true, .. }
+        );
         let row = match self.command {
-            McpMetadataWrite::Create(draft) => mcp_servers::create(store.conn(), &draft)?,
+            McpMetadataWrite::Create(draft) => mcp_servers::create_in_transaction(&tx, &draft)?,
             McpMetadataWrite::LocalRotation {
                 id,
                 revision,
                 variable,
             } => {
-                mcp_servers::begin_local_secret_rotation(store.conn(), &id, revision, &variable)?.0
+                mcp_servers::begin_local_secret_rotation_in_transaction(
+                    &tx, &id, revision, &variable,
+                )?
+                .0
             }
             McpMetadataWrite::OAuthInstall {
                 id,
@@ -120,42 +132,37 @@ impl crate::database_writer::DatabaseCommand for SaveMcpMetadata {
                 issuer,
                 client_id,
             } => {
-                mcp_servers::begin_oauth_install(store.conn(), &id, revision, &issuer, &client_id)?
-                    .0
+                mcp_servers::begin_oauth_install_in_transaction(
+                    &tx, &id, revision, &issuer, &client_id,
+                )?
+                .0
             }
             McpMetadataWrite::LastError { id, revision, code } => {
-                let tx = store
-                    .immediate_transaction()
-                    .map_err(|_| McpSettingsError::Store)?;
-                mcp_servers::set_last_error(&tx, &id, revision, code.as_deref())?;
-                let row = mcp_servers::find(&tx, &id)?.ok_or(McpSettingsError::NotFound)?;
-                tx.commit_with_rollback()
-                    .map_err(|_| McpSettingsError::Store)?;
-                row
+                mcp_servers::set_last_error_in_transaction(&tx, &id, revision, code.as_deref())?;
+                mcp_servers::find(&tx, &id)?.ok_or(McpSettingsError::NotFound)?
             }
             McpMetadataWrite::Replace {
                 id,
                 revision,
                 draft,
-            } => mcp_servers::replace(store.conn(), &id, revision, &draft)?,
+            } => mcp_servers::replace_in_transaction(&tx, &id, revision, &draft)?,
             McpMetadataWrite::Enable {
                 id,
                 revision,
                 enabled,
-            } => {
-                let row = mcp_servers::set_enabled(store.conn(), &id, revision, enabled)?;
-                if enabled {
-                    state.suspended.remove(&id);
-                }
-                row
-            }
+            } => mcp_servers::set_enabled_in_transaction(&tx, &id, revision, enabled)?,
             McpMetadataWrite::Disconnect { id, revision } => {
-                mcp_servers::begin_oauth_disconnect(store.conn(), &id, revision)?
+                mcp_servers::begin_oauth_disconnect_in_transaction(&tx, &id, revision)?
             }
             McpMetadataWrite::Remove { id, revision } => {
-                mcp_servers::begin_remove(store.conn(), &id, revision)?
+                mcp_servers::begin_remove_in_transaction(&tx, &id, revision)?
             }
         };
+        tx.commit_with_rollback()
+            .map_err(|_| McpSettingsError::Store)?;
+        if resume {
+            state.suspended.remove(&row.id);
+        }
         Ok(row)
     }
 }

@@ -56,12 +56,55 @@ fn configuration_identity(path: &std::path::Path) -> Result<String, Conversation
         .ok_or(ConversationError::InvalidTaskIdentity)
 }
 
+#[derive(PartialEq, Eq)]
+struct ConfigurationSourceVersion {
+    path: std::path::PathBuf,
+    canonical: std::path::PathBuf,
+    entries: [(u64, u64, u64, i64, i64, i64, i64); 2],
+}
+
+impl ConfigurationSourceVersion {
+    fn capture(path: &std::path::Path) -> Result<Self, ConversationError> {
+        use std::os::unix::fs::MetadataExt;
+        let canonical = path.canonicalize().map_err(storage_error)?;
+        let link = std::fs::symlink_metadata(path).map_err(storage_error)?;
+        let target = std::fs::metadata(&canonical).map_err(storage_error)?;
+        if !target.is_file() {
+            return Err(ConversationError::InvalidTaskIdentity);
+        }
+        let version = |metadata: &std::fs::Metadata| {
+            (
+                metadata.dev(),
+                metadata.ino(),
+                metadata.len(),
+                metadata.mtime(),
+                metadata.mtime_nsec(),
+                metadata.ctime(),
+                metadata.ctime_nsec(),
+            )
+        };
+        Ok(Self {
+            path: path.to_owned(),
+            canonical,
+            entries: [version(&link), version(&target)],
+        })
+    }
+
+    fn validate(&self) -> Result<(), ConversationError> {
+        if Self::capture(&self.path)? != *self {
+            return Err(ConversationError::InvalidTaskIdentity);
+        }
+        Ok(())
+    }
+}
+
 pub(crate) struct DraftCreationGuard {
     draft: Thread,
     operation: String,
     epoch: String,
     generation: String,
     source: Option<String>,
+    configuration: Option<ConfigurationSourceVersion>,
 }
 
 impl DraftCreationGuard {
@@ -130,23 +173,29 @@ impl DraftCreationGuard {
             },
         )
         .map_err(ConversationError::Store)??;
-        if let Some(snapshot) = &draft.default_permission {
+        let configuration = if let Some(snapshot) = &draft.default_permission {
             let path = snapshot
                 .config_path
                 .as_deref()
                 .ok_or(ConversationError::InvalidTaskIdentity)?;
+            let version = ConfigurationSourceVersion::capture(path)?;
             let current = vega_store::config::read_from(path)
                 .map_err(|_| ConversationError::InvalidTaskIdentity)?;
             if default_permission_snapshot(Some(path), &current.defaults) != *snapshot {
                 return Err(ConversationError::InvalidTaskIdentity);
             }
-        }
+            version.validate()?;
+            Some(version)
+        } else {
+            None
+        };
         Ok(Self {
             draft: draft.clone(),
             operation,
             epoch,
             generation,
             source,
+            configuration,
         })
     }
 
@@ -154,6 +203,9 @@ impl DraftCreationGuard {
         &self,
         transaction: &vega_store::Transaction<'_>,
     ) -> Result<Thread, ConversationError> {
+        if let Some(version) = &self.configuration {
+            version.validate()?;
+        }
         let state =
             vega_store::permission_contracts::load_state(transaction).map_err(storage_error)?;
         let matches: bool = transaction.query_row(
@@ -168,6 +220,9 @@ impl DraftCreationGuard {
         thread.default_permission = None;
         let thread = crate::threads::materialize_draft_in_transaction(transaction, &thread)?;
         transaction.execute("UPDATE draft_creation_intents SET state='committed' WHERE operation_id=?1 AND state='prepared'", [&self.operation]).map_err(storage_error)?;
+        if let Some(version) = &self.configuration {
+            version.validate()?;
+        }
         Ok(thread)
     }
 }

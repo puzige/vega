@@ -129,3 +129,95 @@ fn unconfirmed_default_change_reconciles_actual_file_without_replaying_save() ->
     assert!(fixture.change().read().is_ok());
     Ok(())
 }
+
+struct PausedDraftInstall {
+    creation: DraftCreationGuard,
+    entered: std::sync::mpsc::SyncSender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+impl crate::database_writer::Sealed for PausedDraftInstall {}
+impl crate::database_writer::DatabaseCommand for PausedDraftInstall {
+    type Output = Result<Thread, ConversationError>;
+    fn apply(self, store: &Store) -> Self::Output {
+        self.entered
+            .send(())
+            .map_err(|_| ConversationError::InvalidTaskIdentity)?;
+        self.release
+            .recv()
+            .map_err(|_| ConversationError::InvalidTaskIdentity)?;
+        let _coordination = coordinate()?;
+        let transaction = store.immediate_transaction().map_err(storage_error)?;
+        let thread = self.creation.materialize(&transaction)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(thread)
+    }
+}
+
+#[test]
+fn external_configuration_changes_reject_prepared_drafts_in_actor_without_partial_install()
+-> TestResult {
+    for change in ["in_place", "replace", "remove"] {
+        let fixture = Fixture::new()?;
+        vega_store::config::update_from(&fixture.config, |config| {
+            config.defaults.permission_mode = "full_access".into();
+        })?;
+        let draft = fixture.draft()?;
+        assert_eq!(draft.permission_mode, PermissionMode::FullAccess);
+        let creation = DraftCreationGuard::begin(&fixture.store, &draft)?;
+        let generation: String = fixture.store.conn().query_row(
+            "SELECT generation FROM default_permission_intent",
+            [],
+            |row| row.get(0),
+        )?;
+        let (entered, started) = std::sync::mpsc::sync_channel(1);
+        let (release, resume) = std::sync::mpsc::sync_channel(1);
+        let path = fixture.root.join("database.db");
+        let identity = fixture.store.database_identity();
+        let worker = std::thread::spawn(move || {
+            crate::database_writer::commit(
+                &path,
+                identity,
+                PausedDraftInstall {
+                    creation,
+                    entered,
+                    release: resume,
+                },
+            )
+        });
+        started.recv_timeout(std::time::Duration::from_secs(5))?;
+        let bytes = std::fs::read_to_string(&fixture.config)?;
+        assert!(bytes.contains("full_access"));
+        let changed = bytes.replace("full_access", "confirm");
+        match change {
+            "in_place" => std::fs::write(&fixture.config, changed)?,
+            "replace" => {
+                let replacement = fixture.root.join("replacement.yaml");
+                std::fs::write(&replacement, changed)?;
+                std::fs::rename(replacement, &fixture.config)?;
+            }
+            "remove" => std::fs::remove_file(&fixture.config)?,
+            _ => unreachable!(),
+        }
+        release.send(())?;
+        assert!(
+            worker
+                .join()
+                .map_err(|_| "draft worker panicked")??
+                .is_err()
+        );
+        assert!(vega_store::threads::find(fixture.store.conn(), &draft.id)?.is_none());
+        let state: String = fixture.store.conn().query_row(
+            "SELECT state FROM draft_creation_intents WHERE thread_id=?1",
+            [&draft.id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(state, "prepared");
+        let current: String = fixture.store.conn().query_row(
+            "SELECT generation FROM default_permission_intent",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(current, generation);
+    }
+    Ok(())
+}

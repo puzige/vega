@@ -9,20 +9,17 @@ pub(super) struct CodexWrites {
     failed: AtomicBool,
 }
 
-impl Drop for CodexWrites {
-    fn drop(&mut self) {
-        if let Err(error) = self.service.settle_abandoned_startup() {
-            tracing::error!(error = %error, "Codex startup settlement not confirmed");
-        }
-    }
-}
-
 impl CodexWrites {
     pub(super) fn from_startup(service: CodexPersistence) -> Self {
         Self {
             service,
             failed: AtomicBool::new(false),
         }
+    }
+
+    pub(super) fn finish_worker(self, success: bool) -> bool {
+        let settled = self.record(self.service.settle_abandoned_startup()).is_ok();
+        success && settled && self.healthy()
     }
 
     pub(super) fn validate_external_start(&self) -> Result<(), String> {
