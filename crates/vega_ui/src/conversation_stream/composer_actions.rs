@@ -214,10 +214,6 @@ pub(crate) struct ComposerActions {
 }
 
 impl ComposerActions {
-    pub(crate) fn is_stopping(&self) -> bool {
-        self.stopping
-    }
-
     fn close_menu(&mut self) {
         self.menu = false;
         self.menu_rows.clear();
@@ -227,6 +223,10 @@ impl ComposerActions {
 
     pub(super) fn invalidate_computer_takeover(&mut self) {
         self.control_generation = self.control_generation.wrapping_add(1);
+    }
+
+    pub(crate) fn is_stopping(&self) -> bool {
+        self.stopping
     }
 
     pub(crate) fn visible(&self) -> bool {
