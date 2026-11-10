@@ -76,6 +76,12 @@ fn enabled(snapshot: &Snapshot) -> Vec<Action> {
         .filter(|action| accepts(snapshot, snapshot, *action))
         .collect()
 }
+fn selected_section(snapshot: &Snapshot, session: &ProjectionId) -> Option<Selection<Action>> {
+    let action = Action::Section(snapshot.selected);
+    accepts(snapshot, snapshot, action)
+        .then(|| Selection::reconcile(None, session, &[action]))
+        .flatten()
+}
 fn accepts(current: &Snapshot, observed: &Snapshot, action: Action) -> bool {
     current.id.matches(&observed.id)
         && current.authority.visible
@@ -134,9 +140,18 @@ impl SettingsView {
             } else {
                 |snapshot, requests| render(snapshot, requests, false)
             };
-            let (surface, mut requests) =
-                Surface::new_transparent(self.shell_snapshot(id.clone(), cx), renderer, window, cx);
-            let focus = cx.focus_handle().tab_stop(!heading);
+            let snapshot = self.shell_snapshot(id.clone(), cx);
+            let opening_focus = self
+                .section_focuses
+                .iter()
+                .find(|focus| !heading && focus.is_focused(window));
+            let keyboard_session = ProjectionId::new();
+            let keyboard =
+                opening_focus.and_then(|_| selected_section(&snapshot, &keyboard_session));
+            let focus = opening_focus
+                .cloned()
+                .unwrap_or_else(|| cx.focus_handle().tab_stop(!heading));
+            let (surface, mut requests) = Surface::new_transparent(snapshot, renderer, window, cx);
             let focus_subscriptions = if heading {
                 Vec::new()
             } else {
@@ -171,8 +186,8 @@ impl SettingsView {
                 id,
                 height: Typography::SETTINGS_TITLE * 1.6,
                 focus,
-                keyboard_session: ProjectionId::new(),
-                keyboard: None,
+                keyboard_session,
+                keyboard,
                 keyboard_observed: None,
                 _focus_subscriptions: focus_subscriptions,
             };
@@ -239,8 +254,19 @@ impl SettingsView {
                 .as_ref()
                 .is_some_and(|previous| previous.authority != projected.authority)
             {
+                let keep_section = page.focus.is_focused(window)
+                    && page.keyboard_observed.as_ref().is_some_and(|previous| {
+                        previous.keyboard == Some(Action::Section(projected.selected))
+                            && previous.authority.section != projected.authority.section
+                            && projected.authority.pending.is_none()
+                            && !projected.authority.closing
+                    });
                 page.keyboard_session = ProjectionId::new();
-                page.keyboard = None;
+                page.keyboard = if keep_section {
+                    selected_section(&projected, &page.keyboard_session)
+                } else {
+                    None
+                };
             }
             page.keyboard = Selection::reconcile(
                 page.keyboard.as_ref(),
