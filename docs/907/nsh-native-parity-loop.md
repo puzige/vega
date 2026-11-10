@@ -158,3 +158,13 @@ macOS 15.8.2 (24H232)，arm64。参照为实际 Vega 0.1.413 可执行文件，S
 在正常窗口粘贴后立即 Tab，粘贴 outside，再 Shift-Tab 粘贴 back，实际值为 stable-back。缩到 960×600pt 并打开终端，真实焦点依次从编辑框到 Generate message、Commit，再反向回到 Generate message、编辑框。返回后粘贴并用真实拼音按键输入 nihao、Tab、空格，实际字段值为 stable-back-short-returned你好。取消后隔离 Git HEAD 仍为 8871fd3，仅测试文件保持已暂存。留存 commit-tab-generate-r47.jpeg。该项替代上一节的短视口 Tab 缺口，编辑框内 Cmd+Enter 仍单列。
 
 分支工作区 fmt、严格 Clippy 通过；生产 nextest 为 16 个二进制、0 发现及 0 执行。Python 三组 5/15/40 项通过。非作者复核精确差异 SHA-256 为 `a679b5ace1c04a79fb6b6d12990917e9e6cc5d0c1ef2c255af06876567e4e648`。
+
+## 332c3d57 侧栏的周期性重绘
+
+原版 0.1.413 和新版默认侧栏都经 render_projects_pi 显示项目名。迁移版仍启动独立项目列表的分支轮询：每 100ms 检查一次，约每两秒请求一次渲染以判断分支标签是否已经挂载。侧栏同时观察这个控制器，生产入口没有对应的项目行标签。332c3d57 在组织侧栏启用后结束该计时任务。主界面分支选择器、项目管理及任务列表的定期读取各走自己的路径。
+
+真实 macOS 隔离项目初始分支为 main，将本地测试分支改名 parity-probe-r51，已打开窗口的分支按钮显示新名称；恢复 main 后同一按钮自动恢复。Git HEAD 为 8871fd35，暂存树前后均为 c6f9906a。真实会话显示 Worked for 1m 15s，项目和历史任务仍可打开。
+
+在相同已结束会话、侧栏展开时，每隔约 50ms 读取一次进程 CPU 计数，每轮 240 次。基线两轮平均为单核的 0.84%、0.91%，修复版为 1.81%、4.96%。这一组没有观察到 CPU 改善。启动时机及桌面活动会影响结果；CPU 不度量帧延迟。基线另一次 12 秒 Instruments 记录未产生 hitch 或 surface swap 数据行，无法由此判断卡顿是否消失。流式回复期间的交互与可见侧栏刷新仍为 PARTIAL。原始对照记录保存在本机 performance/branch-probe-r51.json。
+
+实测生产源码 332c3d57cafa8a3b3307f92b8e4de7c5cf60ea80，macOS 15.8.2 arm64 优化程序 SHA-256 f3824d8304c6e757051e6a882ee1ee947fb251189df9ee695ed93c0265b40e62，UUID 378176ED-24F8-3482-982B-8163D70F79D2。独立启动器已核实使用同一程序并创建单独数据库。workspace fmt、全目标严格 Clippy 通过。非作者复核差异 SHA-256 为 011f699d1e6146f7a363da0fc142af4c86a0cbddb7662ea3b47ef398e899759b。
