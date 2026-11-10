@@ -35,7 +35,7 @@ macOS 15.8.2 (24H232)，arm64。参照为实际 Vega 0.1.413 可执行文件，S
 | 会话 | PARTIAL | 第三轮在真实发送后 SIGABRT；本机 HTTP 收到流式请求。组合构建重复发送，观察到 Stop、完成回复和重开历史。第八轮窗口显示用户正文、Markdown 标题、两项列表、Rust 标签、代码和 Copy code。原版即时显示过凭据检查提示，重新打开历史后能显示同一条测试正文。修复长消息的借用错误和父子通知循环后，28 个单字段落成功发送并收到回复。871b46e6 重开历史可以展开、滚动、收起。段落选到 Rust 代码后用 ⌘C，独立本机粘贴接收框确认正文与代码均在、语言标题不进入选区；点击代码复制按钮另行回读整段代码。 d838bba7 中在删除确认关闭后可展开两秒运行的活动，重新看到已完成提问的工具详情入口。 后台生成时切到空白新任务，回到原任务读到 Worked for 1m 15s 及完成正文。 | 思考、子 Agent、锚点、选区边界、长历史以及其他消息样式。 |
 | Composer | PARTIAL | 实际 macOS 文本框输入/粘贴、保存提供方、选默认模型、点击发送并收到流式输出。点击前后区分内外两个 Send AX 节点，空内容时外层状态仍需复核。 在后续普通构建用 ⌘Z 撤销、⇧⌘Z 恢复原文本；输入 @sample 后出现项目文件，用方向键和回车得到 @sample.txt。 d838bba7 使用真实系统输入法逐键输入 nihao，空格得到“你好”，数字 2 选择另一个候选 👋，Esc 取消当次预编辑。慢速回环运行的一条排队消息实际落库为 delivered，出现为下一条用户消息并收到回复。点击 Stop 后显示 Resume，恢复后服务收到新请求并完成。用系统 Open 面板选择自建 PNG 后能打开应用内图像标签。 | 候选窗位置、附件发送及失败重试、其余补全和模型/权限组合。 |
 | 权限与提问 | PARTIAL | 实机打开四档选择器，当前测试草稿通过正常点击切回逐项审批。新测试任务保持 confirm；经过此前操作的另一条隔离任务为 full_access、修订 1，用户不能确认是否手动选择。观察时该库工具调用数为零，行时间不能归因到某个输入。 在另一条隔离会话从生产 HTTP 接入请求提问与两次无害 shell。选 Image 再提交后服务收到工具结果。拒绝的调用落库为 rejected、无退出码；仅允许一次的调用返回 VEGA907 tool 42、退出码 0。会话仍为 confirm、修订 0。 | 危险确认、CUA 引导和其余问答变体。 |
-| 设置 | PARTIAL | 实机访问 General、Providers、MCP、Agents、Skills、Usage；在独立数据目录保存回环提供方和默认模型。外点关闭帮助已核实。1e41de13 从设置导航双向进入外观区，经键盘切换三种主题、中英文和侧栏。 | 权限菜单四行布局已在 0b15c71e 实窗对齐，整组仍比原版低 8 个物理像素。fe07f0ac 已核实权限选择器的键盘操作，以及保存只读后再次展开和重启持久化。下一项模型选择器没有原版焦点框；表单失败和重试、全部模型子页、键盘焦点/帮助、窄窗滚动与更细的版式。 |
+| 设置 | PARTIAL | 实机访问 General、Providers、MCP、Agents、Skills、Usage；在独立数据目录保存回环提供方和默认模型。外点关闭帮助已核实。1e41de13 从设置导航双向进入外观区，经键盘切换三种主题、中英文和侧栏。 | 权限菜单四行布局已在 0b15c71e 实窗对齐，整组仍比原版低 8 个物理像素。fe07f0ac 已核实权限选择器的键盘操作，以及保存只读后再次展开和重启持久化。6f17ddeb 已核实模型触发器、各行键盘选择和焦点恢复。继续 Tab 到 Queue 缺少原版焦点框；表单失败和重试、全部模型子页、键盘焦点/帮助、窄窗滚动与更细的版式。 |
 | 工作区 | PARTIAL | 登记带本地修改的 Git 项目，主界面恢复项目和 main 分支标签；打开环境与终端。 在有项目的前台历史会话，右栏显示 Review、main 和一个真实变更，展开 sample.txt 能看到删改行；切换并排模式、按 [、]，用鼠标建立焦点后 Esc 关闭。四个带名称的 NSH 图标在 3169b834 同宽实窗与原版对应，刷新图标原始像素边界完全一致，文件状态文本较原版横向偏 2 个物理像素。 命令面板用 Files 打开 sample.txt，读取到磁盘的三行内容，二进制文件走文本入口会给出预览限制。Composer 选择同一隔离项目的 PNG，点击附件预览后在真实工作区打开了带图像和关闭按钮的单独标签。 在 7f448915 的隔离仓库从清单进入准备，编辑说明，经遮挡保留草稿，再从 960×600pt 且带终端的短视口滚动并点击提交。Git 确认仅 sample.txt 进入新提交，907-count.txt 仍未跟踪。 | 分支切换、更多提交安全围栏、Diff 长列表、产物、自动化、子 Agent。 |
 | 终端 | PARTIAL | 真实登录 shell 返回 VEGA907_42；在初始候选测为 11×134，修复后以 stty 验得 11×143，与原版同尺寸。隐藏、切换环境并重开仍读到原 shell 变量和同一 PID。菜单回车穿透曾执行无害命令。第七轮预置命令后用方向键和回车选择菜单动作，菜单关闭、独立哨兵文件未产生。后续实机验证 Shift+F10、Escape、外点关闭后输入进入 Composer，并在 1920×1200 像素窗口读到同 PID、11×84。 d838bba7 隐藏终端 10 秒再打开，收到后台任务写出的同一个 shell PID。真实拼音在 PTY 能提交，旧候选会截去中文右半边。85af52f4 优化构建完整显示两个汉字、默认反色和选区；单击宽字后复制得到整屏，再正向拖选得到完整 SELECT 你好 AB，反向只选双宽字得到“你好”。三次结果由独立 macOS 文本接收框分别核对。 | 其他分栏尺寸、跨任务焦点及更长的多行选区。 |
 | 跨切面 | PARTIAL | 两种主题的真实窗口与 AX 已取样，含可操作的设置导航、字段、弹层、可读的侧栏分组。性能修复版实际隐藏/展开侧栏，将语言切换为中文再切回 English，标签随之更新。草稿粘贴是粘贴路径。 85af52f4 前台 ⌘K 可见背后会话及检索边框。真实拼音输入后第一次 Esc 只取消组词，第二次关闭。终端、设置和会话滚动分别有真实窗口取样。 | 候选窗位置、VoiceOver、全套菜单焦点和窗口生命周期。 |
@@ -328,3 +328,25 @@ macOS 15.8.2 arm64，在两个隔离目录打开同样为 Confirm 的默认权�
 下一处已复现的差距是关闭的默认权限选择器向前 Tab：原版聚焦模型的 Not selected 按钮，最终候选该处没有可见焦点。保留原始实窗步骤与截图 performance/permission-menu-r183.json、permission-menu-r187.json、permission-menu-original-default-model.png、permission-menu-r187-default-model.png。周期性卡顿本轮无新增帧时间测量。
 
 生产源码 fe07f0acfc281e75e09a104b0732daf291485db1，macOS 15.8.2 arm64 优化程序 SHA-256 为 6eb86c979940f2b74f4f668601bd208a71f467cdf265dea7963967d61f024803，UUID 0834C0D3-DE77-35C1-B852-642D07C7554D。十份源码经独立审查并与 r187-source.json 逐项核验，隔离启动器的新进程和新库身份另行复查。本机 workspace fmt、全目标严格 Clippy、Python 5/15/40 项通过；Rust 0 发现、0 执行。
+
+## 默认模型键盘实窗对照（工作树候选 R189）
+
+基线为 357d4a21，R189 修改 Vega 设置的模型触发器。优化程序 SHA-256 为 370a2fcd7a2c8e341784564ef04d2f80cb1d90a640674bf7bcce5ce478a6575e。隔离原版 0.1.413 进入通用设置后按 13 次 Tab、回车，可见模型按钮焦点框、展开箭头和无模型提示。R189 在同样步骤显示焦点框并展开；空格收起，Shift-Tab 返回权限按钮。截图在本机 performance/permission-menu-original-model-enter.png、permission-menu-r189-model-tab.png、permission-menu-r189-model-enter.png、permission-menu-r189-model-space.png、permission-menu-r189-back-permission.png。
+
+另用两个合成模型且无凭据的隔离配置，实窗展开可见 Fixture A/B；再按 Tab，第一项没有原版所需焦点框。截图 performance/permission-menu-r189-first-model-option.png。没有选择或发送，保存、持久化与选项焦点恢复仍待回归。此候选未进入 PR，设置行维持 PARTIAL。
+
+无模型、触发器持有焦点且已展开时，分别对 R189 与原版实按 Esc，两版均关闭通用设置回到主窗口。截图 performance/permission-menu-r189-model-escape.png、permission-menu-original-model-before-escape.png 和 permission-menu-original-model-escape.png。此结论仅覆盖触发器焦点。
+
+## 非空默认模型目录（工作树候选 R191）
+
+R189 在两个合成模型的隔离目录选择 Fixture B，模型名已更新，但 macOS AX 仍将触发器报告为 disabled。R191 将等待回执的任务挂到页面，并让模型选项进入原生 Tab 顺序，保留 NSH 绘制。该目录重启 R191 后主界面为 B，设置展开后 Tab 聚焦 A，再 Tab 聚焦 B，Shift-Tab 返回 A，回车选择 A，菜单收起且触发器可用。通过可访问按钮立即重新展开，同一进程可见 A、B。重启同一隔离目录后主窗口和设置均显示 A。使用相同合成模型的原版 0.1.413 从 B 选择 A 后焦点框消失，立即按空格未展开。原版这一行为与 nsh-full.md 的显式焦点恢复要求有差异。
+
+R191 优化程序 SHA-256 为 2d0845e47fdf6f13c51e7bdd9d0890203978bb4d1867c57a993da00073586ab3。证据在 performance/permission-menu-r189-after-select-b.png、permission-menu-original-model-option-a.png、permission-menu-r191-model-option-a.png、permission-menu-r191-model-option-b.png、permission-menu-r191-model-after-save-a.png、permission-menu-r191-model-restart.png。本地 cargo check 与优化构建完成。展现代际校验、按规格恢复焦点及选中态非颜色标记尚待收尾，候选未提交。
+
+## 6f17ddeb 默认模型保存、Esc 与目录变更
+
+原版在展开模型时按 Esc 关闭设置；按本次规格 §默认模型的明确要求，6f17ddeb 在模型行持焦时按 Esc 收起菜单，焦点框返回模型触发器。两个菜单同时展开，按 Tab 越过权限区到模型，再在模型第一行按 Esc，只有模型菜单收起；Confirm 仍是原选中权限。选项勾选标记与键盘焦点框可独立看到。模型菜单打开时点击 Back to app 一次回主窗。中间候选 R193 曾吞掉显式返回；保留 performance/permission-menu-r193-back-open-model.png。命令面板覆盖时 R193 实窗模型按钮及选项均报告禁用，关闭面板后恢复。
+
+在隔离配置中，R195 显示 A/B 后加入 C，选择 A 并合并磁盘目录后，触发器没有焦点框，按空格未重开。最终 6f17ddeb 以 A/B/C 启动，在模型 B 持焦时向同一隔离配置加入 D，按回车选 B，焦点框回到 B 触发器，随后空格立即展开。A/B/C/D 均可见，勾选 B。没有向提供方发送请求。证据 performance/permission-menu-r195-save-with-catalog-change.png、permission-menu-r197-before-catalog-merge.png、permission-menu-r197-after-catalog-merge-space.png、permission-menu-r197-model-esc-both-menus.png。下一处实窗差距为模型收起后继续按两次 Tab：原版 Queue 有焦点框，候选未显示；没有在不明焦点上激活操作。
+
+生产源码 6f17ddebda3ac7b1cd6bbb375f1ed8982d57985d，macOS 15.8.2 arm64，优化程序 SHA-256 94b7a74291f5018f48f79052793c717b277fb71b063491f3275441fd61ee605f，UUID A5B28CC5-DF80-328E-AD00-8DA9B9DA80F4。编译目录按 1099 个跟踪的非文档路径核实。Rust/Cargo 1.98.0，本地格式检查、严格全目标 Clippy、Python 5/15/40 项通过，nextest 为 0 发现/0 执行。非作者终审通过，三文件 diff SHA-256 607ad15257859add2b50bb677eb78de38d36fff1dda1e21cd6fddc0849146f2d。357d4a21 的 required CI 已通过（run 42908246832）；新 head 需单独验证。周期性卡顿本轮未测帧时间，Windows/Linux 未运行。
