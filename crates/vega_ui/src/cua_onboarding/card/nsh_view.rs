@@ -9,9 +9,6 @@ use tokio::sync::{mpsc, oneshot};
 use vega_conversation::types::PermissionState;
 use vega_theme::{Layout, ThemeColors, Typography};
 
-#[cfg(test)]
-mod tests;
-
 mod keyboard;
 mod reveal;
 

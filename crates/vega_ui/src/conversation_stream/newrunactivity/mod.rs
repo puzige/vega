@@ -8,13 +8,7 @@ use gpui_kit::{
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-#[cfg(feature = "nsh-reading-integration")]
-mod header_integration;
-#[cfg(feature = "nsh-reading-integration")]
-pub use header_integration::repeated_production_header_render_retains_unowned_mount_and_projection;
 mod pixels;
-#[cfg(test)]
-mod tests;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Target {

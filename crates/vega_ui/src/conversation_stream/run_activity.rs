@@ -5,8 +5,6 @@ use gpui_kit::{AnyElement, ScrollHandle, div, px};
 
 #[path = "newrunactivity/mod.rs"]
 mod native;
-#[cfg(feature = "nsh-reading-integration")]
-pub use native::repeated_production_header_render_retains_unowned_mount_and_projection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunActivityStatus {

@@ -12,8 +12,6 @@ struct Glyph {
     kind: Icon,
     color: Rgba,
     size: f32,
-    #[cfg(feature = "nsh-reading-integration")]
-    observation: Option<super::host_regressions::Observation>,
 }
 
 struct Host {
@@ -24,13 +22,7 @@ struct Host {
 
 pub(super) fn element(kind: Icon, color: Rgba, size: f32) -> AnyElement {
     NativeIcon {
-        glyph: Glyph {
-            kind,
-            color,
-            size,
-            #[cfg(feature = "nsh-reading-integration")]
-            observation: None,
-        },
+        glyph: Glyph { kind, color, size },
     }
     .into_any_element()
 }
@@ -89,10 +81,6 @@ impl Element for NativeIcon {
     ) -> Self::PrepaintState {
         let mut key = DefaultHasher::new();
         layout.hash(&mut key);
-        #[cfg(feature = "nsh-reading-integration")]
-        {
-            self.glyph.observation = super::host_regressions::icon_observation(self.glyph.kind, cx);
-        }
         let glyph = self.glyph.clone();
         let host = window.use_keyed_state(("nsh-icon-surface", key.finish()), cx, |window, cx| {
             let (surface, _) = Surface::new_transparent(glyph.clone(), pixels, window, cx);
@@ -110,14 +98,6 @@ impl Element for NativeIcon {
             if host.published != glyph {
                 host.surface.publish(glyph.clone());
                 host.published = glyph;
-            }
-            #[cfg(feature = "nsh-reading-integration")]
-            if let Some(observation) = &host.published.observation {
-                observation.host(
-                    host.surface.entity().entity_id(),
-                    bounds,
-                    host.surface.errors().borrow().clone(),
-                );
             }
             host.surface.entity()
         });
@@ -144,10 +124,6 @@ impl Element for NativeIcon {
                 size: Default::default(),
             },
         };
-        #[cfg(feature = "nsh-reading-integration")]
-        if let Some(observation) = &self.glyph.observation {
-            observation.input(mask.bounds);
-        }
         window.with_content_mask(Some(mask), |window| {
             child.prepaint_at(bounds.origin, window, cx);
         });
@@ -165,10 +141,6 @@ impl Element for NativeIcon {
         cx: &mut App,
     ) {
         let bounds = bounds.intersect(&window.content_mask().bounds);
-        #[cfg(feature = "nsh-reading-integration")]
-        if let Some(observation) = &self.glyph.observation {
-            observation.paint(bounds);
-        }
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             child.paint(window, cx);
         });
@@ -184,34 +156,12 @@ pub(super) fn paint_id(bounds: Bounds<Pixels>, window: &Window) -> ElementId {
 }
 
 fn pixels(state: ns::Signal<Glyph>, _: tokio::sync::mpsc::Sender<()>) -> ns::AnyElement {
-    #[cfg(feature = "nsh-reading-integration")]
-    if let Some(observation) = &state.get_untracked().observation {
-        observation.setup();
-    }
     let root = ns::view().size_full().accessibility_elements_hidden(true);
-    #[cfg(feature = "nsh-reading-integration")]
-    let root = {
-        use ns::Interactive as _;
-        let observation = state.get_untracked().observation;
-        root.on_layout(move |bounds: &ns::Bounds<ns::Points>| {
-            if let Some(observation) = &observation {
-                observation.layout(bounds);
-            }
-        })
-    };
     root.child(ns::dynamic(move || {
         let glyph = state.get();
-        #[cfg(feature = "nsh-reading-integration")]
-        if let Some(observation) = &glyph.observation {
-            observation.projection(&[glyph.color], glyph.size, "", None);
-        }
         let Some(source) = nsh_source(glyph.kind) else {
             return ns::view().into_element();
         };
-        #[cfg(feature = "nsh-reading-integration")]
-        if let Some(observation) = &glyph.observation {
-            observation.asset(&source);
-        }
         ns::svg(nsh_core::element::ImageSrc::svg_markup(&source))
             .size(ns::px(glyph.size))
             .flex_shrink_0()

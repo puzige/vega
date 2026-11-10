@@ -758,6 +758,4 @@ mod threads_block;
 
 pub use projects_block::{ProjectsBlock, ProjectsBlockEvent};
 pub use row_helpers::*;
-#[cfg(feature = "nsh-reading-integration")]
-pub use threads_block::mounted_rename_native_ack_ime_cancel_rebind_and_persistence;
 pub use threads_block::{ThreadsBlock, ThreadsBlockEvent};

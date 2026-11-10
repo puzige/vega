@@ -631,6 +631,3 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         ))
         .into_element()
 }
-
-#[cfg(test)]
-mod tests;

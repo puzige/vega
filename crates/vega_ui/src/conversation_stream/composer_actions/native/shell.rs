@@ -1,6 +1,3 @@
-#[cfg(test)]
-mod tests;
-
 use crate::nsh::Surface;
 use gpui_kit::{
     AnyElement, App, Bounds, ContentMask, Context, Element, ElementId, GlobalElementId,

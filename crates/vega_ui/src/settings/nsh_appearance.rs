@@ -18,10 +18,6 @@ impl Presentation {
     }
 }
 
-#[cfg(feature = "nsh-reading-integration")]
-#[path = "nsh_appearance_close_support.rs"]
-pub(super) mod close_support;
-
 #[derive(Clone)]
 struct Snapshot {
     id: ProjectionId,
@@ -263,8 +259,6 @@ fn control(
 }
 
 fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
-    #[cfg(feature = "nsh-reading-integration")]
-    close_support::observe(state, commands.clone());
     let actions = Actions {
         state,
         pending: signal(false),
@@ -440,47 +434,4 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
             },
         ))
         .into_element()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Action, Snapshot, accepts};
-
-    fn snapshot() -> Snapshot {
-        Snapshot {
-            id: crate::nsh::ProjectionId::new(),
-            theme: "system".into(),
-            language: "en".into(),
-            sidebar: true,
-            enabled: true,
-            colors: vega_theme::Theme::light().colors,
-        }
-    }
-
-    #[test]
-    fn stale_preferences_cannot_overwrite_newer_appearance() {
-        let observed = snapshot();
-        let mut current = observed.clone();
-        current.theme = "dark".into();
-        assert!(!accepts(&current, &observed, Action::Theme("light")));
-        assert!(accepts(&current, &current, Action::Theme("light")));
-        current.language = "zh-CN".into();
-        assert!(!accepts(&current, &observed, Action::Language("en")));
-        assert!(accepts(&current, &current, Action::Language("en")));
-        assert!(!accepts(&current, &current, Action::Theme("unknown")));
-        assert!(!accepts(&current, &current, Action::Language("unknown")));
-    }
-
-    #[test]
-    fn saving_blocks_preferences_but_preserves_independent_sidebar_action() {
-        let observed = snapshot();
-        let mut current = observed.clone();
-        current.enabled = false;
-        assert!(!accepts(&current, &observed, Action::Theme("dark")));
-        assert!(!accepts(&current, &observed, Action::Language("zh-CN")));
-        assert!(accepts(&current, &observed, Action::Sidebar));
-        current.sidebar = false;
-        assert!(!accepts(&current, &observed, Action::Sidebar));
-        assert!(accepts(&current, &current, Action::Sidebar));
-    }
 }

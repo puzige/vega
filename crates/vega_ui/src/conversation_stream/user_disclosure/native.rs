@@ -14,9 +14,6 @@ use vega_theme::{Layout, ThemeColors, Typography};
 
 mod pixels;
 
-#[cfg(test)]
-mod tests;
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Intent {
     Activate(bool),

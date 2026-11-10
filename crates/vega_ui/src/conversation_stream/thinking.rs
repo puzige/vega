@@ -208,11 +208,6 @@ pub(crate) struct ThinkingBlock {
 }
 
 impl ThinkingBlock {
-    #[cfg(feature = "nsh-reading-integration")]
-    pub(crate) fn integration_source_copy(&self) -> MessageCopy {
-        self.source_copy.clone()
-    }
-
     pub(crate) fn summary_title(&self) -> Option<&str> {
         (!self.summary_preview.title.is_empty()).then_some(self.summary_preview.title.as_str())
     }

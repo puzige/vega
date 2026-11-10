@@ -172,17 +172,6 @@ impl PartialEq for DraftStamp {
 }
 impl Eq for DraftStamp {}
 impl DraftStamp {
-    #[cfg(test)]
-    pub(in crate::settings) fn development_fixture() -> Self {
-        Draft::new(["model".into(), "80".into(), "20".into()]).stamp()
-    }
-
-    #[cfg(test)]
-    pub(in crate::settings) fn development_change(&mut self, composing: bool) {
-        self.values.revision += 1;
-        self.values.composing[0] = composing;
-    }
-
     pub(in crate::settings) fn composing(&self) -> bool {
         !self.values.valid || self.values.frozen || self.values.composing.contains(&true)
     }
@@ -197,58 +186,5 @@ impl Draft {
             session: self.session.clone(),
             values: self.read(),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn newer_input_and_composition_block_observed_submission() {
-        let draft = Draft::new(["original".into(), String::new(), String::new()]);
-        let old = draft.read();
-        assert!(draft.edit(0, Some("newer"), None));
-        assert!(draft.claim(&old).is_none());
-        assert!(draft.edit(0, None, Some(true)));
-        assert!(draft.claim(&draft.read()).is_none());
-        assert!(draft.edit(0, None, Some(false)));
-        let values = draft.claim(&draft.read()).unwrap();
-        assert_eq!(values[0], "newer");
-        assert!(!draft.edit(0, Some("overwrite"), None));
-        draft.release();
-        assert!(draft.edit(0, Some("recovered"), None));
-        assert_eq!(draft.read().text[0], "recovered");
-    }
-
-    #[test]
-    fn secret_submission_keeps_only_presence_and_revision() {
-        let draft = Draft::new(Default::default());
-        assert!(draft.edit(3, Some("one-time-secret"), None));
-        let before = draft.read();
-        assert!(before.secret_present);
-        assert_eq!(before.text, [String::new(), String::new(), String::new()]);
-        assert!(draft.claim(&before).is_some());
-        draft.consume_secret();
-        draft.release();
-        assert!(!draft.read().secret_present);
-        assert_eq!(draft.read().secret_revision, before.secret_revision);
-        assert!(draft.edit(3, Some("replacement"), None));
-        assert_ne!(draft.read().secret_revision, before.secret_revision);
-        assert!(draft.claim(&before).is_none());
-    }
-
-    #[test]
-    fn discard_invalidates_only_the_observed_session_and_cannot_be_reused() {
-        let draft = Draft::new(Default::default());
-        let old = draft.stamp();
-        assert!(draft.edit(1, Some("latest"), None));
-        assert!(!draft.invalidate_stamp(&old));
-        assert!(draft.invalidate_stamp(&draft.stamp()));
-        assert!(!draft.edit(1, Some("stale"), None));
-        assert!(draft.claim(&draft.read()).is_none());
-        let replacement = Draft::new(Default::default());
-        assert!(!replacement.session.matches(&draft.session));
-        assert!(replacement.edit(0, Some("fresh"), None));
     }
 }

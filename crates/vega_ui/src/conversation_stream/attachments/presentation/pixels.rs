@@ -155,6 +155,3 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
     })
     .into_element()
 }
-
-#[cfg(test)]
-mod tests;

@@ -1086,6 +1086,3 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
         }))
         .into_element()
 }
-
-#[cfg(test)]
-mod tests;

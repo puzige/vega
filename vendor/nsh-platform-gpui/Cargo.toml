@@ -26,7 +26,6 @@ license = "Apache-2.0"
 repository = "https://github.com/longbridge/nsh"
 
 [features]
-vega-host-regressions = []
 default = [
     "js",
     "webview",

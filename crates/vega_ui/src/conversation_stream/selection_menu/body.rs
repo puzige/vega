@@ -3,16 +3,6 @@ use crate::nsh::{ProjectionId, Surface};
 use gpui_kit::IntoElement;
 use gpui_kit::{prelude::*, *};
 
-#[cfg(test)]
-#[path = "body_tests.rs"]
-mod tests;
-
-#[cfg(feature = "nsh-reading-integration")]
-#[path = "body_integration_tests.rs"]
-pub(crate) mod integration_tests;
-#[cfg(feature = "nsh-reading-integration")]
-#[path = "body_scroll_integration.rs"]
-pub(crate) mod scroll_integration;
 use nsh_base::text_view::{Block, CodeBlock, CustomNode, Document, Inline, Table, TableCell};
 use nsh_platform_gpui::reading::{ReadingIntent, ReadingRequest, ReadingSnapshot};
 use std::{
@@ -133,8 +123,6 @@ fn visible_nodes(model: &super::super::model::StreamModel) -> Vec<RenderNode> {
 #[derive(Clone)]
 pub(crate) struct Fragment {
     id: String,
-    #[cfg(test)]
-    row: u64,
     text: String,
     range: Range<usize>,
     synthetic: bool,
@@ -190,8 +178,6 @@ impl Builder {
         self.text.push_str(value);
         self.fragments.push(Fragment {
             id: id.clone(),
-            #[cfg(test)]
-            row: self.row,
             text: value.to_owned(),
             range: start..self.text.len(),
             synthetic,
@@ -447,42 +433,6 @@ impl Content {
             .get(start - self.source_start..end - self.source_start)
             .zip(previous_text.get(start - previous.source_start..end - previous.source_start))
             .is_some_and(|(current, previous)| current == previous)
-    }
-
-    #[cfg(test)]
-    fn row_at(&self, byte: usize) -> Option<u64> {
-        self.fragments
-            .iter()
-            .find(|fragment| fragment.range.contains(&byte))
-            .map(|fragment| fragment.row)
-    }
-
-    #[cfg(test)]
-    fn remap_row_anchor(&self, previous: &Self, anchor: (u64, f32)) -> Option<(u64, f32)> {
-        let previous_source = previous.source.as_deref()?;
-        let source = self.source.as_deref()?;
-        if !self.source_continues(previous, source, previous_source) {
-            return None;
-        }
-        let previous_mapping = previous.mapping(previous_source);
-        let position = previous_mapping.iter().find_map(|span| {
-            (previous.row_at(span.rendered.start) == Some(anchor.0))
-                .then(|| span.position(span.rendered.start))
-        })?;
-        let mapping = self.mapping(source);
-        mapping
-            .iter()
-            .find_map(|span| {
-                self.row_at(span.rendered_position(&position)?)
-                    .map(|id| (id, anchor.1))
-            })
-            .or_else(|| {
-                mapping.iter().find_map(|span| {
-                    (span.source.start >= position.source.end)
-                        .then(|| self.row_at(span.rendered.start).map(|id| (id, 0.)))
-                        .flatten()
-                })
-            })
     }
 
     fn mapping(&self, source: &str) -> Vec<SourceSpan> {
@@ -979,16 +929,6 @@ struct BodyState {
 
 impl BodyState {
     fn interrupt_anchor(&mut self) {
-        #[cfg(feature = "nsh-reading-integration")]
-        integration_tests::trace_anchor(self.copy.id, "interrupt", || {
-            format!(
-                "saved={:?} intent={} observation={} mount={}",
-                self.source_anchor.as_ref().map(|saved| &saved.anchor),
-                self.scroll_intent,
-                self.observation.get(),
-                self.source_mount.as_ref().is_some_and(|mount| mount.get()),
-            )
-        });
         self.scroll_intent = self.scroll_intent.wrapping_add(1);
         self.source_anchor = None;
         self.anchor_scroll = None;
@@ -1014,19 +954,6 @@ impl BodyState {
         {
             return false;
         }
-        #[cfg(feature = "nsh-reading-integration")]
-        integration_tests::trace_anchor(self.copy.id, "scroll.report", || {
-            format!(
-                "saved={:?} intent={} follow={} incoming_follow={} anchor_ticket={}",
-                self.source_anchor.as_ref().map(|saved| &saved.anchor),
-                self.scroll_intent,
-                self.follow,
-                follow,
-                self.anchor_scroll
-                    .as_ref()
-                    .is_some_and(|anchor| anchor.matches(ticket)),
-            )
-        });
         let restored = self
             .anchor_scroll
             .as_ref()
@@ -1049,13 +976,6 @@ impl BodyState {
     }
 
     fn apply_source_anchor(&mut self, window: &Window, cx: &mut App) {
-        macro_rules! trace_anchor {
-            ($event:expr) => {
-                #[cfg(feature = "nsh-reading-integration")]
-                integration_tests::trace_anchor_state(self, $event, window, cx);
-            };
-        }
-        trace_anchor!("apply.enter");
         if !self.projection.thinking
             || !self
                 .owner
@@ -1064,48 +984,39 @@ impl BodyState {
             || self.copy.content_generation() != self.projection.revision
             || self.copy.display_text() != self.projection.source
         {
-            trace_anchor!("reject.owner_source");
             self.source_anchor = None;
             return;
         }
         if !self.valid(window, cx) {
-            if self.acknowledged.is_none()
+            if !(self.acknowledged.is_none()
                 && self.source_layout_width.is_none()
                 && self
                     .source_anchor
                     .as_ref()
                     .is_some_and(|saved| saved.pending && saved.current(self))
-                && self.projection_current(window, cx)
+                && self.projection_current(window, cx))
             {
-                trace_anchor!("wait.layout_ack");
-            } else {
-                trace_anchor!("reject.valid");
                 self.source_anchor = None;
             }
             return;
         }
         let Some(mount) = self.source_mount.clone().filter(|mount| mount.get()) else {
-            trace_anchor!("reject.mount");
             self.source_anchor = None;
             return;
         };
         let Some(host) = self.lease.upgrade().and_then(|lease| lease.geometry.get()) else {
-            trace_anchor!("reject.host");
             self.source_anchor = None;
             return;
         };
         let Some((surface, area)) = self.surface.as_ref().zip(self.area) else {
-            trace_anchor!("reject.surface_area");
             self.source_anchor = None;
             return;
         };
         let Some(scroll_node) = self.scroll_node else {
-            trace_anchor!("reject.scroll_node");
             self.source_anchor = None;
             return;
         };
         if self.source_layout_width != Some(f32::from(host.bounds.size.width)) {
-            trace_anchor!("wait.layout_width");
             return;
         }
         let view = surface.entity();
@@ -1116,25 +1027,20 @@ impl BodyState {
                 && saved.area == area
                 && view.read(cx).reading_geometry_is_current(&saved.geometry)
         }) {
-            trace_anchor!("reuse.current");
             return;
         }
         let Some(snapshot) = view.read(cx).reading_snapshot(area) else {
-            trace_anchor!("reject.snapshot");
             self.source_anchor = None;
             return;
         };
         if !self.projection.content.matches_snapshot(&snapshot) {
-            trace_anchor!("wait.snapshot_content");
             return;
         }
         if snapshot.ranges.iter().any(|(_, range)| !range.is_empty()) {
-            trace_anchor!("reject.selection");
             self.source_anchor = None;
             return;
         }
         let Some(geometry) = view.read(cx).reading_geometry(&snapshot) else {
-            trace_anchor!("reject.geometry");
             self.source_anchor = None;
             return;
         };
@@ -1146,11 +1052,9 @@ impl BodyState {
             f32::from(clipped.size.height),
         ];
         if clipped.is_empty() {
-            trace_anchor!("reject.clip");
             self.source_anchor = None;
             return;
         }
-        trace_anchor!("consume.saved");
         let saved = self
             .source_anchor
             .take()
@@ -1173,7 +1077,6 @@ impl BodyState {
                 saved.geometry = geometry;
                 saved.area = area;
                 self.source_anchor = Some(saved);
-                trace_anchor!("retain.current_source");
                 return;
             }
             if let Some(delta) = saved.anchor.delta(
@@ -1189,13 +1092,6 @@ impl BodyState {
                 let applied = view
                     .read(cx)
                     .scroll_reading_anchor(&geometry, scroll_node, delta);
-                #[cfg(feature = "nsh-reading-integration")]
-                integration_tests::trace_anchor(self.copy.id, "restore.actuator", || {
-                    format!(
-                        "anchor={:?} delta={delta} applied={applied} viewport={viewport:?}",
-                        saved.anchor,
-                    )
-                });
                 if applied {
                     self.anchor_scroll = Some(self.projection.scroll_ticket.clone());
                     saved.pending = false;
@@ -1203,10 +1099,7 @@ impl BodyState {
                     saved.geometry = geometry;
                     saved.area = area;
                     self.source_anchor = Some(saved);
-                    trace_anchor!("retain.restored_source");
                 }
-            } else {
-                trace_anchor!("reject.restore_delta_or_current");
             }
             return;
         }
@@ -1228,7 +1121,6 @@ impl BodyState {
             intent: self.scroll_intent,
             observation: self.observation.get(),
         });
-        trace_anchor!("capture.result");
     }
 
     fn restore_selection(&mut self, window: &Window, cx: &mut App) {
@@ -1583,13 +1475,6 @@ pub(in crate::conversation_stream) fn render_fading(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    #[cfg(feature = "nsh-reading-integration")]
-    let projected = integration_tests::projected_body(copy, window, cx);
-    #[cfg(feature = "nsh-reading-integration")]
-    let content = projected
-        .as_ref()
-        .map(|(content, _, _)| content.clone())
-        .unwrap_or(content);
     let id = copy.id;
     let state = window.use_keyed_state(("nsh-reading-body", id), cx, |_, _| BodyState {
         copy: copy.clone(),
@@ -1744,9 +1629,6 @@ pub(in crate::conversation_stream) fn render_fading(
                     if this
                         .update_in(cx, |this, window, cx| match request {
                             Request::Layout(session, width, height, area) => {
-                                #[cfg(feature = "nsh-reading-integration")]
-                                let _stage =
-                                    integration_tests::Stage::begin("body", "request.layout");
                                 if this.projection.session.matches(&session)
                                     && width.is_finite()
                                     && width > 0.
@@ -1757,13 +1639,6 @@ pub(in crate::conversation_stream) fn render_fading(
                                         this.source_layout_width = Some(width);
                                         window.refresh();
                                     }
-                                    #[cfg(feature = "nsh-reading-integration")]
-                                    integration_tests::trace_anchor_state(
-                                        this,
-                                        "layout.ack",
-                                        window,
-                                        cx,
-                                    );
                                     this.scroll_content_height = height;
                                     this.acknowledged = Some(session);
                                     this.area = Some(area);
@@ -2008,11 +1883,7 @@ pub(in crate::conversation_stream) fn render_fading(
             }
         }
     }
-    #[cfg(feature = "nsh-reading-integration")]
-    if projected.as_ref().is_some_and(|(_, _, mounted)| !mounted) {
-        return div().h(px(1.)).into_any_element();
-    }
-    let mounted = super::mounted::Mounted {
+    super::mounted::Mounted {
         child: LinkedBody {
             child: child.into_any_element(),
             state: weak,
@@ -2021,12 +1892,7 @@ pub(in crate::conversation_stream) fn render_fading(
         lease,
         id: ("nsh-reading-mounted", id).into(),
     }
-    .into_any_element();
-    #[cfg(feature = "nsh-reading-integration")]
-    if let Some((_, width, _)) = projected {
-        return div().w(px(width)).child(mounted).into_any_element();
-    }
-    mounted
+    .into_any_element()
 }
 
 struct LinkedBody {
@@ -2057,8 +1923,6 @@ impl Element for LinkedBody {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
-        #[cfg(feature = "nsh-reading-integration")]
-        let _stage = integration_tests::Stage::begin("body", "request_layout");
         (self.child.request_layout(window, cx), ())
     }
     fn prepaint(
@@ -2070,8 +1934,6 @@ impl Element for LinkedBody {
         window: &mut Window,
         cx: &mut App,
     ) -> Vec<AnyElement> {
-        #[cfg(feature = "nsh-reading-integration")]
-        let _stage = integration_tests::Stage::begin("body", "prepaint");
         if let Some(entity) = self.state.upgrade() {
             let state = entity.read(cx);
             if let Some(lease) = state.lease.upgrade() {
@@ -2115,20 +1977,10 @@ impl Element for LinkedBody {
                 },
             );
         }
-        #[cfg(feature = "nsh-reading-integration")]
-        let child_stage = integration_tests::Stage::begin("body", "prepaint.child");
         self.child.prepaint(window, cx);
-        #[cfg(feature = "nsh-reading-integration")]
-        drop(child_stage);
-        #[cfg(feature = "nsh-reading-integration")]
-        let anchor_stage = integration_tests::Stage::begin("body", "prepaint.source_anchor");
         let _ = self
             .state
             .update(cx, |state, cx| state.apply_source_anchor(window, cx));
-        #[cfg(feature = "nsh-reading-integration")]
-        drop(anchor_stage);
-        #[cfg(feature = "nsh-reading-integration")]
-        let _links_stage = integration_tests::Stage::begin("body", "prepaint.links");
         let Some(entity) = self.state.upgrade() else {
             return Vec::new();
         };
@@ -2264,20 +2116,10 @@ impl Element for LinkedBody {
                 let _ = keyboard.update(cx, |state, _| state.interrupt_anchor());
             }
         });
-        #[cfg(feature = "nsh-reading-integration")]
-        let opacity_stage = integration_tests::Stage::begin("body", "paint.opacity");
         let _ = self
             .state
             .update(cx, |state, cx| state.paint_opacity(window, cx));
-        #[cfg(feature = "nsh-reading-integration")]
-        drop(opacity_stage);
-        #[cfg(feature = "nsh-reading-integration")]
-        let child_stage = integration_tests::Stage::begin("body", "paint.child");
         self.child.paint(window, cx);
-        #[cfg(feature = "nsh-reading-integration")]
-        drop(child_stage);
-        #[cfg(feature = "nsh-reading-integration")]
-        let _links_stage = integration_tests::Stage::begin("body", "paint.links");
         for target in targets {
             target.paint(window, cx);
         }

@@ -1,9 +1,6 @@
 use super::*;
 mod presentation;
 
-#[cfg(feature = "nsh-reading-integration")]
-pub use presentation::mounted_regressions;
-
 use vega_conversation::types::{
     AttemptId, CommitFact, OrdinarySubmission, PrimaryFact, RetryBlocker, RetryEligibility,
     SubmissionFailure, SubmissionId,

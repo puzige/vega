@@ -200,11 +200,6 @@ impl Element for Presence {
         let height = f32::from(bounds.size.height);
         let previous_height = self.height.replace(height);
         if (previous_height - height).abs() > 0.5 {
-            #[cfg(feature = "nsh-reading-integration")]
-            eprintln!(
-                "[nsh-height] card={:?} old={previous_height} new={height}",
-                self.card.entity_id()
-            );
             let card = self.card.clone();
             window.defer(cx, move |_, cx| {
                 let _ = card.update(cx, |_, cx| {

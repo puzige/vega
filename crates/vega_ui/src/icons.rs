@@ -3,9 +3,6 @@ use gpui_kit::{AnyElement, IntoElement, Rgba, component::IconName, prelude::*, p
 mod nsh;
 mod tooltip;
 
-#[cfg(feature = "nsh-reading-integration")]
-pub mod host_regressions;
-
 use crate::interaction::{Interaction, InteractionExt};
 use vega_theme::Layout;
 

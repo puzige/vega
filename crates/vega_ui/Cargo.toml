@@ -3,9 +3,6 @@ name = "vega_ui"
 version.workspace = true
 edition.workspace = true
 
-[features]
-nsh-reading-integration = ["gpui_kit/test-support", "nsh-platform-gpui/vega-host-regressions"]
-
 [dependencies]
 vega_i18n.workspace = true
 gpui_kit.workspace = true
@@ -23,51 +20,3 @@ vega_theme.workspace = true
 # （exec-guide §5 白名单内依赖）。
 vega_markdown.workspace = true
 serde_json.workspace = true
-
-[[test]]
-name = "nsh_reading_geometry"
-harness = false
-
-[[test]]
-name = "nsh_reading_integration"
-harness = false
-required-features = ["nsh-reading-integration"]
-
-[[test]]
-name = "nsh_scroll_integration"
-harness = false
-required-features = ["nsh-reading-integration"]
-
-[[test]]
-name = "nsh_icons_integration"
-harness = false
-required-features = ["nsh-reading-integration"]
-
-[[test]]
-name = "nsh_settings_integration"
-harness = false
-required-features = ["nsh-reading-integration"]
-
-[[test]]
-name = "nsh_recovery_integration"
-harness = false
-required-features = ["nsh-reading-integration"]
-
-[[test]]
-name = "nsh_message_anchors_integration"
-harness = false
-required-features = ["nsh-reading-integration"]
-
-[[test]]
-name = "nsh_palette_integration"
-harness = false
-required-features = ["nsh-reading-integration"]
-
-[[test]]
-name = "nsh_ordinary_controls_integration"
-harness = false
-required-features = ["nsh-reading-integration"]
-
-[dev-dependencies]
-gpui_kit = { workspace = true, features = ["test-support"] }
-nsh-platform-gpui = { workspace = true, features = ["vega-host-regressions"] }

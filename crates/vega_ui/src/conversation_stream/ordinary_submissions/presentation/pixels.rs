@@ -59,8 +59,6 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                 if !command_owner.is_live() || !presentation_owner.is_live() {
                     return;
                 }
-                #[cfg(feature = "nsh-reading-integration")]
-                super::mounted_regressions::record_layout(&id, None, bounds);
                 revision.update(|value| *value = value.wrapping_add(1));
                 measure_commands.send(Request::Layout {
                     id: id.clone(),
@@ -106,18 +104,6 @@ fn label(text: String, snapshot: &Snapshot) -> ns::AnyElement {
         .text_size(ns::px(Typography::BODY))
         .line_height(ns::px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
         .text_color(crate::nsh::color(snapshot.colors.text_secondary));
-    #[cfg(feature = "nsh-reading-integration")]
-    let label = {
-        let id = snapshot.id.clone();
-        label.on(
-            nsh_core::EventKind::TextLayout,
-            move |event: &nsh_core::EventPayload| {
-                if let nsh_core::EventPayload::TextLayout(lines) = event {
-                    super::mounted_regressions::record_text(&id, &text, lines);
-                }
-            },
-        )
-    };
     label.into_element()
 }
 
@@ -148,8 +134,6 @@ fn button(
     let hover = ns::signal(false);
     let down = ns::signal(false);
     let text = label(name.clone(), &observed);
-    #[cfg(test)]
-    let presentation_id = observed.id.clone();
     let button = ns::view()
         .min_w(ns::px(0.))
         .max_w(ns::px(observed.width))
@@ -159,13 +143,6 @@ fn button(
         .rounded(ns::px(Layout::SETTINGS_CONTROL_RADIUS))
         .role(nsh_core::AccessibilityRole::Button)
         .label(name);
-    #[cfg(feature = "nsh-reading-integration")]
-    let button = {
-        let id = observed.id.clone();
-        button.on_layout(move |bounds: &ns::Bounds<ns::Points>| {
-            super::mounted_regressions::record_layout(&id, Some(action), bounds);
-        })
-    };
     let press = move || {
         if !enabled || !command_owner.is_live() || !presentation_owner.is_live() {
             return;
@@ -195,8 +172,6 @@ fn button(
             });
         });
     };
-    #[cfg(test)]
-    let press = super::tests::retain_press(presentation_id, presentation_owner, action, press);
     button
         .border(ns::px(1.))
         .border_color(crate::nsh::color(if selected {

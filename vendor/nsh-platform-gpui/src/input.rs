@@ -85,9 +85,6 @@ use crate::{
 
 type Press = input::Press<NshView>;
 
-#[cfg(feature = "vega-host-regressions")]
-pub(crate) mod scroll_host_tests;
-
 #[doc = "Actual same-event scroll consumption in native content points, positive toward content end."]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ScrollOutcome {

@@ -2,10 +2,6 @@ use super::*;
 use ns::{Accessible as _, IntoElement as _, Styled as _};
 use nsh_core::prelude as ns;
 
-#[cfg(all(test, feature = "nsh-workspace-integration"))]
-#[path = "mounted_observations.rs"]
-pub(super) mod mounted_observations;
-
 pub(in crate::window) fn drag_region(
     key: &'static str,
     vertical: bool,
@@ -60,17 +56,11 @@ fn host(key: &'static str, color: Rgba, window: &mut Window, cx: &mut App) -> En
     let host = window.use_keyed_state(key, cx, |window, cx| {
         let (surface, _) = Surface::new_transparent(color, pixels, window, cx);
         surface.focus_handle(cx).tab_stop(false);
-        #[cfg(all(test, feature = "nsh-workspace-integration"))]
-        mounted_observations::created(key, &surface, cx);
         Host {
             surface,
             color,
-            #[cfg(all(test, feature = "nsh-workspace-integration"))]
-            key,
             _release: cx.on_release(|host: &mut Host, cx| {
                 host.surface.entity().read(cx).stop();
-                #[cfg(all(test, feature = "nsh-workspace-integration"))]
-                mounted_observations::stopped(host.key, host.surface.entity().entity_id(), cx);
             }),
         }
     });
@@ -78,8 +68,6 @@ fn host(key: &'static str, color: Rgba, window: &mut Window, cx: &mut App) -> En
         if host.color != color {
             host.color = color;
             host.surface.publish(color);
-            #[cfg(all(test, feature = "nsh-workspace-integration"))]
-            mounted_observations::published(key, _cx);
         }
     });
     host
@@ -88,8 +76,6 @@ fn host(key: &'static str, color: Rgba, window: &mut Window, cx: &mut App) -> En
 struct Host {
     surface: Surface<Rgba, ()>,
     color: Rgba,
-    #[cfg(all(test, feature = "nsh-workspace-integration"))]
-    key: &'static str,
     _release: Subscription,
 }
 
@@ -97,8 +83,6 @@ impl Render for Host {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.surface.sync_environment(cx);
         Passive {
-            #[cfg(all(test, feature = "nsh-workspace-integration"))]
-            key: self.key,
             child: div()
                 .size_full()
                 .child(self.surface.entity())
@@ -116,8 +100,6 @@ fn pixels(color: ns::Signal<Rgba>, _: tokio::sync::mpsc::Sender<()>) -> ns::AnyE
 }
 
 struct Passive {
-    #[cfg(all(test, feature = "nsh-workspace-integration"))]
-    key: &'static str,
     child: AnyElement,
 }
 
@@ -166,8 +148,6 @@ impl Element for Passive {
                 size: Default::default(),
             },
         };
-        #[cfg(all(test, feature = "nsh-workspace-integration"))]
-        mounted_observations::input(self.key, _bounds, mask.bounds, cx);
         window.with_content_mask(Some(mask), |window| self.child.prepaint(window, cx));
     }
 
@@ -182,8 +162,6 @@ impl Element for Passive {
         cx: &mut App,
     ) {
         let bounds = bounds.intersect(&window.content_mask().bounds);
-        #[cfg(all(test, feature = "nsh-workspace-integration"))]
-        mounted_observations::paint(self.key, bounds, cx);
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             self.child.paint(window, cx);
         });

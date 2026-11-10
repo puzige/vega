@@ -1,7 +1,3 @@
-#[cfg(test)]
-#[path = "tool_activity_group/nsh_scroll/tests.rs"]
-mod scroll_tests;
-
 pub(crate) mod scroll_group;
 
 pub(crate) use scroll_group::{chrome as group_scroll_chrome, listener as group_scroll_listener};

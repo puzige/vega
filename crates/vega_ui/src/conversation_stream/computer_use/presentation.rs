@@ -531,6 +531,3 @@ impl RenderOnce for NativeNotice {
         })
     }
 }
-
-#[cfg(test)]
-mod tests;

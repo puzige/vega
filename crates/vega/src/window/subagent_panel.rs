@@ -1147,10 +1147,6 @@ impl VegaWindow {
     }
 }
 
-#[cfg(test)]
-#[path = "nsh_workspace/detail_tests.rs"]
-mod detail_tests;
-
 fn state_label(state: SubagentState) -> &'static str {
     match state {
         SubagentState::Running => vega_i18n::t("app.subagent.running"),

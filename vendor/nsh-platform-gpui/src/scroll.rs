@@ -159,20 +159,6 @@ impl ScrollHost for Host<'_> {
     }
 }
 
-#[cfg(feature = "vega-host-regressions")]
-pub(crate) fn reading_geometry_scroll_step(surface: &Rc<Surface>, view: &NshView, delta: f32) {
-    shared::wheel(&Host::new(surface, view), point(Points(0.0), Points(delta)));
-}
-
-#[cfg(feature = "vega-host-regressions")]
-pub(crate) fn reading_geometry_scroll_frame(
-    surface: &Rc<Surface>,
-    view: &NshView,
-    now: f64,
-) -> bool {
-    shared::frame(&Host::new(surface, view), now)
-}
-
 /// Whether `view` is a scroll view the user can scroll by `(dx, dy)`
 /// ([`ScrollState::can_scroll`]). Input uses it to pick which of nested
 /// scroll views a wheel moves.

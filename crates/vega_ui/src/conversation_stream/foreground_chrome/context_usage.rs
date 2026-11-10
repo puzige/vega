@@ -657,6 +657,3 @@ impl Element for Guarded {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

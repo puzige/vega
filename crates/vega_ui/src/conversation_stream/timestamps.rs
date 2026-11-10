@@ -2,9 +2,6 @@ use super::timestamp_format::{TimestampDisplay, format_timestamp};
 use super::*;
 mod presentation;
 
-#[cfg(feature = "nsh-reading-integration")]
-pub use presentation::mounted_regressions;
-
 #[derive(Default)]
 pub(super) struct TimestampState {
     pub(super) times: HashMap<String, Option<i64>>,

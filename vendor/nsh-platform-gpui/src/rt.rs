@@ -45,21 +45,12 @@ pub(crate) fn init(cx: &mut App) {
             while let Ok(job) = rx.try_recv() {
                 jobs.push(job);
             }
-            #[cfg(feature = "vega-host-regressions")]
-            let diagnostic = crate::integration_support::batch_started(jobs.len());
             cx.update(|cx| {
-                #[cfg(feature = "vega-host-regressions")]
-                let jobs_diagnostic =
-                    diagnostics::Span::start(diagnostics::Stage::Jobs, jobs.len());
                 for job in jobs {
                     job();
                 }
-                #[cfg(feature = "vega-host-regressions")]
-                drop(jobs_diagnostic);
                 flush(cx);
             });
-            #[cfg(feature = "vega-host-regressions")]
-            crate::integration_support::batch_finished(diagnostic);
         }
     })
     .detach();
@@ -126,139 +117,5 @@ pub(crate) fn on_app(f: impl FnOnce(&mut App) + 'static) {
 /// Notifies the views of every surface of this thread that changed since
 /// they were last drawn.
 pub(crate) fn flush(cx: &mut App) {
-    #[cfg(feature = "vega-host-regressions")]
-    let _diagnostic = diagnostics::Span::start(diagnostics::Stage::Flush, 0);
     crate::surface::flush_all(cx);
-}
-
-#[cfg(feature = "vega-host-regressions")]
-pub(crate) mod diagnostics {
-    use std::{
-        cell::RefCell,
-        time::{Duration, Instant},
-    };
-
-    const STAGE_COUNT: usize = 7;
-    const REPORT_LIMIT: u64 = 64;
-    const REPORT_INTERVAL: Duration = Duration::from_millis(100);
-    const NAMES: [&str; STAGE_COUNT] = [
-        "runtime.jobs",
-        "runtime.flush",
-        "surface.drain",
-        "surface.apply",
-        "geometry.capture",
-        "geometry.current_for",
-        "opacity.active_is_current",
-    ];
-
-    #[derive(Clone, Copy)]
-    pub(crate) enum Stage {
-        Jobs,
-        Flush,
-        SurfaceDrain,
-        SurfaceApply,
-        GeometryCapture,
-        GeometryCurrent,
-        OpacityCurrent,
-    }
-
-    #[derive(Clone, Copy, Default)]
-    struct Metric {
-        calls: u64,
-        items: u64,
-        elapsed: Duration,
-        max: Duration,
-    }
-
-    impl Metric {
-        const EMPTY: Self = Self {
-            calls: 0,
-            items: 0,
-            elapsed: Duration::ZERO,
-            max: Duration::ZERO,
-        };
-
-        fn record(&mut self, items: u64, elapsed: Duration) {
-            self.calls = self.calls.saturating_add(1);
-            self.items = self.items.saturating_add(items);
-            self.elapsed = self.elapsed.saturating_add(elapsed);
-            self.max = self.max.max(elapsed);
-        }
-    }
-
-    struct Aggregate {
-        total: [Metric; STAGE_COUNT],
-        pending: [Metric; STAGE_COUNT],
-        reports: u64,
-    }
-
-    thread_local! {
-        static AGGREGATE: RefCell<Aggregate> = const { RefCell::new(Aggregate {
-            total: [Metric::EMPTY; STAGE_COUNT],
-            pending: [Metric::EMPTY; STAGE_COUNT],
-            reports: 0,
-        }) };
-    }
-
-    pub(crate) struct Span {
-        stage: Stage,
-        items: u64,
-        start: Instant,
-    }
-
-    impl Span {
-        pub(crate) fn start(stage: Stage, items: usize) -> Self {
-            Self {
-                stage,
-                items: items as u64,
-                start: Instant::now(),
-            }
-        }
-    }
-
-    impl Drop for Span {
-        fn drop(&mut self) {
-            let elapsed = self.start.elapsed();
-            let index = self.stage as usize;
-            let report = AGGREGATE.with(|aggregate| {
-                let mut aggregate = aggregate.borrow_mut();
-                aggregate.total[index].record(self.items, elapsed);
-                aggregate.pending[index].record(self.items, elapsed);
-                let flushes = aggregate.total[Stage::Flush as usize].calls;
-                let flush_boundary = matches!(self.stage, Stage::Flush)
-                    && (flushes <= 16 || flushes.is_multiple_of(100));
-                if aggregate.reports >= REPORT_LIMIT
-                    || (!flush_boundary && aggregate.pending[index].elapsed < REPORT_INTERVAL)
-                {
-                    return None;
-                }
-                aggregate.reports += 1;
-                Some((
-                    aggregate.reports,
-                    std::mem::replace(&mut aggregate.pending, [Metric::EMPTY; STAGE_COUNT]),
-                    aggregate.total,
-                ))
-            });
-            if let Some((report, pending, total)) = report {
-                let thread = std::thread::current().id();
-                for (index, metric) in pending.iter().enumerate() {
-                    if metric.calls == 0 {
-                        continue;
-                    }
-                    eprintln!(
-                        "[nsh-stage] thread={thread:?} report={report}/{REPORT_LIMIT} trigger={} stage={} calls={} items={} elapsed_ns={} max_ns={} total_calls={} total_items={} total_elapsed_ns={}",
-                        NAMES[self.stage as usize],
-                        NAMES[index],
-                        metric.calls,
-                        metric.items,
-                        metric.elapsed.as_nanos(),
-                        metric.max.as_nanos(),
-                        total[index].calls,
-                        total[index].items,
-                        total[index].elapsed.as_nanos(),
-                    );
-                }
-            }
-        }
-    }
 }

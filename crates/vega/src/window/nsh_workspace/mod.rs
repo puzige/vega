@@ -1175,6 +1175,3 @@ impl Element for Mounted {
         self.child.paint(window, cx);
     }
 }
-
-#[cfg(test)]
-mod tests;

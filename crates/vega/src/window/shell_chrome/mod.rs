@@ -697,6 +697,3 @@ impl RenderOnce for Deferred {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

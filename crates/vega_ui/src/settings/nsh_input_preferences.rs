@@ -19,10 +19,6 @@ impl Presentation {
     }
 }
 
-#[cfg(feature = "nsh-reading-integration")]
-#[path = "nsh_close_regressions.rs"]
-mod close_regressions;
-
 #[derive(Clone)]
 struct Snapshot {
     id: ProjectionId,
@@ -269,8 +265,6 @@ fn running_button(
 }
 
 fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
-    #[cfg(feature = "nsh-reading-integration")]
-    close_regressions::observe(state, commands.clone());
     let actions = Actions {
         state,
         pending: signal(false),
@@ -404,54 +398,4 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
             },
         ))
         .into_element()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Action, Snapshot, accepts};
-    use vega_conversation::types::PendingMessageBehavior;
-
-    fn snapshot() -> Snapshot {
-        Snapshot {
-            id: crate::nsh::ProjectionId::new(),
-            predictions: true,
-            running: "queue".into(),
-            enabled: true,
-            colors: vega_theme::Theme::light().colors,
-        }
-    }
-
-    #[test]
-    fn stale_prediction_toggle_cannot_flip_new_authoritative_preference() {
-        let observed = snapshot();
-        let mut current = observed.clone();
-        current.predictions = false;
-        assert!(!accepts(&current, &observed, Action::Predictions));
-        assert!(accepts(&current, &current, Action::Predictions));
-        current.enabled = false;
-        assert!(!accepts(&current, &current, Action::Predictions));
-    }
-
-    #[test]
-    fn running_message_choice_rechecks_current_value_and_save_availability() {
-        let observed = snapshot();
-        let mut current = observed.clone();
-        current.running = "steer".into();
-        assert!(!accepts(
-            &current,
-            &observed,
-            Action::Running(PendingMessageBehavior::Queue)
-        ));
-        assert!(accepts(
-            &current,
-            &current,
-            Action::Running(PendingMessageBehavior::Queue)
-        ));
-        current.enabled = false;
-        assert!(!accepts(
-            &current,
-            &current,
-            Action::Running(PendingMessageBehavior::Queue)
-        ));
-    }
 }

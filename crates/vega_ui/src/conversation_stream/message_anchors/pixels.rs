@@ -5,10 +5,6 @@ use nsh_core::prelude as ns;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use vega_theme::{Layout, ThemeColors, Typography};
 
-#[cfg(feature = "nsh-reading-integration")]
-#[path = "mounted_regressions.rs"]
-pub mod mounted_regressions;
-
 #[derive(Clone, Debug, PartialEq)]
 enum Content {
     Mark { width: f32, color: Rgba },
@@ -24,8 +20,6 @@ struct Snapshot {
     line_height: f32,
     radius: f32,
     padding: f32,
-    #[cfg(feature = "nsh-reading-integration")]
-    observation: Option<mounted_regressions::Observation>,
 }
 
 struct Host {
@@ -115,8 +109,6 @@ impl Element for Leaf {
                 .into(),
             radius: (rem * 0.375).into(),
             padding: (rem * 0.5).into(),
-            #[cfg(feature = "nsh-reading-integration")]
-            observation: mounted_regressions::observation(&self.content, cx),
         };
         let mut element = match &self.content {
             Content::Mark { width, .. } => div()
@@ -163,10 +155,6 @@ impl Element for Leaf {
                 published: snapshot.clone(),
                 _release: cx.on_release(|host: &mut Host, cx| {
                     host.surface.entity().read(cx).stop();
-                    #[cfg(feature = "nsh-reading-integration")]
-                    if let Some(observation) = &host.published.observation {
-                        observation.stopped();
-                    }
                 }),
             }
         });
@@ -175,14 +163,6 @@ impl Element for Leaf {
             if host.published != snapshot {
                 host.surface.publish(snapshot.clone());
                 host.published = snapshot;
-            }
-            #[cfg(feature = "nsh-reading-integration")]
-            if let Some(observation) = &host.published.observation {
-                observation.host(
-                    host.surface.entity().entity_id(),
-                    bounds,
-                    host.surface.errors().borrow().clone(),
-                );
             }
             host.surface.entity()
         });
@@ -210,10 +190,6 @@ impl Element for Leaf {
                 size: Default::default(),
             },
         };
-        #[cfg(feature = "nsh-reading-integration")]
-        if let Some(observation) = &measurement.snapshot.observation {
-            observation.input(mask.bounds);
-        }
         window.with_content_mask(Some(mask), |window| {
             child.prepaint_at(bounds.origin, window, cx);
         });
@@ -231,10 +207,6 @@ impl Element for Leaf {
         cx: &mut App,
     ) {
         let bounds = bounds.intersect(&window.content_mask().bounds);
-        #[cfg(feature = "nsh-reading-integration")]
-        if let Some(observation) = &_measurement.snapshot.observation {
-            observation.paint(bounds);
-        }
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             child.paint(window, cx);
         });
@@ -261,38 +233,18 @@ fn preview_shadows() -> Vec<ns::BoxShadow> {
 }
 
 fn pixels(state: ns::Signal<Snapshot>, _: tokio::sync::mpsc::Sender<()>) -> ns::AnyElement {
-    #[cfg(feature = "nsh-reading-integration")]
-    if let Some(observation) = &state.get_untracked().observation {
-        observation.setup();
-    }
     let root = ns::view()
         .size_full()
         .accessible(false)
         .accessibility_elements_hidden(true);
-    #[cfg(feature = "nsh-reading-integration")]
-    let root = {
-        use ns::Interactive as _;
-        let observation = state.get_untracked().observation;
-        root.on_layout(move |bounds: &ns::Bounds<ns::Points>| {
-            if let Some(observation) = &observation {
-                observation.layout(bounds);
-            }
-        })
-    };
     root.child(ns::dynamic(move || {
         let snapshot = state.get();
-        #[cfg(feature = "nsh-reading-integration")]
-        if let Some(observation) = &snapshot.observation {
-            observation.projection(&snapshot);
-        }
         match snapshot.content {
             Content::Mark { color, .. } => ns::view()
                 .size_full()
                 .bg(crate::nsh::color(color))
                 .into_element(),
             Content::Preview { label, colors } => {
-                #[cfg(feature = "nsh-reading-integration")]
-                let observed_label = label.clone();
                 let text = ns::text(label)
                     .w_full()
                     .min_w(ns::px(0.))
@@ -303,32 +255,7 @@ fn pixels(state: ns::Signal<Snapshot>, _: tokio::sync::mpsc::Sender<()>) -> ns::
                     .font_weight(ns::FontWeight(snapshot.weight))
                     .text_color(crate::nsh::color(colors[2]));
                 let text = if snapshot.italic { text.italic() } else { text };
-                #[cfg(feature = "nsh-reading-integration")]
-                let text = {
-                    use ns::Interactive as _;
-                    let observation = snapshot.observation.clone();
-                    let layout_observation = observation.clone();
-                    text.on(
-                        nsh_core::EventKind::TextLayout,
-                        move |event: &nsh_core::EventPayload| {
-                            if let (Some(observation), nsh_core::EventPayload::TextLayout(lines)) =
-                                (&observation, event)
-                            {
-                                observation.lines(&observed_label, lines);
-                            }
-                        },
-                    )
-                    .on_layout(move |bounds: &ns::Bounds<ns::Points>| {
-                        if let Some(observation) = &layout_observation {
-                            observation.text_layout(bounds);
-                        }
-                    })
-                };
                 let shadows = preview_shadows();
-                #[cfg(feature = "nsh-reading-integration")]
-                if let Some(observation) = &snapshot.observation {
-                    observation.shadows(&shadows);
-                }
                 ns::view()
                     .size_full()
                     .flex()

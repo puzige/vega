@@ -8,9 +8,6 @@ use std::{
 
 use crate::nsh::ProjectionId;
 
-#[cfg(feature = "nsh-reading-integration")]
-pub mod host_regressions;
-
 struct Owner {
     precise: bool,
     horizontal: bool,

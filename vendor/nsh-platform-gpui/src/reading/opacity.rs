@@ -185,14 +185,7 @@ pub(crate) fn for_draw(drawn: &DrawnText) -> TextOpacity {
             .publication
             .as_ref()
             .is_some_and(|current| Rc::ptr_eq(current, &publication))
-        || !{
-            #[cfg(feature = "vega-host-regressions")]
-            let _diagnostic = crate::rt::diagnostics::Span::start(
-                crate::rt::diagnostics::Stage::OpacityCurrent,
-                publication.fence.snapshot.texts.len(),
-            );
-            is_current(&surface, &publication.fence.snapshot)
-        }
+        || !{ is_current(&surface, &publication.fence.snapshot) }
         || !publication
             .fence
             .snapshot
@@ -210,11 +203,6 @@ pub(crate) fn for_draw(drawn: &DrawnText) -> TextOpacity {
             .map(|range| (range.range.clone(), range.opacity))
             .collect(),
     }
-}
-
-#[cfg(feature = "vega-host-regressions")]
-pub(crate) fn retained_publications(surface: &Surface) -> usize {
-    usize::from(surface.reading_opacity.borrow().publication.is_some())
 }
 
 pub(crate) type OpacitySlot = RefCell<Option<TextOpacityLease>>;

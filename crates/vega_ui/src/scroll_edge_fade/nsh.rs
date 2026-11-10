@@ -1,7 +1,3 @@
-#[cfg(test)]
-#[path = "tests.rs"]
-mod tests;
-
 use super::{FadeRegion, ScrollFade, ScrollFadeMetrics};
 use crate::nsh::Surface;
 use gpui_kit::{

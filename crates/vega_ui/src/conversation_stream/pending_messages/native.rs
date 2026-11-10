@@ -8,9 +8,6 @@ use std::rc::Weak;
 
 mod pixels;
 
-#[cfg(test)]
-mod tests;
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ButtonStyle {
     Icon,

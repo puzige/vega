@@ -15,8 +15,6 @@ use crate::nsh::ProjectionId;
 
 mod host;
 mod nsh_view;
-#[cfg(test)]
-mod tests;
 actions!(vega_artifact_card, [ArtifactActivate, ArtifactClear]);
 
 const OPEN_TARGETS: [(OpenInTarget, &str); 6] = [

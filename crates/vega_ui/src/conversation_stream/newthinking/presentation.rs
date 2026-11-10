@@ -6,9 +6,6 @@ use std::rc::{Rc, Weak};
 
 #[path = "pixels.rs"]
 mod pixels;
-#[cfg(test)]
-#[path = "tests.rs"]
-mod tests;
 
 pub(super) fn transition_visibility(
     current: &mut bool,

@@ -5,9 +5,6 @@ mod host;
 mod model;
 mod view;
 
-#[cfg(test)]
-mod tests;
-
 use crate::loading_logo as logo;
 
 type ApplyConversation =

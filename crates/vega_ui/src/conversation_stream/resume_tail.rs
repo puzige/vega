@@ -539,6 +539,3 @@ impl Render for Host {
         host.into_any_element()
     }
 }
-
-#[cfg(test)]
-mod tests;

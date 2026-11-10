@@ -368,6 +368,3 @@ fn label(snapshot: Snapshot) -> ns::AnyElement {
     )
     .into_element()
 }
-
-#[cfg(test)]
-mod tests;

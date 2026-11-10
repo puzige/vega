@@ -1,9 +1,5 @@
 use super::*;
-#[cfg(feature = "nsh-reading-integration")]
-pub mod command_control_regressions;
 mod nsh_view;
-#[cfg(feature = "nsh-reading-integration")]
-pub use nsh_view::mounted_regressions;
 
 use crate::nsh::ProjectionId;
 use vega_conversation::types::{

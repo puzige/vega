@@ -6,11 +6,7 @@ mod organization;
 mod pin;
 mod reload;
 mod rename;
-#[cfg(feature = "nsh-reading-integration")]
-mod rename_tests;
 use organization::{Organization, OrganizationSection};
-#[cfg(feature = "nsh-reading-integration")]
-pub use rename_tests::mounted_rename_native_ack_ime_cancel_rebind_and_persistence;
 
 /// Events emitted by the session block.
 pub enum ThreadsBlockEvent {

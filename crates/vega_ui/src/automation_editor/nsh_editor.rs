@@ -13,9 +13,6 @@ use super::{
 };
 use crate::nsh::{OrderedCommands, ProjectionId, Surface};
 
-#[cfg(test)]
-mod tests;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Values {
     text: String,

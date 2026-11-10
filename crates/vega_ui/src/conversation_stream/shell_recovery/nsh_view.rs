@@ -1,13 +1,7 @@
 #[path = "keyboard.rs"]
 mod keyboard;
-#[cfg(feature = "nsh-reading-integration")]
-#[path = "mounted_regressions.rs"]
-pub mod mounted_regressions;
 #[path = "reveal.rs"]
 mod reveal;
-#[cfg(test)]
-#[path = "tests.rs"]
-mod tests;
 
 use super::{ConversationStream, ShellRecoveryAction, ShellRecoveryError, TaskBackend};
 use crate::nsh::{ProjectionId, Surface};
@@ -768,8 +762,6 @@ fn render(incoming: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyEle
                         let commands = layout_commands.clone();
                         let id = layout_id.clone();
                         move |bounds: &Bounds<Points>| {
-                            #[cfg(feature = "nsh-reading-integration")]
-                            mounted_regressions::record_panel(&snapshot, *bounds);
                             report_height(bounds.size.height.0, measured, &commands, &id, failed);
                         }
                     })
@@ -916,8 +908,6 @@ fn render(incoming: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyEle
                     let commands = layout_commands.clone();
                     let id = layout_id.clone();
                     move |bounds: &Bounds<Points>| {
-                        #[cfg(feature = "nsh-reading-integration")]
-                        mounted_regressions::record_panel(&snapshot, *bounds);
                         report_height(bounds.size.height.0, measured, &commands, &id, failed);
                     }
                 })
@@ -961,18 +951,12 @@ fn control_view(
     let ring_action = action.clone();
     let state_action = action.clone();
     let enabled = control.enabled;
-    #[cfg(feature = "nsh-reading-integration")]
-    let layout_observed = observed.clone();
-    #[cfg(feature = "nsh-reading-integration")]
-    let layout_action = action.clone();
     view()
         .element_ref(&target)
         .on_layout(move |bounds: &Bounds<Points>| {
             if layout.get_untracked() != Some(*bounds) {
                 layout.set(Some(*bounds));
                 viewport.invalidate();
-                #[cfg(feature = "nsh-reading-integration")]
-                mounted_regressions::record_control(&layout_observed, &layout_action, *bounds);
             }
         })
         .role(AccessibilityRole::Button)

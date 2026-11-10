@@ -14,15 +14,8 @@ use vega_theme::{Layout, Typography, theme};
 
 use crate::conversation_stream::links::{LinkRange, link_regions};
 
-#[cfg(feature = "nsh-reading-integration")]
-pub(crate) mod integration_support;
-
 mod decoration;
-#[cfg(feature = "nsh-reading-integration")]
-mod focus_integration;
 mod native;
-#[cfg(feature = "nsh-reading-integration")]
-pub use focus_integration::measured_focus_paints_wrapped_fragments_and_tracks_tab_reverse_and_escape;
 
 #[derive(Clone, Default)]
 struct Dependencies {
@@ -34,8 +27,6 @@ struct Registry {
     windows: HashMap<WindowId, WeakEntity<Coordinator>>,
     stack: Vec<ReadingScope>,
     dependencies: Dependencies,
-    #[cfg(feature = "nsh-reading-integration")]
-    request: Option<integration_support::Request>,
 }
 
 impl Global for Registry {}
@@ -914,27 +905,6 @@ pub(crate) fn prepaint_measured_link_target(
     targets
 }
 
-#[cfg(feature = "nsh-reading-integration")]
-fn measured_focus_rects(
-    links: &[VisibleLink],
-    owners: &[LinkRange],
-    window: &Window,
-    cx: &App,
-) -> Vec<Bounds<Pixels>> {
-    links
-        .iter()
-        .filter(|link| {
-            owners.iter().any(|owner| {
-                owner.owner == link.owner
-                    && owner.target == link.target
-                    && owner.occurrence == link.occurrence
-            }) && link.focus.is_focused(window)
-                && link.current(window, cx)
-        })
-        .flat_map(|link| link.text_bounds.iter().copied())
-        .collect()
-}
-
 pub(crate) fn prepaint_link_decorations(
     layout: &TextLayout,
     links: &[LinkRange],
@@ -1099,21 +1069,13 @@ fn load(entity: &Entity<Coordinator>, retry: bool, window: &mut Window, cx: &mut
     let Some((service, target, cancellation, generation, key)) = request else {
         return;
     };
-    #[cfg(feature = "nsh-reading-integration")]
-    let external_request = registry(cx).request.clone();
     window.refresh();
     let weak = entity.downgrade();
     let handle = window.window_handle();
     cx.spawn(async move |cx| {
         let result = cx
             .background_executor()
-            .spawn(async move {
-                #[cfg(feature = "nsh-reading-integration")]
-                if let Some(request) = external_request {
-                    return request(target, retry, cancellation).await;
-                }
-                service.load(&target, retry, cancellation).await
-            })
+            .spawn(async move { service.load(&target, retry, cancellation).await })
             .await;
         let _ = cx.update_window(handle, |_, window, cx| {
             let _ = weak.update(cx, |state, cx| {
@@ -1350,7 +1312,3 @@ fn build_card(
 ) -> Option<(Bounds<Pixels>, AnyElement)> {
     native::card(entity, window, cx)
 }
-
-#[cfg(test)]
-#[path = "link_preview_tests.rs"]
-mod tests;

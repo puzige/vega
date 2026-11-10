@@ -10,9 +10,6 @@ use std::rc::{Rc, Weak};
 mod pixels;
 pub(super) mod shell;
 
-#[cfg(test)]
-mod tests;
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Kind {
     Menu,

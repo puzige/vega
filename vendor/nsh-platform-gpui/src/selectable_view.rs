@@ -38,9 +38,6 @@ use crate::{
     view::NshView,
 };
 
-#[cfg(feature = "vega-host-regressions")]
-pub(crate) mod host_tests;
-
 /// How often a drag past a scroll view's edge scrolls it (ms).
 const AUTOSCROLL_MS: u64 = 16;
 /// Points scrolled per tick for each point the pointer is past the edge.

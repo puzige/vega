@@ -1,6 +1,4 @@
 use super::{Duration, HashMap, Instant, StreamModel, StreamSpan};
-#[cfg(test)]
-use gpui_kit::TextRun;
 use gpui_kit::Window;
 use gpui_kit::base::animation::cubic_bezier;
 use std::ops::Range;
@@ -241,67 +239,4 @@ impl FadeFrame {
         let current = self.parts.get(&(block, line, row, part))?;
         (current.text.as_ref() == expected_text).then_some(current.ranges.as_slice())
     }
-
-    #[cfg(test)]
-    pub(super) fn line(&self, block: u64, line: usize) -> LineFade<'_> {
-        LineFade {
-            frame: self,
-            block,
-            line,
-        }
-    }
 }
-
-#[cfg(test)]
-pub(super) struct LineFade<'a> {
-    frame: &'a FadeFrame,
-    block: u64,
-    line: usize,
-}
-
-#[cfg(test)]
-impl LineFade<'_> {
-    pub(super) fn runs(&self, row: usize, part: TextPart, runs: Vec<TextRun>) -> Vec<TextRun> {
-        let Some(part) = self.frame.parts.get(&(self.block, self.line, row, part)) else {
-            return runs;
-        };
-        let fades = &part.ranges;
-        let mut output = Vec::new();
-        let mut offset = 0;
-        for run in runs {
-            let end = offset + run.len;
-            while offset < end {
-                let next = fades.iter().find(|fade| fade.range.end > offset);
-                let (boundary, opacity) = match next {
-                    Some(fade) if fade.range.start <= offset => {
-                        (end.min(fade.range.end), fade.opacity)
-                    }
-                    Some(fade) => (end.min(fade.range.start), 1.),
-                    None => (end, 1.),
-                };
-                let mut fragment = run.clone();
-                fragment.len = boundary - offset;
-                fragment.color.a *= opacity;
-                if let Some(color) = &mut fragment.background_color {
-                    color.a *= opacity;
-                }
-                if let Some(underline) = &mut fragment.underline
-                    && let Some(color) = &mut underline.color
-                {
-                    color.a *= opacity;
-                }
-                if let Some(strikethrough) = &mut fragment.strikethrough
-                    && let Some(color) = &mut strikethrough.color
-                {
-                    color.a *= opacity;
-                }
-                output.push(fragment);
-                offset = boundary;
-            }
-        }
-        output
-    }
-}
-
-#[cfg(test)]
-mod tests;

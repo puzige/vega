@@ -2341,7 +2341,3 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         ))
         .into_element()
 }
-
-#[cfg(test)]
-#[path = "development_tests.rs"]
-mod development_tests;

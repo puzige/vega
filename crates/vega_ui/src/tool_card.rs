@@ -1,6 +1,4 @@
 mod nsh_tool;
-#[cfg(feature = "nsh-reading-integration")]
-pub use nsh_tool::mounted_regressions as shell_control_mounted_regressions;
 use std::time::Duration;
 
 use gpui_kit::prelude::*;

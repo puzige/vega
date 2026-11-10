@@ -49,42 +49,6 @@ pub(in crate::settings) struct NavigationAuthority {
     reopen: Option<(String, Option<String>)>,
 }
 
-#[cfg(test)]
-impl NavigationAuthority {
-    pub(in crate::settings) fn development_fixture() -> Self {
-        Self {
-            generation: 1,
-            operation: 2,
-            next_request: 3,
-            selected: Some("provider".into()),
-            saving: false,
-            form: true,
-            api: Default::default(),
-            base: None,
-            providers: vec![],
-            inputs: std::array::from_fn(|index| InputAuthority {
-                entity: index as u64,
-                revision: 0,
-                composing: false,
-            }),
-            draft: Some(ProviderDraftStamp::development_fixture()),
-            editor: None,
-            command: None,
-            reopen: None,
-        }
-    }
-
-    pub(in crate::settings) fn development_edit_key(&mut self) {
-        self.inputs[3].revision += 1;
-    }
-
-    pub(in crate::settings) fn development_edit_draft(&mut self, composing: bool) {
-        if let Some(draft) = &mut self.draft {
-            draft.development_change(composing);
-        }
-    }
-}
-
 impl NavigationAuthority {
     pub(in crate::settings) fn draft(&self) -> Option<&ProviderDraftStamp> {
         self.draft.as_ref()

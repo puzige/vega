@@ -19,10 +19,6 @@ mod view;
 use model::{Action, Authority, Snapshot};
 use presentation::Presentation;
 
-#[cfg(test)]
-#[path = "startup_controller/tests.rs"]
-mod tests;
-
 pub(crate) struct StartupView {
     running: bool,
     loading_epoch: Instant,

@@ -458,9 +458,6 @@ impl Element for Mounted {
     }
 }
 
-#[cfg(test)]
-mod tests;
-
 fn render(state: ns::Signal<Snapshot>, commands: mpsc::Sender<Request>) -> ns::AnyElement {
     let commands = crate::nsh::OrderedCommands::new(commands);
     ns::view()

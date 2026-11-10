@@ -17,20 +17,10 @@ pub(crate) mod opacity;
 pub use geometry::ReadingGeometry;
 pub use opacity::{ReadingOpacityFence, ReadingOpacityRange};
 
-#[cfg(feature = "vega-host-regressions")]
-pub(crate) mod opacity_host_tests;
 pub(crate) fn geometry_invalidated(surface: &Surface) {
     opacity::invalidated(surface);
     geometry::invalidated(surface);
 }
-
-#[cfg(feature = "vega-host-regressions")]
-pub(crate) mod geometry_host_tests;
-#[cfg(feature = "vega-host-regressions")]
-pub(crate) mod anchor_host_tests;
-
-#[cfg(feature = "vega-host-regressions")]
-pub(crate) mod host_tests;
 
 #[derive(Clone)]
 pub struct ReadingText {

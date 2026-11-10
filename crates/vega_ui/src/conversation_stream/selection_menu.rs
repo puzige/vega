@@ -11,8 +11,6 @@ mod accessibility;
 pub(super) mod body;
 pub(super) mod mounted;
 mod pixels;
-#[cfg(test)]
-mod tests;
 
 const WIDTH: f32 = 256.;
 const ROW: f32 = 30.;

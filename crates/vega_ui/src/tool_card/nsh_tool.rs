@@ -1,6 +1,4 @@
 mod layout;
-#[cfg(feature = "nsh-reading-integration")]
-pub mod mounted_regressions;
 
 use super::*;
 use crate::nsh::{ProjectionId, Surface};
@@ -811,13 +809,7 @@ fn render(
             move || {
                 let commands = shell_commands.clone();
                 let pending = signal(false);
-                let target = element_ref();
-                #[cfg(feature = "nsh-reading-integration")]
-                effect(move || {
-                    mounted_regressions::measure_control(state, target, state.get());
-                });
                 view()
-                    .element_ref(&target)
                     .role(AccessibilityRole::Button)
                     .optional_label(move || {
                         state
@@ -839,10 +831,6 @@ fn render(
                                 .shell_control
                                 .is_none_or(|control| !control.enabled),
                         ..Default::default()
-                    })
-                    .on_layout(move |_: &Bounds<Points>| {
-                        #[cfg(feature = "nsh-reading-integration")]
-                        mounted_regressions::measure_control(state, target, state.get_untracked());
                     })
                     .px_2()
                     .py_1()

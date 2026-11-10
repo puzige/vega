@@ -18,8 +18,6 @@ struct Snapshot {
     italic: bool,
     line_height: f32,
     radius: f32,
-    #[cfg(feature = "nsh-reading-integration")]
-    observation: Option<super::host_regressions::Observation>,
 }
 
 struct Host {
@@ -57,19 +55,6 @@ fn chrome(label: &SharedString, shortcut: Option<&SharedString>) -> Stateful<Div
         .id("nsh-icon-tooltip")
         .role(Role::Tooltip)
         .aria_label(accessible_label)
-}
-
-#[cfg(feature = "nsh-reading-integration")]
-pub(super) fn assert_accessibility(label: SharedString, shortcut: Option<SharedString>) {
-    let element = chrome(&label, shortcut.as_ref());
-    assert_eq!(element.a11y_role(), Some(Role::Tooltip));
-    let mut node = gpui_kit::accesskit::Node::new(Role::Tooltip);
-    element.write_a11y_info(&mut node);
-    let expected = match shortcut {
-        Some(shortcut) => format!("{label} {shortcut}"),
-        None => label.to_string(),
-    };
-    assert_eq!(node.label(), Some(expected.as_str()));
 }
 
 struct Body {
@@ -213,8 +198,6 @@ impl Element for Body {
             italic: measurement.italic,
             line_height: measurement.line_height,
             radius: measurement.radius,
-            #[cfg(feature = "nsh-reading-integration")]
-            observation: super::host_regressions::tooltip_observation(cx),
         };
         let host = window.use_keyed_state("nsh-icon-tooltip-surface", cx, |window, cx| {
             let (surface, _) = Surface::new_transparent(snapshot.clone(), pixels, window, cx);
@@ -232,14 +215,6 @@ impl Element for Body {
             if host.published != snapshot {
                 host.surface.publish(snapshot.clone());
                 host.published = snapshot;
-            }
-            #[cfg(feature = "nsh-reading-integration")]
-            if let Some(observation) = &host.published.observation {
-                observation.host(
-                    host.surface.entity().entity_id(),
-                    bounds,
-                    host.surface.errors().borrow().clone(),
-                );
             }
             host.surface.entity()
         });
@@ -263,10 +238,6 @@ impl Element for Body {
                 size: Default::default(),
             },
         };
-        #[cfg(feature = "nsh-reading-integration")]
-        if let Some(observation) = super::host_regressions::tooltip_observation(cx) {
-            observation.input(mask.bounds);
-        }
         window.with_content_mask(Some(mask), |window| {
             child.prepaint_at(bounds.origin, window, cx);
         });
@@ -284,10 +255,6 @@ impl Element for Body {
         cx: &mut App,
     ) {
         let bounds = bounds.intersect(&window.content_mask().bounds);
-        #[cfg(feature = "nsh-reading-integration")]
-        if let Some(observation) = super::host_regressions::tooltip_observation(cx) {
-            observation.paint(bounds);
-        }
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             child.paint(window, cx);
         });
@@ -314,35 +281,12 @@ fn text(value: String, rect: [f32; 4], snapshot: &Snapshot, foreground: Rgba) ->
 }
 
 fn pixels(state: ns::Signal<Snapshot>, _: tokio::sync::mpsc::Sender<()>) -> ns::AnyElement {
-    #[cfg(feature = "nsh-reading-integration")]
-    if let Some(observation) = &state.get_untracked().observation {
-        observation.setup();
-    }
     let root = ns::view()
         .size_full()
         .accessible(false)
         .accessibility_elements_hidden(true);
-    #[cfg(feature = "nsh-reading-integration")]
-    let root = {
-        use ns::Interactive as _;
-        let observation = state.get_untracked().observation;
-        root.on_layout(move |bounds: &ns::Bounds<ns::Points>| {
-            if let Some(observation) = &observation {
-                observation.layout(bounds);
-            }
-        })
-    };
     root.child(ns::dynamic(move || {
         let snapshot = state.get();
-        #[cfg(feature = "nsh-reading-integration")]
-        if let Some(observation) = &snapshot.observation {
-            observation.projection(
-                &snapshot.colors,
-                0.,
-                &snapshot.label,
-                snapshot.shortcut.as_deref(),
-            );
-        }
         let [
             background,
             border,

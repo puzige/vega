@@ -254,11 +254,6 @@ fn text_geometry(surface: &Surface, text: &super::ReadingText) -> Option<TextGeo
 
 impl ReadingGeometry {
     pub(crate) fn capture(surface: &Rc<Surface>, snapshot: &ReadingSnapshot) -> Option<Self> {
-        #[cfg(feature = "vega-host-regressions")]
-        let _diagnostic = crate::rt::diagnostics::Span::start(
-            crate::rt::diagnostics::Stage::GeometryCapture,
-            snapshot.texts.len(),
-        );
         if !is_current(surface, snapshot) || surface.invalidated() {
             return None;
         }
@@ -280,11 +275,6 @@ impl ReadingGeometry {
     }
 
     pub(crate) fn current_for(&self, surface: &Rc<Surface>) -> bool {
-        #[cfg(feature = "vega-host-regressions")]
-        let _diagnostic = crate::rt::diagnostics::Span::start(
-            crate::rt::diagnostics::Stage::GeometryCurrent,
-            self.snapshot.texts.len(),
-        );
         self.surface
             .upgrade()
             .is_some_and(|owner| Rc::ptr_eq(&owner, surface))
@@ -352,14 +342,6 @@ impl ReadingGeometry {
             }
         }
         crate::scroll::reading_anchor_by(surface, &view, delta_y)
-    }
-
-    #[cfg(feature = "vega-host-regressions")]
-    pub(crate) fn matches_snapshot(&self, snapshot: &ReadingSnapshot) -> bool {
-        self.surface
-            .upgrade()
-            .is_some_and(|surface| self.current_for(&surface))
-            && self.snapshot.matches(snapshot)
     }
 
     fn text(&self, index: usize) -> Option<(&TextGeometry, &GpuiLayout)> {

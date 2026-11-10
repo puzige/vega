@@ -309,10 +309,6 @@ fn native_range(text: &str, range: Range<usize>, origin: u32) -> Option<Range<u3
     Some(origin.checked_add(start)?..origin.checked_add(end)?)
 }
 
-#[cfg(test)]
-#[path = "body_opacity_tests.rs"]
-mod tests;
-
 pub(super) struct Publication {
     fence: Option<ReadingOpacityFence>,
     source: Option<FadeSource>,

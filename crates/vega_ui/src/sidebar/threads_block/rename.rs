@@ -13,22 +13,6 @@ pub(super) struct RenameBinding {
 }
 
 impl RenameBinding {
-    #[cfg(feature = "nsh-reading-integration")]
-    pub(super) fn test_state(&self, owner: &ThreadsBlock, cx: &App) -> String {
-        format!(
-            "session={:?} input={:?} current={} generations={}/{}/{}/{} route={:?} actual_route={:?}",
-            self.identity.entity_id(),
-            self.input.entity_id(),
-            self.current(owner, cx),
-            self.project_generation,
-            owner.project_generation,
-            self.navigation_generation,
-            owner.visit_navigation_generation,
-            self.route,
-            ThreadsBlock::current_visit_route(cx),
-        )
-    }
-
     fn current(&self, owner: &ThreadsBlock, cx: &App) -> bool {
         owner.editing.as_ref().is_some_and(|session| {
             self.identity == session.binding.identity

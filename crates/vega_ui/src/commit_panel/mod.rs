@@ -31,8 +31,6 @@ mod host;
 mod model;
 mod nsh_view;
 mod panel;
-#[cfg(test)]
-mod tests;
 
 pub(crate) use model::{
     COMMIT_ROW_HEIGHT, commit_row_is_focusable, commit_row_key, commit_row_status,

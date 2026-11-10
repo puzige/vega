@@ -133,8 +133,6 @@ pub(crate) struct Surface {
     pub(crate) file_drop: crate::file_drop::State,
     engine: RefCell<Option<Engine>>,
     control: RefCell<Option<EngineControl>>,
-    #[cfg(feature = "vega-host-regressions")]
-    pub(crate) host_events: RefCell<Vec<(NodeId, EventKind, EventPayload)>>,
     rx: RefCell<Option<Receiver<Message>>>,
     pending: RefCell<Arc<AtomicBool>>,
     /// Pixels per point (the window's scale factor).
@@ -256,8 +254,6 @@ impl Surface {
             file_drop: Default::default(),
             engine: RefCell::new(None),
             control: RefCell::new(None),
-            #[cfg(feature = "vega-host-regressions")]
-            host_events: RefCell::default(),
             rx: RefCell::new(None),
             pending: RefCell::new(Arc::new(AtomicBool::new(false))),
             scale: Cell::new(1.0),
@@ -441,10 +437,6 @@ impl Surface {
 
     /// Sends an event to JS.
     pub(crate) fn event(&self, id: NodeId, kind: EventKind, payload: EventPayload) {
-        #[cfg(feature = "vega-host-regressions")]
-        self.host_events
-            .borrow_mut()
-            .push((id, kind, payload.clone()));
         self.control(|c| {
             c.dispatch_event(id, kind, payload);
             self.events_sent.set(self.events_sent.get() + 1);
@@ -541,8 +533,6 @@ impl Surface {
     }
 
     pub(crate) fn repaint_reading(&self) {
-        #[cfg(feature = "vega-host-regressions")]
-        crate::integration_support::repaint(self.key());
         if !self.repaint_pending.replace(true) {
             // Entry points flush when they end; a change made anywhere else
             // (a GPUI callback, an observer) is flushed by the main-thread
@@ -559,8 +549,6 @@ impl Surface {
 
     /// The surface is being drawn: what changed so far is in this frame.
     pub(crate) fn drawing(&self) {
-        #[cfg(feature = "vega-host-regressions")]
-        crate::integration_support::drawing(self.key());
         self.invalid.set(false);
         self.repaint_pending.set(false);
     }
@@ -588,11 +576,6 @@ impl Surface {
             Some(rx) => rx.try_iter().collect(),
             None => return,
         };
-        #[cfg(feature = "vega-host-regressions")]
-        let _diagnostic = crate::rt::diagnostics::Span::start(
-            crate::rt::diagnostics::Stage::SurfaceDrain,
-            messages.len(),
-        );
         let generation = self.generation.get();
         let mut applied = false;
         for message in messages {
@@ -647,11 +630,6 @@ impl Surface {
     }
 
     fn apply(self: &Rc<Self>, batch: &MountBatch) {
-        #[cfg(feature = "vega-host-regressions")]
-        let _diagnostic = crate::rt::diagnostics::Span::start(
-            crate::rt::diagnostics::Stage::SurfaceApply,
-            batch.items.len(),
-        );
         crate::access::prepare(batch);
         for item in &batch.items {
             self.anim.borrow_mut().apply(item);

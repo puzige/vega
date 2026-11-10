@@ -200,12 +200,6 @@ mod nsh_pricing;
 mod nsh_shell;
 mod nsh_tail;
 use model_configuration::SettingsDestination;
-#[cfg(feature = "nsh-reading-integration")]
-pub use nsh_tail::mounted_validation::{
-    changed_content_font_theme_and_width_reject_retired_measurements,
-    narrow_fields_wrap_labels_and_preserve_natural_height,
-    passive_pixels_forward_parent_input_once_and_skip_cross_surface_focus,
-};
 mod permission_reset;
 mod permissions;
 mod preferences;

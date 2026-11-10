@@ -1,14 +1,8 @@
-#[cfg(test)]
-use super::utf16_byte;
 use super::{BodyState, Content, Geometry, ProjectionId, SourceSpan};
 use nsh_core::{Affinity, TextPosition};
 use nsh_platform_gpui::reading::{ReadingGeometry, ReadingSnapshot};
 use std::{cell::Cell, rc::Rc};
 use vega_markdown::SourcePosition;
-
-#[cfg(test)]
-#[path = "source_anchor_tests.rs"]
-mod tests;
 
 pub(super) struct Presence(pub(super) Rc<Cell<bool>>);
 

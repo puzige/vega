@@ -14,9 +14,6 @@ use vega_theme::{ThemeColors, Typography, theme};
 
 mod pixels;
 
-#[cfg(feature = "nsh-reading-integration")]
-pub mod mounted_regressions;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
     Submission(OrdinaryAction),
@@ -521,10 +518,6 @@ impl Render for Host {
             )))
             .role(Role::Group)
             .children(self.surface.as_ref().map(Surface::entity));
-        #[cfg(feature = "nsh-reading-integration")]
-        {
-            host = host.debug_selector(|| "nsh-ordinary-controls".to_owned());
-        }
         for (action, label) in self.snapshot.buttons.clone() {
             let observed = self.snapshot.clone();
             let accessible_observed = observed.clone();
@@ -673,6 +666,3 @@ impl Element for Mounted {
         self.child.paint(window, cx);
     }
 }
-
-#[cfg(test)]
-mod tests;

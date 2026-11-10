@@ -5,9 +5,6 @@ use std::rc::Rc;
 mod native;
 pub(super) use native::control;
 
-#[cfg(test)]
-mod tests;
-
 #[derive(Default)]
 pub(super) struct UserDisclosure {
     pub(super) expanded: bool,

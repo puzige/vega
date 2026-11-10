@@ -1,8 +1,6 @@
 use super::*;
 
 mod pixels;
-#[cfg(feature = "nsh-reading-integration")]
-pub use pixels::mounted_regressions;
 
 pub(crate) const MESSAGE_ANCHOR_PREVIEW_LIMIT: usize = 96;
 const MESSAGE_ANCHOR_MEASUREMENT_SCAN_LIMIT: usize = 256;

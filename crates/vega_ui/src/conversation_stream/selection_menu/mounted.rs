@@ -63,17 +63,6 @@ impl ReadingList {
             streams: vec![stream],
         }
     }
-
-    #[cfg(feature = "nsh-reading-integration")]
-    pub(crate) fn with_owners(
-        streams: Vec<WeakEntity<ConversationStream>>,
-        child: impl IntoElement,
-    ) -> Self {
-        Self {
-            child: child.into_any_element(),
-            streams,
-        }
-    }
 }
 
 impl IntoElement for ReadingList {

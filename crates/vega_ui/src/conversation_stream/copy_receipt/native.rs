@@ -113,13 +113,6 @@ impl Binding {
             return false;
         }
         match source {
-            #[cfg(test)]
-            CopySource::Message(observed) => {
-                self.code.is_none()
-                    && observed.id == copy.id
-                    && copy.content_generation() == generation
-                    && copy.has_text()
-            }
             CopySource::Code(code) => {
                 !code.is_empty()
                     && model

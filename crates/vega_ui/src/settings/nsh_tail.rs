@@ -9,10 +9,6 @@ use nsh_core::prelude as ns;
 use tokio::sync::mpsc;
 use vega_theme::{Layout, ThemeColors, Typography};
 
-#[cfg(feature = "nsh-reading-integration")]
-#[path = "nsh_tail/mounted_validation.rs"]
-pub(super) mod mounted_validation;
-
 #[derive(Clone, PartialEq)]
 enum PixelsInput {
     Background(Rgba),

@@ -1137,28 +1137,6 @@ impl MessageCopy {
         *self.projected_selection.borrow_mut() = range;
     }
 
-    #[cfg(test)]
-    pub(super) fn publish_retained(
-        &self,
-        identity: u64,
-        text: Arc<str>,
-        map: impl FnOnce(std::ops::Range<usize>) -> Option<std::ops::Range<usize>>,
-    ) {
-        let selection = self.projected_selection.borrow().clone().and_then(map);
-        self.content_generation
-            .set(self.content_generation.get().wrapping_add(1));
-        if let Some(range) = selection.filter(|range| text.get(range.clone()).is_some()) {
-            self.set_local_selection_range(range.clone());
-            self.set_selected_text(self.selection_generation(), text[range.clone()].to_owned());
-            self.set_projected_selection(Some(range));
-            self.projected_identity
-                .set(Some((identity, self.content_generation())));
-        } else {
-            self.invalidate_selection();
-        }
-        self.set_visible_text(text);
-    }
-
     pub(crate) fn selection_generation(&self) -> u64 {
         self.selection_generation.get()
     }

@@ -2258,42 +2258,6 @@ pub(crate) struct BackgroundPaint {
     pub(crate) opacity: f32,
 }
 
-#[cfg(feature = "vega-host-regressions")]
-pub(crate) struct OpacityObservation {
-    pub(crate) glyphs: Vec<(u32, bool, f32)>,
-    pub(crate) backgrounds: Vec<BackgroundPaint>,
-    pub(crate) decoration_bands: Vec<(f32, f32, f32)>,
-}
-
-#[cfg(feature = "vega-host-regressions")]
-pub(crate) fn observe_reading_opacity(drawn: &DrawnText) -> OpacityObservation {
-    let opacity = crate::reading::opacity::for_draw(drawn);
-    let mut observation = OpacityObservation {
-        glyphs: Vec::new(),
-        backgrounds: Vec::new(),
-        decoration_bands: Vec::new(),
-    };
-    if let Some(layout) = drawn.layout.downcast::<GpuiLayout>() {
-        observation.glyphs = layout
-            .glyphs
-            .iter()
-            .map(|g| (g.style, g.emoji, opacity.at(g.style)))
-            .collect();
-        layout.background_paints(&drawn.text, &opacity, |paint| {
-            observation.backgrounds.push(paint)
-        });
-        for line in &layout.lines {
-            observation.decoration_bands.extend(opacity_bands(
-                &layout.boxes[line.boxes.clone()],
-                line.info.x.0,
-                (line.info.x + line.info.width).0,
-                &opacity,
-            ));
-        }
-    }
-    observation
-}
-
 fn opacity_bands(
     boxes: &[CBox],
     left: f32,

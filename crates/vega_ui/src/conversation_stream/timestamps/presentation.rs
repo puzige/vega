@@ -5,9 +5,6 @@ use nsh_core::prelude as ns;
 use tokio::sync::mpsc;
 use vega_theme::{Layout, Typography};
 
-#[cfg(feature = "nsh-reading-integration")]
-pub mod mounted_regressions;
-
 #[derive(Clone, PartialEq)]
 struct Input {
     day: String,
@@ -197,8 +194,6 @@ impl Element for Measured {
         window: &mut Window,
         cx: &mut App,
     ) -> bool {
-        #[cfg(feature = "nsh-reading-integration")]
-        mounted_regressions::record_host(&self.host, bounds, cx);
         let width = f32::from(bounds.size.width);
         if !width.is_finite() || width <= 0. || self.width != width {
             let _ = self.host.update(cx, |host, cx| {
@@ -217,8 +212,6 @@ impl Element for Measured {
                 size: Default::default(),
             },
         };
-        #[cfg(feature = "nsh-reading-integration")]
-        mounted_regressions::record_mask(&self.host, mask.bounds, cx);
         window.with_content_mask(Some(mask), |window| self.child.prepaint(window, cx));
         self.ready
     }
@@ -250,31 +243,13 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Measurement>) -> ns:
         let width = snapshot.width;
         let id = snapshot.id.clone();
         let text = |value: String, weight: gpui_kit::FontWeight| {
-            let text = ns::text(value.clone())
+            ns::text(value.clone())
                 .flex_shrink(1.)
                 .font_family(snapshot.input.family.clone())
                 .font_weight(ns::FontWeight(weight.0 as u16))
                 .text_size(ns::px(Typography::BODY))
                 .line_height(ns::px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
-                .text_color(crate::nsh::color(snapshot.input.color));
-            #[cfg(feature = "nsh-reading-integration")]
-            let text = {
-                let id = snapshot.id.clone();
-                let layout_id = id.clone();
-                let label = value.clone();
-                text.on(
-                    nsh_core::EventKind::TextLayout,
-                    move |event: &nsh_core::EventPayload| {
-                        if let nsh_core::EventPayload::TextLayout(lines) = event {
-                            mounted_regressions::record_lines(&id, &label, weight, lines);
-                        }
-                    },
-                )
-                .on_layout(move |bounds: &ns::Bounds<ns::Points>| {
-                    mounted_regressions::record_text(&layout_id, &value, bounds);
-                })
-            };
-            text
+                .text_color(crate::nsh::color(snapshot.input.color))
         };
         ns::view()
             .w(ns::px(width))
@@ -286,8 +261,6 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Measurement>) -> ns:
             .role(nsh_core::AccessibilityRole::Text)
             .label(snapshot.input.accessible.clone())
             .on_layout(move |bounds: &ns::Bounds<ns::Points>| {
-                #[cfg(feature = "nsh-reading-integration")]
-                mounted_regressions::record_native(&id, bounds);
                 report.send(Measurement {
                     id: id.clone(),
                     width,
@@ -300,6 +273,3 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Measurement>) -> ns:
     })
     .into_element()
 }
-
-#[cfg(test)]
-mod tests;

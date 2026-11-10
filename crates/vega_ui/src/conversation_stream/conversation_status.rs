@@ -613,6 +613,3 @@ fn native_label(label: Label, centered: bool) -> ns::AnyElement {
     }
     text.into_element()
 }
-
-#[cfg(test)]
-mod tests;

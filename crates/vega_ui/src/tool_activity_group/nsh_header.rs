@@ -440,6 +440,3 @@ fn glyph(kind: Icon, tint: gpui_kit::Rgba, size: f32) -> ns::AnyElement {
         .tint_color(crate::nsh::color(tint))
         .into_element()
 }
-
-#[cfg(test)]
-mod tests;

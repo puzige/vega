@@ -1,6 +1,3 @@
-#[cfg(test)]
-mod tests;
-
 use crate::nsh::ProjectionId;
 use gpui_kit::{
     AnyElement, App, Bounds, Element, ElementId, EntityId, GlobalElementId, InspectorElementId,

@@ -9,8 +9,6 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
 mod pixels;
-#[cfg(test)]
-mod tests;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Kind {

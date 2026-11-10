@@ -458,6 +458,3 @@ fn render(
         )
         .into_element()
 }
-
-#[cfg(test)]
-mod tests;

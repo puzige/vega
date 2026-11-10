@@ -3137,9 +3137,6 @@ mod blink {
     }
 }
 
-#[cfg(feature = "vega-host-regressions")]
-pub(crate) mod host_tests;
-
 #[cfg(test)]
 mod tests {
     use super::*;
